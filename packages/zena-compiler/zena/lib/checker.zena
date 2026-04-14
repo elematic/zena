@@ -1375,6 +1375,114 @@ let typesEqual = (a: Type, b: Type): boolean => {
   }
 };
 
+// ============================================================================
+// Control-Flow Narrowing Helpers
+// ============================================================================
+
+/**
+ * Check if a statement definitely exits (return, break, continue, throw).
+ * Used to propagate narrowing past null-guard patterns like:
+ *   if (x == null) { return; }
+ *   // x is now non-null here
+ */
+let branchDefinitelyExits = (stmt: Statement): boolean => {
+  match (stmt) {
+    case ReturnStatement {}: true
+    case BreakStatement {}: true
+    case ContinueStatement {}: true
+    case ExpressionStatement {expression}: {
+      match (expression) {
+        case ThrowExpression {}: true
+        case _: false
+      }
+    }
+    case BlockStatement {body}: {
+      if (body.length == 0) { false }
+      else { branchDefinitelyExits(body[body.length - 1]) }
+    }
+    case IfStatement {consequent, alternate}: {
+      if (alternate == null) { false }
+      else { branchDefinitelyExits(consequent) && branchDefinitelyExits(alternate as Statement) }
+    }
+    case _: false
+  }
+};
+
+/**
+ * Remove null from a type. For unions, filters out NullType members.
+ * Returns the narrowed type.
+ */
+let subtractNullFromType = (t: Type): Type => {
+  match (t) {
+    case UnionT as u: {
+      let remaining = new Array<Type>();
+      let types = u.types;
+      var i = 0;
+      while (i < types.length) {
+        match (types[i]) {
+          case NullType: {}
+          case _: { remaining.push(types[i]); }
+        }
+        i = i + 1;
+      }
+      if (remaining.length == 0) { return new NeverType(); }
+      if (remaining.length == 1) { return remaining[0]; }
+      return new UnionT(remaining);
+    }
+    case NullType: { return new NeverType(); }
+    case _: { return t; }
+  }
+};
+
+/**
+ * Extract null-guard narrowing from a condition like `x == null` or `x != null`.
+ * Returns the SymbolInfo and the narrowed type for the "after-exit" context.
+ *
+ * For `x == null` with definite exit: inverse narrowing removes null from x.
+ * For `x != null` with definite exit: inverse narrowing narrows x to null.
+ */
+let extractNullGuardNarrowing = (
+  ctx: CheckerContext,
+  condition: Expression
+): (SymbolInfo | null, Type | null, boolean) => {
+  match (condition) {
+    case BinaryExpression {operator, left, right}: {
+      if (operator == "==" || operator == "!=") {
+        // Check for `x == null` or `null == x`
+        var target: Expression | null = null;
+        match (right) {
+          case NullLiteral {}: { target = left; }
+          case _: {
+            match (left) {
+              case NullLiteral {}: { target = right; }
+              case _: {}
+            }
+          }
+        }
+        if (target == null) { return (null, null, false); }
+
+        let targetExpr = target as Expression;
+        match (targetExpr) {
+          case Identifier {name}: {
+            let info = ctx.model.resolve(targetExpr as Node);
+            if (info == null) { return (null, null, false); }
+            let si = info as SymbolInfo;
+            let originalType = ctx.resolveIdentifier(targetExpr as Node);
+            if (originalType == null) { return (null, null, false); }
+            let isEqualNull = operator == "==";
+            // For `x == null`: true-branch narrows to null, inverse removes null
+            // For `x != null`: true-branch removes null, inverse narrows to null
+            return (si, originalType as Type, isEqualNull);
+          }
+          case _: { return (null, null, false); }
+        }
+      }
+      return (null, null, false);
+    }
+    case _: { return (null, null, false); }
+  }
+};
+
 let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
   match (stmt) {
     case VariableDeclaration {kind, pattern, typeAnnotation, init, loc}: {
@@ -1447,9 +1555,76 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
           let testExpr = test as Expression;
           let testType = checkExpression(ctx, testExpr, null);
           validateConditionType(ctx, testType, testExpr);
-          checkStatement(ctx, consequent);
+
+          // Extract null-guard narrowing from the condition.
+          let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
+
+          // Check consequent with narrowing applied.
+          // For `x == null`: consequent has x narrowed to null
+          // For `x != null`: consequent has x narrowed to non-null
+          if (guardInfo != null) {
+            let si = guardInfo as SymbolInfo;
+            let origType = guardOrigType as Type;
+            ctx.enterScope();
+            if (isEqualNull) {
+              ctx.narrowBinding(si, new NullType());
+            } else {
+              ctx.narrowBinding(si, subtractNullFromType(origType));
+            }
+            checkStatement(ctx, consequent);
+            ctx.exitScope();
+          } else {
+            checkStatement(ctx, consequent);
+          }
+
+          // Check alternate with inverse narrowing applied.
           if (alternate != null) {
-            checkStatement(ctx, alternate as Statement);
+            if (guardInfo != null) {
+              let si = guardInfo as SymbolInfo;
+              let origType = guardOrigType as Type;
+              ctx.enterScope();
+              if (isEqualNull) {
+                ctx.narrowBinding(si, subtractNullFromType(origType));
+              } else {
+                ctx.narrowBinding(si, new NullType());
+              }
+              checkStatement(ctx, alternate as Statement);
+              ctx.exitScope();
+            } else {
+              checkStatement(ctx, alternate as Statement);
+            }
+          }
+
+          // Narrowing past definite exits:
+          // If the consequent always exits and there is no else branch,
+          // the inverse narrowing holds for subsequent code.
+          if (alternate == null && branchDefinitelyExits(consequent)) {
+            if (guardInfo != null) {
+              let si = guardInfo as SymbolInfo;
+              let origType = guardOrigType as Type;
+              if (isEqualNull) {
+                // `if (x == null) { return; }` → x is non-null after
+                ctx.narrowBinding(si, subtractNullFromType(origType));
+              } else {
+                // `if (x != null) { return; }` → x is null after
+                ctx.narrowBinding(si, new NullType());
+              }
+            }
+          }
+
+          // If the alternate always exits, the regular narrowing holds.
+          if (alternate != null && branchDefinitelyExits(alternate as Statement)) {
+            if (guardInfo != null) {
+              let si = guardInfo as SymbolInfo;
+              let origType = guardOrigType as Type;
+              if (isEqualNull) {
+                // `if (x == null) { ... } else { return; }` → x is null after
+                ctx.narrowBinding(si, new NullType());
+              } else {
+                // `if (x != null) { ... } else { return; }` → x is non-null after
+                ctx.narrowBinding(si, subtractNullFromType(origType));
+              }
+            }
           }
         }
       }
