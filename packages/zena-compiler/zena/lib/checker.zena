@@ -193,8 +193,12 @@ class CheckerContext {
    */
   var #depModels?: HashMap<String, SemanticModel> | null = null;
 
+  /** The file path of the module being checked. */
+  #filePath: String;
+
   new(file: String, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null, depModels: HashMap<String, SemanticModel> | null)
     : diagnostics = new DiagnosticBag(file),
+      #filePath = file,
       #scopeResult = scopeResult,
       #depExports = depExports,
       #depModels = depModels {
@@ -495,6 +499,13 @@ class CheckerContext {
   }
 
   // --- Dependency exports ---
+
+  /**
+   * Get the file path of the module being checked.
+   */
+  filePath: String {
+    get { return this.#filePath; }
+  }
 
   /**
    * Get the dependency exports map (import specifier → ModuleExports).
@@ -2646,6 +2657,9 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
       case _: {}
     }
   }
+
+  // Record the declaring file for cross-module goto-definition.
+  classType.sourcePath = ctx.filePath;
 
   // Flags.
   classType.isFinal = cd.isFinal;

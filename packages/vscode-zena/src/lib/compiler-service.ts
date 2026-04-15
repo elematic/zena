@@ -227,9 +227,7 @@ export class ZenaCompilerService {
    * Uses the cached scope result from the last checkDocument() call.
    * Returns {file, line, column} or null if no definition was found.
    */
-  getDefinition(
-    offset: number,
-  ): {
+  getDefinition(offset: number): {
     file: string;
     line: number;
     column: number;

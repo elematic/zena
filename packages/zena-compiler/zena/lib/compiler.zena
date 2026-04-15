@@ -39,13 +39,20 @@ import {
   SymbolInfo,
   UnresolvedName
 } from './scope.zena';
-import { ImportDeclaration, ImportSpecifier, ExportFromDeclaration, Node, Module, SourceLocation } from './ast.zena';
+import {
+  ImportDeclaration, ImportSpecifier, ExportFromDeclaration,
+  MemberExpression, FieldDefinition, MethodDefinition, ClassDeclaration,
+  Identifier, CaseClassParam, Expression, ThisExpression,
+  Node, Module, SourceLocation
+} from './ast.zena';
 import { parse } from './parser.zena';
 import { checkModule, CheckResult } from './checker.zena';
 import { walk } from './visitor.zena';
-import { Diagnostic } from './diagnostics.zena';
+import { Diagnostic, SourceSpan } from './diagnostics.zena';
 import { SemanticModel } from './semantic-model.zena';
-import { typeToString } from './types.zena';
+import {
+  Type, ClassType, typeToString
+} from './types.zena';
 
 /** Re-export types used by consumers. */
 export { CompilerHost } from './library-loader.zena';
@@ -538,4 +545,235 @@ export let findNodeAtOffset = (root: Node, offset: i32): Node | null => {
     return true;  // no loc info, descend anyway
   }, (node: Node): void => {});
   return found;
+};
+
+/**
+ * On-demand member definition resolution for goto-definition.
+ *
+ * Given a byte offset in a module's AST, checks whether the offset falls
+ * on a MemberExpression property (e.g., the `x` in `p.x`). If so, looks
+ * up the object's type from the SemanticModel and finds the field or
+ * method declaration in the owning class.
+ *
+ * Returns a SourceSpan pointing to the FieldDefinition, MethodDefinition,
+ * or CaseClassParam, or null if the offset is not on a member access.
+ */
+export let resolveMemberDefinition = (
+  ast: Module,
+  offset: i32,
+  model: SemanticModel,
+  scopeResult: ScopeResult,
+  compiler: Compiler
+): SourceSpan | null => {
+  // Find the deepest node at the offset.
+  let node = findNodeAtOffset(ast, offset);
+  if (node == null) { return null; }
+
+  // Check if it's a MemberExpression and the offset is on the property.
+  match (node as Node) {
+    case MemberExpression {object, property, loc}: {
+      // Verify the offset is actually on the property identifier,
+      // not on the object expression.
+      if (property.loc == null) { return null; }
+      let propLoc = property.loc as SourceLocation;
+      if (offset < propLoc.start || offset >= propLoc.end) { return null; }
+
+      // Get the object's type.
+      // We can't use model.getNodeType(object) directly because the
+      // MemberExpression and its object child share the same loc.start
+      // offset, and setNodeType overwrites the object's type with the
+      // member access result type.
+      // Instead, resolve through the scope system when the object is
+      // a simple identifier, and fall back to getNodeType only when the
+      // object has a different loc.start than the MemberExpression.
+      let objType = resolveObjectType(object, model, scopeResult, loc, ast);
+      if (objType == null) { return null; }
+
+      match (objType as Type) {
+        case ClassType as ct: {
+          return findMemberInClass(ct, property.name, compiler);
+        }
+        case _: { return null; }
+      }
+    }
+    case _: { return null; }
+  }
+};
+
+/**
+ * Resolve the type of a member expression's object node.
+ *
+ * For simple identifiers, uses the scope system (ReferenceMap → SymbolInfo
+ * → binding type) to avoid the loc.start collision issue with getNodeType.
+ * For compound expressions, falls back to getNodeType if they have a
+ * different start offset than their parent MemberExpression.
+ */
+let resolveObjectType = (
+  object: Expression,
+  model: SemanticModel,
+  scopeResult: ScopeResult,
+  parentLoc: SourceLocation | null,
+  ast: Module
+): Type | null => {
+  // For identifiers, resolve via the model's own reference map.
+  // This ensures the SymbolInfo matches the model's binding types,
+  // even when the AST is from a newer compilation than the model
+  // (carry-forward scenario).
+  match (object as Node) {
+    case Identifier {name, loc as objLoc}: {
+      let maybeInfo = model.resolve(object);
+      if (maybeInfo != null) {
+        let sym = maybeInfo as SymbolInfo;
+        let bindingType = model.getBindingType(sym);
+        if (bindingType != null) { return bindingType; }
+      }
+      return null;
+    }
+    case ThisExpression: {
+      // `this` always shares loc.start with the parent MemberExpression,
+      // so getNodeType returns the member result type, not the class type.
+      // Instead, find the enclosing ClassDeclaration and look up its type.
+      return findEnclosingClassType(ast, object, model);
+    }
+    case _: {
+      // For compound expressions (call, index, nested member, etc.),
+      // use getNodeType if the object's start differs from the parent's.
+      if (object.loc != null && parentLoc != null) {
+        let oLoc = object.loc as SourceLocation;
+        let pLoc = parentLoc as SourceLocation;
+        if (oLoc.start != pLoc.start) {
+          return model.getNodeType(object);
+        }
+      }
+      return null;
+    }
+  }
+};
+
+/**
+ * Find the ClassType for the enclosing class of a `this` expression.
+ *
+ * Walks the module's top-level declarations to find the ClassDeclaration
+ * whose span contains the ThisExpression, then looks up the class name's
+ * type from the SemanticModel.
+ */
+let findEnclosingClassType = (ast: Module, thisExpr: Expression, model: SemanticModel): Type | null => {
+  if (thisExpr.loc == null) { return null; }
+  let thisLoc = thisExpr.loc as SourceLocation;
+  let thisOffset = thisLoc.start;
+
+  var i = 0;
+  while (i < ast.body.length) {
+    match (ast.body[i]) {
+      case ClassDeclaration as cd: {
+        if (cd.loc != null) {
+          let cdLoc = cd.loc as SourceLocation;
+          if (thisOffset >= cdLoc.start && thisOffset < cdLoc.end) {
+            // Found the enclosing class. The checker stores the ClassType
+            // on the ClassDeclaration node via declareBinding → setNodeType.
+            return model.getNodeType(ast.body[i]);
+          }
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+  return null;
+};
+
+
+/**
+ * Find a field or method declaration in a class's AST.
+ *
+ * Uses ClassType.sourcePath to locate the source file, then walks
+ * the ClassDeclaration body to find the matching member.
+ */
+let findMemberInClass = (
+  ct: ClassType,
+  memberName: String,
+  compiler: Compiler
+): SourceSpan | null => {
+  // For instantiated generics, look at the original source class.
+  var sourceClass = ct;
+  if (ct.genericSource != null) {
+    sourceClass = ct.genericSource as ClassType;
+  }
+
+  let filePath = sourceClass.sourcePath;
+  if (filePath.length == 0) { return null; }
+
+  // Get the source file from the compiler's loader cache.
+  let sourceFile = compiler.getSourceFile(filePath);
+  if (sourceFile == null) { return null; }
+  let sf = sourceFile as SourceFile;
+
+  // Find the ClassDeclaration in the file's AST.
+  var classDecl: ClassDeclaration | null = null;
+  var si = 0;
+  while (si < sf.ast.body.length) {
+    match (sf.ast.body[si]) {
+      case ClassDeclaration as cd: {
+        if (cd.name.name == sourceClass.name) {
+          classDecl = cd;
+        }
+      }
+      case _: {}
+    }
+    si += 1;
+  }
+
+  if (classDecl == null) { return null; }
+  let cd = classDecl as ClassDeclaration;
+
+  // Check case class params first (e.g., `class Point(x: f64, y: f64)`).
+  if (cd.caseParams != null) {
+    let params = cd.caseParams as Array<CaseClassParam>;
+    var pi = 0;
+    while (pi < params.length) {
+      if (params[pi].name.name == memberName) {
+        if (params[pi].loc != null) {
+          let loc = params[pi].loc as SourceLocation;
+          return new SourceSpan(filePath, loc.start, loc.end - loc.start, loc.line, loc.column);
+        }
+      }
+      pi += 1;
+    }
+  }
+
+  // Search class body for FieldDefinition or MethodDefinition.
+  var bi = 0;
+  while (bi < cd.body.length) {
+    match (cd.body[bi]) {
+      case FieldDefinition as fd: {
+        let fieldName = match (fd.name) {
+          case Identifier {name}: name
+          case _: ""
+        };
+        if (fieldName == memberName && fd.loc != null) {
+          let loc = fd.loc as SourceLocation;
+          return new SourceSpan(filePath, loc.start, loc.end - loc.start, loc.line, loc.column);
+        }
+      }
+      case MethodDefinition as md: {
+        let methodName = match (md.name) {
+          case Identifier {name}: name
+          case _: ""
+        };
+        if (methodName == memberName && md.loc != null) {
+          let loc = md.loc as SourceLocation;
+          return new SourceSpan(filePath, loc.start, loc.end - loc.start, loc.line, loc.column);
+        }
+      }
+      case _: {}
+    }
+    bi += 1;
+  }
+
+  // Check inherited members from superclass.
+  if (sourceClass.superType != null) {
+    return findMemberInClass(sourceClass.superType as ClassType, memberName, compiler);
+  }
+
+  return null;
 };

@@ -1718,11 +1718,12 @@ export class Parser {
           } else {
             let property: Identifier;
             if (this.#match(TokenType.Hash)) {
+              const hashToken = this.#previous();
               const id = this.#parseIdentifier();
               property = {
                 type: NodeType.Identifier,
                 name: '#' + id.name,
-                loc: id.loc,
+                loc: this.#loc(hashToken, id),
               };
             } else if (this.#match(TokenType.New)) {
               const token = this.#previous();
@@ -1745,11 +1746,12 @@ export class Parser {
           // Optional member access: expr?.property
           let property: Identifier;
           if (this.#match(TokenType.Hash)) {
+            const hashToken = this.#previous();
             const id = this.#parseIdentifier();
             property = {
               type: NodeType.Identifier,
               name: '#' + id.name,
-              loc: id.loc,
+              loc: this.#loc(hashToken, id),
             };
           } else {
             property = this.#parseIdentifier();
@@ -1829,11 +1831,12 @@ export class Parser {
         } else {
           let property: Identifier;
           if (this.#match(TokenType.Hash)) {
+            const hashToken = this.#previous();
             const id = this.#parseIdentifier();
             property = {
               type: NodeType.Identifier,
               name: '#' + id.name,
-              loc: id.loc,
+              loc: this.#loc(hashToken, id),
             };
           } else if (this.#match(TokenType.New)) {
             const token = this.#previous();
@@ -1856,11 +1859,12 @@ export class Parser {
         // Optional member access: expr?.property
         let property: Identifier;
         if (this.#match(TokenType.Hash)) {
+          const hashToken = this.#previous();
           const id = this.#parseIdentifier();
           property = {
             type: NodeType.Identifier,
             name: '#' + id.name,
-            loc: id.loc,
+            loc: this.#loc(hashToken, id),
           };
         } else {
           property = this.#parseIdentifier();
@@ -3014,11 +3018,12 @@ export class Parser {
 
           // Parse the setter name: #name or :Symbol.name
           if (this.#match(TokenType.Hash)) {
+            const hashToken = this.#previous();
             const id = this.#parseIdentifier();
             setterName = {
               type: NodeType.Identifier,
               name: '#' + id.name,
-              loc: id.loc,
+              loc: this.#loc(hashToken, id),
             };
           } else if (this.#match(TokenType.Colon)) {
             // Symbol setter: var(:Sym.name) field
@@ -3120,11 +3125,12 @@ export class Parser {
       }
     } else if (this.#match(TokenType.Hash)) {
       if (this.#isIdentifier(this.#peek().type) || this.#check(TokenType.New)) {
+        const hashToken = this.#previous();
         const token = this.#advance();
         name = {
           type: NodeType.Identifier,
           name: '#' + token.value,
-          loc: this.#locFromToken(token),
+          loc: this.#locFromRange(hashToken, token),
         };
       } else {
         const token = this.#peek();

@@ -23,7 +23,9 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import {
-  Compiler, createCompiler, checkCompilation, CompilerOptions, CompilerHost, ProgramCheckResult
+  Compiler, createCompiler, checkCompilation, CompilerOptions, CompilerHost,
+  ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition,
+  CompilationResult
 } from 'zena-compiler:compiler';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
@@ -93,10 +95,6 @@ class LspHost implements CompilerHost {
   }
 }
 
-// ============================================================================
-// Language Service
-// ============================================================================
-
 /**
  * Stateful language service backed by a persistent Compiler.
  *
@@ -111,6 +109,7 @@ export class LanguageService {
   var #cachedScopeResult: ScopeResult | null = null;
   var #cachedPath: String = "";
   var #cachedCheckResult: ProgramCheckResult | null = null;
+  var #cachedCompilation: CompilationResult | null = null;
 
   new(host: LspHost, compiler: Compiler)
     : #host = host, #compiler = compiler;
@@ -135,8 +134,9 @@ export class LanguageService {
       this.#version += 1;
       let result = this.#compiler.compile(path, i32ToString(this.#version));
 
-      // Cache the scope result for getDefinition().
+      // Cache the scope result and compilation result for getDefinition().
       this.#cachedScopeResult = result.entry.scopeResult;
+      this.#cachedCompilation = result;
 
       // Type-check all modules, carrying forward unchanged results.
       let checkResult = checkCompilation(result, this.#cachedCheckResult);
@@ -168,22 +168,36 @@ export class LanguageService {
       maybeInfo = decls.getByOffset(offset);
     }
 
-    if (maybeInfo == null) { return null; }
-    let sym = maybeInfo as SymbolInfo;
+    if (maybeInfo != null) {
+      let sym = maybeInfo as SymbolInfo;
 
-    let decl = sym.declaration;
-    if (decl == null) { return null; }
-    let declNode = decl as Node;
+      let decl = sym.declaration;
+      if (decl == null) { return null; }
+      let declNode = decl as Node;
 
-    if (declNode.loc == null) { return null; }
-    let loc = declNode.loc as SourceLocation;
+      if (declNode.loc == null) { return null; }
+      let loc = declNode.loc as SourceLocation;
 
-    var defFile = this.#cachedPath;
-    if (sym.modulePath.length > 0) {
-      defFile = sym.modulePath;
+      var defFile = this.#cachedPath;
+      if (sym.modulePath.length > 0) {
+        defFile = sym.modulePath;
+      }
+
+      return new SourceSpan(defFile, loc.start, loc.end - loc.start, loc.line, loc.column);
     }
 
-    return new SourceSpan(defFile, loc.start, loc.end - loc.start, loc.line, loc.column);
+    // Fallback: on-demand member access resolution (e.g., p.x → FieldDefinition).
+    if (this.#cachedCompilation != null && this.#cachedCheckResult != null) {
+      let compilation = this.#cachedCompilation as CompilationResult;
+      let checkResult = this.#cachedCheckResult as ProgramCheckResult;
+      let entryPath = compilation.entry.path;
+      if (checkResult.results.has(entryPath)) {
+        let entryModel = checkResult.results[entryPath].model;
+        return resolveMemberDefinition(compilation.entry.ast, offset, entryModel, scopeResult, this.#compiler);
+      }
+    }
+
+    return null;
   }
 }
 

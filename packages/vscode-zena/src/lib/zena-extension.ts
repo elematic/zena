@@ -142,7 +142,16 @@ export class ZenaExtension {
               Math.max(0, result.line - 1),
               Math.max(0, result.column - 1),
             );
-            return new vscode.Location(uri, pos);
+            const originRange =
+              wordRange ?? new vscode.Range(position, position);
+            return [
+              {
+                originSelectionRange: originRange,
+                targetUri: uri,
+                targetRange: new vscode.Range(pos, pos),
+                targetSelectionRange: new vscode.Range(pos, pos),
+              } satisfies vscode.LocationLink,
+            ];
           } catch (e) {
             const msg = formatError(e);
             outputChannel.appendLine(`Go to definition failed: ${msg}`);

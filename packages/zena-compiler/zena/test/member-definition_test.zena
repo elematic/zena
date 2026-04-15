@@ -1,0 +1,205 @@
+/**
+ * Tests for resolveMemberDefinition: goto-definition on field/method access.
+ *
+ * These tests verify that resolveMemberDefinition correctly resolves
+ * member access expressions (p.x, c.increment(), this.#balance, etc.)
+ * to the FieldDefinition, MethodDefinition, or CaseClassParam in the
+ * owning class.
+ */
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { CompilerHost, SourceFile } from '../lib/library-loader.zena';
+import { PackageConfig } from '../lib/module-resolver.zena';
+import {
+  createCompiler, Compiler, CompilerOptions, CompilationResult,
+  checkCompilation, ProgramCheckResult,
+  resolveMemberDefinition
+} from '../lib/compiler.zena';
+import { ScopeResult } from '../lib/scope.zena';
+import { SemanticModel } from '../lib/semantic-model.zena';
+import { SourceSpan } from '../lib/diagnostics.zena';
+import { Module } from '../lib/ast.zena';
+
+/**
+ * A mock CompilerHost that serves file contents from an in-memory HashMap.
+ */
+class MockHost implements CompilerHost {
+  #files: HashMap<String, String>;
+
+  new() : #files = new HashMap<String, String>();
+
+  addFile(path: String, content: String): void {
+    this.#files.set(path, content);
+  }
+
+  readFile(path: String): String {
+    if (this.#files.has(path)) {
+      return this.#files[path];
+    }
+    return "";
+  }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+let makeCompiler = (host: MockHost): Compiler => {
+  host.addFile("zena:string", "export class String {}");
+  host.addFile("zena:array", "export class Array {}");
+
+  let packages = new HashMap<String, PackageConfig>();
+  let options = new CompilerOptions("host", "/stdlib", packages, null);
+  return createCompiler(host, options);
+};
+
+class ResolveContext {
+  ast: Module;
+  model: SemanticModel;
+  scopeResult: ScopeResult;
+  compiler: Compiler;
+  new(this.ast, this.model, this.scopeResult, this.compiler);
+}
+
+/** 
+ * Compile and type-check a single source string, returning everything needed
+ * for resolveMemberDefinition.
+ */
+let prepare = (source: String): ResolveContext => {
+  let host = new MockHost();
+  let path = "/test/main.zena";
+  host.addFile(path, source);
+  let compiler = makeCompiler(host);
+  let compilation = compiler.compile(path);
+  let checkResult = checkCompilation(compilation);
+  let entryModel = checkResult.results[path].model;
+  let scopeResult = compilation.entry.scopeResult as ScopeResult;
+  return new ResolveContext(compilation.entry.ast, entryModel, scopeResult, compiler);
+};
+
+/** 
+ * Find byte offset of a substring in source (1-indexed occurrence).
+ */
+let indexOf = (source: String, needle: String, occurrence: i32 = 1): i32 => {
+  var idx = -1;
+  var count = 0;
+  while (count < occurrence) {
+    idx = idx + 1;
+    var found = false;
+    while (idx <= source.length - needle.length) {
+      if (source.sliceBytes(idx, idx + needle.length) == needle) {
+        found = true;
+        count = count + 1;
+        break;
+      }
+      idx = idx + 1;
+    }
+    if (!found) {
+      throw new Error("'" + needle + "' not found in source");
+    }
+  }
+  return idx;
+};
+
+export let tests = suite('Member Definition Resolution', (): void => {
+
+  suite('field access', (): void => {
+
+    test('p.x resolves to field definition', (ctx: TestContext): void => {
+      let src = "class Point { x: f64; y: f64; new(this.x, this.y); }\nlet p = new Point(1.0, 2.0);\nlet v = p.x;";
+      let rc = prepare(src);
+      let offset = indexOf(src, ".x;") + 1; // land on 'x' after dot
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      isTrue(span != null);
+      let s = span as SourceSpan;
+      // Line 1 is the class body with "x: f64"
+      equal(s.line, 1);
+    });
+
+    test('p.y resolves to second field', (ctx: TestContext): void => {
+      let src = "class Point { x: f64; y: f64; new(this.x, this.y); }\nlet p = new Point(1.0, 2.0);\nlet v = p.y;";
+      let rc = prepare(src);
+      let offset = indexOf(src, ".y;") + 1;
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      isTrue(span != null);
+      let s = span as SourceSpan;
+      equal(s.line, 1);
+    });
+
+    test('case class param resolves', (ctx: TestContext): void => {
+      let src = "class Pair(first: i32, second: i32)\nlet p = new Pair(1, 2);\nlet v = p.first;";
+      let rc = prepare(src);
+      let offset = indexOf(src, ".first;") + 1;
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      isTrue(span != null);
+      let s = span as SourceSpan;
+      equal(s.line, 1);
+    });
+  });
+
+  suite('method access', (): void => {
+
+    test('c.increment resolves to method definition', (ctx: TestContext): void => {
+      let src = "class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 1; }\n}\nlet c = new Counter();\nc.increment();";
+      let rc = prepare(src);
+      let offset = indexOf(src, ".increment();") + 1;
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      isTrue(span != null);
+      let s = span as SourceSpan;
+      equal(s.line, 3);
+    });
+  });
+
+  suite('private fields', (): void => {
+
+    test('this.#field resolves to private field definition', (ctx: TestContext): void => {
+      let src = "class Wallet {\n  #balance: f64 = 0.0;\n  deposit(amount: f64): void { this.#balance += amount; }\n}";
+      let rc = prepare(src);
+      let offset = indexOf(src, ".#balance +=") + 2; // land on '#'
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      isTrue(span != null);
+      let s = span as SourceSpan;
+      equal(s.line, 2);
+    });
+
+    test('other.#field resolves to private field definition', (ctx: TestContext): void => {
+      let src = "class Wallet {\n  #balance: f64 = 0.0;\n  new(amount: f64) : #balance = amount;\n  equals(other: Wallet): boolean { return this.#balance == other.#balance; }\n}";
+      let rc = prepare(src);
+      let offset = indexOf(src, "other.#balance;") + 7; // land on 'b' after "other.#"
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      isTrue(span != null);
+      let s = span as SourceSpan;
+      equal(s.line, 2);
+    });
+
+    test('clicking on # resolves to field definition', (ctx: TestContext): void => {
+      let src = "class Wallet {\n  #balance: f64 = 0.0;\n  new(amount: f64) : #balance = amount;\n  equals(other: Wallet): boolean { return this.#balance == other.#balance; }\n}";
+      let rc = prepare(src);
+      let offset = indexOf(src, "other.#balance;") + 6; // land on '#'
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      isTrue(span != null);
+      let s = span as SourceSpan;
+      equal(s.line, 2);
+    });
+  });
+
+  suite('non-member positions', (): void => {
+
+    test('offset on object returns null', (ctx: TestContext): void => {
+      let src = "class Point { x: f64; new(this.x); }\nlet p = new Point(1.0);\nlet v = p.x;";
+      let rc = prepare(src);
+      let offset = indexOf(src, "p.x;"); // land on 'p', not 'x'
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      isTrue(span == null);
+    });
+
+    test('offset on non-member returns null', (ctx: TestContext): void => {
+      let src = "let x = 42;";
+      let rc = prepare(src);
+      let span = resolveMemberDefinition(rc.ast, 4, rc.model, rc.scopeResult, rc.compiler);
+      isTrue(span == null);
+    });
+  });
+});

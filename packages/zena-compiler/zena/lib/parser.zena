@@ -1052,17 +1052,16 @@ export class Parser {
   }
   
   #parseAssignment(): Expression {
+    let startToken = this.#peek();
     let expr = this.#parsePipeline();
     
     if (this.#match(TokenType.Equals)) {
-      let startToken = this.#previous();
       let value = this.#parseAssignment();
       return new AssignmentExpression(expr, value, null, this.#makeLocation(startToken));
     }
     
     let compoundOp = this.#matchCompoundAssignment();
     if (compoundOp != null) {
-      let startToken = this.#previous();
       let value = this.#parseAssignment();
       return new AssignmentExpression(expr, value, compoundOp, this.#makeLocation(startToken));
     }
@@ -1299,59 +1298,62 @@ export class Parser {
   }
   
   #parseCall(): Expression {
+    let callStart = this.#peek();
     var expr = this.#parsePrimary();
     
     while (true) {
       if (this.#match(TokenType.LParen)) {
-        expr = this.#finishCall(expr, null, false);
+        expr = this.#finishCall(expr, null, false, callStart);
       } else if (this.#check(TokenType.Less) && this.#isGenericCall()) {
         let typeArguments = this.#parseTypeArguments();
         this.#consume(TokenType.LParen, "Expected '(' after type arguments");
-        expr = this.#finishCall(expr, typeArguments, false);
+        expr = this.#finishCall(expr, typeArguments, false, callStart);
       } else if (this.#match(TokenType.Dot)) {
         if (this.#match(TokenType.Colon)) {
           // Symbol member access: obj.:sym or obj.:Iface.sym
           var symbolPath: Expression = this.#parseIdentifier();
           while (this.#match(TokenType.Dot)) {
             let prop = this.#parseIdentifier();
-            symbolPath = new MemberExpression(symbolPath, prop, false, false, null, null);
+            symbolPath = new MemberExpression(symbolPath, prop, false, false, null, this.#makeLocation(callStart));
           }
           let property: Identifier = if (symbolPath is Identifier) {
             symbolPath as Identifier
           } else {
             (symbolPath as MemberExpression).property
           };
-          expr = new MemberExpression(expr, property, false, true, symbolPath, null);
+          expr = new MemberExpression(expr, property, false, true, symbolPath, this.#makeLocation(callStart));
         } else if (this.#match(TokenType.Hash)) {
           // Private field access: obj.#field
+          let hashToken = this.#previous();
           let fieldId = this.#parseIdentifier();
-          let name = new Identifier("#" + fieldId.name, fieldId.loc);
-          expr = new MemberExpression(expr, name, false, false, null, null);
+          let name = new Identifier("#" + fieldId.name, this.#makeLocation(hashToken));
+          expr = new MemberExpression(expr, name, false, false, null, this.#makeLocation(callStart));
         } else {
           let name = this.#parseIdentifier();
-          expr = new MemberExpression(expr, name, false, false, null, null);
+          expr = new MemberExpression(expr, name, false, false, null, this.#makeLocation(callStart));
         }
       } else if (this.#match(TokenType.LBracket)) {
         let index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index");
-        expr = new IndexExpression(expr, index, false, null);
+        expr = new IndexExpression(expr, index, false, this.#makeLocation(callStart));
       } else if (this.#match(TokenType.QuestionDot)) {
         // Optional chaining
         if (this.#match(TokenType.Hash)) {
           // Private field access with optional chaining: obj?.#field
+          let hashToken = this.#previous();
           let fieldId = this.#parseIdentifier();
-          let name = new Identifier("#" + fieldId.name, fieldId.loc);
-          expr = new MemberExpression(expr, name, true, false, null, null);
+          let name = new Identifier("#" + fieldId.name, this.#makeLocation(hashToken));
+          expr = new MemberExpression(expr, name, true, false, null, this.#makeLocation(callStart));
         } else {
           let name = this.#parseIdentifier();
-          expr = new MemberExpression(expr, name, true, false, null, null);
+          expr = new MemberExpression(expr, name, true, false, null, this.#makeLocation(callStart));
         }
       } else if (this.#match(TokenType.QuestionLBracket)) {
         let index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index");
-        expr = new IndexExpression(expr, index, true, null);
+        expr = new IndexExpression(expr, index, true, this.#makeLocation(callStart));
       } else if (this.#match(TokenType.QuestionLParen)) {
-        expr = this.#finishCall(expr, null, true);
+        expr = this.#finishCall(expr, null, true, callStart);
       } else if (this.#check(TokenType.NoSubstitutionTemplate) || this.#check(TokenType.TemplateHead)) {
         let tagStartToken = this.#peek();
         let quasi = this.#parsePrimary();
@@ -1364,8 +1366,7 @@ export class Parser {
     return expr;
   }
   
-  #finishCall(callee: Expression, typeArguments: Array<TypeAnnotation> | null, optional: boolean): CallExpression {
-    let startToken = this.#previous();
+  #finishCall(callee: Expression, typeArguments: Array<TypeAnnotation> | null, optional: boolean, startToken: Token): CallExpression {
     let args = new Array<Expression>(4);
     
     if (!this.#check(TokenType.RParen)) {
