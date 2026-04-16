@@ -1125,15 +1125,15 @@ offset, keyed the same way as `ReferenceMap`. The AST is read-only.
 
 - [ ] Identity-based type deduplication in `createUnionType` (currently uses
       `typeToString` for dedup — should use type identity)
-- [ ] Complex generic type argument inference (e.g., `Array<T>` against
+- [x] Complex generic type argument inference (e.g., `Array<T>` against
       `Array<i32>` — currently only handles bare `TypeParameterType`)
-- [ ] Tuple literal index with specific element type (currently returns union
+- [x] Tuple literal index with specific element type (currently returns union
       of all element types when index is a literal)
-- [ ] Logical expression narrowing (extract narrowings from `&&` left side,
+- [x] Logical expression narrowing (extract narrowings from `&&` left side,
       apply to right side)
 - [ ] Operator overloading on non-numeric classes (arithmetic operators
       currently only work on numeric types)
-- [ ] Equality type validation (ensure `==`/`!=` operands are comparable)
+- [x] Equality type validation (ensure `==`/`!=` operands are comparable)
 - [ ] Diagnostic for unresolved `String` type (fallback to `UnknownType`
       when `String` not in scope — should be a hard error)
 

@@ -20,6 +20,7 @@
  */
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { parseI32 } from 'zena:string-convert';
 import {
   Node, Module, SourceLocation,
   // Expressions
@@ -4038,9 +4039,27 @@ let resolveIndexType = (
       return elementType;
     }
     case TupleT {elementTypes}: {
-      // Tuple indexing — for now, return union of all element types.
-      // TODO: If index is a literal, return specific element type.
-      return createUnionType(elementTypes);
+      // Tuple indexing — return specific element type for literal index.
+      match (index) {
+        case NumberLiteral {raw}: {
+          while (let (true, idx) = parseI32(raw)) {
+            if (idx >= 0 && idx < elementTypes.length) {
+              return elementTypes[idx];
+            }
+            break;
+          }
+          ctx.error(
+            `Tuple index out of bounds: ${raw} (tuple has ${elementTypes.length} elements).`,
+            DiagnosticCode.IndexOutOfBounds,
+            loc
+          );
+          return new UnknownType();
+        }
+        case _: {
+          // Non-literal index — return union of all element types.
+          return createUnionType(elementTypes);
+        }
+      }
     }
     case ClassType as ct: {
       // Check for operator [] method.
@@ -4078,8 +4097,25 @@ let checkBinaryExpression = (
   // For && and ||, handle short-circuit evaluation and narrowing.
   if (operator == "&&") {
     let leftType = checkExpression(ctx, left, null);
-    // TODO: Extract narrowings from left, apply to right.
-    let rightType = checkExpression(ctx, right, null);
+    // Extract null-guard narrowing from the left side and apply to right.
+    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, left);
+    var rightType: Type = new UnknownType();
+    if (guardInfo != null) {
+      let si = guardInfo as SymbolInfo;
+      let origType = guardOrigType as Type;
+      ctx.enterScope();
+      // For `x != null && ...`: right side has x narrowed to non-null
+      // For `x == null && ...`: right side has x narrowed to null
+      if (isEqualNull) {
+        ctx.narrowBinding(si, new NullType());
+      } else {
+        ctx.narrowBinding(si, subtractNullFromType(origType));
+      }
+      rightType = checkExpression(ctx, right, null);
+      ctx.exitScope();
+    } else {
+      rightType = checkExpression(ctx, right, null);
+    }
     // && returns the type of the right operand (if left is truthy).
     return rightType;
   }
@@ -4162,7 +4198,28 @@ let checkBinaryExpression = (
   if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
     let leftType = checkExpression(ctx, left, null);
     let rightType = checkExpression(ctx, right, leftType);
-    // TODO: Validate that types are comparable.
+    // Validate that types are comparable:
+    // - Both boolean: always allowed
+    // - Both numeric: always allowed
+    // - Both class or interface: always allowed (reference equality)
+    // - Otherwise: at least one direction must be assignable
+    let typesMatch = (leftType is BooleanType && rightType is BooleanType) ||
+      (leftType is BoolLiteralType && (rightType is BooleanType || rightType is BoolLiteralType)) ||
+      (rightType is BoolLiteralType && (leftType is BooleanType || leftType is BoolLiteralType)) ||
+      (isNumericType(leftType) && isNumericType(rightType)) ||
+      (leftType is ClassType && rightType is ClassType) ||
+      (leftType is InterfaceType && rightType is InterfaceType) ||
+      leftType is UnknownType || rightType is UnknownType ||
+      isAssignableTo(ctx, leftType, rightType) ||
+      isAssignableTo(ctx, rightType, leftType);
+    if (!typesMatch) {
+      ctx.error(
+        "Type mismatch: cannot apply operator '" + operator + "' to '" +
+        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
     return new BooleanType();
   }
 
