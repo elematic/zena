@@ -1,0 +1,85 @@
+// @stdlib: true
+import {suite, test, TestContext} from 'zena:test';
+import {equal, fail} from 'zena:assert';
+import {parseI32} from 'zena:string-convert';
+
+export let tests = suite('parseI32', () => {
+  test('parses zero', (ctx) => {
+    let (ok, v) = parseI32("0");
+    equal(ok, true);
+    // TODO: this should fail to check because `v` could be `never` and
+    // equal() is not a custom type-guard or type-assertion, but it works
+    // because equal() is generic.
+    equal(v, 0);
+  });
+
+  test('parses positive integer', (ctx) => {
+    let (ok, v) = parseI32("42");
+    equal(ok, true);
+    equal(v, 42);
+  });
+
+  test('parses large number', (ctx) => {
+    let (ok, v) = parseI32("2147483647");
+    equal(ok, true);
+    equal(v, 2147483647);
+  });
+
+  test('parses negative integer', (ctx) => {
+    let (ok, v) = parseI32("-123");
+    equal(ok, true);
+    equal(v, 0 - 123);
+  });
+
+  test('parses with plus sign', (ctx) => {
+    let (ok, v) = parseI32("+7");
+    equal(ok, true);
+    equal(v, 7);
+  });
+
+  test('fails on empty string', (ctx) => {
+    let (ok, _) = parseI32("");
+    equal(ok, false);
+  });
+
+  test('fails on non-digit characters', (ctx) => {
+    let (ok, _) = parseI32("12abc");
+    equal(ok, false);
+  });
+
+  test('fails on bare sign', (ctx) => {
+    let (ok, _) = parseI32("-");
+    equal(ok, false);
+  });
+
+  test('fails on whitespace', (ctx) => {
+    let (ok, _) = parseI32(" 42");
+    equal(ok, false);
+  });
+
+  test('fails on decimal', (ctx) => {
+    let (ok, _) = parseI32("3.14");
+    equal(ok, false);
+  });
+
+  test('fails on overflow', (ctx) => {
+    let (ok, _) = parseI32("9999999999");
+    equal(ok, false);
+  });
+
+  test('fails on i32 max + 1', (ctx) => {
+    let (ok, _) = parseI32("2147483648");
+    equal(ok, false);
+  });
+
+  test('parses i32 min', (ctx) => {
+    let (ok, v) = parseI32("-2147483648");
+    equal(ok, true);
+    equal(v, 0 - 2147483647 - 1);
+  });
+
+  test('fails on i32 min - 1', (ctx) => {
+    let (ok, _) = parseI32("-2147483649");
+    equal(ok, false);
+  });
+});

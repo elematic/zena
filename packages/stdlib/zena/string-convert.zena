@@ -197,6 +197,56 @@ export let boolToString = (value: boolean): String => {
   return "false";
 };
 
+// ============================================================================
+// String-to-number parsing
+// ============================================================================
+
+/**
+ * Parse a decimal integer from a string, with optional leading sign.
+ * Returns `inline (true, value)` on success, `inline (false, _)` on failure.
+ * Fails if the string is empty or contains non-digit characters (after optional sign).
+ */
+export let parseI32 = (s: String): inline (true, i32) | inline (false, never) => {
+  if (s.length == 0) {
+    return (false, _);
+  }
+  var start = 0;
+  var negative = false;
+  let first = s.getByteAt(0);
+  if (first == 45) { // '-'
+    negative = true;
+    start = 1;
+  } else if (first == 43) { // '+'
+    start = 1;
+  }
+  if (start >= s.length) {
+    return (false, _);
+  }
+  var result = 0;
+  var i = start;
+  // Max positive i32 is 2147483647, max negative is 2147483648.
+  // We accumulate as positive and check against the appropriate limit.
+  // The first 9 digits are the same (214748364); only the last digit differs.
+  let limit = 214748364;
+  let maxLastDigit = if (negative) { 8 } else { 7 };
+  while (i < s.length) {
+    let ch = s.getByteAt(i);
+    if (ch < 48 || ch > 57) {
+      return (false, _);
+    }
+    let digit = ch - 48;
+    if (result > limit || (result == limit && digit > maxLastDigit)) {
+      return (false, _);
+    }
+    result = result * 10 + digit;
+    i += 1;
+  }
+  if (negative) {
+    result = 0 - result;
+  }
+  return (true, result);
+};
+
 /**
  * Compute 10^n as f64 (for n >= 0) using exponentiation by squaring.
  * O(log n) multiplications instead of O(n), limiting accumulated FP error
