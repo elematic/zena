@@ -1,0 +1,36 @@
+// @mode: check
+// Union dedup with generic class types: Box<i32> and Box<String> should
+// remain distinct, while Box<i32> | Box<i32> should collapse.
+
+class Box<T>(value: T)
+
+let sameGeneric = (x: boolean): Box<i32> => {
+  if (x) { return new Box(1); }
+  return new Box(2);
+};
+let a: Box<i32> = sameGeneric(true);
+
+// Different type arguments should NOT be deduped — result is a union.
+let diffGeneric = (x: boolean): Box<i32> | Box<String> => {
+  if (x) { return new Box(1); }
+  return new Box("hello");
+};
+
+// Assigning the union to a single type should fail.
+let bad: Box<i32> = diffGeneric(true); // @error: Type mismatch
+
+// --- Nested generics ---
+// Box<Box<i32>> should dedup with itself.
+let nestedSame = (x: boolean) => {
+  if (x) { return new Box(new Box(1)); }
+  return new Box(new Box(2));
+};
+// If dedup works, both branches collapse to Box<Box<i32>>.
+let nested: Box<Box<i32>> = nestedSame(true);
+
+// Box<Box<i32>> should NOT dedup with Box<Box<f64>>.
+let nestedDiff = (x: boolean) => {
+  if (x) { return new Box(new Box(1)); }
+  return new Box(new Box(3.14));
+};
+let badNested: Box<Box<i32>> = nestedDiff(true); // @error: Type mismatch

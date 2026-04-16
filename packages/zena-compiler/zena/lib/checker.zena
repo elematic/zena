@@ -952,40 +952,39 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
 };
 
 /**
+ * Check if an array of types already contains a type equal to target.
+ */
+let containsType = (types: Array<Type>, target: Type): boolean => {
+  var i = 0;
+  while (i < types.length) {
+    if (typesEqual(types[i], target)) { return true; }
+    i += 1;
+  }
+  return false;
+};
+
+/**
  * Create a union type, flattening nested unions and deduplicating.
  */
 let createUnionType = (types: Array<Type>): Type => {
-  let flat = new Array<Type>();
+  let deduped = new Array<Type>();
 
-  // Flatten nested unions.
-  var i = 0;
-  while (i < types.length) {
-    match (types[i]) {
+  for (let type in types) {
+    match (type) {
       case UnionT {types as inner}: {
-        var j = 0;
-        while (j < inner.length) {
-          flat.push(inner[j]);
-          j = j + 1;
+        for (let innerType in inner) {
+          if (!containsType(deduped, innerType)) {
+            deduped.push(innerType);
+          }
         }
       }
       case NeverType: {}  // Remove never from unions.
-      case _: flat.push(types[i])
+      case _: {
+        if (!containsType(deduped, type)) {
+          deduped.push(type);
+        }
+      }
     }
-    i += 1;
-  }
-
-  // Deduplicate (simple: compare by typeToString).
-  // TODO: Use identity-based deduplication.
-  let seen = new HashMap<String, boolean>();
-  let deduped = new Array<Type>();
-  i = 0;
-  while (i < flat.length) {
-    let key = typeToString(flat[i]);
-    if (!seen.has(key)) {
-      seen.set(key, true);
-      deduped.push(flat[i]);
-    }
-    i += 1;
   }
 
   if (deduped.length == 0) { return new NeverType(); }
@@ -1446,15 +1445,48 @@ let typesEqual = (a: Type, b: Type): boolean => {
       }
     }
     case ClassType as ca: {
-      // Identity-based: same object.
       match (b) {
-        case ClassType as cb: ca.id == cb.id
+        case ClassType as cb: {
+          // Compare canonical base type (follow genericSource chain)
+          let baseA = if (ca.genericSource != null) (ca.genericSource as ClassType).id else ca.id;
+          let baseB = if (cb.genericSource != null) (cb.genericSource as ClassType).id else cb.id;
+          if (baseA != baseB) { return false; }
+          // Compare type arguments for generic instantiations
+          if (ca.typeArguments == null && cb.typeArguments == null) { return true; }
+          if (ca.typeArguments == null || cb.typeArguments == null) { return false; }
+          let argsA = ca.typeArguments as Array<Type>;
+          let argsB = cb.typeArguments as Array<Type>;
+          if (argsA.length != argsB.length) { return false; }
+          var i = 0;
+          while (i < argsA.length) {
+            if (!typesEqual(argsA[i], argsB[i])) { return false; }
+            i += 1;
+          }
+          true
+        }
         case _: false
       }
     }
     case InterfaceType as ia: {
       match (b) {
-        case InterfaceType as ib: ia.id == ib.id
+        case InterfaceType as ib: {
+          // Compare canonical base type (follow genericSource chain)
+          let baseA = if (ia.genericSource != null) (ia.genericSource as InterfaceType).id else ia.id;
+          let baseB = if (ib.genericSource != null) (ib.genericSource as InterfaceType).id else ib.id;
+          if (baseA != baseB) { return false; }
+          // Compare type arguments for generic instantiations
+          if (ia.typeArguments == null && ib.typeArguments == null) { return true; }
+          if (ia.typeArguments == null || ib.typeArguments == null) { return false; }
+          let argsA = ia.typeArguments as Array<Type>;
+          let argsB = ib.typeArguments as Array<Type>;
+          if (argsA.length != argsB.length) { return false; }
+          var i = 0;
+          while (i < argsA.length) {
+            if (!typesEqual(argsA[i], argsB[i])) { return false; }
+            i += 1;
+          }
+          true
+        }
         case _: false
       }
     }
@@ -1470,7 +1502,96 @@ let typesEqual = (a: Type, b: Type): boolean => {
         case _: false
       }
     }
-    case _: false  // Conservative: other types require identity.
+    case TupleT {elementTypes as ta}: {
+      match (b) {
+        case TupleT {elementTypes as tb}: {
+          if (ta.length != tb.length) { return false; }
+          var i = 0;
+          while (i < ta.length) {
+            if (!typesEqual(ta[i], tb[i])) { return false; }
+            i += 1;
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case InlineTupleT {elementTypes as ta}: {
+      match (b) {
+        case InlineTupleT {elementTypes as tb}: {
+          if (ta.length != tb.length) { return false; }
+          var i = 0;
+          while (i < ta.length) {
+            if (!typesEqual(ta[i], tb[i])) { return false; }
+            i += 1;
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case FunctionType as fa: {
+      match (b) {
+        case FunctionType as fb: {
+          if (fa.parameters.length != fb.parameters.length) { return false; }
+          if (!typesEqual(fa.returnType, fb.returnType)) { return false; }
+          var i = 0;
+          while (i < fa.parameters.length) {
+            if (!typesEqual(fa.parameters[i], fb.parameters[i])) { return false; }
+            i += 1;
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case UnionT {types as ua}: {
+      match (b) {
+        case UnionT {types as ub}: {
+          if (ua.length != ub.length) { return false; }
+          var i = 0;
+          while (i < ua.length) {
+            if (!typesEqual(ua[i], ub[i])) { return false; }
+            i += 1;
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case RecordT {properties as pa}: {
+      match (b) {
+        case RecordT {properties as pb}: {
+          if (pa.size != pb.size) { return false; }
+          let keys = pa.keys();
+          while (let (true, key) = keys.next()) {
+            if (!pb.has(key)) { return false; }
+            if (!typesEqual(pa[key], pb[key])) { return false; }
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case MixinType as ma: {
+      match (b) {
+        case MixinType as mb: ma.name == mb.name
+        case _: false
+      }
+    }
+    case SymbolType as sa: {
+      match (b) {
+        case SymbolType as sb: sa.id == sb.id
+        case _: false
+      }
+    }
+    case ThisType: b is ThisType
+    case TypeAliasType as ta: {
+      match (b) {
+        case TypeAliasType as tb: ta.name == tb.name
+        case _: false
+      }
+    }
   }
 };
 

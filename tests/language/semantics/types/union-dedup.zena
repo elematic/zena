@@ -1,0 +1,33 @@
+// @mode: check
+// Union type deduplication: identical types in union branches should be
+// collapsed, so the result is the single type (not a union).
+
+// --- Primitive dedup ---
+// Both branches return i32, so the result should be i32 (not i32 | i32).
+let pickNum = (x: boolean): i32 => {
+  if (x) { return 1; }
+  return 2;
+};
+let n: i32 = pickNum(true);
+
+// --- Class type dedup ---
+class Foo { new(); }
+let pickFoo = (x: boolean): Foo => {
+  if (x) { return new Foo(); }
+  return new Foo();
+};
+let f: Foo = pickFoo(true);
+
+// --- Tuple dedup ---
+let pickTuple = (x: boolean): (i32, String) => {
+  if (x) { return (1, "a"); }
+  return (2, "b");
+};
+let t: (i32, String) = pickTuple(true);
+
+// --- Nullable dedup (null appears in both branches) ---
+class Bar { new(); }
+let maybeNull = (x: boolean): Bar | null => {
+  if (x) { return null; }
+  return null;
+};
