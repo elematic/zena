@@ -1123,19 +1123,19 @@ offset, keyed the same way as `ReferenceMap`. The AST is read-only.
 
 **3h: Remaining improvements (not yet started)**
 
-- [ ] Identity-based type deduplication in `createUnionType` (currently uses
-      `typeToString` for dedup — should use type identity)
+- [x] Identity-based type deduplication in `createUnionType` (now uses
+      `typeIdentityKey` with numeric IDs for named types)
 - [x] Complex generic type argument inference (e.g., `Array<T>` against
       `Array<i32>` — currently only handles bare `TypeParameterType`)
 - [x] Tuple literal index with specific element type (currently returns union
       of all element types when index is a literal)
 - [x] Logical expression narrowing (extract narrowings from `&&` left side,
       apply to right side)
-- [ ] Operator overloading on non-numeric classes (arithmetic operators
-      currently only work on numeric types)
+- [x] Operator overloading on non-numeric classes (checks `ClassType.methods`
+      for operator methods, e.g., String.+)
 - [x] Equality type validation (ensure `==`/`!=` operands are comparable)
-- [ ] Diagnostic for unresolved `String` type (fallback to `UnknownType`
-      when `String` not in scope — should be a hard error)
+- [x] Diagnostic for unresolved `String` type (now emits
+      `SymbolNotFound` error instead of silent `UnknownType` fallback)
 
 **Important design note:** The checker should produce information that is
 backend-agnostic. It should NOT make decisions specific to WASM (like "this

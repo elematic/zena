@@ -604,6 +604,17 @@ class CheckerContext {
 let registerStandardPrelude = (ctx: CheckerContext): void => {
   // String - the fundamental string type
   let stringType = new ClassType(ctx.freshTypeId(), "String");
+  // Register operator + for string concatenation.
+  let concatParams = new Array<Type>();
+  concatParams.push(stringType);
+  let concatMethod = new FunctionType(concatParams, null, stringType);
+  stringType.methods["+"] = concatMethod;
+  // Register operator == for string equality.
+  let eqParams = new Array<Type>();
+  eqParams.push(stringType);
+  let eqRetType: Type = new BooleanType();
+  let eqMethod = new FunctionType(eqParams, null, eqRetType);
+  stringType.methods["=="] = eqMethod;
   ctx.registerPreludeType("String", stringType);
   ctx.registerPreludeValue("String", stringType);
 
@@ -2279,9 +2290,12 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (stringType != null) {
       return stringType as Type;
     }
-    // Fallback: return unknown if String is not in scope.
-    // This should not happen if prelude is loaded.
-    // TODO: We need to emit a diagnostic here. Can we even continue?
+    // String not in scope — prelude was not loaded correctly.
+    ctx.error(
+      "Built-in type 'String' is not available. Ensure the standard prelude is loaded.",
+      DiagnosticCode.SymbolNotFound,
+      loc
+    );
     new UnknownType()
   }
 
@@ -2652,6 +2666,11 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case TemplateLiteral {loc}: {
     let stringType = ctx.resolveTypeName("String");
     if (stringType != null) { return stringType as Type; }
+    ctx.error(
+      "Built-in type 'String' is not available. Ensure the standard prelude is loaded.",
+      DiagnosticCode.SymbolNotFound,
+      loc
+    );
     new UnknownType()
   }
   case TaggedTemplateExpression {tag, quasi, loc}: {
@@ -3543,7 +3562,14 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
   if (isStringEnum) {
     let st = ctx.resolveTypeName("String");
     if (st != null) { backingType = st as Type; }
-    else { backingType = new UnknownType(); }
+    else {
+      ctx.error(
+        "Built-in type 'String' is not available. Ensure the standard prelude is loaded.",
+        DiagnosticCode.SymbolNotFound,
+        ed.name.loc
+      );
+      backingType = new UnknownType();
+    }
   }
   let enumType = new TypeAliasType(name, null, backingType, true);
 
@@ -4274,7 +4300,33 @@ let checkBinaryExpression = (
     }
 
     if (!isNumericType(leftType)) {
-      // TODO: Check for operator overloading on classes.
+      // Check for operator overloading on class types (e.g., String.+).
+      match (leftType) {
+        case ClassType as ct: {
+          if (ct.methods.has(operator)) {
+            let method = ct.methods[operator];
+            if (method.parameters.length != 1) {
+              ctx.error(
+                "Operator '" + operator + "' must take exactly one argument.",
+                DiagnosticCode.ArgumentCountMismatch,
+                loc
+              );
+              return new UnknownType();
+            }
+            if (!isAssignableTo(ctx, rightType, method.parameters[0])) {
+              ctx.error(
+                "Type mismatch in operator '" + operator + "': expected '" +
+                typeToString(method.parameters[0]) + "', got '" + typeToString(rightType) + "'.",
+                DiagnosticCode.TypeMismatch,
+                loc
+              );
+              return new UnknownType();
+            }
+            return method.returnType;
+          }
+        }
+        case _: {}
+      }
       ctx.error(
         "Operator '" + operator + "' cannot be applied to '" +
         typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
