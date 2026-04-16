@@ -7225,6 +7225,22 @@ export function mapCheckerTypeToWasmType(
     if (unionType.types.some((t) => t.kind === TypeKind.Void)) {
       return [];
     }
+    // Filter out never types - never is uninhabited so it has no runtime
+    // representation. e.g., i32 | never should map to i32 at the WASM level.
+    const nonNeverTypes = unionType.types.filter(
+      (t) => t.kind !== TypeKind.Never,
+    );
+    if (nonNeverTypes.length === 0) return [];
+    if (nonNeverTypes.length < unionType.types.length) {
+      // Had some never types - recurse with the filtered union or single type
+      if (nonNeverTypes.length === 1) {
+        return mapCheckerTypeToWasmType(ctx, nonNeverTypes[0]);
+      }
+      return mapCheckerTypeToWasmType(ctx, {
+        kind: TypeKind.Union,
+        types: nonNeverTypes,
+      } as UnionType);
+    }
     // Check if it's a nullable reference type (T | null)
     const nonNullTypes = unionType.types.filter(
       (t) => t.kind !== TypeKind.Null,

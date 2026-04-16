@@ -604,8 +604,8 @@ function resolveTypeAnnotationInternal(
         const unbounded = getUnboundedTypeParam(t);
         if (unbounded) {
           unboundedParams.push(unbounded);
-        } else if (t.kind !== TypeKind.Void) {
-          // Don't count void as a reference type
+        } else if (t.kind !== TypeKind.Void && t.kind !== TypeKind.Never) {
+          // Don't count void or never as reference types
           hasReference = true;
         }
       }
@@ -972,7 +972,7 @@ export function validateType(type: Type, ctx: CheckerContext) {
         const unbounded = getUnboundedTypeParam(t);
         if (unbounded) {
           unboundedParams.push(unbounded);
-        } else {
+        } else if (t.kind !== TypeKind.Void && t.kind !== TypeKind.Never) {
           hasReference = true;
         }
       }
