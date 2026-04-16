@@ -8,10 +8,6 @@
  */
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
-import { Array } from 'zena:array';
-import { HashMap } from 'zena:map';
-import { CompilerHost, SourceFile } from '../lib/library-loader.zena';
-import { PackageConfig } from '../lib/module-resolver.zena';
 import {
   createCompiler, Compiler, CompilerOptions, CompilationResult,
   checkCompilation, ProgramCheckResult,
@@ -21,39 +17,7 @@ import { ScopeResult } from '../lib/scope.zena';
 import { SemanticModel } from '../lib/semantic-model.zena';
 import { SourceSpan } from '../lib/diagnostics.zena';
 import { Module } from '../lib/ast.zena';
-
-/**
- * A mock CompilerHost that serves file contents from an in-memory HashMap.
- */
-class MockHost implements CompilerHost {
-  #files: HashMap<String, String>;
-
-  new() : #files = new HashMap<String, String>();
-
-  addFile(path: String, content: String): void {
-    this.#files.set(path, content);
-  }
-
-  readFile(path: String): String {
-    if (this.#files.has(path)) {
-      return this.#files[path];
-    }
-    return "";
-  }
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-let makeCompiler = (host: MockHost): Compiler => {
-  host.addFile("zena:string", "export class String {}");
-  host.addFile("zena:array", "export class Array {}");
-
-  let packages = new HashMap<String, PackageConfig>();
-  let options = new CompilerOptions("host", "/stdlib", packages, null);
-  return createCompiler(host, options);
-};
+import { MockHost, makeCompiler } from './test-utils.zena';
 
 class ResolveContext {
   ast: Module;
@@ -86,15 +50,15 @@ let indexOf = (source: String, needle: String, occurrence: i32 = 1): i32 => {
   var idx = -1;
   var count = 0;
   while (count < occurrence) {
-    idx = idx + 1;
+    idx += 1;
     var found = false;
     while (idx <= source.length - needle.length) {
       if (source.sliceBytes(idx, idx + needle.length) == needle) {
         found = true;
-        count = count + 1;
+        count += 1;
         break;
       }
-      idx = idx + 1;
+      idx += 1;
     }
     if (!found) {
       throw new Error("'" + needle + "' not found in source");
@@ -103,11 +67,11 @@ let indexOf = (source: String, needle: String, occurrence: i32 = 1): i32 => {
   return idx;
 };
 
-export let tests = suite('Member Definition Resolution', (): void => {
+export let tests = suite('Member Definition Resolution', () => {
 
-  suite('field access', (): void => {
+  suite('field access', () => {
 
-    test('p.x resolves to field definition', (ctx: TestContext): void => {
+    test('p.x resolves to field definition', () => {
       let src = "class Point { x: f64; y: f64; new(this.x, this.y); }\nlet p = new Point(1.0, 2.0);\nlet v = p.x;";
       let rc = prepare(src);
       let offset = indexOf(src, ".x;") + 1; // land on 'x' after dot
@@ -118,7 +82,7 @@ export let tests = suite('Member Definition Resolution', (): void => {
       equal(s.line, 1);
     });
 
-    test('p.y resolves to second field', (ctx: TestContext): void => {
+    test('p.y resolves to second field', () => {
       let src = "class Point { x: f64; y: f64; new(this.x, this.y); }\nlet p = new Point(1.0, 2.0);\nlet v = p.y;";
       let rc = prepare(src);
       let offset = indexOf(src, ".y;") + 1;
@@ -128,7 +92,7 @@ export let tests = suite('Member Definition Resolution', (): void => {
       equal(s.line, 1);
     });
 
-    test('case class param resolves', (ctx: TestContext): void => {
+    test('case class param resolves', () => {
       let src = "class Pair(first: i32, second: i32)\nlet p = new Pair(1, 2);\nlet v = p.first;";
       let rc = prepare(src);
       let offset = indexOf(src, ".first;") + 1;
@@ -139,9 +103,9 @@ export let tests = suite('Member Definition Resolution', (): void => {
     });
   });
 
-  suite('method access', (): void => {
+  suite('method access', () => {
 
-    test('c.increment resolves to method definition', (ctx: TestContext): void => {
+    test('c.increment resolves to method definition', () => {
       let src = "class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 1; }\n}\nlet c = new Counter();\nc.increment();";
       let rc = prepare(src);
       let offset = indexOf(src, ".increment();") + 1;
@@ -152,9 +116,9 @@ export let tests = suite('Member Definition Resolution', (): void => {
     });
   });
 
-  suite('private fields', (): void => {
+  suite('private fields', () => {
 
-    test('this.#field resolves to private field definition', (ctx: TestContext): void => {
+    test('this.#field resolves to private field definition', () => {
       let src = "class Wallet {\n  #balance: f64 = 0.0;\n  deposit(amount: f64): void { this.#balance += amount; }\n}";
       let rc = prepare(src);
       let offset = indexOf(src, ".#balance +=") + 2; // land on '#'
@@ -164,7 +128,7 @@ export let tests = suite('Member Definition Resolution', (): void => {
       equal(s.line, 2);
     });
 
-    test('other.#field resolves to private field definition', (ctx: TestContext): void => {
+    test('other.#field resolves to private field definition', () => {
       let src = "class Wallet {\n  #balance: f64 = 0.0;\n  new(amount: f64) : #balance = amount;\n  equals(other: Wallet): boolean { return this.#balance == other.#balance; }\n}";
       let rc = prepare(src);
       let offset = indexOf(src, "other.#balance;") + 7; // land on 'b' after "other.#"
@@ -174,7 +138,7 @@ export let tests = suite('Member Definition Resolution', (): void => {
       equal(s.line, 2);
     });
 
-    test('clicking on # resolves to field definition', (ctx: TestContext): void => {
+    test('clicking on # resolves to field definition', () => {
       let src = "class Wallet {\n  #balance: f64 = 0.0;\n  new(amount: f64) : #balance = amount;\n  equals(other: Wallet): boolean { return this.#balance == other.#balance; }\n}";
       let rc = prepare(src);
       let offset = indexOf(src, "other.#balance;") + 6; // land on '#'
@@ -185,9 +149,9 @@ export let tests = suite('Member Definition Resolution', (): void => {
     });
   });
 
-  suite('non-member positions', (): void => {
+  suite('non-member positions', () => {
 
-    test('offset on object returns null', (ctx: TestContext): void => {
+    test('offset on object returns null', () => {
       let src = "class Point { x: f64; new(this.x); }\nlet p = new Point(1.0);\nlet v = p.x;";
       let rc = prepare(src);
       let offset = indexOf(src, "p.x;"); // land on 'p', not 'x'
@@ -195,7 +159,7 @@ export let tests = suite('Member Definition Resolution', (): void => {
       isTrue(span == null);
     });
 
-    test('offset on non-member returns null', (ctx: TestContext): void => {
+    test('offset on non-member returns null', () => {
       let src = "let x = 42;";
       let rc = prepare(src);
       let span = resolveMemberDefinition(rc.ast, 4, rc.model, rc.scopeResult, rc.compiler);

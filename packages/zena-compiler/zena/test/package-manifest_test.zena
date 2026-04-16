@@ -1,45 +1,18 @@
-// Tests for the package manifest parser and stdlib config builder.
+/**
+ * Tests for the package manifest parser and stdlib config builder.
+ */ 
 
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
-import { Array } from 'zena:array';
-import { HashMap } from 'zena:map';
-import { CompilerHost } from '../lib/library-loader.zena';
 import { PackageConfig, ModuleExport } from '../lib/module-resolver.zena';
 import { loadPackageMap, buildStdlibConfig } from '../lib/package-manifest.zena';
+import { MockHost } from './test-utils.zena';
 
-// ============================================================================
-// Test CompilerHost — serves files from a HashMap
-// ============================================================================
+export let tests = suite("Package Manifest", () => {
 
-class MockHost implements CompilerHost {
-  #files: HashMap<String, String>;
+  suite("loadPackageMap", () => {
 
-  new() : #files = new HashMap<String, String>();
-
-  addFile(path: String, content: String): void {
-    this.#files.set(path, content);
-  }
-
-  readFile(path: String): String {
-    if (this.#files.has(path)) {
-      return this.#files[path];
-    }
-    return "";
-  }
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-export let tests = suite("Package Manifest", (): void => {
-
-  // --- loadPackageMap ---
-
-  suite("loadPackageMap", (): void => {
-
-    test("parses string shorthand packages", (t: TestContext): void => {
+    test("parses string shorthand packages", () => {
       let host = new MockHost();
       host.addFile("/project/zena-packages.json", '{"packages": {"mylib": "./lib/mylib"}}');
 
@@ -53,7 +26,7 @@ export let tests = suite("Package Manifest", (): void => {
       equal(config.internal == null, true);
     });
 
-    test("parses object form packages", (t: TestContext): void => {
+    test("parses object form packages", () => {
       let host = new MockHost();
       host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib/mylib", "exports": {"utils": {}, "math": {}}, "internal": ["impl"]}}}');
 
@@ -70,7 +43,7 @@ export let tests = suite("Package Manifest", (): void => {
       isFalse(config.isInternal("utils"));
     });
 
-    test("parses virtual module exports", (t: TestContext): void => {
+    test("parses virtual module exports", () => {
       let host = new MockHost();
       host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"console": {"virtual": {"host": "console-js", "wasi": "console-wasi"}}}}}}');
 
@@ -83,7 +56,7 @@ export let tests = suite("Package Manifest", (): void => {
       equal(virtual["wasi"], "console-wasi");
     });
 
-    test("skips zena package from manifest", (t: TestContext): void => {
+    test("skips zena package from manifest", () => {
       let host = new MockHost();
       host.addFile("/project/zena-packages.json", '{"packages": {"zena": {"root": "/stdlib"}, "mylib": "./lib"}}');
 
@@ -93,7 +66,7 @@ export let tests = suite("Package Manifest", (): void => {
       isTrue(packages.has("mylib"));
     });
 
-    test("handles empty packages", (t: TestContext): void => {
+    test("handles empty packages", () => {
       let host = new MockHost();
       host.addFile("/project/zena-packages.json", '{"packages": {}}');
 
@@ -102,16 +75,14 @@ export let tests = suite("Package Manifest", (): void => {
     });
   });
 
-  // --- buildStdlibConfig ---
+  suite("buildStdlibConfig", () => {
 
-  suite("buildStdlibConfig", (): void => {
-
-    test("sets root from argument", (t: TestContext): void => {
+    test("sets root from argument", () => {
       let config = buildStdlibConfig("/path/to/stdlib/zena");
       equal(config.root, "/path/to/stdlib/zena");
     });
 
-    test("includes public modules", (t: TestContext): void => {
+    test("includes public modules", () => {
       let config = buildStdlibConfig("/stdlib");
       let exports = config.exports as HashMap<String, ModuleExport>;
       isTrue(exports.has("string"));
@@ -121,7 +92,7 @@ export let tests = suite("Package Manifest", (): void => {
       isTrue(exports.has("test"));
     });
 
-    test("includes console as virtual module", (t: TestContext): void => {
+    test("includes console as virtual module", () => {
       let config = buildStdlibConfig("/stdlib");
       let exports = config.exports as HashMap<String, ModuleExport>;
       let consoleExport = exports["console"];
@@ -130,7 +101,7 @@ export let tests = suite("Package Manifest", (): void => {
       equal(virtual["wasi"], "console-wasi");
     });
 
-    test("marks implementation modules as internal", (t: TestContext): void => {
+    test("marks implementation modules as internal", () => {
       let config = buildStdlibConfig("/stdlib");
       isTrue(config.isInternal("console-host"));
       isTrue(config.isInternal("console-wasi"));

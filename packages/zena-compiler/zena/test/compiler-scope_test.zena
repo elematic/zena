@@ -7,63 +7,20 @@
 
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
-import { Array } from 'zena:array';
-import { HashMap } from 'zena:map';
-import { CompilerHost, SourceFile } from '../lib/library-loader.zena';
-import { PackageConfig, ModuleExport } from '../lib/module-resolver.zena';
+import { SourceFile } from '../lib/library-loader.zena';
 import { createCompiler, Compiler, CompilerOptions } from '../lib/compiler.zena';
 import { ScopeResult, SymbolInfo, UnresolvedName } from '../lib/scope.zena';
 import {
   VariableDeclaration,
   ImportSpecifier
 } from '../lib/ast.zena';
-
-/**
- * A mock CompilerHost that serves file contents from an in-memory HashMap.
- */
-class MockHost implements CompilerHost {
-  #files = new HashMap<String, String>();
-
-  addFile(path: String, content: String) {
-    this.#files.set(path, content);
-  }
-
-  readFile(path: String): String {
-    return this.#files.getOr(path, "");
-  }
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-// Create a compiler with stub stdlib and custom files.
-// The stub stdlib provides a minimal "zena:string" and "zena:array" module
-// so import resolution succeeds without real stdlib sources.
-let makeCompiler = (host: MockHost): Compiler => {
-  // Stub stdlib sources — keyed by canonical path (zena:module).
-  host.addFile("zena:string", "export class String {}");
-  host.addFile("zena:array", "export class Array {}");
-
-  let packages = new HashMap<String, PackageConfig>();
-  let options = new CompilerOptions("host", "/stdlib", packages, null);
-
-  return createCompiler(host, options);
-};
-
-// ============================================================================
-// Tests
-// ============================================================================
+import { MockHost, makeCompiler } from './test-utils.zena';
 
 export let tests = suite('Compiler Scope Integration', () => {
 
-  // ==========================================================================
-  // Basic scope analysis after compile
-  // ==========================================================================
-
   suite('scope analysis runs on compile', () => {
 
-    test('single file gets scope result', (ctx) => {
+    test('single file gets scope result', () => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "let x = 1;");
       let compiler = makeCompiler(host);
@@ -75,7 +32,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       isTrue(scope.rootScope.resolveValue("x") != null);
     });
 
-    test('all libraries in graph get scope results', (ctx) => {
+    test('all libraries in graph get scope results', () => {
       let host = new MockHost();
       host.addFile("/project/math.zena", "export let add = (a: i32, b: i32): i32 => a + b;");
       host.addFile("/project/main.zena", "import { add } from './math.zena'; let result = add(1, 2);");
@@ -90,7 +47,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       }
     });
 
-    test('exported values visible in dependency exports', (ctx) => {
+    test('exported values visible in dependency exports', () => {
       let host = new MockHost();
       host.addFile("/project/util.zena", "export let helper = 42;");
       host.addFile("/project/main.zena", "import { helper } from './util.zena'; let x = helper;");
@@ -106,13 +63,9 @@ export let tests = suite('Compiler Scope Integration', () => {
     });
   });
 
-  // ==========================================================================
-  // Cross-module import validation
-  // ==========================================================================
-
   suite('cross-module imports', () => {
 
-    test('valid import has no unresolved names', (ctx) => {
+    test('valid import has no unresolved names', () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let greet = 'hello';");
       host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let x = greet;");
@@ -126,7 +79,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       equal(mainScope.unresolvedValues.length, 0);
     });
 
-    test('import of non-exported name is flagged', (ctx) => {
+    test('import of non-exported name is flagged', () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "let secret = 42;");
       host.addFile("/project/main.zena", "import { secret } from './lib.zena'; let x = secret;");
@@ -139,7 +92,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       equal(mainScope.unresolvedValues[0].name, "secret");
     });
 
-    test('exported class is validated as type and value', (ctx) => {
+    test('exported class is validated as type and value', () => {
       let host = new MockHost();
       host.addFile("/project/point.zena", "export class Point { x: i32; }");
       host.addFile("/project/main.zena", "import { Point } from './point.zena'; let p = new Point();");
@@ -160,13 +113,9 @@ export let tests = suite('Compiler Scope Integration', () => {
     });
   });
 
-  // ==========================================================================
-  // Dependency ordering
-  // ==========================================================================
-
   suite('dependency ordering', () => {
 
-    test('dependencies are processed before dependents', (ctx) => {
+    test('dependencies are processed before dependents', () => {
       let host = new MockHost();
       host.addFile("/project/a.zena", "export let a = 1;");
       host.addFile("/project/b.zena", "import { a } from './a.zena'; export let b = a;");
@@ -190,13 +139,9 @@ export let tests = suite('Compiler Scope Integration', () => {
     });
   });
 
-  // ==========================================================================
-  // Stdlib imports
-  // ==========================================================================
-
   suite('stdlib imports', () => {
 
-    test('stdlib module gets scope result', (ctx) => {
+    test('stdlib module gets scope result', () => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "import { Array } from 'zena:array'; let x = 1;");
       let compiler = makeCompiler(host);
@@ -209,7 +154,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       isTrue(arrayLib.scopeResult != null);
     });
 
-    test('stdlib exported class passes import validation', (ctx) => {
+    test('stdlib exported class passes import validation', () => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "import { Array } from 'zena:array'; let x = Array;");
       let compiler = makeCompiler(host);
@@ -223,7 +168,7 @@ export let tests = suite('Compiler Scope Integration', () => {
 
   suite('scope result caching', () => {
 
-    test('dependency scope result is reused on recompile', (ctx) => {
+    test('dependency scope result is reused on recompile', () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let helper = 42;");
       host.addFile("/project/main.zena", "import { helper } from './lib.zena'; let x = helper;");
@@ -246,7 +191,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       equal(scopeBefore.rootScope, scopeAfter.rootScope);
     });
 
-    test('entry scope result is rebuilt on recompile', (ctx) => {
+    test('entry scope result is rebuilt on recompile', () => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "let x = 1;");
       let compiler = makeCompiler(host);
@@ -265,7 +210,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       isTrue(scope2.rootScope.resolveValue("x") == null);
     });
 
-    test('cross-module imports resolve correctly after cached recompile', (ctx) => {
+    test('cross-module imports resolve correctly after cached recompile', () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let greet = 'hello';");
       host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let a = greet;");

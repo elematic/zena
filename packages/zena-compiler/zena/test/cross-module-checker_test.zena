@@ -1,74 +1,21 @@
-// Cross-module type checking tests.
-//
-// Validates that the checker resolves imported types with full
-// fidelity: field access, method calls, constructor arguments,
-// and function signatures across module boundaries.
+/**
+ * Cross-module type checking tests.
+ *
+ * Validates that the checker resolves imported types with full
+ * fidelity: field access, method calls, constructor arguments,
+ * and function signatures across module boundaries.
+ */
 
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
-import { Array } from 'zena:array';
-import { HashMap } from 'zena:map';
-import { CompilerHost, SourceFile } from '../lib/library-loader.zena';
-import { PackageConfig, ModuleExport } from '../lib/module-resolver.zena';
-import { createCompiler, Compiler, CompilerOptions, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
-import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+import { MockHost, makeCompiler, errorDiagnostics } from './test-utils.zena';
 
-// ============================================================================
-// Test CompilerHost — serves files from a HashMap
-// ============================================================================
+export let tests = suite('Cross-Module Type Checking', () => {
 
-class MockHost implements CompilerHost {
-  #files: HashMap<String, String>;
+  suite('imported class types', () => {
 
-  new() : #files = new HashMap<String, String>();
-
-  addFile(path: String, content: String): void {
-    this.#files.set(path, content);
-  }
-
-  readFile(path: String): String {
-    if (this.#files.has(path)) {
-      return this.#files[path];
-    }
-    return "";
-  }
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-let makeCompiler = (host: MockHost): Compiler => {
-  host.addFile("zena:string", "export class String {}");
-  host.addFile("zena:array", "export class Array {}");
-
-  let packages = new HashMap<String, PackageConfig>();
-  let options = new CompilerOptions("host", "/stdlib", packages, null);
-  return createCompiler(host, options);
-};
-
-let errorDiagnostics = (diags: Array<Diagnostic>): Array<Diagnostic> => {
-  let errors = new Array<Diagnostic>(4);
-  var i = 0;
-  while (i < diags.length) {
-    match (diags[i].severity) {
-      case DiagnosticSeverity.Error: errors.push(diags[i])
-      case _: {}
-    }
-    i += 1;
-  }
-  return errors;
-};
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-export let tests = suite('Cross-Module Type Checking', (): void => {
-
-  suite('imported class types', (): void => {
-
-    test('imported class field access resolves', (ctx: TestContext): void => {
+    test('imported class field access resolves', () => {
       let host = new MockHost();
       host.addFile("/project/point.zena", "export class Point { x: f64; y: f64; new(this.x, this.y); }");
       host.addFile("/project/main.zena", "import { Point } from './point.zena';\nlet p = new Point(1.0, 2.0);\nlet x: f64 = p.x;");
@@ -79,7 +26,7 @@ export let tests = suite('Cross-Module Type Checking', (): void => {
       equal(errors.length, 0);
     });
 
-    test('imported class method call resolves', (ctx: TestContext): void => {
+    test('imported class method call resolves', () => {
       let host = new MockHost();
       host.addFile("/project/counter.zena", "export class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 1; }\n}");
       host.addFile("/project/main.zena", "import { Counter } from './counter.zena';\nlet c = new Counter();\nc.increment();");
@@ -91,9 +38,9 @@ export let tests = suite('Cross-Module Type Checking', (): void => {
     });
   });
 
-  suite('imported function types', (): void => {
+  suite('imported function types', () => {
 
-    test('imported function return type resolves', (ctx: TestContext): void => {
+    test('imported function return type resolves', () => {
       let host = new MockHost();
       host.addFile("/project/math.zena", "export let add = (a: i32, b: i32): i32 => a + b;");
       host.addFile("/project/main.zena", "import { add } from './math.zena';\nlet r: i32 = add(1, 2);");
