@@ -25,14 +25,20 @@ import { Error } from 'zena:error';
 import {
   Compiler, createCompiler, checkCompilation, CompilerOptions, CompilerHost,
   ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition,
-  CompilationResult
+  CompilationResult, typeToString, SemanticModel
 } from 'zena-compiler:compiler';
+import { Type } from 'zena-compiler:types';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
   Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
 } from 'zena-compiler:diagnostics';
 import { SymbolInfo, ReferenceMap, DeclarationMap, ScopeResult } from 'zena-compiler:scope';
-import { Node, SourceLocation } from 'zena-compiler:ast';
+import {
+  Node, SourceLocation, Identifier, IdentifierPattern,
+  ThisExpression, MemberExpression, Expression, Module,
+  ClassDeclaration, Parameter
+} from 'zena-compiler:ast';
+import { i32ToString } from 'zena:string-convert';
 import { format as formatSource } from 'zena-formatter:printer';
 
 // ============================================================================
@@ -92,6 +98,15 @@ class LspHost implements CompilerHost {
     // Regular file: read by absolute path.
     return __read_file(path, path.length);
   }
+}
+
+/**
+ * Result of a hover query, containing the type string and a display label.
+ */
+export class HoverResult {
+  typeStr: String;
+  label: String;
+  new(this.typeStr, this.label);
 }
 
 /**
@@ -197,7 +212,186 @@ export class LanguageService {
 
     return null;
   }
+
+  /**
+   * Get hover information at a byte offset.
+   *
+   * Returns a HoverResult with the type string and display name,
+   * or null if no type information is available at the offset.
+   */
+  getHover(offset: i32): HoverResult | null {
+    if (this.#cachedCompilation == null || this.#cachedCheckResult == null) {
+      return null;
+    }
+
+    let compilation = this.#cachedCompilation as CompilationResult;
+    let checkResult = this.#cachedCheckResult as ProgramCheckResult;
+    let entryPath = compilation.entry.path;
+
+    if (!checkResult.results.has(entryPath)) {
+      return null;
+    }
+
+    let model = checkResult.results[entryPath].model;
+    let ast = compilation.entry.ast;
+
+    // Find the deepest AST node at the cursor position.
+    let node = findNodeAtOffset(ast, offset);
+    if (node == null) { return null; }
+    let foundNode = node as Node;
+
+    // Handle `this` keyword: find enclosing class type.
+    // Handle MemberExpression: when offset is on the property name.
+    // (The visitor doesn't walk MemberExpression.property, so
+    //  findNodeAtOffset returns the MemberExpression when hovering
+    //  on the property identifier.)
+    match (foundNode) {
+      case ThisExpression: {
+        let classType = findEnclosingClassType(ast, foundNode as Expression, model);
+        if (classType == null) { return null; }
+        let typeStr = typeToString(classType as Type);
+        return new HoverResult(typeStr, "this: " + typeStr);
+      }
+      case MemberExpression {property, loc}: {
+        if (property.loc != null) {
+          let propLoc = property.loc as SourceLocation;
+          if (offset >= propLoc.start && offset < propLoc.end) {
+            // Hovering on the property name — use the MemberExpression's type.
+            let memberType = model.getNodeType(foundNode);
+            if (memberType != null) {
+              let typeStr = typeToString(memberType as Type);
+              return new HoverResult(typeStr, "(property) " + property.name + ": " + typeStr);
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+
+    // Try to get the type directly from the SemanticModel.
+    var nodeType = model.getNodeType(foundNode);
+
+    // For identifiers, also try resolving to the binding type.
+    if (nodeType == null && this.#cachedScopeResult != null) {
+      let scopeResult = this.#cachedScopeResult as ScopeResult;
+      let refs = scopeResult.references;
+      var maybeInfo = refs.getByOffset(offset);
+      if (maybeInfo == null) {
+        let decls = scopeResult.declarations;
+        maybeInfo = decls.getByOffset(offset);
+      }
+      if (maybeInfo != null) {
+        let sym = maybeInfo as SymbolInfo;
+        nodeType = model.getBindingType(sym);
+      }
+    }
+
+    if (nodeType == null) { return null; }
+
+    let typ = nodeType as Type;
+    let typeStr = typeToString(typ);
+
+    // Build a display label like "let x: i32" or "class Foo".
+    let label = getHoverLabel(foundNode, typeStr, this.#cachedScopeResult);
+
+    return new HoverResult(typeStr, label);
+  }
 }
+
+/**
+ * Build a human-readable hover label for a given AST node and its type.
+ */
+let getHoverLabel = (node: Node, typeStr: String, scopeResult: ScopeResult | null): String => {
+  // Extract the name from either an Identifier (reference) or
+  // IdentifierPattern (declaration site).
+  let name = getNodeName(node);
+
+  if (name.length == 0) { return typeStr; }
+
+  var prefix = "let";
+  if (scopeResult != null) {
+    let sr = scopeResult as ScopeResult;
+    let refs = sr.references;
+    var maybeInfo = refs.getByNode(node);
+    if (maybeInfo == null) {
+      let decls = sr.declarations;
+      maybeInfo = decls.getByNode(node);
+    }
+    if (maybeInfo != null) {
+      let sym = maybeInfo as SymbolInfo;
+      // Check if the declaration is a parameter.
+      if (sym.declaration != null) {
+        let declNode = sym.declaration as Node;
+        match (declNode) {
+          case Parameter: { prefix = "(parameter)"; }
+          case ClassDeclaration: { prefix = "class"; }
+          case _: {
+            let kind = sym.kind;
+            if (kind == "var") { prefix = "var"; }
+            if (kind == "type") { prefix = "type"; }
+          }
+        }
+      } else {
+        let kind = sym.kind;
+        if (kind == "var") { prefix = "var"; }
+        if (kind == "type") { prefix = "type"; }
+      }
+    }
+  }
+  if (prefix == "type") {
+    return prefix + " " + name + " = " + typeStr;
+  }
+  if (prefix == "class") {
+    return prefix + " " + name;
+  }
+  return prefix + " " + name + ": " + typeStr;
+};
+
+/**
+ * Extract the name string from a node, if it has one.
+ */
+let getNodeName = (node: Node): String => match (node) {
+  case Identifier {name}: name
+  case IdentifierPattern {name}: name
+  case _: ""
+};
+
+/**
+ * Find the ClassType for the enclosing class of a `this` expression.
+ *
+ * The checker stores a ClassType on the ClassDeclaration node
+ * (via declareBinding → setNodeType), so we walk the module's
+ * top-level statements to find the enclosing class.
+ */
+let findEnclosingClassType = (ast: Module, thisExpr: Expression, model: SemanticModel): Type | null => {
+  if (thisExpr.loc == null) { return null; }
+  let thisLoc = thisExpr.loc as SourceLocation;
+  let thisOffset = thisLoc.start;
+
+  var i = 0;
+  while (i < ast.body.length) {
+    match (ast.body[i]) {
+      case ClassDeclaration as cd: {
+        if (cd.loc != null) {
+          let cdLoc = cd.loc as SourceLocation;
+          if (thisOffset >= cdLoc.start && thisOffset < cdLoc.end) {
+            // Try nodeType first (set by declareBinding → setNodeType).
+            let nt = model.getNodeType(ast.body[i]);
+            if (nt != null) { return nt; }
+            // Fallback: resolve via declaration map → binding type.
+            let sym = model.resolveDeclaration(ast.body[i]);
+            if (sym != null) {
+              return model.getBindingType(sym as SymbolInfo);
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+  return null;
+};
 
 /**
  * Create a LanguageService with the standard pipeline.
@@ -374,4 +568,30 @@ export let getDiagnosticFile = (diagnostics: Array<Diagnostic>, index: i32): Str
     return (diag.location as SourceSpan).file;
   }
   return "";
+};
+
+// ============================================================================
+// Hover Exports
+// ============================================================================
+
+/**
+ * Get hover information at a byte offset.
+ * Returns a HoverResult or null if no info is available.
+ */
+export let getHover = (offset: i32): HoverResult | null => {
+  return (__ls as LanguageService).getHover(offset);
+};
+
+/**
+ * Get the type string from a hover result (e.g., "i32", "(a: i32) => i32").
+ */
+export let getHoverType = (result: HoverResult): String => {
+  return result.typeStr;
+};
+
+/**
+ * Get the display label from a hover result (e.g., "let x: i32").
+ */
+export let getHoverLabel = (result: HoverResult): String => {
+  return result.label;
 };

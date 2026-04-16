@@ -161,6 +161,34 @@ export class ZenaExtension {
       }),
     );
 
+    // Hover.
+    context.subscriptions.push(
+      vscode.languages.registerHoverProvider('zena', {
+        provideHover: (document, position) => {
+          if (!this.#compiler.isReady) return null;
+          try {
+            const source = document.getText();
+            const wordRange = document.getWordRangeAtPosition(position);
+            const wordStart = wordRange ? wordRange.start : position;
+            const offset = Buffer.byteLength(
+              source.slice(0, document.offsetAt(wordStart)),
+              'utf8',
+            );
+            const result = this.#compiler.getHover(offset);
+            if (!result) return null;
+
+            const contents = new vscode.MarkdownString();
+            contents.appendCodeblock(result.label, 'zena');
+            return new vscode.Hover(contents, wordRange);
+          } catch (e) {
+            const msg = formatError(e);
+            outputChannel.appendLine(`Hover failed: ${msg}`);
+            return null;
+          }
+        },
+      }),
+    );
+
     // Document formatting.
     context.subscriptions.push(
       vscode.languages.registerDocumentFormattingEditProvider('zena', {

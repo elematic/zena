@@ -33,6 +33,9 @@ interface LspExports extends WebAssembly.Exports {
   getDefinitionColumn(result: unknown): number;
   getDefinitionStart(result: unknown): number;
   getDefinitionLength(result: unknown): number;
+  getHover(offset: number): unknown;
+  getHoverType(result: unknown): unknown;
+  getHoverLabel(result: unknown): unknown;
   $stringGetByte(str: unknown, index: number): number;
   $stringGetLength(str: unknown): number;
   $stringCreate(len: number): unknown;
@@ -285,6 +288,36 @@ export class ZenaCompilerService {
             ? String((e as {stack: unknown}).stack)
             : String(e);
       this.#outputChannel.appendLine(`Format failed: ${msg}`);
+      return null;
+    }
+  }
+
+  /**
+   * Get hover information at a byte offset.
+   * Returns {type, label} or null if no info is available.
+   */
+  getHover(offset: number): {type: string; label: string} | null {
+    const exports = this.#exports!;
+    const readString = this.#readString!;
+
+    try {
+      const resultRef = exports.getHover(offset);
+      if (resultRef === null || resultRef === undefined) {
+        return null;
+      }
+
+      const typeRef = exports.getHoverType(resultRef);
+      const typeLen = exports.$stringGetLength(typeRef);
+      const type = readString(typeRef, typeLen);
+
+      const labelRef = exports.getHoverLabel(resultRef);
+      const labelLen = exports.$stringGetLength(labelRef);
+      const label = readString(labelRef, labelLen);
+
+      return {type, label};
+    } catch (e) {
+      const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
+      this.#outputChannel.appendLine(`getHover failed: ${msg}`);
       return null;
     }
   }

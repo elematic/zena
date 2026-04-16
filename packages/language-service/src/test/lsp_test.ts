@@ -38,6 +38,9 @@ interface LspExports extends WebAssembly.Exports {
   getDefinitionColumn(result: unknown): number;
   getDefinitionStart(result: unknown): number;
   getDefinitionLength(result: unknown): number;
+  getHover(offset: number): unknown;
+  getHoverType(result: unknown): unknown;
+  getHoverLabel(result: unknown): unknown;
   $stringGetByte(str: unknown, index: number): number;
   $stringGetLength(str: unknown): number;
   $stringCreate(len: number): unknown;
@@ -420,5 +423,156 @@ export final class MyString {
     const def = getDefinitionAt(lsp, src, offset);
     assert.ok(def, 'Expected a definition for field type A');
     assert.strictEqual(def!.line, 1);
+  });
+
+  // ========================================================================
+  // Hover Tests
+  // ========================================================================
+
+  /**
+   * Helper: check source, then call getHover at a byte offset.
+   * Returns {type, label} or null.
+   */
+  function getHoverAt(
+    lsp: LspHandle,
+    source: string,
+    offset: number,
+    path = '/test/main.zena',
+  ) {
+    const {exports, readString} = lsp;
+    // check() must run first to populate the cached results.
+    checkSource(lsp, source, path);
+    const resultRef = exports.getHover(offset);
+    if (resultRef === null || resultRef === undefined || resultRef === 0)
+      return null;
+    const typeRef = exports.getHoverType(resultRef);
+    const typeLen = exports.$stringGetLength(typeRef);
+    const labelRef = exports.getHoverLabel(resultRef);
+    const labelLen = exports.$stringGetLength(labelRef);
+    return {
+      type: readString(typeRef, typeLen),
+      label: readString(labelRef, labelLen),
+    };
+  }
+
+  test('getHover: variable with explicit type', () => {
+    const src = 'let x: i32 = 42;\nlet y = x;';
+    // Hover over "x" in "let y = x"
+    const offset = offsetOf(src, 'x', 2);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.type, 'i32');
+    assert.ok(
+      hover!.label.includes('x') && hover!.label.includes('i32'),
+      `Expected label with name and type, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: inferred type from literal', () => {
+    const src = 'let x = 42;';
+    // Hover over "x" at declaration
+    const offset = offsetOf(src, 'x', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.type, 'i32');
+  });
+
+  test('getHover: function type', () => {
+    const src = 'let add = (a: i32, b: i32): i32 => a + b;';
+    const offset = offsetOf(src, 'add', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for function');
+    // The type should be a function type
+    assert.ok(
+      hover!.type.includes('=>'),
+      `Expected function type, got: ${hover!.type}`,
+    );
+  });
+
+  test('getHover: no result at keyword', () => {
+    const src = 'let x = 42;';
+    // Offset 0 is 'l' of 'let'
+    const hover = getHoverAt(lsp, src, 0);
+    assert.strictEqual(hover, null, 'Expected no hover at keyword');
+  });
+
+  test('getHover: var binding shows var keyword', () => {
+    const src = 'var count = 0;';
+    const offset = offsetOf(src, 'count', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for var');
+    assert.ok(
+      hover!.label.startsWith('var '),
+      `Expected var prefix, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: this keyword shows class type', () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+  getX(): i32 { return this.x; }
+}`;
+    // Hover over "this" in "return this.x" (not the constructor's this.x)
+    const offset = src.lastIndexOf('this.x');
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for this');
+    assert.ok(
+      hover!.label.includes('this') && hover!.label.includes('Foo'),
+      `Expected this: Foo, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: member access property shows type', () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+}
+let f = new Foo(42);
+let v = f.x;`;
+    // Hover over "x" in "f.x"
+    const lastLine = 'let v = f.x;';
+    const lineStart = src.indexOf(lastLine);
+    const offset = lineStart + lastLine.indexOf('.x') + 1; // on 'x'
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for member access');
+    assert.ok(
+      hover!.label.includes('(property)') && hover!.label.includes('x'),
+      `Expected (property) label, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: function parameter shows (parameter)', () => {
+    const src = 'let add = (a: i32, b: i32): i32 => a + b;';
+    // Hover over "a" in the parameter list
+    const offset = src.indexOf('a:');
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for parameter');
+    assert.ok(
+      hover!.label.startsWith('(parameter)'),
+      `Expected (parameter) prefix, got: ${hover!.label}`,
+    );
+    assert.ok(
+      hover!.label.includes('a') && hover!.label.includes('i32'),
+      `Expected parameter name and type, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: class name shows class prefix', () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+}
+let f = new Foo(42);`;
+    // Hover over "Foo" in "new Foo(42)"
+    const lastLine = 'let f = new Foo(42);';
+    const lineStart = src.indexOf(lastLine);
+    const offset = lineStart + lastLine.indexOf('Foo');
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for class reference');
+    assert.ok(
+      hover!.label.startsWith('class '),
+      `Expected class prefix, got: ${hover!.label}`,
+    );
   });
 });
