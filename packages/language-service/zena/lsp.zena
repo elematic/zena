@@ -33,7 +33,6 @@ import {
 } from 'zena-compiler:diagnostics';
 import { SymbolInfo, ReferenceMap, DeclarationMap, ScopeResult } from 'zena-compiler:scope';
 import { Node, SourceLocation } from 'zena-compiler:ast';
-import { i32ToString } from 'zena:string-convert';
 import { format as formatSource } from 'zena-formatter:printer';
 
 // ============================================================================
@@ -105,7 +104,6 @@ class LspHost implements CompilerHost {
 export class LanguageService {
   #host: LspHost;
   #compiler: Compiler;
-  var #version: i32 = 0;
   var #cachedScopeResult: ScopeResult | null = null;
   var #cachedPath: String = "";
   var #cachedCheckResult: ProgramCheckResult | null = null;
@@ -129,10 +127,10 @@ export class LanguageService {
     this.#cachedPath = path;
 
     let diagnostics = try {
-      // Bump the version so the loader detects that this file
-      // has changed and re-reads it from the host.
-      this.#version += 1;
-      let result = this.#compiler.compile(path, i32ToString(this.#version));
+      // Invalidate the edited file so the loader re-reads it from
+      // the host (which serves the unsaved editor buffer).
+      this.#compiler.invalidate(path);
+      let result = this.#compiler.compile(path);
 
       // Cache the scope result and compilation result for getDefinition().
       this.#cachedScopeResult = result.entry.scopeResult;

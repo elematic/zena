@@ -136,6 +136,18 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
 - [x] Destructured parameters in function signatures
 - [x] `export { X } from` re-export syntax
 - [x] Self-hosted compiler: lexer, parser, scope analysis, early type checker
+- [x] Language service: goto-definition for class fields, methods, case class params,
+  inherited members, `this.member` access
+- [x] Incremental type checking:
+  - ScopeResult caching — reuse scope analysis for unchanged files.
+  - Export signature comparison — deep structural type comparison to detect
+    when a module's public API actually changed.
+  - Per-import-name invalidation — only re-check dependents when the specific
+    names they import have changed types.
+  - Push/pull invalidation split — `invalidate(path)` for IDE (targeted, single
+    file) and `refreshCache()` for CLI (batch, content comparison).
+  - Language service wired to push-based `invalidate()` for efficient editor
+    integration.
 
 ## Planned
 

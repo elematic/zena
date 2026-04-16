@@ -226,6 +226,29 @@ export class Compiler {
   }
 
   /**
+   * Invalidate a single cached file (push-based).
+   *
+   * Call this when you know a specific file's source has changed (e.g.,
+   * the language service receives an editor update). Evicts the file
+   * from the loader cache, clears scope results on its direct importers,
+   * and re-loads the file from the host.
+   */
+  invalidate(path: String): void {
+    this.#loader.invalidate(path);
+  }
+
+  /**
+   * Re-read all cached non-stdlib files from the host (pull-based).
+   *
+   * Call this in batch/CLI environments where no external notification
+   * of file changes is available. In push-based environments (IDE),
+   * prefer `invalidate(path)` for targeted updates.
+   */
+  refreshCache(): void {
+    this.#loader.refreshCache();
+  }
+
+  /**
    * Compile a program starting from an entry point.
    *
    * The entry point should be a canonical path (absolute file path or
@@ -239,6 +262,10 @@ export class Compiler {
    * If `version` is provided, it is associated with the entry file in
    * the loader cache. A cached entry with a different version is
    * re-loaded automatically.
+   *
+   * NOTE: compile() does NOT automatically detect file changes. In
+   * push-based environments, call `invalidate(path)` before compiling.
+   * In pull-based environments, call `refreshCache()` first.
    */
   compile(entryPoint: String, version: String | null = null): CompilationResult {
     // Load prelude modules first (if configured).

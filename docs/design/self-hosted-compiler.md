@@ -578,13 +578,35 @@ The `LibraryLoader` conflates two responsibilities:
    the module graph (stateful)
 
 The `CompilationResult` is a snapshot of a single compilation — `files` in
-topological order, the `entry` module, and a `hasCycle` flag. `checkCompilation`
-type-checks only the entry module, passing dependency `ModuleExports` as a flat
-map. The `SemanticModel` covers one module.
+topological order, the `entry` module, and a `hasCycle` flag.
+`checkCompilation` type-checks all non-stdlib modules in dependency order,
+using per-module `depExports` and `depModels` maps wired from dependency
+`ScopeResult`s and `CheckResult`s. Each module gets its own `SemanticModel`.
 
-In `lsp.zena`, we currently cache only the `ScopeResult` from the last
-`check()` call (for `getDefinition()` queries). Everything else is thrown away
-and rebuilt from scratch on the next edit.
+**What's already been implemented (incremental checking foundation):**
+
+- **Persistent `Compiler` + `LibraryLoader`** in `lsp.zena` — no longer
+  recreated per `check()` call. The loader cache survives across edits.
+- **`ScopeResult` caching** — unchanged files reuse their scope analysis
+  from the loader cache. Scope analysis is file-local (depends only on
+  source text), so this is always safe.
+- **Export signature comparison** — `computeExportSignature()` maps each
+  module's exported names (prefixed `v:` / `t:`) to their resolved `Type`.
+  `signatureTypeEquals()` does deep structural comparison (with cycle guard)
+  to detect when a module's public API actually changed.
+- **Per-import-name invalidation** — `buildReverseDeps()` tracks which
+  specific names each importer uses. When a dependency's signature changes,
+  only importers that reference affected names are re-checked.
+- **Push/pull invalidation split** — `Compiler.invalidate(path)` for
+  targeted IDE updates (evicts one file, clears importers' `scopeResult`,
+  re-loads); `Compiler.refreshCache()` for batch/CLI (re-reads all cached
+  non-stdlib files, compares source text, evicts changed files).
+- **`ProgramCheckResult` carry-forward** — `checkCompilation()` accepts an
+  optional `previous: ProgramCheckResult` and carries forward `CheckResult`s
+  for files whose source is unchanged and whose imports are unaffected.
+- **Language service wired to push-based invalidation** — `lsp.zena`'s
+  `check()` calls `compiler.invalidate(path)` then `compiler.compile(path)`.
+  No version bumping needed.
 
 **Design:** Three new abstractions that separate concerns cleanly:
 
@@ -879,14 +901,14 @@ when a `.ts` file is opened.
 
 #### What Changes from Current Code
 
-| Current                                             | With Program + LanguageService                                          |
-| --------------------------------------------------- | ----------------------------------------------------------------------- |
-| `lsp.zena` creates a fresh `Compiler` per `check()` | `LanguageService` holds a persistent `SourceFileCache` + `Program`      |
-| `LibraryLoader` owns the cache + loading logic      | `SourceFileCache` owns parsed files; `LibraryLoader` is stateless       |
-| `CompilationResult` is a one-shot snapshot          | `Program` is a reusable snapshot with lazy checking                     |
-| Stdlib is re-parsed on every call                   | Stdlib is parsed once, cached in `SourceFileCache` forever              |
-| Only `ScopeResult` is cached for queries            | `CheckResult` (including `SemanticModel`) cached per file per `Program` |
-| Only one file can be "active" at a time             | All open files tracked; each can be queried independently               |
+| Before incremental work                             | Current state (implemented)                                             | Future (Program + LanguageService)                                      |
+| --------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `lsp.zena` creates a fresh `Compiler` per `check()` | Persistent `Compiler`; `invalidate(path)` before `compile()`            | `LanguageService` holds `SourceFileCache` + immutable `Program`         |
+| `LibraryLoader` owns the cache + loading logic      | Same, but with `invalidate()` (push) and `refreshCache()` (pull)        | `SourceFileCache` owns parsed files; `LibraryLoader` is stateless       |
+| Stdlib is re-parsed on every call                   | Stdlib parsed once, cached in `LibraryLoader` forever                   | Same, in `SourceFileCache`                                              |
+| Only `ScopeResult` is cached for queries            | `ScopeResult` + `CheckResult` cached; carry-forward in `checkCompilation` | Lazy checking per file per `Program`                                   |
+| No incremental invalidation                         | Export signature comparison + per-import-name invalidation              | On-demand checking + intra-file granularity                             |
+| Only one file can be "active" at a time             | Same (single entry point per compile)                                   | All open files tracked; each can be queried independently               |
 
 #### Incremental Workflow
 
@@ -923,21 +945,26 @@ when a `.ts` file is opened.
 
 #### Implementation Plan
 
-1. **Near term:** Make the `Compiler` and `LibraryLoader` persistent in
-   `lsp.zena` (don't recreate them per call). The `LibraryLoader` already
-   caches by path — we just need to stop throwing it away. Add version
-   tracking on the JS side to skip `check()` when the document hasn't changed.
+1. ~~**Near term:** Make the `Compiler` and `LibraryLoader` persistent in
+   `lsp.zena` (don't recreate them per call). Add version tracking on the
+   JS side to skip `check()` when the document hasn't changed.~~ ✅ Done.
+   Persistent compiler with push-based `invalidate(path)` in language service.
 
-2. **Medium term:** Implement `SourceFileCache` and `Program`. Extract the
-   cache from `LibraryLoader` into `SourceFileCache`. `Program` is created
-   per edit cycle and inherits `CheckResult`s from the previous `Program` for
-   unchanged subgraphs. Add export signature comparison for function-body
-   edits.
+2. ~~**Medium term (partial):** Export signature comparison for function-body
+   edits. `CheckResult` carry-forward for unchanged subgraphs.~~ ✅ Done.
+   `checkCompilation()` with `ProgramCheckResult` carry-forward, export
+   signature comparison via `signatureTypeEquals()`, per-import-name
+   invalidation via `buildReverseDeps()`.
 
-3. **Long term:** `LanguageService` as the full orchestrator. On-demand
+3. **Medium term (remaining):** Extract `SourceFileCache` from `LibraryLoader`.
+   Implement immutable `Program` snapshots created per edit cycle. This would
+   enable clean multi-file queries and concurrent read access.
+
+4. **Long term:** `LanguageService` as the full orchestrator. On-demand
    checking (only check files the editor asks about). Intra-file granularity
    (re-check only changed functions). Cache eviction for files no longer in
-   the module graph.
+   the module graph. Content-hashed result caching for undo optimization
+   (state 1→2→1 gets instant cache hit).
 
 ---
 
@@ -1183,17 +1210,23 @@ details.
 - `lsp.zena` WASM entry point with `init()`, `check()`, `format()`,
   `getDefinition()` exports
 - Diagnostics (parse errors, type errors, unresolved names)
-- Go to definition (within-file and cross-module)
+- Go to definition (within-file, cross-module, class fields/methods,
+  case class params, inherited members, `this.member` access)
 - Document formatting via zena-formatter
 - Integration test suite
+- Persistent `Compiler` + `LibraryLoader` in language service (no longer
+  recreated per call)
+- Push-based invalidation (`compiler.invalidate(path)`) wired into
+  `lsp.zena` for efficient single-file updates
+- Incremental type checking via `checkCompilation()` with
+  `ProgramCheckResult` carry-forward, export signature comparison, and
+  per-import-name invalidation
 
 **In progress:**
 
-- **Persistent `LanguageService`** — replace stateless per-call architecture
-  with `SourceFileCache` + immutable `Program` snapshots (Section 9)
+- **`SourceFileCache` + `Program` snapshots** — extract cache from
+  `LibraryLoader`, create immutable `Program` per edit cycle (Section 9)
 - **On-demand checking** — only type-check files the editor asks about
-- **Export signature comparison** — skip re-checking dependents when a file's
-  exports haven't changed (critical for typing-speed edits)
 - **Hover types** — show inferred types on hover via `SemanticModel`
 
 **Deliverable:** A working language service with diagnostics, go-to-definition,

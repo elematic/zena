@@ -200,6 +200,107 @@ export class LibraryLoader {
     return record;
   }
 
+  /**
+   * Invalidate a single file by canonical path (push-based).
+   *
+   * Evicts the file from the cache, clears `scopeResult` on any cached
+   * file that directly imports it (so import wiring is redone), then
+   * re-loads the file from the host so it's ready for the next compile.
+   *
+   * Use this in push-based environments (IDE, language service) where
+   * the host knows exactly which file changed. For pull-based batch
+   * compilation, use `refreshCache()` instead.
+   */
+  invalidate(path: String): void {
+    if (!this.#cache.has(path)) { return; }
+    this.#cache.delete(path);
+
+    // Clear scopeResult on cached files that directly import this path.
+    let iter = this.#cache.keys();
+    while (let (true, p) = iter.next()) {
+      let cached = this.#cache[p];
+      if (!cached.isStdlib && cached.scopeResult != null) {
+        let importIter = cached.imports.keys();
+        while (let (true, spec) = importIter.next()) {
+          if (cached.imports[spec] == path) {
+            cached.scopeResult = null;
+          }
+        }
+      }
+    }
+
+    // Re-load so the file is back in the cache with fresh content.
+    this.load(path);
+  }
+
+  /**
+   * Refresh the loader cache by re-reading non-stdlib files from the host
+   * (pull-based).
+   *
+   * For each cached user file, re-reads the source from the host and
+   * compares it to the cached source. If the source changed, the cache
+   * entry is removed and re-loaded.
+   *
+   * Use this in pull-based environments (CLI, batch compilation) where
+   * no external notification of file changes is available. In push-based
+   * environments (IDE), prefer `invalidate(path)` for targeted updates.
+   */
+  refreshCache(): void {
+    // Collect paths first — can't mutate the map during iteration.
+    let paths = new Array<String>();
+    let iter = this.#cache.keys();
+    while (let (true, path) = iter.next()) {
+      paths.push(path);
+    }
+
+    // Phase 1: Detect changed files and remove from cache.
+    let changedPaths = new HashMap<String, boolean>();
+    var i = 0;
+    while (i < paths.length) {
+      let path = paths[i];
+      let cached = this.#cache[path];
+      if (!cached.isStdlib) {
+        let currentSource = this.#host.readFile(path);
+        if (currentSource != cached.source) {
+          changedPaths.set(path, true);
+          this.#cache.delete(path);
+        }
+      }
+      i += 1;
+    }
+
+    if (changedPaths.size > 0) {
+      // Phase 2: Clear scope results for non-stdlib files that directly
+      // import any changed file, so import wiring is redone with fresh
+      // dependency exports. Files that don't import a changed file keep
+      // their cached scope results.
+      let iter2 = this.#cache.keys();
+      while (let (true, path) = iter2.next()) {
+        let cached = this.#cache[path];
+        if (!cached.isStdlib && cached.scopeResult != null) {
+          // Check if this file imports any changed path.
+          let importIter = cached.imports.keys();
+          var needsClear = false;
+          while (let (true, spec) = importIter.next()) {
+            if (changedPaths.has(cached.imports[spec])) {
+              needsClear = true;
+            }
+          }
+          if (needsClear) {
+            cached.scopeResult = null;
+          }
+        }
+      }
+
+      // Phase 3: Re-load evicted files so they're back in the cache
+      // before computeGraph() tries to find them.
+      let changedIter = changedPaths.keys();
+      while (let (true, path) = changedIter.next()) {
+        this.load(path);
+      }
+    }
+  }
+
   /** Check if a library has already been loaded. */
   has(path: String): boolean {
     return this.#cache.has(path);
