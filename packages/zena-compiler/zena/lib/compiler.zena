@@ -35,6 +35,7 @@ import { buildStdlibConfig, loadPackageMap } from './package-manifest.zena';
 import {
   ScopeBuilder,
   ScopeResult,
+  Scope,
   ModuleExports as ScopeModuleExports,
   SymbolInfo,
   UnresolvedName
@@ -145,6 +146,14 @@ export class ProgramCheckResult {
   /** Source text at the time each module was checked, keyed by file path. */
   sources: HashMap<String, String>;
 
+  /**
+   * Export signatures at the time each module was checked, keyed by file path.
+   * Each value maps exported names (prefixed "v:" or "t:") to their type
+   * strings. Used for incremental invalidation: if a file's exports change,
+   * its dependents must be re-checked.
+   */
+  exportSignatures: HashMap<String, HashMap<String, String>>;
+
   /** Aggregated diagnostics from all modules. */
   diagnostics = new Array<Diagnostic>();
 
@@ -154,6 +163,7 @@ export class ProgramCheckResult {
   new(
     this.results: HashMap<String, CheckResult>,
     this.sources: HashMap<String, String>,
+    this.exportSignatures: HashMap<String, HashMap<String, String>>,
     this.entry: CheckResult
   ) {
     // Aggregate diagnostics from all modules.
@@ -430,20 +440,200 @@ export let checkSource = (source: String, path: String): CheckResult => {
 // ============================================================================
 
 /**
+ * Compute the export signature for a checked module.
+ *
+ * The signature maps each exported name (prefixed with "v:" for values
+ * or "t:" for types) to its resolved type string. Two modules have the
+ * same export signature if and only if they export the same names with
+ * the same types.
+ *
+ * Used for incremental invalidation: if a file is re-checked and its
+ * export signature is unchanged, its dependents don't need re-checking.
+ */
+let computeExportSignature = (
+  exports: ScopeModuleExports,
+  rootScope: Scope,
+  model: SemanticModel
+): HashMap<String, String> => {
+  let sig = new HashMap<String, String>();
+
+  // Collect value exports.
+  // NOTE: We resolve each name through the root scope to get the
+  // SymbolInfo the checker actually set the type on. The export
+  // catalog creates its own SymbolInfo objects (different IDs) so
+  // looking up via exports.valueEntries[name] would miss the type.
+  let valueEntries = exports.valueEntries;
+  let valueIter = valueEntries.keys();
+  while (let (true, name) = valueIter.next()) {
+    let scopeInfo = rootScope.getLocalValue(name);
+    let bt = if (scopeInfo != null) {
+      model.getBindingType(scopeInfo as SymbolInfo)
+    } else {
+      null
+    };
+    let typeStr = if (bt != null) { typeToString(bt as Type) } else { "?" };
+    sig.set("v:" + name, typeStr);
+  }
+
+  // Collect type exports.
+  let typeEntries = exports.typeEntries;
+  let typeIter = typeEntries.keys();
+  while (let (true, name) = typeIter.next()) {
+    let scopeInfo = rootScope.getLocalType(name);
+    let bt = if (scopeInfo != null) {
+      model.getBindingType(scopeInfo as SymbolInfo)
+    } else {
+      null
+    };
+    let typeStr = if (bt != null) { typeToString(bt as Type) } else { "?" };
+    sig.set("t:" + name, typeStr);
+  }
+
+  return sig;
+};
+
+/**
+ * Compare two export signatures for equality.
+ *
+ * Returns true if both maps have the same keys and values.
+ */
+let signaturesEqual = (
+  a: HashMap<String, String>,
+  b: HashMap<String, String>
+): boolean => {
+  if (a.size != b.size) { return false; }
+  let iter = a.keys();
+  while (let (true, key) = iter.next()) {
+    if (!b.has(key) || a[key] != b[key]) { return false; }
+  }
+  return true;
+};
+
+/**
+ * Build a reverse dependency map with imported-name tracking.
+ *
+ * For each file, records which files depend on it AND which names they
+ * import. This enables precise invalidation: when a dependency's export
+ * signature changes, a dependent is only invalidated if one of the names
+ * it actually imports was affected.
+ *
+ * Structure: depPath → HashMap<importerPath, Array<String>>
+ * where the Array<String> contains the imported names (prefixed "v:" or
+ * "t:" to match signature keys).
+ */
+let buildReverseDeps = (
+  files: Array<SourceFile>
+): HashMap<String, HashMap<String, Array<String>>> => {
+  let reverseDeps = new HashMap<String, HashMap<String, Array<String>>>();
+
+  for (let file in files) {
+    // Walk the AST to find import/re-export declarations and their names.
+    var j = 0;
+    while (j < file.ast.body.length) {
+      match (file.ast.body[j]) {
+        case ImportDeclaration {moduleSpecifier, imports}: {
+          let specifier = moduleSpecifier.value;
+          if (file.imports.has(specifier)) {
+            let depPath = file.imports[specifier];
+            if (!reverseDeps.has(depPath)) {
+              reverseDeps.set(depPath, new HashMap<String, Array<String>>());
+            }
+            let depMap = reverseDeps[depPath];
+            if (!depMap.has(file.path)) {
+              depMap.set(file.path, new Array<String>(4));
+            }
+            let names = depMap[file.path];
+            var k = 0;
+            while (k < imports.length) {
+              let importedName = imports[k].imported.name;
+              // Import names may be values or types; add both prefixes so
+              // we match whichever namespace the export lives in.
+              names.push("v:" + importedName);
+              names.push("t:" + importedName);
+              k += 1;
+            }
+          }
+        }
+        case ExportFromDeclaration {moduleSpecifier, specifiers}: {
+          let specifier = moduleSpecifier.value;
+          if (file.imports.has(specifier)) {
+            let depPath = file.imports[specifier];
+            if (!reverseDeps.has(depPath)) {
+              reverseDeps.set(depPath, new HashMap<String, Array<String>>());
+            }
+            let depMap = reverseDeps[depPath];
+            if (!depMap.has(file.path)) {
+              depMap.set(file.path, new Array<String>(4));
+            }
+            let names = depMap[file.path];
+            var m = 0;
+            while (m < specifiers.length) {
+              let importedName = specifiers[m].imported.name;
+              names.push("v:" + importedName);
+              names.push("t:" + importedName);
+              m += 1;
+            }
+          }
+        }
+        case _: {}
+      }
+      j += 1;
+    }
+  }
+
+  return reverseDeps;
+};
+
+/**
+ * Check a single file: build its depExports/depModels and run checkModule.
+ */
+let checkFile = (
+  file: SourceFile,
+  allResults: HashMap<String, CheckResult>,
+  allFiles: Array<SourceFile>
+): CheckResult => {
+  let depExports = new HashMap<String, ScopeModuleExports>();
+  let depModels = new HashMap<String, SemanticModel>();
+  let specIter = file.imports.keys();
+  while (let (true, specifier) = specIter.next()) {
+    let depPath = file.imports[specifier];
+    var li = 0;
+    while (li < allFiles.length) {
+      let dep = allFiles[li];
+      if (dep.path == depPath && dep.scopeResult != null) {
+        let sr = dep.scopeResult as ScopeResult;
+        depExports.set(specifier, sr.exports);
+        if (allResults.has(dep.path)) {
+          depModels.set(specifier, allResults[dep.path].model);
+        }
+      }
+      li = li + 1;
+    }
+  }
+  return checkModule(file.ast, file.scopeResult, depExports, depModels);
+};
+
+/**
  * Type-check all modules in a compilation result in dependency order.
  *
- * Iterates through all source files in topological order (dependencies
- * before dependents). For each file, builds a depExports map from the
- * dependency scope results, runs checkModule, and collects the results.
+ * Uses export signature comparison for precise incremental invalidation:
+ * when a file changes, only dependents that import names whose types
+ * actually changed are re-checked. Invalidation propagates through the
+ * dependency graph but stops as soon as a re-checked file's export
+ * signature is unchanged for the names that matter.
  *
- * When `previous` is provided, modules whose source text has not changed
- * reuse their previous CheckResult instead of re-checking. This is the
- * primary mechanism for incremental type-checking: on a single-file edit,
- * only the changed file (and any dependents with changed exports) are
- * re-checked; all other modules carry forward.
- *
- * Returns a ProgramCheckResult containing per-module CheckResults and
- * aggregated diagnostics.
+ * Algorithm:
+ * 1. Identify files whose source text changed (must be re-checked).
+ * 2. Re-check changed files in topo order. After each, compare the new
+ *    export signature to the previous one.
+ * 3. For each direct dependent, check whether any of the names it
+ *    actually imports were affected by the signature change. Only
+ *    invalidate if so.
+ * 4. For invalidated files: re-check even though their source is
+ *    unchanged, then repeat the per-name comparison for their own
+ *    dependents.
+ * 5. Files whose imports are all stable carry forward their previous
+ *    CheckResult.
  */
 export let checkCompilation = (
   result: CompilationResult,
@@ -451,75 +641,90 @@ export let checkCompilation = (
 ): ProgramCheckResult => {
   let allResults = new HashMap<String, CheckResult>();
   let allSources = new HashMap<String, String>();
+  let allSignatures = new HashMap<String, HashMap<String, String>>();
 
-  // Check each file in topo order. Dependencies are checked first so
-  // their scope exports are available when we build depExports for
-  // downstream modules. Skip stdlib files — they are scope-analyzed
-  // but not yet type-checked (the self-hosted checker doesn't support
-  // all stdlib features yet).
-  var fi = 0;
-  while (fi < result.files.length) {
-    let file = result.files[fi];
+  // Build reverse dependency map for invalidation propagation.
+  let reverseDeps = buildReverseDeps(result.files);
 
-    if (file.isStdlib) {
-      fi += 1;
-      continue;
+  // Set of file paths that must be (re-)checked. Start with files whose
+  // source text changed or that are new.
+  let mustCheck = new HashMap<String, boolean>();
+  if (previous != null) {
+    let prev = previous as ProgramCheckResult;
+    for (let file in result.files) {
+      if (file.isStdlib) { continue; }
+      if (!prev.sources.has(file.path) || prev.sources[file.path] != file.source) {
+        mustCheck.set(file.path, true);
+      }
     }
+  }
 
-    // Carry forward: if the source hasn't changed since the last check,
-    // reuse the previous CheckResult.
-    // TODO: Source comparison alone is not sufficient when multiple files
-    // change at once. A dependency's exports could change (e.g., a function
-    // signature) while this file's source stays the same, producing stale
-    // diagnostics. To handle this correctly, compare each dependency's
-    // export signature (the set of exported names and their Types) between
-    // the previous and current ScopeResults and invalidate downstream
-    // CheckResults when signatures differ.
-    if (previous != null) {
+  // Check each file in topo order.
+  for (let file in result.files) {
+    if (file.isStdlib) { continue; }
+
+    // Carry forward if source unchanged AND not invalidated by a dependency.
+    if (previous != null && !mustCheck.has(file.path)) {
       let prev = previous as ProgramCheckResult;
       if (prev.sources.has(file.path) && prev.results.has(file.path)) {
-        if (prev.sources[file.path] == file.source) {
-          allResults.set(file.path, prev.results[file.path]);
-          allSources.set(file.path, file.source);
-          fi += 1;
-          continue;
+        allResults.set(file.path, prev.results[file.path]);
+        allSources.set(file.path, file.source);
+        if (prev.exportSignatures.has(file.path)) {
+          allSignatures.set(file.path, prev.exportSignatures[file.path]);
         }
+        continue;
       }
     }
 
-    // Build depExports for this file from its import specifiers.
-    let depExports = new HashMap<String, ScopeModuleExports>();
-    let depModels = new HashMap<String, SemanticModel>();
-    let specIter = file.imports.keys();
-    while (let (true, specifier) = specIter.next()) {
-      let depPath = file.imports[specifier];
-      // Find the dependency in the topo-sorted files list.
-      var li = 0;
-      while (li < result.files.length) {
-        let dep = result.files[li];
-        if (dep.path == depPath && dep.scopeResult != null) {
-          let sr = dep.scopeResult as ScopeResult;
-          depExports.set(specifier, sr.exports);
-          // If we already checked this dependency, carry its SemanticModel
-          // so the downstream checker can resolve actual types.
-          if (allResults.has(dep.path)) {
-            depModels.set(specifier, allResults[dep.path].model);
-          }
-        }
-        li = li + 1;
-      }
-    }
-
-    let checkResult = checkModule(file.ast, file.scopeResult, depExports, depModels);
+    // (Re-)check this file.
+    let checkResult = checkFile(file, allResults, result.files);
     allResults.set(file.path, checkResult);
     allSources.set(file.path, file.source);
 
-    fi += 1;
+    // Compute export signature and compare with previous.
+    if (file.scopeResult != null) {
+      let sr = file.scopeResult as ScopeResult;
+      let newSig = computeExportSignature(sr.exports, sr.rootScope, checkResult.model);
+      allSignatures.set(file.path, newSig);
+
+      // If the signature changed, invalidate dependents that import
+      // affected names. A dependent is only invalidated if at least one
+      // of the names it imports from this file actually changed type.
+      if (previous != null && reverseDeps.has(file.path)) {
+        let prev = previous as ProgramCheckResult;
+        let oldSig = if (prev.exportSignatures.has(file.path)) {
+          prev.exportSignatures[file.path]
+        } else {
+          new HashMap<String, String>()  // new file — all names are "changed"
+        };
+
+        let importerMap = reverseDeps[file.path];
+        let importerIter = importerMap.keys();
+        while (let (true, importerPath) = importerIter.next()) {
+          let importedNames = importerMap[importerPath];
+          // Check if any of the names this importer uses actually changed.
+          var affected = false;
+          var ni = 0;
+          while (ni < importedNames.length) {
+            let sigKey = importedNames[ni];
+            let oldVal = if (oldSig.has(sigKey)) { oldSig[sigKey] } else { "" };
+            let newVal = if (newSig.has(sigKey)) { newSig[sigKey] } else { "" };
+            if (oldVal != newVal) {
+              affected = true;
+            }
+            ni += 1;
+          }
+          if (affected) {
+            mustCheck.set(importerPath, true);
+          }
+        }
+      }
+    }
   }
 
   // The entry module's result is always the last in topo order.
   let entryResult = allResults[result.entry.path];
-  return new ProgramCheckResult(allResults, allSources, entryResult);
+  return new ProgramCheckResult(allResults, allSources, allSignatures, entryResult);
 };
 
 // ============================================================================

@@ -1,0 +1,232 @@
+/**
+ * Incremental type-checking tests: export signature comparison.
+ *
+ * Validates that checkCompilation uses export signatures to decide
+ * which modules need re-checking. When a dependency's exports change,
+ * dependents are invalidated. When exports are stable (e.g., only a
+ * function body changes), dependents are carried forward.
+ *
+ * Because the loader only version-gates the entry point, dependency
+ * changes require a fresh compiler (simulating the language service
+ * creating a new compilation after detecting external file changes).
+ * The checkCompilation function compares source texts from the previous
+ * ProgramCheckResult, so it correctly detects which files changed.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { checkCompilation } from '../lib/compiler.zena';
+import { MockHost, makeCompiler, errorDiagnostics } from './test-utils.zena';
+
+export let tests = suite('Incremental Type Checking', () => {
+
+  suite('body-only changes skip dependents', () => {
+
+    test('changing function body does not invalidate dependent', () => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "export let add = (a: i32, b: i32): i32 => a + b;");
+      host.addFile("/project/main.zena", "import { add } from './lib.zena';\nlet r: i32 = add(1, 2);");
+
+      // First compilation + check.
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+
+      // Change lib's body only (return type stays i32).
+      host.addFile("/project/lib.zena", "export let add = (a: i32, b: i32): i32 => a + b + 0;");
+
+      // Fresh compiler picks up changed source.
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+
+      // main.zena's CheckResult should be carried forward (same model).
+      equal(mainResult1.model, mainResult2.model);
+    });
+
+    test('changing class method body does not invalidate dependent', () => {
+      let host = new MockHost();
+      host.addFile("/project/counter.zena",
+        "export class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 1; }\n}");
+      host.addFile("/project/main.zena",
+        "import { Counter } from './counter.zena';\nlet c = new Counter();\nc.increment();");
+
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+
+      // Change method body only.
+      host.addFile("/project/counter.zena",
+        "export class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 2; }\n}");
+
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+
+      equal(mainResult1.model, mainResult2.model);
+    });
+  });
+
+  suite('signature changes invalidate dependents', () => {
+
+    test('changing export return type invalidates dependent', () => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "export let num = (): i32 => 42;");
+      host.addFile("/project/main.zena", "import { num } from './lib.zena';\nlet r = num();");
+
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+
+      // Change return type from i32 to f64.
+      host.addFile("/project/lib.zena", "export let num = (): f64 => 42.0;");
+
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+
+      // main.zena should be re-checked (different model object).
+      isTrue(mainResult1.model != mainResult2.model);
+    });
+
+    test('adding an unused export does NOT invalidate dependent', () => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "export let a = 1;");
+      host.addFile("/project/main.zena", "import { a } from './lib.zena';\nlet x = a;");
+
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+
+      // Add a new export that main.zena doesn't import.
+      host.addFile("/project/lib.zena", "export let a = 1;\nexport let b = 2;");
+
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+
+      // main.zena should be carried forward — it doesn't import 'b'.
+      equal(mainResult1.model, mainResult2.model);
+    });
+
+    test('changing type of an imported name invalidates dependent', () => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "export let a = 1;\nexport let b = 2;");
+      host.addFile("/project/main.zena", "import { a } from './lib.zena';\nlet x = a;");
+
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+
+      // Change 'a' (which main imports) but not 'b'.
+      host.addFile("/project/lib.zena", "export let a = 1.0;\nexport let b = 2;");
+
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+
+      // main.zena should be re-checked — 'a' changed type.
+      isTrue(mainResult1.model != mainResult2.model);
+    });
+
+    test('changing type of an unimported name does NOT invalidate dependent', () => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "export let a = 1;\nexport let b = 2;");
+      host.addFile("/project/main.zena", "import { a } from './lib.zena';\nlet x = a;");
+
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+
+      // Change 'b' (which main does NOT import) but not 'a'.
+      host.addFile("/project/lib.zena", "export let a = 1;\nexport let b = 2.0;");
+
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+
+      // main.zena should be carried forward — 'b' is not imported.
+      equal(mainResult1.model, mainResult2.model);
+    });
+  });
+
+  suite('transitive invalidation', () => {
+
+    test('signature change propagates through dependency chain', () => {
+      let host = new MockHost();
+      host.addFile("/project/a.zena", "export let val = (): i32 => 1;");
+      host.addFile("/project/b.zena", "import { val } from './a.zena';\nexport let bval = val;");
+      host.addFile("/project/main.zena", "import { bval } from './b.zena';\nlet x = bval;");
+
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+
+      // Change a.zena's return type — should propagate through b.zena to main.zena.
+      host.addFile("/project/a.zena", "export let val = (): f64 => 1.0;");
+
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+
+      isTrue(mainResult1.model != mainResult2.model);
+    });
+
+    test('body change does NOT propagate through dependency chain', () => {
+      let host = new MockHost();
+      host.addFile("/project/a.zena", "export let val = (): i32 => 1;");
+      host.addFile("/project/b.zena", "import { val } from './a.zena';\nexport let bval = val;");
+      host.addFile("/project/main.zena", "import { bval } from './b.zena';\nlet x = bval;");
+
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+      let bResult1 = check1.results["/project/b.zena"];
+
+      // Change a.zena's body only — type stays i32.
+      host.addFile("/project/a.zena", "export let val = (): i32 => 2;");
+
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+      let bResult2 = check2.results["/project/b.zena"];
+
+      // b.zena and main.zena should both be carried forward.
+      equal(bResult1.model, bResult2.model);
+      equal(mainResult1.model, mainResult2.model);
+    });
+  });
+
+  suite('no previous results', () => {
+
+    test('first check works without previous', () => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "export let x = 42;");
+      host.addFile("/project/main.zena", "import { x } from './lib.zena';\nlet y = x;");
+
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+      let check = checkCompilation(result);
+
+      isTrue(check.results.has("/project/lib.zena"));
+      isTrue(check.results.has("/project/main.zena"));
+      equal(errorDiagnostics(check.diagnostics).length, 0);
+    });
+  });
+});
