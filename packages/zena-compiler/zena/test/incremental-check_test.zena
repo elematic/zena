@@ -160,6 +160,56 @@ export let tests = suite('Incremental Type Checking', () => {
       // main.zena should be carried forward — 'b' is not imported.
       equal(mainResult1.model, mainResult2.model);
     });
+
+    test('changing class field type invalidates dependent', () => {
+      let host = new MockHost();
+      host.addFile("/project/point.zena",
+        "export class Point {\n  x: i32;\n  y: i32;\n  new(this.x, this.y);\n}");
+      host.addFile("/project/main.zena",
+        "import { Point } from './point.zena';\nlet p = new Point(1, 2);");
+
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+
+      // Change field type from i32 to f64.
+      host.addFile("/project/point.zena",
+        "export class Point {\n  x: f64;\n  y: f64;\n  new(this.x, this.y);\n}");
+
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+
+      // main.zena should be re-checked — Point's fields changed type.
+      isTrue(mainResult1.model != mainResult2.model);
+    });
+
+    test('adding a class method invalidates dependent', () => {
+      let host = new MockHost();
+      host.addFile("/project/counter.zena",
+        "export class Counter {\n  var count: i32 = 0;\n}");
+      host.addFile("/project/main.zena",
+        "import { Counter } from './counter.zena';\nlet c = new Counter();");
+
+      let compiler1 = makeCompiler(host);
+      let result1 = compiler1.compile("/project/main.zena");
+      let check1 = checkCompilation(result1);
+      let mainResult1 = check1.results["/project/main.zena"];
+
+      // Add a method.
+      host.addFile("/project/counter.zena",
+        "export class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 1; }\n}");
+
+      let compiler2 = makeCompiler(host);
+      let result2 = compiler2.compile("/project/main.zena");
+      let check2 = checkCompilation(result2, check1);
+      let mainResult2 = check2.results["/project/main.zena"];
+
+      // main.zena should be re-checked — Counter gained a method.
+      isTrue(mainResult1.model != mainResult2.model);
+    });
   });
 
   suite('transitive invalidation', () => {

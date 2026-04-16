@@ -52,7 +52,14 @@ import { walk } from './visitor.zena';
 import { Diagnostic, SourceSpan } from './diagnostics.zena';
 import { SemanticModel } from './semantic-model.zena';
 import {
-  Type, ClassType, typeToString
+  Type, ClassType, FunctionType, InterfaceType, MixinType,
+  RecordType, TypeParameterType, TypeAliasType, SymbolType,
+  ArrayType, TupleType, InlineTupleType, UnionType,
+  BoolLiteralType, StringLiteralType,
+  I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
+  BooleanType, VoidType, NullType, NeverType, UnknownType, AnyType,
+  AnyRefType, EqRefType, ByteArrayType, ThisType,
+  typeToString
 } from './types.zena';
 
 /** Re-export types used by consumers. */
@@ -148,11 +155,11 @@ export class ProgramCheckResult {
 
   /**
    * Export signatures at the time each module was checked, keyed by file path.
-   * Each value maps exported names (prefixed "v:" or "t:") to their type
-   * strings. Used for incremental invalidation: if a file's exports change,
-   * its dependents must be re-checked.
+   * Each value maps exported names (prefixed "v:" or "t:") to their resolved
+   * Type objects. Used for incremental invalidation: if a file's exports
+   * change, its dependents must be re-checked.
    */
-  exportSignatures: HashMap<String, HashMap<String, String>>;
+  exportSignatures: HashMap<String, HashMap<String, Type>>;
 
   /** Aggregated diagnostics from all modules. */
   diagnostics = new Array<Diagnostic>();
@@ -163,7 +170,7 @@ export class ProgramCheckResult {
   new(
     this.results: HashMap<String, CheckResult>,
     this.sources: HashMap<String, String>,
-    this.exportSignatures: HashMap<String, HashMap<String, String>>,
+    this.exportSignatures: HashMap<String, HashMap<String, Type>>,
     this.entry: CheckResult
   ) {
     // Aggregate diagnostics from all modules.
@@ -443,9 +450,9 @@ export let checkSource = (source: String, path: String): CheckResult => {
  * Compute the export signature for a checked module.
  *
  * The signature maps each exported name (prefixed with "v:" for values
- * or "t:" for types) to its resolved type string. Two modules have the
+ * or "t:" for types) to its resolved Type object. Two modules have the
  * same export signature if and only if they export the same names with
- * the same types.
+ * the same types (compared via signatureTypeEquals).
  *
  * Used for incremental invalidation: if a file is re-checked and its
  * export signature is unchanged, its dependents don't need re-checking.
@@ -454,8 +461,8 @@ let computeExportSignature = (
   exports: ScopeModuleExports,
   rootScope: Scope,
   model: SemanticModel
-): HashMap<String, String> => {
-  let sig = new HashMap<String, String>();
+): HashMap<String, Type> => {
+  let sig = new HashMap<String, Type>();
 
   // Collect value exports.
   // NOTE: We resolve each name through the root scope to get the
@@ -471,8 +478,9 @@ let computeExportSignature = (
     } else {
       null
     };
-    let typeStr = if (bt != null) { typeToString(bt as Type) } else { "?" };
-    sig.set("v:" + name, typeStr);
+    if (bt != null) {
+      sig.set("v:" + name, bt as Type);
+    }
   }
 
   // Collect type exports.
@@ -485,27 +493,428 @@ let computeExportSignature = (
     } else {
       null
     };
-    let typeStr = if (bt != null) { typeToString(bt as Type) } else { "?" };
-    sig.set("t:" + name, typeStr);
+    if (bt != null) {
+      sig.set("t:" + name, bt as Type);
+    }
   }
 
   return sig;
 };
 
 /**
- * Compare two export signatures for equality.
+ * Deep structural comparison of two types for export signature purposes.
  *
- * Returns true if both maps have the same keys and values.
+ * Uses === (referential equality) as a fast path: if a type object is
+ * carried forward from a previous check, it's the *same* ref and we
+ * return true immediately. For re-checked files that produce fresh type
+ * objects, falls back to deep structural comparison.
+ *
+ * Unlike `typesEqual` in the checker (which compares ClassType by id),
+ * this compares ClassType by (name, sourcePath) and then recursively
+ * checks all members, flags, supertypes, etc. This correctly detects
+ * changes to class shape across re-checks where fresh ids are assigned.
+ *
+ * A visited set (keyed on "name:sourcePath" for classes/interfaces/mixins)
+ * breaks cycles in recursive types like `class Node { next: Node | null }`.
+ * Optimistic assumption: if already visiting a pair, return true.
  */
-let signaturesEqual = (
-  a: HashMap<String, String>,
-  b: HashMap<String, String>
+let signatureTypeEquals = (a: Type, b: Type): boolean => {
+  let visited = new HashMap<String, boolean>();
+  return signatureTypeEqualsRec(a, b, visited);
+};
+
+let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashMap<String, boolean>): boolean => {
+  // Fast path: referential identity (singletons, carried-forward objects).
+  if (a === b) { return true; }
+
+  match (a) {
+    case I32Type: b is I32Type
+    case U32Type: b is U32Type
+    case I64Type: b is I64Type
+    case U64Type: b is U64Type
+    case F32Type: b is F32Type
+    case F64Type: b is F64Type
+    case BooleanType: b is BooleanType
+    case VoidType: b is VoidType
+    case NullType: b is NullType
+    case NeverType: b is NeverType
+    case UnknownType: b is UnknownType
+    case AnyType: b is AnyType
+    case AnyRefType: b is AnyRefType
+    case EqRefType: b is EqRefType
+    case ByteArrayType: b is ByteArrayType
+    case ThisType: b is ThisType
+
+    case BoolLiteralType {value as va}: {
+      match (b) {
+        case BoolLiteralType {value as vb}: va == vb
+        case _: false
+      }
+    }
+    case StringLiteralType {value as va}: {
+      match (b) {
+        case StringLiteralType {value as vb}: va == vb
+        case _: false
+      }
+    }
+
+    case ArrayType {elementType as ea}: {
+      match (b) {
+        case ArrayType {elementType as eb}: signatureTypeEqualsRec(ea, eb, visited)
+        case _: false
+      }
+    }
+    case TupleType {elementTypes as ta}: {
+      match (b) {
+        case TupleType {elementTypes as tb}: arrayTypesEqual(ta, tb, visited)
+        case _: false
+      }
+    }
+    case InlineTupleType {elementTypes as ta}: {
+      match (b) {
+        case InlineTupleType {elementTypes as tb}: arrayTypesEqual(ta, tb, visited)
+        case _: false
+      }
+    }
+    case UnionType {types as ua}: {
+      match (b) {
+        case UnionType {types as ub}: arrayTypesEqual(ua, ub, visited)
+        case _: false
+      }
+    }
+
+    case RecordType as ra: {
+      match (b) {
+        case RecordType as rb: {
+          if (ra.properties.size != rb.properties.size) { return false; }
+          let keys = ra.properties.keys();
+          while (let (true, key) = keys.next()) {
+            if (!rb.properties.has(key)) { return false; }
+            if (!signatureTypeEqualsRec(ra.properties[key], rb.properties[key], visited)) {
+              return false;
+            }
+          }
+          // Compare optional properties.
+          if (ra.optionalProperties == null && rb.optionalProperties == null) { return true; }
+          if (ra.optionalProperties == null || rb.optionalProperties == null) { return false; }
+          let optA = ra.optionalProperties as HashMap<String, boolean>;
+          let optB = rb.optionalProperties as HashMap<String, boolean>;
+          if (optA.size != optB.size) { return false; }
+          let optKeys = optA.keys();
+          while (let (true, ok) = optKeys.next()) {
+            if (!optB.has(ok) || optA[ok] != optB[ok]) { return false; }
+          }
+          true
+        }
+        case _: false
+      }
+    }
+
+    case FunctionType as fa: {
+      match (b) {
+        case FunctionType as fb: functionTypeEquals(fa, fb, visited)
+        case _: false
+      }
+    }
+
+    case ClassType as ca: {
+      match (b) {
+        case ClassType as cb: classTypeEquals(ca, cb, visited)
+        case _: false
+      }
+    }
+
+    case InterfaceType as ia: {
+      match (b) {
+        case InterfaceType as ib: interfaceTypeEquals(ia, ib, visited)
+        case _: false
+      }
+    }
+
+    case MixinType as ma: {
+      match (b) {
+        case MixinType as mb: mixinTypeEquals(ma, mb, visited)
+        case _: false
+      }
+    }
+
+    case TypeParameterType as tpa: {
+      match (b) {
+        case TypeParameterType as tpb: {
+          if (tpa.name != tpb.name) { return false; }
+          if (tpa.constraint == null && tpb.constraint == null) { return true; }
+          if (tpa.constraint == null || tpb.constraint == null) { return false; }
+          signatureTypeEqualsRec(tpa.constraint as Type, tpb.constraint as Type, visited)
+        }
+        case _: false
+      }
+    }
+
+    case TypeAliasType as taa: {
+      match (b) {
+        case TypeAliasType as tab: {
+          taa.name == tab.name
+            && taa.isDistinct == tab.isDistinct
+            && signatureTypeEqualsRec(taa.target, tab.target, visited)
+        }
+        case _: false
+      }
+    }
+
+    case SymbolType as sa: {
+      match (b) {
+        case SymbolType as sb: sa.id == sb.id
+        case _: false
+      }
+    }
+  }
+};
+
+/** Compare two arrays of types elementwise. */
+let arrayTypesEqual = (
+  a: Array<Type>, b: Array<Type>, visited: HashMap<String, boolean>
+): boolean => {
+  if (a.length != b.length) { return false; }
+  var i = 0;
+  while (i < a.length) {
+    if (!signatureTypeEqualsRec(a[i], b[i], visited)) { return false; }
+    i += 1;
+  }
+  return true;
+};
+
+/** Compare optional type-parameter arrays. */
+let typeParamsEqual = (
+  a: Array<TypeParameterType> | null,
+  b: Array<TypeParameterType> | null,
+  visited: HashMap<String, boolean>
+): boolean => {
+  if (a == null && b == null) { return true; }
+  if (a == null || b == null) { return false; }
+  let aa = a as Array<TypeParameterType>;
+  let bb = b as Array<TypeParameterType>;
+  if (aa.length != bb.length) { return false; }
+  var i = 0;
+  while (i < aa.length) {
+    if (!signatureTypeEqualsRec(aa[i], bb[i], visited)) { return false; }
+    i += 1;
+  }
+  return true;
+};
+
+/** Compare optional type-argument arrays. */
+let typeArgsEqual = (
+  a: Array<Type> | null,
+  b: Array<Type> | null,
+  visited: HashMap<String, boolean>
+): boolean => {
+  if (a == null && b == null) { return true; }
+  if (a == null || b == null) { return false; }
+  return arrayTypesEqual(a as Array<Type>, b as Array<Type>, visited);
+};
+
+/** Compare two HashMaps of name → Type. */
+let typeMapEquals = (
+  a: HashMap<String, Type>, b: HashMap<String, Type>, visited: HashMap<String, boolean>
+): boolean => {
+  if (a.size != b.size) { return false; }
+  let iter = a.keys();
+  while (let (true, key) = iter.next()) {
+    if (!b.has(key)) { return false; }
+    if (!signatureTypeEqualsRec(a[key], b[key], visited)) { return false; }
+  }
+  return true;
+};
+
+/** Compare two HashMaps of name → FunctionType. */
+let methodMapEquals = (
+  a: HashMap<String, FunctionType>, b: HashMap<String, FunctionType>, visited: HashMap<String, boolean>
+): boolean => {
+  if (a.size != b.size) { return false; }
+  let iter = a.keys();
+  while (let (true, key) = iter.next()) {
+    if (!b.has(key)) { return false; }
+    if (!functionTypeEquals(a[key], b[key], visited)) { return false; }
+  }
+  return true;
+};
+
+/** Compare two HashMaps of name → boolean. */
+let boolMapEquals = (
+  a: HashMap<String, boolean>, b: HashMap<String, boolean>
 ): boolean => {
   if (a.size != b.size) { return false; }
   let iter = a.keys();
   while (let (true, key) = iter.next()) {
     if (!b.has(key) || a[key] != b[key]) { return false; }
   }
+  return true;
+};
+
+/** Compare nullable HashMap<String, boolean>. */
+let nullableBoolMapEquals = (
+  a: HashMap<String, boolean> | null, b: HashMap<String, boolean> | null
+): boolean => {
+  if (a == null && b == null) { return true; }
+  if (a == null || b == null) { return false; }
+  return boolMapEquals(a as HashMap<String, boolean>, b as HashMap<String, boolean>);
+};
+
+/** Deep comparison of FunctionType for signature purposes. */
+let functionTypeEquals = (
+  fa: FunctionType, fb: FunctionType, visited: HashMap<String, boolean>
+): boolean => {
+  if (fa === fb) { return true; }
+  if (fa.parameters.length != fb.parameters.length) { return false; }
+  if (!signatureTypeEqualsRec(fa.returnType, fb.returnType, visited)) { return false; }
+  var i = 0;
+  while (i < fa.parameters.length) {
+    if (!signatureTypeEqualsRec(fa.parameters[i], fb.parameters[i], visited)) { return false; }
+    i += 1;
+  }
+  if (fa.isFinal != fb.isFinal) { return false; }
+  if (fa.isAbstract != fb.isAbstract) { return false; }
+  if (!typeParamsEqual(fa.typeParameters, fb.typeParameters, visited)) { return false; }
+  if (!typeArgsEqual(fa.typeArguments, fb.typeArguments, visited)) { return false; }
+  // Compare optional parameters.
+  if (fa.optionalParameters == null && fb.optionalParameters == null) { return true; }
+  if (fa.optionalParameters == null || fb.optionalParameters == null) { return false; }
+  let optA = fa.optionalParameters as Array<boolean>;
+  let optB = fb.optionalParameters as Array<boolean>;
+  if (optA.length != optB.length) { return false; }
+  var oi = 0;
+  while (oi < optA.length) {
+    if (optA[oi] != optB[oi]) { return false; }
+    oi += 1;
+  }
+  return true;
+};
+
+/** Deep comparison of ClassType for signature purposes. */
+let classTypeEquals = (
+  ca: ClassType, cb: ClassType, visited: HashMap<String, boolean>
+): boolean => {
+  if (ca === cb) { return true; }
+  if (ca.name != cb.name) { return false; }
+  if (ca.sourcePath != cb.sourcePath) { return false; }
+
+  // Cycle guard: if we're already comparing this class pair, assume equal.
+  let visitKey = "c:" + ca.name + ":" + ca.sourcePath;
+  if (visited.has(visitKey)) { return true; }
+  visited.set(visitKey, true);
+
+  // Boolean flags.
+  if (ca.isFinal != cb.isFinal) { return false; }
+  if (ca.isCaseClass != cb.isCaseClass) { return false; }
+  if (ca.isAbstract != cb.isAbstract) { return false; }
+  if (ca.isExtension != cb.isExtension) { return false; }
+  if (ca.isSealed != cb.isSealed) { return false; }
+  if (ca.isMixinIntermediate != cb.isMixinIntermediate) { return false; }
+
+  // Type parameters and arguments.
+  if (!typeParamsEqual(ca.typeParameters, cb.typeParameters, visited)) { return false; }
+  if (!typeArgsEqual(ca.typeArguments, cb.typeArguments, visited)) { return false; }
+
+  // Supertype.
+  if (ca.superType == null && cb.superType != null) { return false; }
+  if (ca.superType != null && cb.superType == null) { return false; }
+  if (ca.superType != null && cb.superType != null) {
+    if (!classTypeEquals(ca.superType as ClassType, cb.superType as ClassType, visited)) {
+      return false;
+    }
+  }
+
+  // Fields, methods, statics.
+  if (!typeMapEquals(ca.fields, cb.fields, visited)) { return false; }
+  if (!boolMapEquals(ca.fieldMutability, cb.fieldMutability)) { return false; }
+  if (!methodMapEquals(ca.methods, cb.methods, visited)) { return false; }
+  if (!typeMapEquals(ca.statics, cb.statics, visited)) { return false; }
+
+  // Constructor.
+  if (ca.constructorType == null && cb.constructorType != null) { return false; }
+  if (ca.constructorType != null && cb.constructorType == null) { return false; }
+  if (ca.constructorType != null && cb.constructorType != null) {
+    if (!functionTypeEquals(
+      ca.constructorType as FunctionType,
+      cb.constructorType as FunctionType,
+      visited
+    )) { return false; }
+  }
+
+  // Sealed variants.
+  if (ca.sealedVariants == null && cb.sealedVariants == null) { return true; }
+  if (ca.sealedVariants == null || cb.sealedVariants == null) { return false; }
+  let sva = ca.sealedVariants as Array<ClassType>;
+  let svb = cb.sealedVariants as Array<ClassType>;
+  if (sva.length != svb.length) { return false; }
+  var svi = 0;
+  while (svi < sva.length) {
+    if (!classTypeEquals(sva[svi], svb[svi], visited)) { return false; }
+    svi += 1;
+  }
+
+  // Optional boolean maps.
+  if (!nullableBoolMapEquals(ca.declaredFields, cb.declaredFields)) { return false; }
+  if (!nullableBoolMapEquals(ca.fieldsWithInitializers, cb.fieldsWithInitializers)) { return false; }
+  if (!nullableBoolMapEquals(ca.abstractFields, cb.abstractFields)) { return false; }
+  if (!nullableBoolMapEquals(ca.forwardVariantNames, cb.forwardVariantNames)) { return false; }
+
+  return true;
+};
+
+/** Deep comparison of InterfaceType for signature purposes. */
+let interfaceTypeEquals = (
+  ia: InterfaceType, ib: InterfaceType, visited: HashMap<String, boolean>
+): boolean => {
+  if (ia === ib) { return true; }
+  if (ia.name != ib.name) { return false; }
+
+  let visitKey = "i:" + ia.name;
+  if (visited.has(visitKey)) { return true; }
+  visited.set(visitKey, true);
+
+  if (!typeParamsEqual(ia.typeParameters, ib.typeParameters, visited)) { return false; }
+  if (!typeArgsEqual(ia.typeArguments, ib.typeArguments, visited)) { return false; }
+  if (!typeMapEquals(ia.fields, ib.fields, visited)) { return false; }
+  if (!methodMapEquals(ia.methods, ib.methods, visited)) { return false; }
+
+  // extendsList
+  if (ia.extendsList.length != ib.extendsList.length) { return false; }
+  var ei = 0;
+  while (ei < ia.extendsList.length) {
+    if (!interfaceTypeEquals(ia.extendsList[ei], ib.extendsList[ei], visited)) { return false; }
+    ei += 1;
+  }
+
+  return true;
+};
+
+/** Deep comparison of MixinType for signature purposes. */
+let mixinTypeEquals = (
+  ma: MixinType, mb: MixinType, visited: HashMap<String, boolean>
+): boolean => {
+  if (ma === mb) { return true; }
+  if (ma.name != mb.name) { return false; }
+
+  let visitKey = "m:" + ma.name;
+  if (visited.has(visitKey)) { return true; }
+  visited.set(visitKey, true);
+
+  if (!typeParamsEqual(ma.typeParameters, mb.typeParameters, visited)) { return false; }
+  if (!typeArgsEqual(ma.typeArguments, mb.typeArguments, visited)) { return false; }
+  if (!typeMapEquals(ma.fields, mb.fields, visited)) { return false; }
+  if (!boolMapEquals(ma.fieldMutability, mb.fieldMutability)) { return false; }
+  if (!methodMapEquals(ma.methods, mb.methods, visited)) { return false; }
+
+  // onType
+  if (ma.onType == null && mb.onType != null) { return false; }
+  if (ma.onType != null && mb.onType == null) { return false; }
+  if (ma.onType != null && mb.onType != null) {
+    if (!classTypeEquals(ma.onType as ClassType, mb.onType as ClassType, visited)) {
+      return false;
+    }
+  }
+
   return true;
 };
 
@@ -641,7 +1050,7 @@ export let checkCompilation = (
 ): ProgramCheckResult => {
   let allResults = new HashMap<String, CheckResult>();
   let allSources = new HashMap<String, String>();
-  let allSignatures = new HashMap<String, HashMap<String, String>>();
+  let allSignatures = new HashMap<String, HashMap<String, Type>>();
 
   // Build reverse dependency map for invalidation propagation.
   let reverseDeps = buildReverseDeps(result.files);
@@ -695,7 +1104,7 @@ export let checkCompilation = (
         let oldSig = if (prev.exportSignatures.has(file.path)) {
           prev.exportSignatures[file.path]
         } else {
-          new HashMap<String, String>()  // new file — all names are "changed"
+          new HashMap<String, Type>()  // new file — all names are "changed"
         };
 
         let importerMap = reverseDeps[file.path];
@@ -707,10 +1116,15 @@ export let checkCompilation = (
           var ni = 0;
           while (ni < importedNames.length) {
             let sigKey = importedNames[ni];
-            let oldVal = if (oldSig.has(sigKey)) { oldSig[sigKey] } else { "" };
-            let newVal = if (newSig.has(sigKey)) { newSig[sigKey] } else { "" };
-            if (oldVal != newVal) {
+            let hasOld = oldSig.has(sigKey);
+            let hasNew = newSig.has(sigKey);
+            if (hasOld != hasNew) {
+              // Name added or removed.
               affected = true;
+            } else if (hasOld && hasNew) {
+              if (!signatureTypeEquals(oldSig[sigKey], newSig[sigKey])) {
+                affected = true;
+              }
             }
             ni += 1;
           }
