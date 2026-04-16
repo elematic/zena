@@ -227,12 +227,9 @@ export class Compiler {
     // Load prelude modules first (if configured).
     if (this.#options.prelude != null) {
       let prelude = this.#options.prelude as Array<String>;
-      var i = 0;
-      while (i < prelude.length) {
-        let specifier = prelude[i];
+      for (let specifier in prelude) {
         let resolved = this.#resolver.resolve(specifier, "");
         this.#loader.load(resolved.path);
-        i += 1;
       }
     }
 
@@ -270,11 +267,21 @@ export class Compiler {
    *
    * Because files are in dependency order, when we process file F,
    * all of F's dependencies already have their scopeResult populated.
+   *
+   * Optimisation: if a SourceFile was reused from the loader cache and
+   * already has a scopeResult from a previous compilation, skip it.
+   * Scope analysis is file-local (depends only on source text) and the
+   * import wiring is stable when all dependencies are also unchanged.
    */
   #resolveScopes(files: Array<SourceFile>): void {
-    var i = 0;
-    while (i < files.length) {
-      let lib = files[i];
+    for (let lib in files) {
+
+      // Skip files that already have a scope result from a previous
+      // compilation — the file was reused from the loader cache, so
+      // its source (and therefore its scope tree) hasn't changed.
+      if (lib.scopeResult != null) {
+        continue;
+      }
 
       // Phase 1: Build file-local scopes.
       let builder = new ScopeBuilder(lib.path);
@@ -283,8 +290,6 @@ export class Compiler {
 
       // Phase 2: Wire up cross-module imports.
       this.#wireImports(lib, result);
-
-      i += 1;
     }
   }
 

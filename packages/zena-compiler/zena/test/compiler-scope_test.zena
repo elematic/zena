@@ -1,7 +1,9 @@
-// Integration tests: Compiler + Scope Analysis
-//
-// Tests that the Compiler correctly runs scope analysis on loaded source files
-// and wires up cross-module imports.
+/**
+ * Integration tests: Compiler + Scope Analysis
+ *
+ * Tests that the Compiler correctly runs scope analysis on loaded source files
+ * and wires up cross-module imports.
+ */
 
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
@@ -16,24 +18,18 @@ import {
   ImportSpecifier
 } from '../lib/ast.zena';
 
-// ============================================================================
-// Test CompilerHost — serves files from a HashMap
-// ============================================================================
-
+/**
+ * A mock CompilerHost that serves file contents from an in-memory HashMap.
+ */
 class MockHost implements CompilerHost {
-  #files: HashMap<String, String>;
+  #files = new HashMap<String, String>();
 
-  new() : #files = new HashMap<String, String>();
-
-  addFile(path: String, content: String): void {
+  addFile(path: String, content: String) {
     this.#files.set(path, content);
   }
 
   readFile(path: String): String {
-    if (this.#files.has(path)) {
-      return this.#files[path];
-    }
-    return "";
+    return this.#files.getOr(path, "");
   }
 }
 
@@ -59,15 +55,15 @@ let makeCompiler = (host: MockHost): Compiler => {
 // Tests
 // ============================================================================
 
-export let tests = suite('Compiler Scope Integration', (): void => {
+export let tests = suite('Compiler Scope Integration', () => {
 
   // ==========================================================================
   // Basic scope analysis after compile
   // ==========================================================================
 
-  suite('scope analysis runs on compile', (): void => {
+  suite('scope analysis runs on compile', () => {
 
-    test('single file gets scope result', (ctx: TestContext): void => {
+    test('single file gets scope result', (ctx) => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "let x = 1;");
       let compiler = makeCompiler(host);
@@ -79,7 +75,7 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       isTrue(scope.rootScope.resolveValue("x") != null);
     });
 
-    test('all libraries in graph get scope results', (ctx: TestContext): void => {
+    test('all libraries in graph get scope results', (ctx) => {
       let host = new MockHost();
       host.addFile("/project/math.zena", "export let add = (a: i32, b: i32): i32 => a + b;");
       host.addFile("/project/main.zena", "import { add } from './math.zena'; let result = add(1, 2);");
@@ -94,7 +90,7 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       }
     });
 
-    test('exported values visible in dependency exports', (ctx: TestContext): void => {
+    test('exported values visible in dependency exports', (ctx) => {
       let host = new MockHost();
       host.addFile("/project/util.zena", "export let helper = 42;");
       host.addFile("/project/main.zena", "import { helper } from './util.zena'; let x = helper;");
@@ -114,9 +110,9 @@ export let tests = suite('Compiler Scope Integration', (): void => {
   // Cross-module import validation
   // ==========================================================================
 
-  suite('cross-module imports', (): void => {
+  suite('cross-module imports', () => {
 
-    test('valid import has no unresolved names', (ctx: TestContext): void => {
+    test('valid import has no unresolved names', (ctx) => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let greet = 'hello';");
       host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let x = greet;");
@@ -130,7 +126,7 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       equal(mainScope.unresolvedValues.length, 0);
     });
 
-    test('import of non-exported name is flagged', (ctx: TestContext): void => {
+    test('import of non-exported name is flagged', (ctx) => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "let secret = 42;");
       host.addFile("/project/main.zena", "import { secret } from './lib.zena'; let x = secret;");
@@ -143,7 +139,7 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       equal(mainScope.unresolvedValues[0].name, "secret");
     });
 
-    test('exported class is validated as type and value', (ctx: TestContext): void => {
+    test('exported class is validated as type and value', (ctx) => {
       let host = new MockHost();
       host.addFile("/project/point.zena", "export class Point { x: i32; }");
       host.addFile("/project/main.zena", "import { Point } from './point.zena'; let p = new Point();");
@@ -168,9 +164,9 @@ export let tests = suite('Compiler Scope Integration', (): void => {
   // Dependency ordering
   // ==========================================================================
 
-  suite('dependency ordering', (): void => {
+  suite('dependency ordering', () => {
 
-    test('dependencies are processed before dependents', (ctx: TestContext): void => {
+    test('dependencies are processed before dependents', (ctx) => {
       let host = new MockHost();
       host.addFile("/project/a.zena", "export let a = 1;");
       host.addFile("/project/b.zena", "import { a } from './a.zena'; export let b = a;");
@@ -198,9 +194,9 @@ export let tests = suite('Compiler Scope Integration', (): void => {
   // Stdlib imports
   // ==========================================================================
 
-  suite('stdlib imports', (): void => {
+  suite('stdlib imports', () => {
 
-    test('stdlib module gets scope result', (ctx: TestContext): void => {
+    test('stdlib module gets scope result', (ctx) => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "import { Array } from 'zena:array'; let x = 1;");
       let compiler = makeCompiler(host);
@@ -213,7 +209,7 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       isTrue(arrayLib.scopeResult != null);
     });
 
-    test('stdlib exported class passes import validation', (ctx: TestContext): void => {
+    test('stdlib exported class passes import validation', (ctx) => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "import { Array } from 'zena:array'; let x = Array;");
       let compiler = makeCompiler(host);
@@ -223,5 +219,72 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       // Array is exported from the stub stdlib — should pass validation.
       equal(mainScope.unresolvedValues.length, 0);
     });
+  });
+
+  suite('scope result caching', () => {
+
+    test('dependency scope result is reused on recompile', (ctx) => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "export let helper = 42;");
+      host.addFile("/project/main.zena", "import { helper } from './lib.zena'; let x = helper;");
+      let compiler = makeCompiler(host);
+
+      // First compile — builds scope results for all files.
+      let result1 = compiler.compile("/project/main.zena", "v1");
+
+      // Grab the dependency's scope result.
+      let libFile = compiler.getSourceFile("/project/lib.zena") as SourceFile;
+      let scopeBefore = libFile.scopeResult as ScopeResult;
+
+      // Second compile — entry has a new version, but lib.zena is unchanged.
+      host.addFile("/project/main.zena", "import { helper } from './lib.zena'; let y = helper;");
+      let result2 = compiler.compile("/project/main.zena", "v2");
+
+      // lib.zena's scope result should be the same object (cached).
+      let libFile2 = compiler.getSourceFile("/project/lib.zena") as SourceFile;
+      let scopeAfter = libFile2.scopeResult as ScopeResult;
+      equal(scopeBefore.rootScope, scopeAfter.rootScope);
+    });
+
+    test('entry scope result is rebuilt on recompile', (ctx) => {
+      let host = new MockHost();
+      host.addFile("/project/main.zena", "let x = 1;");
+      let compiler = makeCompiler(host);
+
+      let result1 = compiler.compile("/project/main.zena", "v1");
+      let scope1 = result1.entry.scopeResult as ScopeResult;
+      isTrue(scope1.rootScope.resolveValue("x") != null);
+
+      // Change the entry file.
+      host.addFile("/project/main.zena", "let y = 2;");
+      let result2 = compiler.compile("/project/main.zena", "v2");
+      let scope2 = result2.entry.scopeResult as ScopeResult;
+
+      // New scope should have 'y', not 'x'.
+      isTrue(scope2.rootScope.resolveValue("y") != null);
+      isTrue(scope2.rootScope.resolveValue("x") == null);
+    });
+
+    test('cross-module imports resolve correctly after cached recompile', (ctx) => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "export let greet = 'hello';");
+      host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let a = greet;");
+      let compiler = makeCompiler(host);
+
+      // First compile.
+      let result1 = compiler.compile("/project/main.zena", "v1");
+      let scope1 = result1.entry.scopeResult as ScopeResult;
+      equal(scope1.unresolvedValues.length, 0);
+
+      // Second compile with changed entry — lib.zena cached.
+      host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let b = greet;");
+      let result2 = compiler.compile("/project/main.zena", "v2");
+      let scope2 = result2.entry.scopeResult as ScopeResult;
+
+      // Imports should still resolve correctly against cached dependency.
+      equal(scope2.unresolvedValues.length, 0);
+      isTrue(scope2.rootScope.resolveValue("greet") != null);
+    });
+
   });
 });
