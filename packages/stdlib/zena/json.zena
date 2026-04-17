@@ -5,6 +5,7 @@ import {Box} from 'zena:box';
 import {Error} from 'zena:error';
 import {StringReader} from 'zena:string-reader';
 import {StringBuilder} from 'zena:string-builder';
+import {parseF64} from 'zena:string-convert';
 import {div} from 'zena:math';
 
 // === Source Location ===
@@ -724,96 +725,8 @@ class JsonParser {
     }
     
     let numStr = this.#reader.sliceFrom(start);
-    let value = this.#parseFloat(numStr);
+    let value = parseF64(numStr);
     return new Box(value);
-  }
-
-  #parseFloat(s: String): f64 {
-    // TODO: Implement proper string-to-float conversion
-    // For now, use a simple integer parser
-    let reader = new StringReader(s);
-    var negative = false;
-    var intPart: f64 = 0.0 as f64;
-    var fracPart: f64 = 0.0 as f64;
-    var fracDiv: f64 = 1.0 as f64;
-    var expPart: i32 = 0;
-    var expNeg = false;
-    
-    // Sign
-    if (reader.peekByte() == 45) {  // '-'
-      negative = true;
-      reader.advanceByte();
-    }
-    
-    // Integer part
-    while (!reader.isAtEnd) {
-      let b = reader.peekByte();
-      if (b >= 48 && b <= 57) {
-        intPart = intPart * (10.0 as f64) + ((b - 48) as f64);
-        reader.advanceByte();
-      } else {
-        break;
-      }
-    }
-    
-    // Fractional part
-    if (reader.peekByte() == 46) {
-      reader.advanceByte();
-      while (!reader.isAtEnd) {
-        let b = reader.peekByte();
-        if (b >= 48 && b <= 57) {
-          fracDiv *= (10.0 as f64);
-          fracPart += ((b - 48) as f64) / fracDiv;
-          reader.advanceByte();
-        } else {
-          break;
-        }
-      }
-    }
-    
-    // Exponent
-    let e = reader.peekByte();
-    if (e == 101 || e == 69) {
-      reader.advanceByte();
-      let sign = reader.peekByte();
-      if (sign == 45) {
-        expNeg = true;
-        reader.advanceByte();
-      } else if (sign == 43) {
-        reader.advanceByte();
-      }
-      while (!reader.isAtEnd) {
-        let b = reader.peekByte();
-        if (b >= 48 && b <= 57) {
-          expPart = expPart * 10 + (b - 48);
-          reader.advanceByte();
-        } else {
-          break;
-        }
-      }
-    }
-    
-    var result = intPart + fracPart;
-    
-    // Apply exponent
-    // TODO: Use Math.pow when available
-    var exp: f64 = 1.0 as f64;
-    var i = 0;
-    while (i < expPart) {
-      exp *= (10.0 as f64);
-      i += 1;
-    }
-    if (expNeg) {
-      result /= exp;
-    } else {
-      result *= exp;
-    }
-    
-    if (negative) {
-      result = (0.0 as f64) - result;
-    }
-    
-    return result;
   }
 
   #parseTrue(): Box<boolean> {

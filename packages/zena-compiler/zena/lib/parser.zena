@@ -1,7 +1,6 @@
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
-import { StringReader } from 'zena:string-reader';
-import { i32ToString } from 'zena:string-convert';
+import { i32ToString, parseF64 } from 'zena:string-convert';
 import { Token, TokenType, Tokenizer } from './tokenizer.zena';
 import { 
   SourceLocation,
@@ -1575,118 +1574,6 @@ export class Parser {
     quasis.push(new TemplateElement(tailToken.value, tailRaw as String, true, this.#makeLocation(tailToken)));
     
     return new TemplateLiteral(quasis, expressions, this.#makeLocation(startToken));
-  }
-  
-  #parseNumber(raw: String): f64 {
-    // Simple number parsing for integers and floats
-    let reader = new StringReader(raw);
-    var result: f64 = 0.0 as f64;
-    var negative = false;
-    
-    // Handle negative sign
-    if (!reader.isAtEnd && reader.peekByte() == 45) { // '-'
-      negative = true;
-      reader.advanceByte();
-    }
-    
-    // Handle hex literals
-    if (!reader.isAtEnd && reader.peekByte() == 48) { // '0'
-      let next = reader.peekByteAt(1);
-      if (next == 120 || next == 88) { // 'x' or 'X'
-        reader.advanceByte(); // skip '0'
-        reader.advanceByte(); // skip 'x'
-        while (!reader.isAtEnd) {
-          let hb = reader.peekByte();
-          if (hb >= 48 && hb <= 57) { // '0'-'9'
-            result = result * (16.0 as f64) + ((hb - 48) as f64);
-            reader.advanceByte();
-          } else if (hb >= 97 && hb <= 102) { // 'a'-'f'
-            result = result * (16.0 as f64) + ((hb - 87) as f64);
-            reader.advanceByte();
-          } else if (hb >= 65 && hb <= 70) { // 'A'-'F'
-            result = result * (16.0 as f64) + ((hb - 55) as f64);
-            reader.advanceByte();
-          } else {
-            break;
-          }
-        }
-        if (negative) { result = (0.0 as f64) - result; }
-        return result;
-      }
-    }
-    
-    // Integer part
-    while (!reader.isAtEnd) {
-      let ib = reader.peekByte();
-      if (ib >= 48 && ib <= 57) { // '0'-'9'
-        result = result * (10.0 as f64) + ((ib - 48) as f64);
-        reader.advanceByte();
-      } else {
-        break;
-      }
-    }
-    
-    // Fractional part
-    if (!reader.isAtEnd && reader.peekByte() == 46) { // '.'
-      reader.advanceByte();
-      var fracDiv: f64 = 10.0 as f64;
-      while (!reader.isAtEnd) {
-        let fb = reader.peekByte();
-        if (fb >= 48 && fb <= 57) {
-          result = result + ((fb - 48) as f64) / fracDiv;
-          fracDiv = fracDiv * (10.0 as f64);
-          reader.advanceByte();
-        } else {
-          break;
-        }
-      }
-    }
-    
-    // Exponent part (e or E)
-    if (!reader.isAtEnd) {
-      let ec = reader.peekByte();
-      if (ec == 101 || ec == 69) { // 'e' or 'E'
-        reader.advanceByte();
-        var expNeg = false;
-        var expVal = 0;
-        
-        if (!reader.isAtEnd) {
-          let sign = reader.peekByte();
-          if (sign == 45) { // '-'
-            expNeg = true;
-            reader.advanceByte();
-          } else if (sign == 43) { // '+'
-            reader.advanceByte();
-          }
-        }
-        
-        while (!reader.isAtEnd) {
-          let eb = reader.peekByte();
-          if (eb >= 48 && eb <= 57) {
-            expVal = expVal * 10 + (eb - 48);
-            reader.advanceByte();
-          } else {
-            break;
-          }
-        }
-        
-        // Apply exponent
-        var exp: f64 = 1.0 as f64;
-        var j = 0;
-        while (j < expVal) {
-          exp = exp * (10.0 as f64);
-          j = j + 1;
-        }
-        if (expNeg) {
-          result = result / exp;
-        } else {
-          result = result * exp;
-        }
-      }
-    }
-    
-    if (negative) { result = (0.0 as f64) - result; }
-    return result;
   }
   
   #isArrowFunction(): boolean {
