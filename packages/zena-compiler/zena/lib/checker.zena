@@ -1422,6 +1422,19 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
 };
 
 /**
+ * Check if two type arrays (tuple elements) are structurally equal.
+ */
+let tupleElementsEqual = (ea: Array<Type>, eb: Array<Type>): boolean => {
+  if (ea.length != eb.length) { return false; }
+  var i = 0;
+  while (i < ea.length) {
+    if (!typesEqual(ea[i], eb[i])) { return false; }
+    i += 1;
+  }
+  return true;
+};
+
+/**
  * Check if two types are structurally equal.
  */
 let typesEqual = (a: Type, b: Type): boolean => {
@@ -1513,31 +1526,15 @@ let typesEqual = (a: Type, b: Type): boolean => {
         case _: false
       }
     }
-    case TupleT {elementTypes as ta}: {
+    case TupleT {elementTypes as ea}: {
       match (b) {
-        case TupleT {elementTypes as tb}: {
-          if (ta.length != tb.length) { return false; }
-          var i = 0;
-          while (i < ta.length) {
-            if (!typesEqual(ta[i], tb[i])) { return false; }
-            i += 1;
-          }
-          true
-        }
+        case TupleT {elementTypes as eb}: tupleElementsEqual(ea, eb)
         case _: false
       }
     }
-    case InlineTupleT {elementTypes as ta}: {
+    case InlineTupleT {elementTypes as ea}: {
       match (b) {
-        case InlineTupleT {elementTypes as tb}: {
-          if (ta.length != tb.length) { return false; }
-          var i = 0;
-          while (i < ta.length) {
-            if (!typesEqual(ta[i], tb[i])) { return false; }
-            i += 1;
-          }
-          true
-        }
+        case InlineTupleT {elementTypes as eb}: tupleElementsEqual(ea, eb)
         case _: false
       }
     }
@@ -4820,8 +4817,59 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       var pi = 0;
       while (pi < properties.length) {
         let prop = properties[pi];
-        checkPattern(ctx, prop.value, new UnknownType());
+        let propName = prop.name.name;
+        var propType: Type = new UnknownType();
+        match (expectedType) {
+          case RecordT {properties as recordProps}: {
+            if (recordProps.has(propName)) {
+              propType = recordProps[propName];
+            }
+          }
+          case _: {}
+        }
+        checkPattern(ctx, prop.value, propType);
         pi = pi + 1;
+      }
+    }
+    case TuplePattern {elements}: {
+      match (expectedType) {
+        case TupleT {elementTypes}: {
+          var i = 0;
+          while (i < elements.length) {
+            if (elements[i] != null) {
+              let elem = elements[i] as Node;
+              if (i < elementTypes.length) {
+                checkPattern(ctx, elem, elementTypes[i]);
+              } else {
+                checkPattern(ctx, elem, new UnknownType());
+              }
+            }
+            i = i + 1;
+          }
+        }
+        case InlineTupleT {elementTypes}: {
+          var i = 0;
+          while (i < elements.length) {
+            if (elements[i] != null) {
+              let elem = elements[i] as Node;
+              if (i < elementTypes.length) {
+                checkPattern(ctx, elem, elementTypes[i]);
+              } else {
+                checkPattern(ctx, elem, new UnknownType());
+              }
+            }
+            i = i + 1;
+          }
+        }
+        case _: {
+          var i = 0;
+          while (i < elements.length) {
+            if (elements[i] != null) {
+              checkPattern(ctx, (elements[i] as Node), new UnknownType());
+            }
+            i = i + 1;
+          }
+        }
       }
     }
     case AsPattern as ap: {
@@ -4836,6 +4884,29 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
     case LogicalPattern {operator, left, right, loc}: {
       checkPattern(ctx, left, expectedType);
       checkPattern(ctx, right, expectedType);
+    }
+    case Identifier as ident: {
+      // Match-context patterns produce Identifier nodes (not IdentifierPattern).
+      if (ident.name != "_") {
+        // Check if this identifier refers to a sealed variant (unit variant pattern).
+        // If so, skip binding — it's a type match, not a variable binding.
+        let resolvedType = ctx.resolveTypeName(ident.name);
+        var isVariant = false;
+        if (resolvedType != null) {
+          match (resolvedType as Type) {
+            case ClassType: { isVariant = true; }
+            case _: {}
+          }
+        }
+        if (!isVariant) {
+          let info = ctx.model.resolveDeclaration(ident);
+          if (info != null) {
+            ctx.declareBinding(info as SymbolInfo, expectedType);
+          } else {
+            ctx.declareTypeName(ident.name, expectedType);
+          }
+        }
+      }
     }
     case _: {
       // Literal patterns, wildcard, etc. - no bindings needed.

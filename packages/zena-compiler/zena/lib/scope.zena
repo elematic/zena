@@ -663,15 +663,42 @@ export class ScopeBuilder {
         this.#exitScope();
       }
       case IfStatement {test, consequent, alternate}: {
-        this.#processNode(test);
-        this.#processStatement(consequent);
-        if (alternate != null) {
-          this.#processStatement(alternate as Statement);
+        match (test) {
+          case LetPatternCondition {pattern, init}: {
+            this.#processExpression(init);
+            this.#enterScope(ScopeKind.Block);
+            this.#declarePattern(pattern, "let", test as LetPatternCondition);
+            this.#processStatement(consequent);
+            this.#exitScope();
+            if (alternate != null) {
+              this.#enterScope(ScopeKind.Block);
+              this.#processStatement(alternate as Statement);
+              this.#exitScope();
+            }
+          }
+          case _: {
+            this.#processNode(test);
+            this.#processStatement(consequent);
+            if (alternate != null) {
+              this.#processStatement(alternate as Statement);
+            }
+          }
         }
       }
       case WhileStatement {test, body}: {
-        this.#processNode(test);
-        this.#processStatement(body);
+        match (test) {
+          case LetPatternCondition {pattern, init}: {
+            this.#processExpression(init);
+            this.#enterScope(ScopeKind.Block);
+            this.#declarePattern(pattern, "let", test as LetPatternCondition);
+            this.#processStatement(body);
+            this.#exitScope();
+          }
+          case _: {
+            this.#processNode(test);
+            this.#processStatement(body);
+          }
+        }
       }
       case ForStatement {init, test, update, body}: {
         this.#enterScope(ScopeKind.Block);
@@ -1207,6 +1234,12 @@ export class ScopeBuilder {
   #declarePatternNode(node: Node, kind: String, declaration: Node): void {
     match (node) {
       case Pattern: { this.#declarePattern(node as Pattern, kind, declaration); }
+      case Identifier as ident: {
+        if (ident.name != "_") {
+          this.#current.declareValue(ident.name, kind, ident, this.#modulePath);
+          this.#declarations.record(ident, this.#current.getLocalValue(ident.name) as SymbolInfo);
+        }
+      }
       case _: {}
     }
   }
