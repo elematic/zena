@@ -420,4 +420,145 @@ export let tests = suite('Checker API', (): void => {
       );
     });
   });
+
+  // ==========================================================================
+  // Private fields
+  // ==========================================================================
+
+  suite('private fields', (): void => {
+
+    test('private field read in own class', (ctx: TestContext): void => {
+      checkOk(
+        "class Counter {\n  #count: i32 = 0;\n  getCount(): i32 { return this.#count; }\n}"
+      );
+    });
+
+    test('private field write in own class', (ctx: TestContext): void => {
+      checkOk(
+        "class Counter {\n  var #count: i32 = 0;\n  increment(): void { this.#count += 1; }\n}"
+      );
+    });
+
+    test('private field outside class is error', (ctx: TestContext): void => {
+      checkError(
+        "class Foo {\n  #secret: i32 = 0;\n}\nlet f = new Foo();\nlet x = f.#secret;",
+        "Private field"
+      );
+    });
+
+    test('private method in own class', (ctx: TestContext): void => {
+      checkOk(
+        "class Builder {\n  #helper(): i32 { return 42; }\n  build(): i32 { return this.#helper(); }\n}"
+      );
+    });
+
+    test('private field with initializer expression', (ctx: TestContext): void => {
+      // Scope.zena pattern: #values = new HashMap<String, SymbolInfo>()
+      checkOk(
+        "class Container {\n  #items: Array<i32> = [1, 2, 3];\n  count(): i32 { return this.#items.length; }\n}"
+      );
+    });
+
+    test('private field member access chain', (ctx: TestContext): void => {
+      // Pattern: this.#values.has(name)
+      checkOk(
+        "class Wrapper {\n  #text: String = 'hello';\n  len(): i32 { return this.#text.length; }\n}"
+      );
+    });
+
+    test('forward reference to private method', (ctx: TestContext): void => {
+      // build() calls #helper() which is defined later in the class body
+      checkOk(
+        "class Builder {\n  build(): i32 { return this.#process(); }\n  #process(): i32 { return 42; }\n}"
+      );
+    });
+  });
+
+  // ==========================================================================
+  // Generic type members
+  // ==========================================================================
+
+  suite('generic type members', (): void => {
+
+    test('array literal length', (ctx: TestContext): void => {
+      checkOk(
+        "let arr = [1, 2, 3];\nlet n: i32 = arr.length;"
+      );
+    });
+
+    test('array push method', (ctx: TestContext): void => {
+      checkOk(
+        "import { Array } from 'zena:array';\nlet arr = new Array<i32>();\narr.push(42);"
+      );
+    });
+  });
+
+  // ==========================================================================
+  // Null comparison operators
+  // ==========================================================================
+
+  suite('null comparison', (): void => {
+
+    test('nullable field compared to null with !=', (ctx: TestContext): void => {
+      checkOk(
+        "class Foo {\n  x: i32 | null;\n  new(this.x);\n}\nlet f = new Foo(null);\nlet b = f.x != null;"
+      );
+    });
+
+    test('nullable field compared to null with ==', (ctx: TestContext): void => {
+      checkOk(
+        "class Foo {\n  x: i32 | null;\n  new(this.x);\n}\nlet f = new Foo(null);\nlet b = f.x == null;"
+      );
+    });
+
+    test('nullable class type compared to null', (ctx: TestContext): void => {
+      checkOk(
+        "class Point { x: f64; new(this.x); }\nlet p: Point | null = null;\nlet b = p != null;"
+      );
+    });
+
+    test('class field compared to null', (ctx: TestContext): void => {
+      checkOk(
+        "class Loc { line: i32; new(this.line); }\nclass Foo {\n  loc: Loc | null;\n  new(this.loc);\n}\nlet f = new Foo(null);\nlet b = f.loc != null;"
+      );
+    });
+  });
+
+  // ==========================================================================
+  // HashMap member access
+  // ==========================================================================
+
+  suite('HashMap members', (): void => {
+
+    test('HashMap set method', (ctx: TestContext): void => {
+      checkOk(
+        "import { HashMap } from 'zena:map';\nlet m = new HashMap<String, i32>();\nm.set(\"x\", 42);"
+      );
+    });
+
+    test('HashMap get method', (ctx: TestContext): void => {
+      checkOk(
+        "import { HashMap } from 'zena:map';\nlet m = new HashMap<String, i32>();\nlet v = m.get(\"x\");"
+      );
+    });
+
+    test('HashMap has method', (ctx: TestContext): void => {
+      checkOk(
+        "import { HashMap } from 'zena:map';\nlet m = new HashMap<String, i32>();\nlet b = m.has(\"x\");"
+      );
+    });
+  });
+
+  // ==========================================================================
+  // Match pattern narrowing
+  // ==========================================================================
+
+  suite('match pattern narrowing', (): void => {
+
+    test('as pattern narrows to class type', (ctx: TestContext): void => {
+      checkOk(
+        "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet c = new Circle(3.14);\nlet r: f64 = c.radius;"
+      );
+    });
+  });
 });

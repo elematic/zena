@@ -532,7 +532,7 @@ export class ScopeBuilder {
    */
   #predeclare(stmt: Statement): void {
     match (stmt) {
-      case ClassDeclaration {name, exported}: {
+      case ClassDeclaration {name, exported, sealedVariants}: {
         // Classes go in BOTH namespaces.
         this.#current.declareType(name.name, stmt, this.#modulePath);
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
@@ -542,6 +542,25 @@ export class ScopeBuilder {
           this.#exports.setType(name.name, info);
           let valueInfo = new SymbolInfo("let", stmt, this.#modulePath);
           this.#exports.setValue(name.name, valueInfo);
+        }
+        // Export sealed variant names so they can be imported individually.
+        if (sealedVariants != null) {
+          let svs = sealedVariants as Array<SealedVariant>;
+          var svi = 0;
+          while (svi < svs.length) {
+            let sv = svs[svi];
+            let svName = sv.name.name;
+            this.#current.declareType(svName, sv, this.#modulePath);
+            this.#current.declareValue(svName, "let", sv, this.#modulePath);
+            this.#declarations.record(sv, this.#current.getLocalValue(svName) as SymbolInfo);
+            if (exported) {
+              let svTypeInfo = new SymbolInfo("type", sv, this.#modulePath);
+              this.#exports.setType(svName, svTypeInfo);
+              let svValueInfo = new SymbolInfo("let", sv, this.#modulePath);
+              this.#exports.setValue(svName, svValueInfo);
+            }
+            svi += 1;
+          }
         }
       }
       case InterfaceDeclaration {name, exported}: {

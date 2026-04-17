@@ -615,11 +615,34 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   let eqRetType: Type = new BooleanType();
   let eqMethod = new FunctionType(eqParams, null, eqRetType);
   stringType.methods["=="] = eqMethod;
+  // String members: length getter, startsWith, endsWith, sliceBytes, getByteAt
+  stringType.methods["get#length"] = new FunctionType(new Array<Type>(), null, new I32Type());
+  let startsWithParams = new Array<Type>();
+  startsWithParams.push(stringType);
+  stringType.methods["startsWith"] = new FunctionType(startsWithParams, null, new BooleanType());
+  let endsWithParams = new Array<Type>();
+  endsWithParams.push(stringType);
+  stringType.methods["endsWith"] = new FunctionType(endsWithParams, null, new BooleanType());
+  let sliceBytesParams = new Array<Type>();
+  sliceBytesParams.push(new I32Type());
+  sliceBytesParams.push(new I32Type());
+  stringType.methods["sliceBytes"] = new FunctionType(sliceBytesParams, null, stringType);
+  let getByteAtParams = new Array<Type>();
+  getByteAtParams.push(new I32Type());
+  stringType.methods["getByteAt"] = new FunctionType(getByteAtParams, null, new I32Type());
   ctx.registerPreludeType("String", stringType);
   ctx.registerPreludeValue("String", stringType);
 
   // Error - base error type
   let errorType = new ClassType(ctx.freshTypeId(), "Error");
+  // Error.message field
+  errorType.fields["message"] = stringType;
+  // Error constructor: new Error(message: String)
+  let errCtorParams = new Array<Type>();
+  errCtorParams.push(stringType);
+  let errCtorNames = new Array<String>();
+  errCtorNames.push("message");
+  errorType.constructorType = new FunctionType(errCtorParams, errCtorNames, errorType);
   ctx.registerPreludeType("Error", errorType);
   ctx.registerPreludeValue("Error", errorType);
 
@@ -629,6 +652,20 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   let fixedArrayTParams = new Array<TypeParameterType>();
   fixedArrayTParams.push(fixedArrayTParam);
   fixedArrayType.typeParameters = fixedArrayTParams;
+  // FixedArray members: length getter, [] indexer, []= setter
+  fixedArrayType.methods["get#length"] = new FunctionType(new Array<Type>(), null, new I32Type());
+  let faIndexParams = new Array<Type>();
+  faIndexParams.push(new I32Type());
+  fixedArrayType.methods["[]"] = new FunctionType(faIndexParams, null, fixedArrayTParam);
+  let faSetParams = new Array<Type>();
+  faSetParams.push(new I32Type());
+  faSetParams.push(fixedArrayTParam);
+  fixedArrayType.methods["[]="] = new FunctionType(faSetParams, null, new VoidType());
+  // push, pop (from GrowableArray trait)
+  let faPushParams = new Array<Type>();
+  faPushParams.push(fixedArrayTParam);
+  fixedArrayType.methods["push"] = new FunctionType(faPushParams, null, new VoidType());
+  fixedArrayType.methods["pop"] = new FunctionType(new Array<Type>(), null, fixedArrayTParam);
   ctx.registerPreludeType("FixedArray", fixedArrayType);
   ctx.registerPreludeValue("FixedArray", fixedArrayType);
 
@@ -638,6 +675,21 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   let arrayTParams = new Array<TypeParameterType>();
   arrayTParams.push(arrayTParam);
   arrayType.typeParameters = arrayTParams;
+  // Array members: length getter, push, pop, [] indexer, []= setter
+  arrayType.methods["get#length"] = new FunctionType(new Array<Type>(), null, new I32Type());
+  let aPushParams = new Array<Type>();
+  aPushParams.push(arrayTParam);
+  arrayType.methods["push"] = new FunctionType(aPushParams, null, new VoidType());
+  arrayType.methods["pop"] = new FunctionType(new Array<Type>(), null, arrayTParam);
+  let aIndexParams = new Array<Type>();
+  aIndexParams.push(new I32Type());
+  arrayType.methods["[]"] = new FunctionType(aIndexParams, null, arrayTParam);
+  let aSetParams = new Array<Type>();
+  aSetParams.push(new I32Type());
+  aSetParams.push(arrayTParam);
+  arrayType.methods["[]="] = new FunctionType(aSetParams, null, new VoidType());
+  // Array constructor: new Array<T>() — capacity param optional, stubbed as zero-arg
+  arrayType.constructorType = new FunctionType(new Array<Type>(), null, arrayType);
   ctx.registerPreludeType("Array", arrayType);
   ctx.registerPreludeValue("Array", arrayType);
 
@@ -691,6 +743,53 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   // Map, HashMap
   let mapType = new InterfaceType(ctx.freshTypeId(), "Map");
   let hashMapType = new ClassType(ctx.freshTypeId(), "HashMap");
+  // HashMap<K, V> type parameters
+  let hashMapKParam = new TypeParameterType("K", null, null);
+  let hashMapVParam = new TypeParameterType("V", null, null);
+  let hashMapTParams = new Array<TypeParameterType>();
+  hashMapTParams.push(hashMapKParam);
+  hashMapTParams.push(hashMapVParam);
+  hashMapType.typeParameters = hashMapTParams;
+  // HashMap members: get, set, has, delete, size, [], []=, keys, forEach, getOr, find, clear
+  let hmGetParams = new Array<Type>();
+  hmGetParams.push(hashMapKParam);
+  let hmGetRetTypes = new Array<Type>();
+  hmGetRetTypes.push(hashMapVParam);
+  hmGetRetTypes.push(new BooleanType());
+  let hmGetRetType: Type = new InlineTupleT(hmGetRetTypes);
+  hashMapType.methods["get"] = new FunctionType(hmGetParams, null, hmGetRetType);
+  let hmSetParams = new Array<Type>();
+  hmSetParams.push(hashMapKParam);
+  hmSetParams.push(hashMapVParam);
+  hashMapType.methods["set"] = new FunctionType(hmSetParams, null, new VoidType());
+  let hmHasParams = new Array<Type>();
+  hmHasParams.push(hashMapKParam);
+  hashMapType.methods["has"] = new FunctionType(hmHasParams, null, new BooleanType());
+  let hmDeleteParams = new Array<Type>();
+  hmDeleteParams.push(hashMapKParam);
+  hashMapType.methods["delete"] = new FunctionType(hmDeleteParams, null, new BooleanType());
+  hashMapType.methods["get#size"] = new FunctionType(new Array<Type>(), null, new I32Type());
+  let hmIndexParams = new Array<Type>();
+  hmIndexParams.push(hashMapKParam);
+  hashMapType.methods["[]"] = new FunctionType(hmIndexParams, null, hashMapVParam);
+  let hmIndexSetParams = new Array<Type>();
+  hmIndexSetParams.push(hashMapKParam);
+  hmIndexSetParams.push(hashMapVParam);
+  hashMapType.methods["[]="] = new FunctionType(hmIndexSetParams, null, new VoidType());
+  let hmGetOrParams = new Array<Type>();
+  hmGetOrParams.push(hashMapKParam);
+  hmGetOrParams.push(hashMapVParam);
+  hashMapType.methods["getOr"] = new FunctionType(hmGetOrParams, null, hashMapVParam);
+  hashMapType.methods["clear"] = new FunctionType(new Array<Type>(), null, new VoidType());
+  let hmForEachCbParams = new Array<Type>();
+  hmForEachCbParams.push(hashMapKParam);
+  hmForEachCbParams.push(hashMapVParam);
+  let hmForEachCbType = new FunctionType(hmForEachCbParams, null, new VoidType());
+  let hmForEachParams = new Array<Type>();
+  hmForEachParams.push(hmForEachCbType);
+  hashMapType.methods["forEach"] = new FunctionType(hmForEachParams, null, new VoidType());
+  // HashMap constructor: new HashMap<K, V>()
+  hashMapType.constructorType = new FunctionType(new Array<Type>(), null, hashMapType);
   ctx.registerPreludeType("Map", mapType);
   ctx.registerPreludeType("HashMap", hashMapType);
   ctx.registerPreludeValue("HashMap", hashMapType);
@@ -1418,6 +1517,31 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case _: {}
   }
 
+  // ArrayType(elementType) is assignable to Array<T>/FixedArray<T> when elementType assignable to T.
+  match (source) {
+    case ArrayType {elementType}: {
+      match (target) {
+        case ClassType as tgtClass: {
+          if ((tgtClass.name == "Array" || tgtClass.name == "FixedArray") && tgtClass.typeArguments != null) {
+            let tgtArgs = tgtClass.typeArguments as Array<Type>;
+            if (tgtArgs.length > 0) {
+              return isAssignableTo(ctx, elementType, tgtArgs[0]);
+            }
+          }
+          // Also match uninstantiated Array/FixedArray (bare type)
+          if (tgtClass.name == "Array" || tgtClass.name == "FixedArray") {
+            return true;
+          }
+        }
+        case ArrayType {elementType as tgtElem}: {
+          return isAssignableTo(ctx, elementType, tgtElem);
+        }
+        case _: {}
+      }
+    }
+    case _: {}
+  }
+
   return false;
 };
 
@@ -1971,15 +2095,27 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
                 }
               } else {
                 // Fallback: create stub types from the declaration AST node.
+                // For stdlib types, prefer the prelude type which has full
+                // member definitions (fields, methods, constructors).
                 let decl = si.declaration;
                 if (decl != null) {
                   match (decl as Node) {
                     case ClassDeclaration {name}: {
-                      let ct = new ClassType(ctx.freshTypeId(), name.name);
-                      ctx.declareTypeName(localName, ct);
-                      let localInfo = ctx.model.resolveDeclaration(spec);
-                      if (localInfo != null) {
-                        ctx.declareBinding(localInfo as SymbolInfo, ct);
+                      let preludeType = ctx.resolveTypeName(name.name);
+                      if (preludeType != null) {
+                        let pt = preludeType as Type;
+                        ctx.declareTypeName(localName, pt);
+                        let localInfo = ctx.model.resolveDeclaration(spec);
+                        if (localInfo != null) {
+                          ctx.declareBinding(localInfo as SymbolInfo, pt);
+                        }
+                      } else {
+                        let ct = new ClassType(ctx.freshTypeId(), name.name);
+                        ctx.declareTypeName(localName, ct);
+                        let localInfo = ctx.model.resolveDeclaration(spec);
+                        if (localInfo != null) {
+                          ctx.declareBinding(localInfo as SymbolInfo, ct);
+                        }
                       }
                     }
                     case InterfaceDeclaration {name}: {
@@ -1988,6 +2124,16 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
                       let localInfo = ctx.model.resolveDeclaration(spec);
                       if (localInfo != null) {
                         ctx.declareBinding(localInfo as SymbolInfo, it);
+                      }
+                    }
+                    case SealedVariant {name}: {
+                      // Sealed variant used as a type (e.g., for pattern matching).
+                      let ct = new ClassType(ctx.freshTypeId(), name.name);
+                      ct.isCaseClass = true;
+                      ctx.declareTypeName(localName, ct);
+                      let localInfo = ctx.model.resolveDeclaration(spec);
+                      if (localInfo != null) {
+                        ctx.declareBinding(localInfo as SymbolInfo, ct);
                       }
                     }
                     case _: {
@@ -2195,10 +2341,18 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
     case AsPattern {pattern as inner, name}: {
       // `pattern as name` — bind both the inner pattern and the alias.
       bindPattern(ctx, inner as Pattern, t);
-      // The `name` (Identifier node) was used as declaration in scope builder.
+      // Narrow the alias to the matched type, not the scrutinee type.
+      var narrowedType: Type = t;
+      if (inner is ClassPattern) {
+        let cp = inner as ClassPattern;
+        let cls = ctx.resolveTypeName(cp.name.name);
+        if (cls != null) {
+          narrowedType = cls as Type;
+        }
+      }
       let info = ctx.model.resolveDeclaration(name);
       if (info != null) {
-        ctx.declareBinding(info as SymbolInfo, t);
+        ctx.declareBinding(info as SymbolInfo, narrowedType);
       }
     }
     case AssignmentPattern {left, right}: {
@@ -3014,7 +3168,9 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
   // Enter class context for body checking.
   ctx.enterClass(classType);
 
-  // Process class body members.
+  // === Pass 1: Register all field types and method signatures ===
+  // This allows forward references between methods (e.g. this.#foo() calling
+  // a private method defined later in the class body).
   var bi = 0;
   while (bi < cd.body.length) {
     let member = cd.body[bi];
@@ -3082,20 +3238,6 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         classType.fields.set(fieldName, fieldType);
         let isMutable = fd.mutability != null && fd.mutability == "var";
         classType.fieldMutability.set(fieldName, isMutable);
-
-        // Check initializer if present.
-        if (fd.value != null) {
-          let initType = checkExpression(ctx, fd.value as Expression, fieldType);
-          if (!isAssignableTo(ctx, initType, fieldType)) {
-            ctx.error(
-              "Type mismatch: field '" + fieldName + "' has type '" +
-              typeToString(fieldType) + "' but initializer has type '" +
-              typeToString(initType) + "'.",
-              DiagnosticCode.TypeMismatch,
-              fd.loc
-            );
-          }
-        }
       }
       case MethodDefinition as md: {
         let methodName = match (md.name) {
@@ -3103,9 +3245,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           case _: "<unknown>"
         };
 
-        // Constructor: parsed from 'new(...)' syntax as "<constructor>"
         if (methodName == "<constructor>") {
-          // If case class already generated a constructor, error.
           if (cd.caseParams != null && classType.constructorType != null) {
             ctx.error(
               "Duplicate constructor in case class '" + className +
@@ -3115,7 +3255,6 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             );
           } else {
             let ctorType = checkMethodSignature(ctx, classType, md);
-            // Constructor returns the class type.
             ctorType.returnType = classType;
             classType.constructorType = ctorType;
           }
@@ -3151,11 +3290,6 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
 
           // Track abstract methods for checking in subclasses.
           trackAbstractMethod(ctx, classType, methodName, md.isAbstract);
-
-          // Check method body.
-          if (md.body != null) {
-            checkMethodBody(ctx, classType, methodType, md);
-          }
         }
       }
       case AccessorDeclaration as acc: {
@@ -3169,19 +3303,6 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         if (acc.getter != null) {
           let getterType = new FunctionType(new Array<Type>(), null, accType);
           classType.methods.set("get#" + accName, getterType);
-
-          // Check getter body.
-          let getterBlock = acc.getter as BlockStatement;
-          ctx.enterScope();
-          let prevReturnType = ctx.returnType;
-          ctx.setReturnType(accType);
-          var gi = 0;
-          while (gi < getterBlock.body.length) {
-            checkStatement(ctx, getterBlock.body[gi]);
-            gi += 1;
-          }
-          ctx.setReturnType(prevReturnType);
-          ctx.exitScope();
         }
 
         // Setter creates a method set#accName with param type = accType.
@@ -3190,35 +3311,12 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           setterParams.push(accType);
           let setterType = new FunctionType(setterParams, null, new VoidType());
           classType.methods.set("set#" + accName, setterType);
-
-          // Check setter body.
-          match (acc.setter as Node) {
-            case SetterInfo as si: {
-              ctx.enterScope();
-              // Declare setter param with the accessor type.
-              let paramInfo = ctx.model.resolveDeclaration(si.param);
-              if (paramInfo != null) {
-                ctx.declareBinding(paramInfo as SymbolInfo, accType);
-              }
-              var sbi = 0;
-              while (sbi < si.body.body.length) {
-                checkStatement(ctx, si.body.body[sbi]);
-                sbi += 1;
-              }
-              ctx.exitScope();
-            }
-            case _: {}
-          }
         }
       }
       case MethodSignature as ms: {
-        // MethodSignature is used for abstract method declarations (no body)
-        // or interface-like signatures in classes (e.g., `new(x: f64, y: f64);`)
         let methodName = (ms.name as Identifier).name;
         
-        // Constructor signature: check for duplicate
         if (methodName == "new") {
-          // If case class already generated a constructor, error.
           if (cd.caseParams != null && classType.constructorType != null) {
             ctx.error(
               "Duplicate constructor in case class '" + className +
@@ -3227,7 +3325,6 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
               ms.loc
             );
           } else {
-            // Build constructor type from signature
             let paramTypes = new Array<Type>();
             let paramNames = new Array<String>();
             var pi = 0;
@@ -3236,7 +3333,6 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
               let paramName = param.name.name;
               var paramType: Type = new UnknownType();
               if (param.isThisParam && classType.fields.has(paramName)) {
-                // this.-style param inherits type from the class field.
                 paramType = classType.fields[paramName];
               } else if (param.typeAnnotation != null) {
                 paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
@@ -3249,7 +3345,6 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             classType.constructorType = ctorType;
           }
         } else {
-          // Abstract method signature
           let paramTypes = new Array<Type>();
           var pi = 0;
           while (pi < ms.params.length) {
@@ -3266,6 +3361,139 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation);
           }
           classType.methods.set(methodName, new FunctionType(paramTypes, null, retType));
+        }
+      }
+      case _: {}
+    }
+    bi = bi + 1;
+  }
+
+  // === Pass 2: Check method bodies and field initializers ===
+  // Collect field names in declaration order for forward-reference detection.
+  let fieldOrder = new Array<String>();
+  var foi = 0;
+  while (foi < cd.body.length) {
+    match (cd.body[foi]) {
+      case FieldDefinition as fd: {
+        let fn = match (fd.name) {
+          case Identifier {name}: name
+          case _: "<unknown>"
+        };
+        fieldOrder.push(fn);
+      }
+      case _: {}
+    }
+    foi = foi + 1;
+  }
+
+  var fieldIndex = 0;
+  bi = 0;
+  while (bi < cd.body.length) {
+    let member = cd.body[bi];
+    match (member) {
+      case FieldDefinition as fd: {
+        if (fd.value != null) {
+          let fieldName = match (fd.name) {
+            case Identifier {name}: name
+            case _: "<unknown>"
+          };
+
+          // Temporarily hide fields declared after this one so that
+          // forward references in initializers (e.g. this.y when y comes
+          // later) are caught as "property does not exist" errors.
+          let hiddenFields = new HashMap<String, Type>();
+          var hi = fieldIndex + 1;
+          while (hi < fieldOrder.length) {
+            let laterName = fieldOrder[hi];
+            // Don't hide the current field (handles duplicate field names).
+            if (laterName != fieldName && classType.fields.has(laterName)) {
+              hiddenFields.set(laterName, classType.fields[laterName]);
+              classType.fields.delete(laterName);
+            }
+            hi = hi + 1;
+          }
+
+          let fieldType = classType.fields[fieldName];
+          let initType = checkExpression(ctx, fd.value as Expression, fieldType);
+
+          // Restore hidden fields.
+          let restoreKeys = hiddenFields.keys();
+          while (let (true, key) = restoreKeys.next()) {
+            classType.fields.set(key, hiddenFields[key]);
+          }
+
+          // Infer field type from initializer when no explicit annotation.
+          if (fieldType is UnknownType && !(initType is UnknownType)) {
+            classType.fields.set(fieldName, initType);
+          } else if (!isAssignableTo(ctx, initType, fieldType)) {
+            ctx.error(
+              "Type mismatch: field '" + fieldName + "' has type '" +
+              typeToString(fieldType) + "' but initializer has type '" +
+              typeToString(initType) + "'.",
+              DiagnosticCode.TypeMismatch,
+              fd.loc
+            );
+          }
+        }
+        fieldIndex = fieldIndex + 1;
+      }
+      case MethodDefinition as md: {
+        if (md.body != null) {
+          let methodName = match (md.name) {
+            case Identifier {name}: name
+            case _: "<unknown>"
+          };
+          if (methodName == "<constructor>") {
+            if (classType.constructorType != null) {
+              checkMethodBody(ctx, classType, classType.constructorType as FunctionType, md);
+            }
+          } else {
+            if (classType.methods.has(methodName)) {
+              checkMethodBody(ctx, classType, classType.methods[methodName], md);
+            }
+          }
+        }
+      }
+      case AccessorDeclaration as acc: {
+        let accName = match (acc.name) {
+          case Identifier {name}: name
+          case _: "<unknown>"
+        };
+        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+
+        // Check getter body.
+        if (acc.getter != null) {
+          let getterBlock = acc.getter as BlockStatement;
+          ctx.enterScope();
+          let prevReturnType = ctx.returnType;
+          ctx.setReturnType(accType);
+          var gi = 0;
+          while (gi < getterBlock.body.length) {
+            checkStatement(ctx, getterBlock.body[gi]);
+            gi += 1;
+          }
+          ctx.setReturnType(prevReturnType);
+          ctx.exitScope();
+        }
+
+        // Check setter body.
+        if (acc.setter != null) {
+          match (acc.setter as Node) {
+            case SetterInfo as si: {
+              ctx.enterScope();
+              let paramInfo = ctx.model.resolveDeclaration(si.param);
+              if (paramInfo != null) {
+                ctx.declareBinding(paramInfo as SymbolInfo, accType);
+              }
+              var sbi = 0;
+              while (sbi < si.body.body.length) {
+                checkStatement(ctx, si.body.body[sbi]);
+                sbi += 1;
+              }
+              ctx.exitScope();
+            }
+            case _: {}
+          }
         }
       }
       case _: {}
@@ -3334,6 +3562,12 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         // Register variant in type and value namespaces (module scope
         // so the name is visible in match patterns outside the class).
         ctx.declareModuleTypeName(variant.name.name, variantType);
+        // Also bind the variant type to its SymbolInfo so cross-module
+        // import resolution can find the fully-typed ClassType.
+        let variantInfo = ctx.model.resolveDeclaration(variant);
+        if (variantInfo != null) {
+          ctx.declareBinding(variantInfo as SymbolInfo, variantType);
+        }
       } else {
         // Forward-declared variant or unit variant (no params).
         // Look up an existing class type (distributed variant pattern),
@@ -4299,6 +4533,41 @@ let resolveMemberType = (
       );
       return new UnknownType();
     }
+    case ArrayType {elementType}: {
+      // ArrayType is produced by array literals [1, 2, 3].
+      // Delegate to FixedArray<T> prelude type with T = elementType.
+      let faType = ctx.resolveTypeName("FixedArray");
+      if (faType != null) {
+        match (faType as Type) {
+          case ClassType as faCt: {
+            // Build type arguments [elementType] for substitution.
+            let typeArgs = new Array<Type>();
+            typeArgs.push(elementType);
+            // Check getter first.
+            let getterName = "get#" + propName;
+            if (faCt.methods.has(getterName)) {
+              let getterType = faCt.methods[getterName];
+              return substituteTypeParams(faCt.typeParameters, typeArgs, getterType.returnType);
+            }
+            if (faCt.methods.has(propName)) {
+              let methodType = faCt.methods[propName];
+              return substituteTypeParams(faCt.typeParameters, typeArgs, methodType);
+            }
+            if (faCt.fields.has(propName)) {
+              let fieldType = faCt.fields[propName];
+              return substituteTypeParams(faCt.typeParameters, typeArgs, fieldType);
+            }
+          }
+          case _: {}
+        }
+      }
+      ctx.error(
+        "Property '" + propName + "' does not exist on type 'Array<" + typeToString(elementType) + ">'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new UnknownType();
+    }
     case UnknownType: { return new UnknownType(); }
     case _: {
       ctx.error(
@@ -4578,6 +4847,7 @@ let checkBinaryExpression = (
       (isNumericType(leftType) && isNumericType(rightType)) ||
       (leftType is ClassType && rightType is ClassType) ||
       (leftType is InterfaceType && rightType is InterfaceType) ||
+      leftType is NullType || rightType is NullType ||
       leftType is UnknownType || rightType is UnknownType ||
       isAssignableTo(ctx, leftType, rightType) ||
       isAssignableTo(ctx, rightType, leftType);
@@ -5073,11 +5343,20 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
     }
     case AsPattern as ap: {
       checkPattern(ctx, ap.pattern, expectedType);
+      // Narrow the alias to the matched type, not the scrutinee type.
+      var narrowedType: Type = expectedType;
+      if (ap.pattern is ClassPattern) {
+        let cp = ap.pattern as ClassPattern;
+        let cls = ctx.resolveTypeName(cp.name.name);
+        if (cls != null) {
+          narrowedType = cls as Type;
+        }
+      }
       let info = ctx.model.resolveDeclaration(ap.name);
       if (info != null) {
-        ctx.declareBinding(info as SymbolInfo, expectedType);
+        ctx.declareBinding(info as SymbolInfo, narrowedType);
       } else {
-        ctx.declareTypeName(ap.name.name, expectedType);
+        ctx.declareTypeName(ap.name.name, narrowedType);
       }
     }
     case LogicalPattern {operator, left, right, loc}: {

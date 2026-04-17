@@ -137,6 +137,7 @@ tests/language/semantics/
 │   │   ├── basic.zena                          [new] — x += 1
 │   │   ├── type-error.zena                     [new] — string += i32 error
 │   │   └── immutable-rejected.zena             [new] — let x = 1; x += 1; error
+│   ├── null-comparison.zena                     [done]
 │   ├── string-concat.zena                      [ts] checker_test — String + String
 │   └── string-concat-type-error.zena           [ts] checker_test — String + i32 error
 │
@@ -194,14 +195,15 @@ tests/language/semantics/
 │   │   ├── unknown-field.zena                  [ts] checker-class_test — access nonexistent field
 │   │   ├── constructor-required.zena           [ts] checker-constructor_test
 │   │   ├── constructor-arg-mismatch.zena       [ts] checker-constructor_test
-│   │   └── constructor-missing-super.zena      [ts] checker-constructor_test
+│   │   ├── constructor-missing-super.zena      [ts] checker-constructor_test
+│   │   └── forward-method-reference.zena       [done]
 │   │
 │   ├── fields/
 │   │   ├── immutable-assignment.zena           [ts] immutable-field_test — let field assignment error
 │   │   ├── mutable-assignment.zena             [ts] — var field assignment ok
 │   │   ├── field-init-order.zena               [ts] checker-field-init_test
 │   │   ├── field-init-required.zena            [ts] checker-field-init-required_test
-│   │   ├── field-type-inference.zena           [new] — field type inferred from initializer
+│   │   ├── field-type-inference.zena           [done]
 │   │   └── private-field-access.zena           [ts] — #field not accessible outside class
 │   │
 │   ├── inheritance/
@@ -366,7 +368,7 @@ tests/language/semantics/
 │   ├── class-pattern-binding.zena              [ts] — case Foo {x, y}: use x, y
 │   ├── record-pattern-binding.zena             [ts] — case {x, y}: use x, y
 │   ├── tuple-pattern-binding.zena              [ts] — case (a, b): use a, b
-│   ├── as-pattern-binding.zena                 [ts] — case Foo {} as f: use f
+│   ├── as-pattern-binding.zena                 [done]
 │   ├── or-pattern.zena                         [ts] — case A {} | B {}: ...
 │   ├── and-pattern.zena                        [ts] — case Foo {} & Bar {}: ... (intersection)
 │   ├── literal-pattern.zena                    [ts] refutable-pattern_test
@@ -492,18 +494,18 @@ tests/language/semantics/
 | Group                      | Done   | Port from TS | New     | Needs @type | Total    |
 | -------------------------- | ------ | ------------ | ------- | ----------- | -------- |
 | **Variables**              | 6      | 3            | 2       | 0           | 11       |
-| **Operators**              | 6      | ~12          | 3       | 0           | ~21      |
+| **Operators**              | 7      | ~12          | 3       | 0           | ~22      |
 | **Functions**              | 4      | ~10          | 3       | 0           | ~17      |
 | **Control Flow**           | 5      | 3            | 1       | 0           | 9        |
 | **If Expressions**         | 0      | 5            | 2       | 0           | 7        |
-| **Classes**                | 0      | ~24          | 2       | 0           | ~26      |
+| **Classes**                | 2      | ~24          | 1       | 0           | ~27      |
 | **Case Classes**           | 11     | 0            | 2       | 0           | 13       |
 | **Sealed Classes**         | 19     | 0            | 1       | 0           | 20       |
 | **Interfaces**             | 0      | ~10          | 0       | 0           | ~10      |
 | **Generics**               | 0      | ~12          | 0       | 0           | ~12      |
 | **Type System**            | 2      | ~30          | 1       | 0           | ~33      |
 | **Type Narrowing**         | 0      | 3            | 3       | 0           | 6        |
-| **Pattern Matching**       | 0      | ~13          | 0       | 0           | ~13      |
+| **Pattern Matching**       | 1      | ~12          | 0       | 0           | ~13      |
 | **Destructuring**          | 0      | ~9           | 0       | 0           | ~9       |
 | **Null Coal. / Opt Chain** | 8      | 0            | 3       | 0           | 11       |
 | **Mixins**                 | 0      | ~10          | 0       | 0           | ~10      |
@@ -516,7 +518,7 @@ tests/language/semantics/
 | **Template Strings**       | 4      | 0            | 0       | 0           | 4        |
 | **Misc**                   | 4      | 2            | 0       | 0           | 6        |
 | **Type Inference**         | 0      | 0            | 0       | 12          | 12       |
-| **TOTAL**                  | **69** | **~168**     | **~29** | **12**      | **~278** |
+| **TOTAL**                  | **73** | **~167**     | **~28** | **12**      | **~280** |
 
 ## Porting Priority
 

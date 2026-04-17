@@ -1,0 +1,140 @@
+// Test that the self-hosted checker can type-check real Zena source files.
+// This catches checker gaps (features used in real code that the checker
+// doesn't handle yet). Each file is compiled with full dependency resolution
+// so cross-module imports are wired up.
+//
+// These tests are currently SKIPPED because the checker has known gaps.
+// Unskip individual files as they check clean.
+
+import { suite, test, testSkip, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { console } from 'zena:console';
+import { Error } from 'zena:error';
+import { i32ToString } from 'zena:string-convert';
+import { CompilerHost } from '../lib/library-loader.zena';
+import {
+  createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult
+} from '../lib/compiler.zena';
+import { loadPackageMap } from '../lib/package-manifest.zena';
+import { PackageConfig } from '../lib/module-resolver.zena';
+import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
+
+// ============================================================================
+// Filesystem-backed CompilerHost
+// ============================================================================
+
+// Filesystem-backed CompilerHost that maps zena:* paths to stdlib files.
+class FsHost implements CompilerHost {
+  #stdlibRoot: String;
+
+  new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
+
+  readFile(path: String): String {
+    if (path.startsWith("zena:")) {
+      // Map zena:array → packages/stdlib/zena/array.zena
+      let moduleName = path.sliceBytes(5, path.length);
+      let fsPath = this.#stdlibRoot + "/" + moduleName + ".zena";
+      return readFile(fsPath);
+    }
+    return readFile(path);
+  }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+let errorDiagnostics = (diags: Array<Diagnostic>): Array<Diagnostic> => {
+  let errors = new Array<Diagnostic>(4);
+  var i = 0;
+  while (i < diags.length) {
+    match (diags[i].severity) {
+      case DiagnosticSeverity.Error: errors.push(diags[i])
+      case _: {}
+    }
+    i += 1;
+  }
+  return errors;
+};
+
+let checkFile = (entryPath: String): Array<Diagnostic> => {
+  let stdlibRoot = "packages/stdlib/zena";
+  let host = new FsHost(stdlibRoot);
+  let packages = loadPackageMap(host, "zena-packages.json");
+  let options = new CompilerOptions("host", stdlibRoot, packages, null);
+  let compiler = createCompiler(host, options);
+  let result = compiler.compile(entryPath);
+  let checkResult = checkCompilation(result);
+  return errorDiagnostics(checkResult.diagnostics);
+};
+
+let printDiagnostics = (errors: Array<Diagnostic>, label: String): void => {
+  if (errors.length > 0) {
+    let count: i32 = errors.length;
+    console.log(label + ": " + i32ToString(count) + " errors");
+    var i = 0;
+    while (i < errors.length && i < 80) {
+      let msg = errors[i].message;
+      console.log("  " + msg);
+      i += 1;
+    }
+    if (errors.length > 80) {
+      console.log("  ... and " + i32ToString(errors.length - 80) + " more");
+    }
+  }
+};
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+export let tests = suite('Checker: Real Files', (): void => {
+
+  // Each test compiles a real compiler source file through the full pipeline.
+  // Files are skipped until they check clean.
+
+  testSkip('checks scope.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/zena-compiler/zena/lib/scope.zena");
+    printDiagnostics(errors, "scope.zena");
+    equal(errors.length, 0);
+  });
+
+  testSkip('checks checker.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/zena-compiler/zena/lib/checker.zena");
+    printDiagnostics(errors, "checker.zena");
+    equal(errors.length, 0);
+  });
+
+  testSkip('checks parser.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/zena-compiler/zena/lib/parser.zena");
+    printDiagnostics(errors, "parser.zena");
+    equal(errors.length, 0);
+  });
+
+  testSkip('checks ast.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/zena-compiler/zena/lib/ast.zena");
+    printDiagnostics(errors, "ast.zena");
+    equal(errors.length, 0);
+  });
+
+  testSkip('checks tokenizer.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/zena-compiler/zena/lib/tokenizer.zena");
+    printDiagnostics(errors, "tokenizer.zena");
+    equal(errors.length, 0);
+  });
+
+  testSkip('checks compiler.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/zena-compiler/zena/lib/compiler.zena");
+    printDiagnostics(errors, "compiler.zena");
+    equal(errors.length, 0);
+  });
+
+  testSkip('checks semantic-model.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/zena-compiler/zena/lib/semantic-model.zena");
+    printDiagnostics(errors, "semantic-model.zena");
+    equal(errors.length, 0);
+  });
+});
