@@ -36,6 +36,7 @@ interface LspExports extends WebAssembly.Exports {
   getHover(path: unknown, offset: number): unknown;
   getHoverType(result: unknown): unknown;
   getHoverLabel(result: unknown): unknown;
+  getHoverDoc(result: unknown): unknown;
   getDocumentSymbols(path: unknown, source: unknown): unknown;
   getSymbolCount(symbols: unknown): number;
   getSymbol(symbols: unknown, index: number): unknown;
@@ -324,7 +325,10 @@ export class ZenaCompilerService {
    * Get hover information at a byte offset.
    * Returns {type, label} or null if no info is available.
    */
-  getHover(path: string, offset: number): {type: string; label: string} | null {
+  getHover(
+    path: string,
+    offset: number,
+  ): {type: string; label: string; doc: string} | null {
     const exports = this.#exports!;
     const readString = this.#readString!;
 
@@ -343,7 +347,11 @@ export class ZenaCompilerService {
       const labelLen = exports.$stringGetLength(labelRef);
       const label = readString(labelRef, labelLen);
 
-      return {type, label};
+      const docRef = exports.getHoverDoc(resultRef);
+      const docLen = exports.$stringGetLength(docRef);
+      const doc = readString(docRef, docLen);
+
+      return {type, label, doc};
     } catch (e) {
       const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
       this.#outputChannel.appendLine(`getHover failed: ${msg}`);

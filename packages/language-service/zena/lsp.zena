@@ -28,14 +28,14 @@ import {
   CompilationResult, typeToString, SemanticModel
 } from 'zena-compiler:compiler';
 import { parse as parseSource } from 'zena-compiler:parser';
-import { Type } from 'zena-compiler:types';
+import { Type, ClassType, InterfaceType, FunctionType } from 'zena-compiler:types';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
   Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
 } from 'zena-compiler:diagnostics';
 import { SymbolInfo, ReferenceMap, DeclarationMap, ScopeResult } from 'zena-compiler:scope';
 import {
-  Node, SourceLocation, Identifier, IdentifierPattern,
+  Comment, Node, SourceLocation, Identifier, IdentifierPattern,
   ThisExpression, MemberExpression, Expression, Module,
   ClassDeclaration, InterfaceDeclaration, EnumDeclaration,
   MixinDeclaration, TypeAliasDeclaration, DeclareFunction,
@@ -46,6 +46,7 @@ import {
   MethodSignature, AccessorSignature,
   SealedVariant, EnumMember
 } from 'zena-compiler:ast';
+import { CommentMap, attachComments } from 'zena-compiler:comment-attachment';
 import { i32ToString } from 'zena:string-convert';
 import { format as formatSource } from 'zena-formatter:printer';
 
@@ -105,12 +106,14 @@ class LspHost implements CompilerHost {
 }
 
 /**
- * Result of a hover query, containing the type string and a display label.
+ * Result of a hover query, containing the type string, display label,
+ * and optional doc comment.
  */
 export class HoverResult {
   typeStr: String;
   label: String;
-  new(this.typeStr, this.label);
+  docComment: String;
+  new(this.typeStr, this.label, this.docComment);
 }
 
 // ============================================================================
@@ -465,6 +468,177 @@ let getPatternName = (pattern: Node): String => match (pattern) {
   case _: ""
 };
 
+// ============================================================================
+// Doc Comment Extraction
+// ============================================================================
+
+/**
+ * Check if a comment is a doc comment (/** ... * / block comments only).
+ */
+let isDocComment = (comment: Comment): boolean => {
+  // Only block comments starting with /** are doc comments.
+  // Line comments (// and ///) are not doc comments.
+  return comment.isBlock && comment.value.length > 0 && comment.value.getByteAt(0) == 42;
+};
+
+/**
+ * Format a block doc comment value into clean text.
+ * Input is the text between delimiters, e.g. "* Docs " for a /** Docs * / comment.
+ * Strips leading/trailing whitespace and * prefixes from each line.
+ */
+let formatBlockDoc = (value: String): String => {
+  var result = "";
+  var pos: i32 = 0;
+  let len = value.length;
+  while (pos < len) {
+    // Find end of current line
+    var lineEnd = pos;
+    while (lineEnd < len && value.getByteAt(lineEnd) != 10) {
+      lineEnd += 1;
+    }
+    // Trim trailing \r
+    var trimEnd = lineEnd;
+    if (trimEnd > pos && value.getByteAt(trimEnd - 1) == 13) { trimEnd -= 1; }
+    // Trim leading whitespace
+    var trimStart = pos;
+    while (trimStart < trimEnd && (value.getByteAt(trimStart) == 32 || value.getByteAt(trimStart) == 9)) {
+      trimStart += 1;
+    }
+    // Strip leading '*'
+    if (trimStart < trimEnd && value.getByteAt(trimStart) == 42) {
+      trimStart += 1;
+      // Strip one space after '*'
+      if (trimStart < trimEnd && value.getByteAt(trimStart) == 32) {
+        trimStart += 1;
+      }
+    }
+    // Trim trailing whitespace
+    while (trimEnd > trimStart && (value.getByteAt(trimEnd - 1) == 32 || value.getByteAt(trimEnd - 1) == 9)) {
+      trimEnd -= 1;
+    }
+    let lineText = value.sliceBytes(trimStart, trimEnd);
+    if (lineText.length > 0) {
+      if (result.length > 0) { result = result + "\n"; }
+      result = result + lineText;
+    }
+    pos = lineEnd + 1;
+  }
+  return result;
+};
+
+/**
+ * Extract and format doc comments from an array of leading comments.
+ * Filters for doc comments only (/** ... * /) and joins them with newlines.
+ */
+let extractDocComment = (comments: Array<Comment>): String => {
+  var result = "";
+  var i: i32 = 0;
+  while (i < comments.length) {
+    let comment = comments[i];
+    if (isDocComment(comment)) {
+      let text = formatBlockDoc(comment.value);
+      if (text.length > 0) {
+        if (result.length > 0) { result = result + "\n"; }
+        result = result + text;
+      }
+    }
+    i += 1;
+  }
+  return result;
+};
+
+/**
+ * Search a class/interface body for the member containing the given
+ * offset and return its leading doc comment.
+ */
+let findMemberDocAtOffset = (body: Array<Node>, offset: i32, commentMap: CommentMap): String => {
+  var j = 0;
+  while (j < body.length) {
+    let member = body[j];
+    if (member.loc != null) {
+      let mLoc = member.loc as SourceLocation;
+      if (offset >= mLoc.start && offset < mLoc.end) {
+        let leading = commentMap.getLeading(member);
+        if (leading != null) {
+          return extractDocComment(leading as Array<Comment>);
+        }
+        return "";
+      }
+    }
+    j += 1;
+  }
+  return "";
+};
+
+/**
+ * Find a doc comment purely by source offset.
+ *
+ * Walks the AST to find the declaration containing the offset, then
+ * checks for leading doc comments on it. This handles class members
+ * (fields, methods, constructors) which aren't in scope reference maps.
+ */
+let findDocCommentByOffset = (ast: Module, offset: i32, commentMap: CommentMap): String => {
+  var i = 0;
+  while (i < ast.body.length) {
+    let stmt = ast.body[i];
+    if (stmt.loc != null) {
+      let sLoc = stmt.loc as SourceLocation;
+      if (offset >= sLoc.start && offset < sLoc.end) {
+        // Check class/interface members first.
+        match (stmt) {
+          case ClassDeclaration {body}: {
+            let memberDoc = findMemberDocAtOffset(body, offset, commentMap);
+            if (memberDoc.length > 0) { return memberDoc; }
+          }
+          case InterfaceDeclaration {body}: {
+            let memberDoc = findMemberDocAtOffset(body, offset, commentMap);
+            if (memberDoc.length > 0) { return memberDoc; }
+          }
+          case _: {}
+        }
+        // Fall back to the statement itself.
+        let leading = commentMap.getLeading(stmt);
+        if (leading != null) {
+          return extractDocComment(leading as Array<Comment>);
+        }
+        break;
+      }
+    }
+    i += 1;
+  }
+  return "";
+};
+
+/**
+ * Find the doc comment for a symbol by looking up its declaration's
+ * leading comments in the CommentMap.
+ *
+ * For ClassDeclaration, InterfaceDeclaration, etc., the comment is
+ * attached directly to the declaration node. For IdentifierPattern
+ * (from variable declarations), we search the module body for the
+ * enclosing statement.
+ */
+let findDocComment = (sym: SymbolInfo, ast: Module, commentMap: CommentMap): String => {
+  let decl = sym.declaration;
+  if (decl == null) { return ""; }
+  let declNode = decl as Node;
+
+  // Direct lookup on the declaration node.
+  let leading = commentMap.getLeading(declNode);
+  if (leading != null) {
+    return extractDocComment(leading as Array<Comment>);
+  }
+
+  // For IdentifierPattern etc., find the enclosing statement using the
+  // declaration's location (not the hover offset).
+  if (declNode.loc != null) {
+    let loc = declNode.loc as SourceLocation;
+    return findDocCommentByOffset(ast, loc.start, commentMap);
+  }
+
+  return "";
+};
+
 /**
  * Stateful language service backed by a persistent Compiler.
  *
@@ -603,7 +777,7 @@ export class LanguageService {
         let classType = findEnclosingClassType(ast, foundNode as Expression, model);
         if (classType == null) { return null; }
         let typeStr = typeToString(classType as Type);
-        return new HoverResult(typeStr, "this: " + typeStr);
+        return new HoverResult(typeStr, "this: " + typeStr, "");
       }
       case MemberExpression {property, loc}: {
         if (property.loc != null) {
@@ -613,7 +787,7 @@ export class LanguageService {
             let memberType = model.getNodeType(foundNode);
             if (memberType != null) {
               let typeStr = typeToString(memberType as Type);
-              return new HoverResult(typeStr, "(property) " + property.name + ": " + typeStr);
+              return new HoverResult(typeStr, "(property) " + property.name + ": " + typeStr, "");
             }
           }
         }
@@ -624,10 +798,12 @@ export class LanguageService {
     // Try to get the type directly from the SemanticModel.
     var nodeType = model.getNodeType(foundNode);
 
-    // For identifiers, also try resolving to the binding type.
+    // Look up the SymbolInfo for this identifier (needed for both
+    // fallback type resolution and doc comment extraction).
     let hasScopeResult = this.#scopeResults.has(path);
+    var symbolInfo: SymbolInfo | null = null;
 
-    if (nodeType == null && hasScopeResult) {
+    if (hasScopeResult) {
       let sr = this.#scopeResults[path];
       let refs = sr.references;
       var maybeInfo = refs.getByOffset(offset);
@@ -636,12 +812,39 @@ export class LanguageService {
         maybeInfo = decls.getByOffset(offset);
       }
       if (maybeInfo != null) {
-        let sym = maybeInfo as SymbolInfo;
-        nodeType = model.getBindingType(sym);
+        symbolInfo = maybeInfo as SymbolInfo;
+        if (nodeType == null) {
+          nodeType = model.getBindingType(symbolInfo as SymbolInfo);
+        }
+        // For type references (e.g. SymbolInfo in HashMap<String, SymbolInfo>),
+        // getBindingType may fail because the reference map stores a different
+        // SymbolInfo (type namespace) than the one the checker used to store
+        // the binding type (value namespace). Try the declaration's node type.
+        if (nodeType == null) {
+          let sym = symbolInfo as SymbolInfo;
+          if (sym.declaration != null) {
+            nodeType = model.getNodeType(sym.declaration as Node);
+          }
+        }
       }
     }
 
-    if (nodeType == null) { return null; }
+    if (nodeType == null) {
+      // Only try class member hover when there's no symbolInfo — i.e., the
+      // cursor is on a class member name at its definition site (which isn't
+      // in the scope's reference or declaration maps). When symbolInfo exists,
+      // the hover is on a reference INSIDE a member, not on the member itself.
+      if (symbolInfo == null) {
+        let memberHover = resolveClassMemberHover(ast, offset, model);
+        if (memberHover != null) {
+          let hr = memberHover as HoverResult;
+          let commentMap = attachComments(ast);
+          let doc = findDocCommentByOffset(ast, offset, commentMap);
+          return new HoverResult(hr.typeStr, hr.label, doc);
+        }
+      }
+      return null;
+    }
 
     let typ = nodeType as Type;
     let typeStr = typeToString(typ);
@@ -653,7 +856,18 @@ export class LanguageService {
       getHoverLabel(foundNode, typeStr, null)
     };
 
-    return new HoverResult(typeStr, label);
+    // Extract doc comment from the symbol's declaration site.
+    // Only use the SymbolInfo-based lookup (follows refs → declaration).
+    // Do NOT fall back to offset-based search here — that would pick up
+    // the enclosing field's or class's doc when hovering on a reference
+    // inside it. Offset-based lookup is only used for class member
+    // definition sites (in resolveClassMemberHover above).
+    let commentMap = attachComments(ast);
+    let docComment = if (symbolInfo != null) {
+      findDocComment(symbolInfo as SymbolInfo, ast, commentMap)
+    } else { "" };
+
+    return new HoverResult(typeStr, label, docComment);
   }
 
   /**
@@ -759,6 +973,89 @@ let findEnclosingClassType = (ast: Module, thisExpr: Expression, model: Semantic
             if (sym != null) {
               return model.getBindingType(sym as SymbolInfo);
             }
+          }
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+  return null;
+};
+
+/**
+ * Resolve hover info for a class member at its definition site.
+ *
+ * The checker stores field/method types in ClassType.fields and
+ * ClassType.methods rather than on the AST nodes themselves. This
+ * function bridges that gap by finding the enclosing ClassDeclaration,
+ * getting its ClassType, and looking up the member by name.
+ */
+let resolveClassMemberHover = (ast: Module, offset: i32, model: SemanticModel): HoverResult | null => {
+  var i = 0;
+  while (i < ast.body.length) {
+    let stmt = ast.body[i];
+    match (stmt) {
+      case ClassDeclaration as cd: {
+        if (cd.loc != null) {
+          let cdLoc = cd.loc as SourceLocation;
+          if (offset >= cdLoc.start && offset < cdLoc.end) {
+            // Get the ClassType for this class.
+            var classTypeRef = model.getNodeType(stmt);
+            if (classTypeRef == null) {
+              let sym = model.resolveDeclaration(stmt);
+              if (sym != null) {
+                classTypeRef = model.getBindingType(sym as SymbolInfo);
+              }
+            }
+            if (classTypeRef == null) { return null; }
+            let ct = classTypeRef as ClassType;
+
+            // Search class body for the member whose NAME is at the offset.
+            // Only match the name span, not the entire member span — otherwise
+            // type refs and expressions inside the member body would be caught.
+            var j = 0;
+            while (j < cd.body.length) {
+              let member = cd.body[j];
+              match (member) {
+                case FieldDefinition as fd: {
+                  if (fd.name.loc != null) {
+                    let nLoc = fd.name.loc as SourceLocation;
+                    if (offset >= nLoc.start && offset < nLoc.end) {
+                      let fieldName = getNodeName(fd.name);
+                      if (fieldName.length > 0 && ct.fields.has(fieldName)) {
+                        let fieldType = ct.fields[fieldName];
+                        let typeStr = typeToString(fieldType);
+                        let isMut = ct.fieldMutability.has(fieldName) && ct.fieldMutability[fieldName];
+                        let prefix = if (isMut) { "(property) var " } else { "(property) " };
+                        return new HoverResult(typeStr, prefix + fieldName + ": " + typeStr, "");
+                      }
+                    }
+                  }
+                }
+                case MethodDefinition as md: {
+                  if (md.name.loc != null) {
+                    let nLoc = md.name.loc as SourceLocation;
+                    if (offset >= nLoc.start && offset < nLoc.end) {
+                      let methodName = getNodeName(md.name);
+                      if (methodName == "new") {
+                        if (ct.constructorType != null) {
+                          let typeStr = typeToString(ct.constructorType as Type);
+                          return new HoverResult(typeStr, "(constructor) new" + typeStr, "");
+                        }
+                      } else if (methodName.length > 0 && ct.methods.has(methodName)) {
+                        let methodType = ct.methods[methodName];
+                        let typeStr = typeToString(methodType as Type);
+                        return new HoverResult(typeStr, "(method) " + methodName + typeStr, "");
+                      }
+                    }
+                  }
+                }
+                case _: {}
+              }
+              j += 1;
+            }
+            return null;
           }
         }
       }
@@ -970,6 +1267,14 @@ export let getHoverType = (result: HoverResult): String => {
  */
 export let getHoverLabel = (result: HoverResult): String => {
   return result.label;
+};
+
+/**
+ * Get the doc comment from a hover result.
+ * Returns an empty string if no doc comment is available.
+ */
+export let getHoverDoc = (result: HoverResult): String => {
+  return result.docComment;
 };
 
 // ============================================================================

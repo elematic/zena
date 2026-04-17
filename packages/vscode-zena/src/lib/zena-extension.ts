@@ -182,6 +182,9 @@ export class ZenaExtension {
 
             const contents = new vscode.MarkdownString();
             contents.appendCodeblock(result.label, 'zena');
+            if (result.doc) {
+              contents.appendMarkdown('\n---\n' + result.doc);
+            }
             return new vscode.Hover(contents, wordRange);
           } catch (e) {
             const msg = formatError(e);

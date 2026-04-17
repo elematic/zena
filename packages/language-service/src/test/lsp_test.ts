@@ -41,6 +41,7 @@ interface LspExports extends WebAssembly.Exports {
   getHover(path: unknown, offset: number): unknown;
   getHoverType(result: unknown): unknown;
   getHoverLabel(result: unknown): unknown;
+  getHoverDoc(result: unknown): unknown;
   getDocumentSymbols(path: unknown, source: unknown): unknown;
   getSymbolCount(symbols: unknown): number;
   getSymbol(symbols: unknown, index: number): unknown;
@@ -462,9 +463,12 @@ export final class MyString {
     const typeLen = exports.$stringGetLength(typeRef);
     const labelRef = exports.getHoverLabel(resultRef);
     const labelLen = exports.$stringGetLength(labelRef);
+    const docRef = exports.getHoverDoc(resultRef);
+    const docLen = exports.$stringGetLength(docRef);
     return {
       type: readString(typeRef, typeLen),
       label: readString(labelRef, labelLen),
+      doc: readString(docRef, docLen),
     };
   }
 
@@ -587,6 +591,145 @@ let f = new Foo(42);`;
       hover!.label.startsWith('class '),
       `Expected class prefix, got: ${hover!.label}`,
     );
+  });
+
+  test('getHover: block doc comment on variable', () => {
+    const src = '/** The answer to everything */\nlet x = 42;';
+    const offset = offsetOf(src, 'x', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'The answer to everything');
+  });
+
+  test('getHover: block doc comment on class', () => {
+    const src =
+      '/** A 2D point */\nclass Point {\n  x: f64;\n  y: f64;\n  new(this.x, this.y);\n}\nlet p = new Point(1.0, 2.0);';
+    // Hover over "Point" in "new Point(...)" (a reference, not declaration)
+    const offset = offsetOf(src, 'Point', 2);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'A 2D point');
+  });
+
+  test('getHover: triple-slash is not a doc comment', () => {
+    const src = '/// Not a doc comment\nlet ticks: i32 = 0;';
+    const offset = offsetOf(src, 'ticks', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, '');
+  });
+
+  test('getHover: multi-line block doc comment', () => {
+    const src =
+      '/**\n * Add two numbers.\n * Returns their sum.\n */\nlet add = (a: i32, b: i32): i32 => a + b;';
+    const offset = offsetOf(src, 'add', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'Add two numbers.\nReturns their sum.');
+  });
+
+  test('getHover: no doc comment returns empty string', () => {
+    const src = 'let x = 42;';
+    const offset = offsetOf(src, 'x', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, '');
+  });
+
+  test('getHover: regular comment is not a doc comment', () => {
+    const src = '// Just a regular comment\nlet x = 42;';
+    const offset = offsetOf(src, 'x', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, '');
+  });
+
+  test('getHover: doc comment on class field at definition', () => {
+    const src = `class Foo {
+  /** The value */
+  x: i32;
+  new(this.x);
+}`;
+    // Hover on "x" in the field definition (first "x")
+    const offset = offsetOf(src, 'x', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for field');
+    assert.strictEqual(hover!.doc, 'The value');
+  });
+
+  test('getHover: doc comment on method at definition', () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+  /** Get the value */
+  getX(): i32 { return this.x; }
+}`;
+    const offset = offsetOf(src, 'getX', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for method');
+    assert.strictEqual(hover!.doc, 'Get the value');
+  });
+
+  test('getHover: doc on top-level let at definition site', () => {
+    const src = '/** The magic number */\nlet magic = 42;';
+    const offset = offsetOf(src, 'magic', 2);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'The magic number');
+  });
+
+  test('getHover: type ref inside field initializer does not leak field doc', () => {
+    const src = `class Scope {
+  /** Map of values */
+  #values = new HashMap<String, SymbolInfo>();
+  #types = new HashMap<String, SymbolInfo>();
+}
+/** Info about a name */
+class SymbolInfo {}
+class HashMap<K, V> {}`;
+    // Hover on "SymbolInfo" type arg in #values field — should show
+    // SymbolInfo class doc, not the #values field doc.
+    const offset = offsetOf(src, 'SymbolInfo', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    if (hover && hover.doc) {
+      assert.ok(
+        !hover.doc.includes('Map of values'),
+        `Should not show enclosing field doc, got: "${hover.doc}"`,
+      );
+    }
+  });
+
+  test('getHover: type ref inside undocumented field does not leak class doc', () => {
+    const src = `/** The Scope class */
+class Scope {
+  #types = new HashMap<String, SymbolInfo>();
+}
+class SymbolInfo {}
+class HashMap<K, V> {}`;
+    // Hover on "SymbolInfo" in #types — should NOT show Scope class doc.
+    const offset = offsetOf(src, 'SymbolInfo', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    if (hover && hover.doc) {
+      assert.ok(
+        !hover.doc.includes('The Scope class'),
+        `Should not show enclosing class doc, got: "${hover.doc}"`,
+      );
+    }
+  });
+
+  test('getHover: ref inside class body does not show next declaration doc', () => {
+    const src = `let helper = (): i32 => 0;
+/** Info about a name */
+class SymbolInfo {
+  id: i32;
+  new() : id = helper();
+}`;
+    // Hover on "helper" ref inside SymbolInfo constructor — should NOT
+    // show the SymbolInfo class doc.
+    const offset = offsetOf(src, 'helper', 2);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for helper ref');
+    assert.strictEqual(hover!.doc, '', 'helper has no doc comment');
   });
 
   // ========================================================================
