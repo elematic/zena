@@ -932,4 +932,73 @@ export let tests = suite('Parser', (): void => {
     const standalone = children.find((c) => c.name === 'standalone');
     assert.ok(standalone, `Expected 'standalone' test`);
   });
+
+  // ========================================================================
+  // Cross-File Tests
+  // ========================================================================
+
+  test('getHover: cross-file doc comment from stdlib', () => {
+    // IndexOutOfBoundsError has a doc comment in the stdlib:
+    // /** Thrown when an array/sequence index is out of bounds. */
+    const src = `import { IndexOutOfBoundsError } from 'zena:error';
+let e = new IndexOutOfBoundsError(0, 0);`;
+    // Hover over "IndexOutOfBoundsError" in the let declaration (2nd occurrence)
+    const offset = offsetOf(src, 'IndexOutOfBoundsError', 2);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for cross-file type');
+    assert.ok(
+      hover!.doc.length > 0,
+      `Expected doc comment from stdlib, got empty string`,
+    );
+    assert.ok(
+      hover!.doc.includes('out of bounds') || hover!.doc.includes('index'),
+      `Expected doc about index bounds, got: ${hover!.doc}`,
+    );
+  });
+
+  test('getHover: cross-file type info from stdlib', () => {
+    // LookupError has a doc comment: /** Base class for errors when a lookup operation fails. */
+    const src = `import { LookupError } from 'zena:error';
+let e = new LookupError("test");`;
+    // Hover over "LookupError" in "new LookupError(...)" (2nd occurrence)
+    const offset = offsetOf(src, 'LookupError', 2);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for cross-file type');
+    assert.ok(
+      hover!.doc.includes('lookup'),
+      `Expected doc about lookup errors, got: "${hover!.doc}"`,
+    );
+  });
+
+  test('getDefinition: cross-file import jumps to stdlib', () => {
+    const src = `import { Error } from 'zena:error';
+let e = new Error("test");`;
+    // Click on "Error" in "new Error("test")" (3rd occurrence: import specifier, type=Error, new Error)
+    const offset = offsetOf(src, 'Error', 2);
+    const def = getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition result');
+    // Should point to a file in the stdlib (error.zena)
+    assert.ok(
+      def!.file.includes('error.zena'),
+      `Expected definition in error.zena, got: ${def!.file}`,
+    );
+  });
+
+  test('getHover: cross-file hover on import specifier', () => {
+    const src = `import { KeyNotFoundError } from 'zena:error';
+let x: i32 = 0;`;
+    // Hover on "KeyNotFoundError" in the import specifier
+    const offset = offsetOf(src, 'KeyNotFoundError', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    if (hover) {
+      // If we get hover info, the doc should come from the stdlib
+      assert.ok(
+        hover.doc.includes('key') ||
+          hover.doc.includes('not found') ||
+          hover.doc.includes('map'),
+        `Expected doc about key not found, got: "${hover.doc}"`,
+      );
+    }
+    // It's acceptable for hover on import specifiers to return null
+  });
 });

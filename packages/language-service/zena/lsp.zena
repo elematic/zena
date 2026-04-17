@@ -25,7 +25,7 @@ import { Error } from 'zena:error';
 import {
   Compiler, createCompiler, checkCompilation, CompilerOptions, CompilerHost,
   ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition,
-  CompilationResult, typeToString, SemanticModel
+  CompilationResult, typeToString, SemanticModel, SourceFile, CheckResult
 } from 'zena-compiler:compiler';
 import { parse as parseSource } from 'zena-compiler:parser';
 import { Type, ClassType, InterfaceType, FunctionType } from 'zena-compiler:types';
@@ -33,13 +33,13 @@ import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
   Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
 } from 'zena-compiler:diagnostics';
-import { SymbolInfo, ReferenceMap, DeclarationMap, ScopeResult } from 'zena-compiler:scope';
+import { SymbolInfo, ReferenceMap, DeclarationMap, ScopeResult, ModuleExports } from 'zena-compiler:scope';
 import {
   Comment, Node, SourceLocation, Identifier, IdentifierPattern,
   ThisExpression, MemberExpression, Expression, Module,
   ClassDeclaration, InterfaceDeclaration, EnumDeclaration,
   MixinDeclaration, TypeAliasDeclaration, DeclareFunction,
-  SymbolDeclaration, ImportDeclaration,
+  SymbolDeclaration, ImportDeclaration, ImportSpecifier,
   Parameter, Statement, VariableDeclaration, ExpressionStatement,
   BlockStatement, FunctionExpression, CallExpression, StringLiteral,
   MethodDefinition, FieldDefinition, AccessorDeclaration,
@@ -73,6 +73,19 @@ class LspHost implements CompilerHost {
   #stdlibRoot: String;
 
   new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
+
+  /**
+   * Resolve a canonical path to a filesystem path.
+   * For stdlib modules (e.g., "zena:error"), maps to the actual file.
+   * For regular paths, returns the input unchanged.
+   */
+  resolveToFilesystemPath(path: String): String {
+    if (path.startsWith("zena:")) {
+      let moduleName = path.sliceBytes(5, path.length);
+      return this.#stdlibRoot + "/" + moduleName + ".zena";
+    }
+    return path;
+  }
 
   /**
    * Register or update an open document's source.
@@ -640,6 +653,150 @@ let findDocComment = (sym: SymbolInfo, ast: Module, commentMap: CommentMap): Str
 };
 
 /**
+ * Find the doc comment for a cross-file symbol.
+ *
+ * When a symbol's declaration is an ImportSpecifier, we follow the import
+ * to the dependency module to find the original declaration and its doc comment.
+ */
+let findCrossFileDocComment = (sym: SymbolInfo, compiler: Compiler): String => {
+  let origSym = resolveImportedSymbol(sym, compiler);
+  if (origSym == null) { return ""; }
+  let orig = origSym as SymbolInfo;
+
+  // Get the source file for the original symbol's module.
+  let sourceFile = compiler.getSourceFile(orig.modulePath);
+  if (sourceFile == null) { return ""; }
+  let sf = sourceFile as SourceFile;
+
+  let depAst = sf.ast;
+  let depCommentMap = attachComments(depAst);
+
+  return findDocComment(orig, depAst, depCommentMap);
+};
+
+/**
+ * Resolve the filesystem path of the module that exports an imported symbol.
+ *
+ * Given a SymbolInfo whose declaration is an ImportSpecifier, resolves the
+ * import to find the actual file path of the dependency module.
+ */
+let resolveImportFilePath = (sym: SymbolInfo, compiler: Compiler): String => {
+  if (sym.declaration == null) { return ""; }
+  let decl = sym.declaration as Node;
+  if (!(decl is ImportSpecifier)) { return ""; }
+
+  let spec = decl as ImportSpecifier;
+
+  // Find which file this symbol was declared in.
+  let ownerFile = compiler.getSourceFile(sym.modulePath);
+  if (ownerFile == null) { return ""; }
+  let sf = ownerFile as SourceFile;
+
+  // Walk the AST to find the ImportDeclaration that contains this specifier.
+  var moduleSpecifier = "";
+  var i = 0;
+  while (i < sf.ast.body.length) {
+    match (sf.ast.body[i]) {
+      case ImportDeclaration {moduleSpecifier as ms, imports}: {
+        var j = 0;
+        while (j < imports.length) {
+          if (imports[j].loc != null && spec.loc != null) {
+            let specLoc = spec.loc as SourceLocation;
+            let impLoc = imports[j].loc as SourceLocation;
+            if (specLoc.start == impLoc.start) {
+              moduleSpecifier = ms.value;
+            }
+          }
+          j += 1;
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+
+  if (moduleSpecifier.length == 0) { return ""; }
+
+  // Resolve the specifier to a canonical path.
+  if (!sf.imports.has(moduleSpecifier)) { return ""; }
+  let depPath = sf.imports[moduleSpecifier];
+
+  // Get the dependency's actual SourceFile to return the real filesystem path.
+  let depFile = compiler.getSourceFile(depPath);
+  if (depFile == null) { return depPath; }
+  return (depFile as SourceFile).path;
+};
+
+/**
+ * Resolve an imported symbol back to the original export in its source module.
+ *
+ * Given a SymbolInfo whose declaration is an ImportSpecifier, walks the AST
+ * to find the parent ImportDeclaration, resolves the module specifier to
+ * a canonical path, then looks up the exported SymbolInfo from the dependency.
+ *
+ * Returns null if the symbol is not an import or cannot be resolved.
+ */
+let resolveImportedSymbol = (sym: SymbolInfo, compiler: Compiler): SymbolInfo | null => {
+  if (sym.declaration == null) { return null; }
+  let decl = sym.declaration as Node;
+  if (!(decl is ImportSpecifier)) { return null; }
+
+  let spec = decl as ImportSpecifier;
+  let importedName = spec.imported.name;
+
+  // Find which file this symbol was declared in.
+  let ownerFile = compiler.getSourceFile(sym.modulePath);
+  if (ownerFile == null) { return null; }
+  let sf = ownerFile as SourceFile;
+
+  // Walk the AST to find the ImportDeclaration that contains this specifier.
+  var moduleSpecifier = "";
+  var i = 0;
+  while (i < sf.ast.body.length) {
+    match (sf.ast.body[i]) {
+      case ImportDeclaration {moduleSpecifier as ms, imports}: {
+        var j = 0;
+        while (j < imports.length) {
+          // Check if this is the same specifier by comparing locations.
+          if (imports[j].loc != null && spec.loc != null) {
+            let specLoc = spec.loc as SourceLocation;
+            let impLoc = imports[j].loc as SourceLocation;
+            if (specLoc.start == impLoc.start) {
+              moduleSpecifier = ms.value;
+            }
+          }
+          j += 1;
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+
+  if (moduleSpecifier.length == 0) { return null; }
+
+  // Resolve the specifier to a canonical path using the source file's import map.
+  if (!sf.imports.has(moduleSpecifier)) { return null; }
+  let depPath = sf.imports[moduleSpecifier];
+
+  // Get the dependency's source file and scope result.
+  let depFile = compiler.getSourceFile(depPath);
+  if (depFile == null) { return null; }
+  let dep = depFile as SourceFile;
+  if (dep.scopeResult == null) { return null; }
+  let depScope = dep.scopeResult as ScopeResult;
+  let depExports = depScope.exports;
+
+  // Look up the original exported symbol.
+  let typeExport = depExports.getType(importedName);
+  if (typeExport != null) { return typeExport; }
+  let valueExport = depExports.getValue(importedName);
+  if (valueExport != null) { return valueExport; }
+
+  return null;
+};
+
+/**
  * Stateful language service backed by a persistent Compiler.
  *
  * Owns the compiler host, compiler instance, and cached analysis
@@ -672,9 +829,15 @@ export class LanguageService {
       this.#compiler.invalidate(path);
       let result = this.#compiler.compile(path);
 
-      // Cache scope result and compilation for getDefinition()/getHover().
-      if (result.entry.scopeResult != null) {
-        this.#scopeResults.set(path, result.entry.scopeResult as ScopeResult);
+      // Cache scope results for ALL files in the compilation (not just the entry)
+      // so that getDefinition()/getHover() work when navigating into dependencies.
+      var fi = 0;
+      while (fi < result.files.length) {
+        let sf = result.files[fi];
+        if (sf.scopeResult != null) {
+          this.#scopeResults.set(sf.path, sf.scopeResult as ScopeResult);
+        }
+        fi += 1;
       }
       this.#compilations.set(path, result);
 
@@ -711,6 +874,26 @@ export class LanguageService {
     if (maybeInfo != null) {
       let sym = maybeInfo as SymbolInfo;
 
+      // For imported symbols, resolve through the import to the original
+      // declaration in the dependency module.
+      if (sym.declaration != null && (sym.declaration as Node) is ImportSpecifier) {
+        let origSym = resolveImportedSymbol(sym, this.#compiler);
+        let depFilePath = resolveImportFilePath(sym, this.#compiler);
+        if (origSym != null && depFilePath.length > 0) {
+          let orig = origSym as SymbolInfo;
+          if (orig.declaration != null) {
+            let origDecl = orig.declaration as Node;
+            if (origDecl.loc != null) {
+              let loc = origDecl.loc as SourceLocation;
+              // Convert canonical paths (e.g., "zena:error") to filesystem paths.
+              let fsPath = this.#host.resolveToFilesystemPath(depFilePath);
+              return new SourceSpan(fsPath, loc.start, loc.end - loc.start, loc.line, loc.column);
+            }
+          }
+        }
+        // Fall through: if we can't resolve the import, point to the import specifier itself.
+      }
+
       let decl = sym.declaration;
       if (decl == null) { return null; }
       let declNode = decl as Node;
@@ -727,13 +910,26 @@ export class LanguageService {
     }
 
     // Fallback: on-demand member access resolution (e.g., p.x → FieldDefinition).
-    if (this.#compilations.has(path) && this.#cachedCheckResult != null) {
-      let compilation = this.#compilations[path];
+    if (this.#cachedCheckResult != null) {
       let checkResult = this.#cachedCheckResult as ProgramCheckResult;
-      let entryPath = compilation.entry.path;
-      if (checkResult.results.has(entryPath)) {
-        let entryModel = checkResult.results[entryPath].model;
-        return resolveMemberDefinition(compilation.entry.ast, offset, entryModel, scopeResult, this.#compiler);
+
+      // Try entry compilation first.
+      if (this.#compilations.has(path)) {
+        let compilation = this.#compilations[path];
+        let entryPath = compilation.entry.path;
+        if (checkResult.results.has(entryPath)) {
+          let entryModel = checkResult.results[entryPath].model;
+          return resolveMemberDefinition(compilation.entry.ast, offset, entryModel, scopeResult, this.#compiler);
+        }
+      }
+
+      // For dependency files, use the ProgramCheckResult + compiler cache.
+      if (checkResult.results.has(path)) {
+        let depModel = checkResult.results[path].model;
+        let sf = this.#compiler.getSourceFile(path);
+        if (sf != null) {
+          return resolveMemberDefinition((sf as SourceFile).ast, offset, depModel, scopeResult, this.#compiler);
+        }
       }
     }
 
@@ -747,23 +943,46 @@ export class LanguageService {
    * or null if no type information is available at the offset.
    */
   getHover(path: String, offset: i32): HoverResult | null {
-    if (!this.#compilations.has(path) || this.#cachedCheckResult == null) {
+    if (this.#cachedCheckResult == null) {
       return null;
     }
 
-    let compilation = this.#compilations[path];
     let checkResult = this.#cachedCheckResult as ProgramCheckResult;
-    let entryPath = compilation.entry.path;
 
-    if (!checkResult.results.has(entryPath)) {
+    // Try to get the model and AST for the requested file.
+    // First check if we have a compilation with this as the entry file.
+    // Otherwise, look up the file from ProgramCheckResult + Compiler cache.
+    var model: SemanticModel | null = null;
+    var ast: Module | null = null;
+
+    if (this.#compilations.has(path)) {
+      let compilation = this.#compilations[path];
+      let entryPath = compilation.entry.path;
+      if (checkResult.results.has(entryPath)) {
+        model = checkResult.results[entryPath].model;
+        ast = compilation.entry.ast;
+      }
+    }
+
+    // For dependency files (navigated to via goto-def), fall back to
+    // ProgramCheckResult and the compiler's source file cache.
+    if (model == null && checkResult.results.has(path)) {
+      model = checkResult.results[path].model;
+      let sf = this.#compiler.getSourceFile(path);
+      if (sf != null) {
+        ast = (sf as SourceFile).ast;
+      }
+    }
+
+    if (model == null || ast == null) {
       return null;
     }
 
-    let model = checkResult.results[entryPath].model;
-    let ast = compilation.entry.ast;
+    let theModel = model as SemanticModel;
+    let theAst = ast as Module;
 
     // Find the deepest AST node at the cursor position.
-    let node = findNodeAtOffset(ast, offset);
+    let node = findNodeAtOffset(theAst, offset);
     if (node == null) { return null; }
     let foundNode = node as Node;
 
@@ -774,7 +993,7 @@ export class LanguageService {
     //  on the property identifier.)
     match (foundNode) {
       case ThisExpression: {
-        let classType = findEnclosingClassType(ast, foundNode as Expression, model);
+        let classType = findEnclosingClassType(theAst, foundNode as Expression, theModel);
         if (classType == null) { return null; }
         let typeStr = typeToString(classType as Type);
         return new HoverResult(typeStr, "this: " + typeStr, "");
@@ -784,7 +1003,7 @@ export class LanguageService {
           let propLoc = property.loc as SourceLocation;
           if (offset >= propLoc.start && offset < propLoc.end) {
             // Hovering on the property name — use the MemberExpression's type.
-            let memberType = model.getNodeType(foundNode);
+            let memberType = theModel.getNodeType(foundNode);
             if (memberType != null) {
               let typeStr = typeToString(memberType as Type);
               return new HoverResult(typeStr, "(property) " + property.name + ": " + typeStr, "");
@@ -796,7 +1015,7 @@ export class LanguageService {
     }
 
     // Try to get the type directly from the SemanticModel.
-    var nodeType = model.getNodeType(foundNode);
+    var nodeType = theModel.getNodeType(foundNode);
 
     // Look up the SymbolInfo for this identifier (needed for both
     // fallback type resolution and doc comment extraction).
@@ -814,7 +1033,7 @@ export class LanguageService {
       if (maybeInfo != null) {
         symbolInfo = maybeInfo as SymbolInfo;
         if (nodeType == null) {
-          nodeType = model.getBindingType(symbolInfo as SymbolInfo);
+          nodeType = theModel.getBindingType(symbolInfo as SymbolInfo);
         }
         // For type references (e.g. SymbolInfo in HashMap<String, SymbolInfo>),
         // getBindingType may fail because the reference map stores a different
@@ -823,7 +1042,14 @@ export class LanguageService {
         if (nodeType == null) {
           let sym = symbolInfo as SymbolInfo;
           if (sym.declaration != null) {
-            nodeType = model.getNodeType(sym.declaration as Node);
+            // For imported symbols, the declaration is an ImportSpecifier in the
+            // current file. The declaration offset won't match anything useful in
+            // the current model. Resolve through the dependency's model instead.
+            if (sym.declaration as Node is ImportSpecifier) {
+              nodeType = this.#getCrossFileNodeType(sym);
+            } else {
+              nodeType = theModel.getNodeType(sym.declaration as Node);
+            }
           }
         }
       }
@@ -835,11 +1061,11 @@ export class LanguageService {
       // in the scope's reference or declaration maps). When symbolInfo exists,
       // the hover is on a reference INSIDE a member, not on the member itself.
       if (symbolInfo == null) {
-        let memberHover = resolveClassMemberHover(ast, offset, model);
+        let memberHover = resolveClassMemberHover(theAst, offset, theModel);
         if (memberHover != null) {
           let hr = memberHover as HoverResult;
-          let commentMap = attachComments(ast);
-          let doc = findDocCommentByOffset(ast, offset, commentMap);
+          let commentMap = attachComments(theAst);
+          let doc = findDocCommentByOffset(theAst, offset, commentMap);
           return new HoverResult(hr.typeStr, hr.label, doc);
         }
       }
@@ -862,12 +1088,48 @@ export class LanguageService {
     // the enclosing field's or class's doc when hovering on a reference
     // inside it. Offset-based lookup is only used for class member
     // definition sites (in resolveClassMemberHover above).
-    let commentMap = attachComments(ast);
+    let commentMap = attachComments(theAst);
     let docComment = if (symbolInfo != null) {
-      findDocComment(symbolInfo as SymbolInfo, ast, commentMap)
+      let sym = symbolInfo as SymbolInfo;
+      // For imported symbols, follow the import to the source module.
+      if (sym.declaration != null && (sym.declaration as Node) is ImportSpecifier) {
+        findCrossFileDocComment(sym, this.#compiler)
+      } else {
+        findDocComment(sym, theAst, commentMap)
+      }
     } else { "" };
 
     return new HoverResult(typeStr, label, docComment);
+  }
+
+  /**
+   * Look up a cross-file symbol's type from its source module's SemanticModel.
+   *
+   * When a symbol is imported from another module, its declaration is an
+   * ImportSpecifier in the current file. We resolve through the import to
+   * the original symbol in the dependency module and look up its type there.
+   */
+  #getCrossFileNodeType(sym: SymbolInfo): Type | null {
+    if (this.#cachedCheckResult == null) { return null; }
+    let checkResult = this.#cachedCheckResult as ProgramCheckResult;
+
+    // Resolve through the import to find the original symbol.
+    let origSym = resolveImportedSymbol(sym, this.#compiler);
+    if (origSym == null) { return null; }
+    let orig = origSym as SymbolInfo;
+
+    let modulePath = orig.modulePath;
+    if (!checkResult.results.has(modulePath)) { return null; }
+    let depModel = checkResult.results[modulePath].model;
+
+    // Try binding type first (keyed by SymbolInfo.id — stable across modules).
+    let bt = depModel.getBindingType(orig);
+    if (bt != null) { return bt; }
+    // Fall back to node type (keyed by declaration offset — only valid in the source module).
+    if (orig.declaration != null) {
+      return depModel.getNodeType(orig.declaration as Node);
+    }
+    return null;
   }
 
   /**
