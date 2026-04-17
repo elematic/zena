@@ -36,10 +36,34 @@ interface LspExports extends WebAssembly.Exports {
   getHover(path: unknown, offset: number): unknown;
   getHoverType(result: unknown): unknown;
   getHoverLabel(result: unknown): unknown;
+  getDocumentSymbols(path: unknown, source: unknown): unknown;
+  getSymbolCount(symbols: unknown): number;
+  getSymbol(symbols: unknown, index: number): unknown;
+  getSymbolName(sym: unknown): unknown;
+  getSymbolKind(sym: unknown): number;
+  getSymbolStart(sym: unknown): number;
+  getSymbolEnd(sym: unknown): number;
+  getSymbolSelStart(sym: unknown): number;
+  getSymbolSelEnd(sym: unknown): number;
+  getSymbolChildCount(sym: unknown): number;
+  getSymbolChild(sym: unknown, index: number): unknown;
   $stringGetByte(str: unknown, index: number): number;
   $stringGetLength(str: unknown): number;
   $stringCreate(len: number): unknown;
   $stringSetByte(str: unknown, index: number, value: number): void;
+}
+
+/**
+ * A document symbol with optional children for the outline view.
+ */
+export interface DocumentSymbolInfo {
+  name: string;
+  kind: number;
+  start: number;
+  end: number;
+  selStart: number;
+  selEnd: number;
+  children: DocumentSymbolInfo[];
 }
 
 /**
@@ -325,5 +349,94 @@ export class ZenaCompilerService {
       this.#outputChannel.appendLine(`getHover failed: ${msg}`);
       return null;
     }
+  }
+
+  /**
+   * Get document symbols for the outline view.
+   * Returns a tree of symbols (classes with members, test suites with tests).
+   */
+  getDocumentSymbols(path: string, source: string): DocumentSymbolInfo[] {
+    const exports = this.#exports!;
+    const readString = this.#readString!;
+
+    try {
+      const pathRef = this.#writeString!(path);
+      const sourceRef = this.#writeString!(source);
+      const symbolsRef = exports.getDocumentSymbols(pathRef, sourceRef);
+      return this.#readSymbols(symbolsRef);
+    } catch (e) {
+      const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
+      this.#outputChannel.appendLine(`getDocumentSymbols failed: ${msg}`);
+      return [];
+    }
+  }
+
+  /**
+   * Read an Array<DocumentSymbol> from WASM into JS objects, recursively.
+   */
+  #readSymbols(symbolsRef: unknown): DocumentSymbolInfo[] {
+    const exports = this.#exports!;
+    const readString = this.#readString!;
+    const count = exports.getSymbolCount(symbolsRef);
+    const result: DocumentSymbolInfo[] = [];
+
+    for (let i = 0; i < count; i++) {
+      const symRef = exports.getSymbol(symbolsRef, i);
+      const nameRef = exports.getSymbolName(symRef);
+      const nameLen = exports.$stringGetLength(nameRef);
+      const name = readString(nameRef, nameLen);
+      const kind = exports.getSymbolKind(symRef);
+      const start = exports.getSymbolStart(symRef);
+      const end = exports.getSymbolEnd(symRef);
+      const selStart = exports.getSymbolSelStart(symRef);
+      const selEnd = exports.getSymbolSelEnd(symRef);
+
+      // Read children recursively.
+      const childCount = exports.getSymbolChildCount(symRef);
+      const children: DocumentSymbolInfo[] = [];
+      for (let j = 0; j < childCount; j++) {
+        const childRef = exports.getSymbolChild(symRef, j);
+        const cNameRef = exports.getSymbolName(childRef);
+        const cNameLen = exports.$stringGetLength(cNameRef);
+        const cName = readString(cNameRef, cNameLen);
+        const cKind = exports.getSymbolKind(childRef);
+        const cStart = exports.getSymbolStart(childRef);
+        const cEnd = exports.getSymbolEnd(childRef);
+        const cSelStart = exports.getSymbolSelStart(childRef);
+        const cSelEnd = exports.getSymbolSelEnd(childRef);
+
+        // Support 2 levels of nesting (suite > test).
+        const grandchildren: DocumentSymbolInfo[] = [];
+        const gcCount = exports.getSymbolChildCount(childRef);
+        for (let k = 0; k < gcCount; k++) {
+          const gcRef = exports.getSymbolChild(childRef, k);
+          const gcNameRef = exports.getSymbolName(gcRef);
+          const gcNameLen = exports.$stringGetLength(gcNameRef);
+          grandchildren.push({
+            name: readString(gcNameRef, gcNameLen),
+            kind: exports.getSymbolKind(gcRef),
+            start: exports.getSymbolStart(gcRef),
+            end: exports.getSymbolEnd(gcRef),
+            selStart: exports.getSymbolSelStart(gcRef),
+            selEnd: exports.getSymbolSelEnd(gcRef),
+            children: [],
+          });
+        }
+
+        children.push({
+          name: cName,
+          kind: cKind,
+          start: cStart,
+          end: cEnd,
+          selStart: cSelStart,
+          selEnd: cSelEnd,
+          children: grandchildren,
+        });
+      }
+
+      result.push({name, kind, start, end, selStart, selEnd, children});
+    }
+
+    return result;
   }
 }

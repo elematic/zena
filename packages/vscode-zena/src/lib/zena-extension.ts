@@ -232,6 +232,48 @@ export class ZenaExtension {
         },
       }),
     );
+
+    // Document symbols / outline.
+    context.subscriptions.push(
+      vscode.languages.registerDocumentSymbolProvider('zena', {
+        provideDocumentSymbols: (document) => {
+          if (!this.#compiler.isReady) return [];
+          try {
+            const source = document.getText();
+            const path = document.uri.fsPath;
+            const symbols = this.#compiler.getDocumentSymbols(path, source);
+
+            const toDocumentSymbol = (
+              info: import('./compiler-service.js').DocumentSymbolInfo,
+            ): vscode.DocumentSymbol => {
+              const range = new vscode.Range(
+                document.positionAt(info.start),
+                document.positionAt(info.end),
+              );
+              const selRange = new vscode.Range(
+                document.positionAt(info.selStart),
+                document.positionAt(info.selEnd),
+              );
+              const sym = new vscode.DocumentSymbol(
+                info.name,
+                '',
+                info.kind as vscode.SymbolKind,
+                range,
+                selRange,
+              );
+              sym.children = info.children.map(toDocumentSymbol);
+              return sym;
+            };
+
+            return symbols.map(toDocumentSymbol);
+          } catch (e) {
+            const msg = formatError(e);
+            outputChannel.appendLine(`Document symbols failed: ${msg}`);
+            return [];
+          }
+        },
+      }),
+    );
   }
 
   #checkDocument(document: vscode.TextDocument) {

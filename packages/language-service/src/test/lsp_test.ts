@@ -41,6 +41,17 @@ interface LspExports extends WebAssembly.Exports {
   getHover(path: unknown, offset: number): unknown;
   getHoverType(result: unknown): unknown;
   getHoverLabel(result: unknown): unknown;
+  getDocumentSymbols(path: unknown, source: unknown): unknown;
+  getSymbolCount(symbols: unknown): number;
+  getSymbol(symbols: unknown, index: number): unknown;
+  getSymbolName(sym: unknown): unknown;
+  getSymbolKind(sym: unknown): number;
+  getSymbolStart(sym: unknown): number;
+  getSymbolEnd(sym: unknown): number;
+  getSymbolSelStart(sym: unknown): number;
+  getSymbolSelEnd(sym: unknown): number;
+  getSymbolChildCount(sym: unknown): number;
+  getSymbolChild(sym: unknown, index: number): unknown;
   $stringGetByte(str: unknown, index: number): number;
   $stringGetLength(str: unknown): number;
   $stringCreate(len: number): unknown;
@@ -576,5 +587,206 @@ let f = new Foo(42);`;
       hover!.label.startsWith('class '),
       `Expected class prefix, got: ${hover!.label}`,
     );
+  });
+
+  // ========================================================================
+  // Document Symbols Tests
+  // ========================================================================
+
+  interface SymbolInfo {
+    name: string;
+    kind: number;
+    start: number;
+    end: number;
+    selStart: number;
+    selEnd: number;
+    children: SymbolInfo[];
+  }
+
+  /**
+   * Helper: get document symbols from source.
+   */
+  function getSymbols(
+    lsp: LspHandle,
+    source: string,
+    path = '/test/main.zena',
+  ): SymbolInfo[] {
+    const {exports, writeString, readString} = lsp;
+    const pathRef = writeString(path);
+    const sourceRef = writeString(source);
+    const symbolsRef = exports.getDocumentSymbols(pathRef, sourceRef);
+    const count = exports.getSymbolCount(symbolsRef);
+    const result: SymbolInfo[] = [];
+
+    function readSym(ref: unknown): SymbolInfo {
+      const nameRef = exports.getSymbolName(ref);
+      const nameLen = exports.$stringGetLength(nameRef);
+      const name = readString(nameRef, nameLen);
+      const kind = exports.getSymbolKind(ref);
+      const start = exports.getSymbolStart(ref);
+      const end = exports.getSymbolEnd(ref);
+      const selStart = exports.getSymbolSelStart(ref);
+      const selEnd = exports.getSymbolSelEnd(ref);
+      const childCount = exports.getSymbolChildCount(ref);
+      const children: SymbolInfo[] = [];
+      for (let j = 0; j < childCount; j++) {
+        children.push(readSym(exports.getSymbolChild(ref, j)));
+      }
+      return {name, kind, start, end, selStart, selEnd, children};
+    }
+
+    for (let i = 0; i < count; i++) {
+      result.push(readSym(exports.getSymbol(symbolsRef, i)));
+    }
+    return result;
+  }
+
+  // VS Code SymbolKind constants used in assertions.
+  const SK_CLASS = 5;
+  const SK_METHOD = 6;
+  const SK_PROPERTY = 8;
+  const SK_CONSTRUCTOR = 9;
+  const SK_ENUM = 10;
+  const SK_INTERFACE = 11;
+  const SK_FUNCTION = 12;
+  const SK_VARIABLE = 13;
+  const SK_ENUM_MEMBER = 22;
+
+  test('getDocumentSymbols: class with members', () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+  getX(): i32 { return this.x; }
+}`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Foo');
+    assert.strictEqual(symbols[0].kind, SK_CLASS);
+    const children = symbols[0].children;
+    assert.ok(
+      children.length >= 2,
+      `Expected >= 2 children, got ${children.length}`,
+    );
+    const names = children.map((c) => c.name);
+    assert.ok(names.includes('x'), `Expected field x, got: ${names}`);
+    assert.ok(
+      names.includes('new') || names.includes('<constructor>'),
+      `Expected constructor, got: ${names}`,
+    );
+    assert.ok(names.includes('getX'), `Expected method getX, got: ${names}`);
+    // Constructor should have SK_CONSTRUCTOR kind
+    const ctor = children.find(
+      (c) => c.name === 'new' || c.name === '<constructor>',
+    );
+    assert.strictEqual(ctor?.kind, SK_CONSTRUCTOR);
+  });
+
+  test('getDocumentSymbols: variable and function', () => {
+    const src = `let x = 42;
+let add = (a: i32, b: i32): i32 => a + b;`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 2);
+    assert.strictEqual(symbols[0].name, 'x');
+    assert.strictEqual(symbols[0].kind, SK_VARIABLE);
+    assert.strictEqual(symbols[1].name, 'add');
+    assert.strictEqual(symbols[1].kind, SK_FUNCTION);
+  });
+
+  test('getDocumentSymbols: enum with members', () => {
+    const src = `enum Color { Red, Green, Blue }`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Color');
+    assert.strictEqual(symbols[0].kind, SK_ENUM);
+    assert.strictEqual(symbols[0].children.length, 3);
+    assert.strictEqual(symbols[0].children[0].name, 'Red');
+    assert.strictEqual(symbols[0].children[0].kind, SK_ENUM_MEMBER);
+  });
+
+  test('getDocumentSymbols: interface', () => {
+    const src = `interface Printable {
+  toString(): String;
+}`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Printable');
+    assert.strictEqual(symbols[0].kind, SK_INTERFACE);
+    assert.ok(symbols[0].children.length >= 1);
+    assert.strictEqual(symbols[0].children[0].name, 'toString');
+  });
+
+  test('getDocumentSymbols: sealed class with variants', () => {
+    const src = `sealed class Expr {
+  case Lit(value: i32)
+  case Add(left: Expr, right: Expr)
+}`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Expr');
+    assert.strictEqual(symbols[0].kind, SK_CLASS);
+    const variantNames = symbols[0].children.map((c) => c.name);
+    assert.ok(
+      variantNames.includes('Lit'),
+      `Expected Lit, got ${variantNames}`,
+    );
+    assert.ok(
+      variantNames.includes('Add'),
+      `Expected Add, got ${variantNames}`,
+    );
+  });
+
+  test('getDocumentSymbols: type alias', () => {
+    const src = `type Point = {x: f64, y: f64};`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Point');
+  });
+
+  test('getDocumentSymbols: test file with suite/test', () => {
+    const src = `import {suite, test, TestContext} from 'zena:test';
+
+export let tests = suite('Parser', (): void => {
+  suite('Variables', (): void => {
+    test('let declaration', (ctx: TestContext): void => {
+      let x = 1;
+    });
+    test('var declaration', (ctx: TestContext): void => {
+      let y = 2;
+    });
+  });
+  test('standalone', (ctx: TestContext): void => {
+    let z = 3;
+  });
+});`;
+    const symbols = getSymbols(lsp, src);
+    // Should have 'tests' as a top-level function symbol.
+    const testsSym = symbols.find((s) => s.name === 'tests');
+    assert.ok(
+      testsSym,
+      `Expected 'tests' symbol, got: ${symbols.map((s) => s.name)}`,
+    );
+    assert.strictEqual(testsSym!.kind, SK_FUNCTION);
+
+    // Should have nested suite/test children.
+    const children = testsSym!.children;
+    assert.ok(
+      children.length >= 2,
+      `Expected >= 2 children, got ${children.length}`,
+    );
+
+    const varsSuite = children.find((c) => c.name === 'Variables');
+    assert.ok(
+      varsSuite,
+      `Expected 'Variables' suite, got: ${children.map((c) => c.name)}`,
+    );
+    assert.ok(
+      varsSuite!.children.length >= 2,
+      `Expected >= 2 tests in Variables`,
+    );
+    assert.strictEqual(varsSuite!.children[0].name, 'let declaration');
+    assert.strictEqual(varsSuite!.children[1].name, 'var declaration');
+
+    const standalone = children.find((c) => c.name === 'standalone');
+    assert.ok(standalone, `Expected 'standalone' test`);
   });
 });

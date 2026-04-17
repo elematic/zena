@@ -27,6 +27,7 @@ import {
   ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition,
   CompilationResult, typeToString, SemanticModel
 } from 'zena-compiler:compiler';
+import { parse as parseSource } from 'zena-compiler:parser';
 import { Type } from 'zena-compiler:types';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
@@ -36,7 +37,14 @@ import { SymbolInfo, ReferenceMap, DeclarationMap, ScopeResult } from 'zena-comp
 import {
   Node, SourceLocation, Identifier, IdentifierPattern,
   ThisExpression, MemberExpression, Expression, Module,
-  ClassDeclaration, Parameter
+  ClassDeclaration, InterfaceDeclaration, EnumDeclaration,
+  MixinDeclaration, TypeAliasDeclaration, DeclareFunction,
+  SymbolDeclaration, ImportDeclaration,
+  Parameter, Statement, VariableDeclaration, ExpressionStatement,
+  BlockStatement, FunctionExpression, CallExpression, StringLiteral,
+  MethodDefinition, FieldDefinition, AccessorDeclaration,
+  MethodSignature, AccessorSignature,
+  SealedVariant, EnumMember
 } from 'zena-compiler:ast';
 import { i32ToString } from 'zena:string-convert';
 import { format as formatSource } from 'zena-formatter:printer';
@@ -104,6 +112,358 @@ export class HoverResult {
   label: String;
   new(this.typeStr, this.label);
 }
+
+// ============================================================================
+// Document Symbols
+// ============================================================================
+
+// VS Code SymbolKind values (subset used by Zena).
+let SK_CLASS = 5;
+let SK_METHOD = 6;
+let SK_PROPERTY = 8;
+let SK_CONSTRUCTOR = 9;
+let SK_ENUM = 10;
+let SK_INTERFACE = 11;
+let SK_FUNCTION = 12;
+let SK_VARIABLE = 13;
+let SK_ENUM_MEMBER = 22;
+
+/**
+ * A document symbol for the outline view.
+ *
+ * Mirrors the VS Code DocumentSymbol interface: name, kind, range
+ * (full span), selectionRange (name span), and children.
+ */
+export class DocumentSymbol {
+  name: String;
+  kind: i32;
+  start: i32;
+  end: i32;
+  selStart: i32;
+  selEnd: i32;
+  var children: Array<DocumentSymbol> = new Array<DocumentSymbol>();
+
+  new(this.name, this.kind, this.start, this.end, this.selStart, this.selEnd);
+}
+
+/**
+ * Extract class/interface members from the body Array<Node>.
+ */
+let extractClassMembers = (body: Array<Node>, sym: DocumentSymbol): void => {
+  var j = 0;
+  while (j < body.length) {
+    let member = body[j];
+    // Class members
+    if (member is MethodDefinition) {
+      let md = member as MethodDefinition;
+      let methodName = getIdentifierName(md.name);
+      let kind = if (methodName == "new" || methodName == "<constructor>") { SK_CONSTRUCTOR } else { SK_METHOD };
+      sym.children.push(symbolFromNamedNode(md.name, kind, md.loc));
+    }
+    if (member is FieldDefinition) {
+      let fd = member as FieldDefinition;
+      sym.children.push(symbolFromNamedNode(fd.name, SK_PROPERTY, fd.loc));
+    }
+    if (member is AccessorDeclaration) {
+      let ad = member as AccessorDeclaration;
+      sym.children.push(symbolFromNamedNode(ad.name, SK_PROPERTY, ad.loc));
+    }
+    // Interface members
+    if (member is MethodSignature) {
+      let ms = member as MethodSignature;
+      sym.children.push(symbolFromNamedNode(ms.name, SK_METHOD, ms.loc));
+    }
+    if (member is AccessorSignature) {
+      let as_ = member as AccessorSignature;
+      sym.children.push(symbolFromNamedNode(as_.name, SK_PROPERTY, as_.loc));
+    }
+    j += 1;
+  }
+};
+
+/**
+ * Extract document symbols from a Module AST.
+ *
+ * Walks top-level statements and produces symbols for classes,
+ * interfaces, enums, functions, variables, type aliases, etc.
+ * For test files (importing zena:test), suite() and test() calls
+ * produce nested symbols that appear in the outline.
+ */
+let extractSymbols = (ast: Module): Array<DocumentSymbol> => {
+  let symbols = new Array<DocumentSymbol>();
+  let isTestFile = hasTestImport(ast);
+
+  var i = 0;
+  while (i < ast.body.length) {
+    let stmt = ast.body[i];
+    match (stmt) {
+      case ClassDeclaration {name, body, sealedVariants, loc}: {
+        let sym = symbolFromNamedNode(name, SK_CLASS, loc);
+        // Class members
+        extractClassMembers(body, sym);
+        // Sealed variants as children
+        if (sealedVariants != null) {
+          let variants = sealedVariants as Array<SealedVariant>;
+          var k = 0;
+          while (k < variants.length) {
+            let v = variants[k];
+            let vSym = symbolFromNamedNode(v.name, SK_CLASS, v.loc);
+            sym.children.push(vSym);
+            k += 1;
+          }
+        }
+        symbols.push(sym);
+      }
+      case InterfaceDeclaration {name, body, loc}: {
+        let sym = symbolFromNamedNode(name, SK_INTERFACE, loc);
+        extractClassMembers(body, sym);
+        symbols.push(sym);
+      }
+      case EnumDeclaration {name, members, loc}: {
+        let sym = symbolFromNamedNode(name, SK_ENUM, loc);
+        var j = 0;
+        while (j < members.length) {
+          let m = members[j];
+          sym.children.push(symbolFromNamedNode(m.name, SK_ENUM_MEMBER, m.loc));
+          j += 1;
+        }
+        symbols.push(sym);
+      }
+      case MixinDeclaration {name, loc}: {
+        symbols.push(symbolFromNamedNode(name, SK_CLASS, loc));
+      }
+      case TypeAliasDeclaration {name, loc}: {
+        symbols.push(symbolFromNamedNode(name, SK_VARIABLE, loc));
+      }
+      case DeclareFunction {name, loc}: {
+        symbols.push(symbolFromNamedNode(name, SK_FUNCTION, loc));
+      }
+      case SymbolDeclaration {name, loc}: {
+        symbols.push(symbolFromNamedNode(name, SK_VARIABLE, loc));
+      }
+      case VariableDeclaration {pattern, init, loc}: {
+        let varName = getPatternName(pattern);
+        if (varName.length > 0) {
+          // Detect if the init is a function expression.
+          let isFn = match (init) {
+            case FunctionExpression: true
+            case _: false
+          };
+          // Detect if the init is a top-level suite() call.
+          let isSuiteCall = if (isTestFile) {
+            match (init) {
+              case CallExpression {callee}: {
+                match (callee) {
+                  case Identifier {name}: name == "suite"
+                  case _: false
+                }
+              }
+              case _: false
+            }
+          } else { false };
+
+          let kind = if (isFn || isSuiteCall) { SK_FUNCTION } else { SK_VARIABLE };
+          let sym = symbolFromPattern(varName, kind, loc, pattern);
+
+          // For test files, extract suite/test child structure.
+          if (isTestFile && isFn) {
+            match (init) {
+              case FunctionExpression as fn: {
+                extractTestSymbols(fn.body, sym);
+              }
+              case _: {}
+            }
+          }
+          if (isSuiteCall) {
+            match (init) {
+              case CallExpression {args}: {
+                // suite('name', callback) — extract from callback body.
+                if (args.length >= 2) {
+                  match (args[1]) {
+                    case FunctionExpression as fn: {
+                      extractTestSymbols(fn.body, sym);
+                    }
+                    case _: {}
+                  }
+                }
+              }
+              case _: {}
+            }
+          }
+
+          symbols.push(sym);
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+
+  return symbols;
+};
+
+/**
+ * Check if the module imports from 'zena:test'.
+ */
+let hasTestImport = (ast: Module): boolean => {
+  var i = 0;
+  while (i < ast.body.length) {
+    match (ast.body[i]) {
+      case ImportDeclaration {moduleSpecifier}: {
+        if (moduleSpecifier.value == "zena:test") {
+          return true;
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+  return false;
+};
+
+/**
+ * Extract suite() and test() calls from a function body (test files).
+ *
+ * Looks for expression statements like:
+ *   suite('name', (): void => { ... })
+ *   test('name', (ctx: TestContext): void => { ... })
+ */
+let extractTestSymbols = (bodyNode: Node, parent: DocumentSymbol): void => {
+  match (bodyNode) {
+    case BlockStatement as block: {
+      var i = 0;
+      while (i < block.body.length) {
+        match (block.body[i]) {
+          case ExpressionStatement {expression}: {
+            extractTestCall(expression, parent);
+          }
+          case _: {}
+        }
+        i += 1;
+      }
+    }
+    case _: {}
+  }
+};
+
+/**
+ * Try to extract a suite() or test() call from an expression.
+ */
+let extractTestCall = (expr: Expression, parent: DocumentSymbol): void => {
+  match (expr) {
+    case CallExpression {callee, args, loc}: {
+      let calleeName = match (callee) {
+        case Identifier {name}: name
+        case _: ""
+      };
+      if ((calleeName == "suite" || calleeName == "test") && args.length >= 2) {
+        // First arg should be a string literal (the test/suite name).
+        let testName = match (args[0]) {
+          case StringLiteral {value}: value
+          case _: ""
+        };
+        if (testName.length > 0) {
+          let kind = if (calleeName == "suite") { SK_METHOD } else { SK_FUNCTION };
+          let sym = symbolFromLoc(testName, kind, loc);
+
+          // For suite(), recurse into the callback body.
+          if (calleeName == "suite" && args.length >= 2) {
+            match (args[1]) {
+              case FunctionExpression as fn: {
+                extractTestSymbols(fn.body, sym);
+              }
+              case _: {}
+            }
+          }
+
+          parent.children.push(sym);
+        }
+      }
+    }
+    case _: {}
+  }
+};
+
+/**
+ * Create a DocumentSymbol from an Identifier node and an outer SourceLocation.
+ */
+let symbolFromNamedNode = (name: Node, kind: i32, outerLoc: SourceLocation | null): DocumentSymbol => {
+  let n = getIdentifierName(name);
+  var start = 0;
+  var end = 0;
+  var selStart = 0;
+  var selEnd = 0;
+  if (outerLoc != null) {
+    let ol = outerLoc as SourceLocation;
+    start = ol.start;
+    end = ol.end;
+  }
+  if (name.loc != null) {
+    let nl = name.loc as SourceLocation;
+    selStart = nl.start;
+    selEnd = nl.end;
+  } else if (outerLoc != null) {
+    let ol = outerLoc as SourceLocation;
+    selStart = ol.start;
+    selEnd = ol.end;
+  }
+  return new DocumentSymbol(n, kind, start, end, selStart, selEnd);
+};
+
+/**
+ * Create a DocumentSymbol from a pattern name and outer/pattern locations.
+ */
+let symbolFromPattern = (name: String, kind: i32, outerLoc: SourceLocation | null, pattern: Node): DocumentSymbol => {
+  var start = 0;
+  var end = 0;
+  var selStart = 0;
+  var selEnd = 0;
+  if (outerLoc != null) {
+    let ol = outerLoc as SourceLocation;
+    start = ol.start;
+    end = ol.end;
+  }
+  if (pattern.loc != null) {
+    let pl = pattern.loc as SourceLocation;
+    selStart = pl.start;
+    selEnd = pl.end;
+  } else if (outerLoc != null) {
+    let ol = outerLoc as SourceLocation;
+    selStart = ol.start;
+    selEnd = ol.end;
+  }
+  return new DocumentSymbol(name, kind, start, end, selStart, selEnd);
+};
+
+/**
+ * Create a DocumentSymbol from a SourceLocation (for test calls).
+ */
+let symbolFromLoc = (name: String, kind: i32, loc: SourceLocation | null): DocumentSymbol => {
+  var start = 0;
+  var end = 0;
+  if (loc != null) {
+    let l = loc as SourceLocation;
+    start = l.start;
+    end = l.end;
+  }
+  return new DocumentSymbol(name, kind, start, end, start, end);
+};
+
+/**
+ * Get the name string from an Identifier node.
+ */
+let getIdentifierName = (node: Node): String => match (node) {
+  case Identifier {name}: name
+  case _: "<unknown>"
+};
+
+/**
+ * Get the name string from a Pattern node.
+ */
+let getPatternName = (pattern: Node): String => match (pattern) {
+  case IdentifierPattern {name}: name
+  case _: ""
+};
 
 /**
  * Stateful language service backed by a persistent Compiler.
@@ -294,6 +654,23 @@ export class LanguageService {
     };
 
     return new HoverResult(typeStr, label);
+  }
+
+  /**
+   * Get document symbols for the outline view.
+   *
+   * Parses the source (or uses the cached AST) and extracts
+   * top-level declarations. For test files, also extracts
+   * suite/test structure.
+   */
+  getDocumentSymbols(path: String, source: String): Array<DocumentSymbol> {
+    let symbols = try {
+      let ast = parseSource(source, path);
+      extractSymbols(ast)
+    } catch (e) {
+      new Array<DocumentSymbol>()
+    };
+    return symbols;
   }
 }
 
@@ -593,4 +970,85 @@ export let getHoverType = (result: HoverResult): String => {
  */
 export let getHoverLabel = (result: HoverResult): String => {
   return result.label;
+};
+
+// ============================================================================
+// Document Symbols Exports
+// ============================================================================
+
+/**
+ * Get document symbols for the outline view.
+ */
+export let getDocumentSymbols = (path: String, source: String): Array<DocumentSymbol> => {
+  return (__ls as LanguageService).getDocumentSymbols(path, source);
+};
+
+/**
+ * Get the number of symbols in a result array.
+ */
+export let getSymbolCount = (symbols: Array<DocumentSymbol>): i32 => {
+  return symbols.length;
+};
+
+/**
+ * Get the i-th symbol from a result array.
+ */
+export let getSymbol = (symbols: Array<DocumentSymbol>, index: i32): DocumentSymbol => {
+  return symbols[index];
+};
+
+/**
+ * Get the name of a symbol.
+ */
+export let getSymbolName = (sym: DocumentSymbol): String => {
+  return sym.name;
+};
+
+/**
+ * Get the kind of a symbol (VS Code SymbolKind value).
+ */
+export let getSymbolKind = (sym: DocumentSymbol): i32 => {
+  return sym.kind;
+};
+
+/**
+ * Get the full range start byte offset of a symbol.
+ */
+export let getSymbolStart = (sym: DocumentSymbol): i32 => {
+  return sym.start;
+};
+
+/**
+ * Get the full range end byte offset of a symbol.
+ */
+export let getSymbolEnd = (sym: DocumentSymbol): i32 => {
+  return sym.end;
+};
+
+/**
+ * Get the selection range start byte offset of a symbol.
+ */
+export let getSymbolSelStart = (sym: DocumentSymbol): i32 => {
+  return sym.selStart;
+};
+
+/**
+ * Get the selection range end byte offset of a symbol.
+ */
+export let getSymbolSelEnd = (sym: DocumentSymbol): i32 => {
+  return sym.selEnd;
+};
+
+/**
+ * Get the number of children of a symbol.
+ */
+export let getSymbolChildCount = (sym: DocumentSymbol): i32 => {
+  return sym.children.length;
+};
+
+/**
+ * Get the i-th child of a symbol.
+ */
+export let getSymbolChild = (sym: DocumentSymbol, index: i32): DocumentSymbol => {
+  return sym.children[index];
 };
