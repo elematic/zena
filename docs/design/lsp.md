@@ -106,20 +106,26 @@ editors (Neovim, Helix, Zed) get support for free.
   locations on document open/change
 - Go to definition (identifiers, type annotations, constructors, fields)
   including cross-module jumps
+- Hover (type string + contextual label for variables, parameters, classes,
+  members, `this`)
 - Document formatting via the zena-formatter
 - Multi-file diagnostics (errors in dependencies shown under the dep's URI)
+- Persistent LanguageService — compiler and LibraryLoader kept alive across
+  calls, per-file scope/compilation caches, incremental `checkCompilation()`
 
 ### Current Limitations
 
-The current `lsp.zena` creates a **fresh `Compiler` + `LibraryLoader` on every
-`check()` call**. This means:
+The `LanguageService` keeps a persistent `Compiler` and per-file caches,
+but some gaps remain:
 
-1. Every keystroke re-reads, re-parses, and re-scope-analyzes the entire
-   stdlib (~20+ modules)
-2. Only one file can be "active" — `__cachedScopeResult` stores exactly one
-   result for `getDefinition()` queries
-3. Only the entry module is type-checked, not its dependents
-4. No version tracking — redundant work even when nothing changed
+1. **No version tracking on the JS side** — every tab switch or
+   `onDidChangeTextDocument` re-checks even if the source hasn't changed.
+   Tracking `TextDocument.version` would let the extension skip redundant
+   `check()` calls.
+2. **No export-signature comparison** — editing inside a function body
+   still re-checks all dependents even though exports are unchanged.
+3. **Hover lacks doc comments** — type + label are shown, but doc comments
+   from source are not preserved in the AST or surfaced to hover results.
 
 ---
 
@@ -190,21 +196,12 @@ delegates queries.
 - `format()` export calls zena-formatter, returns formatted source
 - VS Code `DocumentFormattingEditProvider` wired up
 
-### Step 6: Persistent LanguageService ← Next
+### Step 6: Persistent LanguageService ✅ Complete
 
-Replace the stateless per-call architecture with persistent state:
-
-1. **Keep `LibraryLoader` alive across calls.** The loader already caches
-   `SourceFile`s by path — stop throwing it away between `check()` calls.
-   This alone avoids re-parsing the stdlib on every keystroke.
-
-2. **Add version tracking on the JS side.** Track `TextDocument.version` for
-   open files. Skip `check()` entirely when the version hasn't changed (e.g.,
-   switching tabs back to an already-checked file).
-
-3. **Support multiple open files.** Track all open files instead of caching
-   one `ScopeResult`. Each open file gets its own cached results. Closing a
-   file clears its entry.
+`LanguageService` in `lsp.zena` keeps a persistent `Compiler` (and its
+`LibraryLoader`) across calls. Per-file `HashMap`s cache `ScopeResult`
+and `CompilationResult` for multiple open files. `checkCompilation()`
+carries forward previous `ProgramCheckResult` for incremental checking.
 
 ### Step 7: SourceFileCache + Program
 
@@ -221,17 +218,32 @@ Extract the full incremental architecture:
    identical despite a source change (function body edits). Skip re-checking
    dependents when exports are stable.
 
-### Step 8: Hover Types
+### Step 8: Hover Types ✅ Complete
 
-1. Map cursor position to a source byte offset
-2. `Program.getSemanticModel(path).getNodeType(offset)` → Type
-3. `typeToString(type)` → formatted type string
-4. Return as `vscode.Hover` with ` ```zena ` code block
+Hover shows type string + contextual label (e.g., `let x: i32`,
+`(parameter) a: i32`, `class Foo`, `(property) field: i32`,
+`this: ClassName`). Implemented via `getHover()` in `lsp.zena`
+and `HoverProvider` in `zena-extension.ts`.
 
-### Step 9: Additional Features (Future)
+### Step 9: Document Symbols / Outline ← Next
+
+Walk the AST to return top-level declarations (classes, functions,
+variable bindings, type aliases, enums) with their source spans.
+No type checking required — only the parse tree.
+
+### Step 10: Hover with Doc Comments
+
+Preserve `/** ... */` doc comments in the parser/AST. Thread them
+through `SymbolInfo` or `SemanticModel` and include in `HoverResult`.
+
+### Step 11: Version Tracking (JS Side)
+
+Track `TextDocument.version` in `zena-extension.ts`. Skip `check()`
+when the version hasn't changed (e.g., switching tabs back).
+
+### Step 12: Additional Features (Future)
 
 - Find All References
-- Document Symbols / Outline
 - Completions / IntelliSense
 - Rename Symbol
 - Code Actions (quick fixes)
