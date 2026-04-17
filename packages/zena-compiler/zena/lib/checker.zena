@@ -2361,6 +2361,25 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   // --- Assignment ---
 
   case AssignmentExpression {left, value, operator, loc}: {
+    // Check for assignment to immutable let binding
+    match (left) {
+      case Identifier {name}: {
+        let info = ctx.model.resolve(left);
+        if (info != null) {
+          let si = info as SymbolInfo;
+          if (si.kind == "let") {
+            ctx.error(
+              "Cannot assign to immutable variable '" + name + "'.",
+              DiagnosticCode.InvalidAssignment,
+              loc
+            );
+            return new UnknownType();
+          }
+        }
+      }
+      case _: {}
+    }
+
     // Check for read-only indexer assignment: arr[i] = x
     match (left) {
       case IndexExpression {object, index}: {
@@ -2918,6 +2937,17 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             classType.abstractFields = newMap;
           }
         }
+        // Inherit abstract methods from superclass.
+        if (st.abstractMethods != null) {
+          let stAbstractMethods = st.abstractMethods as HashMap<String, boolean>;
+          if (classType.abstractMethods == null) {
+            classType.abstractMethods = new HashMap<String, boolean>();
+          }
+          let absMethodKeys = stAbstractMethods.keys();
+          while (let (true, absMethodKey) = absMethodKeys.next()) {
+            (classType.abstractMethods as HashMap<String, boolean>).set(absMethodKey, true);
+          }
+        }
       }
       case _: {
         ctx.error(
@@ -3091,11 +3121,36 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           }
         } else {
           // Regular method.
-          if (classType.methods.has(methodName)) {
-            // Allow override (but could validate signature compatibility later).
+
+          // Check abstract method in concrete class.
+          if (md.isAbstract && !cd.isAbstract && !cd.isSealed) {
+            ctx.error(
+              "Abstract method '" + methodName + "' can only appear within an abstract class.",
+              DiagnosticCode.IncompatibleTypes,
+              md.loc
+            );
           }
+
+          // Check final method override.
+          if (classType.superType != null) {
+            let superCt = classType.superType as ClassType;
+            if (superCt.methods.has(methodName)) {
+              let inheritedMethod = superCt.methods[methodName];
+              if (inheritedMethod.isFinal) {
+                ctx.error(
+                  "Cannot override final method '" + methodName + "'.",
+                  DiagnosticCode.IncompatibleTypes,
+                  md.loc
+                );
+              }
+            }
+          }
+
           let methodType = checkMethodSignature(ctx, classType, md);
           classType.methods.set(methodName, methodType);
+
+          // Track abstract methods for checking in subclasses.
+          trackAbstractMethod(ctx, classType, methodName, md.isAbstract);
 
           // Check method body.
           if (md.body != null) {
@@ -3110,10 +3165,50 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         };
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
 
-        // Getter creates a method of () => T.
+        // Getter creates get#accName method.
         if (acc.getter != null) {
           let getterType = new FunctionType(new Array<Type>(), null, accType);
-          classType.methods.set(accName, getterType);
+          classType.methods.set("get#" + accName, getterType);
+
+          // Check getter body.
+          let getterBlock = acc.getter as BlockStatement;
+          ctx.enterScope();
+          let prevReturnType = ctx.returnType;
+          ctx.setReturnType(accType);
+          var gi = 0;
+          while (gi < getterBlock.body.length) {
+            checkStatement(ctx, getterBlock.body[gi]);
+            gi += 1;
+          }
+          ctx.setReturnType(prevReturnType);
+          ctx.exitScope();
+        }
+
+        // Setter creates a method set#accName with param type = accType.
+        if (acc.setter != null) {
+          let setterParams = new Array<Type>();
+          setterParams.push(accType);
+          let setterType = new FunctionType(setterParams, null, new VoidType());
+          classType.methods.set("set#" + accName, setterType);
+
+          // Check setter body.
+          match (acc.setter as Node) {
+            case SetterInfo as si: {
+              ctx.enterScope();
+              // Declare setter param with the accessor type.
+              let paramInfo = ctx.model.resolveDeclaration(si.param);
+              if (paramInfo != null) {
+                ctx.declareBinding(paramInfo as SymbolInfo, accType);
+              }
+              var sbi = 0;
+              while (sbi < si.body.body.length) {
+                checkStatement(ctx, si.body.body[sbi]);
+                sbi += 1;
+              }
+              ctx.exitScope();
+            }
+            case _: {}
+          }
         }
       }
       case MethodSignature as ms: {
@@ -3276,6 +3371,66 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
     }
   }
 
+  // Check interface conformance.
+  if (cd.implementsList != null) {
+    let implList = cd.implementsList as Array<TypeAnnotation>;
+    var ii = 0;
+    while (ii < implList.length) {
+      let ifaceAnn = implList[ii];
+      let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
+      match (ifaceType) {
+        case InterfaceType as iface: {
+          classType.implementsList.push(iface);
+          // Check all interface methods are implemented.
+          let ifaceMethodKeys = iface.methods.keys();
+          while (let (true, methodName) = ifaceMethodKeys.next()) {
+            let ifaceMethod = iface.methods[methodName];
+            if (classType.methods.has(methodName)) {
+              // Check signature compatibility.
+              let classMethod = classType.methods[methodName];
+              if (classMethod.parameters.length != ifaceMethod.parameters.length) {
+                ctx.error(
+                  "Class '" + className + "' incorrectly implements interface '" + iface.name +
+                  "': Method '" + methodName + "' is type '" + typeToString(classMethod) +
+                  "' but expected '" + typeToString(ifaceMethod) + "'.",
+                  DiagnosticCode.IncompatibleTypes,
+                  cd.loc
+                );
+              }
+            } else if (classType.fields.has(methodName)) {
+              // A field can satisfy a getter/setter interface method.
+            } else {
+              ctx.error(
+                "Class '" + className + "' incorrectly implements interface '" + iface.name +
+                "': Method '" + methodName + "' is missing.",
+                DiagnosticCode.IncompatibleTypes,
+                cd.loc
+              );
+            }
+          }
+          // Check all interface fields are implemented.
+          let ifaceFieldKeys = iface.fields.keys();
+          while (let (true, fieldName) = ifaceFieldKeys.next()) {
+            // Interface field requires at least a getter.
+            let getterName = "get#" + fieldName;
+            let hasField = classType.fields.has(fieldName);
+            let hasGetter = classType.methods.has(getterName);
+            if (!hasField && !hasGetter) {
+              ctx.error(
+                "Class '" + className + "' incorrectly implements interface '" + iface.name +
+                "': Getter for '" + fieldName + "' is missing.",
+                DiagnosticCode.IncompatibleTypes,
+                cd.loc
+              );
+            }
+          }
+        }
+        case _: {}
+      }
+      ii += 1;
+    }
+  }
+
   // Check for unimplemented abstract fields in non-abstract classes.
   if (!cd.isAbstract && !cd.isSealed) {
     if (classType.abstractFields != null) {
@@ -3289,10 +3444,42 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         );
       }
     }
+    // Check for unimplemented abstract methods in non-abstract classes.
+    if (classType.abstractMethods != null) {
+      let absMethods = classType.abstractMethods as HashMap<String, boolean>;
+      let absMethodKeys = absMethods.keys();
+      while (let (true, absMethodName) = absMethodKeys.next()) {
+        ctx.error(
+          "Non-abstract class '" + className + "' does not implement abstract method '" + absMethodName + "'.",
+          DiagnosticCode.AbstractMethodNotImplemented,
+          cd.loc
+        );
+      }
+    }
   }
 
   ctx.exitClass();
   ctx.exitScope();
+};
+
+/**
+/**
+ * Track an abstract method on a class type, or remove it if it's been implemented.
+ */
+let trackAbstractMethod = (ctx: CheckerContext, classType: ClassType, methodName: String, isAbstract: boolean) => {
+  if (isAbstract) {
+    if (classType.abstractMethods == null) {
+      classType.abstractMethods = new HashMap<String, boolean>();
+    }
+    (classType.abstractMethods as HashMap<String, boolean>).set(methodName, true);
+  } else {
+    if (classType.abstractMethods != null) {
+      let absMethods = classType.abstractMethods as HashMap<String, boolean>;
+      if (absMethods.has(methodName)) {
+        absMethods.delete(methodName);
+      }
+    }
+  }
 };
 
 /**
@@ -3471,6 +3658,18 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       case PropertySignature as ps: {
         let propType = resolveTypeAnnotation(ctx, ps.typeAnnotation);
         ifaceType.fields.set(ps.name.name, propType);
+      }
+      case FieldDefinition as fd: {
+        let fieldName = match (fd.name) {
+          case Identifier {name}: name
+          case _: "<unknown>"
+        };
+        let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
+        ifaceType.fields.set(fieldName, fieldType);
+        // Track mutability for setter requirement.
+        if (fd.mutability != null && fd.mutability == "var") {
+          ifaceType.fieldMutability.set(fieldName, true);
+        }
       }
       case AccessorSignature as as_: {
         let accType = resolveTypeAnnotation(ctx, as_.typeAnnotation);
@@ -4957,6 +5156,8 @@ let checkFunctionExpression = (
   }
 
   var i = 0;
+  var hasOptionals = false;
+  let optionals = new Array<boolean>();
   while (i < params.length) {
     let param = params[i];
     let paramName = param.name.name;
@@ -4969,6 +5170,32 @@ let checkFunctionExpression = (
       let cfn = contextualFn as FunctionType;
       if (i < cfn.parameters.length) {
         paramType = cfn.parameters[i];
+      }
+    }
+
+    // Optional parameters have their type widened to T | null
+    let isOptional = param.optional || param.defaultValue != null;
+    optionals.push(isOptional);
+    if (isOptional) {
+      hasOptionals = true;
+      // Widen to T | null if not already nullable
+      var alreadyNullable = false;
+      match (paramType) {
+        case NullType: { alreadyNullable = true; }
+        case UnionT {types}: {
+          var ui = 0;
+          while (ui < types.length) {
+            if (types[ui] is NullType) { alreadyNullable = true; }
+            ui += 1;
+          }
+        }
+        case _: {}
+      }
+      if (!alreadyNullable) {
+        let unionTypes = new Array<Type>();
+        unionTypes.push(paramType);
+        unionTypes.push(new NullType());
+        paramType = createUnionType(unionTypes);
       }
     }
 
@@ -5024,8 +5251,8 @@ let checkFunctionExpression = (
     }
     case Expression as bodyExpr: {
       let bodyType = checkExpression(ctx, bodyExpr, retType);
-      // Expression body: validate return type if annotated.
-      if (returnTypeAnn != null) {
+      // Expression body: validate return type if annotated or contextual.
+      if (returnTypeAnn != null || contextualFn != null) {
         if (!isAssignableTo(ctx, bodyType, retType)) {
           ctx.error(
             "Type mismatch: expression body returns '" + typeToString(bodyType) +
@@ -5034,7 +5261,7 @@ let checkFunctionExpression = (
             loc
           );
         }
-      } else if (contextualFn == null) {
+      } else {
         // Infer return type from expression body.
         retType = bodyType;
       }
@@ -5048,6 +5275,9 @@ let checkFunctionExpression = (
 
   let fnType = new FunctionType(paramTypes, paramNames, retType);
   fnType.typeParameters = resolvedTypeParams;
+  if (hasOptionals) {
+    fnType.optionalParameters = optionals;
+  }
   return fnType;
 };
 
