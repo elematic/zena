@@ -134,7 +134,10 @@ export class ZenaExtension {
             outputChannel.appendLine(
               `Go to definition: offset=${offset} pos=${position.line}:${position.character}`,
             );
-            const result = this.#compiler.getDefinition(offset);
+            const result = this.#compiler.getDefinition(
+              document.uri.fsPath,
+              offset,
+            );
             if (!result) return null;
             const uri = vscode.Uri.file(result.file);
             // Convert 1-based line/column to 0-based for VS Code.
@@ -174,7 +177,7 @@ export class ZenaExtension {
               source.slice(0, document.offsetAt(wordStart)),
               'utf8',
             );
-            const result = this.#compiler.getHover(offset);
+            const result = this.#compiler.getHover(document.uri.fsPath, offset);
             if (!result) return null;
 
             const contents = new vscode.MarkdownString();

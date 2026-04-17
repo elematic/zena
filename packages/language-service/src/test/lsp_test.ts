@@ -22,7 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /** Same shape as the exports from lsp.wasm. */
 interface LspExports extends WebAssembly.Exports {
   init(stdlibRoot: unknown): void;
-  check(source: unknown, path: unknown): unknown;
+  check(path: unknown, source: unknown): unknown;
   getDiagnosticCount(diagnostics: unknown): number;
   getDiagnosticLine(diagnostics: unknown, index: number): number;
   getDiagnosticColumn(diagnostics: unknown, index: number): number;
@@ -32,13 +32,13 @@ interface LspExports extends WebAssembly.Exports {
   getDiagnosticMessage(diagnostics: unknown, index: number): unknown;
   getDiagnosticFile(diagnostics: unknown, index: number): unknown;
   format(source: unknown): unknown;
-  getDefinition(offset: number): unknown;
+  getDefinition(path: unknown, offset: number): unknown;
   getDefinitionFile(result: unknown): unknown;
   getDefinitionLine(result: unknown): number;
   getDefinitionColumn(result: unknown): number;
   getDefinitionStart(result: unknown): number;
   getDefinitionLength(result: unknown): number;
-  getHover(offset: number): unknown;
+  getHover(path: unknown, offset: number): unknown;
   getHoverType(result: unknown): unknown;
   getHoverLabel(result: unknown): unknown;
   $stringGetByte(str: unknown, index: number): number;
@@ -105,7 +105,7 @@ function checkSource(lsp: LspHandle, source: string, path = '/test/main.zena') {
   const {exports, writeString, readString} = lsp;
   const sourceRef = writeString(source);
   const pathRef = writeString(path);
-  const handle = exports.check(sourceRef, pathRef);
+  const handle = exports.check(pathRef, sourceRef);
   const count = exports.getDiagnosticCount(handle);
 
   const diagnostics: {
@@ -331,7 +331,8 @@ export final class MyString {
     const {exports, writeString, readString} = lsp;
     // check() must run first to populate the cached scope result.
     checkSource(lsp, source, path);
-    const resultRef = exports.getDefinition(offset);
+    const pathRef = writeString(path);
+    const resultRef = exports.getDefinition(pathRef, offset);
     if (resultRef === null || resultRef === undefined || resultRef === 0)
       return null;
     const fileRef = exports.getDefinitionFile(resultRef);
@@ -439,10 +440,11 @@ export final class MyString {
     offset: number,
     path = '/test/main.zena',
   ) {
-    const {exports, readString} = lsp;
+    const {exports, writeString, readString} = lsp;
     // check() must run first to populate the cached results.
     checkSource(lsp, source, path);
-    const resultRef = exports.getHover(offset);
+    const pathRef = writeString(path);
+    const resultRef = exports.getHover(pathRef, offset);
     if (resultRef === null || resultRef === undefined || resultRef === 0)
       return null;
     const typeRef = exports.getHoverType(resultRef);

@@ -17,7 +17,7 @@ import {
  */
 interface LspExports extends WebAssembly.Exports {
   init(stdlibRoot: unknown): void;
-  check(source: unknown, path: unknown): unknown;
+  check(path: unknown, source: unknown): unknown;
   getDiagnosticCount(diagnostics: unknown): number;
   getDiagnosticLine(diagnostics: unknown, index: number): number;
   getDiagnosticColumn(diagnostics: unknown, index: number): number;
@@ -27,13 +27,13 @@ interface LspExports extends WebAssembly.Exports {
   getDiagnosticMessage(diagnostics: unknown, index: number): unknown;
   getDiagnosticFile(diagnostics: unknown, index: number): unknown;
   format(source: unknown): unknown;
-  getDefinition(offset: number): unknown;
+  getDefinition(path: unknown, offset: number): unknown;
   getDefinitionFile(result: unknown): unknown;
   getDefinitionLine(result: unknown): number;
   getDefinitionColumn(result: unknown): number;
   getDefinitionStart(result: unknown): number;
   getDefinitionLength(result: unknown): number;
-  getHover(offset: number): unknown;
+  getHover(path: unknown, offset: number): unknown;
   getHoverType(result: unknown): unknown;
   getHoverLabel(result: unknown): unknown;
   $stringGetByte(str: unknown, index: number): number;
@@ -129,7 +129,7 @@ export class ZenaCompilerService {
 
     const sourceRef = writeString(source);
     const pathRef = writeString(path);
-    const diagnosticsHandle = exports.check(sourceRef, pathRef);
+    const diagnosticsHandle = exports.check(pathRef, sourceRef);
     const count = exports.getDiagnosticCount(diagnosticsHandle);
 
     const byFile = new Map<string, vscode.Diagnostic[]>();
@@ -230,7 +230,10 @@ export class ZenaCompilerService {
    * Uses the cached scope result from the last checkDocument() call.
    * Returns {file, line, column} or null if no definition was found.
    */
-  getDefinition(offset: number): {
+  getDefinition(
+    path: string,
+    offset: number,
+  ): {
     file: string;
     line: number;
     column: number;
@@ -241,7 +244,8 @@ export class ZenaCompilerService {
     const readString = this.#readString!;
 
     try {
-      const resultRef = exports.getDefinition(offset);
+      const pathRef = this.#writeString!(path);
+      const resultRef = exports.getDefinition(pathRef, offset);
       if (resultRef === null || resultRef === undefined) {
         this.#outputChannel.appendLine(`getDefinition(${offset}): no result`);
         return null;
@@ -296,12 +300,13 @@ export class ZenaCompilerService {
    * Get hover information at a byte offset.
    * Returns {type, label} or null if no info is available.
    */
-  getHover(offset: number): {type: string; label: string} | null {
+  getHover(path: string, offset: number): {type: string; label: string} | null {
     const exports = this.#exports!;
     const readString = this.#readString!;
 
     try {
-      const resultRef = exports.getHover(offset);
+      const pathRef = this.#writeString!(path);
+      const resultRef = exports.getHover(pathRef, offset);
       if (resultRef === null || resultRef === undefined) {
         return null;
       }

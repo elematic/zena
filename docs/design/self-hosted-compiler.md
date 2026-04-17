@@ -901,14 +901,14 @@ when a `.ts` file is opened.
 
 #### What Changes from Current Code
 
-| Before incremental work                             | Current state (implemented)                                             | Future (Program + LanguageService)                                      |
-| --------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `lsp.zena` creates a fresh `Compiler` per `check()` | Persistent `Compiler`; `invalidate(path)` before `compile()`            | `LanguageService` holds `SourceFileCache` + immutable `Program`         |
-| `LibraryLoader` owns the cache + loading logic      | Same, but with `invalidate()` (push) and `refreshCache()` (pull)        | `SourceFileCache` owns parsed files; `LibraryLoader` is stateless       |
-| Stdlib is re-parsed on every call                   | Stdlib parsed once, cached in `LibraryLoader` forever                   | Same, in `SourceFileCache`                                              |
-| Only `ScopeResult` is cached for queries            | `ScopeResult` + `CheckResult` cached; carry-forward in `checkCompilation` | Lazy checking per file per `Program`                                   |
-| No incremental invalidation                         | Export signature comparison + per-import-name invalidation              | On-demand checking + intra-file granularity                             |
-| Only one file can be "active" at a time             | Same (single entry point per compile)                                   | All open files tracked; each can be queried independently               |
+| Before incremental work                             | Current state (implemented)                                               | Future (Program + LanguageService)                                |
+| --------------------------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `lsp.zena` creates a fresh `Compiler` per `check()` | Persistent `Compiler`; `invalidate(path)` before `compile()`              | `LanguageService` holds `SourceFileCache` + immutable `Program`   |
+| `LibraryLoader` owns the cache + loading logic      | Same, but with `invalidate()` (push) and `refreshCache()` (pull)          | `SourceFileCache` owns parsed files; `LibraryLoader` is stateless |
+| Stdlib is re-parsed on every call                   | Stdlib parsed once, cached in `LibraryLoader` forever                     | Same, in `SourceFileCache`                                        |
+| Only `ScopeResult` is cached for queries            | `ScopeResult` + `CheckResult` cached; carry-forward in `checkCompilation` | Lazy checking per file per `Program`                              |
+| No incremental invalidation                         | Export signature comparison + per-import-name invalidation                | On-demand checking + intra-file granularity                       |
+| Only one file can be "active" at a time             | Same (single entry point per compile)                                     | All open files tracked; each can be queried independently         |
 
 #### Incremental Workflow
 

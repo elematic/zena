@@ -119,10 +119,9 @@ export class HoverResult {
 export class LanguageService {
   #host: LspHost;
   #compiler: Compiler;
-  var #cachedScopeResult: ScopeResult | null = null;
-  var #cachedPath: String = "";
   var #cachedCheckResult: ProgramCheckResult | null = null;
-  var #cachedCompilation: CompilationResult | null = null;
+  #scopeResults = new HashMap<String, ScopeResult>();
+  #compilations = new HashMap<String, CompilationResult>();
 
   new(host: LspHost, compiler: Compiler)
     : #host = host, #compiler = compiler;
@@ -135,11 +134,8 @@ export class LanguageService {
    * importing this file sees the editor's version, then compiles
    * starting from `path` as the root of the dependency tree.
    */
-  check(source: String, path: String): Array<Diagnostic> {
+  check(path: String, source: String): Array<Diagnostic> {
     this.#host.setDocument(path, source);
-
-    this.#cachedScopeResult = null;
-    this.#cachedPath = path;
 
     let diagnostics = try {
       // Invalidate the edited file so the loader re-reads it from
@@ -147,9 +143,11 @@ export class LanguageService {
       this.#compiler.invalidate(path);
       let result = this.#compiler.compile(path);
 
-      // Cache the scope result and compilation result for getDefinition().
-      this.#cachedScopeResult = result.entry.scopeResult;
-      this.#cachedCompilation = result;
+      // Cache scope result and compilation for getDefinition()/getHover().
+      if (result.entry.scopeResult != null) {
+        this.#scopeResults.set(path, result.entry.scopeResult as ScopeResult);
+      }
+      this.#compilations.set(path, result);
 
       // Type-check all modules, carrying forward unchanged results.
       let checkResult = checkCompilation(result, this.#cachedCheckResult);
@@ -167,11 +165,11 @@ export class LanguageService {
   /**
    * Find the definition of the symbol at the given byte offset.
    *
-   * Uses the cached ScopeResult from the last check() call.
+   * Uses the cached ScopeResult for the given file.
    */
-  getDefinition(offset: i32): SourceSpan | null {
-    if (this.#cachedScopeResult == null) { return null; }
-    let scopeResult = this.#cachedScopeResult as ScopeResult;
+  getDefinition(path: String, offset: i32): SourceSpan | null {
+    if (!this.#scopeResults.has(path)) { return null; }
+    let scopeResult = this.#scopeResults[path];
 
     let refs = scopeResult.references;
     var maybeInfo = refs.getByOffset(offset);
@@ -191,7 +189,7 @@ export class LanguageService {
       if (declNode.loc == null) { return null; }
       let loc = declNode.loc as SourceLocation;
 
-      var defFile = this.#cachedPath;
+      var defFile = path;
       if (sym.modulePath.length > 0) {
         defFile = sym.modulePath;
       }
@@ -200,8 +198,8 @@ export class LanguageService {
     }
 
     // Fallback: on-demand member access resolution (e.g., p.x → FieldDefinition).
-    if (this.#cachedCompilation != null && this.#cachedCheckResult != null) {
-      let compilation = this.#cachedCompilation as CompilationResult;
+    if (this.#compilations.has(path) && this.#cachedCheckResult != null) {
+      let compilation = this.#compilations[path];
       let checkResult = this.#cachedCheckResult as ProgramCheckResult;
       let entryPath = compilation.entry.path;
       if (checkResult.results.has(entryPath)) {
@@ -219,12 +217,12 @@ export class LanguageService {
    * Returns a HoverResult with the type string and display name,
    * or null if no type information is available at the offset.
    */
-  getHover(offset: i32): HoverResult | null {
-    if (this.#cachedCompilation == null || this.#cachedCheckResult == null) {
+  getHover(path: String, offset: i32): HoverResult | null {
+    if (!this.#compilations.has(path) || this.#cachedCheckResult == null) {
       return null;
     }
 
-    let compilation = this.#cachedCompilation as CompilationResult;
+    let compilation = this.#compilations[path];
     let checkResult = this.#cachedCheckResult as ProgramCheckResult;
     let entryPath = compilation.entry.path;
 
@@ -272,12 +270,14 @@ export class LanguageService {
     var nodeType = model.getNodeType(foundNode);
 
     // For identifiers, also try resolving to the binding type.
-    if (nodeType == null && this.#cachedScopeResult != null) {
-      let scopeResult = this.#cachedScopeResult as ScopeResult;
-      let refs = scopeResult.references;
+    let hasScopeResult = this.#scopeResults.has(path);
+
+    if (nodeType == null && hasScopeResult) {
+      let sr = this.#scopeResults[path];
+      let refs = sr.references;
       var maybeInfo = refs.getByOffset(offset);
       if (maybeInfo == null) {
-        let decls = scopeResult.declarations;
+        let decls = sr.declarations;
         maybeInfo = decls.getByOffset(offset);
       }
       if (maybeInfo != null) {
@@ -292,7 +292,11 @@ export class LanguageService {
     let typeStr = typeToString(typ);
 
     // Build a display label like "let x: i32" or "class Foo".
-    let label = getHoverLabel(foundNode, typeStr, this.#cachedScopeResult);
+    let label = if (hasScopeResult) {
+      getHoverLabel(foundNode, typeStr, this.#scopeResults[path])
+    } else {
+      getHoverLabel(foundNode, typeStr, null)
+    };
 
     return new HoverResult(typeStr, label);
   }
@@ -422,8 +426,8 @@ export let init = (stdlibRoot: String): void => {
 /**
  * Check a source file. See LanguageService.check().
  */
-export let check = (source: String, path: String): Array<Diagnostic> => {
-  return (__ls as LanguageService).check(source, path);
+export let check = (path: String, source: String): Array<Diagnostic> => {
+  return (__ls as LanguageService).check(path, source);
 };
 
 /**
@@ -436,8 +440,8 @@ export let format = (source: String): String => {
 /**
  * Find the definition at a byte offset. See LanguageService.getDefinition().
  */
-export let getDefinition = (offset: i32): SourceSpan | null => {
-  return (__ls as LanguageService).getDefinition(offset);
+export let getDefinition = (path: String, offset: i32): SourceSpan | null => {
+  return (__ls as LanguageService).getDefinition(path, offset);
 };
 
 // ============================================================================
@@ -578,8 +582,8 @@ export let getDiagnosticFile = (diagnostics: Array<Diagnostic>, index: i32): Str
  * Get hover information at a byte offset.
  * Returns a HoverResult or null if no info is available.
  */
-export let getHover = (offset: i32): HoverResult | null => {
-  return (__ls as LanguageService).getHover(offset);
+export let getHover = (path: String, offset: i32): HoverResult | null => {
+  return (__ls as LanguageService).getHover(path, offset);
 };
 
 /**

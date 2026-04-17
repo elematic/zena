@@ -22,7 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /** Same shape as the exports from lsp.wasm. */
 interface LspExports extends WebAssembly.Exports {
   init(stdlibRoot: unknown): void;
-  check(source: unknown, path: unknown): unknown;
+  check(path: unknown, source: unknown): unknown;
   getDiagnosticCount(diagnostics: unknown): number;
   getDiagnosticLine(diagnostics: unknown, index: number): number;
   getDiagnosticColumn(diagnostics: unknown, index: number): number;
@@ -95,7 +95,7 @@ function checkSource(lsp: LspHandle, source: string, path = '/test/main.zena') {
   const {exports, writeString, readString} = lsp;
   const sourceRef = writeString(source);
   const pathRef = writeString(path);
-  const handle = exports.check(sourceRef, pathRef);
+  const handle = exports.check(pathRef, sourceRef);
   const count = exports.getDiagnosticCount(handle);
 
   const diagnostics: {
