@@ -20,7 +20,7 @@ import {
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
-import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { Diagnostic, DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
 
 // ============================================================================
 // Filesystem-backed CompilerHost
@@ -68,7 +68,8 @@ let checkFile = (entryPath: String): Array<Diagnostic> => {
   let compiler = createCompiler(host, options);
   let result = compiler.compile(entryPath);
   let checkResult = checkCompilation(result);
-  return errorDiagnostics(checkResult.diagnostics);
+  // Only return errors from the entry file, not dependencies.
+  return errorDiagnostics(checkResult.entry.diagnostics);
 };
 
 let printDiagnostics = (errors: Array<Diagnostic>, label: String): void => {
@@ -78,7 +79,13 @@ let printDiagnostics = (errors: Array<Diagnostic>, label: String): void => {
     var i = 0;
     while (i < errors.length && i < 80) {
       let msg = errors[i].message;
-      console.log("  " + msg);
+      let loc = errors[i].location;
+      var locStr = "";
+      if (loc != null) {
+        let span = loc as SourceSpan;
+        locStr = " (line " + i32ToString(span.line) + ")";
+      }
+      console.log("  " + msg + locStr);
       i += 1;
     }
     if (errors.length > 80) {
@@ -96,7 +103,7 @@ export let tests = suite('Checker: Real Files', (): void => {
   // Each test compiles a real compiler source file through the full pipeline.
   // Files are skipped until they check clean.
 
-  testSkip('checks scope.zena', (ctx: TestContext): void => {
+  test('checks scope.zena', (ctx: TestContext): void => {
     let errors = checkFile("packages/zena-compiler/zena/lib/scope.zena");
     printDiagnostics(errors, "scope.zena");
     equal(errors.length, 0);

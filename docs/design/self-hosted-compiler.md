@@ -56,9 +56,9 @@ Source File (.zena)
 └────┬────────────────┘
      ▼
 ┌─────────────────────┐
-│  Checker            │  Type inference, validation, semantic model
-│  ├─ Phase 1         │  File-local: scopes, imports, exports (parallelizable)
-│  └─ Phase 2         │  Per-module: full type checking (DAG-parallel)
+│  Checker            │  On-demand type materialization, validation
+│  (per-module,       │  Types created lazily from scope declarations
+│   DAG-parallel)     │  Semantic model as output
 └────┬────────────────┘
      ▼
 ┌─────────────────────┐
@@ -213,50 +213,136 @@ The key insight from the TS implementation: interning makes identity-based
 lookups in WeakMaps reliable. We keep this. The improvement is that _all_ type
 creation goes through the `TypeContext`, not just generic instantiation.
 
-### 4. Checker: Two-Phase Checking
+### 4. Checker: On-Demand Type Resolution
 
 **Current TS design:** A single 5-pass checker processes all modules together.
 Passes 1-4 pre-declare types and functions; pass 5 does full checking.
 
-**Self-hosted design:** Split checking into two explicit phases with
-different parallelism characteristics:
+**Self-hosted design:** Scope analysis is the single source of truth for name
+resolution. The checker never searches for names — it materializes `Type`
+objects on demand from declarations that scope analysis already found.
 
-**Phase 1 — File-local analysis (per-file, trivially parallelizable):**
+#### Scope Analysis Owns All Names
 
-- Parse the file (already done by this point)
-- Resolve symbols to their declarations _within the file_
-- Catalog what the file imports (specifiers + imported names)
-- Catalog what the file exports (names + their declaration nodes)
-- Build the file's scope tree (block scopes, function scopes)
-- Pre-declare all type names (classes, interfaces, enums, type aliases)
+The `ScopeBuilder` registers every name in the appropriate namespace:
+classes, interfaces, mixins, enums, type aliases, sealed variants, imports,
+and local bindings. Prelude types (`String`, `Array`, `Box`, `Option`, etc.)
+are implicit imports at the root scope — not special-cased. By the time the
+checker runs, every name reference resolves to a `SymbolInfo` in the scope
+chain, or doesn't exist (and scope analysis has already flagged it).
 
-This phase does NOT validate expressions or infer types beyond what's
-explicitly annotated. Most expressions depend on imported types (base classes,
-interface constraints, stdlib types), so real type-checking can't happen here.
-The value of this phase is _preparation_: it builds the scope structure and
-import/export catalog that Phase 2 needs.
+#### The Checker Materializes Types
 
-**Phase 2 — Module checking (per-module, parallelizable across the DAG):**
+The checker maintains a single `SymbolInfo → Type` map. When it needs a
+type for a name, it asks scope analysis for the `SymbolInfo`, then
+materializes a `Type` object on demand based on the declaration kind:
 
-- Runs once all of a module's transitive dependencies have been checked
-- Wire up imports to their resolved types from dependency checking results
-- Full type inference and expression validation
-- Class hierarchy: inheritance, interface conformance, mixin application
-- Generic instantiation and type argument inference
-- Overload resolution, pattern exhaustiveness, type narrowing
-- Produces a `ModuleSemanticModel` with per-node types and diagnostics
+```zena
+resolveTypeName(name: String): Type | null {
+  // 1. Scope lookup → get SymbolInfo
+  let si = this.scopeResult.resolveType(name);
+  if (si == null) { return null; }
 
-This is where the bulk of type-checking happens. It's parallelizable across
-the module dependency DAG: if modules B and C both depend only on A, then once
-A is checked, B and C can be checked in parallel. The practical parallelism
-depends on how "wide" the dependency graph is — a deep chain of dependencies
-is essentially sequential, but real programs tend to have some width.
+  // 2. Already materialized?
+  let existing = this.getTypeForSymbol(si);
+  if (existing != null) { return existing; }
 
-The parallelism also depends on how efficiently checker results can be shared.
-If A's `ModuleSemanticModel` can be sent to the workers checking B and C
-(either via serialization or shared memory), this works. If not, the results
-need to be available in a shared location. See the Parallelism section below
-for more on this.
+  // 3. Materialize on demand from declaration kind
+  let t = this.materializeType(si);
+  this.setTypeForSymbol(si, t);
+  return t;
+}
+
+let materializeType = (si: SymbolInfo): Type => match (si.declaration) {
+  case ClassDeclaration as cd: {
+    let ct = new ClassType(freshTypeId(), cd.name.name);
+    // Set ALL boolean flags immediately from the AST node
+    ct.isFinal = cd.isFinal;
+    ct.isAbstract = cd.isAbstract || cd.isSealed;
+    ct.isSealed = cd.isSealed;
+    ct.isCaseClass = cd.params != null && !cd.isSealed;
+    ct.isExtension = cd.isExtension;
+    ct
+  }
+  case InterfaceDeclaration as id:
+    new InterfaceType(freshTypeId(), id.name.name)
+  case MixinDeclaration as md:
+    new MixinType(md.name.name)
+  case SealedVariant as sv: {
+    let ct = new ClassType(freshTypeId(), sv.name.name);
+    ct.isCaseClass = true;
+    ct.isFinal = true;
+    ct
+  }
+  case EnumDeclaration as ed:
+    new TypeAliasType(ed.name.name, null, new I32Type(), true)
+  case TypeAliasDeclaration as td:
+    // Resolve target annotation (may recurse — cycle detection catches loops)
+    resolveTypeAnnotation(td.typeAnnotation)
+  case ImportSpecifier as is:
+    // Query the imported file's semantic model
+    resolveImportedType(is)
+  case null:
+    // Built-in / prelude: query prelude's semantic model (same as imports)
+    resolvePreludeType(si)
+}
+```
+
+At materialization time, all boolean flags (isFinal, isSealed, isAbstract,
+isCaseClass, isExtension) are set from the AST node. The type identity is
+established. The main pass later fills in the mutable structural parts
+(fields, methods, supertypes, type parameters) when it processes the full
+declaration body.
+
+#### Cycle Detection
+
+A `#pendingTypes: Set<SymbolInfo>` tracks types currently being materialized.
+If `resolveTypeName` encounters a name already in the pending set, that's a
+circular type reference. For most declaration kinds, cycles through type
+annotations are errors. But note that _structural_ cycles (class A has a
+field of type B, class B has a field of type A) are fine — `resolveTypeName`
+only creates the type identity, and field types are resolved later during
+the main pass when both types already exist.
+
+#### Cross-File Resolution
+
+Files are checked in dependency order. When the checker encounters an
+`ImportSpecifier`, it queries the imported file's already-checked
+`SemanticModel` for the resolved type — using exactly the same mechanism
+as prelude types (which are just implicit imports).
+
+For libraries with circular dependencies between files, a library has
+three states:
+
+- **not-checked** — library hasn't started checking
+- **in-progress** — types exist as identity-only stubs (flags set, structural
+  members not yet populated)
+- **checked** — all types fully resolved
+
+When file A (in an in-progress library) imports `Foo` from file B (same
+library), it gets back the identity-only `ClassType` for `Foo`. This is
+sufficient for type annotations, since annotations only need identity, not
+members. The members of `Foo` are populated when B finishes its main pass.
+
+#### What This Eliminates
+
+- **Pass 1** (class/interface name pre-registration) — names come from scope
+  analysis
+- **Pass 1.5** (sealed variant pre-declaration) — sealed variants are just
+  another declaration kind in scope analysis
+- **`pass1TypeNames`** — no need to distinguish placeholder vs real types
+- **`resolveLocalTypeName`** — no prelude fallback to work around, because
+  prelude types are in scope analysis like everything else
+- **`#preludeTypes` HashMap** — prelude is part of the scope chain
+- **Prelude shadowing bugs** — a local `Box` class shadows the prelude `Box`
+  naturally because it's in a nearer scope
+
+#### Parallelism
+
+The checker is parallelizable across the module dependency DAG: if modules B
+and C both depend only on A, then once A is checked, B and C can be checked
+in parallel. The practical parallelism depends on how "wide" the dependency
+graph is.
 
 The checker's job ends here. It produces a complete `SemanticModel` with
 resolved types, bindings, class hierarchies, and diagnostics. Everything
@@ -265,22 +351,6 @@ that follows operates on the `SemanticModel` without producing type errors.
 Whole-program concerns like reachability (DCE), devirtualization, and
 effectively-final analysis are _not_ part of checking — they're analysis
 passes that run after all modules are checked. See section 6 below.
-
-**Why not check expressions in Phase 1?** Almost every non-trivial expression
-depends on types from other files. `new Point(1, 2)` needs to know Point's
-constructor signature. `x.foo()` needs to know the type of `x`, which might
-come from an import. Even `let x = bar()` needs to know `bar`'s return type.
-We don't have a universal base class with known members — every class's
-interface comes from its declaration. Attempting to check expressions without
-import resolution would require pervasive "unknown type" placeholders that
-provide little value and add complexity.
-
-**Practical consideration:** The Phase 1 / Phase 2 split might not justify
-itself in the initial implementation. We may start with Phase 1 + Phase 2
-combined (like the current TS compiler), running per-module in dependency
-order. The key design goal is that nothing in Phase 2 requires _all_ modules
-to be loaded — only the current module's transitive dependencies. This keeps
-the door open for parallelism and incremental checking later.
 
 ### 5. Visitor Infrastructure
 
@@ -1132,7 +1202,8 @@ offset, keyed the same way as `ReferenceMap`. The AST is read-only.
 - Mixin declarations (type params, on clause, composed mixins, fields/methods)
 - Declare function (annotation-only FunctionType)
 - Symbol declarations (SymbolType with unique ID)
-- Pre-pass registration for forward/recursive references
+- On-demand type materialization from scope declarations (replaces multi-pass
+  pre-registration — see Section 4)
 
 **3g: Patterns + expressions ✅**
 

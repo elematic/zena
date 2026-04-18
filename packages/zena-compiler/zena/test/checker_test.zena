@@ -547,6 +547,20 @@ export let tests = suite('Checker API', (): void => {
         "import { HashMap } from 'zena:map';\nlet m = new HashMap<String, i32>();\nlet b = m.has(\"x\");"
       );
     });
+
+    test('HashMap field with get and return', (ctx: TestContext): void => {
+      // Class with HashMap field — get method return type must substitute V
+      checkOk(
+        "import { HashMap } from 'zena:map';\nclass Store {\n  #data = new HashMap<String, i32>();\n  lookup(key: String): i32 {\n    let (val, found) = this.#data.get(key);\n    if (found) { return val; }\n    return 0;\n  }\n}"
+      );
+    });
+
+    test('HashMap index access substitutes V', (ctx: TestContext): void => {
+      // Index access on HashMap field must substitute type args
+      checkOk(
+        "import { HashMap } from 'zena:map';\nclass Cache {\n  #map = new HashMap<String, i32>();\n  getValue(key: String): i32 {\n    return this.#map[key];\n  }\n}"
+      );
+    });
   });
 
   // ==========================================================================
@@ -558,6 +572,98 @@ export let tests = suite('Checker API', (): void => {
     test('as pattern narrows to class type', (ctx: TestContext): void => {
       checkOk(
         "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet c = new Circle(3.14);\nlet r: f64 = c.radius;"
+      );
+    });
+
+    test('as pattern with identifier narrows to class type', (ctx: TestContext): void => {
+      // `case Circle as c:` where Circle is an Identifier (no {})
+      checkOk(
+        "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet area = (s: Shape): f64 => match (s) {\n  case Circle as c: c.radius\n  case Rect as r: r.w * r.h\n};"
+      );
+    });
+
+    test('as pattern with distributed variant narrows', (ctx: TestContext): void => {
+      // Distributed variant (standalone class extends sealed)
+      checkOk(
+        "sealed class Node {\n  case Leaf, Branch\n}\nclass Leaf(value: i32) extends Node\nclass Branch(left: Node, right: Node) extends Node\nlet eval = (n: Node): i32 => match (n) {\n  case Leaf as l: l.value\n  case Branch as b: eval(b.left) + eval(b.right)\n};"
+      );
+    });
+  });
+
+  suite('null check narrowing', (): void => {
+
+    test('if != null narrows in then branch', (ctx: TestContext): void => {
+      checkOk(
+        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet foo: Foo | null = null;\nif (foo != null) {\n  let y: Foo = foo;\n}"
+      );
+    });
+
+    test('if == null narrows in else branch', (ctx: TestContext): void => {
+      checkOk(
+        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet foo: Foo | null = null;\nif (foo == null) {\n  let y: i32 = 0;\n} else {\n  let y: Foo = foo;\n}"
+      );
+    });
+
+    test('if == null early return narrows after', (ctx: TestContext): void => {
+      checkOk(
+        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet f = (foo: Foo | null): i32 => {\n  if (foo == null) { return 0; }\n  let y: Foo = foo;\n  return y.x;\n};"
+      );
+    });
+
+    test('null narrowing with method call argument', (ctx: TestContext): void => {
+      // Pattern from scope.zena: if (info == null) { ... } else { record(expr, info); }
+      checkOk(
+        "class Info {\n  x: i32;\n  new(this.x);\n}\nlet record = (info: Info): void => {};\nlet lookup = (): Info | null => null;\nlet test = (): void => {\n  let info = lookup();\n  if (info == null) {\n    let x = 0;\n  } else {\n    record(info);\n  }\n};"
+      );
+    });
+
+    test('null narrowing with != null and method call', (ctx: TestContext): void => {
+      // Pattern from scope.zena: if (info != null) { record(ann, info); }
+      checkOk(
+        "class Info {\n  x: i32;\n  new(this.x);\n}\nlet record = (info: Info): void => {};\nlet lookup = (): Info | null => null;\nlet test = (): void => {\n  let info = lookup();\n  if (info != null) {\n    record(info);\n  }\n};"
+      );
+    });
+
+    test('null narrowing inside match case with method call', (ctx: TestContext): void => {
+      // Exact pattern from scope.zena: inside match arm, if == null, else calls method
+      checkOk(
+        "class Info {\n  x: i32;\n  new(this.x);\n}\nclass Ref {\n  record(a: i32, info: Info): void {}\n}\nclass Foo {\n  #ref: Ref;\n  new() : #ref = new Ref();\n  test(input: String | null): void {\n    let info: Info | null = null;\n    if (info == null) {\n      let x = 0;\n    } else {\n      this.#ref.record(42, info);\n    }\n  }\n}"
+      );
+    });
+
+    test('null narrowing inside match case body', (ctx: TestContext): void => {
+      // info inferred from function returning T | null, inside match arm
+      // FIRST: without match - should pass
+      checkOk(
+        "class Info {\n  x: i32;\n  new(this.x);\n}\nlet record = (info: Info): void => {};\nlet lookup = (s: String): Info | null => null;\nlet process = (s: String): void => {\n  let info = lookup(s);\n  if (info == null) {\n    let x = 0;\n  } else {\n    record(info);\n  }\n};"
+      );
+    });
+
+    test('null narrowing inside match case body with match', (ctx: TestContext): void => {
+      // SAME but inside match - should also pass
+      checkOk(
+        "class Info {\n  x: i32;\n  new(this.x);\n}\nlet record = (info: Info): void => {};\nlet lookup = (s: String): Info | null => null;\nsealed class Tag {\n  case A(name: String)\n  case B\n}\nlet process = (expr: Tag): void => {\n  match (expr) {\n    case A {name}: {\n      let info = lookup(name);\n      if (info == null) {\n        let x = 0;\n      } else {\n        record(info);\n      }\n    }\n    case _: {}\n  }\n};"
+      );
+    });
+
+    test('null narrowing inside match - no destructuring', (ctx: TestContext): void => {
+      // Same but without destructuring in match pattern
+      checkOk(
+        "sealed class Tag {\n  case A\n  case B\n}\nlet f = (): i32 | null => null;\nlet process = (expr: Tag): void => {\n  match (expr) {\n    case A: {\n      let info = f();\n      if (info == null) {\n        let x = 0;\n      } else {\n        let y: i32 = info;\n      }\n    }\n    case B: {}\n  }\n};"
+      );
+    });
+
+    test('rejects nullable to non-nullable assignment', (ctx: TestContext): void => {
+      checkError(
+        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet foo: Foo | null = null;\nlet y: Foo = foo;",
+        "not assignable"
+      );
+    });
+
+    test('narrowing allows non-null assignment in if body', (ctx: TestContext): void => {
+      // With narrowing, foo should be Foo (not Foo | null) inside the if body
+      checkOk(
+        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet foo: Foo | null = null;\nif (foo != null) {\n  let y: Foo = foo;\n}"
       );
     });
   });

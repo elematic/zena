@@ -58,12 +58,18 @@ export enum ScopeKind {
   Class     // Class body (for `this`, type parameters)
 }
 
+/**
+ * Distinct type for SymbolInfo identity keys.
+ * Prevents accidental use of arbitrary i32 values as symbol IDs.
+ */
+export distinct type SymbolId = i32;
+
 // Auto-incrementing counter for SymbolInfo.id.
 var _nextSymbolId: i32 = 0;
-let _allocSymbolId = (): i32 => {
+let _allocSymbolId = (): SymbolId => {
   let id = _nextSymbolId;
   _nextSymbolId = _nextSymbolId + 1;
-  return id;
+  return id as SymbolId;
 };
 
 /**
@@ -77,11 +83,11 @@ let _allocSymbolId = (): i32 => {
  */
 export class SymbolInfo {
   /**
-   * Unique numeric identity for this binding. Auto-incremented at
-   * construction time. Enables identity-keyed maps (HashMap<i32, T>)
+   * Unique identity for this binding. Auto-incremented at
+   * construction time. Enables identity-keyed maps (HashMap<SymbolId, T>)
    * without requiring object-identity hashing.
    */
-  id: i32;
+  id: SymbolId;
 
   /**
    * The kind of declaration: 'let', 'var', or 'type'.
@@ -1004,10 +1010,10 @@ export class ScopeBuilder {
       case TryExpression {body, handler, finalizer}: {
         this.#processNode(body);
         if (handler != null) {
-          this.#processNode(handler as Node);
+          this.#processNode(handler);
         }
         if (finalizer != null) {
-          this.#processNode(finalizer as Node);
+          this.#processNode(finalizer);
         }
       }
       case PipelineExpression {left, right}: {

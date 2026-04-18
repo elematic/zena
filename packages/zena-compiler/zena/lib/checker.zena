@@ -71,7 +71,8 @@ import { SemanticModel } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
-import { ScopeResult, SymbolInfo, ModuleExports } from './scope.zena';
+import { ScopeResult, SymbolInfo, SymbolId, ModuleExports } from './scope.zena';
+
 
 // ============================================================================
 // Checker Context
@@ -114,7 +115,7 @@ class CheckerContext {
    * Kept as a stack so narrowings are automatically discarded when
    * their enclosing scope exits.
    */
-  #narrowings = new Array<HashMap<i32, Type>>();
+  #narrowings = new Array<HashMap<SymbolId, Type>>();
 
   /**
    * The current function's expected return type, or null if not in a function.
@@ -144,14 +145,14 @@ class CheckerContext {
    * can lazily resolve forward-referenced function types from their
    * annotations without waiting for the main pass to reach them.
    */
-  #pendingFunctions = new HashMap<i32, Node>();
+  #pendingFunctions = new HashMap<SymbolId, Node>();
 
   /**
    * SymbolInfo IDs currently being lazily resolved.
    * Used for cycle detection: if we re-enter resolution for an ID
    * already in this set, we've found a recursive reference.
    */
-  #resolving = new HashMap<i32, boolean>();
+  #resolving = new HashMap<SymbolId, boolean>();
 
   /**
    * Pipeline value stack for `|>` operator.
@@ -168,6 +169,14 @@ class CheckerContext {
    * Type ID counter for generating unique IDs (ClassType, InterfaceType).
    */
   var #nextTypeId = 0;
+
+  /**
+   * SymbolInfo IDs currently being materialized (cycle detection).
+   * Prevents infinite recursion when type A references type B
+   * which references type A. Keyed by SymbolInfo.id rather than
+   * name strings, since names only have meaning within a scope.
+   */
+  #pendingTypes = new HashMap<SymbolId, boolean>();
 
   /**
    * Prelude exports: types available globally from stdlib modules.
@@ -206,7 +215,7 @@ class CheckerContext {
     
     // Initialize with module-level scope.
     this.#typeScopes.push(new HashMap<String, Type>());
-    this.#narrowings.push(new HashMap<i32, Type>());
+    this.#narrowings.push(new HashMap<SymbolId, Type>());
 
     // Wire the scope pass's maps into the SemanticModel
     // so consumers have a single object for all queries.
@@ -253,7 +262,7 @@ class CheckerContext {
    */
   enterScope(): void {
     this.#typeScopes.push(new HashMap<String, Type>());
-    this.#narrowings.push(new HashMap<i32, Type>());
+    this.#narrowings.push(new HashMap<SymbolId, Type>());
   }
 
   exitScope(): void {
@@ -303,6 +312,34 @@ class CheckerContext {
     if (this.#pendingFunctions.has(si.id)) {
       return this.lazyResolveFunction(si, this.#pendingFunctions[si.id]);
     }
+
+    // On-demand: if the declaration is a type (class, interface, mixin,
+    // sealed variant), materialize it via resolveTypeName so forward
+    // references in the value namespace work.
+    // For DeclareFunction, register a placeholder so forward refs don't fail.
+    let decl = si.declaration;
+    if (decl != null) {
+      let declNode = decl as Node;
+      var typeName: String | null = null;
+      match (declNode) {
+        case ClassDeclaration {name}: { typeName = name.name; }
+        case InterfaceDeclaration {name}: { typeName = name.name; }
+        case MixinDeclaration {name}: { typeName = name.name; }
+        case SealedVariant {name}: { typeName = name.name; }
+        case DeclareFunction: {
+          // Forward reference to a declare function — bind as unknown
+          // placeholder; the main pass will replace with the real type.
+          this.declareBinding(si, new UnknownType());
+          return new UnknownType();
+        }
+        case _: {}
+      }
+      if (typeName != null) {
+        // resolveTypeName will materialize + declareBinding if needed.
+        let t = this.resolveTypeName(typeName as String);
+        if (t != null) { return t; }
+      }
+    }
     return null;
   }
 
@@ -310,7 +347,7 @@ class CheckerContext {
    * Register a function declaration for lazy resolution.
    * Called during the checkModule pre-scan.
    */
-  registerPendingFunction(id: i32, funcExpr: Node): void {
+  registerPendingFunction(id: SymbolId, funcExpr: Node): void {
     this.#pendingFunctions.set(id, funcExpr);
   }
 
@@ -352,7 +389,6 @@ class CheckerContext {
           this.resolveFunctionFromAnnotations(typeParameters, params, returnType as TypeAnnotation, si)
         } else {
           // No return type annotation — eagerly check the function body.
-          // This is a pure forward reference (entrypoint at top, helper below).
           checkFunctionExpression(this, typeParameters, params, null, body, loc, null)
         };
 
@@ -446,7 +482,10 @@ class CheckerContext {
   }
 
   /**
-   * Resolve a type name by walking the scope chain outward, then prelude.
+   * Resolve a type name: check the checker's type scopes first, then
+   * prelude, then fall through to scope analysis for on-demand
+   * materialization. When a name is found in scope analysis but not yet
+   * materialized, creates the Type from the declaration AST node.
    */
   resolveTypeName(name: String): Type | null {
     // Check local scopes first (innermost to outermost).
@@ -461,7 +500,106 @@ class CheckerContext {
     if (this.#preludeTypes.has(name)) {
       return this.#preludeTypes[name];
     }
-    return null;
+    // On-demand: look up in scope analysis and materialize.
+    return this.#materializeFromScope(name);
+  }
+
+  /**
+   * Look up a type name in scope analysis and materialize a Type object
+   * on demand. Returns null if the name doesn't exist in scope analysis.
+   * Sets all boolean flags from the AST node at creation time.
+   */
+  #materializeFromScope(name: String): Type | null {
+    if (this.#scopeResult == null) { return null; }
+    let sr = this.#scopeResult as ScopeResult;
+    let si = sr.rootScope.resolveType(name);
+    if (si == null) { return null; }
+    let info = si as SymbolInfo;
+
+    // Cycle detection — keyed by SymbolInfo.id, not name.
+    if (this.#pendingTypes.has(info.id)) {
+      return null;
+    }
+    this.#pendingTypes.set(info.id, true);
+
+    let t = this.#materializeType(info);
+    if (t != null) {
+      let materialized = t as Type;
+      this.declareModuleTypeName(name, materialized);
+      // Also bind in the value namespace so forward references work.
+      // The DeclarationMap records the value-namespace SymbolInfo, so
+      // we need to look up via the declaration AST node.
+      if (info.declaration != null) {
+        let valueInfo = this.model.resolveDeclaration(info.declaration as Node);
+        if (valueInfo != null) {
+          this.declareBinding(valueInfo as SymbolInfo, materialized);
+        }
+      }
+    }
+
+    this.#pendingTypes.delete(info.id);
+    return t;
+  }
+
+  /**
+   * Create a Type from a SymbolInfo's declaration node.
+   * Sets all boolean flags immediately from the AST.
+   */
+  #materializeType(info: SymbolInfo): Type | null {
+    let decl = info.declaration;
+    if (decl == null) { return null; }
+    let node = decl as Node;
+    match (node) {
+      case ClassDeclaration as cd: {
+        let ct = new ClassType(this.freshTypeId(), cd.name.name);
+        ct.isFinal = cd.isFinal;
+        ct.isAbstract = cd.isAbstract;
+        ct.isSealed = cd.isSealed;
+        if (cd.isSealed) { ct.isAbstract = true; }
+        if (cd.caseParams != null && !cd.isSealed) {
+          ct.isFinal = true;
+          ct.isCaseClass = true;
+        }
+        ct.isExtension = cd.isExtension;
+        // Pre-register forward variant names for sealed classes.
+        if (cd.isSealed && cd.sealedVariants != null) {
+          let variants = cd.sealedVariants as Array<SealedVariant>;
+          var vi = 0;
+          while (vi < variants.length) {
+            let variant = variants[vi];
+            if (variant.params == null) {
+              if (ct.forwardVariantNames != null) {
+                (ct.forwardVariantNames as HashMap<String, boolean>).set(variant.name.name, true);
+              } else {
+                let map = new HashMap<String, boolean>();
+                map.set(variant.name.name, true);
+                ct.forwardVariantNames = map;
+              }
+            }
+            vi = vi + 1;
+          }
+        }
+        return ct;
+      }
+      case InterfaceDeclaration as id: {
+        return new InterfaceType(this.freshTypeId(), id.name.name);
+      }
+      case MixinDeclaration as md: {
+        return new MixinType(md.name.name);
+      }
+      case SealedVariant as sv: {
+        let ct = new ClassType(this.freshTypeId(), sv.name.name);
+        ct.isCaseClass = true;
+        ct.isFinal = true;
+        return ct;
+      }
+      case EnumDeclaration as ed: {
+        return new TypeAliasType(ed.name.name, null, new I32Type(), true);
+      }
+      case _: {
+        return null;
+      }
+    }
   }
 
   /**
@@ -846,81 +984,10 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExpor
   // Register standard prelude types.
   registerStandardPrelude(ctx);
 
-  // Pre-pass: register class and interface names so they can be referenced
-  // before their declaration in the file (forward references).
-  var pre = 0;
-  while (pre < ast.body.length) {
-    match (ast.body[pre]) {
-      case ClassDeclaration as clsDecl: {
-        // Create a placeholder ClassType that will be filled in during the main pass.
-        let ct = new ClassType(ctx.freshTypeId(), clsDecl.name.name);
-        ctx.declareTypeName(clsDecl.name.name, ct);
-        // Also bind in value namespace.
-        let info = ctx.model.resolveDeclaration(ast.body[pre]);
-        if (info != null) {
-          ctx.declareBinding(info as SymbolInfo, ct);
-        }
-        // Pre-register forward variant names for sealed classes.
-        if (clsDecl.isSealed && clsDecl.sealedVariants != null) {
-          let variants = clsDecl.sealedVariants as Array<SealedVariant>;
-          var vi = 0;
-          while (vi < variants.length) {
-            let variant = variants[vi];
-            // Forward variants have null params (just a name declaration)
-            if (variant.params != null) {
-              vi = vi + 1;
-              continue;
-            }
-            // Register as forward variant name
-            if (ct.forwardVariantNames != null) {
-              (ct.forwardVariantNames as HashMap<String, boolean>).set(variant.name.name, true);
-            } else {
-              let map = new HashMap<String, boolean>();
-              map.set(variant.name.name, true);
-              ct.forwardVariantNames = map;
-            }
-            vi = vi + 1;
-          }
-        }
-      }
-      case InterfaceDeclaration {name, loc}: {
-        let it = new InterfaceType(ctx.freshTypeId(), name.name);
-        ctx.declareTypeName(name.name, it);
-        let info = ctx.model.resolveDeclaration(ast.body[pre]);
-        if (info != null) {
-          ctx.declareBinding(info as SymbolInfo, it);
-        }
-      }
-      case EnumDeclaration as enumDecl: {
-        // Pre-register enum as a distinct type alias for forward references.
-        let enumType = new TypeAliasType(enumDecl.name.name, null, new I32Type(), true);
-        ctx.declareTypeName(enumDecl.name.name, enumType);
-        // Value binding will be set during the main pass.
-      }
-      case MixinDeclaration as mixDecl: {
-        // Pre-register mixin type for forward references.
-        let mt = new MixinType(mixDecl.name.name);
-        ctx.declareTypeName(mixDecl.name.name, mt);
-        let info = ctx.model.resolveDeclaration(ast.body[pre]);
-        if (info != null) {
-          ctx.declareBinding(info as SymbolInfo, mt);
-        }
-      }
-      case DeclareFunction as declFunc: {
-        // Pre-register declared function for forward references.
-        // The full type will be resolved during the main pass.
-        let info = ctx.model.resolveDeclaration(ast.body[pre]);
-        if (info != null) {
-          ctx.declareBinding(info as SymbolInfo, new UnknownType());
-        }
-      }
-      case _: {}
-    }
-    pre = pre + 1;
-  }
-
-  // Pre-pass 2: index function declarations for lazy resolution.
+  // Pre-pass: index function declarations for lazy resolution.
   // This enables forward references and mutual recursion for annotated functions.
+  // Type declarations (classes, interfaces, etc.) are materialized on demand
+  // by resolveTypeName when first referenced — no pre-registration needed.
   var fi = 0;
   while (fi < ast.body.length) {
     match (ast.body[fi]) {
@@ -1265,6 +1332,15 @@ let substituteTypeParams = (
         i += 1;
       }
       return new TupleT(subElems);
+    }
+    case InlineTupleT {elementTypes}: {
+      let subElems = new Array<Type>();
+      var i = 0;
+      while (i < elementTypes.length) {
+        subElems.push(substituteTypeParams(typeParams, typeArgs, elementTypes[i]));
+        i += 1;
+      }
+      return new InlineTupleT(subElems);
     }
     case FunctionType as ft: {
       let subParams = new Array<Type>();
@@ -1811,22 +1887,28 @@ let extractNullGuardNarrowing = (
             }
           }
         }
-        if (target == null) { return (null, null, false); }
+        if (target == null) {
+          return (null, null, false);
+        }
 
         let targetExpr = target as Expression;
         match (targetExpr) {
           case Identifier {name}: {
             let info = ctx.model.resolve(targetExpr as Node);
-            if (info == null) { return (null, null, false); }
+            if (info == null) {
+              return (null, null, false);
+            }
             let si = info as SymbolInfo;
             let originalType = ctx.resolveIdentifier(targetExpr as Node);
-            if (originalType == null) { return (null, null, false); }
+            if (originalType == null) {
+              return (null, null, false);
+            }
             let isEqualNull = operator == "==";
-            // For `x == null`: true-branch narrows to null, inverse removes null
-            // For `x != null`: true-branch removes null, inverse narrows to null
             return (si, originalType as Type, isEqualNull);
           }
-          case _: { return (null, null, false); }
+          case _: {
+            return (null, null, false);
+          }
         }
       }
       return (null, null, false);
@@ -2349,6 +2431,12 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
         if (cls != null) {
           narrowedType = cls as Type;
         }
+      } else if (inner is Identifier) {
+        let ident = inner as Identifier;
+        let cls = ctx.resolveTypeName(ident.name);
+        if (cls != null) {
+          narrowedType = cls as Type;
+        }
       }
       let info = ctx.model.resolveDeclaration(name);
       if (info != null) {
@@ -2394,6 +2482,27 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
  * Check an expression and return its inferred type.
  * `expectedType` is a contextual type hint (may be null).
  */
+/**
+ * Check a branch node of an IfExpression (Expression or BlockStatement).
+ */
+let checkIfBranchNode = (ctx: CheckerContext, node: Node, expectedType: Type | null): Type => {
+  if (node is BlockStatement) {
+    let b = node as BlockStatement;
+    ctx.enterScope();
+    var i = 0;
+    while (i < b.body.length) {
+      checkStatement(ctx, b.body[i]);
+      i += 1;
+    }
+    ctx.exitScope();
+    return new VoidType();
+  }
+  if (node is Expression) {
+    return checkExpression(ctx, node as Expression, expectedType);
+  }
+  return new VoidType();
+};
+
 let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
   let t = checkExpressionInner(ctx, expr, expectedType);
   // Record the inferred type in the semantic model.
@@ -2639,37 +2748,43 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     let testType = checkExpression(ctx, testExpr, null);
     validateConditionType(ctx, testType, testExpr);
 
-    let consType = match (consequent) {
-      case Expression as e: checkExpression(ctx, e, expectedType)
-      case BlockStatement as b: {
-        ctx.enterScope();
-        var blockType: Type = new VoidType();
-        var i = 0;
-        while (i < b.body.length) {
-          checkStatement(ctx, b.body[i]);
-          i += 1;
-        }
-        ctx.exitScope();
-        blockType
-      }
-      case _: new VoidType()
-    };
+    // Extract null-guard narrowing from the condition.
+    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
 
-    let altType = match (alternate) {
-      case Expression as e: checkExpression(ctx, e, expectedType)
-      case BlockStatement as b: {
-        ctx.enterScope();
-        var blockType: Type = new VoidType();
-        var i = 0;
-        while (i < b.body.length) {
-          checkStatement(ctx, b.body[i]);
-          i += 1;
-        }
-        ctx.exitScope();
-        blockType
+    // Check consequent with narrowing applied.
+    if (guardInfo != null) {
+      let si = guardInfo as SymbolInfo;
+      let origType = guardOrigType as Type;
+      ctx.enterScope();
+      if (isEqualNull) {
+        ctx.narrowBinding(si, new NullType());
+      } else {
+        ctx.narrowBinding(si, subtractNullFromType(origType));
       }
-      case _: new VoidType()
-    };
+    }
+    let consType = checkIfBranchNode(ctx, consequent, expectedType);
+    if (guardInfo != null) {
+      ctx.exitScope();
+    }
+
+    // Check alternate with inverse narrowing applied.
+    var altType: Type = new VoidType();
+    if (alternate != null) {
+      if (guardInfo != null) {
+        let si = guardInfo as SymbolInfo;
+        let origType = guardOrigType as Type;
+        ctx.enterScope();
+        if (isEqualNull) {
+          ctx.narrowBinding(si, subtractNullFromType(origType));
+        } else {
+          ctx.narrowBinding(si, new NullType());
+        }
+      }
+      altType = checkIfBranchNode(ctx, alternate as Node, expectedType);
+      if (guardInfo != null) {
+        ctx.exitScope();
+      }
+    }
 
     // Result type is the union of both branches.
     let branches = new Array<Type>();
@@ -2972,11 +3087,13 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
   // Record the declaring file for cross-module goto-definition.
   classType.sourcePath = ctx.filePath;
 
-  // Flags.
+  // Flags — ClassDeclaration is authoritative, overriding any
+  // previously materialized flags (e.g., from SealedVariant).
   classType.isFinal = cd.isFinal;
   classType.isAbstract = cd.isAbstract;
   classType.isExtension = cd.isExtension;
   classType.isSealed = cd.isSealed;
+  classType.isCaseClass = false;
 
   // Sealed classes are implicitly abstract (cannot be instantiated directly).
   if (cd.isSealed) {
@@ -2987,6 +3104,25 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
   if (cd.caseParams != null && !cd.isSealed) {
     classType.isFinal = true;
     classType.isCaseClass = true;
+  }
+
+  // Sealed classes: register forward variant names.
+  if (cd.isSealed && cd.sealedVariants != null) {
+    let variants = cd.sealedVariants as Array<SealedVariant>;
+    var fvi = 0;
+    while (fvi < variants.length) {
+      let variant = variants[fvi];
+      if (variant.params == null) {
+        if (classType.forwardVariantNames != null) {
+          (classType.forwardVariantNames as HashMap<String, boolean>).set(variant.name.name, true);
+        } else {
+          let map = new HashMap<String, boolean>();
+          map.set(variant.name.name, true);
+          classType.forwardVariantNames = map;
+        }
+      }
+      fvi = fvi + 1;
+    }
   }
 
   // Type parameters.
@@ -3513,18 +3649,33 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
       // Forward-declared variants (null params, like `case Circle, Rect`)
       // are defined as separate classes - skip creating inline types.
       if (variant.params != null) {
-        // Check for duplicate declaration of inline variant name.
+        // On-demand: resolveTypeName will materialize from the SealedVariant
+        // declaration in scope analysis if this variant was referenced earlier.
+        // If not, create a fresh ClassType.
         let existingType = ctx.resolveTypeName(variantName);
+        var variantType: ClassType = new ClassType(ctx.freshTypeId(), variantName);
         if (existingType != null) {
-          ctx.error(
-            "Duplicate declaration of '" + variantName + "' as inline variant. " +
-            "The name conflicts with an existing type.",
-            DiagnosticCode.DuplicateDeclaration,
-            variant.name.loc
-          );
+          // Check scope analysis: if the name's declaration is a SealedVariant,
+          // the existing type was forward-materialized from this variant — reuse.
+          // If it's a ClassDeclaration or other node, it's a name conflict.
+          var isForwardVariant = false;
+          if (ctx.scopeResult != null) {
+            let scopeInfo = (ctx.scopeResult as ScopeResult).rootScope.resolveType(variantName);
+            if (scopeInfo != null && (scopeInfo as SymbolInfo).declaration is SealedVariant) {
+              isForwardVariant = true;
+            }
+          }
+          if (isForwardVariant && existingType is ClassType) {
+            variantType = existingType as ClassType;
+          } else {
+            ctx.error(
+              "Duplicate declaration of '" + variantName + "' as inline variant. " +
+              "The name conflicts with an existing type.",
+              DiagnosticCode.DuplicateDeclaration,
+              variant.name.loc
+            );
+          }
         }
-
-        let variantType = new ClassType(ctx.freshTypeId(), variantName);
         variantType.superType = classType;
         variantType.isCaseClass = true;
         variantType.isFinal = true;
@@ -3574,7 +3725,38 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         // otherwise create an inline unit variant.
         match (ctx.resolveTypeName(variantName)) {
           case ClassType as ct: {
-            (classType.sealedVariants as Array<ClassType>).push(ct);
+            // If this ClassType was forward-materialized on-demand from a
+            // SealedVariant, it won't have superType/constructor yet.
+            // Complete it now.
+            if (ct.superType == null) {
+              ct.superType = classType;
+              // Only fully set up unit variants (not forward-declared ones
+              // which have their own ClassDeclaration that handles fields).
+              var isForwardVariant2 = false;
+              if (classType.forwardVariantNames != null) {
+                let fvn = classType.forwardVariantNames as HashMap<String, boolean>;
+                if (fvn.has(variantName)) { isForwardVariant2 = true; }
+              }
+              if (!isForwardVariant2) {
+                ct.isCaseClass = true;
+                ct.isFinal = true;
+                // Inherit fields from parent.
+                let pfKeys = classType.fields.keys();
+                while (let (true, pfk) = pfKeys.next()) {
+                  ct.fields.set(pfk, classType.fields[pfk]);
+                  if (classType.fieldMutability.has(pfk)) {
+                    ct.fieldMutability.set(pfk, classType.fieldMutability[pfk]);
+                  }
+                }
+                if (ct.constructorType == null) {
+                  ct.constructorType = new FunctionType(
+                    new Array<Type>(), new Array<String>(), ct
+                  );
+                }
+              }
+            }
+            let sealedVars = classType.sealedVariants as Array<ClassType>;
+            sealedVars.push(ct);
           }
           case _: {
             let unitType = new ClassType(ctx.freshTypeId(), variantName);
@@ -4716,8 +4898,6 @@ let checkBinaryExpression = (
       let si = guardInfo as SymbolInfo;
       let origType = guardOrigType as Type;
       ctx.enterScope();
-      // For `x != null && ...`: right side has x narrowed to non-null
-      // For `x == null && ...`: right side has x narrowed to null
       if (isEqualNull) {
         ctx.narrowBinding(si, new NullType());
       } else {
@@ -5217,18 +5397,25 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
       var lastType: Type = new VoidType();
       var si = 0;
       while (si < stmts.length) {
-        checkStatement(ctx, stmts[si]);
-        // The last statement's expression value is the result.
+        let isLast = si == stmts.length - 1;
+        let et = if (isLast) { expectedType } else { null };
+        // For ExpressionStatement/ReturnStatement, we need to extract the type
+        // from the expression. Use checkStatement for all other types.
         match (stmts[si]) {
           case ExpressionStatement {expression}: {
-            lastType = checkExpression(ctx, expression, expectedType);
+            lastType = checkExpression(ctx, expression, et);
           }
           case ReturnStatement {argument}: {
             if (argument != null) {
-              lastType = checkExpression(ctx, argument as Expression, expectedType);
+              lastType = checkExpression(ctx, argument as Expression, et);
+            } else {
+              lastType = new VoidType();
             }
           }
-          case _: { lastType = new VoidType(); }
+          case _: {
+            checkStatement(ctx, stmts[si]);
+            lastType = new VoidType();
+          }
         }
         si = si + 1;
       }
@@ -5348,6 +5535,12 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       if (ap.pattern is ClassPattern) {
         let cp = ap.pattern as ClassPattern;
         let cls = ctx.resolveTypeName(cp.name.name);
+        if (cls != null) {
+          narrowedType = cls as Type;
+        }
+      } else if (ap.pattern is Identifier) {
+        let ident = ap.pattern as Identifier;
+        let cls = ctx.resolveTypeName(ident.name);
         if (cls != null) {
           narrowedType = cls as Type;
         }
