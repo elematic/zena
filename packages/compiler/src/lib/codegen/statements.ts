@@ -2,10 +2,12 @@ import {
   NodeType,
   type BlockStatement,
   type BooleanLiteral,
+  type Expression,
   type ForInStatement,
   type ForStatement,
   type FunctionExpression,
   type Identifier,
+  type IfExpression,
   type IfStatement,
   type LetPatternCondition,
   type Pattern,
@@ -198,6 +200,14 @@ export function generateFunctionStatement(
       break;
     case NodeType.ExpressionStatement: {
       const expr = (stmt as any).expression;
+      // When an IfExpression is used as a statement (result discarded),
+      // generate it as void to avoid WASM type mismatches between branches.
+      // The branches may produce incompatible WASM types (e.g., i32 vs eqref)
+      // when operator []= assignments return different types in each branch.
+      if (expr.type === NodeType.IfExpression) {
+        generateIfExpressionAsVoid(ctx, expr as IfExpression, body);
+        break;
+      }
       generateExpression(ctx, expr, body);
       const type = inferType(ctx, expr);
       if (type.length > 0) {
@@ -253,6 +263,66 @@ export function generateIfStatement(
   }
   ctx.exitBlockStructure();
   body.push(Opcode.end);
+}
+
+/**
+ * Generate an IfExpression as a void statement. Used when an IfExpression
+ * appears in ExpressionStatement context (result discarded). Generates a void
+ * WASM if block, avoiding type mismatches between branches.
+ */
+function generateIfExpressionAsVoid(
+  ctx: CodegenContext,
+  expr: IfExpression,
+  body: number[],
+) {
+  if (expr.test.type === NodeType.LetPatternCondition) {
+    // Let-pattern ifs have special codegen; generate normally then drop
+    generateExpression(ctx, expr, body);
+    const type = inferType(ctx, expr);
+    if (type.length > 0) {
+      body.push(Opcode.drop);
+    }
+    return;
+  }
+
+  generateExpression(ctx, expr.test, body);
+  body.push(Opcode.if);
+  body.push(ValType.void);
+  ctx.enterBlockStructure();
+  generateExprBodyAsVoid(ctx, expr.consequent, body);
+  if (expr.alternate) {
+    body.push(Opcode.else);
+    generateExprBodyAsVoid(ctx, expr.alternate, body);
+  }
+  ctx.exitBlockStructure();
+  body.push(Opcode.end);
+}
+
+/**
+ * Generate an expression body (from IfExpression branch) as void statements.
+ * Handles BlockStatement, nested IfExpression, and bare expressions.
+ */
+function generateExprBodyAsVoid(
+  ctx: CodegenContext,
+  node: Expression | BlockStatement,
+  body: number[],
+) {
+  if (node.type === NodeType.BlockStatement) {
+    const block = node as BlockStatement;
+    ctx.pushScope();
+    for (const stmt of block.body) {
+      generateFunctionStatement(ctx, stmt, body);
+    }
+    ctx.popScope();
+  } else if (node.type === NodeType.IfExpression) {
+    generateIfExpressionAsVoid(ctx, node as IfExpression, body);
+  } else {
+    generateExpression(ctx, node as Expression, body);
+    const type = inferType(ctx, node as Expression);
+    if (type.length > 0) {
+      body.push(Opcode.drop);
+    }
+  }
 }
 
 export function generateBreakStatement(ctx: CodegenContext, body: number[]) {

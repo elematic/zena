@@ -1,0 +1,79 @@
+// @mode: run
+// @result: 3
+
+// Regression test: IfExpression used as a void statement inside a match arm.
+// When branches produce different WASM types (e.g., i32 from operator []=
+// vs eqref from field assignment), the codegen must generate a void WASM if
+// block instead of a typed one.
+
+import {HashMap} from 'zena:map';
+
+class Container {
+  var data: HashMap<String, boolean> | null = null;
+
+  new();
+
+  addOrInit(key: String): void {
+    var existing = this.data;
+    // This if/else appears in statement context but is parsed as IfExpression
+    // inside a block-as-expression. The then-branch produces boolean (i32)
+    // via operator []=, while the else-branch produces HashMap (eqref) via
+    // field assignment — incompatible WASM types if emitted as a typed if.
+    if (existing != null) {
+      (existing as HashMap<String, boolean>)[key] = true;
+    } else {
+      let newMap = new HashMap<String, boolean>();
+      newMap[key] = true;
+      this.data = newMap;
+    }
+  }
+}
+
+sealed class Action {
+  case Add(key: String)
+  case Remove(key: String)
+}
+
+let process = (c: Container, action: Action): i32 => {
+  match (action) {
+    case Add {key}: {
+      // if/else with mismatched branch types inside match arm
+      var existing = c.data;
+      if (existing != null) {
+        (existing as HashMap<String, boolean>)[key] = true;
+      } else {
+        let newMap = new HashMap<String, boolean>();
+        newMap[key] = true;
+        c.data = newMap;
+      }
+      1
+    }
+    case Remove {key}: {
+      if (c.data != null) {
+        let map = c.data as HashMap<String, boolean>;
+        map.delete(key);
+      }
+      2
+    }
+  }
+};
+
+export let main = (): i32 => {
+  let c = new Container();
+  // First add initializes the map (else branch)
+  let r1 = process(c, new Add('x'));
+  // Second add uses existing map (then branch)
+  let r2 = process(c, new Add('y'));
+  // Verify both keys exist
+  let map = c.data as HashMap<String, boolean>;
+  if (r1 != 1) return 10;
+  if (r2 != 1) return 20;
+  if (!map.has('x')) return 30;
+  if (!map.has('y')) return 40;
+  // Test remove
+  let r3 = process(c, new Remove('x'));
+  if (r3 != 2) return 50;
+  if (map.has('x')) return 60;
+
+  return 3;
+};

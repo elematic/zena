@@ -1750,8 +1750,15 @@ function checkWhileStatement(ctx: CheckerContext, stmt: WhileStatement) {
     );
   }
 
+  const narrowing = extractNarrowingFromCondition(ctx, stmt.test);
+
   ctx.enterLoop();
+  ctx.enterScope();
+  if (narrowing) {
+    ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+  }
   checkStatement(ctx, stmt.body);
+  ctx.exitScope();
   ctx.exitLoop();
 }
 
