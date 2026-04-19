@@ -547,11 +547,11 @@ let computeExportSignature = (
  * Optimistic assumption: if already visiting a pair, return true.
  */
 let signatureTypeEquals = (a: Type, b: Type): boolean => {
-  let visited = new HashMap<String, boolean>();
+  let visited = new HashSet<String>();
   return signatureTypeEqualsRec(a, b, visited);
 };
 
-let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashMap<String, boolean>): boolean => {
+let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashSet<String>): boolean => {
   // Fast path: referential identity (singletons, carried-forward objects).
   if (a === b) { return true; }
 
@@ -625,14 +625,9 @@ let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashMap<String, boolean
           // Compare optional properties.
           if (ra.optionalProperties == null && rb.optionalProperties == null) { return true; }
           if (ra.optionalProperties == null || rb.optionalProperties == null) { return false; }
-          let optA = ra.optionalProperties as HashMap<String, boolean>;
-          let optB = rb.optionalProperties as HashMap<String, boolean>;
-          if (optA.size != optB.size) { return false; }
-          let optKeys = optA.keys();
-          while (let (true, ok) = optKeys.next()) {
-            if (!optB.has(ok) || optA[ok] != optB[ok]) { return false; }
-          }
-          true
+          let optA = ra.optionalProperties as HashSet<String>;
+          let optB = rb.optionalProperties as HashSet<String>;
+          stringSetEquals(optA, optB)
         }
         case _: false
       }
@@ -700,7 +695,7 @@ let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashMap<String, boolean
 
 /** Compare two arrays of types elementwise. */
 let arrayTypesEqual = (
-  a: Array<Type>, b: Array<Type>, visited: HashMap<String, boolean>
+  a: Array<Type>, b: Array<Type>, visited: HashSet<String>
 ): boolean => {
   if (a.length != b.length) { return false; }
   var i = 0;
@@ -715,7 +710,7 @@ let arrayTypesEqual = (
 let typeParamsEqual = (
   a: Array<TypeParameterType> | null,
   b: Array<TypeParameterType> | null,
-  visited: HashMap<String, boolean>
+  visited: HashSet<String>
 ): boolean => {
   if (a == null && b == null) { return true; }
   if (a == null || b == null) { return false; }
@@ -734,7 +729,7 @@ let typeParamsEqual = (
 let typeArgsEqual = (
   a: Array<Type> | null,
   b: Array<Type> | null,
-  visited: HashMap<String, boolean>
+  visited: HashSet<String>
 ): boolean => {
   if (a == null && b == null) { return true; }
   if (a == null || b == null) { return false; }
@@ -743,7 +738,7 @@ let typeArgsEqual = (
 
 /** Compare two HashMaps of name → Type. */
 let typeMapEquals = (
-  a: HashMap<String, Type>, b: HashMap<String, Type>, visited: HashMap<String, boolean>
+  a: HashMap<String, Type>, b: HashMap<String, Type>, visited: HashSet<String>
 ): boolean => {
   if (a.size != b.size) { return false; }
   let iter = a.keys();
@@ -756,7 +751,7 @@ let typeMapEquals = (
 
 /** Compare two HashMaps of name → FunctionType. */
 let methodMapEquals = (
-  a: HashMap<String, FunctionType>, b: HashMap<String, FunctionType>, visited: HashMap<String, boolean>
+  a: HashMap<String, FunctionType>, b: HashMap<String, FunctionType>, visited: HashSet<String>
 ): boolean => {
   if (a.size != b.size) {
     return false;
@@ -789,15 +784,6 @@ let boolMapEquals = (
   return true;
 };
 
-/** Compare nullable HashMap<String, boolean>. */
-let nullableBoolMapEquals = (
-  a: HashMap<String, boolean> | null, b: HashMap<String, boolean> | null
-): boolean => {
-  if (a == null && b == null) { return true; }
-  if (a == null || b == null) { return false; }
-  return boolMapEquals(a as HashMap<String, boolean>, b as HashMap<String, boolean>);
-};
-
 /**
  * Compare two HashSets of String.
  */
@@ -826,7 +812,7 @@ let nullableStringSetEquals = (
 
 /** Deep comparison of FunctionType for signature purposes. */
 let functionTypeEquals = (
-  fa: FunctionType, fb: FunctionType, visited: HashMap<String, boolean>
+  fa: FunctionType, fb: FunctionType, visited: HashSet<String>
 ): boolean => {
   if (fa === fb) { return true; }
   if (fa.parameters.length != fb.parameters.length) { return false; }
@@ -856,7 +842,7 @@ let functionTypeEquals = (
 
 /** Deep comparison of ClassType for signature purposes. */
 let classTypeEquals = (
-  ca: ClassType, cb: ClassType, visited: HashMap<String, boolean>
+  ca: ClassType, cb: ClassType, visited: HashSet<String>
 ): boolean => {
   if (ca === cb) { return true; }
   if (ca.name != cb.name) { return false; }
@@ -865,7 +851,7 @@ let classTypeEquals = (
   // Cycle guard: if we're already comparing this class pair, assume equal.
   let visitKey = "c:" + ca.name + ":" + ca.sourcePath;
   if (visited.has(visitKey)) { return true; }
-  visited[visitKey] = true;
+  visited.add(visitKey);
 
   // Boolean flags.
   if (ca.isFinal != cb.isFinal) { return false; }
@@ -918,9 +904,9 @@ let classTypeEquals = (
   }
 
   // Optional boolean maps.
-  if (!nullableBoolMapEquals(ca.declaredFields, cb.declaredFields)) { return false; }
-  if (!nullableBoolMapEquals(ca.fieldsWithInitializers, cb.fieldsWithInitializers)) { return false; }
-  if (!nullableBoolMapEquals(ca.abstractFields, cb.abstractFields)) { return false; }
+  if (!nullableStringSetEquals(ca.declaredFields, cb.declaredFields)) { return false; }
+  if (!nullableStringSetEquals(ca.fieldsWithInitializers, cb.fieldsWithInitializers)) { return false; }
+  if (!nullableStringSetEquals(ca.abstractFields, cb.abstractFields)) { return false; }
   if (!nullableStringSetEquals(ca.forwardVariantNames, cb.forwardVariantNames)) { return false; }
 
   return true;
@@ -928,14 +914,14 @@ let classTypeEquals = (
 
 /** Deep comparison of InterfaceType for signature purposes. */
 let interfaceTypeEquals = (
-  ia: InterfaceType, ib: InterfaceType, visited: HashMap<String, boolean>
+  ia: InterfaceType, ib: InterfaceType, visited: HashSet<String>
 ): boolean => {
   if (ia === ib) { return true; }
   if (ia.name != ib.name) { return false; }
 
   let visitKey = "i:" + ia.name;
   if (visited.has(visitKey)) { return true; }
-  visited[visitKey] = true;
+  visited.add(visitKey);
 
   if (!typeParamsEqual(ia.typeParameters, ib.typeParameters, visited)) { return false; }
   if (!typeArgsEqual(ia.typeArguments, ib.typeArguments, visited)) { return false; }
@@ -955,14 +941,14 @@ let interfaceTypeEquals = (
 
 /** Deep comparison of MixinType for signature purposes. */
 let mixinTypeEquals = (
-  ma: MixinType, mb: MixinType, visited: HashMap<String, boolean>
+  ma: MixinType, mb: MixinType, visited: HashSet<String>
 ): boolean => {
   if (ma === mb) { return true; }
   if (ma.name != mb.name) { return false; }
 
   let visitKey = "m:" + ma.name;
   if (visited.has(visitKey)) { return true; }
-  visited[visitKey] = true;
+  visited.add(visitKey);
 
   if (!typeParamsEqual(ma.typeParameters, mb.typeParameters, visited)) { return false; }
   if (!typeArgsEqual(ma.typeArguments, mb.typeArguments, visited)) { return false; }
@@ -1121,13 +1107,13 @@ export let checkCompilation = (
 
   // Set of file paths that must be (re-)checked. Start with files whose
   // source text changed or that are new.
-  let mustCheck = new HashMap<String, boolean>();
+  let mustCheck = new HashSet<String>();
   if (previous != null) {
     let prev = previous as ProgramCheckResult;
     for (let file in result.files) {
       if (file.isStdlib) { continue; }
       if (!prev.sources.has(file.path) || prev.sources[file.path] != file.source) {
-        mustCheck[file.path] = true;
+        mustCheck.add(file.path);
       }
     }
   }
@@ -1193,7 +1179,7 @@ export let checkCompilation = (
             ni += 1;
           }
           if (affected) {
-            mustCheck[importerPath] = true;
+            mustCheck.add(importerPath);
           }
         }
       }

@@ -3222,7 +3222,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           // Check if this is an abstract field
           var isAbstractInSuper = false;
           if (st.abstractFields != null) {
-            let stAbs = st.abstractFields as HashMap<String, boolean>;
+            let stAbs = st.abstractFields as HashSet<String>;
             if (stAbs.has(key)) {
               isAbstractInSuper = true;
             }
@@ -3240,32 +3240,18 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         }
         // Inherit abstract fields from superclass.
         if (st.abstractFields != null) {
-          let stAbstract = st.abstractFields as HashMap<String, boolean>;
-          var targetAbsFields = classType.abstractFields;
-          if (targetAbsFields != null) {
-            let target = targetAbsFields as HashMap<String, boolean>;
-            let absKeys = stAbstract.keys();
-            while (let (true, absKey) = absKeys.next()) {
-              target[absKey] = true;
-            }
-          } else {
-            let newMap = new HashMap<String, boolean>();
-            let absKeys = stAbstract.keys();
-            while (let (true, absKey) = absKeys.next()) {
-              newMap[absKey] = true;
-            }
-            classType.abstractFields = newMap;
+          let stAbstract = st.abstractFields as HashSet<String>;
+          let targetAbsFields = classType.abstractFields ??= new HashSet<String>();
+          for (let absKey in stAbstract) {
+            targetAbsFields.add(absKey);
           }
         }
         // Inherit abstract methods from superclass.
         if (st.abstractMethods != null) {
-          let stAbstractMethods = st.abstractMethods as HashMap<String, boolean>;
-          if (classType.abstractMethods == null) {
-            classType.abstractMethods = new HashMap<String, boolean>();
-          }
-          let absMethodKeys = stAbstractMethods.keys();
-          while (let (true, absMethodKey) = absMethodKeys.next()) {
-            (classType.abstractMethods as HashMap<String, boolean>)[absMethodKey] = true;
+          let stAbstractMethods = st.abstractMethods as HashSet<String>;
+          let targetAbsMethods = classType.abstractMethods ??= new HashSet<String>();
+          for (let absMethodKey in stAbstractMethods) {
+            targetAbsMethods.add(absMethodKey);
           }
         }
       }
@@ -3306,7 +3292,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
 
       // Case param may satisfy an inherited abstract field.
       if (classType.abstractFields != null) {
-        let absFields = classType.abstractFields as HashMap<String, boolean>;
+        let absFields = classType.abstractFields as HashSet<String>;
         if (absFields.has(fieldName)) {
           absFields.delete(fieldName);
         }
@@ -3362,18 +3348,12 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             );
           }
           // Track abstract field.
-          var absFields = classType.abstractFields;
-          if (absFields != null) {
-            (absFields as HashMap<String, boolean>)[fieldName] = true;
-          } else {
-            let newMap = new HashMap<String, boolean>();
-            newMap[fieldName] = true;
-            classType.abstractFields = newMap;
-          }
+          let absFields = classType.abstractFields ??= new HashSet<String>();
+          absFields.add(fieldName);
         } else {
           // Concrete field may satisfy an inherited abstract field.
           if (classType.abstractFields != null) {
-            let absFields = classType.abstractFields as HashMap<String, boolean>;
+            let absFields = classType.abstractFields as HashSet<String>;
             if (absFields.has(fieldName)) {
               absFields.delete(fieldName);
             }
@@ -3880,9 +3860,8 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
   // Check for unimplemented abstract fields in non-abstract classes.
   if (!cd.isAbstract && !cd.isSealed) {
     if (classType.abstractFields != null) {
-      let absFields = classType.abstractFields as HashMap<String, boolean>;
-      let absKeys = absFields.keys();
-      while (let (true, absName) = absKeys.next()) {
+      let absFields = classType.abstractFields as HashSet<String>;
+      for (let absName in absFields) {
         ctx.error(
           "Non-abstract class '" + className + "' does not implement abstract field '" + absName + "'.",
           DiagnosticCode.AbstractMethodNotImplemented,
@@ -3892,9 +3871,8 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
     }
     // Check for unimplemented abstract methods in non-abstract classes.
     if (classType.abstractMethods != null) {
-      let absMethods = classType.abstractMethods as HashMap<String, boolean>;
-      let absMethodKeys = absMethods.keys();
-      while (let (true, absMethodName) = absMethodKeys.next()) {
+      let absMethods = classType.abstractMethods as HashSet<String>;
+      for (let absMethodName in absMethods) {
         ctx.error(
           "Non-abstract class '" + className + "' does not implement abstract method '" + absMethodName + "'.",
           DiagnosticCode.AbstractMethodNotImplemented,
@@ -3913,13 +3891,11 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
  */
 let trackAbstractMethod = (ctx: CheckerContext, classType: ClassType, methodName: String, isAbstract: boolean) => {
   if (isAbstract) {
-    if (classType.abstractMethods == null) {
-      classType.abstractMethods = new HashMap<String, boolean>();
-    }
-    (classType.abstractMethods as HashMap<String, boolean>)[methodName] = true;
+    let absMethods = classType.abstractMethods ??= new HashSet<String>();
+    absMethods.add(methodName);
   } else {
     if (classType.abstractMethods != null) {
-      let absMethods = classType.abstractMethods as HashMap<String, boolean>;
+      let absMethods = classType.abstractMethods as HashSet<String>;
       if (absMethods.has(methodName)) {
         absMethods.delete(methodName);
       }

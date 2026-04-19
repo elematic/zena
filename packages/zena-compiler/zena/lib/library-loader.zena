@@ -12,6 +12,7 @@
 
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
 import { Module, Statement, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration } from './ast.zena';
 import { parse } from './parser.zena';
@@ -254,19 +255,16 @@ export class LibraryLoader {
     }
 
     // Phase 1: Detect changed files and remove from cache.
-    let changedPaths = new HashMap<String, boolean>();
-    var i = 0;
-    while (i < paths.length) {
-      let path = paths[i];
+    let changedPaths = new HashSet<String>();
+    for (let path in paths) {
       let cached = this.#cache[path];
       if (!cached.isStdlib) {
         let currentSource = this.#host.readFile(path);
         if (currentSource != cached.source) {
-          changedPaths[path] = true;
+          changedPaths.add(path);
           this.#cache.delete(path);
         }
       }
-      i += 1;
     }
 
     if (changedPaths.size > 0) {
@@ -294,8 +292,7 @@ export class LibraryLoader {
 
       // Phase 3: Re-load evicted files so they're back in the cache
       // before computeGraph() tries to find them.
-      let changedIter = changedPaths.keys();
-      while (let (true, path) = changedIter.next()) {
+      for (let path in changedPaths) {
         this.load(path);
       }
     }
