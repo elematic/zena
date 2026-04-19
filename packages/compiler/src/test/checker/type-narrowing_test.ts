@@ -1103,4 +1103,57 @@ suite('TypeChecker: Type Narrowing', () => {
       assert.equal(errors.length, 0);
     });
   });
+
+  suite('while loop narrowing', () => {
+    test('should narrow != null in while condition', () => {
+      const input = `
+        class Node {
+          value: i32;
+          next: Node | null;
+          new(this.value, this.next);
+        }
+
+        let sum = (head: Node | null): i32 => {
+          var current = head;
+          var total = 0;
+          while (current != null) {
+            total += current.value;
+            current = current.next;
+          }
+          return total;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+
+    test('should not narrow outside while loop body', () => {
+      const input = `
+        class Node {
+          value: i32;
+          next: Node | null;
+          new(this.value, this.next);
+        }
+
+        let test = (head: Node | null): Node | null => {
+          var current = head;
+          while (current != null) {
+            current = current.next;
+          }
+          // current is Node | null again here
+          return current;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+  });
 });
