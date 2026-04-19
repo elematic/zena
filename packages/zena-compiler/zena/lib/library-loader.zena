@@ -167,7 +167,7 @@ export class LibraryLoader {
 
     // Cache the record BEFORE resolving imports to handle circular imports.
     let record = new SourceFile(path, isStdlib, packageName, source, ast, version ?? "");
-    this.#cache.set(path, record);
+    this.#cache[path] = record;
 
     // Resolve and recursively load imports.
     var i = 0;
@@ -177,19 +177,19 @@ export class LibraryLoader {
         case ImportDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
           let resolved = this.#resolver.resolve(specifier, path);
-          record.imports.set(specifier, resolved.path);
+          record.imports[specifier] = resolved.path;
           this.load(resolved.path);
         }
         case ExportAllDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
           let resolved = this.#resolver.resolve(specifier, path);
-          record.imports.set(specifier, resolved.path);
+          record.imports[specifier] = resolved.path;
           this.load(resolved.path);
         }
         case ExportFromDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
           let resolved = this.#resolver.resolve(specifier, path);
-          record.imports.set(specifier, resolved.path);
+          record.imports[specifier] = resolved.path;
           this.load(resolved.path);
         }
         case _: {}
@@ -262,7 +262,7 @@ export class LibraryLoader {
       if (!cached.isStdlib) {
         let currentSource = this.#host.readFile(path);
         if (currentSource != cached.source) {
-          changedPaths.set(path, true);
+          changedPaths[path] = true;
           this.#cache.delete(path);
         }
       }
@@ -343,7 +343,7 @@ export class LibraryLoader {
       return true;
     }
 
-    stack.set(lib.path, 1);
+    stack[lib.path] = 1;
 
     var hasCycle = false;
 
@@ -359,7 +359,7 @@ export class LibraryLoader {
     }
 
     stack.delete(lib.path);
-    visited.set(lib.path, 1);
+    visited[lib.path] = 1;
     sorted.push(lib);
     return hasCycle;
   }

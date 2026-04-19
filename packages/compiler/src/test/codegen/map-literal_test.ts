@@ -77,7 +77,7 @@ suite('Codegen - Map Literals', () => {
 
       export let main = (): i32 => {
         let m = {"a" => 1};
-        m.set("b", 2);
+        m["b"] = 2;
         return m.size;
       };
     `);

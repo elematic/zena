@@ -8808,10 +8808,10 @@ function generateMapLiteral(
   body.push(Opcode.call);
   body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
 
-  // 6. For each entry, call set(key, value)
-  const setMethod = mapClassInfo.methods.get('set');
+  // 6. For each entry, call operator []=(key, value)
+  const setMethod = mapClassInfo.methods.get('[]=');
   if (!setMethod) {
-    throw new Error('Map class must have a set method');
+    throw new Error('Map class must have an operator []= method');
   }
 
   for (const entry of expr.entries) {

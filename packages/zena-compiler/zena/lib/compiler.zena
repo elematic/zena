@@ -200,10 +200,10 @@ export class ProgramCheckResult {
 let buildResolver = (options: CompilerOptions): ModuleResolver => {
   let allPackages = new HashMap<String, PackageConfig>();
   let stdlibConfig = buildStdlibConfig(options.stdlibRoot);
-  allPackages.set("zena", stdlibConfig);
+  allPackages["zena"] = stdlibConfig;
   let userPkgIter = options.packages.keys();
   while (let (true, name) = userPkgIter.next()) {
-    allPackages.set(name, options.packages[name]);
+    allPackages[name] = options.packages[name];
   }
   return new ModuleResolver(allPackages, options.target);
 };
@@ -506,7 +506,7 @@ let computeExportSignature = (
       null
     };
     if (bt != null) {
-      sig.set("v:" + name, bt as Type);
+      sig["v:" + name] = bt as Type;
     }
   }
 
@@ -521,7 +521,7 @@ let computeExportSignature = (
       null
     };
     if (bt != null) {
-      sig.set("t:" + name, bt as Type);
+      sig["t:" + name] = bt as Type;
     }
   }
 
@@ -828,7 +828,7 @@ let classTypeEquals = (
   // Cycle guard: if we're already comparing this class pair, assume equal.
   let visitKey = "c:" + ca.name + ":" + ca.sourcePath;
   if (visited.has(visitKey)) { return true; }
-  visited.set(visitKey, true);
+  visited[visitKey] = true;
 
   // Boolean flags.
   if (ca.isFinal != cb.isFinal) { return false; }
@@ -898,7 +898,7 @@ let interfaceTypeEquals = (
 
   let visitKey = "i:" + ia.name;
   if (visited.has(visitKey)) { return true; }
-  visited.set(visitKey, true);
+  visited[visitKey] = true;
 
   if (!typeParamsEqual(ia.typeParameters, ib.typeParameters, visited)) { return false; }
   if (!typeArgsEqual(ia.typeArguments, ib.typeArguments, visited)) { return false; }
@@ -925,7 +925,7 @@ let mixinTypeEquals = (
 
   let visitKey = "m:" + ma.name;
   if (visited.has(visitKey)) { return true; }
-  visited.set(visitKey, true);
+  visited[visitKey] = true;
 
   if (!typeParamsEqual(ma.typeParameters, mb.typeParameters, visited)) { return false; }
   if (!typeArgsEqual(ma.typeArguments, mb.typeArguments, visited)) { return false; }
@@ -972,11 +972,11 @@ let buildReverseDeps = (
           if (file.imports.has(specifier)) {
             let depPath = file.imports[specifier];
             if (!reverseDeps.has(depPath)) {
-              reverseDeps.set(depPath, new HashMap<String, Array<String>>());
+              reverseDeps[depPath] = new HashMap<String, Array<String>>();
             }
             let depMap = reverseDeps[depPath];
             if (!depMap.has(file.path)) {
-              depMap.set(file.path, new Array<String>(4));
+              depMap[file.path] = new Array<String>(4);
             }
             let names = depMap[file.path];
             var k = 0;
@@ -995,11 +995,11 @@ let buildReverseDeps = (
           if (file.imports.has(specifier)) {
             let depPath = file.imports[specifier];
             if (!reverseDeps.has(depPath)) {
-              reverseDeps.set(depPath, new HashMap<String, Array<String>>());
+              reverseDeps[depPath] = new HashMap<String, Array<String>>();
             }
             let depMap = reverseDeps[depPath];
             if (!depMap.has(file.path)) {
-              depMap.set(file.path, new Array<String>(4));
+              depMap[file.path] = new Array<String>(4);
             }
             let names = depMap[file.path];
             var m = 0;
@@ -1038,9 +1038,9 @@ let checkFile = (
       let dep = allFiles[li];
       if (dep.path == depPath && dep.scopeResult != null) {
         let sr = dep.scopeResult as ScopeResult;
-        depExports.set(specifier, sr.exports);
+        depExports[specifier] = sr.exports;
         if (allResults.has(dep.path)) {
-          depModels.set(specifier, allResults[dep.path].model);
+          depModels[specifier] = allResults[dep.path].model;
         }
       }
       li = li + 1;
@@ -1090,7 +1090,7 @@ export let checkCompilation = (
     for (let file in result.files) {
       if (file.isStdlib) { continue; }
       if (!prev.sources.has(file.path) || prev.sources[file.path] != file.source) {
-        mustCheck.set(file.path, true);
+        mustCheck[file.path] = true;
       }
     }
   }
@@ -1103,10 +1103,10 @@ export let checkCompilation = (
     if (previous != null && !mustCheck.has(file.path)) {
       let prev = previous as ProgramCheckResult;
       if (prev.sources.has(file.path) && prev.results.has(file.path)) {
-        allResults.set(file.path, prev.results[file.path]);
-        allSources.set(file.path, file.source);
+        allResults[file.path] = prev.results[file.path];
+        allSources[file.path] = file.source;
         if (prev.exportSignatures.has(file.path)) {
-          allSignatures.set(file.path, prev.exportSignatures[file.path]);
+          allSignatures[file.path] = prev.exportSignatures[file.path];
         }
         continue;
       }
@@ -1114,14 +1114,14 @@ export let checkCompilation = (
 
     // (Re-)check this file.
     let checkResult = checkFile(file, allResults, result.files);
-    allResults.set(file.path, checkResult);
-    allSources.set(file.path, file.source);
+    allResults[file.path] = checkResult;
+    allSources[file.path] = file.source;
 
     // Compute export signature and compare with previous.
     if (file.scopeResult != null) {
       let sr = file.scopeResult as ScopeResult;
       let newSig = computeExportSignature(sr.exports, sr.rootScope, checkResult.model);
-      allSignatures.set(file.path, newSig);
+      allSignatures[file.path] = newSig;
 
       // If the signature changed, invalidate dependents that import
       // affected names. A dependent is only invalidated if at least one
@@ -1156,7 +1156,7 @@ export let checkCompilation = (
             ni += 1;
           }
           if (affected) {
-            mustCheck.set(importerPath, true);
+            mustCheck[importerPath] = true;
           }
         }
       }

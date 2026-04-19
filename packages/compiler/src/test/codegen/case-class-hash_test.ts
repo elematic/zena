@@ -64,8 +64,8 @@ suite('Case class hashCode', () => {
         let map = new HashMap<Point, i32>();
         let p1 = new Point(1, 2);
         let p2 = new Point(3, 4);
-        map.set(p1, 10);
-        map.set(p2, 20);
+        map[p1] = 10;
+        map[p2] = 20;
 
         // Lookup by equal (but different) instance
         let lookup = new Point(1, 2);
@@ -84,8 +84,8 @@ suite('Case class hashCode', () => {
       export let main = (): i32 => {
         let map = new HashMap<Point, i32>();
         let p1 = new Point(1, 2);
-        map.set(p1, 10);
-        map.set(new Point(1, 2), 99);
+        map[p1] = 10;
+        map[new Point(1, 2)] = 99;
         return map[p1];
       };
     `);

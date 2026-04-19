@@ -53,7 +53,7 @@ export let loadPackageMap = (
       return;
     }
     let config = parsePackageEntry(value, manifestDir);
-    result.set(name, config);
+    result[name] = config;
   });
 
   return result;
@@ -84,7 +84,7 @@ let parsePackageEntry = (value: JsonValue, manifestDir: String): PackageConfig =
     let exportsObj = obj["exports"] as JsonObject;
     exportsObj.forEach((moduleName: String, moduleValue: JsonValue): void => {
       let moduleExport = parseModuleExport(moduleValue);
-      exportsMap.set(moduleName, moduleExport);
+      exportsMap[moduleName] = moduleExport;
     });
     exports = exportsMap;
   }
@@ -114,7 +114,7 @@ let parseModuleExport = (value: JsonValue): ModuleExport => {
     let virtualObj = obj["virtual"] as JsonObject;
     let virtual = new HashMap<String, String>();
     virtualObj.forEach((target: String, implName: JsonValue): void => {
-      virtual.set(target, implName as String);
+      virtual[target] = implName as String;
     });
     return new ModuleExport(virtual);
   }
@@ -150,15 +150,15 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   ];
   var i = 0;
   while (i < publicModules.length) {
-    exports.set(publicModules[i], new ModuleExport(null));
+    exports[publicModules[i]] = new ModuleExport(null);
     i += 1;
   }
 
   // Virtual module: console → console-host / console-wasi.
   let consoleVirtual = new HashMap<String, String>();
-  consoleVirtual.set("host", "console-host");
-  consoleVirtual.set("wasi", "console-wasi");
-  exports.set("console", new ModuleExport(consoleVirtual));
+  consoleVirtual["host"] = "console-host";
+  consoleVirtual["wasi"] = "console-wasi";
+  exports["console"] = new ModuleExport(consoleVirtual);
 
   // Internal modules.
   let internal = new Array<String>();

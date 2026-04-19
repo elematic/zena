@@ -55,7 +55,7 @@ suite('Codegen: Exception handling with multi-module imports', () => {
       
       export let main = (): i32 => {
         let m = new HashMap<i32, i32>();
-        m.set(1, 100);
+        m[1] = 100;
         let (value, found) = m.get(1);
         return if (found) { value } else { 0 };
       };
@@ -129,7 +129,7 @@ suite('Codegen: Exception handling with multi-module imports', () => {
       
       export let main = (): i32 => {
         let m = new HashMap<i32, i32>();
-        m.set(5, 500);
+        m[5] = 500;
         return safeLookup(m, 5);
       };
     `);

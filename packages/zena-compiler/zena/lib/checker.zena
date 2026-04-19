@@ -242,7 +242,7 @@ class CheckerContext {
    * Register a built-in type in the type namespace.
    */
   declareBuiltinType(name: String, t: Type): void {
-    this.#typeScopes[0].set(name, t);
+    this.#typeScopes[0][name] = t;
   }
 
   /**
@@ -348,7 +348,7 @@ class CheckerContext {
    * Called during the checkModule pre-scan.
    */
   registerPendingFunction(id: SymbolId, funcExpr: Node): void {
-    this.#pendingFunctions.set(id, funcExpr);
+    this.#pendingFunctions[id] = funcExpr;
   }
 
   /**
@@ -382,7 +382,7 @@ class CheckerContext {
         }
 
         // Not a cycle. Mark as resolving.
-        this.#resolving.set(si.id, true);
+        this.#resolving[si.id] = true;
 
         let funcType = if (returnType != null) {
           // Fully annotated — resolve from annotations.
@@ -470,7 +470,7 @@ class CheckerContext {
    */
   declareTypeName(name: String, t: Type): void {
     let top = this.#typeScopes[this.#typeScopes.length - 1];
-    top.set(name, t);
+    top[name] = t;
   }
 
   /**
@@ -478,7 +478,7 @@ class CheckerContext {
    * variant types that need to be visible outside the class scope.
    */
   declareModuleTypeName(name: String, t: Type): void {
-    this.#typeScopes[0].set(name, t);
+    this.#typeScopes[0][name] = t;
   }
 
   /**
@@ -520,7 +520,7 @@ class CheckerContext {
     if (this.#pendingTypes.has(info.id)) {
       return null;
     }
-    this.#pendingTypes.set(info.id, true);
+    this.#pendingTypes[info.id] = true;
 
     let t = this.#materializeType(info);
     if (t != null) {
@@ -569,10 +569,10 @@ class CheckerContext {
             let variant = variants[vi];
             if (variant.params == null) {
               if (ct.forwardVariantNames != null) {
-                (ct.forwardVariantNames as HashMap<String, boolean>).set(variant.name.name, true);
+                (ct.forwardVariantNames as HashMap<String, boolean>)[variant.name.name] = true;
               } else {
                 let map = new HashMap<String, boolean>();
-                map.set(variant.name.name, true);
+                map[variant.name.name] = true;
                 ct.forwardVariantNames = map;
               }
             }
@@ -606,14 +606,14 @@ class CheckerContext {
    * Register a prelude type (available globally without import).
    */
   registerPreludeType(name: String, t: Type): void {
-    this.#preludeTypes.set(name, t);
+    this.#preludeTypes[name] = t;
   }
 
   /**
    * Register a prelude value (available globally without import).
    */
   registerPreludeValue(name: String, t: Type): void {
-    this.#preludeValues.set(name, t);
+    this.#preludeValues[name] = t;
   }
 
   /**
@@ -709,7 +709,7 @@ class CheckerContext {
    */
   narrowBinding(info: SymbolInfo, t: Type): void {
     let top = this.#narrowings[this.#narrowings.length - 1];
-    top.set(info.id, t);
+    top[info.id] = t;
   }
 
   // --- Scope result access ---
@@ -1102,7 +1102,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
     var i = 0;
     while (i < properties.length) {
       let prop = properties[i];
-      props.set(prop.name.name, resolveTypeAnnotation(ctx, prop.typeAnnotation));
+      props[prop.name.name] = resolveTypeAnnotation(ctx, prop.typeAnnotation);
       i += 1;
     }
     new RecordT(props, null)
@@ -1447,7 +1447,7 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
     case TypeParameterType {name}: {
       // Direct type parameter — infer from arg type.
       if (!inferred.has(name)) {
-        inferred.set(name, argType);
+        inferred[name] = argType;
       }
     }
     case ArrayType {elementType}: {
@@ -2908,7 +2908,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       match (properties[i]) {
         case PropertyAssignment {name, value}: {
           let valType = checkExpression(ctx, value, null);
-          propTypes.set(name.name, valType);
+          propTypes[name.name] = valType;
         }
         case SpreadElement {argument}: {
           // Spread: merge properties from the argument's record type.
@@ -2917,7 +2917,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             case RecordT {properties as spreadProps}: {
               let keys = spreadProps.keys();
               while (let (true, key) = keys.next()) {
-                propTypes.set(key, spreadProps[key]);
+                propTypes[key] = spreadProps[key];
               }
             }
             case _: {}
@@ -3149,10 +3149,10 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
       let variant = variants[fvi];
       if (variant.params == null) {
         if (classType.forwardVariantNames != null) {
-          (classType.forwardVariantNames as HashMap<String, boolean>).set(variant.name.name, true);
+          (classType.forwardVariantNames as HashMap<String, boolean>)[variant.name.name] = true;
         } else {
           let map = new HashMap<String, boolean>();
-          map.set(variant.name.name, true);
+          map[variant.name.name] = true;
           classType.forwardVariantNames = map;
         }
       }
@@ -3233,15 +3233,15 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             }
           }
           if (!isAbstractInSuper) {
-            classType.fields.set(key, st.fields[key]);
+            classType.fields[key] = st.fields[key];
             if (st.fieldMutability.has(key)) {
-              classType.fieldMutability.set(key, st.fieldMutability[key]);
+              classType.fieldMutability[key] = st.fieldMutability[key];
             }
           }
         }
         let methodKeys = st.methods.keys();
         while (let (true, key) = methodKeys.next()) {
-          classType.methods.set(key, st.methods[key]);
+          classType.methods[key] = st.methods[key];
         }
         // Inherit abstract fields from superclass.
         if (st.abstractFields != null) {
@@ -3251,13 +3251,13 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             let target = targetAbsFields as HashMap<String, boolean>;
             let absKeys = stAbstract.keys();
             while (let (true, absKey) = absKeys.next()) {
-              target.set(absKey, true);
+              target[absKey] = true;
             }
           } else {
             let newMap = new HashMap<String, boolean>();
             let absKeys = stAbstract.keys();
             while (let (true, absKey) = absKeys.next()) {
-              newMap.set(absKey, true);
+              newMap[absKey] = true;
             }
             classType.abstractFields = newMap;
           }
@@ -3270,7 +3270,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           }
           let absMethodKeys = stAbstractMethods.keys();
           while (let (true, absMethodKey) = absMethodKeys.next()) {
-            (classType.abstractMethods as HashMap<String, boolean>).set(absMethodKey, true);
+            (classType.abstractMethods as HashMap<String, boolean>)[absMethodKey] = true;
           }
         }
       }
@@ -3305,9 +3305,9 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         );
       }
 
-      classType.fields.set(fieldName, fieldType);
+      classType.fields[fieldName] = fieldType;
       let isMutable = cp.mutability != null && cp.mutability == "var";
-      classType.fieldMutability.set(fieldName, isMutable);
+      classType.fieldMutability[fieldName] = isMutable;
 
       // Case param may satisfy an inherited abstract field.
       if (classType.abstractFields != null) {
@@ -3369,10 +3369,10 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           // Track abstract field.
           var absFields = classType.abstractFields;
           if (absFields != null) {
-            (absFields as HashMap<String, boolean>).set(fieldName, true);
+            (absFields as HashMap<String, boolean>)[fieldName] = true;
           } else {
             let newMap = new HashMap<String, boolean>();
-            newMap.set(fieldName, true);
+            newMap[fieldName] = true;
             classType.abstractFields = newMap;
           }
         } else {
@@ -3406,9 +3406,9 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           );
         }
 
-        classType.fields.set(fieldName, fieldType);
+        classType.fields[fieldName] = fieldType;
         let isMutable = fd.mutability != null && fd.mutability == "var";
-        classType.fieldMutability.set(fieldName, isMutable);
+        classType.fieldMutability[fieldName] = isMutable;
       }
       case MethodDefinition as md: {
         let methodName = match (md.name) {
@@ -3457,7 +3457,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           }
 
           let methodType = checkMethodSignature(ctx, classType, md);
-          classType.methods.set(methodName, methodType);
+          classType.methods[methodName] = methodType;
 
           // Track abstract methods for checking in subclasses.
           trackAbstractMethod(ctx, classType, methodName, md.isAbstract);
@@ -3473,7 +3473,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         // Getter creates get#accName method.
         if (acc.getter != null) {
           let getterType = new FunctionType(new Array<Type>(), null, accType);
-          classType.methods.set("get#" + accName, getterType);
+          classType.methods["get#" + accName] = getterType;
         }
 
         // Setter creates a method set#accName with param type = accType.
@@ -3481,7 +3481,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           let setterParams = new Array<Type>();
           setterParams.push(accType);
           let setterType = new FunctionType(setterParams, null, new VoidType());
-          classType.methods.set("set#" + accName, setterType);
+          classType.methods["set#" + accName] = setterType;
         }
       }
       case MethodSignature as ms: {
@@ -3531,7 +3531,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           if (ms.returnType != null) {
             retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation);
           }
-          classType.methods.set(methodName, new FunctionType(paramTypes, null, retType));
+          classType.methods[methodName] = new FunctionType(paramTypes, null, retType);
         }
       }
       case _: {}
@@ -3578,7 +3578,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             let laterName = fieldOrder[hi];
             // Don't hide the current field (handles duplicate field names).
             if (laterName != fieldName && classType.fields.has(laterName)) {
-              hiddenFields.set(laterName, classType.fields[laterName]);
+              hiddenFields[laterName] = classType.fields[laterName];
               classType.fields.delete(laterName);
             }
             hi = hi + 1;
@@ -3590,12 +3590,12 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           // Restore hidden fields.
           let restoreKeys = hiddenFields.keys();
           while (let (true, key) = restoreKeys.next()) {
-            classType.fields.set(key, hiddenFields[key]);
+            classType.fields[key] = hiddenFields[key];
           }
 
           // Infer field type from initializer when no explicit annotation.
           if (fieldType is UnknownType && !(initType is UnknownType)) {
-            classType.fields.set(fieldName, initType);
+            classType.fields[fieldName] = initType;
           } else if (!isAssignableTo(ctx, initType, fieldType)) {
             ctx.error(
               "Type mismatch: field '" + fieldName + "' has type '" +
@@ -3718,9 +3718,9 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         // Inherit fields from parent.
         let parentFieldKeys = classType.fields.keys();
         while (let (true, key) = parentFieldKeys.next()) {
-          variantType.fields.set(key, classType.fields[key]);
+          variantType.fields[key] = classType.fields[key];
           if (classType.fieldMutability.has(key)) {
-            variantType.fieldMutability.set(key, classType.fieldMutability[key]);
+            variantType.fieldMutability[key] = classType.fieldMutability[key];
           }
         }
 
@@ -3732,9 +3732,9 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         while (vpi < vParams.length) {
           let vp = vParams[vpi];
           let vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
-          variantType.fields.set(vp.name.name, vpType);
+          variantType.fields[vp.name.name] = vpType;
           let isMut = vp.mutability != null && vp.mutability == "var";
-          variantType.fieldMutability.set(vp.name.name, isMut);
+          variantType.fieldMutability[vp.name.name] = isMut;
           vCtorParams.push(vpType);
           vCtorNames.push(vp.name.name);
           vpi = vpi + 1;
@@ -3778,9 +3778,9 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
                 // Inherit fields from parent.
                 let pfKeys = classType.fields.keys();
                 while (let (true, pfk) = pfKeys.next()) {
-                  ct.fields.set(pfk, classType.fields[pfk]);
+                  ct.fields[pfk] = classType.fields[pfk];
                   if (classType.fieldMutability.has(pfk)) {
-                    ct.fieldMutability.set(pfk, classType.fieldMutability[pfk]);
+                    ct.fieldMutability[pfk] = classType.fieldMutability[pfk];
                   }
                 }
                 if (ct.constructorType == null) {
@@ -3802,9 +3802,9 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             // Inherit fields from parent.
             let parentFieldKeys2 = classType.fields.keys();
             while (let (true, key2) = parentFieldKeys2.next()) {
-              unitType.fields.set(key2, classType.fields[key2]);
+              unitType.fields[key2] = classType.fields[key2];
               if (classType.fieldMutability.has(key2)) {
-                unitType.fieldMutability.set(key2, classType.fieldMutability[key2]);
+                unitType.fieldMutability[key2] = classType.fieldMutability[key2];
               }
             }
             // Unit variant: zero-arg constructor.
@@ -3914,7 +3914,6 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
 };
 
 /**
-/**
  * Track an abstract method on a class type, or remove it if it's been implemented.
  */
 let trackAbstractMethod = (ctx: CheckerContext, classType: ClassType, methodName: String, isAbstract: boolean) => {
@@ -3922,7 +3921,7 @@ let trackAbstractMethod = (ctx: CheckerContext, classType: ClassType, methodName
     if (classType.abstractMethods == null) {
       classType.abstractMethods = new HashMap<String, boolean>();
     }
-    (classType.abstractMethods as HashMap<String, boolean>).set(methodName, true);
+    (classType.abstractMethods as HashMap<String, boolean>)[methodName] = true;
   } else {
     if (classType.abstractMethods != null) {
       let absMethods = classType.abstractMethods as HashMap<String, boolean>;
@@ -4070,11 +4069,11 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
           // Inherit methods and fields.
           let methodKeys = pt.methods.keys();
           while (let (true, key) = methodKeys.next()) {
-            ifaceType.methods.set(key, pt.methods[key]);
+            ifaceType.methods[key] = pt.methods[key];
           }
           let fieldKeys = pt.fields.keys();
           while (let (true, key) = fieldKeys.next()) {
-            ifaceType.fields.set(key, pt.fields[key]);
+            ifaceType.fields[key] = pt.fields[key];
           }
         }
         case _: {}
@@ -4104,11 +4103,11 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         if (ms.returnType != null) {
           retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation);
         }
-        ifaceType.methods.set((ms.name as Identifier).name, new FunctionType(paramTypes, null, retType));
+        ifaceType.methods[(ms.name as Identifier).name] = new FunctionType(paramTypes, null, retType);
       }
       case PropertySignature as ps: {
         let propType = resolveTypeAnnotation(ctx, ps.typeAnnotation);
-        ifaceType.fields.set(ps.name.name, propType);
+        ifaceType.fields[ps.name.name] = propType;
       }
       case FieldDefinition as fd: {
         let fieldName = match (fd.name) {
@@ -4116,16 +4115,16 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
           case _: "<unknown>"
         };
         let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
-        ifaceType.fields.set(fieldName, fieldType);
+        ifaceType.fields[fieldName] = fieldType;
         // Track mutability for setter requirement.
         if (fd.mutability != null && fd.mutability == "var") {
-          ifaceType.fieldMutability.set(fieldName, true);
+          ifaceType.fieldMutability[fieldName] = true;
         }
       }
       case AccessorSignature as as_: {
         let accType = resolveTypeAnnotation(ctx, as_.typeAnnotation);
         if (as_.hasGetter) {
-          ifaceType.methods.set(as_.name.name, new FunctionType(new Array<Type>(), null, accType));
+          ifaceType.methods[as_.name.name] = new FunctionType(new Array<Type>(), null, accType);
         }
       }
       case _: {}
@@ -4227,7 +4226,7 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
   let fields = new HashMap<String, Type>();
   var fi = 0;
   while (fi < members.length) {
-    fields.set(members[fi].name.name, enumType);
+    fields[members[fi].name.name] = enumType;
     fi += 1;
   }
   let enumValueType = new RecordT(fields, null);
@@ -4313,14 +4312,14 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           // Copy fields and methods from composed mixin.
           let fieldKeys = composedMixin.fields.keys();
           while (let (true, key) = fieldKeys.next()) {
-            mixinType.fields.set(key, composedMixin.fields[key]);
+            mixinType.fields[key] = composedMixin.fields[key];
             if (composedMixin.fieldMutability.has(key)) {
-              mixinType.fieldMutability.set(key, composedMixin.fieldMutability[key]);
+              mixinType.fieldMutability[key] = composedMixin.fieldMutability[key];
             }
           }
           let methodKeys = composedMixin.methods.keys();
           while (let (true, key) = methodKeys.next()) {
-            mixinType.methods.set(key, composedMixin.methods[key]);
+            mixinType.methods[key] = composedMixin.methods[key];
           }
         }
         case _: {
@@ -4348,9 +4347,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           case _: "<unknown>"
         };
         let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation);
-        mixinType.fields.set(fieldName, fieldType);
+        mixinType.fields[fieldName] = fieldType;
         let isMutable = fd.mutability != null && fd.mutability == "var";
-        mixinType.fieldMutability.set(fieldName, isMutable);
+        mixinType.fieldMutability[fieldName] = isMutable;
 
         // Check initializer if present.
         if (fd.value != null) {
@@ -4401,7 +4400,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           let ft = new FunctionType(paramTypes, paramNames, retType);
           ft.isFinal = methDef.isFinal;
           ft.isAbstract = methDef.isAbstract;
-          mixinType.methods.set(methodName, ft);
+          mixinType.methods[methodName] = ft;
         }
       }
       case AccessorDeclaration as acc: {
@@ -4410,9 +4409,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           case Identifier {name}: name
           case _: "<unknown>"
         };
-        mixinType.fields.set(accName, accType);
+        mixinType.fields[accName] = accType;
         if (acc.getter != null) {
-          mixinType.methods.set(accName, new FunctionType(new Array<Type>(), null, accType));
+          mixinType.methods[accName] = new FunctionType(new Array<Type>(), null, accType);
         }
       }
       case _: {}

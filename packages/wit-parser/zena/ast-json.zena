@@ -138,14 +138,14 @@ class SerializeContext {
   registerInterface(iface: InterfaceDef): i32 {
     let index = this.interfaces.length;
     this.interfaces.push(iface);
-    this.interfaceIndices.set(iface.name.name, index);
+    this.interfaceIndices[iface.name.name] = index;
     return index;
   }
 
   registerWorld(world: WorldDef): i32 {
     let index = this.worlds.length;
     this.worlds.push(world);
-    this.worldIndices.set(world.name.name, index);
+    this.worldIndices[world.name.name] = index;
     return index;
   }
 
@@ -153,7 +153,7 @@ class SerializeContext {
     let index = this.types.length;
     this.types.push(entry);
     if (entry.name != null) {
-      this.typeIndices.set(entry.name as String, index);
+      this.typeIndices[entry.name as String] = index;
     }
     return index;
   }
@@ -166,7 +166,7 @@ class SerializeContext {
     }
     let entry = new TypeEntry(null, kind, none, null);
     let idx = this.registerType(entry);
-    this.anonTypeIndices.set(key, idx);
+    this.anonTypeIndices[key] = idx;
     return idx;
   }
   
@@ -181,7 +181,7 @@ class SerializeContext {
     kind.borrowIndex = resourceIdx;
     let entry = new TypeEntry(null, kind, none, null);
     let idx = this.registerType(entry);
-    this.borrowTypeIndices.set(resourceIdx, idx);
+    this.borrowTypeIndices[resourceIdx] = idx;
     return idx;
   }
   
@@ -198,7 +198,7 @@ class SerializeContext {
     kind.ownIndex = resourceIdx;
     let entry = new TypeEntry(null, kind, none, null);
     let idx = this.registerType(entry);
-    this.ownTypeIndices.set(resourceIdx, idx);
+    this.ownTypeIndices[resourceIdx] = idx;
     return idx;
   }
 
@@ -614,7 +614,7 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, ownerInterface: i32):
   
   // Track resources for bare name -> own<resource> conversion
   if (td.tag == TypeDefTag.Resource) {
-    ctx.resourceTypeIndices.set(typeIdx, 1);
+    ctx.resourceTypeIndices[typeIdx] = 1;
   }
   
   return typeIdx;
@@ -1137,11 +1137,11 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
     if (item.tag == AstItemTag.Interface) {
       let iface = item.interfaceDef as InterfaceDef;
       let ifaceIdx = ctx.registerInterface(iface);
-      pkg.interfaces.set(normalizeId(iface.name.name), ifaceIdx);
+      pkg.interfaces[normalizeId(iface.name.name)] = ifaceIdx;
     } else if (item.tag == AstItemTag.World) {
       let world = item.worldDef as WorldDef;
       let worldIdx = ctx.registerWorld(world);
-      pkg.worlds.set(normalizeId(world.name.name), worldIdx);
+      pkg.worlds[normalizeId(world.name.name)] = worldIdx;
     }
     idx = idx + 1;
   }

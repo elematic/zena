@@ -6,48 +6,44 @@ import { Hashable, hash, equals } from 'zena:hashable';
 
 export * from 'zena:hashable';
 
-// Symbols for MapEntry storage (exposed via getters)
-symbol mapEntryKey;
-symbol mapEntryValue;
-
-class Entry<K, V> {
-  key: K;
-  var value: V;
-  var next: Entry<K, V> | null;
-
-  new(key: K, value: V, next: Entry<K, V> | null)
-    : key = key,
-      value = value,
-      next = next;
-}
+symbol entryNext;
 
 /**
  * A key-value pair from a Map.
  */
 export class MapEntry<K, V> {
-  var :mapEntryKey: K;
-  var :mapEntryValue: V;
+  /**
+   * The key this entry was inserted with.
+   */
+  key: K;
 
-  new(key: K, value: V) {
-    this.:mapEntryKey = key;
-    this.:mapEntryValue = value;
-  }
+  /**
+   * The value associated with this key. This is mutable to allow updating the
+   * value for an existing key.
+   */
+  var value: V;
 
-  key: K {
-    get {
-      return this.:mapEntryKey;
-    }
-  }
+  /**
+   * Pointer to next entry in the same bucket (for hash collision chaining)
+   */
+  var :entryNext: MapEntry<K, V> | null;
 
-  value: V {
-    get {
-      return this.:mapEntryValue;
-    }
+  new(this.key: K, this.value: V, next: MapEntry<K, V> | null) {
+    this.:entryNext = next;
   }
 }
 
 /**
- * The Map interface defines a mutable key-value collection.
+ * A collection of key-value pairs with efficient lookup by key.
+ *
+ * A key can only be associated with one value. Inserting a new value for an
+ * existing key overwrites the previous value.
+ *
+ * The [] operator allows getting and setting values by key. Getting a key that
+ * doesn't exist throws a KeyNotFoundError. Use the get/getOr/find methods to
+ * check for existence without exceptions. The get method is the most efficient
+ * way to check for a key and get its value, returning an inline tuple of
+ * (value, found) with zero allocations.
  */
 export interface Map<K, V> extends Iterable<MapEntry<K, V>> {
   size: i32 { get; }
@@ -58,79 +54,33 @@ export interface Map<K, V> extends Iterable<MapEntry<K, V>> {
   has(key: K): boolean;
   delete(key: K): boolean;
   clear(): void;
-  set(key: K, value: V): void;
-  keys(): Iterator<K>;
+  keys(): Iterator<K>;  
   forEach(callback: (key: K, value: V) => void): void;
-}
-
-/**
- * Iterator over the keys of a HashMap.
- */
-class HashMapKeyIterator<K, V> implements Iterator<K> {
-  var #buckets: FixedArray<Entry<K, V> | null>;
-  var #bucketIndex: i32;
-  var #current: Entry<K, V> | null;
-
-  new(buckets: FixedArray<Entry<K, V> | null>)
-    : #buckets = buckets, #bucketIndex = 0, #current = null {
-    this.#advanceToNext();
-  }
-
-  #advanceToNext(): void {
-    if (this.#current != null) {
-      let entry = this.#current as Entry<K, V>;
-      if (entry.next != null) {
-        this.#current = entry.next;
-        return;
-      }
-    }
-    this.#current = null;
-    while (this.#bucketIndex < this.#buckets.length) {
-      let bucket = this.#buckets[this.#bucketIndex];
-      this.#bucketIndex = this.#bucketIndex + 1;
-      if (bucket != null) {
-        this.#current = bucket;
-        return;
-      }
-    }
-  }
-
-  next(): inline (true, K) | inline (false, never) {
-    if (this.#current == null) {
-      return (false, _);
-    }
-    let entry = this.#current as Entry<K, V>;
-    let key = entry.key;
-    this.#advanceToNext();
-    return (true, key);
-  }
 }
 
 /**
  * Iterator over the entries of a HashMap.
  */
 class HashMapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
-  var #buckets: FixedArray<Entry<K, V> | null>;
+  var #buckets: FixedArray<MapEntry<K, V> | null>;
   var #bucketIndex: i32;
-  var #current: Entry<K, V> | null;
+  var #current: MapEntry<K, V> | null;
 
-  new(buckets: FixedArray<Entry<K, V> | null>)
+  new(buckets: FixedArray<MapEntry<K, V> | null>)
     : #buckets = buckets, #bucketIndex = 0, #current = null {
     this.#advanceToNext();
   }
 
   #advanceToNext(): void {
-    if (this.#current != null) {
-      let entry = this.#current as Entry<K, V>;
-      if (entry.next != null) {
-        this.#current = entry.next;
-        return;
-      }
+    let entry = this.#current;
+    if (entry != null && entry.:entryNext != null) {
+      this.#current = entry.:entryNext;
+      return;
     }
     this.#current = null;
     while (this.#bucketIndex < this.#buckets.length) {
       let bucket = this.#buckets[this.#bucketIndex];
-      this.#bucketIndex = this.#bucketIndex + 1;
+      this.#bucketIndex += 1;
       if (bucket != null) {
         this.#current = bucket;
         return;
@@ -142,19 +92,35 @@ class HashMapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
     if (this.#current == null) {
       return (false, _);
     }
-    let entry = this.#current as Entry<K, V>;
-    let result = new MapEntry<K, V>(entry.key, entry.value);
+    let entry = this.#current as MapEntry<K, V>;
     this.#advanceToNext();
-    return (true, result);
+    return (true, entry);
+  }
+}
+
+/**
+ * Iterator over the keys of a HashMap. Delegates to HashMapEntryIterator.
+ */
+class HashMapKeyIterator<K, V> implements Iterator<K> {
+  var #inner: HashMapEntryIterator<K, V>;
+
+  new(buckets: FixedArray<MapEntry<K, V> | null>)
+    : #inner = new HashMapEntryIterator<K, V>(buckets);
+
+  next(): inline (true, K) | inline (false, never) {
+    if (let (true, entry) = this.#inner.next()) {
+      return (true, entry.key);
+    }
+    return (false, _);
   }
 }
 
 export class HashMap<K, V> implements Map<K, V> {
-  var #buckets: FixedArray<Entry<K, V> | null>;
+  var #buckets: FixedArray<MapEntry<K, V> | null>;
   var #size = 0;
 
   new(capacity: i32 = 16)
-    : #buckets = __array_new_empty<Entry<K, V> | null>(capacity);
+    : #buckets = __array_new_empty<MapEntry<K, V> | null>(capacity);
 
   size: i32 {
     get {
@@ -162,30 +128,42 @@ export class HashMap<K, V> implements Map<K, V> {
     }
   }
 
+  #bucketFor(key: K): i32 {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) {
+      index += len;
+    }
+    return index;
+  }
+
+  #findEntry(key: K): MapEntry<K, V> | null {
+    var entry = this.#buckets[this.#bucketFor(key)];
+    while (entry != null) {
+      if (equals(entry.key, key)) {
+        return entry;
+      }
+      entry = entry.:entryNext;
+    }
+    return null;
+  }
+
   operator []=(key: K, value: V): void {
+    // Resize when load factor exceeds 75% (size/capacity >= 3/4)
     if (this.#size * 4 >= this.#buckets.length * 3) {
       this.#resize();
     }
 
-    let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
-
-    let head = this.#buckets[index];
-    var current = head;
-    while (current != null) {
-      let entry = current as Entry<K, V>;
-      if (equals(entry.key, key)) {
-        entry.value = value;
-        return;
-      }
-      current = entry.next;
+    let existing = this.#findEntry(key);
+    if (existing != null) {
+      existing.value = value;
+      return;
     }
 
-    let newEntry = new Entry(key, value, head);
-    this.#buckets[index] = newEntry;
-    this.#size = this.#size + 1;
+    let index = this.#bucketFor(key);
+    this.#buckets[index] = new MapEntry(key, value, this.#buckets[index]);
+    this.#size += 1;
   }
 
   /**
@@ -193,41 +171,23 @@ export class HashMap<K, V> implements Map<K, V> {
    * Use this when you expect the key to exist.
    */
   operator [](key: K): V {
-    let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
-
-    var current = this.#buckets[index];
-    while (current != null) {
-      let entry = current as Entry<K, V>;
-      if (equals(entry.key, key)) {
-        return entry.value;
-      }
-      current = entry.next;
+    let entry = this.#findEntry(key);
+    if (entry != null) {
+      return entry.value;
     }
     throw new KeyNotFoundError();
   }
 
   /**
-   * Gets the value for a key, returning (value, true) if found or (_, false) if not.
-   * This is the preferred method for checking if a key exists and getting its value,
-   * as it has zero allocation overhead. The first element is undefined when not found
-   * and must not be accessed.
+   * Gets the value for a key, returning (value, true) if found or (_, false)
+   * if not. This is the preferred method for checking if a key exists and
+   * getting its value, as it has zero allocation overhead. The first element is
+   * undefined when not found and must not be accessed.
    */
   get(key: K): inline (V, boolean) {
-    let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
-
-    var current = this.#buckets[index];
-    while (current != null) {
-      let entry = current as Entry<K, V>;
-      if (equals(entry.key, key)) {
-        return (entry.value, true);
-      }
-      current = entry.next;
+    let entry = this.#findEntry(key);
+    if (entry != null) {
+      return (entry.value, true);
     }
     return (_, false);
   }
@@ -236,18 +196,9 @@ export class HashMap<K, V> implements Map<K, V> {
    * Gets the value for a key, or returns the default value if not found.
    */
   getOr(key: K, defaultValue: V): V {
-    let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
-
-    var current = this.#buckets[index];
-    while (current != null) {
-      let entry = current as Entry<K, V>;
-      if (equals(entry.key, key)) {
-        return entry.value;
-      }
-      current = entry.next;
+    let entry = this.#findEntry(key);
+    if (entry != null) {
+      return entry.value;
     }
     return defaultValue;
   }
@@ -257,92 +208,58 @@ export class HashMap<K, V> implements Map<K, V> {
    * Use this when you need to store or pass around the optional result.
    */
   find(key: K): Option<V> {
-    let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
-
-    var current = this.#buckets[index];
-    while (current != null) {
-      let entry = current as Entry<K, V>;
-      if (equals(entry.key, key)) {
-        return some(entry.value);
-      }
-      current = entry.next;
+    let entry = this.#findEntry(key);
+    if (entry != null) {
+      return some(entry.value);
     }
     return none;
   }
 
   has(key: K): boolean {
-    let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
-
-    var current = this.#buckets[index];
-    while (current != null) {
-      let entry = current as Entry<K, V>;
-      if (equals(entry.key, key)) {
-        return true;
-      }
-      current = entry.next;
-    }
-    return false;
+    return this.#findEntry(key) != null;
   }
 
   delete(key: K): boolean {
-    let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
+    let index = this.#bucketFor(key);
+    var entry = this.#buckets[index];
+    var prev: MapEntry<K, V> | null = null;
 
-    let head = this.#buckets[index];
-    var current = head;
-    var prev: Entry<K, V> | null = null;
-
-    while (current != null) {
-      let entry = current as Entry<K, V>;
+    while (entry != null) {
       if (equals(entry.key, key)) {
         if (prev == null) {
-          this.#buckets[index] = entry.next;
+          this.#buckets[index] = entry.:entryNext;
         } else {
-          (prev as Entry<K, V>).next = entry.next;
+          prev.:entryNext = entry.:entryNext;
         }
-        this.#size = this.#size - 1;
+        this.#size -= 1;
         return true;
       }
-      prev = current;
-      current = entry.next;
+      prev = entry;
+      entry = entry.:entryNext;
     }
     return false;
   }
 
   clear(): void {
-    this.#buckets = __array_new_empty<Entry<K, V> | null>(16);
+    this.#buckets = __array_new_empty<MapEntry<K, V> | null>(16);
     this.#size = 0;
   }
 
   #resize(): void {
     let oldBuckets = this.#buckets;
     let newCapacity = oldBuckets.length * 2;
-    this.#buckets = __array_new_empty<Entry<K, V> | null>(newCapacity);
+    this.#buckets = __array_new_empty<MapEntry<K, V> | null>(newCapacity);
     this.#size = 0;
 
     var i = 0;
     while (i < oldBuckets.length) {
-      var current = oldBuckets[i];
-      while (current != null) {
-        let entry = current as Entry<K, V>;
+      var entry = oldBuckets[i];
+      while (entry != null) {
         this[entry.key] = entry.value;
-        current = entry.next;
+        entry = entry.:entryNext;
       }
       i += 1;
     }
-  }
-
-  // Add set method for compatibility/convenience
-  set(key: K, value: V): void {
-    this[key] = value;
   }
 
   /**
@@ -365,11 +282,10 @@ export class HashMap<K, V> implements Map<K, V> {
   forEach(callback: (key: K, value: V) => void): void {
     var i = 0;
     while (i < this.#buckets.length) {
-      var current = this.#buckets[i];
-      while (current != null) {
-        let entry = current as Entry<K, V>;
+      var entry = this.#buckets[i];
+      while (entry != null) {
         callback(entry.key, entry.value);
-        current = entry.next;
+        entry = entry.:entryNext;
       }
       i += 1;
     }
