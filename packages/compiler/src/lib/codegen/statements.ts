@@ -570,7 +570,7 @@ function generateForInStatement(
   const elementType = stmt.elementType;
   const iteratorSymbol = stmt.iteratorSymbol;
 
-  if (!iterableType || !iteratorType || !elementType || !iteratorSymbol) {
+  if (!iterableType || !iteratorType || !elementType) {
     throw new Error('for-in statement missing type information from checker');
   }
 
@@ -583,9 +583,13 @@ function generateForInStatement(
 
   const varName = (stmt.pattern as Identifier).name;
 
-  // 1. Generate iterable expression and call .:Iterable.iterator()
+  // 1. Generate iterable expression and optionally call .:Iterable.iterator()
   generateExpression(ctx, stmt.iterable, body);
-  generateIteratorMethodCall(ctx, iterableType, iteratorSymbol, body);
+  if (iteratorSymbol) {
+    // Normal case: iterable implements Iterable<T>, call .iterator()
+    generateIteratorMethodCall(ctx, iterableType, iteratorSymbol, body);
+  }
+  // else: the expression is already an Iterator<T>, use it directly
 
   // 2. Store iterator in temp local
   const iteratorWasmType = getInterfaceWasmType(ctx, iteratorType);

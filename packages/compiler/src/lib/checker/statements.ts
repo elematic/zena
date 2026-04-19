@@ -1841,7 +1841,7 @@ function checkForInStatement(ctx: CheckerContext, stmt: ForInStatement) {
 interface IterableInfo {
   elementType: Type;
   iteratorType: InterfaceType;
-  iteratorSymbol: SymbolType;
+  iteratorSymbol?: SymbolType;
 }
 
 /**
@@ -1884,6 +1884,19 @@ function getIterableInfo(
   // Handle interface types (if the iterable is typed as Iterable<T> directly)
   if (type.kind === TypeKind.Interface) {
     const interfaceType = type as InterfaceType;
+
+    // Check if this IS Iterator<T> directly — allow for-in on iterators
+    const iteratorName =
+      interfaceType.genericSource?.name ?? interfaceType.name;
+    if (iteratorName === 'Iterator') {
+      const elementType = interfaceType.typeArguments?.[0] ?? Types.Unknown;
+      return {
+        elementType,
+        iteratorType: interfaceType,
+        // No iteratorSymbol — the expression is already the iterator
+      };
+    }
+
     const iterableInterface = findIterableInterface(interfaceType);
     if (iterableInterface) {
       const elementType = iterableInterface.typeArguments?.[0] ?? Types.Unknown;
