@@ -899,12 +899,17 @@ export function checkMatchPattern(
           // Check fields and methods (getters)
           let propType: Type | undefined;
           if (classType.fields.has(propName)) {
-            propType = classType.fields.get(propName)!;
+            propType = resolveMemberType(
+              classType,
+              classType.fields.get(propName)!,
+              ctx,
+            );
           } else if (classType.methods.has(propName)) {
-            // Assuming getter for now, or method reference?
-            // For destructuring, we usually mean property access.
-            // If it's a method, it's a function type.
-            propType = classType.methods.get(propName)!;
+            propType = resolveMemberType(
+              classType,
+              classType.methods.get(propName)!,
+              ctx,
+            );
           }
 
           if (!propType) {

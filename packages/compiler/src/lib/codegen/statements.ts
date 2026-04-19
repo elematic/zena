@@ -574,15 +574,6 @@ function generateForInStatement(
     throw new Error('for-in statement missing type information from checker');
   }
 
-  // For now, only support identifier patterns
-  if (stmt.pattern.type !== NodeType.Identifier) {
-    throw new Error(
-      `for-in currently only supports identifier patterns, got ${stmt.pattern.type}`,
-    );
-  }
-
-  const varName = (stmt.pattern as Identifier).name;
-
   // 1. Generate iterable expression and optionally call .:Iterable.iterator()
   generateExpression(ctx, stmt.iterable, body);
   if (iteratorSymbol) {
@@ -625,14 +616,13 @@ function generateForInStatement(
   body.push(Opcode.br_if);
   body.push(...WasmModule.encodeSignedLEB128(1)); // break to outer block
 
-  // Bind pattern variable
+  // Bind pattern variable(s)
   ctx.enterLoop();
   ctx.pushScope();
 
-  // Declare and initialize the loop variable
-  const varLocal = ctx.declareLocal(varName, elemWasmType);
+  // Push element value and bind via pattern (identifier, record, tuple, etc.)
   body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(elemTemp));
-  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(varLocal));
+  generatePatternBinding(ctx, stmt.pattern, elemWasmType, body);
 
   // Generate loop body
   generateFunctionStatement(ctx, stmt.body, body);
