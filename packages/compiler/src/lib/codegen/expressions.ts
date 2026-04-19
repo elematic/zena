@@ -39,6 +39,8 @@ import {
   type TuplePattern,
   type UnaryExpression,
   type InlineTupleLiteral,
+  type LetPatternCondition,
+  type InlineTuplePattern,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {
@@ -98,6 +100,9 @@ import {
   generateBlockStatement,
   generateFunctionStatement,
   generatePatternBinding,
+  generateLetPatternCheck,
+  generateLetPatternBindings,
+  getInlineTupleElementTypes,
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
 import {
@@ -11553,6 +11558,11 @@ function generateIfExpression(
   expr: IfExpression,
   body: number[],
 ) {
+  if (expr.test.type === NodeType.LetPatternCondition) {
+    generateIfLetExpression(ctx, expr, body);
+    return;
+  }
+
   // Get result types from inferred type.
   // Use mapReturnTypeToWasmResults to correctly handle inline tuples
   // (multi-value returns) by producing separate result slots per element.
@@ -11582,6 +11592,81 @@ function generateIfExpression(
   generateIfBranch(ctx, expr.consequent, body, results.length === 0);
 
   // Generate else branch (if present)
+  if (expr.alternate) {
+    body.push(Opcode.else);
+    generateIfBranch(ctx, expr.alternate, body, results.length === 0);
+  }
+
+  body.push(Opcode.end);
+}
+
+/**
+ * Generate code for if-let expressions:
+ *   if (let pattern = expr) { consequent } else { alternate }
+ *
+ * Like generateIfLetStatement in statements.ts, but branches produce values.
+ */
+function generateIfLetExpression(
+  ctx: CodegenContext,
+  expr: IfExpression,
+  body: number[],
+) {
+  const letPattern = expr.test as LetPatternCondition;
+  const initType = letPattern.init.inferredType;
+  const pattern = letPattern.pattern;
+
+  if (pattern.type !== NodeType.InlineTuplePattern) {
+    throw new Error(
+      `if (let ...) expression only supports inline tuple patterns, got ${pattern.type}`,
+    );
+  }
+
+  const tuplePattern = pattern as InlineTuplePattern;
+  const elementTypes = getInlineTupleElementTypes(initType);
+
+  if (elementTypes === null) {
+    throw new Error(
+      `if (let ...) expression expected inline tuple type, got ${initType?.kind}`,
+    );
+  }
+
+  // Generate init expression - pushes values onto stack
+  generateExpression(ctx, letPattern.init, body);
+
+  // Store all values in temp locals (reverse order for LIFO stack)
+  const tempLocals: number[] = [];
+  for (let i = tuplePattern.elements.length - 1; i >= 0; i--) {
+    const elemType = elementTypes[i];
+    const wasmType = mapCheckerTypeToWasmType(ctx, elemType);
+    const tempLocal = ctx.declareLocal(`$$let_temp_${i}`, wasmType);
+    tempLocals.unshift(tempLocal);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempLocal));
+  }
+
+  // Generate pattern check condition
+  generateLetPatternCheck(ctx, tuplePattern, tempLocals, elementTypes, body);
+
+  // Get result types for the if expression
+  let results: number[][] = [];
+  if (expr.inferredType) {
+    results = mapReturnTypeToWasmResults(ctx, expr.inferredType);
+  }
+
+  body.push(Opcode.if);
+  if (results.length === 0) {
+    body.push(ValType.void);
+  } else {
+    const blockTypeIndex = ctx.module.addType([], results);
+    body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
+  }
+
+  // Consequent: bind pattern variables and evaluate expression
+  ctx.pushScope();
+  generateLetPatternBindings(ctx, tuplePattern, tempLocals, elementTypes, body);
+  generateIfBranch(ctx, expr.consequent, body, results.length === 0);
+  ctx.popScope();
+
+  // Alternate
   if (expr.alternate) {
     body.push(Opcode.else);
     generateIfBranch(ctx, expr.alternate, body, results.length === 0);

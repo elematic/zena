@@ -481,11 +481,11 @@ export interface ClassPattern extends Node {
 /**
  * If expression - like Rust, if/else can be used as an expression.
  * Both consequent and alternate evaluate to the last expression in their block.
- * If used as an expression, the alternate is required.
+ * Without an alternate, the expression type is `T | void`.
  */
 export interface IfExpression extends Node {
   type: typeof NodeType.IfExpression;
-  test: Expression;
+  test: Expression | LetPatternCondition;
   consequent: Expression | BlockStatement;
   alternate: Expression | BlockStatement | null;
 }

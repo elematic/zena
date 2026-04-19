@@ -2142,7 +2142,12 @@ export class Parser {
   #parseIfExpression(): IfExpression {
     const startToken = this.#previous();
     this.#consume(TokenType.LParen, "Expected '(' after 'if'.");
-    const test = this.#parseExpression();
+
+    // Check for let-pattern condition: if (let pattern = expr)
+    const test = this.#match(TokenType.Let)
+      ? this.#parseLetPatternCondition()
+      : this.#parseExpression();
+
     this.#consume(TokenType.RParen, "Expected ')' after if condition.");
 
     let consequent: Expression | BlockStatement;

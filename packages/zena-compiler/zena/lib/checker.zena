@@ -2489,13 +2489,25 @@ let checkIfBranchNode = (ctx: CheckerContext, node: Node, expectedType: Type | n
   if (node is BlockStatement) {
     let b = node as BlockStatement;
     ctx.enterScope();
+    // Check all statements except the last
     var i = 0;
-    while (i < b.body.length) {
+    while (i < b.body.length - 1) {
       checkStatement(ctx, b.body[i]);
       i += 1;
     }
+    // The type of the block is the type of the last expression statement
+    var resultType: Type = new VoidType();
+    if (b.body.length > 0) {
+      let lastStmt = b.body[b.body.length - 1];
+      if (lastStmt is ExpressionStatement) {
+        let es = lastStmt as ExpressionStatement;
+        resultType = checkExpression(ctx, es.expression, expectedType);
+      } else {
+        checkStatement(ctx, lastStmt);
+      }
+    }
     ctx.exitScope();
-    return new VoidType();
+    return resultType;
   }
   if (node is Expression) {
     return checkExpression(ctx, node as Expression, expectedType);
@@ -2744,53 +2756,76 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   // --- If Expression ---
 
   case IfExpression {test, consequent, alternate, loc}: {
-    let testExpr = test as Expression;
-    let testType = checkExpression(ctx, testExpr, null);
-    validateConditionType(ctx, testType, testExpr);
-
-    // Extract null-guard narrowing from the condition.
-    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
-
-    // Check consequent with narrowing applied.
-    if (guardInfo != null) {
-      let si = guardInfo as SymbolInfo;
-      let origType = guardOrigType as Type;
-      ctx.enterScope();
-      if (isEqualNull) {
-        ctx.narrowBinding(si, new NullType());
-      } else {
-        ctx.narrowBinding(si, subtractNullFromType(origType));
-      }
-    }
-    let consType = checkIfBranchNode(ctx, consequent, expectedType);
-    if (guardInfo != null) {
-      ctx.exitScope();
-    }
-
-    // Check alternate with inverse narrowing applied.
-    var altType: Type = new VoidType();
-    if (alternate != null) {
-      if (guardInfo != null) {
-        let si = guardInfo as SymbolInfo;
-        let origType = guardOrigType as Type;
+    match (test) {
+      case LetPatternCondition as lpc: {
+        let initType = checkExpression(ctx, lpc.init, null);
         ctx.enterScope();
-        if (isEqualNull) {
-          ctx.narrowBinding(si, subtractNullFromType(origType));
-        } else {
-          ctx.narrowBinding(si, new NullType());
-        }
-      }
-      altType = checkIfBranchNode(ctx, alternate as Node, expectedType);
-      if (guardInfo != null) {
+        checkPattern(ctx, lpc.pattern, initType);
+        let consType = checkIfBranchNode(ctx, consequent, expectedType);
         ctx.exitScope();
+
+        var altType: Type = new VoidType();
+        if (alternate != null) {
+          ctx.enterScope();
+          altType = checkIfBranchNode(ctx, alternate as Node, expectedType);
+          ctx.exitScope();
+        }
+
+        let branches = new Array<Type>();
+        branches.push(consType);
+        branches.push(altType);
+        createUnionType(branches)
+      }
+      case _: {
+        let testExpr = test as Expression;
+        let testType = checkExpression(ctx, testExpr, null);
+        validateConditionType(ctx, testType, testExpr);
+
+        // Extract null-guard narrowing from the condition.
+        let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
+
+        // Check consequent with narrowing applied.
+        if (guardInfo != null) {
+          let si = guardInfo as SymbolInfo;
+          let origType = guardOrigType as Type;
+          ctx.enterScope();
+          if (isEqualNull) {
+            ctx.narrowBinding(si, new NullType());
+          } else {
+            ctx.narrowBinding(si, subtractNullFromType(origType));
+          }
+        }
+        let consType = checkIfBranchNode(ctx, consequent, expectedType);
+        if (guardInfo != null) {
+          ctx.exitScope();
+        }
+
+        // Check alternate with inverse narrowing applied.
+        var altType: Type = new VoidType();
+        if (alternate != null) {
+          if (guardInfo != null) {
+            let si = guardInfo as SymbolInfo;
+            let origType = guardOrigType as Type;
+            ctx.enterScope();
+            if (isEqualNull) {
+              ctx.narrowBinding(si, subtractNullFromType(origType));
+            } else {
+              ctx.narrowBinding(si, new NullType());
+            }
+          }
+          altType = checkIfBranchNode(ctx, alternate as Node, expectedType);
+          if (guardInfo != null) {
+            ctx.exitScope();
+          }
+        }
+
+        // Result type is the union of both branches.
+        let branches = new Array<Type>();
+        branches.push(consType);
+        branches.push(altType);
+        createUnionType(branches)
       }
     }
-
-    // Result type is the union of both branches.
-    let branches = new Array<Type>();
-    branches.push(consType);
-    branches.push(altType);
-    createUnionType(branches)
   }
 
   // --- TODO: Other expression types ---

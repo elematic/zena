@@ -190,6 +190,8 @@ import {
 import {
   checkPattern,
   checkStatement,
+  extractNarrowingFromCondition,
+  extractInverseNarrowingFromCondition,
   extractAllInverseNarrowingsFromCondition,
   extractAllNarrowingsFromCondition,
   predeclareFunction,
@@ -473,6 +475,25 @@ function checkMatchCaseBody(
 }
 
 function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
+  if (expr.test.type === NodeType.LetPatternCondition) {
+    const initType = checkExpression(ctx, expr.test.init);
+
+    ctx.enterScope();
+    checkMatchPattern(ctx, expr.test.pattern, initType);
+    const consequentType = checkIfBranch(ctx, expr.consequent);
+    ctx.exitScope();
+
+    if (!expr.alternate) {
+      return Types.Void;
+    }
+
+    ctx.enterScope();
+    const alternateType = checkIfBranch(ctx, expr.alternate);
+    ctx.exitScope();
+
+    return createUnionType([consequentType, alternateType]);
+  }
+
   const testType = checkExpression(ctx, expr.test);
   if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
     ctx.diagnostics.reportError(
@@ -482,17 +503,34 @@ function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
     );
   }
 
+  // Extract narrowing information from the condition
+  const narrowing = extractNarrowingFromCondition(ctx, expr.test);
+
+  // Check the consequent branch with narrowing applied
+  ctx.enterScope();
+  if (narrowing) {
+    ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+  }
   const consequentType = checkIfBranch(ctx, expr.consequent);
+  ctx.exitScope();
 
   // If there is no else branch, the if expression has type void
   if (!expr.alternate) {
     return Types.Void;
   }
 
+  // Check the alternate branch with inverse narrowing applied
+  const inverseNarrowing = extractInverseNarrowingFromCondition(ctx, expr.test);
+  ctx.enterScope();
+  if (inverseNarrowing) {
+    ctx.narrowType(
+      inverseNarrowing.variableName,
+      inverseNarrowing.narrowedType,
+    );
+  }
   const alternateType = checkIfBranch(ctx, expr.alternate);
+  ctx.exitScope();
 
-  // If both branches have the same type, return that type.
-  // Otherwise, create a union type.
   return createUnionType([consequentType, alternateType]);
 }
 

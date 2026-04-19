@@ -889,7 +889,7 @@ function getInterfaceWasmType(
  * - Check if first element equals `true`
  * - Identifier patterns always match (wildcard)
  */
-function generateLetPatternCheck(
+export function generateLetPatternCheck(
   ctx: CodegenContext,
   pattern: InlineTuplePattern,
   tempLocals: number[],
@@ -931,7 +931,7 @@ function generateLetPatternCheck(
  * Generate code to bind variables from an inline tuple pattern.
  * Called after pattern check succeeds - copies temp locals to named locals.
  */
-function generateLetPatternBindings(
+export function generateLetPatternBindings(
   ctx: CodegenContext,
   pattern: InlineTuplePattern,
   tempLocals: number[],
@@ -1327,7 +1327,9 @@ function generateInlineTuplePatternBinding(
  * WASM representation, just different static types).
  * Returns null if the type is not an inline tuple or union of inline tuples.
  */
-function getInlineTupleElementTypes(type: Type | undefined): Type[] | null {
+export function getInlineTupleElementTypes(
+  type: Type | undefined,
+): Type[] | null {
   if (!type) return null;
 
   if (type.kind === TypeKind.InlineTuple) {

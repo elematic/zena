@@ -1,0 +1,16 @@
+// @mode: check
+// Throw in if-expression branches enables narrowing:
+// the non-throwing branch narrows the condition, and the overall
+// expression type collapses Never out of the union.
+import {Error} from 'zena:error';
+
+class Wrapper(value: i32)
+
+// x narrowed to Wrapper in consequent (x != null), throw is Never
+// Result type: i32 | Never = i32
+let guardWithThrow = (x: Wrapper | null): i32 =>
+  if (x != null) { x.value } else { throw new Error('null') };
+
+// Inverse: x narrowed to Wrapper in alternate (x == null is false)
+let inverseGuard = (x: Wrapper | null): i32 =>
+  if (x == null) { throw new Error('null') } else { x.value };

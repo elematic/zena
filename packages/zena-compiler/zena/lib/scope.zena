@@ -66,9 +66,9 @@ export distinct type SymbolId = i32;
 
 // Auto-incrementing counter for SymbolInfo.id.
 var _nextSymbolId: i32 = 0;
-let _allocSymbolId = (): SymbolId => {
+let makeSymbolId = (): SymbolId => {
   let id = _nextSymbolId;
-  _nextSymbolId = _nextSymbolId + 1;
+  _nextSymbolId += 1;
   return id as SymbolId;
 };
 
@@ -87,7 +87,7 @@ export class SymbolInfo {
    * construction time. Enables identity-keyed maps (HashMap<SymbolId, T>)
    * without requiring object-identity hashing.
    */
-  id: SymbolId;
+  id = makeSymbolId();
 
   /**
    * The kind of declaration: 'let', 'var', or 'type'.
@@ -128,8 +128,10 @@ export class SymbolInfo {
    */
   modulePath: String;
 
-  new(kind: String, declaration: Node | null, modulePath: String)
-    : id = _allocSymbolId(), kind = kind, declaration = declaration, modulePath = modulePath;
+  new(
+    this.kind: String,
+    this.declaration: Node | null,
+    this.modulePath: String);
 }
 
 /**
@@ -150,8 +152,7 @@ export class Scope {
   #values = new HashMap<String, SymbolInfo>();
   #types = new HashMap<String, SymbolInfo>();
 
-  new(scopeKind: ScopeKind, parent: Scope | null)
-    : scopeKind = scopeKind, parent = parent;
+  new(this.scopeKind: ScopeKind, this.parent: Scope | null);
 
   /**
    * Declare a value (variable, function, class constructor) in this scope.
@@ -182,18 +183,22 @@ export class Scope {
    * Look up a value in this scope only (no parent walk).
    */
   getLocalValue(name: String): SymbolInfo | null {
-    let (info, found) = this.#values.get(name);
-    if (found) { return info; }
-    return null;
+    return if (let (info, true) = this.#values.get(name)) {
+      info
+    } else {
+      null
+    };
   }
 
   /**
    * Look up a type in this scope only (no parent walk).
    */
   getLocalType(name: String): SymbolInfo | null {
-    let (info, found) = this.#types.get(name);
-    if (found) { return info; }
-    return null;
+    return if (let (info, true) = this.#types.get(name)) {
+      info
+    } else {
+      null
+    };
   }
 
   /**
@@ -204,7 +209,9 @@ export class Scope {
     while (current != null) {
       let scope = current as Scope;
       let (info, found) = scope.#values.get(name);
-      if (found) { return info; }
+      if (found) {
+        return info;
+      }
       current = scope.parent;
     }
     return null;
@@ -218,7 +225,9 @@ export class Scope {
     while (current != null) {
       let scope = current as Scope;
       let (info, found) = scope.#types.get(name);
-      if (found) { return info; }
+      if (found) {
+        return info;
+      }
       current = scope.parent;
     }
     return null;
@@ -269,18 +278,22 @@ export class ModuleExports {
    * Look up an exported value.
    */
   getValue(name: String): SymbolInfo | null {
-    let (info, found) = this.#values.get(name);
-    if (found) { return info; }
-    return null;
+    return if (let (info, true) = this.#values.get(name)) {
+      info
+    } else {
+      null
+    };
   }
 
   /**
    * Look up an exported type.
    */
   getType(name: String): SymbolInfo | null {
-    let (info, found) = this.#types.get(name);
-    if (found) { return info; }
-    return null;
+    return if (let (info, true) = this.#types.get(name)) {
+      info
+    } else {
+      null
+    };
   }
 
   /**
@@ -330,9 +343,7 @@ export class UnresolvedName(
  * original declaration.
  */
 export class ReferenceMap {
-  #byOffset: HashMap<i32, SymbolInfo>;
-
-  new() : #byOffset = new HashMap<i32, SymbolInfo>();
+  #byOffset = new HashMap<i32, SymbolInfo>();
 
   /** Record a resolved reference. */
   record(node: Node, info: SymbolInfo): void {
@@ -342,20 +353,30 @@ export class ReferenceMap {
     }
   }
 
-  /** Look up the symbol a node refers to. Returns null if unresolved. */
+  /**
+   * Look up the symbol a node refers to. Returns null if unresolved.
+   */
   getByNode(node: Node): SymbolInfo | null {
-    if (node.loc == null) { return null; }
+    if (node.loc == null) {
+      return null;
+    }
     let loc = node.loc as SourceLocation;
-    let (info, found) = this.#byOffset.get(loc.start);
-    if (found) { return info; }
-    return null;
+    return if (let (info, true) = this.#byOffset.get(loc.start)) {
+      info
+    } else {
+      null
+    };
   }
 
-  /** Look up by source offset (0-based). For LSP position-based queries. */
+  /**
+   * Look up by source offset (0-based). For LSP position-based queries.
+   */
   getByOffset(offset: i32): SymbolInfo | null {
-    let (info, found) = this.#byOffset.get(offset);
-    if (found) { return info; }
-    return null;
+    return if (let (info, true) = this.#byOffset.get(offset)) {
+      info
+    } else {
+      null
+    };
   }
 }
 
@@ -386,18 +407,24 @@ export class DeclarationMap {
    * Look up the SymbolInfo for a declaration node.
    */
   getByNode(node: Node): SymbolInfo | null {
-    if (node.loc == null) { return null; }
+    if (node.loc == null) {
+      return null;
+    }
     let loc = node.loc as SourceLocation;
-    let (info, found) = this.#byOffset.get(loc.start);
-    if (found) { return info; }
-    return null;
+    return if (let (info, true) = this.#byOffset.get(loc.start)) {
+      info
+    } else {
+      null
+    };
   }
 
   /** Look up by source offset (0-based). For LSP position-based queries. */
   getByOffset(offset: i32): SymbolInfo | null {
-    let (info, found) = this.#byOffset.get(offset);
-    if (found) { return info; }
-    return null;
+    return if (let (info, true) = this.#byOffset.get(offset)) {
+      info
+    } else {
+      null
+    };
   }
 }
 
@@ -1000,9 +1027,25 @@ export class ScopeBuilder {
         }
       }
       case IfExpression {test, consequent, alternate}: {
-        this.#processExpression(test);
-        this.#processNode(consequent);
-        if (alternate != null) { this.#processNode(alternate); }
+        match (test) {
+          case LetPatternCondition {pattern, init}: {
+            this.#processExpression(init);
+            this.#enterScope(ScopeKind.Block);
+            this.#declarePattern(pattern, "let", test as LetPatternCondition);
+            this.#processNode(consequent);
+            this.#exitScope();
+            if (alternate != null) {
+              this.#enterScope(ScopeKind.Block);
+              this.#processNode(alternate as Node);
+              this.#exitScope();
+            }
+          }
+          case _: {
+            this.#processNode(test);
+            this.#processNode(consequent);
+            if (alternate != null) { this.#processNode(alternate); }
+          }
+        }
       }
       case ThrowExpression {argument}: {
         this.#processExpression(argument);
