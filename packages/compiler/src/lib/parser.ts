@@ -1065,12 +1065,13 @@ export class Parser {
     return expr;
   }
 
-  #matchCompoundAssignment(): '+' | '-' | '*' | '/' | '%' | null {
+  #matchCompoundAssignment(): '+' | '-' | '*' | '/' | '%' | '??' | null {
     if (this.#match(TokenType.PlusEquals)) return '+';
     if (this.#match(TokenType.MinusEquals)) return '-';
     if (this.#match(TokenType.StarEquals)) return '*';
     if (this.#match(TokenType.SlashEquals)) return '/';
     if (this.#match(TokenType.PercentEquals)) return '%';
+    if (this.#match(TokenType.QuestionQuestionEquals)) return '??';
     return null;
   }
 

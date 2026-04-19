@@ -91,6 +91,7 @@ export const TokenType = {
   Caret: 'Caret',
   Question: 'Question',
   QuestionQuestion: 'QuestionQuestion',
+  QuestionQuestionEquals: 'QuestionQuestionEquals',
   QuestionDot: 'QuestionDot',
   QuestionLBracket: 'QuestionLBracket',
   QuestionLParen: 'QuestionLParen',
@@ -770,14 +771,26 @@ export function tokenize(source: string): Token[] {
       case '?':
         if (peek() === '?') {
           advance();
-          tokens.push({
-            type: TokenType.QuestionQuestion,
-            value: '??',
-            line,
-            column: startColumn,
-            start: startIndex,
-            end: current,
-          });
+          if (peek() === '=') {
+            advance();
+            tokens.push({
+              type: TokenType.QuestionQuestionEquals,
+              value: '??=',
+              line,
+              column: startColumn,
+              start: startIndex,
+              end: current,
+            });
+          } else {
+            tokens.push({
+              type: TokenType.QuestionQuestion,
+              value: '??',
+              line,
+              column: startColumn,
+              start: startIndex,
+              end: current,
+            });
+          }
         } else if (peek() === '.') {
           advance();
           tokens.push({

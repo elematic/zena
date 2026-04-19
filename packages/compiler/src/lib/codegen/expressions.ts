@@ -4264,11 +4264,48 @@ const makeCompoundValueExpr = (
   inferredType: expr.inferredType,
 });
 
+/**
+ * Generates code for ??= (nullish assignment).
+ * Semantics: if LHS is null, assign RHS to LHS and evaluate to RHS;
+ * otherwise keep LHS and evaluate to the non-null LHS value.
+ * Desugars to: left = left ?? value (reusing BinaryExpression ?? codegen).
+ */
+function generateNullishAssignment(
+  ctx: CodegenContext,
+  expr: AssignmentExpression,
+  body: number[],
+) {
+  // Create a synthetic BinaryExpression: left ?? value
+  const nullishExpr: BinaryExpression = {
+    type: NodeType.BinaryExpression,
+    operator: '??',
+    left: expr.left as Expression,
+    right: expr.value,
+    loc: expr.loc,
+    inferredType: expr.inferredType,
+  };
+
+  // Create a plain assignment: left = (left ?? value)
+  const assignExpr: AssignmentExpression = {
+    ...expr,
+    operator: undefined,
+    value: nullishExpr,
+  };
+
+  generateAssignmentExpressionInner(ctx, assignExpr, body);
+}
+
 function generateAssignmentExpression(
   ctx: CodegenContext,
   expr: AssignmentExpression,
   body: number[],
 ) {
+  // ??= needs special codegen: short-circuiting nullish assignment
+  if (expr.operator === '??') {
+    generateNullishAssignment(ctx, expr, body);
+    return;
+  }
+
   // For compound assignment (+=, -=, etc.), wrap the value in a synthetic BinaryExpression
   // that reads the left side and applies the operator. This reuses all existing
   // binary expression codegen (type promotion, operator overloading, etc.).

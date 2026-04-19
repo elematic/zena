@@ -1280,6 +1280,7 @@ the result back.
 - `*=` (Multiply and assign)
 - `/=` (Divide and assign)
 - `%=` (Modulo and assign)
+- `??=` (Nullish assign — assign if `null`)
 
 ```zena
 var x = 10;
@@ -1288,6 +1289,18 @@ x -= 3;   // x is now 12
 x *= 2;   // x is now 24
 x /= 4;   // x is now 6
 x %= 4;   // x is now 2
+```
+
+The nullish assignment operator `??=` assigns the right-hand side only when the
+left-hand side is `null`. It short-circuits: the right side is not evaluated
+when the left is non-null.
+
+```zena
+var name: String | null = null;
+name ??= 'Anonymous';  // name is now 'Anonymous'
+
+var value: String | null = 'hello';
+value ??= 'default';   // value is still 'hello'
 ```
 
 Compound assignment works with variables, class fields, and array indices:

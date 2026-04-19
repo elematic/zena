@@ -379,6 +379,13 @@ x /= 4; // x is now 6
 x %= 4; // x is now 2
 ```
 
+Nullish assignment assigns only when the left side is `null`:
+
+```ts
+var name: String | null = null;
+name ??= 'Anonymous'; // name is now 'Anonymous'
+```
+
 Compound assignment works with variables, class fields, and array indices.
 There are no `++` or `--` operators — use `+= 1` and `-= 1` instead.
 

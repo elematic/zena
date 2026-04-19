@@ -2069,6 +2069,36 @@ function inferTypeArguments(
 }
 
 /**
+ * Validates a nullish assignment (??=).
+ * LHS must be nullable. RHS must be assignable to the non-null part of LHS.
+ * The result type is the non-null part of the target type.
+ */
+function checkNullishAssignment(
+  ctx: CheckerContext,
+  expr: AssignmentExpression,
+  targetType: Type,
+  valueType: Type,
+): Type {
+  if (!isNullableType(targetType)) {
+    ctx.diagnostics.reportError(
+      `Left side of '??=' must be a nullable type, got '${typeToString(targetType)}'.`,
+      DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
+    );
+    return targetType;
+  }
+  const nonNullTarget = getNonNullableType(targetType, ctx);
+  if (!isAssignableTo(ctx, valueType, nonNullTarget)) {
+    ctx.diagnostics.reportError(
+      `Type mismatch in '??=' assignment: expected '${typeToString(nonNullTarget)}', got '${typeToString(valueType)}'.`,
+      DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
+    );
+  }
+  return nonNullTarget;
+}
+
+/**
  * Validates the binary operation inside a compound assignment (e.g., += -= *= /= %=).
  * Given the target type (LHS) and value type (RHS), checks that `targetType op valueType`
  * is valid and returns the result type of the binary operation.
@@ -2080,6 +2110,11 @@ function checkCompoundOperator(
   valueType: Type,
 ): Type {
   const op = expr.operator!;
+
+  // ??= is handled separately
+  if (op === '??') {
+    return checkNullishAssignment(ctx, expr, targetType, valueType);
+  }
 
   // Check for operator overloading on class types
   if (op === '+' && targetType.kind === TypeKind.Class) {
