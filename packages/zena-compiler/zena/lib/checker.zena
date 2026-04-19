@@ -20,6 +20,7 @@
  */
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
 import { parseI32 } from 'zena:string-convert';
 import {
   Node, Module, SourceLocation,
@@ -152,7 +153,7 @@ class CheckerContext {
    * Used for cycle detection: if we re-enter resolution for an ID
    * already in this set, we've found a recursive reference.
    */
-  #resolving = new HashMap<SymbolId, boolean>();
+  #resolving = new HashSet<SymbolId>();
 
   /**
    * Pipeline value stack for `|>` operator.
@@ -176,7 +177,7 @@ class CheckerContext {
    * which references type A. Keyed by SymbolInfo.id rather than
    * name strings, since names only have meaning within a scope.
    */
-  #pendingTypes = new HashMap<SymbolId, boolean>();
+  #pendingTypes = new HashSet<SymbolId>();
 
   /**
    * Prelude exports: types available globally from stdlib modules.
@@ -382,7 +383,7 @@ class CheckerContext {
         }
 
         // Not a cycle. Mark as resolving.
-        this.#resolving[si.id] = true;
+        this.#resolving.add(si.id);
 
         let funcType = if (returnType != null) {
           // Fully annotated — resolve from annotations.
@@ -520,7 +521,7 @@ class CheckerContext {
     if (this.#pendingTypes.has(info.id)) {
       return null;
     }
-    this.#pendingTypes[info.id] = true;
+    this.#pendingTypes.add(info.id);
 
     let t = this.#materializeType(info);
     if (t != null) {
@@ -568,13 +569,15 @@ class CheckerContext {
           while (vi < variants.length) {
             let variant = variants[vi];
             if (variant.params == null) {
-              if (ct.forwardVariantNames != null) {
-                (ct.forwardVariantNames as HashMap<String, boolean>)[variant.name.name] = true;
-              } else {
-                let map = new HashMap<String, boolean>();
-                map[variant.name.name] = true;
-                ct.forwardVariantNames = map;
-              }
+              let forwardVariantNames = (ct.forwardVariantNames = ct.forwardVariantNames ?? new HashSet<String>());
+              forwardVariantNames.add(variant.name.name);
+              // if (ct.forwardVariantNames != null) {
+              //   (ct.forwardVariantNames as HashSet<String>).add(variant.name.name);
+              // } else {
+              //   let map = new HashSet<String>();
+              //   map.add(variant.name.name);
+              //   ct.forwardVariantNames = map;
+              // }
             }
             vi = vi + 1;
           }
@@ -3149,11 +3152,11 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
       let variant = variants[fvi];
       if (variant.params == null) {
         if (classType.forwardVariantNames != null) {
-          (classType.forwardVariantNames as HashMap<String, boolean>)[variant.name.name] = true;
+          (classType.forwardVariantNames as HashSet<String>).add(variant.name.name);
         } else {
-          let map = new HashMap<String, boolean>();
-          map[variant.name.name] = true;
-          classType.forwardVariantNames = map;
+          let set = new HashSet<String>();
+          set.add(variant.name.name);
+          classType.forwardVariantNames = set;
         }
       }
       fvi = fvi + 1;
@@ -3205,7 +3208,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           // Check if this class is a forward-declared variant
           var isForwardVariant = false;
           if (st.forwardVariantNames != null) {
-            let fwdNames = st.forwardVariantNames as HashMap<String, boolean>;
+            let fwdNames = st.forwardVariantNames as HashSet<String>;
             if (fwdNames.has(className)) {
               isForwardVariant = true;
             }
@@ -3769,7 +3772,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
               // which have their own ClassDeclaration that handles fields).
               var isForwardVariant2 = false;
               if (classType.forwardVariantNames != null) {
-                let fvn = classType.forwardVariantNames as HashMap<String, boolean>;
+                let fvn = classType.forwardVariantNames as HashSet<String>;
                 if (fvn.has(variantName)) { isForwardVariant2 = true; }
               }
               if (!isForwardVariant2) {

@@ -18,6 +18,7 @@
 
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
 import {
   PackageConfig,
@@ -757,23 +758,33 @@ let typeMapEquals = (
 let methodMapEquals = (
   a: HashMap<String, FunctionType>, b: HashMap<String, FunctionType>, visited: HashMap<String, boolean>
 ): boolean => {
-  if (a.size != b.size) { return false; }
-  let iter = a.keys();
-  while (let (true, key) = iter.next()) {
-    if (!b.has(key)) { return false; }
-    if (!functionTypeEquals(a[key], b[key], visited)) { return false; }
+  if (a.size != b.size) {
+    return false;
+  }
+  for (let {key} in a) {
+    if (!b.has(key)) {
+      return false;
+    }
+    if (!functionTypeEquals(a[key], b[key], visited)) {
+      return false;
+    }
   }
   return true;
 };
 
-/** Compare two HashMaps of name → boolean. */
+/** 
+ * Compare two HashMaps of name → boolean.
+ */
 let boolMapEquals = (
   a: HashMap<String, boolean>, b: HashMap<String, boolean>
 ): boolean => {
-  if (a.size != b.size) { return false; }
-  let iter = a.keys();
-  while (let (true, key) = iter.next()) {
-    if (!b.has(key) || a[key] != b[key]) { return false; }
+  if (a.size != b.size) {
+    return false;
+  }
+  for (let {key} in a) {
+    if (!b.has(key) || a[key] != b[key]) {
+      return false;
+    }
   }
   return true;
 };
@@ -785,6 +796,32 @@ let nullableBoolMapEquals = (
   if (a == null && b == null) { return true; }
   if (a == null || b == null) { return false; }
   return boolMapEquals(a as HashMap<String, boolean>, b as HashMap<String, boolean>);
+};
+
+/**
+ * Compare two HashSets of String.
+ */
+let stringSetEquals = (a: HashSet<String>, b: HashSet<String>): boolean => {
+  if (a.size != b.size) {
+    return false;
+  }
+  for (let key in a) {
+    if (!b.has(key)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+/**
+ * Compare nullable HashSet<String>.
+ */
+let nullableStringSetEquals = (
+  a: HashSet<String> | null, b: HashSet<String> | null
+): boolean => {
+  if (a == null && b == null) { return true; }
+  if (a == null || b == null) { return false; }
+  return stringSetEquals(a as HashSet<String>, b as HashSet<String>);
 };
 
 /** Deep comparison of FunctionType for signature purposes. */
@@ -884,7 +921,7 @@ let classTypeEquals = (
   if (!nullableBoolMapEquals(ca.declaredFields, cb.declaredFields)) { return false; }
   if (!nullableBoolMapEquals(ca.fieldsWithInitializers, cb.fieldsWithInitializers)) { return false; }
   if (!nullableBoolMapEquals(ca.abstractFields, cb.abstractFields)) { return false; }
-  if (!nullableBoolMapEquals(ca.forwardVariantNames, cb.forwardVariantNames)) { return false; }
+  if (!nullableStringSetEquals(ca.forwardVariantNames, cb.forwardVariantNames)) { return false; }
 
   return true;
 };
