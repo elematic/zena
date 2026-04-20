@@ -3666,6 +3666,8 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
   // === Pass 1: Register all field types and method signatures ===
   // This allows forward references between methods (e.g. this.#foo() calling
   // a private method defined later in the class body).
+  // Track fields declared directly in this class body (not inherited).
+  let ownFieldNames = new HashSet<String>();
   var bi = 0;
   while (bi < cd.body.length) {
     let member = cd.body[bi];
@@ -3716,13 +3718,26 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           }
         }
 
-        if (classType.fields.has(fieldName)) {
+        if (ownFieldNames.has(fieldName)) {
           ctx.error(
             "Duplicate field '" + fieldName + "' in class '" + className + "'.",
             DiagnosticCode.DuplicateField,
             fd.loc
           );
+        } else if (classType.fields.has(fieldName)) {
+          // Field was inherited from superclass — check type compatibility.
+          let inheritedType = classType.fields[fieldName];
+          if (!isAssignableTo(ctx, fieldType, inheritedType)) {
+            ctx.error(
+              "Field '" + fieldName + "' in subclass '" + className +
+              "' must be compatible with inherited field of type '" +
+              typeToString(inheritedType) + "'.",
+              DiagnosticCode.IncompatibleTypes,
+              fd.loc
+            );
+          }
         }
+        ownFieldNames.add(fieldName);
 
         classType.fields[fieldName] = fieldType;
         let isMutable = fd.mutability != null && fd.mutability == "var";

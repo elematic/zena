@@ -240,46 +240,48 @@ tests/language/semantics/
 │
 ├── classes/
 │   ├── basic/
-│   │   ├── field-access.zena                   [ts] checker-class_test — access class fields
-│   │   ├── method-call.zena                    [ts] — call class methods
-│   │   ├── duplicate-field.zena                [ts] checker-class_test — duplicate field name error
-│   │   ├── unknown-field.zena                  [ts] checker-class_test — access nonexistent field
+│   │   ├── field-access.zena                   [done]
+│   │   ├── method-call.zena                    [done]
+│   │   ├── duplicate-field.zena                [done]
+│   │   ├── unknown-field.zena                  [done]
 │   │   ├── constructor-required.zena           [ts] checker-constructor_test
-│   │   ├── constructor-arg-mismatch.zena       [ts] checker-constructor_test
+│   │   ├── constructor-arg-mismatch.zena       [done]
 │   │   ├── constructor-missing-super.zena      [ts] checker-constructor_test
 │   │   └── forward-method-reference.zena       [done]
 │   │
 │   ├── fields/
-│   │   ├── immutable-assignment.zena           [ts] immutable-field_test — let field assignment error
-│   │   ├── mutable-assignment.zena             [ts] — var field assignment ok
-│   │   ├── field-init-order.zena               [ts] checker-field-init_test
-│   │   ├── field-init-required.zena            [ts] checker-field-init-required_test
+│   │   ├── immutable-assignment.zena           [done]
+│   │   ├── mutable-assignment.zena             [done]
+│   │   ├── field-init-order.zena               [done]
+│   │   ├── field-init-required.zena            [done]
 │   │   ├── field-type-inference.zena           [done]
-│   │   └── private-field-access.zena           [ts] — #field not accessible outside class
+│   │   └── private-field-access.zena           [done]
 │   │
 │   ├── inheritance/
-│   │   ├── basic-extends.zena                  [ts] checker-inheritance_test
-│   │   ├── method-override.zena                [ts] checker-inheritance_test
-│   │   ├── invalid-override.zena               [ts] — override with wrong type
-│   │   ├── super-field-access.zena             [ts] — access parent field
-│   │   ├── subtype-assignability.zena          [ts] — Child assignable to Parent
-│   │   └── deep-chain.zena                     [ts] — A extends B extends C
+│   │   ├── basic-extends.zena                  [done]
+│   │   ├── method-override.zena                [done]
+│   │   ├── unknown-superclass.zena             [done]
+│   │   ├── extend-interface-rejected.zena      [done]
+│   │   ├── invalid-override.zena               [done]
+│   │   ├── super-field-access.zena             [done]
+│   │   ├── subtype-assignability.zena          [done]
+│   │   └── deep-chain.zena                     [done]
 │   │
 │   ├── abstract/
-│   │   ├── cannot-instantiate.zena             [ts] checker-abstract_test
-│   │   ├── must-implement.zena                 [ts] — concrete subclass must implement abstract
+│   │   ├── cannot-instantiate.zena             [done]
+│   │   ├── must-implement.zena                 [done]
 │   │   ├── abstract-method.zena                [ts] checker-abstract_test
-│   │   ├── partial-implementation.zena         [ts] — some abstract methods implemented
-│   │   └── abstract-field.zena                 [ts] — abstract fields in abstract class
+│   │   ├── partial-implementation.zena         [ts]
+│   │   └── abstract-field.zena                 [ts]
 │   │
 │   ├── final/
-│   │   ├── cannot-extend.zena                  [ts] checker-final_test
-│   │   ├── cannot-override.zena                [ts] checker-final_test
+│   │   ├── cannot-extend.zena                  [done]
+│   │   ├── cannot-override.zena                [done]
 │   │   └── final-class-method-override.zena    [ts] checker-final_test
 │   │
 │   ├── accessors/
-│   │   ├── getter-return-type.zena             [ts] checker-accessor_test
-│   │   ├── setter-param-type.zena              [ts] checker-accessor_test
+│   │   ├── getter-return-type.zena             [done]
+│   │   ├── setter-param-type.zena              [done]
 │   │   ├── readonly-assignment.zena            [ts] readonly-assignment_test
 │   │   └── name-conflicts.zena                 [ts] name-conflict_test
 │   │
