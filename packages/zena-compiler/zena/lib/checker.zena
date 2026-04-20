@@ -4276,23 +4276,27 @@ let checkMethodSignature = (
     optionals.push(isOptional);
     if (isOptional) {
       hasOptionals = true;
-      var alreadyNullable = false;
-      match (paramType) {
-        case NullType: { alreadyNullable = true; }
-        case UnionT {types}: {
-          var ui = 0;
-          while (ui < types.length) {
-            if (types[ui] is NullType) { alreadyNullable = true; }
-            ui += 1;
+      // Only widen to T | null for ?-style optionals without a default value.
+      // Params with default values keep their declared type.
+      if (param.optional && param.defaultValue == null) {
+        var alreadyNullable = false;
+        match (paramType) {
+          case NullType: { alreadyNullable = true; }
+          case UnionT {types}: {
+            var ui = 0;
+            while (ui < types.length) {
+              if (types[ui] is NullType) { alreadyNullable = true; }
+              ui += 1;
+            }
           }
+          case _: {}
         }
-        case _: {}
-      }
-      if (!alreadyNullable) {
-        let unionTypes = new Array<Type>();
-        unionTypes.push(paramType);
-        unionTypes.push(new NullType());
-        paramType = createUnionType(unionTypes);
+        if (!alreadyNullable) {
+          let unionTypes = new Array<Type>();
+          unionTypes.push(paramType);
+          unionTypes.push(new NullType());
+          paramType = createUnionType(unionTypes);
+        }
       }
     }
 
@@ -6072,24 +6076,27 @@ let checkFunctionExpression = (
     optionals.push(isOptional);
     if (isOptional) {
       hasOptionals = true;
-      // Widen to T | null if not already nullable
-      var alreadyNullable = false;
-      match (paramType) {
-        case NullType: { alreadyNullable = true; }
-        case UnionT {types}: {
-          var ui = 0;
-          while (ui < types.length) {
-            if (types[ui] is NullType) { alreadyNullable = true; }
-            ui += 1;
+      // Only widen to T | null for ?-style optionals without a default value.
+      // Params with default values keep their declared type.
+      if (param.optional && param.defaultValue == null) {
+        var alreadyNullable = false;
+        match (paramType) {
+          case NullType: { alreadyNullable = true; }
+          case UnionT {types}: {
+            var ui = 0;
+            while (ui < types.length) {
+              if (types[ui] is NullType) { alreadyNullable = true; }
+              ui += 1;
+            }
           }
+          case _: {}
         }
-        case _: {}
-      }
-      if (!alreadyNullable) {
-        let unionTypes = new Array<Type>();
-        unionTypes.push(paramType);
-        unionTypes.push(new NullType());
-        paramType = createUnionType(unionTypes);
+        if (!alreadyNullable) {
+          let unionTypes = new Array<Type>();
+          unionTypes.push(paramType);
+          unionTypes.push(new NullType());
+          paramType = createUnionType(unionTypes);
+        }
       }
     }
 

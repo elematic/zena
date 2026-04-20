@@ -150,27 +150,29 @@ tests/language/semantics/
 │   ├── return-type-mismatch.zena               [done]
 │   ├── wrong-arg-count.zena                    [done]
 │   ├── wrong-arg-type.zena                     [done]
-│   ├── infer-return-type.zena                  [new] — let f = (x: i32) => x + 1; (no annotation)
-│   ├── void-return.zena                        [new] — function returning void
-│   ├── recursive-function.zena                 [ts] checker_test — recursive call type checks
-│   ├── closure-captures.zena                   [new] — closure captures outer variable
+│   ├── infer-return-type.zena                  [done]
+│   ├── void-return.zena                        [done]
+│   ├── recursive-function.zena                 [done]
+│   ├── closure-captures.zena                   [done]
 │   ├── contextual-typing/
-│   │   ├── param-from-annotation.zena          [ts] — let f: (i32) => i32 = (x) => x;
-│   │   ├── callback-param.zena                 [ts] — arr.map((x) => x + 1) infers x: i32
-│   │   └── multi-param.zena                    [ts] — infer multiple params from context
+│   │   ├── param-from-annotation.zena          [done] — function type annotation with explicit params
+│   │   ├── callback-param.zena                 [done] — callback param inferred from callee type
+│   │   └── multi-param.zena                    [done] — multiple callback params inferred
 │   ├── optional-params/
 │   │   ├── basic.zena                          [done] (optional-param-basic.zena)
 │   │   ├── null-union.zena                     [done] (optional-param-null-union.zena)
 │   │   ├── pass-null.zena                      [done] (optional-param-pass-null.zena)
-│   │   ├── default-value.zena                  [ts] — param with default
+│   │   ├── default-value.zena                  [done] — param with default, no T|null widening
 │   │   ├── wrong-type.zena                     [done] (optional-param-wrong-type.zena)
 │   │   ├── call-without-optional.zena          [done] (in optional-param-basic.zena)
 │   │   ├── method.zena                         [done] (optional-param-method.zena)
 │   │   └── constructor.zena                    [done] (optional-param-constructor.zena)
 │   └── function-type/
-│       ├── basic.zena                          [ts] function-type_test
-│       ├── assignability.zena                  [ts] — (i32) => i32 assignable to (i32) => i32
-│       └── mismatch.zena                       [ts] — (i32) => String not assignable to (i32) => i32
+│       ├── basic.zena                          [done] (function-type-basic.zena)
+│       ├── assignability.zena                  [done] (function-type-basic.zena)
+│       ├── param-mismatch.zena                 [done] (function-type-param-mismatch.zena)
+│       ├── return-mismatch.zena                [done] (function-type-return-mismatch.zena)
+│       └── union-dedup.zena                    [done] (union-dedup-function.zena)
 │
 ├── control-flow/
 │   ├── break-outside-loop.zena                 [done]
@@ -507,7 +509,7 @@ tests/language/semantics/
 | -------------------------- | ------ | ------------ | ------- | ----------- | -------- |
 | **Variables**              | 11     | 0            | 0       | 0           | 11       |
 | **Operators**              | 23     | 0            | 0       | 0           | 23       |
-| **Functions**              | 4      | ~10          | 3       | 0           | ~17      |
+| **Functions**              | 22     | 0            | 0       | 0           | 22       |
 | **Control Flow**           | 5      | 3            | 1       | 0           | 9        |
 | **If Expressions**         | 8      | 0            | 0       | 0           | 8        |
 | **Classes**                | 2      | ~24          | 1       | 0           | ~27      |
@@ -530,7 +532,7 @@ tests/language/semantics/
 | **Template Strings**       | 4      | 0            | 0       | 0           | 4        |
 | **Misc**                   | 4      | 2            | 0       | 0           | 6        |
 | **Type Inference**         | 0      | 0            | 0       | 12          | 12       |
-| **TOTAL**                  | **77** | **~167**     | **~24** | **12**      | **~280** |
+| **TOTAL**                  | **95** | **~150**     | **~20** | **12**      | **~277** |
 
 ## Porting Priority
 
