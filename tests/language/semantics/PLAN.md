@@ -182,14 +182,14 @@ tests/language/semantics/
 │
 ├── if-expression/
 │   ├── basic.zena                              [ts] if-expression_test — if/else returns union
-│   ├── same-type-branches.zena                 [ts] — both branches same type → that type
-│   ├── different-type-branches.zena            [ts] — different types → union
+│   ├── same-type-branches.zena                [done] — both branches same type → that type
+│   ├── different-type-branches.zena            [done] — different types → union
 │   ├── void-if-no-else.zena                    [ts] — if without else → void
-│   ├── nested.zena                             [ts] — nested if-expression
-│   ├── with-block.zena                         [ts] — if { ... } else { ... } expression
-│   ├── type-error-condition.zena               [ts] — non-bool condition in if expr
-│   ├── if-let-basic.zena                       [new] — if (let Some {value} = x) { ... }
-│   └── if-let-narrowing.zena                   [new] — binding is narrowed type in body
+│   ├── nested.zena                             [done] — nested if-expression
+│   ├── with-block.zena                         [done] — if { ... } else { ... } expression
+│   ├── type-error-condition.zena               [done] — non-bool condition in if expr (non-boolean-condition.zena)
+│   ├── if-let-basic.zena                       [done] — covered by control-flow/if-let*.zena
+│   └── if-let-narrowing.zena                   [done] — covered by control-flow/if-let*.zena
 │
 ├── classes/
 │   ├── basic/
@@ -506,7 +506,7 @@ tests/language/semantics/
 | **Operators**              | 7      | ~12          | 3       | 0           | ~22      |
 | **Functions**              | 4      | ~10          | 3       | 0           | ~17      |
 | **Control Flow**           | 5      | 3            | 1       | 0           | 9        |
-| **If Expressions**         | 0      | 5            | 2       | 0           | 7        |
+| **If Expressions**         | 8      | 0            | 0       | 0           | 8        |
 | **Classes**                | 2      | ~24          | 1       | 0           | ~27      |
 | **Case Classes**           | 11     | 0            | 2       | 0           | 13       |
 | **Sealed Classes**         | 19     | 0            | 1       | 0           | 20       |
