@@ -1952,6 +1952,65 @@ let subtractNullFromType = (t: Type): Type => {
 };
 
 /**
+ * Subtract a specific type from a union type.
+ * For example, subtractTypeFromUnion(Cat | Fish, Cat) => Fish.
+ * For non-union types, returns never if equal, or the original type unchanged.
+ */
+let subtractTypeFromUnion = (original: Type, toRemove: Type): Type => {
+  match (original) {
+    case UnionT as u: {
+      let remaining = new Array<Type>();
+      let types = u.types;
+      var i = 0;
+      while (i < types.length) {
+        if (!typesEqual(types[i], toRemove)) {
+          remaining.push(types[i]);
+        }
+        i = i + 1;
+      }
+      if (remaining.length == 0) { return new NeverType(); }
+      if (remaining.length == 1) { return remaining[0]; }
+      return new UnionT(remaining);
+    }
+    case _: {
+      if (typesEqual(original, toRemove)) { return new NeverType(); }
+      return original;
+    }
+  }
+};
+
+/**
+ * Extract is-expression narrowing from a condition like `x is T`.
+ * Returns the SymbolInfo, the target type, and the original type.
+ */
+let extractIsNarrowing = (
+  ctx: CheckerContext,
+  condition: Expression
+): (SymbolInfo | null, Type | null, Type | null) => {
+  match (condition) {
+    case IsExpression {expression, typeAnnotation}: {
+      match (expression) {
+        case Identifier {}: {
+          let info = ctx.model.resolve(expression as Node);
+          if (info == null) {
+            return (null, null, null);
+          }
+          let si = info as SymbolInfo;
+          let originalType = ctx.resolveIdentifier(expression as Node);
+          if (originalType == null) {
+            return (null, null, null);
+          }
+          let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
+          return (si, targetType, originalType as Type);
+        }
+        case _: { return (null, null, null); }
+      }
+    }
+    case _: { return (null, null, null); }
+  }
+};
+
+/**
  * Extract null-guard narrowing from a condition like `x == null` or `x != null`.
  * Returns the SymbolInfo and the narrowed type for the "after-exit" context.
  *
@@ -2117,9 +2176,21 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
           // Extract null-guard narrowing from the condition.
           let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
 
+          // Also try is-expression narrowing if no null-guard found.
+          var isInfo: SymbolInfo | null = null;
+          var isTargetType: Type | null = null;
+          var isOrigType: Type | null = null;
+          if (guardInfo == null) {
+            let (info, target, orig) = extractIsNarrowing(ctx, testExpr);
+            isInfo = info;
+            isTargetType = target;
+            isOrigType = orig;
+          }
+
           // Check consequent with narrowing applied.
           // For `x == null`: consequent has x narrowed to null
           // For `x != null`: consequent has x narrowed to non-null
+          // For `x is T`: consequent has x narrowed to T
           if (guardInfo != null) {
             let si = guardInfo as SymbolInfo;
             let origType = guardOrigType as Type;
@@ -2129,6 +2200,12 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
             } else {
               ctx.narrowBinding(si, subtractNullFromType(origType));
             }
+            checkStatement(ctx, consequent);
+            ctx.exitScope();
+          } else if (isInfo != null) {
+            let si = isInfo as SymbolInfo;
+            ctx.enterScope();
+            ctx.narrowBinding(si, isTargetType as Type);
             checkStatement(ctx, consequent);
             ctx.exitScope();
           } else {
@@ -2146,6 +2223,14 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
               } else {
                 ctx.narrowBinding(si, new NullType());
               }
+              checkStatement(ctx, alternate as Statement);
+              ctx.exitScope();
+            } else if (isInfo != null) {
+              // `x is T` else branch: x is NOT T, subtract T from original type
+              let si = isInfo as SymbolInfo;
+              let narrowed = subtractTypeFromUnion(isOrigType as Type, isTargetType as Type);
+              ctx.enterScope();
+              ctx.narrowBinding(si, narrowed);
               checkStatement(ctx, alternate as Statement);
               ctx.exitScope();
             } else {
@@ -2168,6 +2253,11 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
                 ctx.narrowBinding(si, new NullType());
               }
             }
+            if (isInfo != null) {
+              // `if (x is T) { return; }` → x is NOT T after
+              let si = isInfo as SymbolInfo;
+              ctx.narrowBinding(si, subtractTypeFromUnion(isOrigType as Type, isTargetType as Type));
+            }
           }
 
           // If the alternate always exits, the regular narrowing holds.
@@ -2182,6 +2272,11 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
                 // `if (x != null) { ... } else { return; }` → x is non-null after
                 ctx.narrowBinding(si, subtractNullFromType(origType));
               }
+            }
+            if (isInfo != null) {
+              // `if (x is T) { ... } else { return; }` → x IS T after
+              let si = isInfo as SymbolInfo;
+              ctx.narrowBinding(si, isTargetType as Type);
             }
           }
 
@@ -3075,7 +3170,11 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     checkExpression(ctx, expression, null);
     resolveTypeAnnotation(ctx, typeAnnotation)
   }
-  case IsExpression {loc}: new BooleanType()
+  case IsExpression {expression, typeAnnotation, loc}: {
+    checkExpression(ctx, expression, null);
+    resolveTypeAnnotation(ctx, typeAnnotation);
+    new BooleanType()
+  }
   case ArrayLiteral {elements, loc}: {
     if (elements.length == 0) {
       // Empty array — need contextual type or return unknown element type.

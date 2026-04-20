@@ -354,11 +354,13 @@ tests/language/semantics/
 │       └── never-in-union.zena                 [ts] — never | i32 simplifies to i32
 │
 ├── type-narrowing/
-│   ├── null-check.zena                         [ts] type-narrowing_test — if (x !== null) { x.foo() }
-│   ├── null-check-else.zena                    [ts] — else branch retains nullable
-│   ├── nested-null-check.zena                  [ts] — nested if for multiple nullables
+│   ├── null-check.zena                         [done]
+│   ├── null-check-else.zena                    [done]
+│   ├── nested-null-check.zena                  [done]
+│   ├── is-expression.zena                      [done]
+│   ├── field-narrowing.zena                    [done] — immutable vs mutable field narrowing
+│   ├── record-field-narrowing.zena             [done] — record fields narrow after null check
 │   ├── if-let-narrowing.zena                   [new] — if (let Some {val} = opt) { ... }
-│   ├── is-expression.zena                      [new] — if (x is Dog) { x.bark() }
 │   └── match-narrowing.zena                    [new] — type narrowed inside match case
 │
 ├── pattern-matching/

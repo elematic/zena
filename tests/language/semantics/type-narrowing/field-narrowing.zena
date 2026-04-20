@@ -1,0 +1,34 @@
+// @mode: check
+// Immutable (let) fields can be narrowed after a null check.
+// Mutable (var) fields cannot be narrowed since they may change.
+
+class Container {
+  value: i32;
+  new(this.value);
+}
+
+class ImmutableWrapper {
+  let inner: Container | null;
+  new() : inner = null {}
+}
+
+class MutableWrapper {
+  var inner: Container | null;
+  new() : inner = null {}
+}
+
+// Immutable field narrows after null check
+let immutableNarrows = (w: ImmutableWrapper): i32 => {
+  if (w.inner !== null) {
+    return w.inner.value;
+  }
+  return 0;
+};
+
+// Mutable field does NOT narrow — still nullable
+let mutableDoesNotNarrow = (w: MutableWrapper): i32 => {
+  if (w.inner !== null) {
+    return w.inner.value; // @error: null
+  }
+  return 0;
+};

@@ -1,0 +1,55 @@
+// @mode: check
+// The `is` expression narrows the type of a variable.
+
+class Animal {
+  name: String;
+  new(this.name);
+}
+
+class Dog extends Animal {
+  breed: String;
+  new(name: String, breed: String) : breed = breed, super(name) {}
+}
+
+// is narrows to subclass, allowing access to subclass fields
+let getDogBreed = (animal: Animal): String => {
+  if (animal is Dog) {
+    return animal.breed;
+  }
+  return animal.name;
+};
+
+// is narrows a union type
+class Cat {
+  new() {}
+  meow(): String { return "meow"; }
+}
+
+class Fish {
+  new() {}
+  swim(): String { return "splash"; }
+}
+
+let catOrFish = (pet: Cat | Fish): String => {
+  if (pet is Cat) {
+    return pet.meow();
+  }
+  return "unknown";
+};
+
+// else branch of is check narrows to the other type
+let catElseFish = (pet: Cat | Fish): String => {
+  if (pet is Cat) {
+    return pet.meow();
+  } else {
+    return pet.swim();
+  }
+};
+
+// Accessing wrong property after is check should error
+let wrongAccess = (pet: Cat | Fish): String => {
+  if (pet is Cat) {
+    return pet.swim(); // @error: swim
+  }
+  return "unknown";
+};
