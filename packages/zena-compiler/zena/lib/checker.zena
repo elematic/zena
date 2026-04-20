@@ -3765,6 +3765,15 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         } else {
           // Regular method.
 
+          // Check for field/method name conflict.
+          if (ownFieldNames.has(methodName)) {
+            ctx.error(
+              "Method '" + methodName + "' conflicts with field '" + methodName + "'.",
+              DiagnosticCode.DuplicateDeclaration,
+              md.loc
+            );
+          }
+
           // Check abstract method in concrete class.
           if (md.isAbstract && !cd.isAbstract && !cd.isSealed) {
             ctx.error(
@@ -3805,16 +3814,48 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
 
         // Getter creates get#accName method.
         if (acc.getter != null) {
+          let getterName = "get#" + accName;
+          // Check for final override.
+          if (classType.superType != null) {
+            let superCt = classType.superType as ClassType;
+            if (superCt.methods.has(getterName)) {
+              let superMethod = superCt.methods[getterName];
+              if (superMethod.isFinal) {
+                ctx.error(
+                  "Cannot override final method '" + getterName + "'.",
+                  DiagnosticCode.IncompatibleTypes,
+                  acc.loc
+                );
+              }
+            }
+          }
           let getterType = new FunctionType(new Array<Type>(), null, accType);
-          classType.methods["get#" + accName] = getterType;
+          getterType.isFinal = acc.isFinal;
+          classType.methods[getterName] = getterType;
         }
 
         // Setter creates a method set#accName with param type = accType.
         if (acc.setter != null) {
+          let setterName = "set#" + accName;
+          // Check for final override.
+          if (classType.superType != null) {
+            let superCt = classType.superType as ClassType;
+            if (superCt.methods.has(setterName)) {
+              let superMethod = superCt.methods[setterName];
+              if (superMethod.isFinal) {
+                ctx.error(
+                  "Cannot override final method '" + setterName + "'.",
+                  DiagnosticCode.IncompatibleTypes,
+                  acc.loc
+                );
+              }
+            }
+          }
           let setterParams = new Array<Type>();
           setterParams.push(accType);
           let setterType = new FunctionType(setterParams, null, new VoidType());
-          classType.methods["set#" + accName] = setterType;
+          setterType.isFinal = acc.isFinal;
+          classType.methods[setterName] = setterType;
         }
       }
       case MethodSignature as ms: {
@@ -3950,6 +3991,14 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           if (methodName == "<constructor>") {
             if (classType.constructorType != null) {
               checkMethodBody(ctx, classType, classType.constructorType as FunctionType, md);
+            }
+            // Derived class constructors must call super().
+            if (classType.superType != null && md.superInitializer == null && !classType.isCaseClass) {
+              ctx.error(
+                "Constructors in derived classes must call super().",
+                DiagnosticCode.IncompatibleTypes,
+                md.loc
+              );
             }
           } else {
             if (classType.methods.has(methodName)) {

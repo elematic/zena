@@ -244,9 +244,9 @@ tests/language/semantics/
 │   │   ├── method-call.zena                    [done]
 │   │   ├── duplicate-field.zena                [done]
 │   │   ├── unknown-field.zena                  [done]
-│   │   ├── constructor-required.zena           [ts] checker-constructor_test
+│   │   ├── constructor-required.zena           [done]
 │   │   ├── constructor-arg-mismatch.zena       [done]
-│   │   ├── constructor-missing-super.zena      [ts] checker-constructor_test
+│   │   └── constructor-missing-super.zena      [done]
 │   │   └── forward-method-reference.zena       [done]
 │   │
 │   ├── fields/
@@ -270,20 +270,20 @@ tests/language/semantics/
 │   ├── abstract/
 │   │   ├── cannot-instantiate.zena             [done]
 │   │   ├── must-implement.zena                 [done]
-│   │   ├── abstract-method.zena                [ts] checker-abstract_test
-│   │   ├── partial-implementation.zena         [ts]
-│   │   └── abstract-field.zena                 [ts]
+│   │   ├── abstract-method.zena                [done]
+│   │   ├── partial-implementation.zena         [done]
+│   │   └── abstract-field.zena                 [done]
 │   │
 │   ├── final/
 │   │   ├── cannot-extend.zena                  [done]
 │   │   ├── cannot-override.zena                [done]
-│   │   └── final-class-method-override.zena    [ts] checker-final_test
+│   │   └── final-class-method-override.zena    [done]
 │   │
 │   ├── accessors/
 │   │   ├── getter-return-type.zena             [done]
 │   │   ├── setter-param-type.zena              [done]
-│   │   ├── readonly-assignment.zena            [ts] readonly-assignment_test
-│   │   └── name-conflicts.zena                 [ts] name-conflict_test
+│   │   ├── readonly-assignment.zena            [done]
+│   │   └── name-conflicts.zena                 [done]
 │   │
 │   └── operators/
 │       ├── operator-eq.zena                    [ts] — operator == type checking
