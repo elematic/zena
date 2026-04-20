@@ -110,9 +110,9 @@ tests/language/semantics/
 │   ├── undeclared-variable.zena                [done]
 │   ├── var-assignment.zena                     [done] — var x = 1; x = 2; (valid)
 │   ├── let-reassignment-rejected.zena          [done] — let x = 1; x = 2; (error)
-│   ├── infer-from-function-call.zena           [ts] checker_test
-│   ├── infer-from-string.zena                  [ts] checker_test
-│   └── infer-from-boolean.zena                 [ts] checker_test
+│   ├── infer-from-function-call.zena           [done]
+│   ├── infer-from-string.zena                  [done]
+│   └── infer-from-boolean.zena                 [done]
 │
 ├── operators/
 │   ├── arithmetic-i32.zena                     [done]
@@ -502,7 +502,7 @@ tests/language/semantics/
 
 | Group                      | Done   | Port from TS | New     | Needs @type | Total    |
 | -------------------------- | ------ | ------------ | ------- | ----------- | -------- |
-| **Variables**              | 6      | 3            | 2       | 0           | 11       |
+| **Variables**              | 11     | 0            | 0       | 0           | 11       |
 | **Operators**              | 7      | ~12          | 3       | 0           | ~22      |
 | **Functions**              | 4      | ~10          | 3       | 0           | ~17      |
 | **Control Flow**           | 5      | 3            | 1       | 0           | 9        |
