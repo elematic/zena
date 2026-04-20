@@ -142,6 +142,36 @@ const branchDefinitelyExits = (stmt: Statement): boolean => {
 };
 
 /**
+ * Check if a statement (or block) contains an assignment to a variable
+ * with the given name. Used to detect patterns like:
+ *   if (x == null) { x = value; }
+ * for post-if narrowing.
+ */
+const bodyAssignsToVariable = (stmt: Statement, varName: string): boolean => {
+  switch (stmt.type) {
+    case NodeType.BlockStatement: {
+      const body = (stmt as {body: Statement[]}).body;
+      return body.some((s) => bodyAssignsToVariable(s, varName));
+    }
+    case NodeType.ExpressionStatement: {
+      const expr = (stmt as {expression: Expression}).expression;
+      if (expr.type === NodeType.AssignmentExpression) {
+        const left = (expr as {left: Expression}).left;
+        if (
+          left.type === NodeType.Identifier &&
+          (left as Identifier).name === varName
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    default:
+      return false;
+  }
+};
+
+/**
  * Convert an expression to a narrowing path string.
  * Returns null if the expression cannot be narrowed.
  *
@@ -1724,6 +1754,26 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
     const allNarrowings = extractAllNarrowingsFromCondition(ctx, stmt.test);
     for (const n of allNarrowings) {
       ctx.narrowType(n.variableName, n.narrowedType);
+    }
+  }
+
+  // Narrowing via assignment in null-guard body:
+  // `if (x == null) { x = value; }` → x is non-null after.
+  // Both paths guarantee non-null: the false branch means x was already
+  // non-null, and the true branch assigned a (non-null) value to x.
+  if (!stmt.alternate && !branchDefinitelyExits(stmt.consequent)) {
+    const inverseNarrowing = extractInverseNarrowingFromCondition(
+      ctx,
+      stmt.test,
+    );
+    if (
+      inverseNarrowing &&
+      bodyAssignsToVariable(stmt.consequent, inverseNarrowing.variableName)
+    ) {
+      ctx.narrowType(
+        inverseNarrowing.variableName,
+        inverseNarrowing.narrowedType,
+      );
     }
   }
 }

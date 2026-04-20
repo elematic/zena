@@ -2252,6 +2252,11 @@ function checkAssignmentExpression(
       );
     }
 
+    // ??= narrows the binding to non-null after assignment.
+    if (expr.operator === '??') {
+      ctx.narrowType(varName, effectiveType);
+    }
+
     return effectiveType;
   } else if (expr.left.type === NodeType.MemberExpression) {
     const memberExpr = expr.left as MemberExpression;

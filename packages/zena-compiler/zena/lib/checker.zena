@@ -927,6 +927,34 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   ctx.registerPreludeType("HashMap", hashMapType);
   ctx.registerPreludeValue("HashMap", hashMapType);
 
+  // Set, HashSet
+  let setType = new InterfaceType(ctx.freshTypeId(), "Set");
+  let hashSetType = new ClassType(ctx.freshTypeId(), "HashSet");
+  let hashSetTParam = new TypeParameterType("T", null, null);
+  let hashSetTParams = new Array<TypeParameterType>();
+  hashSetTParams.push(hashSetTParam);
+  hashSetType.typeParameters = hashSetTParams;
+  // HashSet members: add, has, delete, clear, size, []
+  let hsAddParams = new Array<Type>();
+  hsAddParams.push(hashSetTParam);
+  hashSetType.methods["add"] = new FunctionType(hsAddParams, null, new BooleanType());
+  let hsHasParams = new Array<Type>();
+  hsHasParams.push(hashSetTParam);
+  hashSetType.methods["has"] = new FunctionType(hsHasParams, null, new BooleanType());
+  let hsDeleteParams = new Array<Type>();
+  hsDeleteParams.push(hashSetTParam);
+  hashSetType.methods["delete"] = new FunctionType(hsDeleteParams, null, new BooleanType());
+  hashSetType.methods["clear"] = new FunctionType(new Array<Type>(), null, new VoidType());
+  hashSetType.methods["get#size"] = new FunctionType(new Array<Type>(), null, new I32Type());
+  let hsIndexParams = new Array<Type>();
+  hsIndexParams.push(hashSetTParam);
+  hashSetType.methods["[]"] = new FunctionType(hsIndexParams, null, new BooleanType());
+  // HashSet constructor: new HashSet<T>()
+  hashSetType.constructorType = new FunctionType(new Array<Type>(), null, hashSetType);
+  ctx.registerPreludeType("Set", setType);
+  ctx.registerPreludeType("HashSet", hashSetType);
+  ctx.registerPreludeValue("HashSet", hashSetType);
+
   // Sequence, MutableSequence
   let seqType = new InterfaceType(ctx.freshTypeId(), "Sequence");
   let mutSeqType = new InterfaceType(ctx.freshTypeId(), "MutableSequence");
@@ -1098,10 +1126,8 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
     for (let prop in properties) {
       props[prop.name.name] = resolveTypeAnnotation(ctx, prop.typeAnnotation);
       if (prop.optional) {
-        if (optionals == null) {
-          optionals = new HashSet<String>();
-        }
-        (optionals as HashSet<String>).add(prop.name.name);
+        optionals ??= new HashSet<String>();
+        optionals.add(prop.name.name);
       }
     }
     new RecordT(props, optionals)
@@ -1916,6 +1942,41 @@ let extractNullGuardNarrowing = (
   }
 };
 
+/**
+ * Check if a statement (or block) contains an assignment to a variable
+ * identified by its SymbolInfo id. Used to detect patterns like:
+ *   if (x == null) { x = value; }
+ * for post-if narrowing.
+ */
+let bodyAssignsToVariable = (ctx: CheckerContext, stmt: Statement, targetId: SymbolId): boolean => {
+  match (stmt) {
+    case BlockStatement {body}: {
+      for (let s in body) {
+        if (bodyAssignsToVariable(ctx, s, targetId)) { return true; }
+      }
+      false
+    }
+    case ExpressionStatement {expression}: {
+      match (expression) {
+        case AssignmentExpression {left}: {
+          match (left) {
+            case Identifier: {
+              let info = ctx.model.resolve(left);
+              if (info != null && (info as SymbolInfo).id == targetId) {
+                return true;
+              }
+              false
+            }
+            case _: false
+          }
+        }
+        case _: false
+      }
+    }
+    case _: false
+  }
+};
+
 let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
   match (stmt) {
     case VariableDeclaration {kind, pattern, typeAnnotation, init, loc}: {
@@ -2055,6 +2116,20 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
                 ctx.narrowBinding(si, new NullType());
               } else {
                 // `if (x != null) { ... } else { return; }` → x is non-null after
+                ctx.narrowBinding(si, subtractNullFromType(origType));
+              }
+            }
+          }
+
+          // Narrowing via assignment in null-guard body:
+          // `if (x == null) { x = value; }` → x is non-null after
+          // Both paths guarantee non-null: the non-null branch didn't enter,
+          // and the null branch assigned a (presumably non-null) value.
+          if (alternate == null && !branchDefinitelyExits(consequent)) {
+            if (guardInfo != null && isEqualNull) {
+              let si = guardInfo as SymbolInfo;
+              let origType = guardOrigType as Type;
+              if (bodyAssignsToVariable(ctx, consequent, si.id)) {
                 ctx.narrowBinding(si, subtractNullFromType(origType));
               }
             }
@@ -2753,7 +2828,50 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       case _: {}
     }
 
-    let leftType = checkExpression(ctx, left, null);
+    // Null-coalescing assignment: x ??= value
+    // Result type is the non-null part of left's type.
+    // Narrows the binding to non-null afterward.
+    if (operator != null && (operator as String) == "??") {
+      let leftType = checkExpression(ctx, left, null);
+      let nonNullType = subtractNullFromType(leftType);
+      let rightType = checkExpression(ctx, value, nonNullType);
+      if (!isAssignableTo(ctx, rightType, nonNullType)) {
+        ctx.error(
+          "Type mismatch in '??=' assignment: '" + typeToString(rightType) +
+          "' is not assignable to '" + typeToString(nonNullType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+      // Narrow the binding to non-null.
+      match (left) {
+        case Identifier: {
+          let info = ctx.model.resolve(left);
+          if (info != null) {
+            ctx.narrowBinding(info as SymbolInfo, nonNullType);
+          }
+        }
+        case _: {}
+      }
+      return nonNullType;
+    }
+
+    // For assignment, use the declared (binding) type of the LHS,
+    // not the narrowed type. The RHS must be compatible with what the
+    // variable was declared as, not what it was narrowed to.
+    var leftType: Type = checkExpression(ctx, left, null);
+    match (left) {
+      case Identifier: {
+        let info = ctx.model.resolve(left);
+        if (info != null) {
+          let bindingType = ctx.model.getBindingType(info as SymbolInfo);
+          if (bindingType != null) {
+            leftType = bindingType as Type;
+          }
+        }
+      }
+      case _: {}
+    }
     let rightType = checkExpression(ctx, value, leftType);
 
     if (!isAssignableTo(ctx, rightType, leftType)) {
