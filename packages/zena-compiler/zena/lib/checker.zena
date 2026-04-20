@@ -1094,13 +1094,17 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
   }
   case RecordTypeAnnotation {properties}: {
     let props = new HashMap<String, Type>();
-    var i = 0;
-    while (i < properties.length) {
-      let prop = properties[i];
+    var optionals: HashSet<String> | null = null;
+    for (let prop in properties) {
       props[prop.name.name] = resolveTypeAnnotation(ctx, prop.typeAnnotation);
-      i += 1;
+      if (prop.optional) {
+        if (optionals == null) {
+          optionals = new HashSet<String>();
+        }
+        (optionals as HashSet<String>).add(prop.name.name);
+      }
     }
-    new RecordT(props, null)
+    new RecordT(props, optionals)
   }
   case TupleTypeAnnotation {elementTypes}: {
     let elTypes = new Array<Type>();
@@ -2346,17 +2350,29 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
     case RecordPattern {properties}: {
       // For record destructuring: { x, y } = record.
       match (t) {
-        case RecordT {properties as recordProps}: {
+        case RecordT {properties as recordProps, optionalProperties}: {
           var i = 0;
           while (i < properties.length) {
             let prop = properties[i];
             let propName = prop.name.name;
             if (recordProps.has(propName)) {
-              let propType = recordProps[propName];
-              bindPattern(ctx, prop.value as Pattern, propType);
+              // Check if the property is optional and requires a default value
+              let isOptional = optionalProperties != null &&
+                (optionalProperties as HashSet<String>).has(propName);
+              let hasDefault = prop.value is AssignmentPattern;
+              if (isOptional && !hasDefault) {
+                ctx.error(
+                  "Optional field '" + propName + "' requires a default value when destructuring.",
+                  DiagnosticCode.TypeMismatch,
+                  prop.loc
+                );
+              } else {
+                let propType = recordProps[propName];
+                bindPattern(ctx, prop.value as Pattern, propType);
+              }
             } else {
               ctx.error(
-                "Property '" + propName + "' does not exist on type '" + typeToString(t) + "'.",
+                "Type '" + typeToString(t) + "' has no property '" + propName + "'.",
                 DiagnosticCode.PropertyNotFound,
                 prop.loc
               );
@@ -2374,9 +2390,16 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
         }
       }
     }
-    case TuplePattern {elements}: {
+    case TuplePattern {elements, loc}: {
       match (t) {
         case TupleT {elementTypes}: {
+          if (elements.length > elementTypes.length) {
+            ctx.error(
+              "Tuple pattern has more elements than the tuple type.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+          }
           var i = 0;
           while (i < elements.length) {
             if (elements[i] != null) {
@@ -2391,6 +2414,13 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
           }
         }
         case InlineTupleT {elementTypes}: {
+          if (elements.length > elementTypes.length) {
+            ctx.error(
+              "Tuple pattern has more elements than the tuple type.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+          }
           var i = 0;
           while (i < elements.length) {
             if (elements[i] != null) {

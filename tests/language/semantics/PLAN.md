@@ -378,14 +378,17 @@ tests/language/semantics/
 │       └── or-in-let.zena                      [ts] — let A {} | B {} = x (error)
 │
 ├── destructuring/
-│   ├── record-basic.zena                       [ts] destructuring_test — let {x, y} = point;
-│   ├── record-with-rename.zena                 [ts] destructuring_test — let {x: a} = point;
-│   ├── record-with-default.zena                [ts] destructuring_test — let {x = 0} = rec;
-│   ├── record-nested.zena                      [ts] destructuring_test
-│   ├── tuple-basic.zena                        [ts] destructuring_test — let (a, b) = pair;
-│   ├── tuple-nested.zena                       [ts] destructuring_test
-│   ├── optional-field-default.zena             [ts] destructuring_test — default for optional
-│   ├── optional-field-no-default.zena          [ts] destructuring_test — optional without default
+│   ├── record-basic.zena                       [done]
+│   ├── record-with-rename.zena                 [done]
+│   ├── record-with-default.zena                [done]
+│   ├── record-nested.zena                      [done]
+│   ├── record-missing-property.zena            [done]
+│   ├── record-type-mismatch.zena               [done]
+│   ├── tuple-basic.zena                        [done]
+│   ├── tuple-nested.zena                       [done]
+│   ├── tuple-length-mismatch.zena              [done]
+│   ├── optional-field-default.zena             [done]
+│   ├── optional-field-no-default.zena          [done]
 │   └── invalid-pattern.zena                    [ts] destructuring_test — destructure non-record
 │
 ├── null-coalescing/
