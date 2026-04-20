@@ -122,6 +122,12 @@ export let instantiateClassType = (
   result.typeArguments = typeArguments;
   result.genericSource = source;
   result.superType = source.superType;
+  // Copy implementsList entries (field is immutable, so push from source).
+  var i = 0;
+  while (i < source.implementsList.length) {
+    result.implementsList.push(source.implementsList[i]);
+    i += 1;
+  }
   result.fields = source.fields;
   result.fieldMutability = source.fieldMutability;
   result.methods = source.methods;
@@ -137,16 +143,30 @@ export let instantiateClassType = (
 export class InterfaceType extends Type {
   id: i32;
   name: String;
-  typeParameters: Array<TypeParameterType> | null = null;
-  typeArguments: Array<Type> | null = null;
+  var typeParameters: Array<TypeParameterType> | null = null;
+  var typeArguments: Array<Type> | null = null;
   extendsList = new Array<InterfaceType>();
   fields = new HashMap<String, Type>();
   fieldMutability = new HashMap<String, boolean>();
   methods = new HashMap<String, FunctionType>();
-  genericSource: InterfaceType | null = null;
+  var genericSource: InterfaceType | null = null;
 
   new(id: i32, name: String) : id = id, name = name;
 }
+
+/**
+ * Create an instantiated copy of a generic InterfaceType with concrete type arguments.
+ */
+export let instantiateInterfaceType = (
+  source: InterfaceType,
+  typeArguments: Array<Type>,
+): InterfaceType => {
+  let result = new InterfaceType(source.id, source.name);
+  result.typeParameters = source.typeParameters;
+  result.typeArguments = typeArguments;
+  result.genericSource = source;
+  return result;
+};
 
 export class MixinType extends Type {
   name: String;

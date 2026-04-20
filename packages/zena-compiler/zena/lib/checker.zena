@@ -63,7 +63,7 @@ import {
   UnionType as UnionT, RecordType as RecordT,
   FunctionType, ClassType, InterfaceType, MixinType,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
-  instantiateClassType,
+  instantiateClassType, instantiateInterfaceType,
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, widenType, baseType,
   promoteNumeric, typeToString
@@ -621,6 +621,17 @@ class CheckerContext {
     return null;
   }
 
+  /**
+   * Resolve a prelude type by name. Used for identity-based type comparisons
+   * (e.g. checking if a ClassType is the prelude Array).
+   */
+  resolvePreludeType(name: String): Type | null {
+    if (this.#preludeTypes.has(name)) {
+      return this.#preludeTypes[name];
+    }
+    return null;
+  }
+
   // --- Pipeline ---
 
   pushPipelineValue(t: Type): void { this.#pipelineStack.push(t); }
@@ -779,6 +790,14 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   ctx.registerPreludeType("Error", errorType);
   ctx.registerPreludeValue("Error", errorType);
 
+  // Iterable<T> - the interface for for-in loops
+  let iterableType = new InterfaceType(ctx.freshTypeId(), "Iterable");
+  let iterableTParam = new TypeParameterType("T", null, null);
+  let iterableTParams = new Array<TypeParameterType>();
+  iterableTParams.push(iterableTParam);
+  iterableType.typeParameters = iterableTParams;
+  ctx.registerPreludeType("Iterable", iterableType);
+
   // FixedArray<T> - fixed-size array
   let fixedArrayType = new ClassType(ctx.freshTypeId(), "FixedArray");
   let fixedArrayTParam = new TypeParameterType("T", null, null);
@@ -799,6 +818,10 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   faPushParams.push(fixedArrayTParam);
   fixedArrayType.methods["push"] = new FunctionType(faPushParams, null, new VoidType());
   fixedArrayType.methods["pop"] = new FunctionType(new Array<Type>(), null, fixedArrayTParam);
+  // FixedArray<T> implements Iterable<T>
+  let faIterableArgs = new Array<Type>();
+  faIterableArgs.push(fixedArrayTParam);
+  fixedArrayType.implementsList.push(instantiateInterfaceType(iterableType, faIterableArgs));
   ctx.registerPreludeType("FixedArray", fixedArrayType);
   ctx.registerPreludeValue("FixedArray", fixedArrayType);
 
@@ -823,6 +846,10 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   arrayType.methods["[]="] = new FunctionType(aSetParams, null, new VoidType());
   // Array constructor: new Array<T>() — capacity param optional, stubbed as zero-arg
   arrayType.constructorType = new FunctionType(new Array<Type>(), null, arrayType);
+  // Array<T> implements Iterable<T>
+  let aIterableArgs = new Array<Type>();
+  aIterableArgs.push(arrayTParam);
+  arrayType.implementsList.push(instantiateInterfaceType(iterableType, aIterableArgs));
   ctx.registerPreludeType("Array", arrayType);
   ctx.registerPreludeValue("Array", arrayType);
 
@@ -840,6 +867,10 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   // Add length getter
   let iaLengthGetter = new FunctionType(new Array<Type>(), null, new I32Type());
   immArrayType.methods["get#length"] = iaLengthGetter;
+  // ImmutableArray<T> implements Iterable<T>
+  let iaIterableArgs = new Array<Type>();
+  iaIterableArgs.push(immArrayTParam);
+  immArrayType.implementsList.push(instantiateInterfaceType(iterableType, iaIterableArgs));
   ctx.registerPreludeType("ImmutableArray", immArrayType);
 
   // TemplateStringsArray - for tagged template literals (immutable)
@@ -1196,7 +1227,8 @@ let createUnionType = (types: Array<Type>): Type => {
 
 /**
  * Extract the element type from an iterable type for for-in loops.
- * Handles Array<T>, FixedArray<T>, and Sequence<T> (by name + type arguments).
+ * Checks if the type implements Iterable<T> by identity-based comparison
+ * against the prelude Iterable interface.
  * Reports an error if the type is not iterable.
  */
 let getElementType = (
@@ -1212,7 +1244,7 @@ let getElementType = (
       return getElementTypeFromClass(ctx, ct, iterableExpr);
     }
     case InterfaceType as it: {
-      let elemType = getSequenceElementType(it);
+      let elemType = findIterableInterface(ctx, it);
       if (elemType != null) {
         return elemType as Type;
       }
@@ -1243,21 +1275,11 @@ let getElementTypeFromClass = (
   ct: ClassType,
   iterableExpr: Expression
 ): Type => {
-  let name = ct.name;
-  if (name == "Array" || name == "FixedArray" || name == "ImmutableArray") {
-    if (ct.typeArguments != null) {
-      let args = ct.typeArguments as Array<Type>;
-      if (args.length > 0) {
-        return args[0];
-      }
-    }
-    return new UnknownType();
-  }
-  // Check if the class implements Sequence<T> (walk implementsList).
+  // Check if the class implements Iterable<T> (walk implementsList).
   var i = 0;
   while (i < ct.implementsList.length) {
     let iface = ct.implementsList[i];
-    let elemType = getSequenceElementType(iface);
+    let elemType = findIterableInterface(ctx, iface);
     if (elemType != null) {
       let result = elemType as Type;
       return substituteTypeParams(ct.typeParameters, ct.typeArguments, result);
@@ -1277,33 +1299,39 @@ let getElementTypeFromClass = (
 };
 
 /**
- * Check if an interface type is Sequence<T> or extends Sequence<T>.
+ * Check if an interface type is Iterable<T> or extends Iterable<T>.
+ * Uses identity-based comparison against the prelude Iterable type.
  * Returns the element type T if found, null otherwise.
  */
-let getSequenceElementType = (iface: InterfaceType): Type | null => {
-  let name = iface.name;
-  let sourceName = if (iface.genericSource != null) {
-    (iface.genericSource as InterfaceType).name
-  } else {
-    name
-  };
-  if (sourceName == "Sequence" || sourceName == "MutableSequence" || sourceName == "Iterable") {
-    if (iface.typeArguments != null) {
-      let args = iface.typeArguments as Array<Type>;
-      if (args.length > 0) {
-        return args[0];
+let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | null => {
+  let prelude = ctx.resolvePreludeType("Iterable");
+  if (prelude == null) { return null; }
+  match (prelude as Type) {
+    case InterfaceType as iterableType: {
+      // Compare by type id — instantiateInterfaceType preserves the source id.
+      let sourceId = if (iface.genericSource != null) {
+        (iface.genericSource as InterfaceType).id
+      } else {
+        iface.id
+      };
+      if (sourceId == iterableType.id) {
+        if (iface.typeArguments != null) {
+          let args = iface.typeArguments as Array<Type>;
+          if (args.length > 0) { return args[0]; }
+        }
+        return null;
       }
+      // Walk extends list.
+      var i = 0;
+      while (i < iface.extendsList.length) {
+        let result = findIterableInterface(ctx, iface.extendsList[i]);
+        if (result != null) { return result; }
+        i += 1;
+      }
+      return null;
     }
-    return null;
+    case _: { return null; }
   }
-  // Walk extends list.
-  var i = 0;
-  while (i < iface.extendsList.length) {
-    let result = getSequenceElementType(iface.extendsList[i]);
-    if (result != null) { return result; }
-    i += 1;
-  }
-  return null;
 };
 
 /**
@@ -1488,7 +1516,7 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
       // Box<T> against Box<i32> → infer T = i32.
       match (argType) {
         case ClassType as at: {
-          if (pt.name == at.name && pt.typeArguments != null && at.typeArguments != null) {
+          if (pt.id == at.id && pt.typeArguments != null && at.typeArguments != null) {
             let ptArgs = pt.typeArguments as Array<Type>;
             let atArgs = at.typeArguments as Array<Type>;
             var i = 0;
@@ -1522,6 +1550,20 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
 /**
  * Check if `source` is assignable to `target`.
  */
+/**
+ * Check if a ClassType is a specific prelude type by identity (type id comparison).
+ * Works for both uninstantiated and instantiated generic types because
+ * instantiateClassType preserves the source type's id.
+ */
+let isPreludeClassType = (ctx: CheckerContext, ct: ClassType, preludeName: String): boolean => {
+  let prelude = ctx.resolvePreludeType(preludeName);
+  if (prelude == null) { return false; }
+  match (prelude as Type) {
+    case ClassType as pt: { return ct.id == pt.id; }
+    case _: { return false; }
+  }
+};
+
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
   // Same type (identity check via match).
   if (typesEqual(source, target)) { return true; }
@@ -1623,14 +1665,15 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case ArrayType {elementType}: {
       match (target) {
         case ClassType as tgtClass: {
-          if ((tgtClass.name == "Array" || tgtClass.name == "FixedArray") && tgtClass.typeArguments != null) {
+          let isArrayLike = isPreludeClassType(ctx, tgtClass, "Array") || isPreludeClassType(ctx, tgtClass, "FixedArray");
+          if (isArrayLike && tgtClass.typeArguments != null) {
             let tgtArgs = tgtClass.typeArguments as Array<Type>;
             if (tgtArgs.length > 0) {
               return isAssignableTo(ctx, elementType, tgtArgs[0]);
             }
           }
           // Also match uninstantiated Array/FixedArray (bare type)
-          if (tgtClass.name == "Array" || tgtClass.name == "FixedArray") {
+          if (isArrayLike) {
             return true;
           }
         }
@@ -3018,7 +3061,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       if (expectedType != null) {
         match (expectedType as Type) {
           case ClassType as ct: {
-            if ((ct.name == "Array" || ct.name == "FixedArray") && ct.typeArguments != null) {
+            if ((isPreludeClassType(ctx, ct, "Array") || isPreludeClassType(ctx, ct, "FixedArray")) && ct.typeArguments != null) {
               return expectedType as Type;
             }
           }
