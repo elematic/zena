@@ -113,7 +113,9 @@ tests/language/semantics/
 │   ├── let-reassignment-rejected.zena          [done] — let x = 1; x = 2; (error)
 │   ├── infer-from-function-call.zena           [done]
 │   ├── infer-from-string.zena                  [done]
-│   └── infer-from-boolean.zena                 [done]
+│   ├── infer-from-boolean.zena                 [done]
+│   ├── destructure-record.zena                 [ts] — smoke: let {x, y} = rec; x, y have correct types
+│   └── destructure-tuple.zena                  [ts] — smoke: let (a, b) = tup; a, b have correct types
 │
 ├── operators/
 │   ├── arithmetic-i32.zena                     [done]
@@ -141,7 +143,7 @@ tests/language/semantics/
 │   ├── is-operator.zena                        [done] — is with subclass, union, nullable
 │   ├── null-coalescing.zena                    [done] — ?? removes null, chained
 │   ├── nullish-unnecessary.zena                [done] — ?? and ??= on non-nullable warns
-│   ├── null-comparison.zena                     [done]
+│   ├── null-comparison.zena                    [done]
 │   ├── string-concat.zena                      [done]
 │   └── string-concat-type-error.zena           [done]
 │
@@ -173,28 +175,68 @@ tests/language/semantics/
 │       ├── param-mismatch.zena                 [done] (function-type-param-mismatch.zena)
 │       ├── return-mismatch.zena                [done] (function-type-return-mismatch.zena)
 │       └── union-dedup.zena                    [done] (union-dedup-function.zena)
+│   ├── destructure-param-record.zena           [ts] — smoke: ({x, y}: {x: i32, y: i32}) param destructure
+│   └── destructure-param-tuple.zena            [ts] — smoke: ((a, b): (i32, String)) param destructure
 │
 ├── control-flow/
-│   ├── break-outside-loop.zena                 [done]
-│   ├── continue-outside-loop.zena              [done]
-│   ├── for-loop.zena                           [done]
-│   ├── non-boolean-condition.zena              [done]
-│   ├── while-loop.zena                         [done]
-│   ├── if-condition-type.zena                  [new] — if condition must be boolean
-│   ├── block-scope.zena                        [ts] block-scope_test — var not visible outside block
-│   ├── nested-block-scope.zena                 [ts] block-scope_test
-│   └── block-scope-shadowing.zena              [ts] block-scope_test
+│   ├── break-outside-loop.zena                 [done] — break outside loop errors
+│   ├── continue-outside-loop.zena              [done] — continue outside loop errors
+│   ├── if/
+│   │   ├── non-boolean-condition.zena          [done] — non-boolean if condition errors
+│   │   ├── if-let.zena                         [done] — if-let with class name pattern
+│   │   ├── if-let-class-pattern.zena           [done] — if-let binds identifier to matched value
+│   │   ├── if-let-record-pattern.zena          [done] — if-let with record destructure
+│   │   ├── if-let-tuple-pattern.zena           [done] — if-let with tuple destructure
+│   │   ├── null-check.zena                     [done] — !== null / != null / null !== narrow to non-null
+│   │   ├── null-check-else.zena                [done] — else of !== null narrows to null
+│   │   ├── nested-null-check.zena              [done] — nested null checks narrow independently
+│   │   ├── null-guard-narrowing.zena           [done] — null guard + early return narrows after
+│   │   ├── null-assign-narrowing.zena          [done] — if (x==null) x=v and x ??= v narrow after
+│   │   ├── logical-and-narrowing.zena          [done] — x != null && x.val narrows right side
+│   │   ├── logical-or-narrowing.zena           [done] — else of (a == null || b == null) narrows both
+│   │   ├── is-expression.zena                  [done] — is narrows to subclass; else narrows other type
+│   │   ├── if-expression-narrowing.zena        [done] — if-expression branches narrow types
+│   │   ├── if-expr-throw.zena                  [done] — throw in branch collapses Never from result type
+│   │   ├── if-let-narrowing.zena               [done] — if-let fields have the variant's declared types
+│   │   ├── field-narrowing.zena                [done] (skip: self-hosted) — immutable vs mutable field narrowing
+│   │   └── record-field-narrowing.zena         [done] — record fields narrow after null check
+│   ├── for/
+│   │   ├── for-loop.zena                       [done] — C-style for with var counter
+│   │   ├── for-in-loop.zena                    [done] — for-in with Array<i32>
+│   │   ├── for-in-iterator.zena                [done] (skip: self-hosted) — for-in on Iterator<T>
+│   │   └── for-in-destructure-map.zena         [done] (skip: self-hosted) — for-in with HashMap entry destructure
+│   ├── while/
+│   │   ├── while-loop.zena                     [done] — basic while loop
+│   │   ├── while-let.zena                      [done] — while (let Pattern = expr) loop
+│   │   ├── while-non-boolean-condition.zena    [done] — non-boolean while condition errors
+│   │   ├── while-loop-narrowing.zena           [done] — while (x != null) narrows body
+│   │   └── while-let-narrowing.zena            [done] — while-let body has variant field types
+│   └── match/
+│       ├── exhaustive-boolean.zena             [done] — match true/false covers boolean
+│       ├── non-exhaustive-boolean.zena         [done] — missing false case errors
+│       ├── exhaustive-literal-union.zena       [done] — match all members of string literal union
+│       ├── non-exhaustive-literal-union.zena   [done] — missing literal case errors
+│       ├── exhaustive-sealed.zena              [done] (in sealed-classes/)
+│       ├── non-exhaustive-error.zena           [done] (in sealed-classes/)
+│       ├── wildcard-catches-all.zena           [done] (in sealed-classes/)
+│       ├── unreachable-case.zena               [done] — case after wildcard is unreachable
+│       ├── guard-not-exhaustive.zena           [done] — guard makes case non-exhaustive
+│       ├── match-narrowing.zena                [done] — match case body binds destructured fields
+│       ├── record-pattern-smoke.zena           [done] — smoke: case {x, y}: fields have correct types
+│       └── tuple-pattern-smoke.zena            [done] — smoke: case (n, _): element has correct type
+│
+├── scoping/
+│   ├── block-scope.zena                        [done] — var not visible outside block
+│   ├── nested-block-scope.zena                 [done] — nested block var not visible in outer
+│   └── block-scope-shadowing.zena              [done] — inner block can shadow outer var
 │
 ├── if-expression/
-│   ├── basic.zena                              [ts] if-expression_test — if/else returns union
 │   ├── same-type-branches.zena                [done] — both branches same type → that type
 │   ├── different-type-branches.zena            [done] — different types → union
 │   ├── void-if-no-else.zena                    [ts] — if without else → void
 │   ├── nested.zena                             [done] — nested if-expression
 │   ├── with-block.zena                         [done] — if { ... } else { ... } expression
-│   ├── type-error-condition.zena               [done] — non-bool condition in if expr (non-boolean-condition.zena)
-│   ├── if-let-basic.zena                       [done] — covered by control-flow/if-let*.zena
-│   └── if-let-narrowing.zena                   [done] — covered by control-flow/if-let*.zena
+│   └── type-error-condition.zena               [done] — non-bool condition (non-boolean-condition.zena)
 │
 ├── classes/
 │   ├── basic/
@@ -358,49 +400,45 @@ tests/language/semantics/
 │       ├── unreachable-after-throw.zena        [ts] never_test
 │       └── never-in-union.zena                 [ts] — never | i32 simplifies to i32
 │
-├── type-narrowing/
-│   ├── null-check.zena                         [done]
-│   ├── null-check-else.zena                    [done]
-│   ├── nested-null-check.zena                  [done]
-│   ├── is-expression.zena                      [done]
-│   ├── field-narrowing.zena                    [done] — immutable vs mutable field narrowing
-│   ├── record-field-narrowing.zena             [done] — record fields narrow after null check
-│   ├── if-let-narrowing.zena                   [new] — if (let Some {val} = opt) { ... }
-│   └── match-narrowing.zena                    [new] — type narrowed inside match case
-│
-├── pattern-matching/
-│   ├── exhaustive-sealed.zena                  [done] (in sealed-classes/)
-│   ├── exhaustive-boolean.zena                 [ts] match_exhaustiveness_test
-│   ├── exhaustive-literal-union.zena           [ts] — match on "a" | "b" union
-│   ├── non-exhaustive-error.zena               [done] (in sealed-classes/)
-│   ├── unreachable-case.zena                   [ts] match_exhaustiveness_test
-│   ├── wildcard-catches-all.zena               [done] (in sealed-classes/)
-│   ├── guard-not-exhaustive.zena               [ts] — guard makes case non-exhaustive
-│   ├── class-pattern-binding.zena              [ts] — case Foo {x, y}: use x, y
-│   ├── record-pattern-binding.zena             [ts] — case {x, y}: use x, y
-│   ├── tuple-pattern-binding.zena              [ts] — case (a, b): use a, b
-│   ├── as-pattern-binding.zena                 [done]
-│   ├── or-pattern.zena                         [ts] — case A {} | B {}: ...
-│   ├── and-pattern.zena                        [ts] — case Foo {} & Bar {}: ... (intersection)
-│   ├── literal-pattern.zena                    [ts] refutable-pattern_test
-│   └── refutable-pattern/
-│       ├── literal-in-let.zena                 [ts] refutable-pattern_test — let 42 = x (error)
-│       ├── class-in-let.zena                   [ts] — let Some {value} = x (error)
-│       └── or-in-let.zena                      [ts] — let A {} | B {} = x (error)
-│
 ├── destructuring/
-│   ├── record-basic.zena                       [done]
-│   ├── record-with-rename.zena                 [done]
-│   ├── record-with-default.zena                [done]
-│   ├── record-nested.zena                      [done]
-│   ├── record-missing-property.zena            [done]
-│   ├── record-type-mismatch.zena               [done]
-│   ├── tuple-basic.zena                        [done]
-│   ├── tuple-nested.zena                       [done]
-│   ├── tuple-length-mismatch.zena              [done]
-│   ├── optional-field-default.zena             [done]
-│   ├── optional-field-no-default.zena          [done]
-│   └── invalid-pattern.zena                    [ts] destructuring_test — destructure non-record
+│   │
+│   │   Strategy: comprehensive pattern-type coverage here; variables/, functions/,
+│   │   and control-flow/match/ carry smoke tests to verify each declaration site
+│   │   delegates to the same pattern-parsing logic.
+│   │
+│   ├── record/
+│   │   ├── basic.zena                          [done] (record-basic.zena)
+│   │   ├── rename.zena                         [done] (record-with-rename.zena)
+│   │   ├── default.zena                        [done] (record-with-default.zena)
+│   │   ├── nested.zena                         [done] (record-nested.zena)
+│   │   ├── missing-property.zena               [done] (record-missing-property.zena)
+│   │   ├── type-mismatch.zena                  [done] (record-type-mismatch.zena)
+│   │   ├── optional-field-with-default.zena    [done] (optional-field-default.zena)
+│   │   └── optional-field-no-default.zena      [done] (optional-field-no-default.zena)
+│   │
+│   ├── tuple/
+│   │   ├── basic.zena                          [done] (tuple-basic.zena)
+│   │   ├── nested.zena                         [done] (tuple-nested.zena)
+│   │   ├── length-mismatch.zena                [done] (tuple-length-mismatch.zena)
+│   │   └── inline-never-union.zena             [done] (skip: self-hosted) — inline tuple Never union
+│   │
+│   ├── class/
+│   │   ├── basic.zena                          [ts] — class pattern binds fields to their declared types
+│   │   ├── nested-field.zena                   [ts] — nested class pattern
+│   │   ├── refutable-in-let.zena               [ts] — let Some {value} = x is refutable (error)
+│   │   └── refutable-in-for.zena               [ts] — for (let Some {v} in arr) is refutable (error)
+│   │
+│   ├── literal/
+│   │   ├── match-arm.zena                      [ts] refutable-pattern_test — literal in match arm ok
+│   │   └── refutable-in-let.zena               [ts] refutable-pattern_test — let 42 = x is refutable (error)
+│   │
+│   ├── composite/
+│   │   ├── or-pattern.zena                     [ts] — case A {} | B {}: ... binds to union type
+│   │   ├── and-pattern.zena                    [ts] — case Foo {} & Bar {}: ... binds to intersection
+│   │   └── or-refutable-in-let.zena            [ts] — let A {} | B {} = x is refutable (error)
+│   │
+│   └── as/
+│       └── binding.zena                        [done] (as-pattern-binding.zena) — p as x binds x
 │
 ├── null-coalescing/
 │   ├── basic.zena                              [done]
@@ -505,34 +543,34 @@ tests/language/semantics/
 
 ## Test Counts Summary
 
-| Group                      | Done   | Port from TS | New     | Needs @type | Total    |
-| -------------------------- | ------ | ------------ | ------- | ----------- | -------- |
-| **Variables**              | 11     | 0            | 0       | 0           | 11       |
-| **Operators**              | 23     | 0            | 0       | 0           | 23       |
-| **Functions**              | 22     | 0            | 0       | 0           | 22       |
-| **Control Flow**           | 5      | 3            | 1       | 0           | 9        |
-| **If Expressions**         | 8      | 0            | 0       | 0           | 8        |
-| **Classes**                | 2      | ~24          | 1       | 0           | ~27      |
-| **Case Classes**           | 11     | 0            | 2       | 0           | 13       |
-| **Sealed Classes**         | 19     | 0            | 1       | 0           | 20       |
-| **Interfaces**             | 0      | ~10          | 0       | 0           | ~10      |
-| **Generics**               | 0      | ~12          | 0       | 0           | ~12      |
-| **Type System**            | 2      | ~30          | 1       | 0           | ~33      |
-| **Type Narrowing**         | 0      | 3            | 3       | 0           | 6        |
-| **Pattern Matching**       | 1      | ~12          | 0       | 0           | ~13      |
-| **Destructuring**          | 0      | ~9           | 0       | 0           | ~9       |
-| **Null Coal. / Opt Chain** | 9      | 0            | 2       | 0           | 11       |
-| **Mixins**                 | 0      | ~10          | 0       | 0           | ~10      |
-| **Enums**                  | 0      | 0            | 5       | 0           | 5        |
-| **Arrays**                 | 0      | ~7           | 0       | 0           | ~7       |
-| **Extensions**             | 0      | 4            | 0       | 0           | 4        |
-| **Throw/Try**              | 0      | 5            | 0       | 0           | 5        |
-| **This Type**              | 0      | 5            | 0       | 0           | 5        |
-| **Shadowing**              | 0      | 1            | 1       | 0           | 2        |
-| **Template Strings**       | 4      | 0            | 0       | 0           | 4        |
-| **Misc**                   | 4      | 2            | 0       | 0           | 6        |
-| **Type Inference**         | 0      | 0            | 0       | 12          | 12       |
-| **TOTAL**                  | **95** | **~150**     | **~20** | **12**      | **~277** |
+| Group                      | Done    | Port from TS | New     | Needs @type | Total    |
+| -------------------------- | ------- | ------------ | ------- | ----------- | -------- |
+| **Variables**              | 11      | 0            | 0       | 0           | 11       |
+| **Operators**              | 23      | 0            | 0       | 0           | 23       |
+| **Functions**              | 22      | 0            | 0       | 0           | 22       |
+| **Control Flow**           | 30      | 0            | 1       | 0           | 31       |
+| **Scoping**                | 3       | 0            | 0       | 0           | 3        |
+| **If Expressions**         | 5       | 1            | 0       | 0           | 6        |
+| **Classes**                | 2       | ~24          | 1       | 0           | ~27      |
+| **Case Classes**           | 11      | 0            | 2       | 0           | 13       |
+| **Sealed Classes**         | 19      | 0            | 1       | 0           | 20       |
+| **Interfaces**             | 0       | ~10          | 0       | 0           | ~10      |
+| **Generics**               | 0       | ~12          | 0       | 0           | ~12      |
+| **Type System**            | 2       | ~30          | 1       | 0           | ~33      |
+| **Pattern Matching**       | 1       | ~12          | 0       | 0           | ~13      |
+| **Destructuring**          | 0       | ~9           | 0       | 0           | ~9       |
+| **Null Coal. / Opt Chain** | 9       | 0            | 2       | 0           | 11       |
+| **Mixins**                 | 0       | ~10          | 0       | 0           | ~10      |
+| **Enums**                  | 0       | 0            | 5       | 0           | 5        |
+| **Arrays**                 | 0       | ~7           | 0       | 0           | ~7       |
+| **Extensions**             | 0       | 4            | 0       | 0           | 4        |
+| **Throw/Try**              | 0       | 5            | 0       | 0           | 5        |
+| **This Type**              | 0       | 5            | 0       | 0           | 5        |
+| **Shadowing**              | 0       | 1            | 1       | 0           | 2        |
+| **Template Strings**       | 4       | 0            | 0       | 0           | 4        |
+| **Misc**                   | 4       | 2            | 0       | 0           | 6        |
+| **Type Inference**         | 0       | 0            | 0       | 12          | 12       |
+| **TOTAL**                  | **138** | **~115**     | **~14** | **12**      | **~279** |
 
 ## Porting Priority
 

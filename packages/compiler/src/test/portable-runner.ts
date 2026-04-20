@@ -231,7 +231,14 @@ async function runTestFile(filePath: string): Promise<void> {
   if (mode === 'parse') {
     await runParseTest(filePath, content, directives, errors, relPath);
   } else if (mode === 'check') {
-    await runCheckTest(filePath, content, directives, errors, warnings, relPath);
+    await runCheckTest(
+      filePath,
+      content,
+      directives,
+      errors,
+      warnings,
+      relPath,
+    );
   } else if (mode === 'run') {
     await runExecutionTest(filePath, content, directives, relPath);
   } else {

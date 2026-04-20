@@ -907,8 +907,37 @@ export class Parser {
       return this.#parseParenTuplePattern(startToken, false);
     }
     
-    // Identifier pattern (most common case)
-    return this.#parseIdentifierPattern();
+    // Identifier or class pattern: Identifier or ClassName { fields }
+    if (this.#isIdentifier()) {
+      let ident = this.#parseIdentifier();
+
+      // Class pattern: ClassName { ... }
+      if (this.#check(TokenType.LBrace)) {
+        this.#advance();
+        let properties = new Array<BindingProperty>(4);
+        while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+          let propStart = this.#peek();
+          let name = this.#parseIdentifier();
+          var value: Node = new IdentifierPattern(name.name, name.loc);
+          if (this.#match(TokenType.Colon)) {
+            value = this.#parsePattern();
+          } else if (this.#match(TokenType.As)) {
+            let newName = this.#parseIdentifier();
+            value = new IdentifierPattern(newName.name, newName.loc);
+          }
+          properties.push(new BindingProperty(name, value, this.#makeLocation(propStart)));
+          if (!this.#check(TokenType.RBrace)) {
+            this.#consume(TokenType.Comma, "Expected ',' after property");
+          }
+        }
+        this.#consume(TokenType.RBrace, "Expected '}' after class pattern");
+        return new ClassPattern(ident, properties, this.#makeLocation(startToken));
+      }
+
+      return new IdentifierPattern(ident.name, ident.loc);
+    }
+
+    throw this.#error("Expected pattern");
   }
   
   #parseIdentifierPattern(): IdentifierPattern {

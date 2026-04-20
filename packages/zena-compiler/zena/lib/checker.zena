@@ -5562,6 +5562,30 @@ let collectLeafVariants = (ct: ClassType): Array<ClassType> => {
 };
 
 /**
+ * Returns true if a type has a finite, enumerable set of values that can be
+ * fully covered by match patterns (sealed classes, booleans, literal types).
+ */
+let isFiniteType = (t: Type): boolean => {
+  match (t) {
+    case BooleanType: true
+    case BoolLiteralType: true
+    case StringLiteralType: true
+    case NullType: true
+    case ClassType as ct: ct.isSealed
+    case UnionT {types}: {
+      var allFinite = true;
+      var i = 0;
+      while (i < types.length) {
+        if (!isFiniteType(types[i])) { allFinite = false; }
+        i += 1;
+      }
+      allFinite
+    }
+    case _: false
+  }
+};
+
+/**
  * Subtract a pattern from a type, returning the remaining uncovered type.
  * Returns NeverType when the pattern fully covers the type.
  */
@@ -5618,6 +5642,32 @@ let subtractPatternFromType = (ctx: CheckerContext, t: Type, pattern: Node): Typ
     }
     case AsPattern as ap: {
       return subtractPatternFromType(ctx, t, ap.pattern);
+    }
+    case BooleanLiteral {value}: {
+      // Subtract the specific boolean literal from the remaining type.
+      let lit: Type = new BoolLiteralType(value);
+      match (t) {
+        case BooleanType: {
+          // BooleanType = true | false. Subtracting one literal leaves the other.
+          if (value) {
+            return new BoolLiteralType(false);
+          } else {
+            return new BoolLiteralType(true);
+          }
+        }
+        case _: {
+          return subtractTypeFromUnion(t, lit);
+        }
+      }
+    }
+    case StringLiteral {value}: {
+      // Subtract the specific string literal from the remaining type.
+      let lit: Type = new StringLiteralType(value);
+      return subtractTypeFromUnion(t, lit);
+    }
+    case NumberLiteral {}: {
+      // Number literal patterns: no subtraction (no numeric literal types yet).
+      return t;
     }
     case _: {
       // Literal patterns, etc. — don't subtract from sealed types for now.
@@ -5757,6 +5807,15 @@ let checkMatchExpr = (
   while (i < cases.length) {
     let matchCase = cases[i];
 
+    // Check for unreachable case: if remaining type is Never, nothing can reach this case.
+    if (remainingType is NeverType) {
+      ctx.error(
+        "Unreachable case.",
+        DiagnosticCode.TypeMismatch,
+        matchCase.loc
+      );
+    }
+
     // Enter a new scope for pattern bindings.
     ctx.enterScope();
 
@@ -5788,15 +5847,11 @@ let checkMatchExpr = (
     i += 1;
   }
 
-  // Check exhaustiveness: if the scrutinee is a sealed class and
-  // remainingType is not Never, report non-exhaustive match.
-  let isSealed = match (scrutineeType) {
-    case ClassType as ct: ct.isSealed
-    case _: false
-  };
-  if (isSealed && !(remainingType is NeverType)) {
+  // Check exhaustiveness: if the scrutinee is a finite type (sealed class,
+  // boolean, literal union, etc.) and remainingType is not Never, report error.
+  if (isFiniteType(scrutineeType) && !(remainingType is NeverType)) {
     ctx.error(
-      "Non-exhaustive match. Not all variants are covered.",
+      "Non-exhaustive match. Not all cases are covered.",
       DiagnosticCode.TypeMismatch,
       loc
     );
