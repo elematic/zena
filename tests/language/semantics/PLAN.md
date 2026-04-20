@@ -114,8 +114,8 @@ tests/language/semantics/
 │   ├── infer-from-function-call.zena           [done]
 │   ├── infer-from-string.zena                  [done]
 │   ├── infer-from-boolean.zena                 [done]
-│   ├── destructure-record.zena                 [ts] — smoke: let {x, y} = rec; x, y have correct types
-│   └── destructure-tuple.zena                  [ts] — smoke: let (a, b) = tup; a, b have correct types
+│   ├── destructure-record.zena                 [done] — smoke: let {x, y} = rec; x, y have correct types
+│   └── destructure-tuple.zena                  [done] — smoke: let (a, b) = tup; a, b have correct types
 │
 ├── operators/
 │   ├── arithmetic-i32.zena                     [done]
@@ -175,8 +175,8 @@ tests/language/semantics/
 │       ├── param-mismatch.zena                 [done] (function-type-param-mismatch.zena)
 │       ├── return-mismatch.zena                [done] (function-type-return-mismatch.zena)
 │       └── union-dedup.zena                    [done] (union-dedup-function.zena)
-│   ├── destructure-param-record.zena           [ts] — smoke: ({x, y}: {x: i32, y: i32}) param destructure
-│   └── destructure-param-tuple.zena            [ts] — smoke: ((a, b): (i32, String)) param destructure
+│   ├── destructure-param-record.zena           [done] — smoke: ({x, y}: {x: i32, y: i32}) param destructure
+│   └── destructure-param-tuple.zena            [done] — smoke: ((a, b): (i32, String)) param destructure
 │
 ├── control-flow/
 │   ├── break-outside-loop.zena                 [done] — break outside loop errors
