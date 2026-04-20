@@ -255,6 +255,8 @@ tests/language/semantics/
 │   │   ├── field-init-order.zena               [done]
 │   │   ├── field-init-required.zena            [done]
 │   │   ├── field-type-inference.zena           [done]
+│   │   ├── optional-field-primitive.zena       [done]
+│   │   ├── optional-field-valid.zena           [done]
 │   │   └── private-field-access.zena           [done]
 │   │
 │   ├── inheritance/
