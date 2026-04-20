@@ -2992,6 +2992,38 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // Narrows the binding to non-null afterward.
     if (operator != null && (operator as String) == "??") {
       let leftType = checkExpression(ctx, left, null);
+
+      // Warn if LHS is not nullable (??= is a no-op).
+      var leftIsNullable = false;
+      var leftIsAlwaysNull = false;
+      match (leftType) {
+        case NullType: { leftIsNullable = true; leftIsAlwaysNull = true; }
+        case UnionT as u: {
+          let members = u.types;
+          var ni = 0;
+          while (ni < members.length) {
+            if (members[ni] is NullType) { leftIsNullable = true; }
+            ni += 1;
+          }
+        }
+        case _: {}
+      }
+      if (!leftIsNullable) {
+        ctx.warning(
+          "Left operand of '??=' is not nullable and will always be returned.",
+          DiagnosticCode.UnnecessaryNullish,
+          loc
+        );
+        return leftType;
+      }
+      if (leftIsAlwaysNull) {
+        ctx.warning(
+          "Left operand of '??=' is always null and will never be returned.",
+          DiagnosticCode.UnnecessaryNullish,
+          loc
+        );
+      }
+
       let nonNullType = subtractNullFromType(leftType);
       let rightType = checkExpression(ctx, value, nonNullType);
       if (!isAssignableTo(ctx, rightType, nonNullType)) {
@@ -5298,8 +5330,8 @@ let checkBinaryExpression = (
     if (isNumericType(leftType) && !isNumericType(rightType)) {
       // Right wasn't numeric — error.
       ctx.error(
-        "Operator '" + operator + "' cannot be applied to '" +
-        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        "Type mismatch: cannot apply operator '" + operator + "' to " +
+        typeToString(leftType) + " and " + typeToString(rightType),
         DiagnosticCode.InvalidOperator,
         loc
       );
@@ -5335,8 +5367,8 @@ let checkBinaryExpression = (
         case _: {}
       }
       ctx.error(
-        "Operator '" + operator + "' cannot be applied to '" +
-        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        "Type mismatch: cannot apply operator '" + operator + "' to " +
+        typeToString(leftType) + " and " + typeToString(rightType),
         DiagnosticCode.InvalidOperator,
         loc
       );
@@ -5346,12 +5378,19 @@ let checkBinaryExpression = (
     let promoted = promoteNumeric(leftType, rightType);
     if (promoted == null) {
       ctx.error(
-        "Operator '" + operator + "' cannot be applied to '" +
-        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        "Type mismatch: cannot apply operator '" + operator + "' to " +
+        typeToString(leftType) + " and " + typeToString(rightType),
         DiagnosticCode.InvalidOperator,
         loc
       );
       return new UnknownType();
+    }
+    // Division always returns a float type.
+    if (operator == "/") {
+      if (promoted is F64Type || promoted is I64Type || promoted is U64Type) {
+        return new F64Type();
+      }
+      return new F32Type();
     }
     return promoted as Type;
   }
@@ -5365,11 +5404,22 @@ let checkBinaryExpression = (
 
     if (!isNumericType(leftType) || !isNumericType(rightType)) {
       ctx.error(
-        "Operator '" + operator + "' requires numeric types, got '" +
-        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        "Type mismatch: cannot apply operator '" + operator + "' to " +
+        typeToString(leftType) + " and " + typeToString(rightType),
         DiagnosticCode.InvalidOperator,
         loc
       );
+    } else {
+      // Reject mixed signedness (e.g., u32 < i32)
+      let promoted = promoteNumeric(leftType, rightType);
+      if (promoted == null) {
+        ctx.error(
+          "Type mismatch: cannot apply operator '" + operator + "' to " +
+          typeToString(leftType) + " and " + typeToString(rightType),
+          DiagnosticCode.InvalidOperator,
+          loc
+        );
+      }
     }
     return new BooleanType();
   }
@@ -5412,7 +5462,7 @@ let checkBinaryExpression = (
 
     if (!isIntegerType(leftType) || !isIntegerType(rightType)) {
       ctx.error(
-        "Bitwise operator '" + operator + "' requires integer types, got '" +
+        "Operator '" + operator + "' cannot be applied to type '" +
         typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
         DiagnosticCode.InvalidOperator,
         loc
@@ -5453,10 +5503,20 @@ let checkBinaryExpression = (
       }
       case NullType: {
         // Left is just null, result is right type.
+        ctx.warning(
+          "Left operand of '??' is always null and will never be returned.",
+          DiagnosticCode.UnnecessaryNullish,
+          loc
+        );
         return rightType;
       }
       case _: {
         // Left is not nullable, ?? is redundant but valid. Return left type.
+        ctx.warning(
+          "Left operand of '??' is not nullable and will always be returned.",
+          DiagnosticCode.UnnecessaryNullish,
+          loc
+        );
         return leftType;
       }
     }

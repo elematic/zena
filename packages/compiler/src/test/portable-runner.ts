@@ -139,6 +139,7 @@ function getAllTests(dir: string): {directive: string[]; zenaTest: string[]} {
 function parseDirectives(content: string): {
   directives: TestDirectives;
   errors: ExpectedError[];
+  warnings: ExpectedError[];
 } {
   const directives: TestDirectives = {};
   const lines = content.split('\n');
@@ -151,6 +152,8 @@ function parseDirectives(content: string): {
 
   // Parse inline errors: // @error: regex
   const errors: ExpectedError[] = [];
+  // Parse inline warnings: // @warning: regex
+  const warnings: ExpectedError[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const errorMatch = line.match(/\/\/ @error: (.*)$/);
@@ -160,9 +163,16 @@ function parseDirectives(content: string): {
         regex: new RegExp(errorMatch[1]),
       });
     }
+    const warningMatch = line.match(/\/\/ @warning: (.*)$/);
+    if (warningMatch) {
+      warnings.push({
+        line: i + 1,
+        regex: new RegExp(warningMatch[1]),
+      });
+    }
   }
 
-  return {directives, errors};
+  return {directives, errors, warnings};
 }
 
 function stripLocation(obj: any): any {
@@ -200,7 +210,7 @@ function stripLocation(obj: any): any {
 
 async function runTestFile(filePath: string): Promise<void> {
   const content = readFileSync(filePath, 'utf-8');
-  const {directives, errors} = parseDirectives(content);
+  const {directives, errors, warnings} = parseDirectives(content);
 
   // Compute relative path from the correct base
   const relPath = filePath.startsWith(stdlibTestsDir)
@@ -221,7 +231,7 @@ async function runTestFile(filePath: string): Promise<void> {
   if (mode === 'parse') {
     await runParseTest(filePath, content, directives, errors, relPath);
   } else if (mode === 'check') {
-    await runCheckTest(filePath, content, directives, errors, relPath);
+    await runCheckTest(filePath, content, directives, errors, warnings, relPath);
   } else if (mode === 'run') {
     await runExecutionTest(filePath, content, directives, relPath);
   } else {
@@ -298,6 +308,7 @@ async function runCheckTest(
   content: string,
   directives: TestDirectives,
   expectedErrors: ExpectedError[],
+  expectedWarnings: ExpectedError[],
   relPath: string,
 ) {
   // Check if the test has imports - if so, use the full compiler
@@ -393,6 +404,22 @@ async function runCheckTest(
         .map((d) => formatDiagnostic(d, content))
         .join('\n');
       throw new Error(`Unexpected errors:\n${formatted}`);
+    }
+  }
+
+  // Match expected warnings
+  const warnings = diagnostics.filter(
+    (d) => d.severity === DiagnosticSeverity.Warning,
+  );
+  for (const expected of expectedWarnings) {
+    const found = warnings.find((d) => expected.regex.test(d.message));
+    if (!found) {
+      const formatted = warnings
+        .map((d) => formatDiagnostic(d, content))
+        .join('\n');
+      throw new Error(
+        `Expected warning matching ${expected.regex} on line ${expected.line}, but found none.\nActual warnings:\n${formatted || '(none)'}`,
+      );
     }
   }
 }

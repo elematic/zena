@@ -314,6 +314,55 @@ let parseExpectedErrors = (source: String): Array<ExpectedError> => {
 };
 
 /**
+ * Extract // @warning: <pattern> directives from source, returning
+ * the line number (1-based) and the pattern string for each.
+ */
+let parseExpectedWarnings = (source: String): Array<ExpectedError> => {
+  let warnings = new Array<ExpectedError>(4);
+  let marker = "// @warning: ";
+  var pos = 0;
+  var lineNum = 1;
+
+  while (pos < source.length) {
+    var eol = pos;
+    while (eol < source.length && source.sliceBytes(eol, eol + 1) != "\n") {
+      eol += 1;
+    }
+
+    let line = source.sliceBytes(pos, eol);
+    var mi = 0;
+    var found = false;
+    while (mi <= line.length - marker.length) {
+      if (line.sliceBytes(mi, mi + marker.length) == marker) {
+        var patEnd = line.length;
+        while (patEnd > mi + marker.length) {
+          let ch = line.sliceBytes(patEnd - 1, patEnd);
+          if (ch == " " || ch == "\r") {
+            patEnd -= 1;
+          } else {
+            break;
+          }
+        }
+        let pattern = line.sliceBytes(mi + marker.length, patEnd);
+        warnings.push({ line: lineNum, pattern: pattern });
+        found = true;
+        break;
+      }
+      mi += 1;
+    }
+
+    if (eol < source.length) {
+      pos = eol + 1;
+    } else {
+      pos = eol;
+    }
+    lineNum += 1;
+  }
+
+  return warnings;
+};
+
+/**
  * Check if a diagnostic message contains a pattern string (case-sensitive).
  */
 let messageContains = (message: String, pattern: String): boolean => {
@@ -403,6 +452,50 @@ let runSemanticCheck = (source: String, filePath: String): void => {
     throw new Error(
       "Unexpected errors:\n" + errStr + "\nFile: " + filePath
     );
+  }
+
+  // Match expected warnings against actual diagnostics.
+  let expectedWarnings = parseExpectedWarnings(source);
+  let warnings = new Array<Diagnostic>(4);
+  var wi = 0;
+  while (wi < diagnostics.length) {
+    match (diagnostics[wi].severity) {
+      case DiagnosticSeverity.Warning: {
+        warnings.push(diagnostics[wi]);
+      }
+      case _: {}
+    }
+    wi += 1;
+  }
+
+  var wxi = 0;
+  while (wxi < expectedWarnings.length) {
+    let expected = expectedWarnings[wxi];
+    var wMatched = false;
+    var wdi = 0;
+    while (wdi < warnings.length) {
+      if (messageContains(warnings[wdi].message, expected.pattern)) {
+        wMatched = true;
+        break;
+      }
+      wdi += 1;
+    }
+    if (!wMatched) {
+      var actualWarnStr = "(none)";
+      if (warnings.length > 0) {
+        actualWarnStr = "";
+        var wai = 0;
+        while (wai < warnings.length) {
+          if (wai > 0) { actualWarnStr = actualWarnStr + "\n"; }
+          actualWarnStr = actualWarnStr + formatDiagnostic(warnings[wai], source);
+          wai += 1;
+        }
+      }
+      throw new Error(
+        `Expected warning matching '${expected.pattern}' on line ${expected.line} but found none.\nActual warnings:\n${actualWarnStr}\nFile: ${filePath}`
+      );
+    }
+    wxi += 1;
   }
 };
 

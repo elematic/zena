@@ -308,15 +308,26 @@ export let promoteNumeric = (left: Type, right: Type): Type | null => {
   }
   // u64 dominates integers
   if (left is U64Type || right is U64Type) {
-    return new U64Type();
+    // Reject mixed signedness: u64 + i32/i64 is an error
+    if (left is U64Type && right is U64Type) {
+      return new U64Type();
+    }
+    return null;
   }
   // i64 dominates remaining integers
   if (left is I64Type || right is I64Type) {
     return new I64Type();
   }
-  // u32 + i32 → i32
-  if (isIntegerType(left) && isIntegerType(right)) {
+  // Same signedness 32-bit integers
+  if (left is U32Type && right is U32Type) {
+    return new U32Type();
+  }
+  if (left is I32Type && right is I32Type) {
     return new I32Type();
+  }
+  // Mixed signedness i32/u32 — reject
+  if (isIntegerType(left) && isIntegerType(right)) {
+    return null;
   }
   return null;
 };

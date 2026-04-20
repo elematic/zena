@@ -2080,12 +2080,19 @@ function checkNullishAssignment(
   valueType: Type,
 ): Type {
   if (!isNullableType(targetType)) {
-    ctx.diagnostics.reportError(
-      `Left side of '??=' must be a nullable type, got '${typeToString(targetType)}'.`,
-      DiagnosticCode.TypeMismatch,
+    ctx.diagnostics.reportWarning(
+      `Left operand of '??=' is not nullable and will always be returned.`,
+      DiagnosticCode.UnnecessaryNullish,
       ctx.getLocation(expr.loc),
     );
     return targetType;
+  }
+  if (targetType.kind === TypeKind.Null) {
+    ctx.diagnostics.reportWarning(
+      `Left operand of '??=' is always null and will never be returned.`,
+      DiagnosticCode.UnnecessaryNullish,
+      ctx.getLocation(expr.loc),
+    );
   }
   const nonNullTarget = getNonNullableType(targetType, ctx);
   if (!isAssignableTo(ctx, valueType, nonNullTarget)) {
@@ -2590,9 +2597,21 @@ function checkBinaryExpression(
     right = checkExpression(ctx, expr.right);
 
     if (!isNullableType(left)) {
-      // Left is not nullable, ?? is a no-op, result is left type
-      // This could be a warning in the future
+      ctx.diagnostics.reportWarning(
+        `Left operand of '??' is not nullable and will always be returned.`,
+        DiagnosticCode.UnnecessaryNullish,
+        ctx.getLocation(expr.loc),
+      );
       return left;
+    }
+
+    if (left.kind === TypeKind.Null) {
+      ctx.diagnostics.reportWarning(
+        `Left operand of '??' is always null and will never be returned.`,
+        DiagnosticCode.UnnecessaryNullish,
+        ctx.getLocation(expr.loc),
+      );
+      return right;
     }
 
     // Result is non-null left type | right type

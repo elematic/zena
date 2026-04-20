@@ -12,6 +12,7 @@ self-hosted checker can run against.
 - File names are `kebab-case` with underscores for compound names.
 - Directories group related constructs into suites.
 - **Error tests** use `// @error: pattern` on the line that should produce an error.
+- **Warning tests** use `// @warning: pattern` on the line that should produce a warning.
 - **Positive tests** have no `// @error:` — they must produce zero errors.
 - Error patterns are **regex** in the bootstrap runner and **substring** in the
   self-hosted runner. Use simple substrings that work for both.
@@ -116,31 +117,33 @@ tests/language/semantics/
 │
 ├── operators/
 │   ├── arithmetic-i32.zena                     [done]
-│   ├── arithmetic-f64.zena                     [done]
+│   ├── arithmetic-f32.zena                     [done]
 │   ├── arithmetic-type-error.zena              [done]
 │   ├── bitwise.zena                            [done]
 │   ├── comparison.zena                         [done]
 │   ├── unary.zena                              [done]
 │   ├── mixed-arithmetic/
-│   │   ├── i32-f32-allowed.zena                [ts] mixed-arithmetic_test — f32 + i32 → f32
-│   │   ├── i32-f64-allowed.zena                [ts] mixed-arithmetic_test
-│   │   ├── i64-f64-allowed.zena                [ts] mixed-arithmetic_test
-│   │   ├── bitwise-mixed-rejected.zena         [ts] mixed-arithmetic_test — f32 & i32 error
-│   │   └── shift-mixed-rejected.zena           [ts] mixed-arithmetic_test
+│   │   ├── i32-f32-allowed.zena                [done] — f32 + i32 → f32, also comparison
+│   │   ├── comparison-allowed.zena             [done] — mixed i32/f32 comparison
+│   │   └── bitwise-mixed-rejected.zena         [done] — f32 & i32 error
 │   ├── u32/
-│   │   ├── basic-ops.zena                      [ts] u32_test — u32 arithmetic
-│   │   ├── comparison.zena                     [ts] u32_test
-│   │   ├── bitwise.zena                        [ts] u32_test
-│   │   ├── mixed-i32-rejected.zena             [ts] u32_test — u32 + i32 error
-│   │   └── cast.zena                           [ts] u32_test — u32 as i32
+│   │   ├── basic-ops.zena                      [done] — u32 arithmetic
+│   │   ├── comparison.zena                     [done]
+│   │   ├── bitwise.zena                        [done]
+│   │   ├── mixed-i32-rejected.zena             [done] — u32 + i32 error
+│   │   └── cast.zena                           [done] — u32 as i32
 │   ├── compound-assignment/
-│   │   ├── basic.zena                          [done] — x += 1
+│   │   ├── basic.zena                          [done] — +=, -=, *=, %=, /=
 │   │   ├── type-error.zena                     [done] — string += i32 error
 │   │   ├── string-concat.zena                  [done] — string += string
-│   │   └── immutable-rejected.zena             [done] — let x = 1; x += 1; error
+│   │   ├── immutable-rejected.zena             [done] — let x = 1; x += 1; error
+│   │   └── nullish-assign.zena                 [done] — ??= with narrowing
+│   ├── is-operator.zena                        [done] — is with subclass, union, nullable
+│   ├── null-coalescing.zena                    [done] — ?? removes null, chained
+│   ├── nullish-unnecessary.zena                [done] — ?? and ??= on non-nullable warns
 │   ├── null-comparison.zena                     [done]
-│   ├── string-concat.zena                      [ts] checker_test — String + String
-│   └── string-concat-type-error.zena           [ts] checker_test — String + i32 error
+│   ├── string-concat.zena                      [done]
+│   └── string-concat-type-error.zena           [done]
 │
 ├── functions/
 │   ├── basic-function.zena                     [done]
@@ -401,7 +404,7 @@ tests/language/semantics/
 │   ├── basic.zena                              [done]
 │   ├── chained.zena                            [done]
 │   ├── type-result.zena                        [new] — x ?? 0 where x: i32 | null → i32
-│   └── non-nullable-rejected.zena              [new] — x ?? 0 where x: i32 is warning/error
+│   └── non-nullable-warned.zena                [done] — covered by operators/nullish-unnecessary.zena
 │
 ├── optional-chaining/
 │   ├── member_null_result.zena                 [done]
@@ -503,7 +506,7 @@ tests/language/semantics/
 | Group                      | Done   | Port from TS | New     | Needs @type | Total    |
 | -------------------------- | ------ | ------------ | ------- | ----------- | -------- |
 | **Variables**              | 11     | 0            | 0       | 0           | 11       |
-| **Operators**              | 7      | ~12          | 3       | 0           | ~22      |
+| **Operators**              | 23     | 0            | 0       | 0           | 23       |
 | **Functions**              | 4      | ~10          | 3       | 0           | ~17      |
 | **Control Flow**           | 5      | 3            | 1       | 0           | 9        |
 | **If Expressions**         | 8      | 0            | 0       | 0           | 8        |
@@ -516,7 +519,7 @@ tests/language/semantics/
 | **Type Narrowing**         | 0      | 3            | 3       | 0           | 6        |
 | **Pattern Matching**       | 1      | ~12          | 0       | 0           | ~13      |
 | **Destructuring**          | 0      | ~9           | 0       | 0           | ~9       |
-| **Null Coal. / Opt Chain** | 8      | 0            | 3       | 0           | 11       |
+| **Null Coal. / Opt Chain** | 9      | 0            | 2       | 0           | 11       |
 | **Mixins**                 | 0      | ~10          | 0       | 0           | ~10      |
 | **Enums**                  | 0      | 0            | 5       | 0           | 5        |
 | **Arrays**                 | 0      | ~7           | 0       | 0           | ~7       |
@@ -527,7 +530,7 @@ tests/language/semantics/
 | **Template Strings**       | 4      | 0            | 0       | 0           | 4        |
 | **Misc**                   | 4      | 2            | 0       | 0           | 6        |
 | **Type Inference**         | 0      | 0            | 0       | 12          | 12       |
-| **TOTAL**                  | **73** | **~167**     | **~28** | **12**      | **~280** |
+| **TOTAL**                  | **77** | **~167**     | **~24** | **12**      | **~280** |
 
 ## Porting Priority
 

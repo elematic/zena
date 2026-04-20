@@ -19,6 +19,7 @@ export const DiagnosticCode = {
 
   // Checker Warnings (2500-2599)
   ConstructorSyntax: 2500,
+  UnnecessaryNullish: 2501,
   InvalidAssignment: 2004,
   ReturnOutsideFunction: 2005,
   BreakOutsideLoop: 2024,
