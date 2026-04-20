@@ -738,12 +738,33 @@ class CheckerContext {
 /**
  * Register the standard prelude types in a CheckerContext.
  *
+ * TEMPORARY SCAFFOLDING — this function should be deleted.
+ *
  * The prelude provides fundamental types like String, Array, etc.
  * that are implicitly available in all Zena code without explicit import.
+ * Currently these are hardcoded stubs, but the correct approach (already
+ * used by the bootstrap compiler) is:
  *
- * This function registers stub types - the checker only needs to know
- * these types exist and their basic structure. Full method signatures
- * would come from checking the actual stdlib modules.
+ *   1. Compile the stdlib .zena files through the normal pipeline.
+ *   2. Populate prelude types/values from the checked modules' exports.
+ *   3. Look up well-known types by canonical module path (e.g.
+ *      "String" → zena:string's exports) instead of stub identity.
+ *
+ * The self-hosted compiler already loads, parses, and scope-analyzes
+ * stdlib modules in compile(). What's missing is:
+ *   - Remove the `if (file.isStdlib) { continue; }` skip in
+ *     checkCompilation() so stdlib modules get type-checked.
+ *   - After checking prelude modules, populate #preludeTypes/#preludeValues
+ *     from their CheckResult exports instead of these stubs.
+ *   - Add a WELL_KNOWN_TYPE_MODULES map for identity-based lookups
+ *     (resolvePreludeType("Iterable") → query zena:iterator's exports).
+ *
+ * The blocker is that the self-hosted checker doesn't yet support all
+ * language features used in stdlib (interfaces + implements, extension
+ * classes, @intrinsic/@external decorators, operator overloading).
+ * As those features land, this function should shrink and eventually
+ * disappear. See docs/design/self-hosted-compiler.md §"Prelude: From
+ * Stubs to Real Stdlib".
  */
 let registerStandardPrelude = (ctx: CheckerContext): void => {
   // String - the fundamental string type

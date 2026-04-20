@@ -1651,6 +1651,105 @@ We may want something similar for large Zena codebases:
 
 ---
 
+## Prelude: From Stubs to Real Stdlib
+
+### The Problem
+
+The self-hosted checker's `registerStandardPrelude()` is ~260 lines of
+handcrafted type stubs that duplicate (a subset of) what the real stdlib
+`.zena` files define. Every time a stdlib type gains a method, the stub
+must be updated by hand. The stubs are always incomplete and always
+drifting.
+
+The bootstrap compiler already does this correctly: it compiles stdlib
+modules through the normal pipeline and populates prelude types from
+checked exports. The self-hosted compiler should do the same.
+
+### Current State
+
+The infrastructure is mostly in place:
+
+- **Loading & parsing:** `compile()` already resolves prelude specifiers
+  (`"zena:string"`, etc.) through `ModuleResolver`, loads and parses the
+  stdlib `.zena` files via `LibraryLoader`, and includes them in the
+  topo-sorted dependency graph.
+- **Scope analysis:** `#resolveScopes()` runs on stdlib files. They get
+  `scopeResult` populated with exports.
+- **Cross-module wiring:** `checkFile()` already passes stdlib scope
+  exports as `depExports` to user files.
+
+But then two things go wrong:
+
+1. `checkCompilation()` **skips stdlib files** with
+   `if (file.isStdlib) { continue; }` — they're never type-checked.
+2. `checkModule()` calls `registerStandardPrelude()`, which creates
+   hardcoded stubs that shadow any real stdlib types.
+
+### Target State
+
+As described in §4 (Checker: On-Demand Type Resolution), prelude types
+should be implicit imports in the scope chain — not special-cased. The
+checker resolves `String` the same way it resolves any imported name:
+via the dependency's `SemanticModel`.
+
+Well-known type identity checks (e.g. "is this the stdlib `Array`?") use
+a `WELL_KNOWN_TYPE_MODULES` map that looks up the canonical module's
+checked exports by path, matching the bootstrap compiler's approach:
+
+```
+WELL_KNOWN_TYPE_MODULES = {
+  "String"     → "zena:string",
+  "FixedArray" → "zena:fixed-array",
+  "Array"      → "zena:growable-array",
+  "HashMap"    → "zena:map",
+  "HashSet"    → "zena:set",
+  "Error"      → "zena:error",
+  "Iterable"   → "zena:iterator",
+  "BoundedRange" → "zena:range",
+  "FromRange"    → "zena:range",
+  "ToRange"      → "zena:range",
+  "FullRange"    → "zena:range",
+}
+```
+
+### Migration Plan
+
+**Phase 1 — Check stdlib modules through the normal pipeline.**
+Remove the `isStdlib` skip in `checkCompilation()`. Stdlib files go
+through `checkFile()` in topo order like everything else. Their
+`CheckResult`s go into `allResults`, so downstream files get `depModels`
+for stdlib deps.
+
+**Phase 2 — Populate prelude from checked exports.**
+After checking prelude modules, iterate their exports and populate
+`#preludeTypes`/`#preludeValues` from the real `CheckResult.model` data.
+Remove corresponding entries from `registerStandardPrelude()` one module
+at a time.
+
+**Phase 3 — Well-known type lookups.**
+Add the `WELL_KNOWN_TYPE_MODULES` map. Replace `resolvePreludeType("Iterable")`
+and `isPreludeClassType()` calls with lookups against checked module exports
+by canonical path.
+
+**Phase 4 — Delete `registerStandardPrelude()`.**
+Once all prelude types come from real checked modules, the function is empty
+and can be removed.
+
+### Practical Blocker
+
+The self-hosted checker doesn't yet support all language features used in
+stdlib: `interface` + `implements`, `extension class`, `@intrinsic`/
+`@external` decorators, `operator` overloading, `declare` methods. The
+simpler stdlib files (`error.zena`, `range.zena`, `option.zena`) would
+work today, but the core collection types (`fixed-array`, `growable-array`,
+`map`, `set`) need these features.
+
+The pragmatic path is incremental: check the simple stdlib files first,
+stub only what can't yet be checked, and replace stubs with real checked
+modules as checker features land.
+
+---
+
 ## Open Questions
 
 1. **Comment preservation strategy?** Store comments in AST nodes (simpler) or
