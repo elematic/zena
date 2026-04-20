@@ -4125,6 +4125,8 @@ let checkMethodSignature = (
 ): FunctionType => {
   let paramTypes = new Array<Type>();
   let paramNames = new Array<String>();
+  var hasOptionals = false;
+  let optionals = new Array<boolean>();
 
   var i = 0;
   while (i < md.params.length) {
@@ -4137,6 +4139,32 @@ let checkMethodSignature = (
     } else if (param.typeAnnotation != null) {
       paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
     }
+
+    // Track optional parameters and widen to T | null.
+    let isOptional = param.optional || param.defaultValue != null;
+    optionals.push(isOptional);
+    if (isOptional) {
+      hasOptionals = true;
+      var alreadyNullable = false;
+      match (paramType) {
+        case NullType: { alreadyNullable = true; }
+        case UnionT {types}: {
+          var ui = 0;
+          while (ui < types.length) {
+            if (types[ui] is NullType) { alreadyNullable = true; }
+            ui += 1;
+          }
+        }
+        case _: {}
+      }
+      if (!alreadyNullable) {
+        let unionTypes = new Array<Type>();
+        unionTypes.push(paramType);
+        unionTypes.push(new NullType());
+        paramType = createUnionType(unionTypes);
+      }
+    }
+
     paramTypes.push(paramType);
     paramNames.push(paramName);
     i += 1;
@@ -4150,6 +4178,9 @@ let checkMethodSignature = (
   let ft = new FunctionType(paramTypes, paramNames, retType);
   ft.isFinal = md.isFinal;
   ft.isAbstract = md.isAbstract;
+  if (hasOptionals) {
+    ft.optionalParameters = optionals;
+  }
   return ft;
 };
 
@@ -4754,11 +4785,26 @@ let checkNewExpression = (
 
       let ctor = ctorType as FunctionType;
 
-      // Check argument count.
+      // Check argument count (accounting for optional parameters).
       let expectedCount = ctor.parameters.length;
-      if (args.length != expectedCount) {
+      var requiredCount = expectedCount;
+      if (ctor.optionalParameters != null) {
+        let optionals = ctor.optionalParameters as Array<boolean>;
+        requiredCount = 0;
+        var oi = 0;
+        while (oi < optionals.length) {
+          if (!optionals[oi]) { requiredCount = requiredCount + 1; }
+          oi += 1;
+        }
+      }
+      if (args.length < requiredCount || args.length > expectedCount) {
+        let expectedMsg = if (requiredCount == expectedCount) {
+          `${expectedCount}`
+        } else {
+          `${requiredCount}-${expectedCount}`
+        };
         ctx.error(
-          `Expected ${expectedCount} arguments, got ${args.length}.`,
+          `Expected ${expectedMsg} arguments, got ${args.length}.`,
           DiagnosticCode.ArgumentCountMismatch,
           loc
         );

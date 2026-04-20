@@ -108,8 +108,8 @@ tests/language/semantics/
 │   ├── let-reference.zena                      [done]
 │   ├── var-widens-literals.zena                [done]
 │   ├── undeclared-variable.zena                [done]
-│   ├── var-assignment.zena                     [new] — var x = 1; x = 2; (valid)
-│   ├── let-reassignment-rejected.zena          [new] — let x = 1; x = 2; (error)
+│   ├── var-assignment.zena                     [done] — var x = 1; x = 2; (valid)
+│   ├── let-reassignment-rejected.zena          [done] — let x = 1; x = 2; (error)
 │   ├── infer-from-function-call.zena           [ts] checker_test
 │   ├── infer-from-string.zena                  [ts] checker_test
 │   └── infer-from-boolean.zena                 [ts] checker_test
@@ -134,9 +134,10 @@ tests/language/semantics/
 │   │   ├── mixed-i32-rejected.zena             [ts] u32_test — u32 + i32 error
 │   │   └── cast.zena                           [ts] u32_test — u32 as i32
 │   ├── compound-assignment/
-│   │   ├── basic.zena                          [new] — x += 1
-│   │   ├── type-error.zena                     [new] — string += i32 error
-│   │   └── immutable-rejected.zena             [new] — let x = 1; x += 1; error
+│   │   ├── basic.zena                          [done] — x += 1
+│   │   ├── type-error.zena                     [done] — string += i32 error
+│   │   ├── string-concat.zena                  [done] — string += string
+│   │   └── immutable-rejected.zena             [done] — let x = 1; x += 1; error
 │   ├── null-comparison.zena                     [done]
 │   ├── string-concat.zena                      [ts] checker_test — String + String
 │   └── string-concat-type-error.zena           [ts] checker_test — String + i32 error
@@ -155,11 +156,14 @@ tests/language/semantics/
 │   │   ├── callback-param.zena                 [ts] — arr.map((x) => x + 1) infers x: i32
 │   │   └── multi-param.zena                    [ts] — infer multiple params from context
 │   ├── optional-params/
-│   │   ├── basic.zena                          [ts] checker-optional-params_test
-│   │   ├── null-union.zena                     [ts] — optional param is T | null
+│   │   ├── basic.zena                          [done] (optional-param-basic.zena)
+│   │   ├── null-union.zena                     [done] (optional-param-null-union.zena)
+│   │   ├── pass-null.zena                      [done] (optional-param-pass-null.zena)
 │   │   ├── default-value.zena                  [ts] — param with default
-│   │   ├── wrong-type.zena                     [ts] — optional param type mismatch
-│   │   └── call-without-optional.zena          [ts] — omitting optional arg is ok
+│   │   ├── wrong-type.zena                     [done] (optional-param-wrong-type.zena)
+│   │   ├── call-without-optional.zena          [done] (in optional-param-basic.zena)
+│   │   ├── method.zena                         [done] (optional-param-method.zena)
+│   │   └── constructor.zena                    [done] (optional-param-constructor.zena)
 │   └── function-type/
 │       ├── basic.zena                          [ts] function-type_test
 │       ├── assignability.zena                  [ts] — (i32) => i32 assignable to (i32) => i32
