@@ -294,9 +294,9 @@ tests/language/semantics/
 │   │   └── name-conflicts.zena                 [done]
 │   │
 │   └── operators/
-│       ├── operator-eq.zena                    [ts] — operator == type checking
-│       ├── operator-index.zena                 [ts] — operator [] return type
-│       └── operator-index-set.zena             [ts] — operator []= param type
+│       ├── operator-eq.zena                    [done]
+│       ├── operator-index.zena                 [done]
+│       └── operator-index-set.zena             [done]
 │
 ├── case-classes/
 │   ├── basic.zena                              [done]
