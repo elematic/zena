@@ -386,17 +386,22 @@ tests/language/semantics/
 │   │   ├── explicit-cast.zena                  [ts] — cast required between distinct and base
 │   │   └── generic-instantiation.zena          [ts] distinct-type_test
 │   │
-│   ├── records-tuples/
-│   │   ├── record-literal.zena                 [ts] records-tuples_test — {x: 1, y: 2}
-│   │   ├── record-assignability.zena           [ts] — structural subtyping (width)
-│   │   ├── record-field-mismatch.zena          [ts] — wrong field type
-│   │   ├── record-missing-field.zena           [ts] — required field absent
-│   │   ├── record-optional-field.zena          [ts] records-tuples_test
-│   │   ├── tuple-literal.zena                  [ts] records-tuples_test — (1, "hello")
-│   │   ├── tuple-length-mismatch.zena          [ts] — (i32, i32) != (i32, i32, i32)
-│   │   ├── tuple-element-mismatch.zena         [ts] — (i32, String) != (i32, i32)
-│   │   ├── record-spread.zena                  [ts] record_spread_test
+│   ├── records/
+│   │   ├── literal.zena                        [ts] records-tuples_test — {x: 1, y: 2}
+│   │   ├── assignability.zena                  [ts] — structural subtyping (width)
+│   │   ├── field-mismatch.zena                 [ts] — wrong field type
+│   │   ├── missing-field.zena                  [ts] — required field absent
+│   │   ├── optional-field.zena                 [ts] records-tuples_test
+│   │   ├── spread.zena                         [ts] record_spread_test
 │   │   └── spread-non-record.zena              [ts] record_spread_test — spread primitive error
+│   │
+│   ├── tuples/
+│   │   ├── index-out-of-bounds.zena            [done]
+│   │   ├── literal-index.zena                  [done]
+│   │   ├── not-array.zena                      [done]
+│   │   ├── literal.zena                        [ts] records-tuples_test — (1, "hello")
+│   │   ├── length-mismatch.zena                [ts] — (i32, i32) != (i32, i32, i32)
+│   │   └── element-mismatch.zena               [ts] — (i32, String) != (i32, i32)
 │   │
 │   └── never-type/
 │       ├── assignable-to-anything.zena         [ts] never_test
