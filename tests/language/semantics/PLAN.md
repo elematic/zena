@@ -336,16 +336,16 @@ tests/language/semantics/
 │   └── variant-field-access.zena               [new] — access case fields after match
 │
 ├── interfaces/
-│   ├── basic-implementation.zena               [ts] checker-interface_test
-│   ├── missing-method.zena                     [ts] — class missing interface method
-│   ├── wrong-method-signature.zena             [ts] — method return type mismatch
-│   ├── missing-field.zena                      [ts] — class missing interface field
-│   ├── multiple-interfaces.zena                [ts] — class implements A, B
-│   ├── interface-extends.zena                  [ts] — interface extends other interface
-│   ├── interface-assignability.zena            [ts] — class assignable to interface type
-│   ├── generic-interface.zena                  [ts] checker-interface_test
-│   ├── accessor-conformance.zena               [ts] — getter satisfies interface field
-│   └── diamond-inheritance.zena                [ts] — A extends B, C; B extends D; C extends D
+│   ├── basic-implementation.zena               [done]
+│   ├── missing-method.zena                     [done]
+│   ├── wrong-method-signature.zena             [done]
+│   ├── missing-field.zena                      [done]
+│   ├── multiple-interfaces.zena                [done]
+│   ├── interface-extends.zena                  [done]
+│   ├── interface-assignability.zena            [done]
+│   ├── generic-interface.zena                  [done]
+│   ├── accessor-conformance.zena               [done]
+│   └── diamond-inheritance.zena                [done]
 │
 ├── generics/
 │   ├── basic-class.zena                        [ts] checker-generics_test — Box<i32>

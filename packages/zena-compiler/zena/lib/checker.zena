@@ -4223,12 +4223,13 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             let ifaceMethod = iface.methods[methodName];
             if (classType.methods.has(methodName)) {
               // Check signature compatibility.
+              let expectedMethodType = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
               let classMethod = classType.methods[methodName];
-              if (classMethod.parameters.length != ifaceMethod.parameters.length) {
+              if (!isAssignableTo(ctx, classMethod, expectedMethodType)) {
                 ctx.error(
                   "Class '" + className + "' incorrectly implements interface '" + iface.name +
                   "': Method '" + methodName + "' is type '" + typeToString(classMethod) +
-                  "' but expected '" + typeToString(ifaceMethod) + "'.",
+                  "' but expected '" + typeToString(expectedMethodType) + "'.",
                   DiagnosticCode.IncompatibleTypes,
                   cd.loc
                 );
