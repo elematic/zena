@@ -1,10 +1,18 @@
-// String class - view-based design (like Go)
-// Every String is a view into a backing ByteArray with start/end offsets.
-// Slicing is O(1) and zero-copy. Use copy() to release parent memory.
-//
-// SAFETY: Use StringReader for parsing to ensure slices are at code point
-// boundaries. Direct use of sliceBytes() with computed indices can split
-// multi-byte UTF-8 sequences.
+/**
+ * The Zena String class
+ *
+ * This is view-based design like Go, but also takes inspiration from Swift
+ * which is very strict about hiding encoding details and providing safe slicing
+ * methods. We will probably move the design to be even more like Swift in the
+ * future, further hiding encoding details and byte-based operations.
+ *
+ * Every String is a view into a backing ByteArray with start/end offsets.
+ * Slicing is O(1) and zero-copy. Use copy() to release parent memory.
+ *
+ * SAFETY: Use StringReader for parsing to ensure slices are at code point
+ * boundaries. Direct use of sliceBytes() with computed indices can split
+ * multi-byte UTF-8 sequences.
+ */
 
 export enum Encoding {
   WTF8,    // 0 - UTF-8 with unpaired surrogates allowed
@@ -40,8 +48,14 @@ export final class String {
   #end: i32;           // End offset into #data (exclusive)
   #encoding: Encoding;
 
-  // Private constructor - strings are created by the compiler for literals
-  // or by StringBuilder/transcoding functions
+  /**
+   * Create a new array from a ByteArray.
+   *
+   * Important: This should be considered a private constructor - strings are
+   * created by the compiler for literals or by StringBuilder/transcoding
+   * functions. When Zena supports private constructors, this will be marked as
+   * private to prevent misuse.
+   */
   new(data: ByteArray, start: i32, end: i32, encoding: Encoding)
     : #data = data, #start = start, #end = end, #encoding = encoding;
 
@@ -91,18 +105,27 @@ export final class String {
     return new String(data, 0, totalLen, encoding);
   }
 
-  // Length in bytes (code units for WTF-8).
-  // For ASCII and most UTF-8, this equals the number of characters.
-  // TODO: For WTF-16, return code units (byteLen / 2) once integer division is supported.
+  /**
+   * The length of the string in bytes.
+   * 
+   * Since string operations like slicing and `getByteAt` operate on bytes,
+   * this consistently returns the byte capacity of the view regardless of
+   * the underlying encoding (WTF-8 or WTF-16).
+   *
+   * TODO: Rename to byteLength or remove entirely.
+   */
   length: i32 {
     get {
       return this.#end - this.#start;
     }
   }
 
-  // Get byte at index (relative to this view). Returns the byte value as i32.
-  // For WTF-8 strings, this is the UTF-8 byte at the given index.
-  // For WTF-16 strings, this is the byte (not code unit) at the given index.
+  /**
+   * Returns the byte at the given index.
+   *
+   * For WTF-8 strings, this is the UTF-8 byte at the given index.
+   * For WTF-16 strings, this is the byte (not code unit) at the given index.
+   */
   getByteAt(index: i32): i32 {
     return __byte_array_get(this.#data, this.#start + index);
   }
@@ -132,8 +155,10 @@ export final class String {
     );
   }
 
-  // Force a copy - creates a new String with its own backing array.
-  // Use this when you need to release the parent string's memory.
+  /**
+   * Force a copy - creates a new String with its own backing array.
+   * Use this when you need to release the parent string's memory.
+   */
   copy(): String {
     let len = this.#end - this.#start;
     let newData = __byte_array_new(len);
@@ -143,6 +168,7 @@ export final class String {
 
   /**
    * Copies bytes from this string to a target ByteArray.
+   *
    * @param target The target ByteArray to copy to.
    * @param targetOffset The offset in target to start writing.
    * @param start Start byte offset in this string (default: 0).
@@ -156,37 +182,117 @@ export final class String {
     __byte_array_copy(target, targetOffset, this.#data, this.#start + start, len);
   }
 
-  // Compares `length` bytes of this string starting at `offset` against
-  // `other` starting at `other.#start`.
+  /**
+   * Compares `length` bytes of this string starting at `thisOffset` against
+   * `other` starting at `otherOffset`.
+   */
   #regionEquals(
       other: String,
-      offset: i32,
+      thisOffset: i32,
+      otherOffset: i32,
       length: i32): boolean {
-    if (length > this.#end - this.#start) {
-      return false;
-    }
-    var i = 0;
+
+    let thisData = this.#data;
+    let otherData = other.#data;
+
     for (var i = 0; i < length; i += 1) {
-      if (__byte_array_get(this.#data, offset + i) != 
-          __byte_array_get(other.#data, other.#start + i)) {
+      if (__byte_array_get(thisData, thisOffset + i) != 
+          __byte_array_get(otherData, otherOffset + i)) {
         return false;
       }
     }
     return true;
   }
 
-  // Returns true if this string starts with the given prefix.
+  /**
+   * Returns true if this string starts with the given prefix.
+   */
   startsWith(prefix: String): boolean {
-    return this.#regionEquals(prefix, this.#start, prefix.#end - prefix.#start);
+    let prefixLength = prefix.#end - prefix.#start;
+    if (prefixLength > this.#end - this.#start) {
+      return false;
+    }
+    return this.#regionEquals(prefix, this.#start, prefix.#start, prefixLength);
   }
 
-  // Returns true if this string ends with the given suffix.
+  /**
+   * Returns true if this string ends with the given suffix.
+   */
   endsWith(suffix: String): boolean {
-    let suffixLen = suffix.#end - suffix.#start;
-    return this.#regionEquals(suffix, this.#end - suffixLen, suffixLen);
+    let suffixLength = suffix.#end - suffix.#start;
+    if (suffixLength > this.#end - this.#start) {
+      return false;
+    }
+    return this.#regionEquals(suffix, this.#end - suffixLength, suffix.#start, suffixLength);
   }
 
-  // Concatenation operator - always allocates a new backing array
+  /**
+   * Returns the byte-index of the first occurrence of `needle`.
+   */
+  #indexOf(needle: String): i32 {
+    // This is a simplified search algorithm that checks the first and last byte
+    // of the needle to quickly skip non-matching positions. It performs well
+    // for short needles. If we find that this is a bottleneck, we can implement
+    // a more advanced algorithm like Boyer-Moore-Horspool.
+    //
+    // https://en.wikipedia.org/wiki/Boyer%E2%80%93Moore%E2%80%93Horspool_algorithm
+    //
+    // That would require building a skip table for the needle, which adds
+    // overhead for short needles, but can be faster for longer needles. For
+    // repeated searches with the same needle, we could cache the skip table,
+    // but in order to not bloat the String class with extra fields, we would
+    // need to store the skip table in a side table.
+
+    let needleLength = needle.#end - needle.#start;    
+    if (needleLength == 0) {
+      return 0;
+    }
+
+    let haystackLength = this.#end - this.#start;
+    if (needleLength > haystackLength) {
+      return -1;
+    }
+
+    let lastIndex = needleLength - 1;
+    let firstByte = __byte_array_get(needle.#data, needle.#start);
+    let lastByte = __byte_array_get(needle.#data,
+      needle.#start + lastIndex);
+
+    for (var i = 0; i <= haystackLength - needleLength; i += 1) {
+      let currentIndex = this.#start + i;
+
+      // 1. Check the first byte
+      if (__byte_array_get(this.#data, currentIndex) != firstByte) {
+        continue;
+      }
+
+      // 2. Check the last byte (this eliminates many non-matches)
+      if (__byte_array_get(this.#data, currentIndex + lastIndex) != lastByte) {
+        continue;
+      }
+
+      if (needleLength <= 2) {
+        // For 1 or 2 byte needles, we can skip the full comparison since the
+        // first and last byte checks are sufficient.
+        return i;
+      }
+
+      // 3. Only then do the full comparison
+      // TODO: Use skip tables in the future
+      if (this.#regionEquals(needle, currentIndex + 1, needle.#start + 1, needleLength - 2)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  contains(needle: String): boolean {
+    return this.#indexOf(needle) != -1;
+  }
+
+  /**
+   * Concatenates two strings and returns a new string.
+   */
   operator +(other: String): String {
     let len1 = this.#end - this.#start;
     let len2 = other.#end - other.#start;
@@ -196,13 +302,15 @@ export final class String {
     return new String(newData, 0, len1 + len2, this.#encoding);
   }
 
-  // Equality operator - compares the bytes in each view
+  /**
+   * Equality operator - compares the bytes in each view.
+   */
   operator ==(other: String): boolean {
     let length = other.#end - other.#start;
     if (length != this.#end - this.#start) {
       return false;
     }
-    return this.#regionEquals(other, this.#start, length);
+    return this.#regionEquals(other, this.#start, other.#start, length);
   }
 
   // String hash is implemented by the compiler in codegen/expressions.ts:

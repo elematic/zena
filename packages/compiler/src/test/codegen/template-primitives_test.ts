@@ -49,8 +49,8 @@ suite('Template Literals - Binary Size', () => {
 
     // Also verify string-only stays small (sanity check)
     assert.ok(
-      stringOnlyBytes.length < 1000,
-      `String-only binary should be <1KB, got ${stringOnlyBytes.length} bytes`,
+      stringOnlyBytes.length < 1200,
+      `String-only binary should be <1.2KB, got ${stringOnlyBytes.length} bytes`,
     );
 
     // The primitive version should still be reasonable (not bloated with all conversions)

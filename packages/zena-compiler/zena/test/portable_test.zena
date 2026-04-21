@@ -1,7 +1,10 @@
-// Portable tests — auto-discovers .zena files under tests/language/
-//   syntax/    → parsed AST JSON compared against .ast.json snapshots
-//   semantics/ → parsed, scope-analysed, type-checked; @error directives validated
-// Requires WASI (run with wasmtime via npm run test:wasmtime)
+/**
+ * Portable tests — auto-discovers .zena files under tests/language/
+ *   syntax/    → parsed AST JSON compared against .ast.json snapshots
+ *   semantics/ → parsed, scope-analysed, type-checked; @error directives validated
+ *
+ * Requires WASI (run with wasmtime via npm run test:wasmtime)
+ */
 
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
@@ -29,43 +32,10 @@ let skipList = [
   }
 ];
 
-// ============================================================================
-// String helpers (Zena has no endsWith/startsWith builtins yet)
-// ============================================================================
-
-let startsWith = (s: String, prefix: String): boolean => {
-  if (prefix.length > s.length) {
-    return false;
-  }
-  return s.sliceBytes(0, prefix.length) == prefix;
-};
-
-let endsWith = (s: String, suffix: String): boolean => {
-  if (suffix.length > s.length) {
-    return false;
-  }
-  return s.sliceBytes(s.length - suffix.length, s.length) == suffix;
-};
-
-let contains = (s: String, sub: String): boolean => {
-  if (sub.length > s.length) {
-    return false;
-  }
-  var i = 0;
-  while (i <= s.length - sub.length) {
-    if (s.sliceBytes(i, i + sub.length) == sub) {
-      return true;
-    }
-    i += 1;
-  }
-  return false;
-};
-
 // Returns true if the source has any // @error: directive
 let hasErrorDirective = (source: String): boolean => {
-  return contains(source, "// @error:");
+  return source.contains("// @error:");
 };
-
 
 // ============================================================================
 // Directive parsing
@@ -121,13 +91,11 @@ let parseTarget = (source: String): String => {
 // ============================================================================
 
 let isSkipped = (relPath: String, skips: FixedArray<SkipEntry>): String | null => {
-  var i = 0;
-  while (i < skips.length) {
+  for (let skip in skips) {
     // Match exact path OR prefix (for directory patterns like "optional-chaining/")
-    if (skips[i].path == relPath || startsWith(relPath, skips[i].path)) {
-      return skips[i].reason;
+    if (relPath.startsWith(skip.path)) {
+      return skip.reason;
     }
-    i += 1;
   }
   return null;
 };
