@@ -310,8 +310,8 @@ tests/language/semantics/
 │   ├── mutable_field.zena                      [done]
 │   ├── with_methods.zena                       [done]
 │   ├── wrong_arg_count.zena                    [done]
-│   ├── optional-param.zena                     [new] — case class with optional field
-│   └── pattern-binding.zena                    [new] — match case class and bind fields
+│   ├── optional-param.zena                     [done]
+│   └── pattern-binding.zena                    [done]
 │
 ├── sealed-classes/
 │   ├── basic.zena                              [done]
