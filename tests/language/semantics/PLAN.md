@@ -515,10 +515,9 @@ tests/language/semantics/
 │   └── type-name-shadowing.zena                [ts] — local type alias shadows outer
 │
 ├── template-strings/
-│   ├── readonly-index-assign.zena              [done] (template_strings_array_index_assign)
-│   ├── readonly-length-assign.zena             [done] (template_strings_array_length_assign)
-│   ├── private-access.zena                     [done] (template_strings_array_private_access)
-│   └── readonly-raw-assign.zena                [done] (template_strings_array_raw_assign)
+│   ├── readonly-index-assign.zena              [done]
+│   ├── readonly-length-assign.zena             [done]
+│   └── readonly-raw-index-assign.zena          [done]
 │
 ├── misc/
 │   ├── optional-field-primitive.zena           [done]
