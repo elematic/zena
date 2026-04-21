@@ -12,6 +12,7 @@ import { jsonEqual } from 'zena:assert';
 import { readFile, listDir, exists, DirEntry, FileType } from 'zena:fs';
 import { parseJson, JsonValue, JsonOptions } from 'zena:json';
 import { Array } from 'zena:array';
+import { StringReader } from 'zena:string-reader';
 import { parse } from '../lib/parser.zena';
 import { nodeToJson } from '../lib/ast-json.zena';
 import { ExpressionStatement } from '../lib/ast.zena';
@@ -25,333 +26,129 @@ import { Diagnostic, DiagnosticSeverity, formatDiagnostic } from '../lib/diagnos
 
 type SkipEntry = { path: String, reason: String };
 
-let skipList = [
-  {
-    path: "classes/case-classes/exported.zena",
-    reason: "snapshot is full Module (no @target: statement directive)"
-  }
+let skippedTests = [
+  // syntax skips
+  { path: "syntax/classes/case-classes/exported.zena", reason: "snapshot is full Module (no @target: statement directive)" },
+  // semantics skips
+  { path: "semantics/destructuring/tuple/inline-tuple-never-union", reason: "inline tuple union returns not yet supported" },
+  { path: "semantics/classes/fields/field-init-required.zena", reason: "field init check not implemented" },
+  { path: "semantics/interfaces/var-field-needs-setter.zena", reason: "var field setter check not implemented" },
+  { path: "semantics/control-flow/for/for-in-iterator.zena", reason: "HashMap.keys() not resolved in self-hosted checker" },
+  { path: "semantics/control-flow/for/for-in-destructure-map.zena", reason: "HashMap iteration not resolved in self-hosted checker" },
+  { path: "semantics/control-flow/if/field-narrowing.zena", reason: "field-path narrowing not implemented" }
 ];
 
 // Returns true if the source has any // @error: directive
-let hasErrorDirective = (source: String): boolean => {
-  return source.contains("// @error:");
+let hasErrorDirective = (directives: Array<Directive>): boolean => {
+  for (let directive in directives) {
+    if (directive.name == "error") {
+      return true;
+    }
+  }
+  return false;
 };
 
 // ============================================================================
 // Directive parsing
 // ============================================================================
 
-// Returns "statement", "module", or "expression" based on // @target: directive
-let parseTarget = (source: String): String => {
-  // Scan first few lines for // @target: ...
-  // Simple approach: look for the prefix in the source
-  let prefix = "// @target: ";
-  var i = 0;
-  while (i < source.length) {
-    // Check if this position starts with prefix
-    if (i + prefix.length <= source.length) {
-      if (source.sliceBytes(i, i + prefix.length) == prefix) {
-        // Found it — extract value until newline
-        let start = i + prefix.length;
-        var end = start;
-        while (end < source.length) {
-          // Check for newline (byte 10)
-          if (source.sliceBytes(end, end + 1) == "\n") {
-            break;
+type Directive = { name: String, line: i32, value: String };
+
+// Parses all // @name: value directives from a file
+let parseDirectives = (source: String): Array<Directive> => {
+  let results = new Array<Directive>(4);
+  let marker = "// @";
+  if (!source.contains(marker)) {
+    return results;
+  }
+
+  var lineNum = 1;
+  let r = new StringReader(source);
+  while (!r.isAtEnd) {
+    let lineStart = r.mark();
+    while (!r.isAtEnd && r.peekByte() != 10) { // 10 = '\n'
+      r.advanceByte();
+    }
+    let line = r.sliceFrom(lineStart);
+
+    if (line.contains(marker)) {
+      var mi = 0;
+      while (mi <= line.length - marker.length) {
+        if (line.sliceBytes(mi, mi + marker.length) == marker) {
+          var colonIndex = mi + marker.length;
+          var foundColon = false;
+          while (colonIndex < line.length) {
+            if (line.getByteAt(colonIndex) == 58) { // ':'
+              foundColon = true;
+              break;
+            }
+            colonIndex += 1;
           }
-          end += 1;
-        }
-        // Trim trailing whitespace
-        var trimEnd = end;
-        while (trimEnd > start) {
-          let ch = source.sliceBytes(trimEnd - 1, trimEnd);
-          if (ch == " " || ch == "\r") {
-            trimEnd -= 1;
-          } else {
-            break;
+
+          if (foundColon) {
+            let name = line.sliceBytes(mi + marker.length, colonIndex);
+            var valStart = colonIndex + 1;
+            while (valStart < line.length) {
+              let b = line.getByteAt(valStart);
+              if (b == 32 || b == 9) { // space or \t
+                valStart += 1;
+              } else {
+                break;
+              }
+            }
+            var valEnd = line.length;
+            while (valEnd > valStart) {
+              let b = line.getByteAt(valEnd - 1);
+              if (b == 32 || b == 13) { // space or \r
+                valEnd -= 1;
+              } else {
+                break;
+              }
+            }
+            let value = line.sliceBytes(valStart, valEnd);
+            results.push({ name: name, line: lineNum, value: value });
           }
+          break;
         }
-        return source.sliceBytes(start, trimEnd);
+        mi += 1;
       }
     }
-    // Advance to next line
-    while (i < source.length) {
-      let ch = source.sliceBytes(i, i + 1);
-      i += 1;
-      if (ch == "\n") {
-        break;
-      }
+
+    if (r.peekByte() == 10) {
+      r.advanceByte();
+    }
+    lineNum += 1;
+  }
+
+  return results;
+};
+
+// Determine target from directives
+let getTarget = (directives: Array<Directive>): String => {
+  for (let directive in directives) {
+    if (directive.name == "target") {
+      return directive.value;
     }
   }
   return "module";
 };
 
-// ============================================================================
-// Test discovery
-// ============================================================================
-
-let isSkipped = (relPath: String, skips: FixedArray<SkipEntry>): String | null => {
-  for (let skip in skips) {
-    // Match exact path OR prefix (for directory patterns like "optional-chaining/")
-    if (relPath.startsWith(skip.path)) {
-      return skip.reason;
-    }
-  }
-  return null;
-};
-
-// Discovers and registers tests for all .zena files in a directory (recursively).
-// dirPath: filesystem path (e.g., "tests/language/syntax")
-// relPrefix: relative path from the syntax root for skip list matching (e.g., "")
-let discoverTests = (dirPath: String, relPrefix: String, skips: FixedArray<SkipEntry>): void => {
-  let entries = listDir(dirPath);
-  
-  // Collect subdirectories and files separately for ordered processing
-  let subdirs = new Array<DirEntry>(4);
-  let files = new Array<DirEntry>(8);
-  
-  var i = 0;
-  while (i < entries.length) {
-    let entry = entries[i];
-    if (entry.fileType == FileType.Directory) {
-      // Skip . and .. to prevent infinite recursion
-      if (entry.name != "." && entry.name != "..") {
-        subdirs.push(entry);
-      }
-    } else if (entry.fileType == FileType.RegularFile) {
-      if (entry.name.endsWith(".zena")) {
-        files.push(entry);
-      }
-    }
-    i += 1;
-  }
-  
-  // Register tests for .zena files that have a corresponding .ast.json
-  var fi = 0;
-  while (fi < files.length) {
-    let fileName = files[fi].name;
-    let filePath = dirPath + "/" + fileName;
-    
-    // Build relative path for skip list matching
-    let relPath = if (relPrefix.length > 0) {
-      relPrefix + "/" + fileName
-    } else {
-      fileName
-    };
-    
-    // Build snapshot path: replace .zena with .ast.json
-    let snapshotPath = filePath.sliceBytes(0, filePath.length - 5) + ".ast.json";
-    
-    // Read source to check for @error directives
-    let source = readFile(filePath);
-    let isErrorTest = hasErrorDirective(source);
-
-    // Test if snapshot exists (positive test) or @error directive present (error test)
-    if (exists(snapshotPath) || isErrorTest) {
-      let reason = isSkipped(relPath, skips);
-      if (reason != null) {
-        // Skip — test is in skip list
-        // (zena:test doesn't have test.skip yet, so we just don't register it)
-      } else {
-        // Capture values for closure
-        let capturedFilePath = filePath;
-        let capturedSnapshotPath = snapshotPath;
-        let capturedFileName = fileName;
-        let capturedIsErrorTest = isErrorTest;
-        let capturedSource = source;
-
-        test(capturedFileName, (ctx: TestContext): void => {
-          if (capturedIsErrorTest) {
-            // Error test: parser should throw
-            let threw = try {
-              parse(capturedSource, capturedFileName);
-              false
-            } catch (e) {
-              true
-            };
-            if (!threw) {
-              throw new Error("Expected parse error (has @error directive) but parsing succeeded: " + capturedFilePath);
-            }
-          } else {
-            // Positive test: compare AST against snapshot
-            let expectedSnapshot = readFile(capturedSnapshotPath);
-            let expected = parseJson(expectedSnapshot, { allowComments: false, trackLocations: true });
-            let mod = parse(capturedSource, capturedFileName);
-          
-            // Determine target from directives
-            let target = parseTarget(capturedSource);
-          
-            var actual = nodeToJson(mod);
-            if (target == "statement") {
-              actual = nodeToJson(mod.body[0]);
-            } else {
-              if (target == "expression") {
-                let stmt = mod.body[0] as ExpressionStatement;
-                actual = nodeToJson(stmt.expression);
-              } else {}
-            }
-          
-            jsonEqual(actual, expected, capturedFilePath);
-          }
-        });
-      }
-    }
-    fi += 1;
-  }
-  
-  // Recurse into subdirectories, each wrapped in a suite
-  var si = 0;
-  while (si < subdirs.length) {
-    let subName = subdirs[si].name;
-    let subPath = dirPath + "/" + subName;
-    let subRel = if (relPrefix.length > 0) {
-      relPrefix + "/" + subName
-    } else {
-      subName
-    };
-    
-    // Capture for closure
-    let capturedSubPath = subPath;
-    let capturedSubRel = subRel;
-    let capturedSkips = skips;
-    
-    suite(subName, (): void => {
-      discoverTests(capturedSubPath, capturedSubRel, capturedSkips);
-    });
-    si += 1;
-  }
-};
-
-// ============================================================================
-// Semantic test infrastructure
-// ============================================================================
-
-type ExpectedError = { line: i32, pattern: String };
-
 /**
- * Extract // @error: <pattern> directives from source, returning
- * the line number (1-based) and the pattern string for each.
+ * Run a semantic test: parse → scope → check, then match diagnostics.
  */
-let parseExpectedErrors = (source: String): Array<ExpectedError> => {
-  let errors = new Array<ExpectedError>(4);
-  let marker = "// @error: ";
-  var pos = 0;
-  var lineNum = 1;
-
-  while (pos < source.length) {
-    // Find end of current line.
-    var eol = pos;
-    while (eol < source.length && source.sliceBytes(eol, eol + 1) != "\n") {
-      eol += 1;
+let runSemanticTest = (
+    source: String,
+    filePath: String,
+    directives: Array<Directive>): void => {
+  let expectedErrors = new Array<Directive>(4);
+  let expectedWarnings = new Array<Directive>(4);
+  for (let directive in directives) {
+    if (directive.name == "error") {
+      expectedErrors.push(directive);
+    } else if (directive.name == "warning") {
+      expectedWarnings.push(directive);
     }
-
-    // Check if this line contains the marker.
-    let line = source.sliceBytes(pos, eol);
-    var mi = 0;
-    var found = false;
-    while (mi <= line.length - marker.length) {
-      if (line.sliceBytes(mi, mi + marker.length) == marker) {
-        // Extract the pattern (rest of line after marker, trimmed).
-        var patEnd = line.length;
-        while (patEnd > mi + marker.length) {
-          let ch = line.sliceBytes(patEnd - 1, patEnd);
-          if (ch == " " || ch == "\r") {
-            patEnd -= 1;
-          } else {
-            break;
-          }
-        }
-        let pattern = line.sliceBytes(mi + marker.length, patEnd);
-        errors.push({ line: lineNum, pattern: pattern });
-        found = true;
-        break;
-      }
-      mi += 1;
-    }
-
-    // Advance past newline.
-    if (eol < source.length) {
-      pos = eol + 1;
-    } else {
-      pos = eol;
-    }
-    lineNum += 1;
   }
-
-  return errors;
-};
-
-/**
- * Extract // @warning: <pattern> directives from source, returning
- * the line number (1-based) and the pattern string for each.
- */
-let parseExpectedWarnings = (source: String): Array<ExpectedError> => {
-  let warnings = new Array<ExpectedError>(4);
-  let marker = "// @warning: ";
-  var pos = 0;
-  var lineNum = 1;
-
-  while (pos < source.length) {
-    var eol = pos;
-    while (eol < source.length && source.sliceBytes(eol, eol + 1) != "\n") {
-      eol += 1;
-    }
-
-    let line = source.sliceBytes(pos, eol);
-    var mi = 0;
-    var found = false;
-    while (mi <= line.length - marker.length) {
-      if (line.sliceBytes(mi, mi + marker.length) == marker) {
-        var patEnd = line.length;
-        while (patEnd > mi + marker.length) {
-          let ch = line.sliceBytes(patEnd - 1, patEnd);
-          if (ch == " " || ch == "\r") {
-            patEnd -= 1;
-          } else {
-            break;
-          }
-        }
-        let pattern = line.sliceBytes(mi + marker.length, patEnd);
-        warnings.push({ line: lineNum, pattern: pattern });
-        found = true;
-        break;
-      }
-      mi += 1;
-    }
-
-    if (eol < source.length) {
-      pos = eol + 1;
-    } else {
-      pos = eol;
-    }
-    lineNum += 1;
-  }
-
-  return warnings;
-};
-
-/**
- * Check if a diagnostic message contains a pattern string (case-sensitive).
- */
-let messageContains = (message: String, pattern: String): boolean => {
-  if (pattern.length > message.length) {
-    return false;
-  }
-  var i = 0;
-  while (i <= message.length - pattern.length) {
-    if (message.sliceBytes(i, i + pattern.length) == pattern) {
-      return true;
-    }
-    i += 1;
-  }
-  return false;
-};
-
-/**
- * Run a semantic check test: parse → scope → check, then match diagnostics.
- */
-let runSemanticCheck = (source: String, filePath: String): void => {
-  let expectedErrors = parseExpectedErrors(source);
 
   // Parse.
   let ast = parse(source, filePath);
@@ -366,29 +163,23 @@ let runSemanticCheck = (source: String, filePath: String): void => {
 
   // Collect only errors (not warnings).
   let errors = new Array<Diagnostic>(4);
-  var ei = 0;
-  while (ei < diagnostics.length) {
-    match (diagnostics[ei].severity) {
+  for (let diagnostic in diagnostics) {
+    match (diagnostic.severity) {
       case DiagnosticSeverity.Error: {
-        errors.push(diagnostics[ei]);
+        errors.push(diagnostic);
       }
       case _: {}
     }
-    ei += 1;
   }
 
   // Match expected errors against actual diagnostics.
-  var xi = 0;
-  while (xi < expectedErrors.length) {
-    let expected = expectedErrors[xi];
+  for (let expected in expectedErrors) {
     var matched = false;
-    var di = 0;
-    while (di < errors.length) {
-      if (messageContains(errors[di].message, expected.pattern)) {
+    for (let error in errors) {
+      if (error.message.contains(expected.value)) {
         matched = true;
         break;
       }
-      di += 1;
     }
     if (!matched) {
       var actualStr = "(none)";
@@ -402,20 +193,19 @@ let runSemanticCheck = (source: String, filePath: String): void => {
         }
       }
       throw new Error(
-        `Expected error matching '${expected.pattern}' on line ${expected.line} but found none.\nActual errors:\n${actualStr}\nFile: ${filePath}`
+        `Expected error matching '${expected.value}' on line ${expected.line} but found none.\nActual errors:\n${actualStr}\nFile: ${filePath}`
       );
     }
-    xi += 1;
   }
 
   // If no expected errors, fail on any unexpected errors.
   if (expectedErrors.length == 0 && errors.length > 0) {
     var errStr = "";
-    var ui = 0;
-    while (ui < errors.length) {
-      if (ui > 0) { errStr = errStr + "\n"; }
-      errStr = errStr + formatDiagnostic(errors[ui], source);
-      ui += 1;
+    for (var i = 0; i < errors.length; i += 1) {
+      if (i > 0) {
+        errStr = errStr + "\n";
+      }
+      errStr = errStr + formatDiagnostic(errors[i], source);
     }
     throw new Error(
       "Unexpected errors:\n" + errStr + "\nFile: " + filePath
@@ -423,63 +213,106 @@ let runSemanticCheck = (source: String, filePath: String): void => {
   }
 
   // Match expected warnings against actual diagnostics.
-  let expectedWarnings = parseExpectedWarnings(source);
   let warnings = new Array<Diagnostic>(4);
-  var wi = 0;
-  while (wi < diagnostics.length) {
-    match (diagnostics[wi].severity) {
+  for (let diagnostic in diagnostics) {
+    match (diagnostic.severity) {
       case DiagnosticSeverity.Warning: {
-        warnings.push(diagnostics[wi]);
+        warnings.push(diagnostic);
       }
       case _: {}
     }
-    wi += 1;
   }
 
-  var wxi = 0;
-  while (wxi < expectedWarnings.length) {
-    let expected = expectedWarnings[wxi];
-    var wMatched = false;
-    var wdi = 0;
-    while (wdi < warnings.length) {
-      if (messageContains(warnings[wdi].message, expected.pattern)) {
-        wMatched = true;
+  for (let expected in expectedWarnings) {
+    var warningMatched = false;
+    for (let warning in warnings) {
+      if (warning.message.contains(expected.value)) {
+        warningMatched = true;
         break;
       }
-      wdi += 1;
     }
-    if (!wMatched) {
+    if (!warningMatched) {
       var actualWarnStr = "(none)";
       if (warnings.length > 0) {
         actualWarnStr = "";
-        var wai = 0;
-        while (wai < warnings.length) {
-          if (wai > 0) { actualWarnStr = actualWarnStr + "\n"; }
-          actualWarnStr = actualWarnStr + formatDiagnostic(warnings[wai], source);
-          wai += 1;
+        for (var i = 0; i < warnings.length; i += 1) {
+          if (i > 0) {
+            actualWarnStr = actualWarnStr + "\n";
+          }
+          actualWarnStr = actualWarnStr + formatDiagnostic(warnings[i], source);
         }
       }
       throw new Error(
-        `Expected warning matching '${expected.pattern}' on line ${expected.line} but found none.\nActual warnings:\n${actualWarnStr}\nFile: ${filePath}`
+        `Expected warning matching '${expected.value}' on line ${expected.line} but found none.\nActual warnings:\n${actualWarnStr}\nFile: ${filePath}`
       );
     }
-    wxi += 1;
   }
 };
 
-/**
- * Discovers and registers semantic tests for all .zena files in a directory.
- */
-let discoverSemanticTests = (dirPath: String, relPrefix: String, skips: FixedArray<SkipEntry>): void => {
-  let entries = listDir(dirPath);
+let runSyntaxTest = (
+    source: String,
+    filePath: String,
+    directives: Array<Directive>,
+    isErrorTest: boolean,
+    snapshotPath: String,
+    fileName: String): void => {
+  if (isErrorTest) {
+    // Error test: parser should throw
+    let threw = try {
+      parse(source, fileName);
+      false
+    } catch (e) {
+      true
+    };
+    if (!threw) {
+      throw new Error("Expected parse error (has @error directive) but parsing succeeded: " + filePath);
+    }
+  } else {
+    // Positive test: compare AST against snapshot
+    let expectedSnapshot = readFile(snapshotPath);
+    let expected = parseJson(expectedSnapshot, { allowComments: false, trackLocations: true });
+    let mod = parse(source, fileName);
+    
+    let actual = match (getTarget(directives)) {
+      case "statement": {
+        nodeToJson(mod.body[0]);
+      }
+      case "expression": {
+        let stmt = mod.body[0] as ExpressionStatement;
+        nodeToJson(stmt.expression);
+      }
+      case _: {
+        nodeToJson(mod)
+      }
+    };
+  
+    jsonEqual(actual, expected, filePath);
+  }
+};
 
+let isSkipped = (relPath: String): String | null => {
+  for (let skip in skippedTests) {
+    // Match exact path OR prefix (for directory patterns like "optional-chaining/")
+    if (relPath.startsWith(skip.path)) {
+      return skip.reason;
+    }
+  }
+  return null;
+};
+
+// Discovers and registers tests for all .zena files in a directory (recursively).
+// dirPath: filesystem path (e.g., "tests/language/syntax")
+// relPrefix: relative path from the syntax root for skip list matching (e.g., "")
+let runTests = (dirPath: String, relPrefix: String): void => {
+  let entries = listDir(dirPath);
+  
+  // Collect subdirectories and files separately for ordered processing
   let subdirs = new Array<DirEntry>(4);
   let files = new Array<DirEntry>(8);
-
-  var i = 0;
-  while (i < entries.length) {
-    let entry = entries[i];
+  
+  for (let entry in entries) {
     if (entry.fileType == FileType.Directory) {
+      // Skip . and .. to prevent infinite recursion
       if (entry.name != "." && entry.name != "..") {
         subdirs.push(entry);
       }
@@ -488,80 +321,65 @@ let discoverSemanticTests = (dirPath: String, relPrefix: String, skips: FixedArr
         files.push(entry);
       }
     }
-    i += 1;
   }
-
-  var fi = 0;
-  while (fi < files.length) {
-    let fileName = files[fi].name;
+  
+  // Register tests for .zena files that have a corresponding .ast.json
+  for (let file in files) {
+    let fileName = file.name;
     let filePath = dirPath + "/" + fileName;
+    
+    // Build relative path for skip list matching
     let relPath = if (relPrefix.length > 0) {
       relPrefix + "/" + fileName
     } else {
       fileName
     };
+    
+    // Build snapshot path: replace .zena with .ast.json
+    let snapshotPath = filePath.sliceBytes(0, filePath.length - 5) + ".ast.json";
+    
+    // Read source to check for @error directives
+    let source = readFile(filePath);
+    let directives = parseDirectives(source);
+    let isErrorTest = hasErrorDirective(directives);
 
-    let reason = isSkipped(relPath, skips);
-    // console.log(`Test: ${relPath} skipped: ${reason != null}`);
-    if (reason == null) {
-      let capturedFilePath = filePath;
-      let capturedFileName = fileName;
+    let isSyntax = relPath.startsWith("syntax/");
+    let isSemantic = relPath.startsWith("semantics/");
 
-      test(capturedFileName, (ctx: TestContext): void => {
-        let source = readFile(capturedFilePath);
-        runSemanticCheck(source, capturedFilePath);
-      });
+    // Test if snapshot exists (positive test) or @error directive present (error test)
+    if (isSemantic || exists(snapshotPath) || isErrorTest) {
+      let reason = isSkipped(relPath);
+      if (reason != null) {
+        // Skip — test is in skip list
+        // (zena:test doesn't have test.skip yet, so we just don't register it)
+      } else {
+        test(fileName, (ctx: TestContext): void => {
+          if (isSyntax) {
+            runSyntaxTest(source, filePath, directives, isErrorTest, snapshotPath, fileName);
+          } else {
+            runSemanticTest(source, filePath, directives);
+          }
+        });
+      }
     }
-    fi += 1;
   }
-
-  var si = 0;
-  while (si < subdirs.length) {
-    let subName = subdirs[si].name;
+  
+  // Recurse into subdirectories, each wrapped in a suite
+  for (let subdir in subdirs) {
+    let subName = subdir.name;
     let subPath = dirPath + "/" + subName;
     let subRel = if (relPrefix.length > 0) {
       relPrefix + "/" + subName
     } else {
       subName
     };
-
-    let capturedSubPath = subPath;
-    let capturedSubRel = subRel;
-    let capturedSkips = skips;
-
+    
     suite(subName, (): void => {
-      discoverSemanticTests(capturedSubPath, capturedSubRel, capturedSkips);
+      runTests(subPath, subRel);
     });
-    si += 1;
   }
 };
 
-// ============================================================================
-// Main test registration
-// ============================================================================
-
-// Skip list for semantic tests
-let semanticSkipList: FixedArray<SkipEntry> = [
-  // self-hosted checker doesn't support inline tuple union return types yet
-  {path: "destructuring/tuple/inline-tuple-never-union", reason: "inline tuple union returns not yet supported"},
-  // self-hosted checker does not yet enforce field initialization
-  {path: "classes/fields/field-init-required.zena", reason: "field init check not implemented"},
-  // self-hosted checker does not yet enforce setter requirement for var interface fields
-  {path: "interfaces/var-field-needs-setter.zena", reason: "var field setter check not implemented"},
-  // self-hosted checker doesn't resolve HashMap.keys() yet
-  {path: "control-flow/for/for-in-iterator.zena", reason: "HashMap.keys() not resolved in self-hosted checker"},
-  // self-hosted checker doesn't resolve HashMap iteration element types yet
-  {path: "control-flow/for/for-in-destructure-map.zena", reason: "HashMap iteration not resolved in self-hosted checker"},
-  // self-hosted checker doesn't support field-path narrowing (mutable vs immutable) yet
-  {path: "control-flow/if/field-narrowing.zena", reason: "field-path narrowing not implemented"}
-];
-
 export let tests = suite('Portable Tests', (): void => {
-  suite('Syntax', (): void => {
-    discoverTests("tests/language/syntax", "", skipList);
-  });
-  // Re-enabling to debug the null reference error
-  suite('Semantics', (): void => {
-    discoverSemanticTests("tests/language/semantics", "", semanticSkipList);
-  });
+  runTests("tests/language", "");
 });
