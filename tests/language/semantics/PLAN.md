@@ -155,7 +155,13 @@ tests/language/semantics/
 │   ├── infer-return-type.zena                  [done]
 │   ├── void-return.zena                        [done]
 │   ├── recursive-function.zena                 [done]
+│   ├── self-recursive-void.zena                [done] — self-recursive with void return type annotation
+│   ├── self-recursive-no-return-type.zena      [done] — self-recursive without return type is error
+│   ├── forward-ref-void.zena                   [done] — function calls another function defined later
+│   ├── forward-ref-inferred.zena               [done] — forward ref with inferred return type
+│   ├── forward-ref-no-return-type.zena         [done] — mutually recursive without annotation is error
 │   ├── closure-captures.zena                   [done]
+│   ├── no-param-annotations.zena               [done] — unannotated params error
 │   ├── contextual-typing/
 │   │   ├── param-from-annotation.zena          [done] — function type annotation with explicit params
 │   │   ├── callback-param.zena                 [done] — callback param inferred from callee type
