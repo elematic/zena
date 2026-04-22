@@ -348,18 +348,18 @@ tests/language/semantics/
 │   └── diamond-inheritance.zena                [done]
 │
 ├── generics/
-│   ├── basic-class.zena                        [ts] checker-generics_test — Box<i32>
-│   ├── type-argument-mismatch.zena             [ts] — Box<i32> not assignable to Box<String>
-│   ├── infer-from-constructor.zena             [ts] — new Box(42) infers Box<i32>
-│   ├── infer-from-function.zena                [ts] — identity(42) infers i32
-│   ├── constraint-check.zena                   [ts] — T extends Comparable, pass non-Comparable
-│   ├── constraint-method-access.zena           [ts] — access constraint method inside generic
-│   ├── default-type-param.zena                 [ts] checker-generics_test
-│   ├── multiple-type-params.zena               [ts] — Pair<A, B>
-│   ├── generic-method.zena                     [ts] generic-method_test
-│   ├── nested-generics.zena                    [ts] — Box<Array<i32>>
-│   ├── private-in-generic.zena                 [ts] generic-class-context_test
-│   └── self-referential.zena                   [ts] — class Node<T> { next: Node<T>? }
+│   ├── basic-class.zena                        [done]
+│   ├── type-argument-mismatch.zena             [done]
+│   ├── infer-from-constructor.zena             [done]
+│   ├── infer-from-function.zena                [done]
+│   ├── constraint-check.zena                   [done]
+│   ├── constraint-method-access.zena           [done]
+│   ├── default-type-param.zena                 [done]
+│   ├── multiple-type-params.zena               [done]
+│   ├── generic-method.zena                     [done]
+│   ├── nested-generics.zena                    [done]
+│   ├── private-in-generic.zena                 [done]
+│   └── self-referential.zena                   [done]
 │
 ├── type-system/
 │   ├── type-alias/
@@ -568,8 +568,8 @@ tests/language/semantics/
 | **Classes**                | 2       | ~24          | 1       | 0           | ~27      |
 | **Case Classes**           | 11      | 0            | 2       | 0           | 13       |
 | **Sealed Classes**         | 19      | 0            | 1       | 0           | 20       |
-| **Interfaces**             | 0       | ~10          | 0       | 0           | ~10      |
-| **Generics**               | 0       | ~12          | 0       | 0           | ~12      |
+| **Interfaces**             | 10      | 0            | 0       | 0           | 10       |
+| **Generics**               | 12      | 0            | 0       | 0           | 12       |
 | **Type System**            | 2       | ~30          | 1       | 0           | ~33      |
 | **Pattern Matching**       | 1       | ~12          | 0       | 0           | ~13      |
 | **Destructuring**          | 0       | ~9           | 0       | 0           | ~9       |
@@ -584,7 +584,7 @@ tests/language/semantics/
 | **Template Strings**       | 4       | 0            | 0       | 0           | 4        |
 | **Misc**                   | 4       | 2            | 0       | 0           | 6        |
 | **Type Inference**         | 0       | 0            | 0       | 12          | 12       |
-| **TOTAL**                  | **138** | **~115**     | **~14** | **12**      | **~279** |
+| **TOTAL**                  | **160** | **~93**      | **~14** | **12**      | **~279** |
 
 ## Porting Priority
 

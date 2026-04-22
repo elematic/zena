@@ -1,3 +1,4 @@
+
 /**
  * Type checker for the Zena compiler.
  *
@@ -1132,6 +1133,9 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
         }
         match (resolved as Type) {
           case ClassType as ct: {
+            if (ct.typeParameters != null) {
+              applyAndCheckTypeArguments(ctx, ct.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
+            }
             return instantiateClassType(ct, resolvedArgs);
           }
           case _: {}
@@ -1450,6 +1454,67 @@ let substituteTypeParams = (
 };
 
 /**
+ * Applies default type arguments and checks constraints.
+ * Modifies `typeArgs` in place if defaults are applied.
+ */
+let applyAndCheckTypeArguments = (
+  ctx: CheckerContext,
+  typeParams: Array<TypeParameterType>,
+  typeArgs: Array<Type>,
+  loc: SourceLocation | null
+): void => {
+  // Apply defaults if type arguments are missing
+  var i = typeArgs.length;
+  while (i < typeParams.length) {
+    let param = typeParams[i];
+    if (param.defaultType != null) {
+      typeArgs.push(substituteTypeParams(typeParams, typeArgs, param.defaultType as Type));
+    } else {
+      ctx.error(
+        `Expected ${typeParams.length} type arguments, but got ${i}.`,
+        DiagnosticCode.ArgumentCountMismatch,
+        loc
+      );
+      while (typeArgs.length < typeParams.length) {
+        typeArgs.push(new UnknownType());
+      }
+      break;
+    }
+    i += 1;
+  }
+
+  if (typeArgs.length > typeParams.length) {
+    ctx.error(
+      `Expected ${typeParams.length} type arguments, but got ${typeArgs.length}.`,
+      DiagnosticCode.ArgumentCountMismatch,
+      loc
+    );
+    // Truncate to avoid issues later
+    while (typeArgs.length > typeParams.length) {
+      typeArgs.pop();
+    }
+  }
+
+  // Check constraints
+  var j = 0;
+  while (j < typeParams.length && j < typeArgs.length) {
+    let param = typeParams[j];
+    if (param.constraint != null) {
+      let expectedConstraint = substituteTypeParams(typeParams, typeArgs, param.constraint as Type);
+      if (!isAssignableTo(ctx, typeArgs[j], expectedConstraint)) {
+        ctx.error(
+          "Type '" + typeToString(typeArgs[j]) + "' does not satisfy constraint '" +
+            typeToString(expectedConstraint) + "' for type parameter '" + param.name + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+    }
+    j += 1;
+  }
+};
+
+/**
  * Infer type arguments from constructor arguments for a generic class.
  * Returns a new ClassType with typeArguments set, or the original if not generic.
  */
@@ -1474,6 +1539,7 @@ let instantiateGenericClass = (
       typeArgs.push(resolveTypeAnnotation(ctx, explicit[i]));
       i += 1;
     }
+    applyAndCheckTypeArguments(ctx, params, typeArgs, loc);
     return instantiateClassType(ct, typeArgs);
   }
 
@@ -1506,6 +1572,9 @@ let instantiateGenericClass = (
     pi += 1;
   }
 
+  // Apply missing default types and check constraints before instantiating.
+  applyAndCheckTypeArguments(ctx, params, typeArgs, loc);
+  
   // Create instantiated class type using factory function.
   return instantiateClassType(ct, typeArgs);
 };
@@ -5220,6 +5289,17 @@ let resolveMemberType = (
       );
       return new UnknownType();
     }
+    case TypeParameterType {name as tname, constraint}: {
+      if (constraint != null) {
+        return resolveMemberType(ctx, constraint as Type, propName, loc);
+      }
+      ctx.error(
+        "Property '" + propName + "' does not exist on type '" + tname + "'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new UnknownType();
+    }
     case UnknownType: { return new UnknownType(); }
     case _: {
       ctx.error(
@@ -6158,7 +6238,11 @@ let checkFunctionExpression = (
       var tpi = 0;
       while (tpi < tps.length) {
         let tp = tps[tpi];
-        let tpType = new TypeParameterType(tp.name, null, null);
+        var constraint: Type | null = null;
+        if (tp.constraint != null) {
+          constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        }
+        let tpType = new TypeParameterType(tp.name, constraint, null);
         ctx.declareTypeName(tp.name, tpType);
         tpTypes.push(tpType);
         tpi += 1;
