@@ -79,10 +79,14 @@ Key things that differ from TypeScript:
 - **No `function` keyword** — arrow functions only.
 - **No `const`** — use `let` (immutable) and `var` (mutable).
 - **Class fields are immutable by default** — use `var` to make mutable.
-- **Dart-style constructors** — initializer lists (`: x = x, y = y`), `this.` params, semicolon bodies.
+- **Dart-style constructors** — initializer lists (`: x = x, y = y`), `this.`
+  params, semicolon bodies.
 - **`String` not `string`** — capital S (it's a class, not a primitive alias).
+- for/in loops iterator on iterables and iterators: `for (let item of items)`.
+  They are like for/of loops in TypeScript.
 - **No `++`/`--`** — use `+= 1` instead.
-- **Sound type system** — no `any` escape hatch (well, `any` exists but requires explicit casts back).
+- **Sound type system** — no `any` escape hatch (well, `any` exists but requires
+  explicit casts back).
 - **`match` expressions** with exhaustiveness checking.
 - **Sealed classes** for sum types, not TypeScript discriminated unions.
 
@@ -90,11 +94,12 @@ Key things that differ from TypeScript:
 
 The project has **two compiler implementations**:
 
-1. **Bootstrap compiler** (`packages/compiler`): Written in TypeScript. Mostly working. Package name: `@zena-lang/compiler`.
-2. **Self-hosted compiler** (`packages/zena-compiler`): Written in Zena. Partially
-   implemented — currently has lexer, parser, and early type checker stages. Package
-   name: `@zena-lang/zena-compiler`. See `docs/design/self-hosted-compiler.md` for
-   the architecture.
+1. **Bootstrap compiler** (`packages/compiler`): Written in TypeScript. Mostly
+   working. Package name: `@zena-lang/compiler`.
+2. **Self-hosted compiler** (`packages/zena-compiler`): Written in Zena.
+   Partially implemented — currently has lexer, parser, and early type checker
+   stages. Package name: `@zena-lang/zena-compiler`. See
+   `docs/design/self-hosted-compiler.md` for the architecture.
 
 Both compilers should pass the same **portable tests** in `tests/language/`.
 
@@ -123,6 +128,22 @@ This project is an **npm monorepo** managed with **Wireit**.
 - **`docs/language-reference.md`**: Official language reference.
 - **`docs/design/`**: Design documents for complex features.
 - **`PLAN.md`**: Completed and planned work.
+
+# Interaction Guidelines
+
+- **Conversational Requirement**: You MUST explain your plan in plain English
+  BEFORE generating code or editing files. Do not act silently.
+- **Tool Usage**:
+  - NEVER create temporary files or shell scripts to edit code.
+  - ALWAYS use the provided VS Code text editing tools to modify files
+    directly.
+- **Clarification Protocol**: If a request is ambiguous or lacks context, you
+  MUST ask a clarifying question. Do not guess.
+- **Task Management**: Use the Todo List tool (`manage_todo_list`) to track
+  complex tasks. If you are unsure of the next step, present a multiple-choice
+  option (`vscode_askQuestions` tool) to the user.
+- **Role**: You are a pair programmer, not an automated script runner. Talk to
+  me.
 
 ### Nix Development Environment
 
@@ -164,6 +185,22 @@ default, so test stack traces are always readable.
 The project uses Node.js **v25+** for built-in WASM exnref support. Run
 `node -v` to check and `nvm use default` to switch.
 
+## IMPORTANT: Reading and Editing Diles
+
+**ALWAYS** read files with the built-in `read_file` tool, not terminal commands
+like `cat`. `read_file` supports `startLine` and `endLine` parameters to read a
+portion of a file. Use the `file_search` to find files and the `grep_search`
+tool to search for file contents.
+
+**ALWAYS** edit files with the built-in file tools like `create_file` and
+`replace_string_in_file`. **NEVER** edit files by writing and running scripts.
+
+**DO NOT** create temporary text files with content that you want to put into a
+source file. Just create or edit the source file directly.
+
+Only use scripts to edit files for massive, multi-file changes that have to use
+search and replace, etc. Then use `grep`, `sed`, `awk`, etc., as necessary.
+
 ## ⚠️ CRITICAL: Build System (Wireit)
 
 **Agents repeatedly make mistakes with Wireit. Read this carefully.**
@@ -193,6 +230,9 @@ already succeeded for the current inputs. **The cached result is correct.**
 
 ### Running Tests
 
+**ALWAYS** use `npm` to run tests. Never use `npx`, `tsx`, or bash scripts.
+There is no `wireit` comman. Use `npm`.
+
 ```bash
 # Run all tests
 npm test
@@ -207,16 +247,19 @@ npm test -w @zena-lang/compiler -- test/checker/checker_test.js
 npm test -w @zena-lang/compiler -- --test-only test/checker/checker_test.js
 ```
 
-- **NEVER** use `npm test packages/compiler/...` or `npm test -- some/path`.
 - Packages are referred to by **package name** (`@zena-lang/compiler`), not path.
+- **NEVER** use `npm test packages/compiler/...` or `npm test -- some/path`.
+- If test output is large and written to a file by the system, use the
+  `read_file` tool, which supports `startLine` and `endLine` parameters, to read
+  the file.
 
 ## ⚠️ CRITICAL: Temporary Files
 
 **NEVER create test or debug files under `/tmp/`.** Files in `/tmp/` cannot
 import project modules because relative paths are broken.
 
-- Create temporary test files in the **normal test directories** (e.g.,
-  `packages/compiler/src/test/`).
+- If you truly need a temporary file for debugging, create temporary test files
+  in the **normal test directories** (e.g., `packages/compiler/src/test/`).
 - For portable tests, create them in `tests/language/`.
 - Delete temporary files when done, or better yet, keep them as permanent tests.
 
@@ -245,7 +288,21 @@ Do not skip step 1. A test that was never seen to fail proves nothing.
   imports/objects (e.g., `import {foo} from 'bar';`).
 - **Naming**: `kebab-case` files. Test files end in `_test.ts`.
 - **Testing**: Use `suite` and `test` from `node:test`.
-- **Package Management**: Use `npm i <package>`, not manual `package.json` edits.
+- **Package Management**: Use `npm i <package>`, not manual `package.json`
+  edits.
+
+### Zena (self-hosted compiler, formatter, etc)
+
+- Prefer `let` for variables
+- Use enums where appropriate
+- Prefer private fields (#)
+- Use for/in loops when iterating over arrays and other iterables
+- Use `HashSet`s when needed instead of `HashMap<T, boolean>`
+- Use `if` statements instead of a `match()` with one arm.
+- Don't put types on functions that can use contextual typing, like callbacks.
+- Use JSDoc-style multi-like comments (`/** */`)
+- Document classes with their own JSDoc comment, do not use a big comment
+  section divider above each class.
 
 ### Testing
 
