@@ -171,28 +171,59 @@ export let instantiateInterfaceType = (
 export class MixinType extends Type {
   name: String;
   var typeParameters: Array<TypeParameterType> | null = null;
-  typeArguments: Array<Type> | null = null;
+  var typeArguments: Array<Type> | null = null;
   var onType: ClassType | null = null;
-  fields = new HashMap<String, Type>();
-  fieldMutability = new HashMap<String, boolean>();
-  methods = new HashMap<String, FunctionType>();
-  genericSource: MixinType | null = null;
+  var fields: HashMap<String, Type> = new HashMap<String, Type>();
+  var fieldMutability: HashMap<String, boolean> = new HashMap<String, boolean>();
+  var methods: HashMap<String, FunctionType> = new HashMap<String, FunctionType>();
+  var genericSource: MixinType | null = null;
 
   new(name: String) : name = name;
 }
 
-export class TypeParameterType(
-  name: String,
-  constraint: Type | null,
-  defaultType: Type | null
-) extends Type
+export let instantiateMixinType = (
+  source: MixinType,
+  typeArguments: Array<Type>,
+): MixinType => {
+  let result = new MixinType(source.name);
+  result.typeParameters = source.typeParameters;
+  result.typeArguments = typeArguments;
+  result.genericSource = source;
+  result.onType = source.onType;
+  result.fields = source.fields;
+  result.fieldMutability = source.fieldMutability;
+  result.methods = source.methods;
+  return result;
+};
+
+export class TypeParameterType extends Type {
+  name: String;
+  var constraint: Type | null;
+  var defaultType: Type | null;
+
+  new(this.name, this.constraint, this.defaultType);
+}
 
 export class TypeAliasType(
   name: String,
-  typeParameters: Array<TypeParameterType> | null,
-  target: Type,
+  var typeParameters: Array<TypeParameterType> | null,
+  var target: Type,
   isDistinct: boolean
 ) extends Type
+
+export let instantiateTypeAliasType = (
+  source: TypeAliasType,
+  typeArguments: Array<Type>
+): TypeAliasType => {
+  return new TypeAliasType(
+    source.name,
+    source.typeParameters,
+    source.target, // We substitute the target in the checker since it needs the map
+    source.isDistinct
+  );
+};
+
+export type GenericNamedType = ClassType | InterfaceType | MixinType | TypeAliasType;
 
 export class SymbolType(
   id: i32,

@@ -359,7 +359,11 @@ tests/language/semantics/
 │   ├── generic-method.zena                     [done]
 │   ├── nested-generics.zena                    [done]
 │   ├── private-in-generic.zena                 [done]
-│   └── self-referential.zena                   [done]
+│   ├── self-referential.zena                   [done]
+│   ├── type-alias-generic.zena                 [done]
+│   ├── union-dedup-generic.zena                [done]
+│   ├── union-exhaustiveness.zena               [done]
+│   └── match-union-type.zena                   [done]
 │
 ├── type-system/
 │   ├── type-alias/
@@ -471,16 +475,17 @@ tests/language/semantics/
 │   └── on-non-nullable.zena                    [new] — x?.foo where x is non-null
 │
 ├── mixins/
-│   ├── basic-application.zena                  [ts] checker-mixin_test — class A with M
-│   ├── mixin-method-access.zena                [ts] — access mixin methods on class
-│   ├── mixin-field-access.zena                 [ts] — access mixin fields
-│   ├── on-clause-satisfied.zena                [ts] — mixin M on Base; class C extends Base with M
-│   ├── on-clause-violated.zena                 [ts] — error if on-clause not met
-│   ├── multiple-mixins.zena                    [ts] — class A with M1, M2
-│   ├── generic-mixin.zena                      [ts] checker-mixin_test
-│   ├── mixin-method-override.zena              [ts] — override mixin method in class
-│   ├── mixin-interface.zena                    [ts] — mixin satisfies interface
-│   └── mixin-composition.zena                  [ts] — mixin M1 on M2 (mixin depends on mixin)
+│   ├── basic-application.zena                  [done]
+│   ├── mixin-method-access.zena                [done]
+│   ├── mixin-field-access.zena                 [done]
+│   ├── on-clause-satisfied.zena                [done]
+│   ├── on-clause-violated.zena                 [done]
+│   ├── multiple-mixins.zena                    [done]
+│   ├── generic-mixin.zena                      [done]
+│   ├── mixin-method-override.zena              [done]
+│   ├── mixin-interface.zena                    [done]
+│   ├── mixin-composition.zena                  [done]
+│   └── mixin-base-private-field.zena           [done]
 │
 ├── enums/
 │   ├── basic-usage.zena                        [new] — enum Color { Red, Green, Blue }

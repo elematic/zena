@@ -5721,24 +5721,19 @@ function instantiateClassImpl(
           params.push(thisType);
         }
         for (const param of member.params) {
-          // Class method params require type annotations; use resolveType for proper substitution
-          if (!param.typeAnnotation) {
+          const typeTarget =
+            param.typeAnnotation?.inferredType ?? param.inferredType;
+          if (!typeTarget) {
             throw new Error(
-              `Parameter ${param.name.name} of ${methodName} missing type annotation`,
+              `Parameter ${param.name.name} of ${methodName} missing type annotation or inferred type`,
             );
           }
-          params.push(resolveType(param.typeAnnotation));
-          // Build checker type for signature - use the resolved type from annotation
-          // Need to substitute type parameters to get concrete types for mangling
-          if (param.typeAnnotation.inferredType) {
-            const resolvedParamType = ctx.checkerContext
-              ? ctx.checkerContext.substituteTypeParams(
-                  param.typeAnnotation.inferredType,
-                  typeArguments,
-                )
-              : param.typeAnnotation.inferredType;
-            paramCheckerTypes.push(resolvedParamType);
-          }
+          params.push(resolveCheckerType(typeTarget));
+          // Build checker type for signature mangling
+          const resolvedParamType = ctx.checkerContext
+            ? ctx.checkerContext.substituteTypeParams(typeTarget, typeArguments)
+            : typeTarget;
+          paramCheckerTypes.push(resolvedParamType);
         }
 
         // Determine mangled name for overloaded methods

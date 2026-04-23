@@ -3585,7 +3585,7 @@ function checkMemberExpression(
       !ctx.currentClass.methods.has(memberName)
     ) {
       ctx.diagnostics.reportError(
-        `Private member '${memberName}' is not defined in class '${ctx.currentClass.name}'.`,
+        `Property '${memberName}' does not exist on type '${ctx.currentClass.name}'.`,
         DiagnosticCode.PropertyNotFound,
         ctx.getLocation(expr.property.loc),
       );

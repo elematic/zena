@@ -1,4 +1,3 @@
-
 /**
  * Type checker for the Zena compiler.
  *
@@ -19,6 +18,7 @@
  * - Narrowing uses SymbolInfo.id keys for identity-based precision.
  * - The checker produces a SemanticModel + diagnostics as output.
  */
+
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -64,7 +64,8 @@ import {
   UnionType as UnionT, RecordType as RecordT,
   FunctionType, ClassType, InterfaceType, MixinType,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
-  instantiateClassType, instantiateInterfaceType,
+  instantiateClassType, instantiateInterfaceType, instantiateMixinType,
+  instantiateTypeAliasType, GenericNamedType,
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, widenType, baseType,
   promoteNumeric, typeToString
@@ -74,11 +75,6 @@ import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
 import { ScopeResult, SymbolInfo, SymbolId, ModuleExports } from './scope.zena';
-
-
-// ============================================================================
-// Checker Context
-// ============================================================================
 
 /**
  * Internal state for the type checker.
@@ -208,7 +204,11 @@ class CheckerContext {
   /** The file path of the module being checked. */
   #filePath: String;
 
-  new(file: String, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null, depModels: HashMap<String, SemanticModel> | null)
+  new(
+      file: String,
+      scopeResult: ScopeResult | null,
+      depExports: HashMap<String, ModuleExports> | null,
+      depModels: HashMap<String, SemanticModel> | null)
     : diagnostics = new DiagnosticBag(file),
       #filePath = file,
       #scopeResult = scopeResult,
@@ -549,7 +549,9 @@ class CheckerContext {
    */
   #materializeType(info: SymbolInfo): Type | null {
     let decl = info.declaration;
-    if (decl == null) { return null; }
+    if (decl == null) {
+      return null;
+    }
     let node = decl as Node;
     match (node) {
       case ClassDeclaration as cd: {
@@ -591,6 +593,38 @@ class CheckerContext {
       }
       case EnumDeclaration as ed: {
         return new TypeAliasType(ed.name.name, null, new I32Type(), true);
+      }
+      case TypeAliasDeclaration as ta: {
+        this.enterScope();
+        let declarationParams = ta.typeParameters;
+        var typeParams: Array<TypeParameterType> | null = null;
+        if (declarationParams != null) {
+          let tempTypeParams = new Array<TypeParameterType>();
+          typeParams = tempTypeParams;
+          for (let param in declarationParams) {
+            let tpType = new TypeParameterType(param.name, null, null);
+            tempTypeParams.push(tpType);
+            this.declareTypeName(tpType.name, tpType);
+          }
+
+          // Resolve constraints
+          for (var i = 0; i < declarationParams.length; i += 1) {
+            let param = declarationParams[i];
+            if (param.constraint != null) {
+              tempTypeParams[i].constraint =
+                resolveTypeAnnotation(this, param.constraint as TypeAnnotation);
+            }
+            if (param.defaultType != null) {
+              tempTypeParams[i].defaultType =
+                resolveTypeAnnotation(this, param.defaultType as TypeAnnotation);
+            }
+          }
+        }
+        
+        let targetType = resolveTypeAnnotation(this, ta.typeAnnotation);
+        this.exitScope();
+        
+        return new TypeAliasType(ta.name.name, typeParams, targetType, ta.isDistinct);
       }
       case _: {
         return null;
@@ -1121,27 +1155,63 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
       );
       return new UnknownType();
     }
-    // Handle generic type arguments: Array<i32> → instantiate Array with [i32].
+    
+    // Handle generic type arguments
+    let resolvedArgs = new Array<Type>();
+    var hasTypeArgs = false;
+    
     if (typeArguments != null) {
-      let typeArgs = typeArguments as Array<TypeAnnotation>;
-      if (typeArgs.length > 0) {
-        let resolvedArgs = new Array<Type>();
-        var tai = 0;
-        while (tai < typeArgs.length) {
-          resolvedArgs.push(resolveTypeAnnotation(ctx, typeArgs[tai]));
-          tai += 1;
-        }
-        match (resolved as Type) {
-          case ClassType as ct: {
-            if (ct.typeParameters != null) {
-              applyAndCheckTypeArguments(ctx, ct.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
-            }
-            return instantiateClassType(ct, resolvedArgs);
-          }
-          case _: {}
+      if (typeArguments.length > 0) {
+        hasTypeArgs = true;
+        for (let typeArgument in typeArguments) {
+          resolvedArgs.push(resolveTypeAnnotation(ctx, typeArgument));
         }
       }
     }
+    
+    match (resolved as Type) {
+      case ClassType as ct: {
+        if (ct.typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, ct.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
+          return instantiateClassType(ct, resolvedArgs);
+        }
+      }
+      case MixinType as mt: {
+        if (mt.typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, mt.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
+          return instantiateMixinType(mt, resolvedArgs);
+        }
+      }
+      case InterfaceType as it: {
+        if (it.typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, it.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
+          return instantiateInterfaceType(it, resolvedArgs);
+        }
+      }
+      case TypeAliasType as tat: {
+        if (tat.typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, tat.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
+          let target = substituteTypeParams(tat.typeParameters, resolvedArgs, tat.target);
+          if (tat.isDistinct) {
+            let inst = instantiateTypeAliasType(tat, resolvedArgs);
+            inst.target = target;
+            return inst;
+          }
+          return target;
+        } else {
+          if (hasTypeArgs) {
+             ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
+          }
+          return if (tat.isDistinct) tat else tat.target;
+        }
+      }
+      case _: {
+        if (hasTypeArgs) {
+           ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
+        }
+      }
+    }
+    
     resolved as Type
   }
   case UnionTypeAnnotation {types}: {
@@ -1379,22 +1449,18 @@ let substituteTypeParams = (
   match (t) {
     case TypeParameterType {name}: {
       // Find the matching type parameter and substitute.
-      var i = 0;
-      while (i < tpLen && i < taLen) {
+      for (var i = 0; i < tpLen && i < taLen; i += 1) {
         if (params[i].name == name) {
           return args[i];
         }
-        i += 1;
       }
       // No match found, return original.
       return t;
     }
     case UnionT {types}: {
       let substituted = new Array<Type>();
-      var i = 0;
-      while (i < types.length) {
-        substituted.push(substituteTypeParams(typeParams, typeArgs, types[i]));
-        i += 1;
+      for (let t in types) {
+        substituted.push(substituteTypeParams(typeParams, typeArgs, t));
       }
       return createUnionType(substituted);
     }
@@ -1404,47 +1470,83 @@ let substituteTypeParams = (
     }
     case TupleT {elementTypes}: {
       let subElems = new Array<Type>();
-      var i = 0;
-      while (i < elementTypes.length) {
-        subElems.push(substituteTypeParams(typeParams, typeArgs, elementTypes[i]));
-        i += 1;
+      for (let elem in elementTypes) {
+        subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
       }
       return new TupleT(subElems);
     }
     case InlineTupleT {elementTypes}: {
       let subElems = new Array<Type>();
-      var i = 0;
-      while (i < elementTypes.length) {
-        subElems.push(substituteTypeParams(typeParams, typeArgs, elementTypes[i]));
-        i += 1;
+      for (let elem in elementTypes) {
+        subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
       }
       return new InlineTupleT(subElems);
     }
+    case RecordT {properties, optionalProperties}: {
+      let subProps = new HashMap<String, Type>();
+      for (let {key} in properties) {
+        subProps[key] = substituteTypeParams(typeParams, typeArgs, properties[key]);
+      }
+      return new RecordT(subProps, optionalProperties);
+    }
     case FunctionType as ft: {
       let subParams = new Array<Type>();
-      var i = 0;
-      while (i < ft.parameters.length) {
-        subParams.push(substituteTypeParams(typeParams, typeArgs, ft.parameters[i]));
-        i += 1;
+      for (let param in ft.parameters) {
+        subParams.push(substituteTypeParams(typeParams, typeArgs, param));
       }
       let subRet = substituteTypeParams(typeParams, typeArgs, ft.returnType);
       return new FunctionType(subParams, ft.parameterNames, subRet);
     }
     case ClassType as ct: {
-      // Recurse into type arguments of generic class types.
       if (ct.typeArguments != null) {
         let srcArgs = ct.typeArguments as Array<Type>;
         let subArgs = new Array<Type>();
         var changed = false;
-        var i = 0;
-        while (i < srcArgs.length) {
-          let sub = substituteTypeParams(typeParams, typeArgs, srcArgs[i]);
+        for (let arg in srcArgs) {
+          let sub = substituteTypeParams(typeParams, typeArgs, arg);
           subArgs.push(sub);
-          if (!typesEqual(sub, srcArgs[i])) { changed = true; }
-          i += 1;
+          if (!typesEqual(sub, arg)) {
+            changed = true;
+          }
         }
         if (changed) {
           return instantiateClassType(ct.genericSource ?? ct, subArgs);
+        }
+      }
+      return t;
+    }
+    case InterfaceType as it: {
+      if (it.typeArguments != null) {
+        let srcArgs = it.typeArguments as Array<Type>;
+        let subArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in srcArgs) {
+          let sub = substituteTypeParams(typeParams, typeArgs, arg);
+          subArgs.push(sub);
+          if (!typesEqual(sub, arg)) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          return instantiateInterfaceType(it.genericSource ?? it, subArgs);
+        }
+      }
+      return t;
+    }
+    case MixinType as mt: {
+      if (mt.typeArguments != null) {
+        let srcArgs = mt.typeArguments as Array<Type>;
+        let subArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in srcArgs) {
+          let sub = substituteTypeParams(typeParams, typeArgs, arg);
+          subArgs.push(sub);
+          if (!typesEqual(sub, arg)) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          return instantiateMixinType(mt.genericSource ?? mt, subArgs);
         }
       }
       return t;
@@ -1464,8 +1566,7 @@ let applyAndCheckTypeArguments = (
   loc: SourceLocation | null
 ): void => {
   // Apply defaults if type arguments are missing
-  var i = typeArgs.length;
-  while (i < typeParams.length) {
+  for (var i = typeArgs.length; i < typeParams.length; i += 1) {
     let param = typeParams[i];
     if (param.defaultType != null) {
       typeArgs.push(substituteTypeParams(typeParams, typeArgs, param.defaultType as Type));
@@ -1480,7 +1581,6 @@ let applyAndCheckTypeArguments = (
       }
       break;
     }
-    i += 1;
   }
 
   if (typeArgs.length > typeParams.length) {
@@ -1496,8 +1596,7 @@ let applyAndCheckTypeArguments = (
   }
 
   // Check constraints
-  var j = 0;
-  while (j < typeParams.length && j < typeArgs.length) {
+  for (var j = 0; j < typeParams.length && j < typeArgs.length; j += 1) {
     let param = typeParams[j];
     if (param.constraint != null) {
       let expectedConstraint = substituteTypeParams(typeParams, typeArgs, param.constraint as Type);
@@ -1510,7 +1609,6 @@ let applyAndCheckTypeArguments = (
         );
       }
     }
-    j += 1;
   }
 };
 
@@ -2575,9 +2673,10 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     case MixinDeclaration as md: {
       checkMixinDeclaration(ctx, md);
     }
-    case TypeAliasDeclaration {name, typeAnnotation, loc}: {
-      let aliasType = resolveTypeAnnotation(ctx, typeAnnotation);
-      ctx.declareTypeName(name.name, aliasType);
+    case TypeAliasDeclaration {name}: {
+      // Force materialization so errors inside constraints or the target type
+      // are reported once (in their proper generic scope).
+      ctx.resolveTypeName(name.name);
     }
     case DeclareFunction as df: {
       checkDeclareFunction(ctx, df);
@@ -3674,6 +3773,81 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           cd.loc
         );
       }
+    }
+  }
+
+  // Apply mixins
+  if (cd.mixins != null) {
+    let mixinAnns = cd.mixins as Array<TypeAnnotation>;
+    var mi = 0;
+    while (mi < mixinAnns.length) {
+      let mixinAnn = mixinAnns[mi];
+      let resolvedMixin = resolveTypeAnnotation(ctx, mixinAnn);
+      
+      match (resolvedMixin) {
+        case MixinType as mt: {
+          // Check 'on' constraint
+          if (mt.onType != null) {
+            var st: Type | null = null;
+            if (cd.superClass != null && classType.superType != null) {
+              st = classType.superType as Type;
+            }
+            if (st == null) {
+              ctx.error(
+                "Mixin '" + mt.name + "' requires superclass to extend '" + 
+                (mt.onType as ClassType).name + "', but no superclass is defined.",
+                DiagnosticCode.TypeMismatch,
+                mixinAnn.loc
+              );
+            } else {
+              if (!isAssignableTo(ctx, st, mt.onType as Type)) {
+                ctx.error(
+                  "Mixin '" + mt.name + "' requires superclass to extend '" + 
+                  (mt.onType as ClassType).name + "'.",
+                  DiagnosticCode.TypeMismatch,
+                  mixinAnn.loc
+                );
+              }
+            }
+          }
+          
+          // Copy fields
+          let fieldKeys = mt.fields.keys();
+          while (let (true, key) = fieldKeys.next()) {
+            classType.fields[key] = mt.fields[key];
+            if (mt.fieldMutability.has(key)) {
+              classType.fieldMutability[key] = mt.fieldMutability[key];
+            }
+          }
+          
+          // Copy methods
+          let methodKeys = mt.methods.keys();
+          while (let (true, key) = methodKeys.next()) {
+            let mMethod = mt.methods[key];
+            if (classType.methods.has(key)) {
+              let existingMethod = classType.methods[key];
+              if (!isAssignableTo(ctx, mMethod, existingMethod)) {
+                ctx.error(
+                  "Type mismatch in overridden method '" + key + "' is not compatible.",
+                  DiagnosticCode.TypeMismatch,
+                  mixinAnn.loc
+                );
+              }
+            }
+            classType.methods[key] = mMethod;
+          }
+        }
+        case _: {
+          if (!(resolvedMixin is UnknownType)) {
+            ctx.error(
+              "'" + typeToString(resolvedMixin) + "' is not a mixin.",
+              DiagnosticCode.TypeMismatch,
+              mixinAnn.loc
+            );
+          }
+        }
+      }
+      mi += 1;
     }
   }
 
@@ -4908,6 +5082,65 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
     }
     bi += 1;
   }
+
+  // 2. Check bodies
+  // Create a synthetic ClassType for "this" inside the mixin
+  let thisType = new ClassType(ctx.freshTypeId(), mixinName + "_This");
+  
+  if (mixinType.onType != null) {
+    thisType.superType = mixinType.onType;
+    let onClass = mixinType.onType as ClassType;
+    let onKeys = onClass.fields.keys();
+    while (let (true, k) = onKeys.next()) {
+      if (!k.startsWith("#") && !thisType.fields.has(k)) {
+        thisType.fields[k] = onClass.fields[k];
+        if (onClass.fieldMutability.has(k)) {
+          thisType.fieldMutability[k] = onClass.fieldMutability[k];
+        }
+      }
+    }
+    let onMethods = onClass.methods.keys();
+    while (let (true, k) = onMethods.next()) {
+      if (!thisType.methods.has(k)) {
+        thisType.methods[k] = onClass.methods[k];
+      }
+    }
+  }
+
+  // Add mixin own members
+  let mKeys = mixinType.fields.keys();
+  while (let (true, k) = mKeys.next()) {
+    thisType.fields[k] = mixinType.fields[k];
+    if (mixinType.fieldMutability.has(k)) {
+      thisType.fieldMutability[k] = mixinType.fieldMutability[k];
+    }
+  }
+  let mmKeys = mixinType.methods.keys();
+  while (let (true, k) = mmKeys.next()) {
+    thisType.methods[k] = mixinType.methods[k];
+  }
+
+  ctx.enterClass(thisType);
+
+  var bmi = 0;
+  while (bmi < md.body.length) {
+    let member = md.body[bmi];
+    match (member) {
+      case MethodDefinition as methDef: {
+        let methodName = match (methDef.name) {
+          case Identifier {name}: name
+          case _: "<unknown>"
+        };
+        if (methodName != "<constructor>" && methDef.body != null && mixinType.methods.has(methodName)) {
+           checkMethodBody(ctx, thisType, mixinType.methods[methodName], methDef);
+        }
+      }
+      case _: {}
+    }
+    bmi += 1;
+  }
+
+  ctx.exitClass();
 
   // Register mixin type.
   ctx.declareTypeName(mixinName, mixinType);
