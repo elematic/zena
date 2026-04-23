@@ -289,10 +289,30 @@ let materializeType = (si: SymbolInfo): Type => match (si.declaration) {
 ```
 
 At materialization time, all boolean flags (isFinal, isSealed, isAbstract,
-isCaseClass, isExtension) are set from the AST node. The type identity is
-established. The main pass later fills in the mutable structural parts
-(fields, methods, supertypes, type parameters) when it processes the full
-declaration body.
+isCaseClass, isExtension) are set directly from the AST node. The type identity
+is established and registered before any further work is done.
+
+#### Two-Phase Checking Strategy
+
+Type discovery and checking officially operates in two cleanly separated phases:
+
+**Phase 1: Signature Registration**
+The checker iterates over the entire module AST. When it hits declarations
+(Classes, Interfaces, Mixins, Type Aliases), it registers their _shapes_. For
+classes, it registers the superclass, applies mixins, and populates the `fields`
+and `methods` maps with their type signatures. It _does not_ check method bodies
+or field initializers.
+
+**Phase 2: Body Checking**
+The checker iterates over the AST again. This time it walks inside the bodies of
+functions, method implementations, getters/setters, and field initializers to
+type-check the actual statements and expressions. It also validates interface
+conformance here (since all signatures are now fully known).
+
+**Why?** This guarantees that a method body in Class A can reference a field or
+method in Class B, even if Class B is declared at the bottom of the file. It
+fully resolves the "cross-class forward reference" problem without requiring
+developers to order their classes topologically.
 
 #### Cycle Detection
 

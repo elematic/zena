@@ -6,15 +6,38 @@
  * never mutated — all semantic data lives in the SemanticModel.
  *
  * Architecture:
- * - Name resolution for values delegates to the scope pass's
- *   ReferenceMap (Identifier → SymbolInfo → binding type). The checker
- *   has no value scope stack.
+ *
+ * Two-phase checking (checkModule):
+ *   Phase 1 — Register all declaration signatures: imports, classes,
+ *     interfaces, enums, mixins, type aliases, declared functions, and
+ *     symbols. After Phase 1, every type identity and member signature
+ *     is available for lookup.
+ *   Phase 2 — Check all bodies: class method bodies, field initializers,
+ *     accessor bodies, variable declarations, expression statements, and
+ *     all other non-declaration statements. Interface conformance and
+ *     abstract-field validation also run here.
+ *   This separation ensures that forward references between classes work:
+ *   class A's method can call class B's method even when B is declared
+ *   after A, because B's member signatures are registered in Phase 1
+ *   before A's method body is checked in Phase 2.
+ *
+ * Name resolution:
+ * - Value names delegate to the scope pass's ReferenceMap
+ *   (Identifier → SymbolInfo → binding type). The checker has no value
+ *   scope stack.
  * - Binding types are stored in SemanticModel via SymbolInfo.id keys,
  *   set at declaration time and read at reference time.
  * - Type annotation resolution uses the checker's own type-name scope
  *   stack, since the scope pass doesn't record type annotation references.
  * - Built-in types (i32, boolean, etc.) are pre-registered as singletons
  *   in the type-name scope.
+ *
+ * On-demand type materialization:
+ * - Type declarations (classes, interfaces, etc.) are materialized
+ *   on demand by resolveTypeName when first referenced, before their
+ *   full Phase 1 registration runs.
+ *
+ * Other:
  * - Narrowing uses SymbolInfo.id keys for identity-based precision.
  * - The checker produces a SemanticModel + diagnostics as output.
  */
@@ -1096,8 +1119,9 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExpor
 
   // Pre-pass: index function declarations for lazy resolution.
   // This enables forward references and mutual recursion for annotated functions.
-  // Type declarations (classes, interfaces, etc.) are materialized on demand
-  // by resolveTypeName when first referenced — no pre-registration needed.
+  // Type declarations (classes, interfaces, etc.) are registered eagerly in
+  // Phase 1 below, but are also materialized on demand by resolveTypeName when
+  // first referenced (e.g. during Phase 1 superclass resolution).
   var fi = 0;
   while (fi < ast.body.length) {
     match (ast.body[fi]) {
@@ -1122,10 +1146,50 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExpor
     fi += 1;
   }
 
-  // Process top-level statements.
+  // === Phase 1: Register all declaration signatures ===
+  // Process imports and register type declarations (classes, interfaces,
+  // enums, mixins, type aliases, declared functions, symbols) so that ALL
+  // member signatures are available before any bodies are checked.
+  var ri = 0;
+  while (ri < ast.body.length) {
+    let stmt = ast.body[ri];
+    match (stmt) {
+      case ImportDeclaration {}: { checkStatement(ctx, stmt); }
+      case ClassDeclaration as cd: { registerClassDeclaration(ctx, cd); }
+      case InterfaceDeclaration as id: { checkInterfaceDeclaration(ctx, id); }
+      case EnumDeclaration as ed: { checkEnumDeclaration(ctx, ed); }
+      case MixinDeclaration as md: { checkMixinDeclaration(ctx, md); }
+      case TypeAliasDeclaration {name}: {
+        ctx.resolveTypeName(name.name);
+      }
+      case DeclareFunction as df: { checkDeclareFunction(ctx, df); }
+      case SymbolDeclaration as sd: { checkSymbolDeclaration(ctx, sd); }
+      case _: {} // Non-declaration statements handled in Phase 2.
+    }
+    ri += 1;
+  }
+
+  // === Phase 2: Check all bodies and non-declaration statements ===
+  // Class bodies are checked here (after all member signatures exist).
+  // Other declarations were fully handled in Phase 1 and are skipped.
   var i = 0;
   while (i < ast.body.length) {
-    checkStatement(ctx, ast.body[i]);
+    let stmt = ast.body[i];
+    match (stmt) {
+      case ClassDeclaration as cd: { checkClassBodies(ctx, cd); }
+      // Already fully handled in Phase 1.
+      case ImportDeclaration {}: {}
+      case InterfaceDeclaration {}: {}
+      case EnumDeclaration {}: {}
+      case MixinDeclaration {}: {}
+      case TypeAliasDeclaration {}: {}
+      case DeclareFunction {}: {}
+      case SymbolDeclaration {}: {}
+      case ExportAllDeclaration {}: {}
+      case ExportFromDeclaration {}: {}
+      // Everything else: variable declarations, expression statements, etc.
+      case _: { checkStatement(ctx, stmt); }
+    }
     i += 1;
   }
 
@@ -2662,7 +2726,8 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     case ExportAllDeclaration {}: {}
     case ExportFromDeclaration {}: {}
     case ClassDeclaration as cd: {
-      checkClassDeclaration(ctx, cd);
+      registerClassDeclaration(ctx, cd);
+      checkClassBodies(ctx, cd);
     }
     case InterfaceDeclaration as id: {
       checkInterfaceDeclaration(ctx, id);
@@ -3606,10 +3671,12 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 // ============================================================================
 
 /**
- * Check a class declaration: build a ClassType, register fields/methods,
- * handle case class params, and validate the class body.
+ * Register a class declaration's type identity, flags, superclass,
+ * case-class params, member signatures (fields, methods, accessors),
+ * and sealed variant types. Does NOT check method bodies, field
+ * initializers, or accessor bodies — that happens in checkClassBodies.
  */
-let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void => {
+let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   // Access Identifier.name directly. In Zena AST, ClassDeclaration.name is an Identifier
   // which has a .name: String field. Use cd.name.name directly.
   let className = cd.name.name;
@@ -4159,147 +4226,6 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
     bi = bi + 1;
   }
 
-  // === Pass 2: Check method bodies and field initializers ===
-  // Collect field names in declaration order for forward-reference detection.
-  let fieldOrder = new Array<String>();
-  var foi = 0;
-  while (foi < cd.body.length) {
-    match (cd.body[foi]) {
-      case FieldDefinition as fd: {
-        let fn = match (fd.name) {
-          case Identifier {name}: name
-          case _: "<unknown>"
-        };
-        fieldOrder.push(fn);
-      }
-      case _: {}
-    }
-    foi = foi + 1;
-  }
-
-  var fieldIndex = 0;
-  bi = 0;
-  while (bi < cd.body.length) {
-    let member = cd.body[bi];
-    match (member) {
-      case FieldDefinition as fd: {
-        if (fd.value != null) {
-          let fieldName = match (fd.name) {
-            case Identifier {name}: name
-            case _: "<unknown>"
-          };
-
-          // Temporarily hide fields declared after this one so that
-          // forward references in initializers (e.g. this.y when y comes
-          // later) are caught as "property does not exist" errors.
-          let hiddenFields = new HashMap<String, Type>();
-          var hi = fieldIndex + 1;
-          while (hi < fieldOrder.length) {
-            let laterName = fieldOrder[hi];
-            // Don't hide the current field (handles duplicate field names).
-            if (laterName != fieldName && classType.fields.has(laterName)) {
-              hiddenFields[laterName] = classType.fields[laterName];
-              classType.fields.delete(laterName);
-            }
-            hi = hi + 1;
-          }
-
-          let fieldType = classType.fields[fieldName];
-          let initType = checkExpression(ctx, fd.value as Expression, fieldType);
-
-          // Restore hidden fields.
-          let restoreKeys = hiddenFields.keys();
-          while (let (true, key) = restoreKeys.next()) {
-            classType.fields[key] = hiddenFields[key];
-          }
-
-          // Infer field type from initializer when no explicit annotation.
-          if (fieldType is UnknownType && !(initType is UnknownType)) {
-            classType.fields[fieldName] = initType;
-          } else if (!isAssignableTo(ctx, initType, fieldType)) {
-            ctx.error(
-              "Type mismatch: field '" + fieldName + "' has type '" +
-              typeToString(fieldType) + "' but initializer has type '" +
-              typeToString(initType) + "'.",
-              DiagnosticCode.TypeMismatch,
-              fd.loc
-            );
-          }
-        }
-        fieldIndex = fieldIndex + 1;
-      }
-      case MethodDefinition as md: {
-        if (md.body != null) {
-          let methodName = match (md.name) {
-            case Identifier {name}: name
-            case _: "<unknown>"
-          };
-          if (methodName == "<constructor>") {
-            if (classType.constructorType != null) {
-              checkMethodBody(ctx, classType, classType.constructorType as FunctionType, md);
-            }
-            // Derived class constructors must call super().
-            if (classType.superType != null && md.superInitializer == null && !classType.isCaseClass) {
-              ctx.error(
-                "Constructors in derived classes must call super().",
-                DiagnosticCode.IncompatibleTypes,
-                md.loc
-              );
-            }
-          } else {
-            if (classType.methods.has(methodName)) {
-              checkMethodBody(ctx, classType, classType.methods[methodName], md);
-            }
-          }
-        }
-      }
-      case AccessorDeclaration as acc: {
-        let accName = match (acc.name) {
-          case Identifier {name}: name
-          case _: "<unknown>"
-        };
-        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-
-        // Check getter body.
-        if (acc.getter != null) {
-          let getterBlock = acc.getter as BlockStatement;
-          ctx.enterScope();
-          let prevReturnType = ctx.returnType;
-          ctx.setReturnType(accType);
-          var gi = 0;
-          while (gi < getterBlock.body.length) {
-            checkStatement(ctx, getterBlock.body[gi]);
-            gi += 1;
-          }
-          ctx.setReturnType(prevReturnType);
-          ctx.exitScope();
-        }
-
-        // Check setter body.
-        if (acc.setter != null) {
-          match (acc.setter as Node) {
-            case SetterInfo as si: {
-              ctx.enterScope();
-              let paramInfo = ctx.model.resolveDeclaration(si.param);
-              if (paramInfo != null) {
-                ctx.declareBinding(paramInfo as SymbolInfo, accType);
-              }
-              var sbi = 0;
-              while (sbi < si.body.body.length) {
-                checkStatement(ctx, si.body.body[sbi]);
-                sbi += 1;
-              }
-              ctx.exitScope();
-            }
-            case _: {}
-          }
-        }
-      }
-      case _: {}
-    }
-    bi = bi + 1;
-  }
-
   // Handle sealed class variants.
   if (cd.isSealed && cd.sealedVariants != null) {
     let variants = cd.sealedVariants as Array<SealedVariant>;
@@ -4448,6 +4374,182 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
 
       vi = vi + 1;
     }
+  }
+
+  ctx.exitClass();
+  ctx.exitScope();
+};
+
+/**
+ * Check class method bodies, field initializers, accessor bodies, interface
+ * conformance, and abstract field/method implementation. Called in Phase 2
+ * after all declaration signatures have been registered.
+ */
+let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
+  let className = cd.name.name;
+
+  // Look up the ClassType registered by registerClassDeclaration.
+  var classType: ClassType = new ClassType(ctx.freshTypeId(), className);
+  let resolved = ctx.resolveTypeName(className);
+  if (resolved != null) {
+    match (resolved as Type) {
+      case ClassType as ct: { classType = ct; }
+      case _: {}
+    }
+  }
+
+  // Re-enter scope for type parameters so method bodies can reference them.
+  ctx.enterScope();
+  if (classType.typeParameters != null) {
+    let tps = classType.typeParameters as Array<TypeParameterType>;
+    var tpi = 0;
+    while (tpi < tps.length) {
+      ctx.declareTypeName(tps[tpi].name, tps[tpi]);
+      tpi = tpi + 1;
+    }
+  }
+
+  ctx.enterClass(classType);
+
+  // Check method bodies and field initializers.
+  // Collect field names in declaration order for forward-reference detection.
+  let fieldOrder = new Array<String>();
+  var foi = 0;
+  while (foi < cd.body.length) {
+    match (cd.body[foi]) {
+      case FieldDefinition as fd: {
+        let fn = match (fd.name) {
+          case Identifier {name}: name
+          case _: "<unknown>"
+        };
+        fieldOrder.push(fn);
+      }
+      case _: {}
+    }
+    foi = foi + 1;
+  }
+
+  var fieldIndex = 0;
+  var bi = 0;
+  while (bi < cd.body.length) {
+    let member = cd.body[bi];
+    match (member) {
+      case FieldDefinition as fd: {
+        if (fd.value != null) {
+          let fieldName = match (fd.name) {
+            case Identifier {name}: name
+            case _: "<unknown>"
+          };
+
+          // Temporarily hide fields declared after this one so that
+          // forward references in initializers (e.g. this.y when y comes
+          // later) are caught as "property does not exist" errors.
+          let hiddenFields = new HashMap<String, Type>();
+          var hi = fieldIndex + 1;
+          while (hi < fieldOrder.length) {
+            let laterName = fieldOrder[hi];
+            // Don't hide the current field (handles duplicate field names).
+            if (laterName != fieldName && classType.fields.has(laterName)) {
+              hiddenFields[laterName] = classType.fields[laterName];
+              classType.fields.delete(laterName);
+            }
+            hi = hi + 1;
+          }
+
+          let fieldType = classType.fields[fieldName];
+          let initType = checkExpression(ctx, fd.value as Expression, fieldType);
+
+          // Restore hidden fields.
+          let restoreKeys = hiddenFields.keys();
+          while (let (true, key) = restoreKeys.next()) {
+            classType.fields[key] = hiddenFields[key];
+          }
+
+          // Infer field type from initializer when no explicit annotation.
+          if (fieldType is UnknownType && !(initType is UnknownType)) {
+            classType.fields[fieldName] = initType;
+          } else if (!isAssignableTo(ctx, initType, fieldType)) {
+            ctx.error(
+              "Type mismatch: field '" + fieldName + "' has type '" +
+              typeToString(fieldType) + "' but initializer has type '" +
+              typeToString(initType) + "'.",
+              DiagnosticCode.TypeMismatch,
+              fd.loc
+            );
+          }
+        }
+        fieldIndex = fieldIndex + 1;
+      }
+      case MethodDefinition as md: {
+        if (md.body != null) {
+          let methodName = match (md.name) {
+            case Identifier {name}: name
+            case _: "<unknown>"
+          };
+          if (methodName == "<constructor>") {
+            if (classType.constructorType != null) {
+              checkMethodBody(ctx, classType, classType.constructorType as FunctionType, md);
+            }
+            // Derived class constructors must call super().
+            if (classType.superType != null && md.superInitializer == null && !classType.isCaseClass) {
+              ctx.error(
+                "Constructors in derived classes must call super().",
+                DiagnosticCode.IncompatibleTypes,
+                md.loc
+              );
+            }
+          } else {
+            if (classType.methods.has(methodName)) {
+              checkMethodBody(ctx, classType, classType.methods[methodName], md);
+            }
+          }
+        }
+      }
+      case AccessorDeclaration as acc: {
+        let accName = match (acc.name) {
+          case Identifier {name}: name
+          case _: "<unknown>"
+        };
+        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+
+        // Check getter body.
+        if (acc.getter != null) {
+          let getterBlock = acc.getter as BlockStatement;
+          ctx.enterScope();
+          let prevReturnType = ctx.returnType;
+          ctx.setReturnType(accType);
+          var gi = 0;
+          while (gi < getterBlock.body.length) {
+            checkStatement(ctx, getterBlock.body[gi]);
+            gi += 1;
+          }
+          ctx.setReturnType(prevReturnType);
+          ctx.exitScope();
+        }
+
+        // Check setter body.
+        if (acc.setter != null) {
+          match (acc.setter as Node) {
+            case SetterInfo as si: {
+              ctx.enterScope();
+              let paramInfo = ctx.model.resolveDeclaration(si.param);
+              if (paramInfo != null) {
+                ctx.declareBinding(paramInfo as SymbolInfo, accType);
+              }
+              var sbi = 0;
+              while (sbi < si.body.body.length) {
+                checkStatement(ctx, si.body.body[sbi]);
+                sbi += 1;
+              }
+              ctx.exitScope();
+            }
+            case _: {}
+          }
+        }
+      }
+      case _: {}
+    }
+    bi = bi + 1;
   }
 
   // Check interface conformance.

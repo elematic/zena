@@ -6,7 +6,10 @@ import {
   predeclareType,
   predeclareSealedVariants,
   predeclareFunction,
+  predeclareSymbol,
   processImport,
+  registerInterfaceAndMixinSignatures,
+  registerClassSignatures,
   resolveTypeAliases,
 } from './statements.js';
 import {
@@ -137,7 +140,26 @@ export class TypeChecker {
       predeclareFunction(ctx, stmt);
     }
 
-    // Fifth pass: fully check all statements
+    // Fifth pass: pre-declare all symbols so they're available for class
+    // member registration (symbol fields like `var :mySymbol: T`)
+    for (const stmt of ctx.module!.body) {
+      predeclareSymbol(ctx, stmt);
+    }
+
+    // Pass 5.5: register all interface and mixin member signatures
+    // This is needed before class signatures because classes may use them in 'implements' and 'with'
+    for (const stmt of ctx.module!.body) {
+      registerInterfaceAndMixinSignatures(ctx, stmt);
+    }
+
+    // Sixth pass: register all class member signatures (fields, methods, accessors)
+    // This enables cross-class forward references (class A's method can call
+    // class B's method even when B is declared after A).
+    for (const stmt of ctx.module!.body) {
+      registerClassSignatures(ctx, stmt);
+    }
+
+    // Sixth pass: fully check all statements (method bodies, field initializers, etc.)
     for (const stmt of ctx.module!.body) {
       checkStatement(ctx, stmt);
     }

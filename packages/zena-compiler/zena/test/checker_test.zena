@@ -472,6 +472,14 @@ export let tests = suite('Checker API', (): void => {
         "class Builder {\n  build(): i32 { return this.#process(); }\n  #process(): i32 { return 42; }\n}"
       );
     });
+
+    test('cross-class forward reference', (ctx: TestContext): void => {
+      // Class A's method calls class B's method — B is declared AFTER A.
+      // The two-phase checker registers all member signatures before checking bodies.
+      checkOk(
+        "class A {\n  getValue(): i32 {\n    let b = new B(42);\n    return b.getDouble();\n  }\n}\nclass B {\n  value: i32;\n  new(this.value);\n  getDouble(): i32 { return this.value * 2; }\n}"
+      );
+    });
   });
 
   // ==========================================================================

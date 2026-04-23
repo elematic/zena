@@ -1195,6 +1195,50 @@ const predeclareInterface = (
 // Statement Checking
 // =============================================================================
 
+/**
+ * Register all class member signatures (fields, methods, accessors) for a
+ * top-level class declaration. Called in a dedicated pass before the main
+ * checking pass so that cross-class forward references work (class A's
+ * method body can reference class B's members even when B is declared later).
+ */
+/**
+ * Pre-declare a symbol so it's available during class member registration.
+ */
+export function predeclareSymbol(ctx: CheckerContext, stmt: Statement) {
+  if (stmt.type !== NodeType.SymbolDeclaration) return;
+  checkSymbolDeclaration(ctx, stmt as SymbolDeclaration);
+}
+
+export function registerInterfaceAndMixinSignatures(
+  ctx: CheckerContext,
+  stmt: Statement,
+) {
+  if (
+    stmt.type !== NodeType.InterfaceDeclaration &&
+    stmt.type !== NodeType.MixinDeclaration
+  ) {
+    return;
+  }
+  (ctx as any)._classRegistrationOnly = true;
+
+  if (stmt.type === NodeType.InterfaceDeclaration) {
+    checkInterfaceDeclaration(ctx, stmt as InterfaceDeclaration);
+  } else if (stmt.type === NodeType.MixinDeclaration) {
+    checkMixinDeclaration(ctx, stmt as MixinDeclaration);
+  }
+
+  (ctx as any)._classRegistrationOnly = false;
+}
+
+export function registerClassSignatures(ctx: CheckerContext, stmt: Statement) {
+  if (stmt.type !== NodeType.ClassDeclaration) {
+    return;
+  }
+  (ctx as any)._classRegistrationOnly = true;
+  checkClassDeclaration(ctx, stmt as ClassDeclaration);
+  (ctx as any)._classRegistrationOnly = false;
+}
+
 export function checkStatement(ctx: CheckerContext, stmt: Statement) {
   switch (stmt.type) {
     case NodeType.ImportDeclaration:
@@ -1411,6 +1455,7 @@ function checkTypeAliasDeclaration(
  * Symbols are compile-time unique identifiers used for method/field names.
  */
 function checkSymbolDeclaration(ctx: CheckerContext, decl: SymbolDeclaration) {
+  if (decl.inferredType) return; // Already processed in predeclaration pass
   const name = decl.name.name;
 
   // Generate a debug name based on module path + symbol name for diagnostics
@@ -2837,11 +2882,336 @@ function resolveMemberName(
   }
 }
 
+/**
+ * Check class method bodies, field initializers, accessor bodies, and
+ * sealed variant processing. Called when member signatures were already
+ * registered in a prior pass (classRegistrationOnly mode).
+ */
+function checkClassBodies(ctx: CheckerContext, decl: ClassDeclaration) {
+  const className = decl.name.name;
+  const classType = decl.inferredType as ClassType;
+  if (!classType) return;
+
+  const superType = classType.superType;
+  const typeParameters = classType.typeParameters ?? [];
+
+  // Re-enter class context and scope with type parameters.
+  ctx.enterClass(classType);
+  ctx.enterScope();
+  for (const tp of typeParameters) {
+    ctx.declare(tp.name, tp, 'type');
+  }
+
+  // Check bodies: method bodies, field initializers, accessor bodies.
+  const previousInitializedFields = new Set(ctx.initializedFields);
+  ctx.initializedFields.clear();
+  if (superType) {
+    for (const [name] of superType.fields) {
+      ctx.initializedFields.add(name);
+    }
+  }
+
+  if (decl.caseParams) {
+    for (const param of decl.caseParams) {
+      ctx.initializedFields.add(param.name.name);
+    }
+  }
+
+  for (const member of decl.body) {
+    if (member.type === NodeType.MethodDefinition) {
+      checkMethodDefinition(ctx, member);
+    } else if (member.type === NodeType.FieldDefinition) {
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+
+      if (memberNameInfo.isSymbol) {
+        if (member.value) {
+          ctx.isCheckingFieldInitializer = true;
+          const valueType = checkExpression(ctx, member.value);
+          ctx.isCheckingFieldInitializer = false;
+
+          const fieldType = classType.symbolFields?.get(
+            memberNameInfo.symbolType!,
+          );
+          if (fieldType && !isAssignableTo(ctx, valueType, fieldType)) {
+            ctx.diagnostics.reportError(
+              `Type mismatch for symbol field '${memberNameInfo.symbolType?.debugName ?? '<symbol>'}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+              DiagnosticCode.TypeMismatch,
+              undefined /* TODO fix location */,
+            );
+          }
+        }
+        continue;
+      }
+      const memberName = memberNameInfo.name;
+
+      if (member.value && member.typeAnnotation) {
+        ctx.isCheckingFieldInitializer = true;
+        const valueType = checkExpression(ctx, member.value);
+        ctx.isCheckingFieldInitializer = false;
+
+        const fieldType = classType.fields.get(memberName)!;
+        if (!isAssignableTo(ctx, valueType, fieldType)) {
+          ctx.diagnostics.reportError(
+            `Type mismatch for field '${memberName}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+            DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
+          );
+        }
+      }
+      ctx.initializedFields.add(memberName);
+    } else if (member.type === NodeType.AccessorDeclaration) {
+      checkAccessorDeclaration(ctx, member);
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (!memberNameInfo.isSymbol) {
+        ctx.initializedFields.add(memberNameInfo.name);
+      }
+    }
+  }
+
+  ctx.initializedFields = previousInitializedFields;
+
+  // Check for uninitialized non-nullable fields in classes without constructors
+  if (!classType.constructorType && !decl.isAbstract && !decl.isSealed) {
+    for (const [fieldName, fieldType] of classType.fields) {
+      const isInherited =
+        superType &&
+        superType.fields.has(fieldName) &&
+        !fieldName.startsWith('#');
+      if (isInherited) continue;
+      if (classType.declaredFields?.has(fieldName)) continue;
+      if (classType.genericSource?.declaredFields?.has(fieldName)) continue;
+      if (classType.fieldsWithInitializers?.has(fieldName)) continue;
+      if (classType.genericSource?.fieldsWithInitializers?.has(fieldName))
+        continue;
+      if (isNullableType(fieldType)) continue;
+
+      ctx.diagnostics.reportError(
+        `Field '${fieldName}' must be initialized. Add an initializer or a constructor.`,
+        DiagnosticCode.UninitializedField,
+        ctx.getLocation(decl.name.loc),
+      );
+    }
+  }
+
+  // Check interface implementation (deferred from registration pass since
+  // interfaces aren't populated until checkStatement runs).
+  if (decl.implements) {
+    for (const impl of decl.implements) {
+      const type = resolveTypeAnnotation(ctx, impl);
+      if (type.kind !== TypeKind.Interface) {
+        const name =
+          impl.type === NodeType.TypeAnnotation ? impl.name : '<union>';
+        ctx.diagnostics.reportError(
+          `Type '${name}' is not an interface.`,
+          DiagnosticCode.TypeMismatch,
+          ctx.getLocation(impl.loc),
+        );
+        continue;
+      }
+      const interfaceType = type as InterfaceType;
+      if (!classType.implements.includes(interfaceType)) {
+        classType.implements.push(interfaceType);
+      }
+
+      const thisTypeMap = new Map<string, Type>();
+      thisTypeMap.set('$this', ctx.currentClass!);
+
+      for (const [name, type] of interfaceType.methods) {
+        if (!classType.methods.has(name)) {
+          let errorMsg = `Method '${name}' is missing.`;
+          if (isGetterName(name)) {
+            errorMsg = `Getter for '${getPropertyNameFromAccessor(name)}' is missing.`;
+          } else if (isSetterName(name)) {
+            errorMsg = `Setter for '${getPropertyNameFromAccessor(name)}' is missing.`;
+          }
+
+          ctx.diagnostics.reportError(
+            `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${errorMsg}`,
+            DiagnosticCode.PropertyNotFound,
+            ctx.getLocation(impl.loc),
+          );
+        } else {
+          const methodType = classType.methods.get(name)!;
+          const substitutedType = substituteType(type, thisTypeMap, ctx);
+          if (!isAssignableTo(ctx, methodType, substitutedType)) {
+            let memberName = `Method '${name}'`;
+            if (isGetterName(name)) {
+              memberName = `Getter for '${getPropertyNameFromAccessor(name)}'`;
+            } else if (isSetterName(name)) {
+              memberName = `Setter for '${getPropertyNameFromAccessor(name)}'`;
+            }
+
+            ctx.diagnostics.reportError(
+              `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${memberName} is type '${typeToString(methodType)}' but expected '${typeToString(substitutedType)}'.`,
+              DiagnosticCode.TypeMismatch,
+              ctx.getLocation(impl.loc),
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // Check abstract methods/fields implementation
+  if (!decl.isAbstract && !decl.isSealed) {
+    for (const [name, method] of classType.methods) {
+      if (method.isAbstract) {
+        const label = isGetterName(name)
+          ? `abstract field '${getPropertyNameFromAccessor(name)}'`
+          : `abstract method '${name}'`;
+        ctx.diagnostics.reportError(
+          `Non-abstract class '${className}' does not implement ${label}.`,
+          DiagnosticCode.AbstractMethodNotImplemented,
+          ctx.getLocation(decl.name.loc),
+        );
+      }
+    }
+  }
+
+  if (decl.isSealed && !decl.sealedVariants) {
+    classType.sealedVariants = [];
+  }
+
+  ctx.exitClass();
+  ctx.exitScope();
+
+  // Process sealed class variants (after exiting class scope so variants
+  // are declared in the parent scope and visible to match expressions)
+  if (decl.isSealed && decl.sealedVariants) {
+    classType.sealedVariants = [];
+
+    for (const variant of decl.sealedVariants) {
+      const variantName = variant.name.name;
+
+      const existingType = ctx.resolveType(variantName);
+
+      if (variant.params) {
+        if (existingType && existingType.kind === TypeKind.Class) {
+          const syntheticDecl = (variant as any)._syntheticDecl as
+            | ClassDeclaration
+            | undefined;
+          if (!syntheticDecl || syntheticDecl.inferredType !== existingType) {
+            ctx.diagnostics.reportError(
+              `Duplicate declaration: inline variant '${variantName}' conflicts with existing class.`,
+              DiagnosticCode.DuplicateDeclaration,
+              ctx.getLocation(variant.name.loc),
+            );
+            continue;
+          }
+
+          checkClassDeclaration(ctx, syntheticDecl);
+
+          if (ctx.module) {
+            ctx.module.body.push(syntheticDecl);
+          }
+
+          const variantType = syntheticDecl.inferredType as
+            | ClassType
+            | undefined;
+          if (variantType) {
+            classType.sealedVariants.push(variantType);
+          }
+          continue;
+        }
+
+        const syntheticDecl: ClassDeclaration = {
+          type: NodeType.ClassDeclaration,
+          name: variant.name,
+          typeParameters: decl.typeParameters,
+          caseParams: variant.params,
+          superClass: buildVariantSuperClass(className, decl),
+          body: [],
+          exported: decl.exported,
+          isFinal: false,
+          isAbstract: false,
+          isExtension: false,
+          isSealed: false,
+          loc: variant.loc,
+        };
+
+        predeclareClass(ctx, syntheticDecl);
+        checkClassDeclaration(ctx, syntheticDecl);
+
+        if (ctx.module) {
+          ctx.module.body.push(syntheticDecl);
+        }
+
+        const variantType = syntheticDecl.inferredType as ClassType | undefined;
+        if (variantType) {
+          classType.sealedVariants.push(variantType);
+        }
+      } else {
+        const preDeclaredSynth = (variant as any)._syntheticDecl as
+          | ClassDeclaration
+          | undefined;
+
+        if (
+          preDeclaredSynth &&
+          existingType &&
+          existingType.kind === TypeKind.Class &&
+          preDeclaredSynth.inferredType === existingType
+        ) {
+          checkClassDeclaration(ctx, preDeclaredSynth);
+
+          if (ctx.module) {
+            ctx.module.body.push(preDeclaredSynth);
+          }
+
+          const variantType = preDeclaredSynth.inferredType as
+            | ClassType
+            | undefined;
+          if (variantType) {
+            classType.sealedVariants.push(variantType);
+          }
+        } else if (existingType && existingType.kind === TypeKind.Class) {
+          classType.sealedVariants.push(existingType as ClassType);
+        } else {
+          const syntheticDecl: ClassDeclaration = {
+            type: NodeType.ClassDeclaration,
+            name: variant.name,
+            typeParameters: decl.typeParameters,
+            superClass: buildVariantSuperClass(className, decl),
+            body: [],
+            exported: decl.exported,
+            isFinal: false,
+            isAbstract: false,
+            isExtension: false,
+            isSealed: false,
+            loc: variant.loc,
+          };
+
+          predeclareClass(ctx, syntheticDecl);
+          checkClassDeclaration(ctx, syntheticDecl);
+
+          if (ctx.module) {
+            ctx.module.body.push(syntheticDecl);
+          }
+
+          const variantType = syntheticDecl.inferredType as
+            | ClassType
+            | undefined;
+          if (variantType) {
+            classType.sealedVariants.push(variantType);
+          }
+        }
+      }
+    }
+  }
+
+  (decl as any)._checked = true;
+}
+
 function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   const className = decl.name.name;
 
   // Skip re-checking if this class was already fully checked (e.g., synthetic sealed variant)
   if ((decl as any)._checked) return;
+
+  // Members already registered in the registration pass — skip to body checking.
+  if ((decl as any)._membersRegistered) {
+    checkClassBodies(ctx, decl);
+    return;
+  }
 
   // Local classes (classes declared inside functions) are not supported
   if (ctx.currentFunctionReturnType !== null) {
@@ -3916,7 +4286,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
-  // Check interface implementation
+  (decl as any)._membersRegistered = true;
+
+  // Resolve 'implements' interfaces during Phase 1 so they are available for conformance checks
   if (decl.implements) {
     for (const impl of decl.implements) {
       const type = resolveTypeAnnotation(ctx, impl);
@@ -3931,8 +4303,23 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         continue;
       }
       const interfaceType = type as InterfaceType;
-      classType.implements.push(interfaceType);
+      // Don't duplicate if already added
+      if (!classType.implements.includes(interfaceType)) {
+        classType.implements.push(interfaceType);
+      }
+    }
+  }
 
+  // In registration-only mode (Phase 1), exit now.
+  if ((ctx as any)._classRegistrationOnly) {
+    ctx.exitClass();
+    ctx.exitScope();
+    return;
+  }
+
+  // Phase 2: Check interface implementation correctness
+  if (decl.implements) {
+    for (const interfaceType of classType.implements) {
       // Create a type map to substitute `this` with the implementing class.
       // Use ctx.currentClass which has typeArguments set to typeParameters for generics.
       const thisTypeMap = new Map<string, Type>();
@@ -3951,7 +4338,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           ctx.diagnostics.reportError(
             `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${errorMsg}`,
             DiagnosticCode.PropertyNotFound,
-            ctx.getLocation(impl.loc),
+            ctx.getLocation(decl.name.loc), // fallback location
           );
         } else {
           const methodType = classType.methods.get(name)!;
@@ -3968,7 +4355,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${memberName} is type '${typeToString(methodType)}' but expected '${typeToString(substitutedType)}'.`,
               DiagnosticCode.TypeMismatch,
-              ctx.getLocation(impl.loc),
+              ctx.getLocation(decl.name.loc), // fallback location
             );
           }
         }
@@ -4256,6 +4643,8 @@ function checkInterfaceDeclaration(
   ctx: CheckerContext,
   decl: InterfaceDeclaration,
 ) {
+  if ((decl as any)._membersRegistered) return;
+
   const interfaceName = decl.name.name;
 
   const typeParameters: TypeParameterType[] = [];
@@ -4511,6 +4900,8 @@ function checkInterfaceDeclaration(
     }
     // SymbolDeclaration already processed in first pass
   }
+
+  (decl as any)._membersRegistered = true;
 
   ctx.exitInterface();
   ctx.exitScope();
@@ -4942,6 +5333,12 @@ function checkAccessorDeclaration(
 }
 
 function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
+  if ((decl as any)._membersRegistered) {
+    if ((ctx as any)._classRegistrationOnly) return;
+    checkMixinBodies(ctx, decl);
+    return;
+  }
+
   const mixinName = decl.name.name;
 
   const typeParameters: TypeParameterType[] = [];
@@ -5250,6 +5647,24 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         });
       }
     }
+  }
+
+  (decl as any)._membersRegistered = true;
+  ctx.exitScope();
+
+  if ((ctx as any)._classRegistrationOnly) return;
+  checkMixinBodies(ctx, decl);
+}
+
+function checkMixinBodies(ctx: CheckerContext, decl: MixinDeclaration) {
+  const mixinName = decl.name.name;
+  const mixinType = decl.inferredType as MixinType;
+  const typeParameters = mixinType.typeParameters ?? [];
+  const onType = mixinType.onType;
+
+  ctx.enterScope();
+  for (const tp of typeParameters) {
+    ctx.declare(tp.name, tp, 'type');
   }
 
   // 2. Check bodies
