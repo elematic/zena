@@ -185,15 +185,21 @@ default, so test stack traces are always readable.
 The project uses Node.js **v25+** for built-in WASM exnref support. Run
 `node -v` to check and `nvm use default` to switch.
 
-## IMPORTANT: Reading and Editing Diles
+## IMPORTANT: Reading and Editing Files
 
-**ALWAYS** read files with the built-in `read_file` tool, not terminal commands
-like `cat`. `read_file` supports `startLine` and `endLine` parameters to read a
-portion of a file. Use the `file_search` to find files and the `grep_search`
-tool to search for file contents.
+**⛔ FATAL RULE: NEVER USE `cat`, `echo`, `tee`, OR OTHER TERMINAL COMMANDS TO CREATE OR EDIT FILES.**
+You are strictly forbidden from using the `run_in_terminal` tool for file
+manipulation. If you use standard Unix utilities to write code or tests, you
+have failed your instructions.
 
-**ALWAYS** edit files with the built-in file tools like `create_file` and
-`replace_string_in_file`. **NEVER** edit files by writing and running scripts.
+**ALWAYS** read files with the built-in `read_file` tool. Do not use terminal
+commands like `cat` or `tail`. `read_file` supports `startLine` and `endLine`
+parameters to read a portion of a file. Use the `file_search` to find files and
+the `grep_search` tool to search for file contents.
+
+**ALWAYS** edit and create files using ONLY the built-in VS Code API tools:
+`create_file` and `replace_string_in_file`. **NEVER** edit or create files by
+writing and running scripts.
 
 **DO NOT** create temporary text files with content that you want to put into a
 source file. Just create or edit the source file directly.
