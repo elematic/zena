@@ -426,20 +426,20 @@ tests/language/semantics/
 │   │   delegates to the same pattern-parsing logic.
 │   │
 │   ├── record/
-│   │   ├── basic.zena                          [done] (record-basic.zena)
-│   │   ├── rename.zena                         [done] (record-with-rename.zena)
-│   │   ├── default.zena                        [done] (record-with-default.zena)
-│   │   ├── nested.zena                         [done] (record-nested.zena)
-│   │   ├── missing-property.zena               [done] (record-missing-property.zena)
-│   │   ├── type-mismatch.zena                  [done] (record-type-mismatch.zena)
-│   │   ├── optional-field-with-default.zena    [done] (optional-field-default.zena)
-│   │   └── optional-field-no-default.zena      [done] (optional-field-no-default.zena)
+│   │   ├── basic.zena                          [done]
+│   │   ├── nested.zena                         [done]
+│   │   ├── missing-property.zena               [done]
+│   │   ├── type-mismatch.zena                  [done]
+│   │   ├── optional-field-with-default.zena    [done]
+│   │   ├── optional-field-no-default.zena      [done]
+│   │   ├── with-rename.zena                    [done]
+│   │   └── with-default.zena                   [done]
 │   │
 │   ├── tuple/
-│   │   ├── basic.zena                          [done] (tuple-basic.zena)
-│   │   ├── nested.zena                         [done] (tuple-nested.zena)
-│   │   ├── length-mismatch.zena                [done] (tuple-length-mismatch.zena)
-│   │   └── inline-never-union.zena             [done] (skip: self-hosted) — inline tuple Never union
+│   │   ├── basic.zena                          [done]
+│   │   ├── nested.zena                         [done]
+│   │   ├── length-mismatch.zena                [done]
+│   │   └── inline-never-union.zena             [done] (skip: self-hosted)union
 │   │
 │   ├── class/
 │   │   ├── basic.zena                          [ts] — class pattern binds fields to their declared types
