@@ -1045,9 +1045,14 @@ export class Parser {
     let elements = new Array<Node | null>(4);
     
     while (!this.#check(TokenType.RBracket) && !this.#isAtEnd()) {
-      // TODO: Support holes in tuple patterns (null elements)
+      // Support holes: [a, , c]
+      if (this.#match(TokenType.Comma)) {
+        elements.push(null);
+        continue;
+      }
+
       elements.push(this.#parsePattern());
-      
+
       if (!this.#check(TokenType.RBracket)) {
         this.#consume(TokenType.Comma, "Expected ',' in tuple pattern");
       }
@@ -1059,11 +1064,18 @@ export class Parser {
   
   #parseParenTuplePattern(startToken: Token, matchContext: boolean): TuplePattern {
     let elements = new Array<Node | null>(4);
-    
-    if (!this.#check(TokenType.RParen)) {
+
+    while (!this.#check(TokenType.RParen) && !this.#isAtEnd()) {
+      // Support holes: (a, , c)
+      if (this.#match(TokenType.Comma)) {
+        elements.push(null);
+        continue;
+      }
+
       elements.push(if (matchContext) { this.#parseMatchPattern() } else { this.#parsePattern() });
-      while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
-        elements.push(if (matchContext) { this.#parseMatchPattern() } else { this.#parsePattern() });
+
+      if (!this.#check(TokenType.RParen)) {
+        this.#consume(TokenType.Comma, "Expected ',' in tuple pattern");
       }
     }
     

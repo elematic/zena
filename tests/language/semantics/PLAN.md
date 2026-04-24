@@ -17,6 +17,16 @@ self-hosted checker can run against.
 - Error patterns are **regex** in the bootstrap runner and **substring** in the
   self-hosted runner. Use simple substrings that work for both.
 
+### Placement Rules (Destructuring vs Patterns vs Match)
+
+- `destructuring/` is for **irrefutable binding forms** in declaration sites
+  (`let`/`var` destructure, parameter destructure, for-in destructure).
+- `control-flow/match/` is for **match-expression behavior**
+  (exhaustiveness, guards, unreachable arms, match-specific narrowing).
+- `patterns/` is for **reusable pattern-language semantics** that are not owned
+  by one syntax site (class/literal/composite/as patterns, and refutability
+  rules reused by `match`, `if-let`, `while-let`, and declarations).
+
 ## Test Format
 
 ### Error tests (checking that bad code is rejected)
@@ -421,9 +431,9 @@ tests/language/semantics/
 │
 ├── destructuring/
 │   │
-│   │   Strategy: comprehensive pattern-type coverage here; variables/, functions/,
-│   │   and control-flow/match/ carry smoke tests to verify each declaration site
-│   │   delegates to the same pattern-parsing logic.
+│   │   Strategy: declaration-site destructuring only (irrefutable binding forms).
+│   │   Pattern-language semantics that also apply to `match`/`if-let`/`while-let`
+│   │   belong under `patterns/`.
 │   │
 │   ├── record/
 │   │   ├── basic.zena                          [done]
@@ -432,6 +442,8 @@ tests/language/semantics/
 │   │   ├── type-mismatch.zena                  [done]
 │   │   ├── optional-field-with-default.zena    [done]
 │   │   ├── optional-field-no-default.zena      [done]
+│   │   ├── multiple-optional-defaults.zena     [done]
+│   │   ├── default-type-mismatch.zena          [done] (skip: self-hosted)
 │   │   ├── with-rename.zena                    [done]
 │   │   └── with-default.zena                   [done]
 │   │
@@ -439,7 +451,14 @@ tests/language/semantics/
 │   │   ├── basic.zena                          [done]
 │   │   ├── nested.zena                         [done]
 │   │   ├── length-mismatch.zena                [done]
-│   │   └── inline-never-union.zena             [done] (skip: self-hosted)union
+│   │   ├── redeclare-existing-variable.zena    [done]
+│   │   ├── with-skipping.zena                  [done] (skip: self-hosted)
+│   │   └── inline-never-union.zena             [done] (skip: self-hosted)
+│
+├── patterns/
+│   │
+│   │   Strategy: pattern-language semantics reused across `match`, `if-let`,
+│   │   `while-let`, and declaration contexts.
 │   │
 │   ├── class/
 │   │   ├── basic.zena                          [ts] — class pattern binds fields to their declared types
@@ -576,7 +595,7 @@ tests/language/semantics/
 | **Interfaces**             | 10      | 0            | 0       | 0           | 10       |
 | **Generics**               | 12      | 0            | 0       | 0           | 12       |
 | **Type System**            | 2       | ~30          | 1       | 0           | ~33      |
-| **Pattern Matching**       | 1       | ~12          | 0       | 0           | ~13      |
+| **Match & Patterns**       | 1       | ~12          | 0       | 0           | ~13      |
 | **Destructuring**          | 0       | ~9           | 0       | 0           | ~9       |
 | **Null Coal. / Opt Chain** | 9       | 0            | 2       | 0           | 11       |
 | **Mixins**                 | 0       | ~10          | 0       | 0           | ~10      |
@@ -622,14 +641,14 @@ need fixing.
 13. **Type Aliases** — basic and generic aliases
 14. **Union Types** — assignability, null unions
 15. **Generics** — instantiation, inference, constraints
-16. **Pattern Matching** — class/record/tuple patterns, exhaustiveness
+16. **Match & Patterns** — match semantics (exhaustiveness/guards/unreachable) plus reusable class/record/tuple/literal/composite pattern rules
 17. **Literal Types** — preservation, widening, literal unions
 
 ### Priority 3: Partially Implemented — Write Tests as Targets
 
 These need self-hosted checker work before they'll pass.
 
-18. **Destructuring** — record and tuple destructuring in let
+18. **Destructuring** — declaration-site irrefutable destructuring (let/params/for-in)
 19. **Type Narrowing** — null checks, is-expression narrowing
 20. **Abstract Classes** — instantiation, must-implement
 21. **Final Classes** — cannot extend/override

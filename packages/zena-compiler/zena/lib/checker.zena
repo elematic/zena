@@ -2815,7 +2815,16 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
     case IdentifierPattern as pat: {
       let info = ctx.model.resolveDeclaration(pat);
       if (info != null) {
-        ctx.declareBinding(info as SymbolInfo, t);
+        let si = info as SymbolInfo;
+        if (si.declaration != null && (si.declaration as Node) != pat) {
+          ctx.error(
+            "Variable '" + pat.name + "' is already declared in this scope.",
+            DiagnosticCode.DuplicateDeclaration,
+            pat.loc
+          );
+        } else {
+          ctx.declareBinding(si, t);
+        }
       }
     }
     case RecordPattern {properties}: {
@@ -2940,7 +2949,17 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       }
     }
     case AssignmentPattern {left, right}: {
-      // `name = default` — bind the name; the default provides the type.
+      // `name = default` — default expression must be assignable to the
+      // target binding type, then bind the left-hand pattern.
+      let defaultType = checkExpression(ctx, right, t);
+      if (!isAssignableTo(ctx, defaultType, t)) {
+        ctx.error(
+          "Type mismatch: '" + typeToString(defaultType) +
+          "' is not assignable to '" + typeToString(t) + "'.",
+          DiagnosticCode.TypeMismatch,
+          pattern.loc
+        );
+      }
       bindPattern(ctx, left as Pattern, t);
     }
     case ClassPattern as cp: {
