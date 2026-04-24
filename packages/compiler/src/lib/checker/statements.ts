@@ -764,7 +764,9 @@ export function resolveTypeAliases(ctx: CheckerContext, stmt: Statement) {
         ctx.declare(tp.name, tp, 'type');
       }
     }
+    (typeAlias as any)._resolving = true;
     typeAlias.target = resolveTypeAnnotation(ctx, decl.typeAnnotation);
+    delete (typeAlias as any)._resolving;
     ctx.exitScope();
     delete (decl as any).needsTargetResolution;
   }
@@ -862,7 +864,7 @@ export function predeclareFunction(
     // We use Unknown params and Void return to avoid resolving annotations
     // (which could produce side-effect diagnostics). The main pass will
     // update with the real type.
-    const paramTypes: Type[] = funcExpr.params.map(() => Types.Unknown);
+    const paramTypes: Type[] = funcExpr.params.map(() => Types.Error);
     const parameterNames: string[] = funcExpr.params.map((p) => p.name.name);
     const optionalParameters: boolean[] = funcExpr.params.map(
       (p) => p.optional,
@@ -1322,7 +1324,7 @@ function resolveParameterType(ctx: CheckerContext, param: Parameter): Type {
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(param.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
   let type = resolveTypeAnnotation(ctx, param.typeAnnotation);
   if (param.optional && !param.initializer) {
@@ -1385,7 +1387,7 @@ function predeclareTypeAlias(ctx: CheckerContext, decl: TypeAliasDeclaration) {
     kind: TypeKind.TypeAlias,
     name,
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
-    target: Types.Unknown, // Will be resolved after imports
+    target: Types.Error, // Will be resolved after imports
     isDistinct: decl.isDistinct,
   };
 
@@ -1420,7 +1422,9 @@ function checkTypeAliasDeclaration(
           ctx.declare(tp.name, tp, 'type');
         }
       }
+      (typeAlias as any)._resolving = true;
       typeAlias.target = resolveTypeAnnotation(ctx, decl.typeAnnotation);
+      delete (typeAlias as any)._resolving;
       ctx.exitScope();
       delete (decl as any).needsTargetResolution;
     }
@@ -1746,7 +1750,7 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
 
   // Regular expression condition
   const testType = checkExpression(ctx, stmt.test);
-  if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
+  if (!isBooleanType(testType) && testType.kind !== TypeKind.Error) {
     ctx.diagnostics.reportError(
       `Condition must be a boolean type, got '${typeToString(testType)}'.`,
       DiagnosticCode.TypeMismatch,
@@ -1837,7 +1841,7 @@ function checkWhileStatement(ctx: CheckerContext, stmt: WhileStatement) {
     return;
   }
   const testType = checkExpression(ctx, stmt.test);
-  if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
+  if (!isBooleanType(testType) && testType.kind !== TypeKind.Error) {
     ctx.diagnostics.reportError(
       `Condition must be a boolean type, got '${typeToString(testType)}'.`,
       DiagnosticCode.TypeMismatch,
@@ -1872,7 +1876,7 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
   // Check test
   if (stmt.test) {
     const testType = checkExpression(ctx, stmt.test);
-    if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
+    if (!isBooleanType(testType) && testType.kind !== TypeKind.Error) {
       ctx.diagnostics.reportError(
         `Condition must be a boolean type, got '${typeToString(testType)}'.`,
         DiagnosticCode.TypeMismatch,
@@ -1912,7 +1916,7 @@ function checkForInStatement(ctx: CheckerContext, stmt: ForInStatement) {
       ctx.getLocation(stmt.iterable.loc),
     );
     // Use unknown type to continue checking
-    stmt.elementType = Types.Unknown;
+    stmt.elementType = Types.Error;
   } else {
     stmt.elementType = iterableInfo.elementType;
     stmt.iteratorType = iterableInfo.iteratorType;
@@ -1984,7 +1988,7 @@ function getIterableInfo(
     const iteratorName =
       interfaceType.genericSource?.name ?? interfaceType.name;
     if (iteratorName === 'Iterator') {
-      const elementType = interfaceType.typeArguments?.[0] ?? Types.Unknown;
+      const elementType = interfaceType.typeArguments?.[0] ?? Types.Error;
       return {
         elementType,
         iteratorType: interfaceType,
@@ -1994,7 +1998,7 @@ function getIterableInfo(
 
     const iterableInterface = findIterableInterface(interfaceType);
     if (iterableInterface) {
-      const elementType = iterableInterface.typeArguments?.[0] ?? Types.Unknown;
+      const elementType = iterableInterface.typeArguments?.[0] ?? Types.Error;
       // Get the iterator symbol from Iterable's statics
       const iteratorSymbol = getIteratorSymbol(iterableInterface);
       if (iteratorSymbol) {
@@ -2071,8 +2075,7 @@ function findIterableInImplements(
     for (const impl of implementsList) {
       const iterableInterface = findIterableInterface(impl);
       if (iterableInterface) {
-        const elementType =
-          iterableInterface.typeArguments?.[0] ?? Types.Unknown;
+        const elementType = iterableInterface.typeArguments?.[0] ?? Types.Error;
         // Get the iterator symbol from Iterable's statics
         const iteratorSymbol = getIteratorSymbol(iterableInterface);
         if (iteratorSymbol) {
@@ -2155,7 +2158,7 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
     ? checkExpression(ctx, stmt.argument)
     : Types.Void;
 
-  if (ctx.currentFunctionReturnType.kind !== Types.Unknown.kind) {
+  if (ctx.currentFunctionReturnType.kind !== Types.Error.kind) {
     // If we know the expected return type, check against it
     const isCompatible = isAssignableTo(
       ctx,
@@ -3261,7 +3264,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   let superType: ClassType | undefined;
   if (decl.superClass) {
     const resolvedSuperType = resolveTypeAnnotation(ctx, decl.superClass);
-    if (resolvedSuperType.kind === TypeKind.Unknown) {
+    if (resolvedSuperType.kind === TypeKind.Error) {
       // Error already reported by resolveTypeAnnotation
     } else if (resolvedSuperType.kind !== TypeKind.Class) {
       ctx.diagnostics.reportError(
@@ -3302,7 +3305,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   if (decl.mixins) {
     for (const mixinAnnotation of decl.mixins) {
       const mixinType = resolveTypeAnnotation(ctx, mixinAnnotation);
-      if (mixinType.kind === TypeKind.Unknown) {
+      if (mixinType.kind === TypeKind.Error) {
         // Error already reported by resolveTypeAnnotation
         continue;
       }
@@ -4096,7 +4099,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         if (p.isThisParam) {
           // this.field param: resolve type from field
           const fieldType = classType.fields.get(p.name.name);
-          return fieldType ?? Types.Unknown;
+          return fieldType ?? Types.Error;
         }
         return resolveParameterType(ctx, p);
       });
@@ -5034,7 +5037,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(param.loc),
         );
-        type = Types.Unknown;
+        type = Types.Error;
       } else if (param.typeAnnotation) {
         // Explicit type annotation given - resolve and check assignability
         type = resolveTypeAnnotation(ctx, param.typeAnnotation);
@@ -5422,7 +5425,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
   if (decl.mixins) {
     for (const mixinAnnotation of decl.mixins) {
       const composedMixinType = resolveTypeAnnotation(ctx, mixinAnnotation);
-      if (composedMixinType.kind === TypeKind.Unknown) {
+      if (composedMixinType.kind === TypeKind.Error) {
         continue;
       }
       if (composedMixinType.kind !== TypeKind.Mixin) {
@@ -5572,7 +5575,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         let type: Type;
         if (param.isThisParam) {
           const fieldType = mixinType.fields.get(param.name.name);
-          type = fieldType ?? Types.Unknown;
+          type = fieldType ?? Types.Error;
         } else {
           type = resolveParameterType(ctx, param);
         }

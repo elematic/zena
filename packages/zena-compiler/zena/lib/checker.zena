@@ -80,7 +80,7 @@ import {
 } from './ast.zena';
 import {
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
-  BooleanType, VoidType, NullType, NeverType, UnknownType, AnyType,
+  BooleanType, VoidType, NullType, NeverType, ErrorType, UnknownType, AnyType,
   AnyRefType, EqRefType, ByteArrayType,
   BoolLiteralType, StringLiteralType,
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
@@ -358,8 +358,8 @@ class CheckerContext {
         case DeclareFunction: {
           // Forward reference to a declare function — bind as unknown
           // placeholder; the main pass will replace with the real type.
-          this.declareBinding(si, new UnknownType());
-          return new UnknownType();
+          this.declareBinding(si, new ErrorType());
+          return new ErrorType();
         }
         case _: {}
       }
@@ -406,7 +406,7 @@ class CheckerContext {
               DiagnosticCode.TypeMismatch,
               loc
             );
-            return new UnknownType();
+            return new ErrorType();
           }
         }
 
@@ -473,7 +473,7 @@ class CheckerContext {
       if (param.typeAnnotation != null) {
         paramTypes.push(resolveTypeAnnotation(this, param.typeAnnotation as TypeAnnotation));
       } else {
-        paramTypes.push(new UnknownType());
+        paramTypes.push(new ErrorType());
       }
       pi += 1;
     }
@@ -648,7 +648,7 @@ class CheckerContext {
           }
         }
         
-        let targetType = resolveTypeAnnotation(this, ta.typeAnnotation);
+        let targetType = new ErrorType();
         this.exitScope();
         
         return new TypeAliasType(ta.name.name, typeParams, targetType, ta.isDistinct);
@@ -1173,9 +1173,10 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExpor
     ri += 1;
   }
 
-  // === Phase 2: Check all bodies and non-declaration statements ===
-  // Class bodies are checked here (after all member signatures exist).
-  // Other declarations were fully handled in Phase 1 and are skipped.
+  // === Phase 2: Main Checking Phase ===
+  // This is the actual checking phase where the full structure is validated
+  // (bodies, statements, type aliases, etc.), relying on the signatures
+  // registered in Phase 1 to seamlessly resolve forward references.
   var i = 0;
   while (i < ast.body.length) {
     let stmt = ast.body[i];
@@ -1186,7 +1187,7 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExpor
       case InterfaceDeclaration {}: {}
       case EnumDeclaration {}: {}
       case MixinDeclaration {}: {}
-      case TypeAliasDeclaration {}: {}
+      case TypeAliasDeclaration as ta: { checkTypeAliasDeclaration(ctx, ta); }
       case DeclareFunction {}: {}
       case SymbolDeclaration {}: {}
       case ExportAllDeclaration {}: {}
@@ -1221,7 +1222,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
         DiagnosticCode.SymbolNotFound,
         ann.loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
     
     // Handle generic type arguments
@@ -1260,7 +1261,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
         if (tat.typeParameters != null) {
           applyAndCheckTypeArguments(ctx, tat.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
           let target = substituteTypeParams(tat.typeParameters, resolvedArgs, tat.target);
-          if (tat.isDistinct) {
+          if (tat.isDistinct || tat.resolving) {
             let inst = instantiateTypeAliasType(tat, resolvedArgs);
             inst.target = target;
             return inst;
@@ -1270,7 +1271,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
           if (hasTypeArgs) {
              ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
           }
-          return if (tat.isDistinct) tat else tat.target;
+          return if (tat.isDistinct || tat.resolving) tat else tat.target;
         }
       }
       case _: {
@@ -1311,7 +1312,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
       }
       case StringLiteral {value}: new StringLiteralType(value)
       case NullLiteral {}: new NullType()
-      case _: new UnknownType()
+      case _: new ErrorType()
     }
   }
   case RecordTypeAnnotation {properties}: {
@@ -1416,10 +1417,10 @@ let getElementType = (
         DiagnosticCode.TypeMismatch,
         iterableExpr.loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
-    case UnknownType: {
-      return new UnknownType();
+    case ErrorType: {
+      return new ErrorType();
     }
     case _: {
       ctx.error(
@@ -1427,10 +1428,10 @@ let getElementType = (
         DiagnosticCode.TypeMismatch,
         iterableExpr.loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
   }
-  return new UnknownType();
+  return new ErrorType();
 };
 
 let getElementTypeFromClass = (
@@ -1458,7 +1459,7 @@ let getElementTypeFromClass = (
     DiagnosticCode.TypeMismatch,
     iterableExpr.loc
   );
-  return new UnknownType();
+  return new ErrorType();
 };
 
 /**
@@ -1645,7 +1646,7 @@ let applyAndCheckTypeArguments = (
         loc
       );
       while (typeArgs.length < typeParams.length) {
-        typeArgs.push(new UnknownType());
+        typeArgs.push(new ErrorType());
       }
       break;
     }
@@ -1733,7 +1734,7 @@ let instantiateGenericClass = (
       typeArgs.push(inferred[paramName]);
     } else {
       // No inference possible; use unknown.
-      typeArgs.push(new UnknownType());
+      typeArgs.push(new ErrorType());
     }
     pi += 1;
   }
@@ -1826,9 +1827,19 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
 
   // `never` is assignable to anything.
   if (source is NeverType) { return true; }
+  if (source is ErrorType || target is ErrorType) { return true; }
 
-  // Anything is assignable to `unknown` or `any`.
-  if (target is UnknownType || target is AnyType) { return true; }
+  if (source is UnknownType || target is UnknownType) {
+    ctx.error(
+      "Internal compiler error: Unknown type encountered during validation.",
+      DiagnosticCode.UnknownError,
+      null
+    );
+    return true;
+  }
+
+  // Anything is assignable to `any`.
+  if (target is AnyType) { return true; }
 
   // `null` is assignable to nullable unions.
   if (source is NullType) {
@@ -1975,6 +1986,7 @@ let typesEqual = (a: Type, b: Type): boolean => {
     case VoidType: b is VoidType
     case NullType: b is NullType
     case NeverType: b is NeverType
+    case ErrorType: b is ErrorType
     case UnknownType: b is UnknownType
     case AnyType: b is AnyType
     case AnyRefType: b is AnyRefType
@@ -2687,11 +2699,11 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
                       }
                     }
                     case _: {
-                      ctx.declareTypeName(localName, new UnknownType());
+                      ctx.declareTypeName(localName, new ErrorType());
                     }
                   }
                 } else {
-                  ctx.declareTypeName(localName, new UnknownType());
+                  ctx.declareTypeName(localName, new ErrorType());
                 }
               }
             }
@@ -2717,7 +2729,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
                 if (resolvedValType != null) {
                   ctx.declareBinding(localInfo as SymbolInfo, resolvedValType as Type);
                 } else {
-                  ctx.declareBinding(localInfo as SymbolInfo, new UnknownType());
+                  ctx.declareBinding(localInfo as SymbolInfo, new ErrorType());
                 }
               }
             }
@@ -2742,10 +2754,11 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     case MixinDeclaration as md: {
       checkMixinDeclaration(ctx, md);
     }
-    case TypeAliasDeclaration {name}: {
+    case TypeAliasDeclaration as ta: {
       // Force materialization so errors inside constraints or the target type
       // are reported once (in their proper generic scope).
-      ctx.resolveTypeName(name.name);
+      ctx.resolveTypeName(ta.name.name);
+      checkTypeAliasDeclaration(ctx, ta);
     }
     case DeclareFunction as df: {
       checkDeclareFunction(ctx, df);
@@ -2864,7 +2877,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
           // If not a record, just bind the property names as unknown.
           var i = 0;
           while (i < properties.length) {
-            bindPattern(ctx, properties[i].value as Pattern, new UnknownType());
+            bindPattern(ctx, properties[i].value as Pattern, new ErrorType());
             i += 1;
           }
         }
@@ -2887,7 +2900,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
               if (i < elementTypes.length) {
                 bindPattern(ctx, elem as Pattern, elementTypes[i]);
               } else {
-                bindPattern(ctx, elem as Pattern, new UnknownType());
+                bindPattern(ctx, elem as Pattern, new ErrorType());
               }
             }
             i += 1;
@@ -2908,7 +2921,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
               if (i < elementTypes.length) {
                 bindPattern(ctx, elem as Pattern, elementTypes[i]);
               } else {
-                bindPattern(ctx, elem as Pattern, new UnknownType());
+                bindPattern(ctx, elem as Pattern, new ErrorType());
               }
             }
             i += 1;
@@ -2918,7 +2931,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
           var i = 0;
           while (i < elements.length) {
             if (elements[i] != null) {
-              bindPattern(ctx, (elements[i] as Node) as Pattern, new UnknownType());
+              bindPattern(ctx, (elements[i] as Node) as Pattern, new ErrorType());
             }
             i += 1;
           }
@@ -3083,7 +3096,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       DiagnosticCode.SymbolNotFound,
       loc
     );
-    new UnknownType()
+    new ErrorType()
   }
 
   case BooleanLiteral {value, loc}: {
@@ -3118,7 +3131,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         DiagnosticCode.SymbolNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
     resolved as Type
   }
@@ -3143,7 +3156,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         DiagnosticCode.InvalidOperator,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
     if (operator == "!") {
       if (isBooleanLike(argType)) {
@@ -3156,7 +3169,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       );
       return new BooleanType();
     }
-    new UnknownType()
+    new ErrorType()
   }
 
   // --- Assignment ---
@@ -3174,7 +3187,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
               DiagnosticCode.InvalidAssignment,
               loc
             );
-            return new UnknownType();
+            return new ErrorType();
           }
         }
       }
@@ -3196,7 +3209,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
                   DiagnosticCode.InvalidAssignment,
                   loc
                 );
-                return new UnknownType();
+                return new ErrorType();
               }
             }
           }
@@ -3213,7 +3226,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
               DiagnosticCode.PrivateAccess,
               loc
             );
-            return new UnknownType();
+            return new ErrorType();
           }
         }
         // Check for read-only property assignment
@@ -3229,7 +3242,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
                   DiagnosticCode.InvalidAssignment,
                   loc
                 );
-                return new UnknownType();
+                return new ErrorType();
               }
             } else {
               // Check for setter method (set#propName)
@@ -3243,7 +3256,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
                     DiagnosticCode.InvalidAssignment,
                     loc
                   );
-                  return new UnknownType();
+                  return new ErrorType();
                 }
               }
             }
@@ -3441,7 +3454,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     let cc = ctx.currentClass;
     if (cc == null) {
       ctx.error("'this' used outside of a class.", DiagnosticCode.SymbolNotFound, loc);
-      new UnknownType()
+      new ErrorType()
     } else {
       cc as Type
     }
@@ -3450,13 +3463,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     let cc = ctx.currentClass;
     if (cc == null) {
       ctx.error("'super' can only be used inside a class.", DiagnosticCode.SymbolNotFound, loc);
-      new UnknownType()
+      new ErrorType()
     } else {
       let cls = cc as ClassType;
       let st = cls.superType;
       if (st == null) {
         ctx.error("Class '" + cls.name + "' does not have a superclass.", DiagnosticCode.SymbolNotFound, loc);
-        new UnknownType()
+        new ErrorType()
       } else {
         st as Type
       }
@@ -3487,7 +3500,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           case _: {}
         }
       }
-      new ArrayType(new UnknownType())
+      new ArrayType(new ErrorType())
     } else {
       // Infer element type from first element.
       let firstType = checkExpression(ctx, elements[0], null);
@@ -3548,7 +3561,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case MapLiteral {entries, loc}: {
     if (entries.length == 0) {
       ctx.error("Empty map literal requires type annotation. Use 'new HashMap<K, V>()' instead.", DiagnosticCode.TypeMismatch, loc);
-      new UnknownType()
+      new ErrorType()
     } else {
       // Check all entries and unify key/value types.
       let firstKeyType = checkExpression(ctx, entries[0].key, null);
@@ -3571,7 +3584,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         }
         ei += 1;
       }
-      // Return HashMap<K, V> if available, otherwise UnknownType.
+      // Return HashMap<K, V> if available, otherwise ErrorType.
       let hashMapType = ctx.resolveTypeName("HashMap");
       if (hashMapType != null) {
         match (hashMapType as Type) {
@@ -3581,10 +3594,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             typeArgs.push(firstValType);
             instantiateClassType(hm, typeArgs) as Type
           }
-          case _: new UnknownType()
+          case _: new ErrorType()
         }
       } else {
-        new UnknownType()
+        new ErrorType()
       }
     }
   }
@@ -3596,7 +3609,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       DiagnosticCode.SymbolNotFound,
       loc
     );
-    new UnknownType()
+    new ErrorType()
   }
   case TaggedTemplateExpression {tag, quasi, loc}: {
     // Check the interpolated expressions.
@@ -3614,7 +3627,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           "Tagged template tag must be a function, got '" + typeToString(tagType) + "'.",
           DiagnosticCode.TypeMismatch, loc
         );
-        new UnknownType()
+        new ErrorType()
       }
     }
   }
@@ -3635,7 +3648,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let paramId = clause.param as Identifier;
         let info = ctx.model.resolveDeclaration(paramId);
         if (info != null) {
-          ctx.declareBinding(info as SymbolInfo, new UnknownType());
+          ctx.declareBinding(info as SymbolInfo, new ErrorType());
         }
       }
       catchType = checkMatchCaseBody(ctx, clause.body as Node, expectedType);
@@ -3680,7 +3693,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       else { "FullRange" };
     let rangeType = ctx.resolveTypeName(rangeTypeName);
     if (rangeType != null) { rangeType as Type }
-    else { new UnknownType() }
+    else { new ErrorType() }
   }
   case PipelineExpression {left, right, loc}: {
     let leftType = checkExpression(ctx, left, null);
@@ -3693,7 +3706,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     let pipeType = ctx.pipelineValueType;
     if (pipeType == null) {
       ctx.error("'$' can only be used inside a pipeline expression (|>).", DiagnosticCode.SymbolNotFound, loc);
-      new UnknownType()
+      new ErrorType()
     } else {
       pipeType as Type
     }
@@ -3939,7 +3952,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
         }
         case _: {
-          if (!(resolvedMixin is UnknownType)) {
+          if (!(resolvedMixin is ErrorType)) {
             ctx.error(
               "'" + typeToString(resolvedMixin) + "' is not a mixin.",
               DiagnosticCode.TypeMismatch,
@@ -4027,7 +4040,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         let fieldType = if (fd.typeAnnotation != null) {
           resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation)
         } else {
-          new UnknownType() as Type
+          new ErrorType() as Type
         };
 
         // Abstract fields can only appear in abstract or sealed classes.
@@ -4223,7 +4236,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             while (pi < ms.params.length) {
               let param = ms.params[pi];
               let paramName = param.name.name;
-              var paramType: Type = new UnknownType();
+              var paramType: Type = new ErrorType();
               if (param.isThisParam && classType.fields.has(paramName)) {
                 paramType = classType.fields[paramName];
               } else if (param.typeAnnotation != null) {
@@ -4241,7 +4254,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           var pi = 0;
           while (pi < ms.params.length) {
             let param = ms.params[pi];
-            var paramType: Type = new UnknownType();
+            var paramType: Type = new ErrorType();
             if (param.typeAnnotation != null) {
               paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
             }
@@ -4500,7 +4513,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
           }
 
           // Infer field type from initializer when no explicit annotation.
-          if (fieldType is UnknownType && !(initType is UnknownType)) {
+          if (fieldType is ErrorType && !(initType is ErrorType)) {
             classType.fields[fieldName] = initType;
           } else if (!isAssignableTo(ctx, initType, fieldType)) {
             ctx.error(
@@ -4701,6 +4714,17 @@ let checkMethodSignature = (
   classType: ClassType,
   md: MethodDefinition
 ): FunctionType => {
+  ctx.enterScope();
+  let astTypeParameters = md.typeParameters;
+  if (astTypeParameters != null) {
+    let typeParameters = new Array<TypeParameterType>();
+    for (let astParam in astTypeParameters) {
+      let tpType = new TypeParameterType(astParam.name, null, null);
+      typeParameters.push(tpType);
+      ctx.declareTypeName(astParam.name, tpType);
+    }
+  }
+
   let paramTypes = new Array<Type>();
   let paramNames = new Array<String>();
   var hasOptionals = false;
@@ -4712,7 +4736,7 @@ let checkMethodSignature = (
   while (i < md.params.length) {
     let param = md.params[i];
     let paramName = param.name.name;
-    var paramType: Type = new UnknownType();
+    var paramType: Type = new ErrorType();
     if (param.isThisParam && classType.fields.has(paramName)) {
       // this.-style param inherits type from the class field.
       paramType = classType.fields[paramName];
@@ -4783,6 +4807,13 @@ let checkMethodBody = (
   md: MethodDefinition
 ): void => {
   ctx.enterScope();
+
+  let {typeParameters} = methodType;
+  if (typeParameters != null) {
+    for (let tpType in typeParameters) {
+      ctx.declareTypeName(tpType.name, tpType);
+    }
+  }
 
   // Declare parameters.
   var i = 0;
@@ -4899,7 +4930,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         var pi = 0;
         while (pi < ms.params.length) {
           let param = ms.params[pi];
-          var paramType: Type = new UnknownType();
+          var paramType: Type = new ErrorType();
           if (param.typeAnnotation != null) {
             paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
           }
@@ -4947,6 +4978,38 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   }
 
   ctx.exitScope();
+};
+
+// ============================================================================
+// Enum Declaration
+// ============================================================================
+
+// ============================================================================
+// Type Alias Declaration
+// ============================================================================
+
+let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration): void => {
+  let tat = ctx.resolveTypeName(ta.name.name);
+  if (tat != null) {
+    match (tat as Type) {
+      case TypeAliasType as t: {
+        ctx.enterScope();
+        let {typeParameters} = t;
+        if (typeParameters != null) {
+          for (let param in typeParameters) {
+            ctx.declareTypeName(param.name, param);
+          }
+        }
+        
+        t.resolving = true;
+        t.target = resolveTypeAnnotation(ctx, ta.typeAnnotation);
+        t.resolving = false;
+        
+        ctx.exitScope();
+      }
+      case _: {}
+    }
+  }
 };
 
 // ============================================================================
@@ -5021,7 +5084,7 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
         DiagnosticCode.SymbolNotFound,
         ed.name.loc
       );
-      backingType = new UnknownType();
+      backingType = new ErrorType();
     }
   }
   let enumType = new TypeAliasType(name, null, backingType, true);
@@ -5130,7 +5193,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           }
         }
         case _: {
-          if (!(composedType is UnknownType)) {
+          if (!(composedType is ErrorType)) {
             ctx.error(
               "'" + typeToString(composedType) + "' is not a mixin.",
               DiagnosticCode.TypeMismatch,
@@ -5192,7 +5255,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           var mpi = 0;
           while (mpi < methDef.params.length) {
             let param = methDef.params[mpi];
-            var paramType: Type = new UnknownType();
+            var paramType: Type = new ErrorType();
             if (param.typeAnnotation != null) {
               paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
             }
@@ -5333,7 +5396,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
     if (param.typeAnnotation != null) {
       paramTypes.push(resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation));
     } else {
-      paramTypes.push(new UnknownType());
+      paramTypes.push(new ErrorType());
     }
     pi += 1;
   }
@@ -5404,7 +5467,7 @@ let checkNewExpression = (
       DiagnosticCode.SymbolNotFound,
       loc
     );
-    return new UnknownType();
+    return new ErrorType();
   }
 
   match (resolved as Type) {
@@ -5526,7 +5589,7 @@ let checkNewExpression = (
         DiagnosticCode.NotCallable,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
   }
 };
@@ -5553,7 +5616,7 @@ let checkMemberExpression = (
         DiagnosticCode.PrivateAccess,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
   }
 
@@ -5631,7 +5694,7 @@ let resolveMemberType = (
         DiagnosticCode.PropertyNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
     case InterfaceType as it: {
       if (it.fields.has(propName)) {
@@ -5651,7 +5714,7 @@ let resolveMemberType = (
         DiagnosticCode.PropertyNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
     case RecordT {properties}: {
       if (properties.has(propName)) {
@@ -5662,7 +5725,7 @@ let resolveMemberType = (
         DiagnosticCode.PropertyNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
     case ArrayType {elementType}: {
       // ArrayType is produced by array literals [1, 2, 3].
@@ -5697,7 +5760,7 @@ let resolveMemberType = (
         DiagnosticCode.PropertyNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
     case TypeParameterType {name as tname, constraint}: {
       if (constraint != null) {
@@ -5708,16 +5771,16 @@ let resolveMemberType = (
         DiagnosticCode.PropertyNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
-    case UnknownType: { return new UnknownType(); }
+    case ErrorType: { return new ErrorType(); }
     case _: {
       ctx.error(
         "Property access not supported on type '" + typeToString(objectType) + "'.",
         DiagnosticCode.PropertyNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
   }
 };
@@ -5807,7 +5870,7 @@ let resolveIndexType = (
             DiagnosticCode.IndexOutOfBounds,
             loc
           );
-          return new UnknownType();
+          return new ErrorType();
         }
         case _: {
           // Non-literal index — return union of all element types.
@@ -5827,16 +5890,16 @@ let resolveIndexType = (
         DiagnosticCode.PropertyNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
-    case UnknownType: { return new UnknownType(); }
+    case ErrorType: { return new ErrorType(); }
     case _: {
       ctx.error(
         "Index access not supported on type '" + typeToString(objectType) + "'.",
         DiagnosticCode.PropertyNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
   }
 };
@@ -5853,7 +5916,7 @@ let checkBinaryExpression = (
     let leftType = checkExpression(ctx, left, null);
     // Extract null-guard narrowing from the left side and apply to right.
     let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, left);
-    var rightType: Type = new UnknownType();
+    var rightType: Type = new ErrorType();
     if (guardInfo != null) {
       let si = guardInfo as SymbolInfo;
       let origType = guardOrigType as Type;
@@ -5901,7 +5964,7 @@ let checkBinaryExpression = (
         DiagnosticCode.InvalidOperator,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
 
     if (!isNumericType(leftType)) {
@@ -5916,7 +5979,7 @@ let checkBinaryExpression = (
                 DiagnosticCode.ArgumentCountMismatch,
                 loc
               );
-              return new UnknownType();
+              return new ErrorType();
             }
             if (!isAssignableTo(ctx, rightType, method.parameters[0])) {
               ctx.error(
@@ -5925,7 +5988,7 @@ let checkBinaryExpression = (
                 DiagnosticCode.TypeMismatch,
                 loc
               );
-              return new UnknownType();
+              return new ErrorType();
             }
             return method.returnType;
           }
@@ -5938,7 +6001,7 @@ let checkBinaryExpression = (
         DiagnosticCode.InvalidOperator,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
 
     let promoted = promoteNumeric(leftType, rightType);
@@ -5949,7 +6012,7 @@ let checkBinaryExpression = (
         DiagnosticCode.InvalidOperator,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
     // Division always returns a float type.
     if (operator == "/") {
@@ -6006,7 +6069,7 @@ let checkBinaryExpression = (
       (leftType is ClassType && rightType is ClassType) ||
       (leftType is InterfaceType && rightType is InterfaceType) ||
       leftType is NullType || rightType is NullType ||
-      leftType is UnknownType || rightType is UnknownType ||
+      leftType is ErrorType || rightType is ErrorType ||
       isAssignableTo(ctx, leftType, rightType) ||
       isAssignableTo(ctx, rightType, leftType);
     if (!typesMatch) {
@@ -6093,7 +6156,7 @@ let checkBinaryExpression = (
     DiagnosticCode.InvalidOperator,
     loc
   );
-  return new UnknownType();
+  return new ErrorType();
 };
 
 /**
@@ -6309,7 +6372,7 @@ let subtractClassFromType = (ctx: CheckerContext, t: Type, patClass: ClassType):
 
 /**
  * Look up a field type on a class or interface type for pattern destructuring.
- * Returns UnknownType if the field is not found.
+ * Returns ErrorType if the field is not found.
  */
 let resolveClassFieldType = (
   ctx: CheckerContext,
@@ -6337,10 +6400,10 @@ let resolveClassFieldType = (
         DiagnosticCode.PropertyNotFound,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
     case _: {
-      return new UnknownType();
+      return new ErrorType();
     }
   }
 };
@@ -6517,7 +6580,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       while (pi < properties.length) {
         let prop = properties[pi];
         let propName = prop.name.name;
-        var propType: Type = new UnknownType();
+        var propType: Type = new ErrorType();
         match (expectedType) {
           case RecordT {properties as recordProps}: {
             if (recordProps.has(propName)) {
@@ -6540,7 +6603,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
               if (i < elementTypes.length) {
                 checkPattern(ctx, elem, elementTypes[i]);
               } else {
-                checkPattern(ctx, elem, new UnknownType());
+                checkPattern(ctx, elem, new ErrorType());
               }
             }
             i = i + 1;
@@ -6554,7 +6617,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
               if (i < elementTypes.length) {
                 checkPattern(ctx, elem, elementTypes[i]);
               } else {
-                checkPattern(ctx, elem, new UnknownType());
+                checkPattern(ctx, elem, new ErrorType());
               }
             }
             i = i + 1;
@@ -6564,7 +6627,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
           var i = 0;
           while (i < elements.length) {
             if (elements[i] != null) {
-              checkPattern(ctx, (elements[i] as Node), new UnknownType());
+              checkPattern(ctx, (elements[i] as Node), new ErrorType());
             }
             i = i + 1;
           }
@@ -6684,7 +6747,7 @@ let checkFunctionExpression = (
     let paramName = param.name.name;
     paramNames.push(paramName);
 
-    var paramType: Type = new UnknownType();
+    var paramType: Type = new ErrorType();
     if (param.typeAnnotation != null) {
       paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
     } else if (contextualFn != null) {
@@ -6919,7 +6982,7 @@ let checkCallExpressionInner = (
               if (inferred.has(paramName)) {
                 typeArgs.push(inferred[paramName]);
               } else {
-                typeArgs.push(new UnknownType());
+                typeArgs.push(new ErrorType());
               }
               pi += 1;
             }
@@ -7018,14 +7081,14 @@ let checkCallExpressionInner = (
 
       return effectiveFt.returnType;
     }
-    case UnknownType: { return new UnknownType(); }
+    case ErrorType: { return new ErrorType(); }
     case _: {
       ctx.error(
         "Type '" + typeToString(calleeType) + "' is not callable.",
         DiagnosticCode.NotCallable,
         loc
       );
-      return new UnknownType();
+      return new ErrorType();
     }
   }
 };

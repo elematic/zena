@@ -7075,7 +7075,7 @@ export function mapCheckerTypeToWasmType(
       ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
     ];
   }
-  if (type.kind === TypeKind.Unknown) return [ValType.eqref];
+  if (type.kind === TypeKind.Error) return [ValType.eqref];
 
   // Handle This type - resolve to current class if available
   if (type.kind === TypeKind.This) {

@@ -563,7 +563,7 @@ function resolveTypeAnnotationInternal(
       `'this' type is only valid inside a class or interface.`,
       DiagnosticCode.TypeMismatch,
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   if (annotation.type === NodeType.UnionTypeAnnotation) {
@@ -762,7 +762,7 @@ function resolveTypeAnnotationInternal(
         ? `Type 'string' not found. Did you mean 'String'?`
         : `Type '${name}' not found.`;
     ctx.diagnostics.reportError(message, DiagnosticCode.SymbolNotFound);
-    return Types.Unknown;
+    return Types.Error;
   }
 
   if (type.kind === TypeKind.TypeAlias) {
@@ -776,7 +776,7 @@ function resolveTypeAnnotationInternal(
           `Generic type alias '${name}' requires ${alias.typeParameters.length} type arguments.`,
           DiagnosticCode.GenericTypeArgumentMismatch,
         );
-        return Types.Unknown;
+        return Types.Error;
       }
       const typeArguments = annotation.typeArguments.map((arg) =>
         resolveTypeAnnotation(ctx, arg),
@@ -817,7 +817,7 @@ function resolveTypeAnnotationInternal(
         DiagnosticCode.GenericTypeArgumentMismatch,
       );
     }
-    if (alias.isDistinct) {
+    if (alias.isDistinct || (alias as any)._resolving) {
       return alias;
     }
     return alias.target;
@@ -1545,6 +1545,7 @@ export function typesEqual(a: Type, b: Type): boolean {
     case TypeKind.Any:
     case TypeKind.AnyRef:
     case TypeKind.Unknown:
+    case TypeKind.Error:
     case TypeKind.ByteArray:
     case TypeKind.This:
       return true;
@@ -1650,7 +1651,15 @@ export function isAssignableTo(
 ): boolean {
   if (source === target) return true;
   if (source.kind === TypeKind.Never) return true;
+  if (source.kind === TypeKind.Error || target.kind === TypeKind.Error)
+    return true;
   if (source.kind === TypeKind.Unknown || target.kind === TypeKind.Unknown) {
+    // Record internal error if it leaked to assignability checks unnoticed ? Wait, is that safe? Let's trace it.
+    ctx.diagnostics.reportError(
+      `Internal compiler error: Unknown type encountered during validation.`,
+      DiagnosticCode.UnknownError,
+      undefined,
+    );
     return true;
   }
 

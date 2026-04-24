@@ -31,6 +31,7 @@ export sealed class Type {
   case VoidType
   case NullType
   case NeverType
+  case ErrorType
   case UnknownType
   case AnyType
   case AnyRefType
@@ -212,7 +213,16 @@ export class TypeAliasType(
   var typeParameters: Array<TypeParameterType> | null,
   var target: Type,
   isDistinct: boolean
-) extends Type
+) extends Type {
+  /**
+   * Ephemeral flag used by the checker to detect generic type resolution cycles.
+   * When this is true, the checker is currently computing this alias's target.
+   * If a code path reads `target` while `.resolving` is true, it MUST stop
+   * unwrapping and treat this TypeAliasType as an opaque bound. Otherwise,
+   * recursive aliases (e.g., `type T = T[]`) will trigger an infinite loop.
+   */
+  var resolving: boolean = false;
+}
 
 export let instantiateTypeAliasType = (
   source: TypeAliasType,
@@ -380,6 +390,7 @@ export let typeToString = (t: Type): String => match (t) {
   case VoidType: "void"
   case NullType: "null"
   case NeverType: "never"
+  case ErrorType: "<error>"
   case UnknownType: "unknown"
   case AnyType: "any"
   case AnyRefType: "anyref"
@@ -445,9 +456,51 @@ export let typeToString = (t: Type): String => match (t) {
     }
     s + ") => " + typeToString(ft.returnType)
   }
-  case ClassType as ct: ct.name
-  case InterfaceType as it: it.name
-  case MixinType as mt: mt.name
+  case ClassType as ct: {
+    if (ct.typeArguments != null) {
+      let args = ct.typeArguments as Array<Type>;
+      var s = ct.name + "<";
+      var i = 0;
+      while (i < args.length) {
+        if (i > 0) { s = s + ", "; }
+        s = s + typeToString(args[i]);
+        i += 1;
+      }
+      s + ">"
+    } else {
+      ct.name
+    }
+  }
+  case InterfaceType as it: {
+    if (it.typeArguments != null) {
+      let args = it.typeArguments as Array<Type>;
+      var s = it.name + "<";
+      var i = 0;
+      while (i < args.length) {
+        if (i > 0) { s = s + ", "; }
+        s = s + typeToString(args[i]);
+        i += 1;
+      }
+      s + ">"
+    } else {
+      it.name
+    }
+  }
+  case MixinType as mt: {
+    if (mt.typeArguments != null) {
+      let args = mt.typeArguments as Array<Type>;
+      var s = mt.name + "<";
+      var i = 0;
+      while (i < args.length) {
+        if (i > 0) { s = s + ", "; }
+        s = s + typeToString(args[i]);
+        i += 1;
+      }
+      s + ">"
+    } else {
+      mt.name
+    }
+  }
   case TypeParameterType as tp: tp.name
   case TypeAliasType as ta: ta.name
   case SymbolType as sym: {

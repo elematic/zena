@@ -309,7 +309,7 @@ function checkExpressionInternal(
           DiagnosticCode.SymbolNotFound,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
 
       // Create and store the resolved binding for codegen
@@ -385,7 +385,7 @@ function checkExpressionInternal(
     case NodeType.PipePlaceholder:
       return checkPipePlaceholder(ctx, expr as PipePlaceholder);
     default:
-      return Types.Unknown;
+      return Types.Error;
   }
 }
 
@@ -505,7 +505,7 @@ function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
   }
 
   const testType = checkExpression(ctx, expr.test);
-  if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
+  if (!isBooleanType(testType) && testType.kind !== TypeKind.Error) {
     ctx.diagnostics.reportError(
       `Condition must be a boolean type, got '${typeToString(testType)}'.`,
       DiagnosticCode.TypeMismatch,
@@ -700,7 +700,7 @@ export function checkMatchPattern(
         // Zena is strongly typed.
         // If I match on string, case 10 is invalid.
         if (
-          discriminantType !== Types.Unknown &&
+          discriminantType !== Types.Error &&
           discriminantType.kind !== TypeKind.Union
         ) {
           ctx.diagnostics.reportError(
@@ -731,7 +731,7 @@ export function checkMatchPattern(
       // Boolean literal pattern can match boolean type or boolean literal types
       if (
         !isBooleanType(discriminantType) &&
-        discriminantType.kind !== TypeKind.Unknown
+        discriminantType.kind !== TypeKind.Error
       ) {
         ctx.diagnostics.reportError(
           `Type mismatch: cannot match boolean against ${typeToString(discriminantType)}`,
@@ -849,7 +849,7 @@ export function checkMatchPattern(
           continue;
         }
 
-        let propType: Type = Types.Unknown;
+        let propType: Type = Types.Error;
         if (classType.fields.has(propName)) {
           propType = resolveMemberType(
             classType,
@@ -875,7 +875,7 @@ export function checkMatchPattern(
           // `checkMemberExpression` handles it.
           // So I should use similar logic to resolve property type.
           // For now, assume fields.
-          propType = Types.Unknown; // Fallback
+          propType = Types.Error; // Fallback
         }
 
         // Recursively check pattern
@@ -964,7 +964,7 @@ export function checkMatchPattern(
         }
       } else {
         // Allow if unknown or any?
-        if (discriminantType !== Types.Unknown) {
+        if (discriminantType !== Types.Error) {
           ctx.diagnostics.reportError(
             `Cannot destructure non-object type '${typeToString(discriminantType)}'.`,
             DiagnosticCode.TypeMismatch,
@@ -1077,7 +1077,7 @@ export function checkMatchPattern(
           }
         }
       } else {
-        if (discriminantType !== Types.Unknown) {
+        if (discriminantType !== Types.Error) {
           ctx.diagnostics.reportError(
             `Cannot destructure non-tuple type '${typeToString(discriminantType)}'.`,
             DiagnosticCode.TypeMismatch,
@@ -1362,11 +1362,11 @@ function checkUnaryExpression(
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
     return argType;
   }
-  return Types.Unknown;
+  return Types.Error;
 }
 
 function checkThrowExpression(
@@ -1417,8 +1417,7 @@ function checkCatchClause(ctx: CheckerContext, clause: CatchClause): Type {
 
   // If there's a parameter, bind it to the Error type (or eqref for now)
   if (clause.param) {
-    const errorType =
-      ctx.resolveWellKnownType(TypeNames.Error) ?? Types.Unknown;
+    const errorType = ctx.resolveWellKnownType(TypeNames.Error) ?? Types.Error;
     ctx.declare(clause.param.name, errorType, 'let', clause.param);
   }
 
@@ -1617,7 +1616,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   const wrapResult = (type: Type): Type => {
     if (
       shouldMakeNullable &&
-      type.kind !== TypeKind.Unknown &&
+      type.kind !== TypeKind.Error &&
       type.kind !== TypeKind.Void
     ) {
       return makeNullable(type, ctx);
@@ -1660,7 +1659,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
 
     // Check compatibility for each member
@@ -1676,7 +1675,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
           DiagnosticCode.ArgumentCountMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
 
       // Check argument types
@@ -1687,7 +1686,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
             DiagnosticCode.TypeMismatch,
             ctx.getLocation(expr.loc),
           );
-          return Types.Unknown;
+          return Types.Error;
         }
       }
 
@@ -1705,7 +1704,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
             DiagnosticCode.TypeMismatch,
             ctx.getLocation(expr.loc),
           );
-          return Types.Unknown;
+          return Types.Error;
         }
       }
     }
@@ -1719,7 +1718,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   let funcType = calleeType as FunctionType;
@@ -1750,8 +1749,8 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
           DiagnosticCode.UnknownError,
           ctx.getLocation(calleeDecl.loc),
         );
-        expr.inferredType = Types.Unknown;
-        return Types.Unknown;
+        expr.inferredType = Types.Error;
+        return Types.Error;
       } else {
         // Pure forward reference - eagerly check the function.
         // checkStatement will add it to the resolving set internally.
@@ -1823,7 +1822,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
           DiagnosticCode.GenericTypeArgumentMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
       typeArguments = expr.typeArguments.map((arg) =>
         resolveTypeAnnotation(ctx, arg),
@@ -1842,7 +1841,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
           DiagnosticCode.GenericTypeArgumentMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
       typeArguments = inferred;
       // Store inferred type arguments in AST for Codegen
@@ -2166,7 +2165,7 @@ function checkCompoundOperator(
           DiagnosticCode.ArgumentCountMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
       if (!isAssignableTo(ctx, valueType, resolvedMethod.parameters[0])) {
         ctx.diagnostics.reportError(
@@ -2237,7 +2236,7 @@ function checkCompoundOperator(
     DiagnosticCode.TypeMismatch,
     ctx.getLocation(expr.loc),
   );
-  return Types.Unknown;
+  return Types.Error;
 }
 
 function checkAssignmentExpression(
@@ -2254,7 +2253,7 @@ function checkAssignmentExpression(
         DiagnosticCode.SymbolNotFound,
         ctx.getLocation(expr.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
 
     // Create and store the resolved binding for codegen
@@ -2300,14 +2299,14 @@ function checkAssignmentExpression(
       objectType.kind !== TypeKind.Class &&
       objectType.kind !== TypeKind.Interface
     ) {
-      if (objectType.kind !== Types.Unknown.kind) {
+      if (objectType.kind !== Types.Error.kind) {
         ctx.diagnostics.reportError(
           `Property assignment on non-class type '${typeToString(objectType)}'.`,
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(expr.loc),
         );
       }
-      return Types.Unknown;
+      return Types.Error;
     }
 
     const classType = objectType as ClassType | InterfaceType;
@@ -2323,7 +2322,7 @@ function checkAssignmentExpression(
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
 
       const symbolType = symbolTypeValue as SymbolType;
@@ -2350,7 +2349,7 @@ function checkAssignmentExpression(
         DiagnosticCode.PropertyNotFound,
         ctx.getLocation(expr.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
 
     const memberName = memberExpr.property.name;
@@ -2462,7 +2461,7 @@ function checkAssignmentExpression(
         DiagnosticCode.InvalidAssignment,
         ctx.getLocation(expr.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
 
     ctx.diagnostics.reportError(
@@ -2470,7 +2469,7 @@ function checkAssignmentExpression(
       DiagnosticCode.PropertyNotFound,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   } else if (expr.left.type === NodeType.IndexExpression) {
     const indexExpr = expr.left as IndexExpression;
 
@@ -2529,7 +2528,7 @@ function checkAssignmentExpression(
           indexExpr.inferredType = effectiveType;
           return effectiveType;
         }
-        return Types.Unknown;
+        return Types.Error;
       }
 
       // Check if it is a read-only indexer (getter only)
@@ -2540,7 +2539,7 @@ function checkAssignmentExpression(
           DiagnosticCode.InvalidAssignment,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
     }
 
@@ -2565,7 +2564,7 @@ function checkAssignmentExpression(
 
     return effectiveType;
   }
-  return Types.Unknown;
+  return Types.Error;
 }
 
 /**
@@ -2694,7 +2693,7 @@ function checkBinaryExpression(
           DiagnosticCode.ArgumentCountMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
 
       if (!isAssignableTo(ctx, right, resolvedMethod.parameters[0])) {
@@ -2703,7 +2702,7 @@ function checkBinaryExpression(
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
 
       // Store the resolved operator method for codegen
@@ -2841,7 +2840,7 @@ function checkBinaryExpression(
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   // Helper to check if a type is an integer type (i32, u32, i64, u64)
@@ -2881,7 +2880,7 @@ function checkBinaryExpression(
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
       return resultType;
     }
@@ -2896,7 +2895,7 @@ function checkBinaryExpression(
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
       // Return the left operand's type (shift count doesn't affect result type)
       return left;
@@ -2909,11 +2908,11 @@ function checkBinaryExpression(
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
       return Types.Boolean;
     default:
-      return Types.Unknown;
+      return Types.Error;
   }
 }
 
@@ -2983,7 +2982,7 @@ function checkFunctionExpression(
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
-      type = Types.Unknown;
+      type = Types.Error;
     }
 
     if (param.optional && !param.initializer) {
@@ -3028,7 +3027,7 @@ function checkFunctionExpression(
   }
 
   // Check return type if annotated
-  let expectedReturnType: Type = Types.Unknown;
+  let expectedReturnType: Type = Types.Error;
   if (expr.returnType) {
     expectedReturnType = resolveTypeAnnotation(ctx, expr.returnType);
   }
@@ -3039,11 +3038,11 @@ function checkFunctionExpression(
   const previousInferredReturns = ctx.inferredReturnTypes;
   ctx.inferredReturnTypes = [];
 
-  let bodyType: Type = Types.Unknown;
+  let bodyType: Type = Types.Error;
   if (expr.body.type === NodeType.BlockStatement) {
     checkStatement(ctx, expr.body);
 
-    if (expectedReturnType.kind === Types.Unknown.kind) {
+    if (expectedReturnType.kind === Types.Error.kind) {
       if (ctx.inferredReturnTypes.length === 0) {
         bodyType = Types.Void;
       } else {
@@ -3056,7 +3055,7 @@ function checkFunctionExpression(
   } else {
     bodyType = checkExpression(ctx, expr.body as Expression);
 
-    if (expectedReturnType.kind !== Types.Unknown.kind) {
+    if (expectedReturnType.kind !== Types.Error.kind) {
       if (!isAssignableTo(ctx, bodyType, expectedReturnType)) {
         ctx.diagnostics.reportError(
           `Type mismatch: expected return type ${typeToString(expectedReturnType)}, got ${typeToString(bodyType)}`,
@@ -3096,7 +3095,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
       DiagnosticCode.SymbolNotFound,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   let classType = type as ClassType;
@@ -3291,7 +3290,7 @@ function checkSymbolMemberAccess(
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
     symbolType = symbolTypeValue as SymbolType;
   } else if (symbolPath.type === NodeType.MemberExpression) {
@@ -3320,7 +3319,7 @@ function checkSymbolMemberAccess(
             DiagnosticCode.TypeMismatch,
             ctx.getLocation(expr.loc),
           );
-          return Types.Unknown;
+          return Types.Error;
         }
       } else if (
         interfaceOrClassType &&
@@ -3341,7 +3340,7 @@ function checkSymbolMemberAccess(
             DiagnosticCode.TypeMismatch,
             ctx.getLocation(expr.loc),
           );
-          return Types.Unknown;
+          return Types.Error;
         }
       } else {
         ctx.diagnostics.reportError(
@@ -3349,7 +3348,7 @@ function checkSymbolMemberAccess(
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(expr.loc),
         );
-        return Types.Unknown;
+        return Types.Error;
       }
     } else {
       ctx.diagnostics.reportError(
@@ -3357,7 +3356,7 @@ function checkSymbolMemberAccess(
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
   } else {
     ctx.diagnostics.reportError(
@@ -3365,7 +3364,7 @@ function checkSymbolMemberAccess(
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   expr.resolvedSymbol = symbolType;
@@ -3407,7 +3406,7 @@ function checkSymbolMemberAccess(
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   // Check symbolFields first
@@ -3441,7 +3440,7 @@ function checkSymbolMemberAccess(
     DiagnosticCode.PropertyNotFound,
     ctx.getLocation(expr.loc),
   );
-  return Types.Unknown;
+  return Types.Error;
 }
 
 function checkMemberExpression(
@@ -3461,7 +3460,7 @@ function checkMemberExpression(
 
   // Helper to wrap result in nullable if needed
   const wrapResult = (type: Type): Type => {
-    if (shouldMakeNullable && type.kind !== TypeKind.Unknown) {
+    if (shouldMakeNullable && type.kind !== TypeKind.Error) {
       return makeNullable(type, ctx);
     }
     return type;
@@ -3587,21 +3586,21 @@ function checkMemberExpression(
       DiagnosticCode.PropertyNotFound,
       ctx.getLocation(expr.property.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   if (
     objectType.kind !== TypeKind.Class &&
     objectType.kind !== TypeKind.Interface
   ) {
-    if (objectType.kind !== Types.Unknown.kind) {
+    if (objectType.kind !== Types.Error.kind) {
       ctx.diagnostics.reportError(
         `Property access not supported on type '${typeToString(objectType)}'.`,
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
     }
-    return Types.Unknown;
+    return Types.Error;
   }
 
   const classType = objectType as ClassType | InterfaceType;
@@ -3621,7 +3620,7 @@ function checkMemberExpression(
         DiagnosticCode.UnknownError,
         ctx.getLocation(expr.property.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
 
     if (
@@ -3633,7 +3632,7 @@ function checkMemberExpression(
         DiagnosticCode.PropertyNotFound,
         ctx.getLocation(expr.property.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
 
     if (!isAssignableTo(ctx, objectType, ctx.currentClass)) {
@@ -3642,7 +3641,7 @@ function checkMemberExpression(
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.property.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
 
     // Determine if this is static field access:
@@ -3776,7 +3775,7 @@ function checkMemberExpression(
     DiagnosticCode.PropertyNotFound,
     ctx.getLocation(expr.property.loc),
   );
-  return Types.Unknown;
+  return Types.Error;
 }
 
 function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
@@ -3786,7 +3785,7 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
       DiagnosticCode.UnknownError,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
   if (!ctx.isThisInitialized) {
     ctx.diagnostics.reportError(
@@ -3807,7 +3806,7 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
 function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
   let elementType: Type;
   if (expr.elements.length === 0) {
-    elementType = Types.Unknown;
+    elementType = Types.Error;
   } else {
     const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
     // Check if all element types are compatible.
@@ -3916,7 +3915,7 @@ function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
       DiagnosticCode.TypeNotFound,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   const mapClassType = genericMapType as ClassType;
@@ -3928,7 +3927,7 @@ function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   // Type-check all entries and collect key/value types
@@ -4053,7 +4052,7 @@ function checkIndexExpression(
 
   // Helper to wrap result in nullable if needed
   const wrapResult = (type: Type): Type => {
-    if (shouldMakeNullable && type.kind !== TypeKind.Unknown) {
+    if (shouldMakeNullable && type.kind !== TypeKind.Error) {
       return makeNullable(type, ctx);
     }
     return type;
@@ -4130,7 +4129,7 @@ function checkIndexExpression(
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
     if (index < 0 || index >= tupleType.elementTypes.length) {
       ctx.diagnostics.reportError(
@@ -4138,7 +4137,7 @@ function checkIndexExpression(
         DiagnosticCode.IndexOutOfBounds,
         ctx.getLocation(expr.loc),
       );
-      return Types.Unknown;
+      return Types.Error;
     }
     const elementType = tupleType.elementTypes[index];
 
@@ -4224,7 +4223,7 @@ function checkIndexExpression(
       DiagnosticCode.NotIndexable,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   if (isString) {
@@ -4233,7 +4232,7 @@ function checkIndexExpression(
       DiagnosticCode.NotIndexable,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   return wrapResult((objectType as ArrayType).elementType);
@@ -4249,7 +4248,7 @@ function checkSuperExpression(
       DiagnosticCode.UnknownError,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   if (!ctx.currentClass.superType) {
@@ -4258,7 +4257,7 @@ function checkSuperExpression(
       DiagnosticCode.UnknownError,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   return ctx.currentClass.superType;
@@ -4368,7 +4367,7 @@ function checkTaggedTemplateExpression(
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   const funcType = tagType as FunctionType;
@@ -4386,7 +4385,7 @@ function checkTaggedTemplateExpression(
       DiagnosticCode.ArgumentCountMismatch,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   // Return the function's return type
@@ -4789,7 +4788,7 @@ function checkRangeExpression(
       DiagnosticCode.TypeNotFound,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   return rangeType;
@@ -4834,7 +4833,7 @@ function checkPipePlaceholder(
       DiagnosticCode.SymbolNotFound,
       ctx.getLocation(expr.loc),
     );
-    return Types.Unknown;
+    return Types.Error;
   }
 
   return pipeType;

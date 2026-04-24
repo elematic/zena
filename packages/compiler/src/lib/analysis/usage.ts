@@ -800,7 +800,7 @@ class UsageAnalyzer {
                 !argType ||
                 argType.kind === TypeKind.TypeParameter ||
                 argType.kind === TypeKind.Any ||
-                argType.kind === TypeKind.Unknown
+                argType.kind === TypeKind.Error
               ) {
                 // Find String class and mark its == method
                 const stringDecl = this.#findDeclarationByName('String');

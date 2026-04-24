@@ -377,11 +377,11 @@ tests/language/semantics/
 │
 ├── type-system/
 │   ├── type-alias/
-│   │   ├── basic.zena                          [done] (in types/)
-│   │   ├── unknown-type.zena                   [done] (in types/)
-│   │   ├── generic-alias.zena                  [ts] type-alias_test
-│   │   ├── recursive-alias.zena                [ts] type-alias_test — type List = ... (rejected?)
-│   │   └── alias-to-union.zena                 [ts] — type Nullable<T> = T | null
+│   │   ├── basic.zena                          [done]
+│   │   ├── unknown-type.zena                   [done]
+│   │   ├── generic-alias.zena                  [done]
+│   │   ├── recursive-alias.zena                [done]
+│   │   └── alias-to-union.zena                 [done]
 │   │
 │   ├── unions/
 │   │   ├── basic-assignability.zena            [ts] checker-union_test — i32 | String

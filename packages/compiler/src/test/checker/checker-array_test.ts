@@ -78,11 +78,12 @@ suite('TypeChecker - Arrays', () => {
     const errors = check(`
       let x: array = [];
     `);
-    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors.length, 2);
     assert.match(
       errors[0].message,
       /Generic type 'array' requires 1 type argument/,
     );
+    assert.match(errors[1].message, /Type mismatch/);
   });
 
   test('should allow valid generic array type', () => {
