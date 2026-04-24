@@ -419,9 +419,9 @@ tests/language/semantics/
 │   │   ├── index-out-of-bounds.zena            [done]
 │   │   ├── literal-index.zena                  [done]
 │   │   ├── not-array.zena                      [done]
-│   │   ├── literal.zena                        [ts] records-tuples_test — (1, "hello")
-│   │   ├── length-mismatch.zena                [ts] — (i32, i32) != (i32, i32, i32)
-│   │   └── element-mismatch.zena               [ts] — (i32, String) != (i32, i32)
+│   │   ├── literal.zena                        [done] records-tuples_test — (1, "hello")
+│   │   ├── length-mismatch.zena                [done] — (i32, i32) != (i32, i32, i32)
+│   │   └── element-mismatch.zena               [done] — (i32, String) != (i32, i32)
 │   │
 │   └── never-type/
 │       ├── assignable-to-anything.zena         [ts] never_test
