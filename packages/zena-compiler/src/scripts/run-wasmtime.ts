@@ -89,7 +89,12 @@ for (const wasmFile of wasmFiles.sort()) {
   const lines = output.split('\n');
   const returnValue = lines.pop()?.trim();
   // Everything before the return value is the test report
-  const report = lines.join('\n');
+  const report = lines
+    .map((line) => {
+      // Unescape explicit color strings returned by Zena tests
+      return line.replace(/\\x1b/g, '\x1B').replace(/\\n/g, '\n');
+    })
+    .join('\n');
   const testCount = parseSummary(report);
   totalTests += testCount;
 
@@ -115,12 +120,10 @@ for (const wasmFile of wasmFiles.sort()) {
 console.log('');
 console.log('─'.repeat(50));
 if (failed === 0) {
-  console.log(
-    `${GREEN}All ${passed} suite(s) passed (${totalTests} tests)${NC}`,
-  );
+  console.log(`${GREEN}All tests passed (${totalTests} total)${NC}`);
 } else {
   console.log(
-    `${RED}${failed} of ${passed + failed} suite(s) failed (${totalTests} tests)${NC}`,
+    `${RED}${failed} suite(s) failed (${totalTests} total tests)${NC}`,
   );
   process.exit(1);
 }

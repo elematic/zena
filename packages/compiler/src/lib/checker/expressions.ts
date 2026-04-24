@@ -292,6 +292,16 @@ function checkExpressionInternal(
         return Types.Never;
       }
 
+      if (expr.name === '__LOCATION__') {
+        const stringType = ctx.getWellKnownType(Types.String.name);
+        return stringType
+          ? ({
+              kind: TypeKind.Union,
+              types: [stringType, Types.Null],
+            } as UnionType)
+          : Types.Null;
+      }
+
       const symbolInfo = ctx.resolveValueInfo(expr.name);
       if (!symbolInfo) {
         ctx.diagnostics.reportError(
@@ -1891,16 +1901,33 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         ) {
           const initializer = funcType.parameterInitializers[i];
           if (initializer) {
-            // Push the initializer AST node. The initializer was already type-checked
-            // when the function/method was defined (in the callee's scope where `this`
-            // and other parameters are available). We don't re-check it here because
-            // the call site doesn't have the same scope as the callee.
-            //
-            // Note: This "caller supplies default" strategy means the default expression
-            // is inlined at the call site. For defaults that reference `this` or other
-            // parameters, codegen must ensure the expression is evaluated in the correct
-            // context (see generateCallExpression).
-            expr.arguments.push(initializer);
+            if (
+              initializer.type === NodeType.Identifier &&
+              initializer.name === '__LOCATION__'
+            ) {
+              if (ctx.compiler?.options?.emitLocations) {
+                const loc = expr.loc ? ctx.getLocation(expr.loc) : null;
+                const literal: StringLiteral = {
+                  type: NodeType.StringLiteral,
+                  value: loc ? `${loc.file}:${loc.line}` : 'unknown:0',
+                  loc: expr.loc,
+                };
+                expr.arguments.push(literal);
+              } else {
+                expr.arguments.push({type: NodeType.NullLiteral});
+              }
+            } else {
+              // Push the initializer AST node. The initializer was already type-checked
+              // when the function/method was defined (in the callee's scope where `this`
+              // and other parameters are available). We don't re-check it here because
+              // the call site doesn't have the same scope as the callee.
+              //
+              // Note: This "caller supplies default" strategy means the default expression
+              // is inlined at the call site. For defaults that reference `this` or other
+              // parameters, codegen must ensure the expression is evaluated in the correct
+              // context (see generateCallExpression).
+              expr.arguments.push(initializer);
+            }
             // Use the parameter type as the argument type (the initializer was checked
             // to be compatible during function definition)
             argTypes.push(funcType.parameters[i]);
@@ -3174,7 +3201,24 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
         ) {
           const initializer = constructor.parameterInitializers[i];
           if (initializer) {
-            expr.arguments.push(initializer);
+            if (
+              initializer.type === NodeType.Identifier &&
+              initializer.name === '__LOCATION__'
+            ) {
+              if (ctx.compiler?.options?.emitLocations) {
+                const loc = expr.loc ? ctx.getLocation(expr.loc) : null;
+                const literal: StringLiteral = {
+                  type: NodeType.StringLiteral,
+                  value: loc ? `${loc.file}:${loc.line}` : 'unknown:0',
+                  loc: expr.loc,
+                };
+                expr.arguments.push(literal);
+              } else {
+                expr.arguments.push({type: NodeType.NullLiteral});
+              }
+            } else {
+              expr.arguments.push(initializer);
+            }
           } else {
             // Optional but no default? Inject null.
             const nullLiteral: Expression = {

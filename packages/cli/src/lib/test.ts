@@ -42,6 +42,8 @@ export interface TestRunnerOptions {
   cwd?: string;
   /** Verbose output */
   verbose?: boolean;
+  /** Emit source locations */
+  emitLocations?: boolean;
 }
 
 /**
@@ -250,12 +252,17 @@ const formatFailures = (result: ZenaSuiteResult): string => {
  *
  * If neither is found but the file compiles, it's considered a pass.
  */
-const runTestFile = async (filePath: string): Promise<TestResult> => {
+const runTestFile = async (
+  filePath: string,
+  options: {emitLocations?: boolean} = {},
+): Promise<TestResult> => {
   const start = performance.now();
 
   try {
     const host = new NodeCompilerHost();
-    const compiler = new Compiler(host);
+    const compiler = new Compiler(host, {
+      emitLocations: options.emitLocations,
+    });
 
     // First, compile the test file to check for exports
     const modules = compiler.compile(filePath);
@@ -516,7 +523,7 @@ export const runTests = async (
   for (const file of uniqueFiles) {
     const displayPath = relative(cwd, file);
 
-    const result = await runTestFile(file);
+    const result = await runTestFile(file, options);
     results.push(result);
 
     // Print results - always show structured results if available
@@ -566,7 +573,7 @@ export const runTests = async (
  */
 export const testCommand = async (
   patterns: string[],
-  options: {verbose?: boolean} = {},
+  options: {verbose?: boolean; emitLocations?: boolean} = {},
 ): Promise<number> => {
   if (patterns.length === 0) {
     // Default pattern
@@ -576,6 +583,7 @@ export const testCommand = async (
   const summary = await runTests({
     patterns,
     verbose: options.verbose,
+    emitLocations: options.emitLocations,
   });
 
   return summary.failed > 0 ? 1 : 0;

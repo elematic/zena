@@ -369,7 +369,7 @@ async function runCheckTest(
       },
     };
 
-    const compiler = new Compiler(host);
+    const compiler = new Compiler(host, {emitLocations: true});
     const modules = compiler.compile(filePath);
 
     // Collect all diagnostics
@@ -484,7 +484,7 @@ async function runExecutionTest(
     },
   };
 
-  const compiler = new Compiler(host);
+  const compiler = new Compiler(host, {emitLocations: true});
   // compile() does type checking and returns all modules with their diagnostics
   const modules = compiler.compile(filePath);
 

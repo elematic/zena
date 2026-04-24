@@ -227,16 +227,20 @@ class CheckerContext {
   /** The file path of the module being checked. */
   #filePath: String;
 
+  emitLocations: boolean;
+
   new(
       file: String,
       scopeResult: ScopeResult | null,
       depExports: HashMap<String, ModuleExports> | null,
-      depModels: HashMap<String, SemanticModel> | null)
+      depModels: HashMap<String, SemanticModel> | null,
+      emitLocations: boolean = false)
     : diagnostics = new DiagnosticBag(file),
       #filePath = file,
       #scopeResult = scopeResult,
       #depExports = depExports,
-      #depModels = depModels {
+      #depModels = depModels,
+      emitLocations = emitLocations {
     
     // Initialize with module-level scope.
     this.#typeScopes.push(new HashMap<String, Type>());
@@ -1111,8 +1115,8 @@ export class CheckResult(
  * This version loads the standard prelude types (String, Array, etc.)
  * automatically.
  */
-export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null, depModels: HashMap<String, SemanticModel> | null = null): CheckResult => {
-  let ctx = new CheckerContext(ast.path, scopeResult, depExports, depModels);
+export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null, depModels: HashMap<String, SemanticModel> | null = null, emitLocations: boolean = false): CheckResult => {
+  let ctx = new CheckerContext(ast.path, scopeResult, depExports, depModels, emitLocations);
 
   // Register standard prelude types.
   registerStandardPrelude(ctx);
@@ -3076,6 +3080,17 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // The hole literal `_` has type `never`.
     if (name == "_") { return new NeverType(); }
 
+    if (name == "__LOCATION__") {
+      let stringType = ctx.resolveTypeName("String");
+      if (stringType != null) {
+        let uTypes = new Array<Type>();
+        uTypes.push(stringType as Type);
+        uTypes.push(new NullType());
+        return createUnionType(uTypes);
+      }
+      return new UnknownType();
+    }
+
     // Resolve through the scope pass's ReferenceMap → SymbolInfo → binding type.
     let resolved = ctx.resolveIdentifier(expr);
     if (resolved == null) {
@@ -4671,6 +4686,8 @@ let checkMethodSignature = (
   let paramNames = new Array<String>();
   var hasOptionals = false;
   let optionals = new Array<boolean>();
+  var hasInitializers = false;
+  let initializers = new Array<Expression | null>();
 
   var i = 0;
   while (i < md.params.length) {
@@ -4687,6 +4704,8 @@ let checkMethodSignature = (
     // Track optional parameters and widen to T | null.
     let isOptional = param.optional || param.defaultValue != null;
     optionals.push(isOptional);
+    if (param.defaultValue != null) { hasInitializers = true; }
+    initializers.push(param.defaultValue);
     if (isOptional) {
       hasOptionals = true;
       // Only widen to T | null for ?-style optionals without a default value.
@@ -4728,6 +4747,9 @@ let checkMethodSignature = (
   ft.isAbstract = md.isAbstract;
   if (hasOptionals) {
     ft.optionalParameters = optionals;
+  }
+  if (hasInitializers) {
+    ft.parameterInitializers = initializers;
   }
   return ft;
 };
@@ -5395,6 +5417,40 @@ let checkNewExpression = (
       }
 
       let ctor = ctorType as FunctionType;
+
+      // Fill in missing arguments with default values
+      if (ctor.parameterInitializers != null) {
+        var a = args.length;
+        while (a < ctor.parameters.length) {
+          let init = (ctor.parameterInitializers as Array<Expression | null>)[a];
+          if (init != null) {
+            let initializer = init as Expression;
+            match (initializer) {
+              case Identifier {name}: {
+                if (name == "__LOCATION__") {
+                  if (ctx.emitLocations) {
+                    let locStr = if (loc != null) {
+                      `${ctx.filePath}:${(loc as SourceLocation).line}`
+                    } else {
+                      `${ctx.filePath}:0`
+                    };
+                    args.push(new StringLiteral(locStr, loc));
+                  } else {
+                    args.push(new NullLiteral(loc));
+                  }
+                } else {
+                  args.push(initializer);
+                }
+              }
+              case _: { args.push(initializer); }
+            }
+          } else {
+            // Optional but no default? Inject null.
+            args.push(new NullLiteral(loc));
+          }
+          a += 1;
+        }
+      }
 
       // Check argument count (accounting for optional parameters).
       let expectedCount = ctor.parameters.length;
@@ -6602,6 +6658,8 @@ let checkFunctionExpression = (
   var i = 0;
   var hasOptionals = false;
   let optionals = new Array<boolean>();
+  var hasInitializers = false;
+  let initializers = new Array<Expression | null>();
   while (i < params.length) {
     let param = params[i];
     let paramName = param.name.name;
@@ -6627,6 +6685,8 @@ let checkFunctionExpression = (
     // Optional parameters have their type widened to T | null
     let isOptional = param.optional || param.defaultValue != null;
     optionals.push(isOptional);
+    if (param.defaultValue != null) { hasInitializers = true; }
+    initializers.push(param.defaultValue);
     if (isOptional) {
       hasOptionals = true;
       // Only widen to T | null for ?-style optionals without a default value.
@@ -6735,6 +6795,9 @@ let checkFunctionExpression = (
   fnType.typeParameters = resolvedTypeParams;
   if (hasOptionals) {
     fnType.optionalParameters = optionals;
+  }
+  if (hasInitializers) {
+    fnType.parameterInitializers = initializers;
   }
   return fnType;
 };
@@ -6851,6 +6914,40 @@ let checkCallExpressionInner = (
             let subRet = substituteTypeParams(ft.typeParameters, typeArgs, ft.returnType);
             effectiveFt = new FunctionType(subParams, ft.parameterNames, subRet);
           }
+        }
+      }
+
+      // Fill in missing arguments with default values
+      if (effectiveFt.parameterInitializers != null) {
+        var a = args.length;
+        while (a < effectiveFt.parameters.length) {
+          let init = (effectiveFt.parameterInitializers as Array<Expression | null>)[a];
+          if (init != null) {
+            let initializer = init as Expression;
+            match (initializer) {
+              case Identifier {name}: {
+                if (name == "__LOCATION__") {
+                  if (ctx.emitLocations) {
+                    let locStr = if (loc != null) {
+                      `${ctx.filePath}:${(loc as SourceLocation).line}`
+                    } else {
+                      `${ctx.filePath}:0`
+                    };
+                    args.push(new StringLiteral(locStr, loc));
+                  } else {
+                    args.push(new NullLiteral(loc));
+                  }
+                } else {
+                  args.push(initializer);
+                }
+              }
+              case _: { args.push(initializer); }
+            }
+          } else {
+            // Optional but no default? Inject null.
+            args.push(new NullLiteral(loc));
+          }
+          a += 1;
         }
       }
 

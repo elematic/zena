@@ -20,14 +20,28 @@ const outDir = join(zenaDir, 'out');
 const cliPath = join(pkgDir, '..', 'cli', 'lib', 'cli.js');
 const repoRoot = join(pkgDir, '..', '..');
 
-// Generate a wrapper module that imports a test suite and runs it
-const generateWrapper = (testFileName: string): string => `\
-import { tests } from './${testFileName}';
-import { runAndReport } from 'zena:test';
+// Generate a single monolithic test file
+const generateWrapper = (testFileNames: string[]): string => {
+  let imports = '';
+  let pushes = '';
+  testFileNames.forEach((file, index) => {
+    imports += `import { tests as t${index} } from './${file}';\n`;
+    pushes += `  root.suites.push(t${index});\n`;
+  });
+
+  return `\
+${imports}
+import { Suite, runAndReport } from 'zena:test';
 import { console } from 'zena:console';
 
-export let main = (): i32 => runAndReport(tests, (s: String): void => { console.log(s); });
+export let main = (): i32 => {
+  let root = new Suite('Compiler Tests');
+${pushes}
+
+  return runAndReport(root, (s: String): void => { console.log(s); });
+};
 `;
+};
 
 // Build all test files
 const testPattern = 'test/*_test.zena';
@@ -35,52 +49,39 @@ const testPattern = 'test/*_test.zena';
 console.log('Building zena-compiler tests...');
 console.log('');
 
-let built = 0;
-let failed = 0;
-
 const fullPattern = join(zenaDir, testPattern);
 const files = await glob(fullPattern);
+files.sort(); // Ensure stable output order
 
-for (const zenaFile of files) {
-  const relPath = relative(zenaDir, zenaFile);
-  const testFileName = basename(zenaFile);
-  const wasmFile = join(outDir, relPath.replace(/\.zena$/, '.wasm'));
+const testFileNames = files.map((f) => basename(f));
+const wrapperFileName = '__all_tests__.zena';
+const wrapperPath = join(zenaDir, 'test', wrapperFileName);
+const wasmFile = join(outDir, 'test', '__all_tests__.wasm');
 
-  // Ensure output directory exists
-  const wasmDir = dirname(wasmFile);
-  if (!existsSync(wasmDir)) {
-    mkdirSync(wasmDir, {recursive: true});
-  }
-
-  // Generate wrapper in the same directory as the test file
-  const wrapperPath = zenaFile.replace(/\.zena$/, '.__runner__.zena');
-  writeFileSync(wrapperPath, generateWrapper(testFileName));
-
-  // Compile wrapper (which imports the actual test) with wasi target
-  // Use --stack-size=4096 to handle large programs (like checker.zena at ~4000 LOC)
-  try {
-    execSync(
-      `node --stack-size=4096 "${cliPath}" build "${wrapperPath}" --target wasi -g -o "${wasmFile}"`,
-      {
-        stdio: 'pipe',
-        cwd: repoRoot,
-      },
-    );
-    console.log(`  ✓ ${relPath}`);
-    built++;
-  } catch (e: unknown) {
-    console.error(`  ✗ ${relPath}`);
-    if (e instanceof Error && 'stderr' in e) {
-      const stderr = (e as {stderr: Buffer | string}).stderr;
-      console.error(`    ${stderr.toString().trim()}`);
-    }
-    failed++;
-  }
+// Ensure output directory exists
+const wasmDir = dirname(wasmFile);
+if (!existsSync(wasmDir)) {
+  mkdirSync(wasmDir, {recursive: true});
 }
 
-console.log('');
-console.log(`Built: ${built}, Failed: ${failed}`);
+writeFileSync(wrapperPath, generateWrapper(testFileNames));
 
-if (failed > 0) {
+let failed = false;
+
+try {
+  execSync(
+    `node --stack-size=4096 "${cliPath}" build "${wrapperPath}" --target wasi -g -l -o "${wasmFile}"`,
+    {
+      stdio: 'inherit', // Show compiler output so we see errors immediately
+      cwd: repoRoot,
+    },
+  );
+  console.log(`  ✓ Combined tests built successfully`);
+} catch (e: unknown) {
+  console.error(`  ✗ Combined tests failed to build`);
+  failed = true;
+}
+
+if (failed) {
   process.exit(1);
 }

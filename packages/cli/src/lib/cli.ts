@@ -126,6 +126,7 @@ const buildCommand = async (
   target: Target = 'host',
   debug: boolean = false,
   dce: boolean = false,
+  emitLocations: boolean = false,
 ): Promise<number> => {
   if (files.length === 0) {
     console.error('Error: No input files specified');
@@ -133,7 +134,7 @@ const buildCommand = async (
   }
 
   const host = createHost(target);
-  const compiler = new Compiler(host, {target});
+  const compiler = new Compiler(host, {target, emitLocations});
 
   // For now, assume first file is entry point
   const entryPoint = resolve(process.cwd(), files[0]);
@@ -219,6 +220,7 @@ const checkCommand = async (files: string[]): Promise<number> => {
 const runCommand = async (
   files: string[],
   target: Target = 'host',
+  emitLocations: boolean = false,
 ): Promise<number> => {
   if (files.length === 0) {
     console.error('Error: No input files specified');
@@ -233,7 +235,7 @@ const runCommand = async (
   }
 
   const host = createHost(target);
-  const compiler = new Compiler(host, {target});
+  const compiler = new Compiler(host, {target, emitLocations});
   const entryPoint = resolve(process.cwd(), files[0]);
 
   try {
@@ -302,6 +304,7 @@ export const main = async (args: string[]): Promise<number> => {
       target: {type: 'string', short: 't', default: 'host'},
       debug: {type: 'boolean', short: 'g', default: false},
       dce: {type: 'boolean', default: false},
+      'emit-locations': {type: 'boolean', short: 'l', default: false},
       verbose: {type: 'boolean', short: 'v', default: false},
     },
     allowPositionals: true,
@@ -332,13 +335,17 @@ export const main = async (args: string[]): Promise<number> => {
         target,
         values.debug,
         values.dce,
+        values['emit-locations'],
       );
     case 'check':
       return checkCommand(files);
     case 'run':
-      return runCommand(files, target);
+      return runCommand(files, target, values['emit-locations']);
     case 'test':
-      return testCommand(files, {verbose: values.verbose});
+      return testCommand(files, {
+        verbose: values.verbose,
+        emitLocations: values['emit-locations'],
+      });
     default:
       printHelp();
       return 1;

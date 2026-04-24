@@ -3,33 +3,35 @@ import { Error } from 'zena:error';
 import { Array } from 'zena:growable-array';
 import { StringBuilder } from 'zena:string-builder';
 
-// Test context passed to each test function
+/**
+ * Test context passed to each test function
+ */
 export class TestContext {
   name: String;
 
   new(name: String) : name = name;
 }
 
-// Result of a single test execution
+/**
+ * Result of a single test execution
+ */
 export class TestResult {
   name: String;
   passed: boolean;
   error: String | null;
 
-  new(name: String, passed: boolean, error: String | null)
-    : name = name, passed = passed, error = error;
+  new(this.name: String, this.passed: boolean, this.error: String | null);
 }
 
 // Result of running a suite
 export class SuiteResult {
   name: String;
-  tests: Array<TestResult>;
-  suites: Array<SuiteResult>;
-  var passed: i32;
-  var failed: i32;
+  tests = new Array<TestResult>();
+  suites = new Array<SuiteResult>();
+  var passed = 0;
+  var failed = 0;
 
-  new(name: String)
-    : name = name, tests = new Array<TestResult>(), suites = new Array<SuiteResult>(), passed = 0, failed = 0;
+  new(this.name: String);
 
   addTestResult(result: TestResult): void {
     this.tests.push(result);
@@ -47,15 +49,20 @@ export class SuiteResult {
   }
 }
 
-// A single test case
+/**
+ * A single test case
+ */
 class TestCase {
   name: String;
   fn: (ctx: TestContext) => void;
   only: boolean;
   skip: boolean;
 
-  new(name: String, fn: (ctx: TestContext) => void, only: boolean, skip: boolean)
-    : name = name, fn = fn, only = only, skip = skip;
+  new(
+    this.name: String,
+    this.fn: (ctx: TestContext) => void,
+    this.only: boolean,
+    this.skip: boolean);
 
   run(): TestResult {
     let ctx = new TestContext(this.name);
@@ -69,15 +76,16 @@ class TestCase {
   }
 }
 
-// A test suite containing tests and nested suites
+/**
+ * A test suite containing tests and nested suites
+ */
 export class Suite {
   name: String;
-  tests: Array<TestCase>;
-  suites: Array<Suite>;
-  var hasOnly: boolean;
+  tests = new Array<TestCase>();
+  suites = new Array<Suite>();
+  var hasOnly = false;
 
-  new(name: String)
-    : name = name, tests = new Array<TestCase>(), suites = new Array<Suite>(), hasOnly = false;
+  new(this.name: String);
 
   // Run all tests in this suite and return structured results
   run(): SuiteResult {
@@ -87,12 +95,9 @@ export class Suite {
     let runOnlyTests = this.hasOnly;
     
     // Run tests
-    var i: i32 = 0;
-    while (i < this.tests.length) {
-      let testCase = this.tests[i];
+    for (let testCase in this.tests) {
       // Skip tests that are explicitly skipped
       if (testCase.skip) {
-        i += 1;
         continue;
       }
       // Skip non-only tests if we have .only tests
@@ -101,16 +106,12 @@ export class Suite {
         let testResult = testCase.run();
         result.addTestResult(testResult);
       }
-      i += 1;
     }
     
     // Run nested suites
-    var j: i32 = 0;
-    while (j < this.suites.length) {
-      let nestedSuite = this.suites[j];
+    for (let nestedSuite in this.suites) {
       let suiteResult = nestedSuite.run();
       result.addSuiteResult(suiteResult);
-      j = j + 1;
     }
     
     return result;
@@ -120,14 +121,18 @@ export class Suite {
 // Current suite for nested test/suite registration
 var currentSuite: Suite | null = null;
 
-// Register a test in the current suite
+/**
+ * Register a test in the current suite
+ */
 export let test = (name: String, fn: (ctx: TestContext) => void): void => {
   if (currentSuite !== null) {
     currentSuite.tests.push(new TestCase(name, fn, false, false));
   }
 };
 
-// Register a test that will be the only one to run (for debugging)
+/**
+ * Register a test that will be the only one to run (for debugging)
+ */
 export let testOnly = (name: String, fn: (ctx: TestContext) => void): void => {
   if (currentSuite !== null) {
     currentSuite.tests.push(new TestCase(name, fn, true, false));
@@ -135,14 +140,18 @@ export let testOnly = (name: String, fn: (ctx: TestContext) => void): void => {
   }
 };
 
-// Register a test that will be skipped
+/**
+ * Register a test that will be skipped
+ */
 export let testSkip = (name: String, fn: (ctx: TestContext) => void): void => {
   if (currentSuite !== null) {
     currentSuite.tests.push(new TestCase(name, fn, false, true));
   }
 };
 
-// Create a test suite
+/**
+ * Create a test suite
+ */
 export let suite = (name: String, fn: () => void): Suite => {
   let parentSuite = currentSuite;
   let newSuite = new Suite(name);
@@ -186,64 +195,79 @@ let indent = (level: i32): String => {
   return sb.toString();
 };
 
+let RED = "\\x1b[31m";
+let GREEN = "\\x1b[32m";
+let DIM = "\\x1b[2m";
+let YELLOW = "\\x1b[33m";
+let NC = "\\x1b[0m";
+
 // Report a suite result tree to a write function (spec reporter style).
 // The write function is called once per line of output.
-let reportSuite = (result: SuiteResult, write: (s: String) => void, level: i32): void => {
-  let prefix = indent(level);
+let reportFailedTests = (result: SuiteResult, write: (s: String) => void, path: Array<String>): void => {
+  // Add this suite to the path
+  path.push(result.name);
 
-  // Print suite header
-  if (level > 0) {
-    write(`${prefix}▶ ${result.name}`);
+  // Build path prefix directly since Array.join is not available
+  let sb = new StringBuilder(64);
+  for (var i = 0; i < path.length; i += 1) {
+    if (i > 0) {
+      sb.append(' > ');
+    }
+    sb.append(path[i]);
   }
+  let pathPrefix = sb.toString();
 
-  // Print test results
-  let testPrefix = indent(level + 1);
-  var i: i32 = 0;
-  while (i < result.tests.length) {
-    let t = result.tests[i];
-    if (t.passed) {
-      write(`${testPrefix}✔ ${t.name}`);
-    } else {
-      write(`${testPrefix}✖ ${t.name}`);
+  // Print failed tests in this suite
+  for (let t in result.tests) {
+    if (!t.passed) {
+      write(`${RED}✖ ${pathPrefix} > ${t.name}${NC}`);
       if (t.error !== null) {
-        write(`${testPrefix}    ${t.error}`);
+        write(`    ${DIM}${t.error}${NC}`);
       }
     }
-    i += 1;
   }
 
-  // Print nested suites
-  var j: i32 = 0;
-  while (j < result.suites.length) {
-    reportSuite(result.suites[j], write, level + 1);
-    j = j + 1;
+  // Recurse into nested suites
+  for (let suite in result.suites) {
+    reportFailedTests(suite, write, path);
   }
+
+  // Remove this suite from the path
+  path.pop();
 };
 
-// Run a suite, print results, and return the number of failures.
-// This is the standard entry point for test runners.
-//
-// Usage in a test wrapper:
-//   import { tests } from './my_test.zena';
-//   import { runAndReport } from 'zena:test';
-//   export let main = (): i32 => runAndReport(tests, console.log);
+// Format a summary of all test failures across all suites.
+let reportSummary = (result: SuiteResult, write: (s: String) => void): void => {
+  if (result.failed == 0) {
+    return;
+  }
+  write(`\n${RED}FAILURES:${NC}`);
+  let path = new Array<String>(4);
+  reportFailedTests(result, write, path);
+};
+
+/**
+ * Run a suite, print results, and return the number of failures.
+ * This is the standard entry point for test runners.
+ *
+ * Usage in a test wrapper:
+ *   import { tests } from './my_test.zena';
+ *   import { runAndReport } from 'zena:test';
+ *   export let main = (): i32 => runAndReport(tests, console.log);
+ */
 export let runAndReport = (s: Suite, write: (s: String) => void): i32 => {
   let result = s.run();
 
-  // Print suite name as header
-  let icon = if (result.failed > 0) '✖' else '✔';
-  write(`${icon} ${result.name}`);
-
-  // Print test tree
-  reportSuite(result, write, 0);
+  // We only print the failures now instead of the full tree to avoid flooding
+  reportSummary(result, write);
 
   // Print summary
   let total = result.passed + result.failed;
   write('');
   if (result.failed == 0) {
-    write(`✓ ${result.passed} of ${total} test(s) passed`);
+    write(`${GREEN}✓ ${result.passed} of ${total} test(s) passed${NC}`);
   } else {
-    write(`✗ ${result.failed} failed, ${result.passed} passed of ${total} test(s)`);
+    write(`${RED}✗ ${result.failed} failed, ${result.passed} passed of ${total} test(s)${NC}`);
   }
 
   return result.failed;

@@ -27,6 +27,8 @@ export interface CompilerOptions {
    * - true: fields are mutable (legacy behavior for migration)
    */
   mutableFields?: boolean;
+  /** Emit source locations for __LOCATION__ defaults (otherwise injects null) */
+  emitLocations?: boolean;
 }
 
 export class Compiler {
@@ -50,8 +52,11 @@ export class Compiler {
    */
   #checkerContext: CheckerContext;
 
+  public options: CompilerOptions;
+
   constructor(host: CompilerHost, options: CompilerOptions = {}) {
     this.#host = host;
+    this.options = options;
     this.#loader = new LibraryLoader(host, {stdlibPaths: options.stdlibPaths});
     this.#checkerContext = new CheckerContext(this);
   }

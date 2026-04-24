@@ -90,7 +90,7 @@ export const checkSource = (
   path = '/main.zena',
 ): Diagnostic[] => {
   const host = createHost(input, path);
-  const compiler = new Compiler(host);
+  const compiler = new Compiler(host, {emitLocations: true});
   // compile() runs type checking on all modules
   const modules = compiler.compile(path);
   // Collect diagnostics from all modules
@@ -106,7 +106,7 @@ export const compileModules = (
   path = '/main.zena',
 ): Module[] => {
   const host = createHost(input, path);
-  const compiler = new Compiler(host);
+  const compiler = new Compiler(host, {emitLocations: true});
   return compiler.compile(path);
 };
 
@@ -132,7 +132,7 @@ export const compileToWasm = (
   options: CompileToWasmOptions = {},
 ): Uint8Array => {
   const host = createHost(input, path);
-  const compiler = new Compiler(host);
+  const compiler = new Compiler(host, {emitLocations: true});
   const modules = compiler.compile(path);
   const generator = new CodeGenerator(
     modules,
@@ -178,7 +178,7 @@ export async function compileAndInstantiate(
 
   const host = createHost(input, path);
 
-  const compiler = new Compiler(host);
+  const compiler = new Compiler(host, {emitLocations: true});
 
   // Check for errors from the initial compilation pass
   const modules = compiler.compile(path);
@@ -275,7 +275,7 @@ export async function compileWithDetails(
   }
 
   const host = createHost(input, path);
-  const compiler = new Compiler(host);
+  const compiler = new Compiler(host, {emitLocations: true});
   const modules = compiler.compile(path);
   const allDiagnostics = modules.flatMap((m) => m.diagnostics ?? []);
   const errors = allDiagnostics.filter(
@@ -582,7 +582,9 @@ export let getNestedTestError = (index: i32): String | null => nested().tests[in
   virtualFiles.set(wrapperPath, wrapperSource);
 
   const host = createFileHost(wrapperPath, virtualFiles);
-  const compilerOptions = options.isStdlib ? {stdlibPaths: [absolutePath]} : {};
+  const compilerOptions = options.isStdlib
+    ? {stdlibPaths: [absolutePath], emitLocations: true}
+    : {emitLocations: true};
   const compiler = new Compiler(host, compilerOptions);
 
   // compile() runs type checking on all modules

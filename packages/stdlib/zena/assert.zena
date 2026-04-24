@@ -6,103 +6,105 @@ import { StringBuilder } from 'zena:string-builder';
 
 export class AssertionError extends Error {
   op: String;
+  loc: String | null;
 
-  new(message: String, op: String) : op = op, super(message);
+  new(message: String, this.op: String, this.loc: String | null = null)
+    : super(if (loc != null) { (loc as String) + ": " + message } else { message });
 }
 
-export let equal = <T>(actual: T, expected: T, message: String = 'Values not equal'): void => {
+export let equal = <T>(actual: T, expected: T, message: String = 'Values not equal', loc: String | null = __LOCATION__): void => {
   if (actual != expected) {
-    throw new AssertionError(message, '==');
+    throw new AssertionError(message, '==', loc);
   }
 };
 
-export let notEqual = <T>(actual: T, expected: T, message: String = 'Values should not be equal'): void => {
+export let notEqual = <T>(actual: T, expected: T, message: String = 'Values should not be equal', loc: String | null = __LOCATION__): void => {
   if (actual == expected) {
-    throw new AssertionError(message, '!=');
+    throw new AssertionError(message, '!=', loc);
   }
 };
 
-export let same = <T>(actual: T, expected: T, message: String = 'References not identical'): void => {
+export let same = <T>(actual: T, expected: T, message: String = 'References not identical', loc: String | null = __LOCATION__): void => {
   if (actual !== expected) {
-    throw new AssertionError(message, '===');
+    throw new AssertionError(message, '===', loc);
   }
 };
 
-export let notSame = <T>(actual: T, expected: T, message: String = 'References should not be identical'): void => {
+export let notSame = <T>(actual: T, expected: T, message: String = 'References should not be identical', loc: String | null = __LOCATION__): void => {
   if (actual === expected) {
-    throw new AssertionError(message, '!==');
+    throw new AssertionError(message, '!==', loc);
   }
 };
 
-export let isNull = <T extends anyref>(value: T | null, message: String = 'Expected null'): void => {
+export let isNull = <T extends anyref>(value: T | null, message: String = 'Expected null', loc: String | null = __LOCATION__): void => {
   if (value !== null) {
-    throw new AssertionError(message, 'isNull');
+    throw new AssertionError(message, 'isNull', loc);
   }
 };
 
-export let isNotNull = <T extends anyref>(value: T | null, message: String = 'Expected non-null value'): void => {
+export let isNotNull = <T extends anyref>(value: T | null, message: String = 'Expected non-null value', loc: String | null = __LOCATION__): void => {
   if (value === null) {
-    throw new AssertionError(message, 'isNotNull');
+    throw new AssertionError(message, 'isNotNull', loc);
   }
 };
 
-export let isTrue = (value: boolean, message: String = 'Expected true'): void => {
+export let isTrue = (value: boolean, message: String = 'Expected true', loc: String | null = __LOCATION__): void => {
   if (value !== true) {
-    throw new AssertionError(message, 'isTrue');
+    throw new AssertionError(message, 'isTrue', loc);
   }
 };
 
-export let isFalse = (value: boolean, message: String = 'Expected false'): void => {
+export let isFalse = (value: boolean, message: String = 'Expected false', loc: String | null = __LOCATION__): void => {
   if (value !== false) {
-    throw new AssertionError(message, 'isFalse');
+    throw new AssertionError(message, 'isFalse', loc);
   }
 };
 
 // Comparison assertions
-export let greater = <T>(actual: T, expected: T, message: String = 'Expected actual > expected'): void => {
+export let greater = <T>(actual: T, expected: T, message: String = 'Expected actual > expected', loc: String | null = __LOCATION__): void => {
   if (actual <= expected) {
-    throw new AssertionError(message, '>');
+    throw new AssertionError(message, '>', loc);
   }
 };
 
-export let greaterOrEqual = <T>(actual: T, expected: T, message: String = 'Expected actual >= expected'): void => {
+export let greaterOrEqual = <T>(actual: T, expected: T, message: String = 'Expected actual >= expected', loc: String | null = __LOCATION__): void => {
   if (actual < expected) {
-    throw new AssertionError(message, '>=');
+    throw new AssertionError(message, '>=', loc);
   }
 };
 
-export let less = <T>(actual: T, expected: T, message: String = 'Expected actual < expected'): void => {
+export let less = <T>(actual: T, expected: T, message: String = 'Expected actual < expected', loc: String | null = __LOCATION__): void => {
   if (actual >= expected) {
-    throw new AssertionError(message, '<');
+    throw new AssertionError(message, '<', loc);
   }
 };
 
-export let lessOrEqual = <T>(actual: T, expected: T, message: String = 'Expected actual <= expected'): void => {
+export let lessOrEqual = <T>(actual: T, expected: T, message: String = 'Expected actual <= expected', loc: String | null = __LOCATION__): void => {
   if (actual > expected) {
-    throw new AssertionError(message, '<=');
+    throw new AssertionError(message, '<=', loc);
   }
 };
 
 // Exception assertions
-export let throws = (fn: () => void, message: String = 'Expected function to throw'): void => {
+export let throws = (fn: () => void, message: String = 'Expected function to throw', loc: String | null = __LOCATION__): void => {
   try {
     fn();
   } catch (e) {
     return;
   }
-  throw new AssertionError(message, 'throws');
+  throw new AssertionError(message, 'throws', loc);
 };
 
-export let doesNotThrow = (fn: () => void, message: String = 'Expected function not to throw'): void => {
+export let doesNotThrow = (fn: () => void, message: String = 'Expected function not to throw', loc: String | null = __LOCATION__): void => {
   try {
     fn();
   } catch (e) {
-    throw new AssertionError(message, 'doesNotThrow');
+    throw new AssertionError(message, 'doesNotThrow', loc);
   }
 };
 
-export let fail = (message: String = 'Test failed'): never => {
-  throw new AssertionError(message, 'fail');
+export let fail = (message: String = 'Test failed', loc: String | null = __LOCATION__): never => {
+  throw new AssertionError(message, 'fail', loc);
 };
 
 // ============================================================================
@@ -325,7 +327,7 @@ let collectJsonDiffs = (
 // Assert that two JSON values are structurally equal.
 // Reports up to 10 differences with JSON paths and source locations (if available
 // on the expected value, e.g. when parsed with parseJson).
-export let jsonEqual = (actual: JsonValue, expected: JsonValue, message: String = 'JSON mismatch'): void => {
+export let jsonEqual = (actual: JsonValue, expected: JsonValue, message: String = 'JSON mismatch', loc: String | null = __LOCATION__): void => {
   let diffs = new Array<String>(8);
   collectJsonDiffs(actual, expected, '$', null, diffs, 10);
   if (diffs.length > 0) {
@@ -342,6 +344,6 @@ export let jsonEqual = (actual: JsonValue, expected: JsonValue, message: String 
       sb.append('\n');
       i += 1;
     }
-    throw new AssertionError(sb.toString(), 'jsonEqual');
+    throw new AssertionError(sb.toString(), 'jsonEqual', loc);
   }
 };

@@ -108,6 +108,9 @@ export class CompilerOptions {
    */
   packages: HashMap<String, PackageConfig>;
 
+  /** Whether to emit source locations for __LOCATION__ defaults. */
+  emitLocations: boolean = false;
+
   /**
    * Modules to inject as implicit imports in every source file (the prelude).
    * Each entry is a specifier (e.g., "zena:string").
@@ -467,7 +470,7 @@ export let checkSource = (source: String, path: String): CheckResult => {
   let ast = parse(source, path);
   let builder = new ScopeBuilder(path);
   let scopeResult = builder.build(ast);
-  return checkModule(ast, scopeResult, null);
+  return checkModule(ast, scopeResult, null, null, false);
 };
 
 // ============================================================================
@@ -1049,7 +1052,8 @@ let buildReverseDeps = (
 let checkFile = (
   file: SourceFile,
   allResults: HashMap<String, CheckResult>,
-  allFiles: Array<SourceFile>
+  allFiles: Array<SourceFile>,
+  emitLocations: boolean
 ): CheckResult => {
   let depExports = new HashMap<String, ScopeModuleExports>();
   let depModels = new HashMap<String, SemanticModel>();
@@ -1069,7 +1073,7 @@ let checkFile = (
       li = li + 1;
     }
   }
-  return checkModule(file.ast, file.scopeResult, depExports, depModels);
+  return checkModule(file.ast, file.scopeResult, depExports, depModels, emitLocations);
 };
 
 /**
@@ -1096,7 +1100,8 @@ let checkFile = (
  */
 export let checkCompilation = (
   result: CompilationResult,
-  previous: ProgramCheckResult | null = null
+  previous: ProgramCheckResult | null = null,
+  emitLocations: boolean = false
 ): ProgramCheckResult => {
   let allResults = new HashMap<String, CheckResult>();
   let allSources = new HashMap<String, String>();
@@ -1136,7 +1141,7 @@ export let checkCompilation = (
     }
 
     // (Re-)check this file.
-    let checkResult = checkFile(file, allResults, result.files);
+    let checkResult = checkFile(file, allResults, result.files, emitLocations);
     allResults[file.path] = checkResult;
     allSources[file.path] = file.source;
 
