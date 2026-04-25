@@ -525,13 +525,39 @@ export class ScopeBuilder {
   #declareBuiltins(): void {
     let builtins = new Scope(ScopeKind.Module, null);
     builtins.declareType("i32", null, "");
+    builtins.declareType("u32", null, "");
     builtins.declareType("i64", null, "");
+    builtins.declareType("u64", null, "");
     builtins.declareType("f32", null, "");
     builtins.declareType("f64", null, "");
     builtins.declareType("boolean", null, "");
     builtins.declareType("void", null, "");
     builtins.declareType("never", null, "");
     builtins.declareType("null", null, "");
+
+    // Prelude types are semantically available at module entry.
+    builtins.declareType("String", null, "");
+    builtins.declareType("Error", null, "");
+    builtins.declareType("Iterable", null, "");
+    builtins.declareType("FixedArray", null, "");
+    builtins.declareType("Array", null, "");
+    builtins.declareType("ImmutableArray", null, "");
+    builtins.declareType("TemplateStringsArray", null, "");
+    builtins.declareType("Box", null, "");
+    builtins.declareType("Option", null, "");
+    builtins.declareType("Some", null, "");
+    builtins.declareType("None", null, "");
+    builtins.declareType("Map", null, "");
+    builtins.declareType("HashMap", null, "");
+    builtins.declareType("Set", null, "");
+    builtins.declareType("HashSet", null, "");
+    builtins.declareType("Sequence", null, "");
+    builtins.declareType("MutableSequence", null, "");
+    builtins.declareType("BoundedRange", null, "");
+    builtins.declareType("FromRange", null, "");
+    builtins.declareType("ToRange", null, "");
+    builtins.declareType("FullRange", null, "");
+
     // Re-parent the module scope onto the builtins scope.
     this.#current = new Scope(ScopeKind.Module, builtins);
   }
@@ -845,11 +871,17 @@ export class ScopeBuilder {
         this.#processInterfaceBody(body);
         this.#exitScope();
       }
-      case MixinDeclaration {name, typeParameters, body}: {
+      case MixinDeclaration {name, typeParameters, mixins, body}: {
         this.#enterScope(ScopeKind.Class);
         if (typeParameters != null) {
           let tps = typeParameters as Array<TypeParameter>;
           this.#declareTypeParameters(tps);
+        }
+        // Traverse `with` clause so mixin names are linked in the ReferenceMap.
+        if (mixins != null) {
+          for (let mixin in mixins) {
+            this.#processTypeAnnotation(mixin);
+          }
         }
         this.#processClassBody(body);
         this.#exitScope();
@@ -872,10 +904,31 @@ export class ScopeBuilder {
       case BreakStatement: {}
       case ContinueStatement: {}
       case EnumDeclaration: {}
-      case TypeAliasDeclaration: {}
+      case TypeAliasDeclaration {typeParameters, typeAnnotation}: {
+        this.#enterScope(ScopeKind.Block);
+        if (typeParameters != null) {
+          let tps = typeParameters as Array<TypeParameter>;
+          this.#declareTypeParameters(tps);
+        }
+        this.#processTypeAnnotation(typeAnnotation);
+        this.#exitScope();
+      }
       case ExportAllDeclaration: {}
       case ExportFromDeclaration: {}
-      case DeclareFunction: {}
+      case DeclareFunction {typeParameters, params, returnType}: {
+        this.#enterScope(ScopeKind.Function);
+        if (typeParameters != null) {
+          let tps = typeParameters as Array<TypeParameter>;
+          this.#declareTypeParameters(tps);
+        }
+        for (let param in params) {
+          if (param.typeAnnotation != null) {
+            this.#processTypeAnnotation(param.typeAnnotation);
+          }
+        }
+        this.#processTypeAnnotation(returnType);
+        this.#exitScope();
+      }
       case SymbolDeclaration: {}
     }
   }
@@ -1332,10 +1385,25 @@ export class ScopeBuilder {
   }
 
   #declareTypeParameters(tps: Array<TypeParameter>): void {
-    var i = 0;
-    while (i < tps.length) {
-      this.#current.declareType(tps[i].name, tps[i], this.#modulePath);
-      i += 1;
+    for (let typeParam in tps) {
+      this.#current.declareType(typeParam.name, typeParam, this.#modulePath);
+      // Record each TypeParameter in the declarations map so the checker can
+      // look up its SymbolInfo via model.resolveDeclaration(typeParam) and store
+      // the TypeParameterType by identity (SymbolInfo.id) rather than by name.
+      let si = this.#current.getLocalType(typeParam.name);
+      if (si != null) {
+        this.#declarations.record(typeParam, si as SymbolInfo);
+      }
+    }
+
+    // After all params are in scope, resolve constraints/defaults.
+    for (let typeParam in tps) {
+      if (typeParam.constraint != null) {
+        this.#processTypeAnnotation(typeParam.constraint);
+      }
+      if (typeParam.defaultType != null) {
+        this.#processTypeAnnotation(typeParam.defaultType);
+      }
     }
   }
 
@@ -1348,50 +1416,40 @@ export class ScopeBuilder {
         let info = this.#current.resolveType(name);
         if (info != null) {
           this.#references.record(ann, info);
+        } else {
+          this.#unresolvedTypes.push(new UnresolvedName(name, ann));
         }
         if (typeArguments != null) {
           let args = typeArguments as Array<TypeAnnotation>;
-          var i = 0;
-          while (i < args.length) {
-            this.#processTypeAnnotation(args[i]);
-            i += 1;
+          for (let arg in args) {
+            this.#processTypeAnnotation(arg);
           }
         }
       }
       case UnionTypeAnnotation {types}: {
-        var i = 0;
-        while (i < types.length) {
-          this.#processTypeAnnotation(types[i]);
-          i += 1;
+        for (let type in types) {
+          this.#processTypeAnnotation(type);
         }
       }
       case FunctionTypeAnnotation {params, returnType}: {
-        var i = 0;
-        while (i < params.length) {
-          this.#processTypeAnnotation(params[i]);
-          i += 1;
+        for (let param in params) {
+          this.#processTypeAnnotation(param);
         }
         this.#processTypeAnnotation(returnType);
       }
       case RecordTypeAnnotation {properties}: {
-        var i = 0;
-        while (i < properties.length) {
-          this.#processTypeAnnotation(properties[i].typeAnnotation);
-          i += 1;
+        for (let property in properties) {
+          this.#processTypeAnnotation(property.typeAnnotation);
         }
       }
       case TupleTypeAnnotation {elementTypes}: {
-        var i = 0;
-        while (i < elementTypes.length) {
-          this.#processTypeAnnotation(elementTypes[i]);
-          i += 1;
+        for (let elementType in elementTypes) {
+          this.#processTypeAnnotation(elementType);
         }
       }
       case InlineTupleTypeAnnotation {elementTypes}: {
-        var i = 0;
-        while (i < elementTypes.length) {
-          this.#processTypeAnnotation(elementTypes[i]);
-          i += 1;
+        for (let elementType in elementTypes) {
+          this.#processTypeAnnotation(elementType);
         }
       }
       case _: {}

@@ -27,10 +27,12 @@
  *   scope stack.
  * - Binding types are stored in SemanticModel via SymbolInfo.id keys,
  *   set at declaration time and read at reference time.
- * - Type annotation resolution uses the checker's own type-name scope
- *   stack, since the scope pass doesn't record type annotation references.
- * - Built-in types (i32, boolean, etc.) are pre-registered as singletons
- *   in the type-name scope.
+ * - Type annotation resolution also delegates to the scope pass's
+ *   ReferenceMap (NamedTypeAnnotation → SymbolInfo), then materializes
+ *   declaration types on demand by SymbolInfo identity.
+ * - Built-in type objects (primitives, prelude types) are pre-registered
+ *   in the checker's internal type scope so annotation resolution works
+ *   even before stdlib module exports are wired in.
  *
  * On-demand type materialization:
  * - Type declarations (classes, interfaces, etc.) are materialized
@@ -76,7 +78,8 @@ import {
   AccessorDeclaration, MatchCase, PropertyAssignment, SpreadElement,
   LetPatternCondition, BindingProperty, PropertySignature, CatchClause,
   CaseClassParam, FieldInitializer, SuperInitializer, EnumMember, MapEntry,
-  MethodSignature, AccessorSignature, SetterInfo, SealedVariant
+  MethodSignature, AccessorSignature, SetterInfo, SealedVariant,
+  ImportSpecifier
 } from './ast.zena';
 import {
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
@@ -113,19 +116,21 @@ import { ScopeResult, SymbolInfo, SymbolId, ModuleExports } from './scope.zena';
  *   to its SymbolInfo, then `model.getBindingType(info)` recovers the
  *   type. Narrowings are checked first (keyed by SymbolInfo.id).
  *
- * The checker still maintains its own type-name scope stack because
- * the scope pass's ReferenceMap only covers value-namespace identifiers,
- * not type annotations. Type names (i32, MyClass, T, etc.) are resolved
- * through this stack.
+ * The checker keeps a flat type-name map for built-in primitive types
+ * (i32, f64, etc.) at #typeScopes[0]. Type annotation resolution for
+ * all other names — including type parameters — delegates to the scope
+ * pass's ReferenceMap: model.resolve(node) → SymbolInfo.id →
+ * #materializedTypes. Type parameters are registered there via
+ * registerTypeParameter() as soon as each TypeParameterType is created.
  */
 class CheckerContext {
   model = new SemanticModel();
   diagnostics: DiagnosticBag;
 
   /**
-   * Type namespace scope stack: maps type names (i32, MyClass, etc.) to Types.
-   * The scope pass doesn't record type annotation references in the
-   * ReferenceMap, so the checker resolves type names itself.
+   * Type namespace map for built-in primitive types (i32, u32, f64, etc.).
+   * Only index 0 is meaningful; the stack structure is retained because
+   * enterScope/exitScope still push/pop frames for narrowing bookkeeping.
    */
   #typeScopes = new Array<HashMap<String, Type>>();
 
@@ -190,7 +195,7 @@ class CheckerContext {
   /**
    * The scope result from name resolution (for reference lookups).
    */
-  #scopeResult?: ScopeResult | null;
+  #scopeResult: ScopeResult;
 
   /**
    * Type ID counter for generating unique IDs (ClassType, InterfaceType).
@@ -204,6 +209,18 @@ class CheckerContext {
    * name strings, since names only have meaning within a scope.
    */
   #pendingTypes = new HashSet<SymbolId>();
+
+  /**
+   * Materialized type declarations keyed by type-symbol identity.
+   * Avoids name-based caching bugs under lexical shadowing.
+   */
+  #materializedTypes = new HashMap<SymbolId, Type>();
+
+  /**
+   * Materialized declaration types keyed by declaration offset.
+   * Keeps type/value namespace symbols for the same declaration unified.
+   */
+  #materializedDeclTypes = new HashMap<i32, Type>();
 
   /**
    * Prelude exports: types available globally from stdlib modules.
@@ -237,7 +254,7 @@ class CheckerContext {
 
   new(
       file: String,
-      scopeResult: ScopeResult | null,
+      scopeResult: ScopeResult,
       depExports: HashMap<String, ModuleExports> | null,
       depModels: HashMap<String, SemanticModel> | null,
       emitLocations: boolean = false)
@@ -255,11 +272,8 @@ class CheckerContext {
 
     // Wire the scope pass's maps into the SemanticModel
     // so consumers have a single object for all queries.
-    if (scopeResult != null) {
-      let sr = scopeResult as ScopeResult;
-      this.model.setReferences(sr.references);
-      this.model.setDeclarations(sr.declarations);
-    }
+    this.model.setReferences(scopeResult.references);
+    this.model.setDeclarations(scopeResult.declarations);
 
     // Pre-register built-in types in the type namespace.
     this.declareBuiltinType("i32", new I32Type());
@@ -293,8 +307,9 @@ class CheckerContext {
   // --- Scope management ---
 
   /**
-   * Push a new scope frame (for type names and narrowings).
+   * Push a new scope frame (for narrowings).
    * Value-namespace scoping is handled by the scope pass's ReferenceMap.
+   * Type-parameter scoping is handled by registerTypeParameter → #materializedTypes.
    */
   enterScope(): void {
     this.#typeScopes.push(new HashMap<String, Type>());
@@ -467,6 +482,7 @@ class CheckerContext {
         }
         let tpType = new TypeParameterType(tp.name, constraint, null);
         this.declareTypeName(tp.name, tpType);
+        this.registerTypeParameter(tp, tpType);
         (resolvedTypeParams as Array<TypeParameterType>).push(tpType);
         tpi += 1;
       }
@@ -512,6 +528,22 @@ class CheckerContext {
   }
 
   /**
+   * Register a TypeParameterType in the materialized types cache by the
+   * SymbolInfo identity of the corresponding TypeParameter AST node.
+   *
+   * Called immediately after creating each TypeParameterType so that
+   * resolveTypeReference → model.resolve → #materializeFromSymbol finds
+   * the correct object (by SymbolInfo.id) instead of falling back to the
+   * name-string #typeScopes stack.
+   */
+  registerTypeParameter(tp: TypeParameter, tpType: TypeParameterType): void {
+    let info = this.model.resolveDeclaration(tp as Node);
+    if (info != null) {
+      this.#materializedTypes[(info as SymbolInfo).id] = tpType as Type;
+    }
+  }
+
+  /**
    * Declare a type name in the module (outermost) scope. Used for sealed
    * variant types that need to be visible outside the class scope.
    */
@@ -520,30 +552,32 @@ class CheckerContext {
   }
 
   /**
-   * Resolve a type name: check the checker's type scopes first, then
-   * prelude, then fall through to scope analysis for on-demand
-   * materialization. When a name is found in scope analysis but not yet
-   * materialized, creates the Type from the declaration AST node.
+   * Resolve a type name through scope analysis and materialization.
+   * This path is for name-only lookups (for example declaration self-lookups).
    */
   resolveTypeName(name: String): Type | null {
-    // Check local scopes first (innermost to outermost).
-    for (var i = this.#typeScopes.length - 1; i >= 0; i -= 1) {
-      let scope = this.#typeScopes[i];
-      if (let (t, true) = scope.get(name)) {
-        return t;
-      }
-    }
-    // On-demand: look up in scope analysis and materialize.
-    // This allows module-level declarations to shadow prelude types.
     let localType = this.#materializeFromScope(name);
     if (localType != null) {
       return localType;
     }
-    // Fall back to prelude types.
-    if (this.#preludeTypes.has(name)) {
-      return this.#preludeTypes[name];
+    return this.#resolveBuiltinOrPreludeType(name);
+  }
+
+  /**
+   * Resolve a type reference site (e.g. NamedTypeAnnotation) using
+   * the scope pass's ReferenceMap.
+   */
+  resolveTypeReference(node: Node, fallbackName: String): Type | null {
+    let info = this.model.resolve(node);
+    if (info != null) {
+      let t = this.#materializeFromSymbol(info as SymbolInfo, fallbackName);
+      if (t != null) {
+        return t;
+      }
     }
-    return null;
+
+    // Fall back to scope root by name and builtins/prelude.
+    return this.resolveTypeName(fallbackName);
   }
 
   /**
@@ -552,11 +586,51 @@ class CheckerContext {
    * Sets all boolean flags from the AST node at creation time.
    */
   #materializeFromScope(name: String): Type | null {
-    if (this.#scopeResult == null) { return null; }
-    let sr = this.#scopeResult as ScopeResult;
-    let si = sr.rootScope.resolveType(name);
+    let si = this.#scopeResult.rootScope.resolveType(name);
     if (si == null) { return null; }
-    let info = si as SymbolInfo;
+    return this.#materializeFromSymbol(si as SymbolInfo, name);
+  }
+
+  #materializeFromSymbol(info: SymbolInfo, nameHint: String): Type | null {
+    if (this.#materializedTypes.has(info.id)) {
+      return this.#materializedTypes[info.id];
+    }
+
+    if (info.declaration != null) {
+      let declNode = info.declaration as Node;
+      if (declNode.loc != null) {
+        let declLoc = declNode.loc as SourceLocation;
+        if (this.#materializedDeclTypes.has(declLoc.start)) {
+          let cached = this.#materializedDeclTypes[declLoc.start];
+          this.#materializedTypes[info.id] = cached;
+          return cached;
+        }
+      }
+    }
+
+    // For imports, type/value namespace entries are distinct SymbolInfos
+    // that share an ImportSpecifier declaration node. Reuse the declaration
+    // symbol's bound type if already populated.
+    if (info.declaration != null) {
+      match (info.declaration as Node) {
+        case ImportSpecifier: {
+          let declInfo = this.model.resolveDeclaration(info.declaration as Node);
+          if (declInfo != null) {
+            let bt = this.model.getBindingType(declInfo as SymbolInfo);
+            if (bt != null) {
+              let resolved = bt as Type;
+              this.#materializedTypes[info.id] = resolved;
+              return resolved;
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+
+    if (info.declaration == null) {
+      return this.#resolveBuiltinOrPreludeType(nameHint);
+    }
 
     // Cycle detection — keyed by SymbolInfo.id, not name.
     if (this.#pendingTypes.has(info.id)) {
@@ -567,20 +641,66 @@ class CheckerContext {
     let t = this.#materializeType(info);
     if (t != null) {
       let materialized = t as Type;
-      this.declareModuleTypeName(name, materialized);
-      // Also bind in the value namespace so forward references work.
-      // The DeclarationMap records the value-namespace SymbolInfo, so
-      // we need to look up via the declaration AST node.
+      this.#materializedTypes[info.id] = materialized;
       if (info.declaration != null) {
-        let valueInfo = this.model.resolveDeclaration(info.declaration as Node);
-        if (valueInfo != null) {
-          this.declareBinding(valueInfo as SymbolInfo, materialized);
+        let declNode = info.declaration as Node;
+        if (declNode.loc != null) {
+          let declLoc = declNode.loc as SourceLocation;
+          this.#materializedDeclTypes[declLoc.start] = materialized;
+        }
+        // Mirror into the value namespace only for class-like declarations
+        // where type and value are intentionally the same constructor value.
+        match (declNode) {
+          case ClassDeclaration: {
+            let valueInfo = this.model.resolveDeclaration(declNode);
+            if (valueInfo != null) {
+              this.declareBinding(valueInfo as SymbolInfo, materialized);
+            }
+          }
+          case InterfaceDeclaration: {
+            let valueInfo = this.model.resolveDeclaration(declNode);
+            if (valueInfo != null) {
+              this.declareBinding(valueInfo as SymbolInfo, materialized);
+            }
+          }
+          case MixinDeclaration: {
+            let valueInfo = this.model.resolveDeclaration(declNode);
+            if (valueInfo != null) {
+              this.declareBinding(valueInfo as SymbolInfo, materialized);
+            }
+          }
+          case SealedVariant: {
+            let valueInfo = this.model.resolveDeclaration(declNode);
+            if (valueInfo != null) {
+              this.declareBinding(valueInfo as SymbolInfo, materialized);
+            }
+          }
+          case _: {}
         }
       }
     }
 
     this.#pendingTypes.delete(info.id);
     return t;
+  }
+
+  #resolveBuiltinOrPreludeType(name: String): Type | null {
+    if (this.#typeScopes.length > 0 && this.#typeScopes[0].has(name)) {
+      return this.#typeScopes[0][name];
+    }
+    if (this.#preludeTypes.has(name)) {
+      return this.#preludeTypes[name];
+    }
+    return null;
+  }
+
+  #resolveCheckerTypeName(name: String): Type | null {
+    for (var i = this.#typeScopes.length - 1; i >= 0; i -= 1) {
+      if (let (t, true) = this.#typeScopes[i].get(name)) {
+        return t;
+      }
+    }
+    return null;
   }
 
   /**
@@ -645,6 +765,7 @@ class CheckerContext {
             let tpType = new TypeParameterType(param.name, null, null);
             tempTypeParams.push(tpType);
             this.declareTypeName(tpType.name, tpType);
+            this.registerTypeParameter(param, tpType);
           }
 
           // Resolve constraints
@@ -809,7 +930,7 @@ class CheckerContext {
 
   // --- Scope result access ---
 
-  scopeResult: ScopeResult | null {
+  scopeResult: ScopeResult {
     get { return this.#scopeResult; }
   }
 
@@ -1143,7 +1264,6 @@ export class CheckResult(
  * Check a module AST and produce type information.
  *
  * `scopeResult` is the output of scope analysis for this module.
- * If null, the checker will work without cross-module import info.
  *
  * `depExports` maps import specifiers (as written in source) to the
  * ModuleExports of the resolved dependency module. When provided, the
@@ -1152,7 +1272,7 @@ export class CheckResult(
  * This version loads the standard prelude types (String, Array, etc.)
  * automatically.
  */
-export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null, depModels: HashMap<String, SemanticModel> | null = null, emitLocations: boolean = false): CheckResult => {
+export let checkModule = (ast: Module, scopeResult: ScopeResult, depExports: HashMap<String, ModuleExports> | null, depModels: HashMap<String, SemanticModel> | null = null, emitLocations: boolean = false): CheckResult => {
   let ctx = new CheckerContext(ast.path, scopeResult, depExports, depModels, emitLocations);
 
   // Register standard prelude types.
@@ -1251,8 +1371,8 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExpor
  */
 let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => match (ann) {
   case NamedTypeAnnotation {name, typeArguments}: {
-    // Look up the name in the type scope.
-    let resolved = ctx.resolveTypeName(name);
+    // Resolve through scope analysis so lexical shadowing is honored.
+    let resolved = ctx.resolveTypeReference(ann, name);
     if (resolved == null) {
       ctx.error(
         "Type '" + name + "' not found.",
@@ -4409,6 +4529,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       }
       let tpType = new TypeParameterType(tp.name, constraint, defaultT);
       ctx.declareTypeName(tp.name, tpType);
+      ctx.registerTypeParameter(tp, tpType);
 
       if (classType.typeParameters == null) {
         classType.typeParameters = new Array<TypeParameterType>();
@@ -5334,6 +5455,7 @@ let checkMethodSignature = (
       let tpType = new TypeParameterType(astParam.name, null, null);
       typeParameters.push(tpType);
       ctx.declareTypeName(astParam.name, tpType);
+      ctx.registerTypeParameter(astParam, tpType);
     }
   }
 
@@ -5503,6 +5625,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       }
       let tpType = new TypeParameterType(tp.name, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
+      ctx.registerTypeParameter(tp, tpType);
       tpi = tpi + 1;
     }
   }
@@ -5751,6 +5874,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       }
       let tpType = new TypeParameterType(tp.name, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
+      ctx.registerTypeParameter(tp, tpType);
       resolvedTps.push(tpType);
       tpi += 1;
     }
@@ -5993,6 +6117,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
       }
       let tpType = new TypeParameterType(tp.name, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
+      ctx.registerTypeParameter(tp, tpType);
       (resolvedTypeParams as Array<TypeParameterType>).push(tpType);
       tpi += 1;
     }
@@ -6061,7 +6186,7 @@ let checkNewExpression = (
   let className = callee.name;
 
   // Resolve the class from the type namespace.
-  var resolved = ctx.resolveTypeName(className);
+  var resolved = ctx.resolveTypeReference(callee, className);
   if (resolved == null) {
     // Try value namespace (might be imported as a value binding).
     let valueResolved = ctx.resolveIdentifier(callee);
@@ -7385,6 +7510,7 @@ let checkFunctionExpression = (
         }
         let tpType = new TypeParameterType(tp.name, constraint, null);
         ctx.declareTypeName(tp.name, tpType);
+        ctx.registerTypeParameter(tp, tpType);
         tpTypes.push(tpType);
         tpi += 1;
       }

@@ -338,6 +338,16 @@ export let tests = suite('Scope', (): void => {
       // All names should resolve.
       equal(result.unresolvedValues.length, 0);
     });
+
+    test('type alias unknown target is unresolved type', (ctx: TestContext): void => {
+      let source = "type ID = MissingType;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isTrue(result.unresolvedTypes.length > 0);
+      equal(result.unresolvedTypes[0].name, "MissingType");
+    });
   });
 
   // ==========================================================================
@@ -384,6 +394,8 @@ export let tests = suite('Scope', (): void => {
       isTrue(result.rootScope.resolveType("void") != null);
       isTrue(result.rootScope.resolveType("never") != null);
       isTrue(result.rootScope.resolveType("null") != null);
+      isTrue(result.rootScope.resolveType("String") != null);
+      isTrue(result.rootScope.resolveType("Array") != null);
     });
 
     test('built-in types have null declaration', (ctx: TestContext): void => {

@@ -147,14 +147,6 @@ export let tests = suite('Checker API', (): void => {
       isTrue(errors.length > 0);
     });
 
-    test('checkModule works without scope result', (ctx: TestContext): void => {
-      let ast = parse("let x = 1;", "<test>");
-      // Pass null for scopeResult — checker should still work
-      let result = checkModule(ast, null, null);
-      // It might have warnings about unresolved names, but shouldn't crash
-      isTrue(result.model != null);
-    });
-
     test('multiple statements checked', (ctx: TestContext): void => {
       let result = checkOk(
         "let x = 1;\nlet y = 2;\nlet z = x;"
@@ -395,6 +387,15 @@ export let tests = suite('Checker API', (): void => {
       // The inner x should not conflict with the outer x
       let result = checkOk(
         "let x = 1;\n{\n  let x = 2;\n}"
+      );
+      isTrue(result.diagnostics.length == 0);
+    });
+
+    test('block type alias shadows outer materialized type', (ctx: TestContext): void => {
+      // Ensure outer Point gets materialized first, then shadow it with a
+      // block-local type alias and use that alias in an annotation.
+      let result = checkOk(
+        "class Point {\n  x: i32;\n  new(this.x);\n}\nlet p: Point = new Point(1);\nlet f = (): i32 => {\n  type Point = i32;\n  let x: Point = 1;\n  return x;\n};\nlet y = f();"
       );
       isTrue(result.diagnostics.length == 0);
     });
