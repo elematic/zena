@@ -45,7 +45,7 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
-import { parseI32 } from 'zena:string-convert';
+import { parseI32, i32ToString } from 'zena:string-convert';
 import {
   Node, Module, SourceLocation,
   // Expressions
@@ -137,6 +137,12 @@ class CheckerContext {
    * their enclosing scope exits.
    */
   #narrowings = new Array<HashMap<SymbolId, Type>>();
+
+  /**
+   * Narrowed types for member paths (for example, "symbolId.inner").
+   * Only immutable field paths are eligible for these narrowings.
+   */
+  #memberPathNarrowings = new Array<HashMap<String, Type>>();
 
   /**
    * The current function's expected return type, or null if not in a function.
@@ -245,6 +251,7 @@ class CheckerContext {
     // Initialize with module-level scope.
     this.#typeScopes.push(new HashMap<String, Type>());
     this.#narrowings.push(new HashMap<SymbolId, Type>());
+    this.#memberPathNarrowings.push(new HashMap<String, Type>());
 
     // Wire the scope pass's maps into the SemanticModel
     // so consumers have a single object for all queries.
@@ -292,11 +299,13 @@ class CheckerContext {
   enterScope(): void {
     this.#typeScopes.push(new HashMap<String, Type>());
     this.#narrowings.push(new HashMap<SymbolId, Type>());
+    this.#memberPathNarrowings.push(new HashMap<String, Type>());
   }
 
   exitScope(): void {
     this.#typeScopes.pop();
     this.#narrowings.pop();
+    this.#memberPathNarrowings.pop();
   }
 
   // --- Value binding (via SemanticModel + SymbolInfo) ---
@@ -782,6 +791,20 @@ class CheckerContext {
   narrowBinding(info: SymbolInfo, t: Type): void {
     let top = this.#narrowings[this.#narrowings.length - 1];
     top[info.id] = t;
+  }
+
+  narrowMemberPath(path: String, t: Type): void {
+    let top = this.#memberPathNarrowings[this.#memberPathNarrowings.length - 1];
+    top[path] = t;
+  }
+
+  resolveNarrowedMemberPath(path: String): Type | null {    
+    for (var i = this.#memberPathNarrowings.length - 1; i >= 0; i -= 1) {
+      if (let (t, true) = this.#memberPathNarrowings[i].get(path)) {
+        return t;
+      }
+    }
+    return null;
   }
 
   // --- Scope result access ---
@@ -2359,6 +2382,127 @@ let subtractTypeFromUnion = (original: Type, toRemove: Type): Type => {
   }
 };
 
+let unwrapNullableForMemberLookup = (t: Type): Type | null => {
+  match (t) {
+    case NullType: {
+      return null;
+    }
+    case UnionT as u: {
+      let remaining = new Array<Type>();
+      let members = u.types;
+      for (let member in members) {
+        if (!(member is NullType)) {
+          remaining.push(member);
+        }
+      }
+      if (remaining.length == 0) {
+        return null;
+      }
+      if (remaining.length == 1) {
+        return remaining[0];
+      }
+      return new UnionT(remaining);
+    }
+    case _: {
+      return t;
+    }
+  }
+};
+
+let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null => {
+  match (expr) {
+    case Identifier: {
+      let info = ctx.model.resolve(expr);
+      if (info == null) {
+        return null;
+      }
+      return "s" + i32ToString((info as SymbolInfo).id as i32);
+    }
+    case MemberExpression {object, property}: {
+      let base = getMemberPathKey(ctx, object);
+      if (base == null) {
+        return null;
+      }
+      return (base as String) + "." + property.name;
+    }
+    case _: {
+      return null;
+    }
+  }
+};
+
+let getMemberPathKeyFromAccess = (
+  ctx: CheckerContext,
+  object: Expression,
+  property: Identifier
+): String | null => {
+  let base = getMemberPathKey(ctx, object);
+  if (base == null) {
+    return null;
+  }
+  return (base as String) + "." + property.name;
+};
+
+let isImmutableFieldAccess = (objectType: Type, propName: String): boolean => {
+  let base = unwrapNullableForMemberLookup(objectType);
+  if (base == null) {
+    return false;
+  }
+
+  match (base as Type) {
+    case ClassType as ct: {
+      if (!ct.fields.has(propName)) {
+        return false;
+      }
+      if (ct.fieldMutability.has(propName) && ct.fieldMutability[propName]) {
+        return false;
+      }
+      return true;
+    }
+    case InterfaceType as it: {
+      if (!it.fields.has(propName)) {
+        return false;
+      }
+      if (it.fieldMutability.has(propName) && it.fieldMutability[propName]) {
+        return false;
+      }
+      return true;
+    }
+    case RecordT {properties}: {
+      return properties.has(propName);
+    }
+    case _: {
+      return false;
+    }
+  }
+};
+
+let isImmutableMemberPath = (ctx: CheckerContext, expr: Expression): boolean => {
+  match (expr) {
+    case MemberExpression {object, property}: {
+      let objectType = checkExpression(ctx, object, null);
+      if (!isImmutableFieldAccess(objectType, property.name)) {
+        return false;
+      }
+
+      match (object) {
+        case Identifier: {
+          return true;
+        }
+        case MemberExpression: {
+          return isImmutableMemberPath(ctx, object);
+        }
+        case _: {
+          return false;
+        }
+      }
+    }
+    case _: {
+      return false;
+    }
+  }
+};
+
 /**
  * Extract is-expression narrowing from a condition like `x is T`.
  * Returns the SymbolInfo, the target type, and the original type.
@@ -2403,7 +2547,7 @@ let extractNullGuardNarrowing = (
 ): (SymbolInfo | null, Type | null, boolean) => {
   match (condition) {
     case BinaryExpression {operator, left, right}: {
-      if (operator == "==" || operator == "!=") {
+      if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
         // Check for `x == null` or `null == x`
         var target: Expression | null = null;
         match (right) {
@@ -2431,7 +2575,7 @@ let extractNullGuardNarrowing = (
             if (originalType == null) {
               return (null, null, false);
             }
-            let isEqualNull = operator == "==";
+            let isEqualNull = operator == "==" || operator == "===";
             return (si, originalType as Type, isEqualNull);
           }
           case _: {
@@ -2442,6 +2586,114 @@ let extractNullGuardNarrowing = (
       return (null, null, false);
     }
     case _: { return (null, null, false); }
+  }
+};
+
+let extractNullGuardPathNarrowing = (
+  ctx: CheckerContext,
+  condition: Expression
+): (String | null, Type | null, boolean) => {
+  match (condition) {
+    case BinaryExpression {operator, left, right}: {
+      if (operator != "==" && operator != "!=" && operator != "===" && operator != "!==") {
+        return (null, null, false);
+      }
+
+      var target: Expression | null = null;
+      match (right) {
+        case NullLiteral {}: { target = left; }
+        case _: {
+          match (left) {
+            case NullLiteral {}: { target = right; }
+            case _: {}
+          }
+        }
+      }
+      if (target == null) {
+        return (null, null, false);
+      }
+
+      let targetExpr = target as Expression;
+      if (!(targetExpr is MemberExpression)) {
+        return (null, null, false);
+      }
+      if (!isImmutableMemberPath(ctx, targetExpr)) {
+        return (null, null, false);
+      }
+
+      let key = getMemberPathKey(ctx, targetExpr);
+      if (key == null) {
+        return (null, null, false);
+      }
+
+      let originalType = checkExpression(ctx, targetExpr, null);
+      return (key, originalType, operator == "==" || operator == "===");
+    }
+    case _: { return (null, null, false); }
+  }
+};
+
+let applyFalseNullNarrowingFromCondition = (ctx: CheckerContext, condition: Expression): void => {
+  let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, condition);
+  if (guardInfo != null) {
+    let si = guardInfo as SymbolInfo;
+    let origType = guardOrigType as Type;
+    if (isEqualNull) {
+      ctx.narrowBinding(si, subtractNullFromType(origType));
+    } else {
+      ctx.narrowBinding(si, new NullType());
+    }
+    return;
+  }
+
+  let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, condition);
+  if (guardPathKey != null) {
+    let pathKey = guardPathKey as String;
+    let origType = guardPathOrigType as Type;
+    if (pathIsEqualNull) {
+      ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+    } else {
+      ctx.narrowMemberPath(pathKey, new NullType());
+    }
+    return;
+  }
+
+  match (condition) {
+    case BinaryExpression {operator, left, right}: {
+      if (operator == "||") {
+        applyFalseNullNarrowingFromCondition(ctx, left);
+        applyFalseNullNarrowingFromCondition(ctx, right);
+      }
+    }
+    case _: {}
+  }
+};
+
+let extractIsPathNarrowing = (
+  ctx: CheckerContext,
+  condition: Expression
+): (String | null, Type | null, Type | null) => {
+  match (condition) {
+    case IsExpression {expression, typeAnnotation}: {
+      if (!(expression is MemberExpression)) {
+        return (null, null, null);
+      }
+      if (!isImmutableMemberPath(ctx, expression)) {
+        return (null, null, null);
+      }
+
+      let key = getMemberPathKey(ctx, expression);
+      if (key == null) {
+        return (null, null, null);
+      }
+
+      let originalType = checkExpression(ctx, expression, null);
+      let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
+      return (key, targetType, originalType);
+    }
+    case _: {
+      return (null, null, null);
+    }
   }
 };
 
@@ -2555,16 +2807,27 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
 
           // Extract null-guard narrowing from the condition.
           let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
+          let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
 
           // Also try is-expression narrowing if no null-guard found.
           var isInfo: SymbolInfo | null = null;
           var isTargetType: Type | null = null;
           var isOrigType: Type | null = null;
-          if (guardInfo == null) {
+          var isPathKey: String | null = null;
+          var isPathTargetType: Type | null = null;
+          var isPathOrigType: Type | null = null;
+          if (guardInfo == null && guardPathKey == null) {
             let (info, target, orig) = extractIsNarrowing(ctx, testExpr);
             isInfo = info;
             isTargetType = target;
             isOrigType = orig;
+
+            if (isInfo == null) {
+              let (pathKey, pathTarget, pathOrig) = extractIsPathNarrowing(ctx, testExpr);
+              isPathKey = pathKey;
+              isPathTargetType = pathTarget;
+              isPathOrigType = pathOrig;
+            }
           }
 
           // Check consequent with narrowing applied.
@@ -2582,10 +2845,26 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
             }
             checkStatement(ctx, consequent);
             ctx.exitScope();
+          } else if (guardPathKey != null) {
+            let pathKey = guardPathKey as String;
+            let origType = guardPathOrigType as Type;
+            ctx.enterScope();
+            if (pathIsEqualNull) {
+              ctx.narrowMemberPath(pathKey, new NullType());
+            } else {
+              ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+            }
+            checkStatement(ctx, consequent);
+            ctx.exitScope();
           } else if (isInfo != null) {
             let si = isInfo as SymbolInfo;
             ctx.enterScope();
             ctx.narrowBinding(si, isTargetType as Type);
+            checkStatement(ctx, consequent);
+            ctx.exitScope();
+          } else if (isPathKey != null) {
+            ctx.enterScope();
+            ctx.narrowMemberPath(isPathKey as String, isPathTargetType as Type);
             checkStatement(ctx, consequent);
             ctx.exitScope();
           } else {
@@ -2605,12 +2884,29 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
               }
               checkStatement(ctx, alternate as Statement);
               ctx.exitScope();
+            } else if (guardPathKey != null) {
+              let pathKey = guardPathKey as String;
+              let origType = guardPathOrigType as Type;
+              ctx.enterScope();
+              if (pathIsEqualNull) {
+                ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+              } else {
+                ctx.narrowMemberPath(pathKey, new NullType());
+              }
+              checkStatement(ctx, alternate as Statement);
+              ctx.exitScope();
             } else if (isInfo != null) {
               // `x is T` else branch: x is NOT T, subtract T from original type
               let si = isInfo as SymbolInfo;
               let narrowed = subtractTypeFromUnion(isOrigType as Type, isTargetType as Type);
               ctx.enterScope();
               ctx.narrowBinding(si, narrowed);
+              checkStatement(ctx, alternate as Statement);
+              ctx.exitScope();
+            } else if (isPathKey != null) {
+              let narrowed = subtractTypeFromUnion(isPathOrigType as Type, isPathTargetType as Type);
+              ctx.enterScope();
+              ctx.narrowMemberPath(isPathKey as String, narrowed);
               checkStatement(ctx, alternate as Statement);
               ctx.exitScope();
             } else {
@@ -2622,21 +2918,17 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
           // If the consequent always exits and there is no else branch,
           // the inverse narrowing holds for subsequent code.
           if (alternate == null && branchDefinitelyExits(consequent)) {
-            if (guardInfo != null) {
-              let si = guardInfo as SymbolInfo;
-              let origType = guardOrigType as Type;
-              if (isEqualNull) {
-                // `if (x == null) { return; }` → x is non-null after
-                ctx.narrowBinding(si, subtractNullFromType(origType));
-              } else {
-                // `if (x != null) { return; }` → x is null after
-                ctx.narrowBinding(si, new NullType());
-              }
-            }
+            applyFalseNullNarrowingFromCondition(ctx, testExpr);
             if (isInfo != null) {
               // `if (x is T) { return; }` → x is NOT T after
               let si = isInfo as SymbolInfo;
               ctx.narrowBinding(si, subtractTypeFromUnion(isOrigType as Type, isTargetType as Type));
+            }
+            if (isPathKey != null) {
+              ctx.narrowMemberPath(
+                isPathKey as String,
+                subtractTypeFromUnion(isPathOrigType as Type, isPathTargetType as Type)
+              );
             }
           }
 
@@ -2653,10 +2945,22 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
                 ctx.narrowBinding(si, subtractNullFromType(origType));
               }
             }
+            if (guardPathKey != null) {
+              let pathKey = guardPathKey as String;
+              let origType = guardPathOrigType as Type;
+              if (pathIsEqualNull) {
+                ctx.narrowMemberPath(pathKey, new NullType());
+              } else {
+                ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+              }
+            }
             if (isInfo != null) {
               // `if (x is T) { ... } else { return; }` → x IS T after
               let si = isInfo as SymbolInfo;
               ctx.narrowBinding(si, isTargetType as Type);
+            }
+            if (isPathKey != null) {
+              ctx.narrowMemberPath(isPathKey as String, isPathTargetType as Type);
             }
           }
 
@@ -2691,8 +2995,33 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
           let testExpr = test as Expression;
           let testType = checkExpression(ctx, testExpr, null);
           validateConditionType(ctx, testType, testExpr);
+          let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
+          let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
           ctx.enterLoop();
-          checkStatement(ctx, body);
+          if (guardInfo != null || guardPathKey != null) {
+            ctx.enterScope();
+            if (guardInfo != null) {
+              let si = guardInfo as SymbolInfo;
+              let origType = guardOrigType as Type;
+              if (isEqualNull) {
+                ctx.narrowBinding(si, new NullType());
+              } else {
+                ctx.narrowBinding(si, subtractNullFromType(origType));
+              }
+            } else {
+              let pathKey = guardPathKey as String;
+              let origType = guardPathOrigType as Type;
+              if (pathIsEqualNull) {
+                ctx.narrowMemberPath(pathKey, new NullType());
+              } else {
+                ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+              }
+            }
+            checkStatement(ctx, body);
+            ctx.exitScope();
+          } else {
+            checkStatement(ctx, body);
+          }
           ctx.exitLoop();
         }
       }
@@ -3629,38 +3958,88 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
         // Extract null-guard narrowing from the condition.
         let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
+        let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
+
+        var isInfo: SymbolInfo | null = null;
+        var isTargetType: Type | null = null;
+        var isOrigType: Type | null = null;
+        var isPathKey: String | null = null;
+        var isPathTargetType: Type | null = null;
+        var isPathOrigType: Type | null = null;
+        if (guardInfo == null && guardPathKey == null) {
+          let (info, target, orig) = extractIsNarrowing(ctx, testExpr);
+          isInfo = info;
+          isTargetType = target;
+          isOrigType = orig;
+          if (isInfo == null) {
+            let (pathKey, pathTarget, pathOrig) = extractIsPathNarrowing(ctx, testExpr);
+            isPathKey = pathKey;
+            isPathTargetType = pathTarget;
+            isPathOrigType = pathOrig;
+          }
+        }
 
         // Check consequent with narrowing applied.
+        if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
+          ctx.enterScope();
+        }
         if (guardInfo != null) {
           let si = guardInfo as SymbolInfo;
           let origType = guardOrigType as Type;
-          ctx.enterScope();
           if (isEqualNull) {
             ctx.narrowBinding(si, new NullType());
           } else {
             ctx.narrowBinding(si, subtractNullFromType(origType));
           }
+        } else if (guardPathKey != null) {
+          let pathKey = guardPathKey as String;
+          let origType = guardPathOrigType as Type;
+          if (pathIsEqualNull) {
+            ctx.narrowMemberPath(pathKey, new NullType());
+          } else {
+            ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+          }
+        } else if (isInfo != null) {
+          ctx.narrowBinding(isInfo as SymbolInfo, isTargetType as Type);
+        } else if (isPathKey != null) {
+          ctx.narrowMemberPath(isPathKey as String, isPathTargetType as Type);
         }
         let consType = checkIfBranchNode(ctx, consequent, expectedType);
-        if (guardInfo != null) {
+        if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
           ctx.exitScope();
         }
 
         // Check alternate with inverse narrowing applied.
         var altType: Type = new VoidType();
         if (alternate != null) {
+          if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
+            ctx.enterScope();
+          }
           if (guardInfo != null) {
             let si = guardInfo as SymbolInfo;
             let origType = guardOrigType as Type;
-            ctx.enterScope();
             if (isEqualNull) {
               ctx.narrowBinding(si, subtractNullFromType(origType));
             } else {
               ctx.narrowBinding(si, new NullType());
             }
+          } else if (guardPathKey != null) {
+            let pathKey = guardPathKey as String;
+            let origType = guardPathOrigType as Type;
+            if (pathIsEqualNull) {
+              ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+            } else {
+              ctx.narrowMemberPath(pathKey, new NullType());
+            }
+          } else if (isInfo != null) {
+            let narrowed = subtractTypeFromUnion(isOrigType as Type, isTargetType as Type);
+            ctx.narrowBinding(isInfo as SymbolInfo, narrowed);
+          } else if (isPathKey != null) {
+            let narrowed = subtractTypeFromUnion(isPathOrigType as Type, isPathTargetType as Type);
+            ctx.narrowMemberPath(isPathKey as String, narrowed);
           }
           altType = checkIfBranchNode(ctx, alternate as Node, expectedType);
-          if (guardInfo != null) {
+          if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
             ctx.exitScope();
           }
         }
@@ -5840,6 +6219,12 @@ let checkMemberExpression = (
 ): Type => {
   let objectType = checkExpression(ctx, object, null);
   let propName = property.name;
+  let pathKey = getMemberPathKeyFromAccess(ctx, object, property);
+  let narrowedPathType = if (pathKey != null) {
+    ctx.resolveNarrowedMemberPath(pathKey as String)
+  } else {
+    null
+  };
 
   // Check for private field access outside class
   if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
@@ -5880,6 +6265,19 @@ let checkMemberExpression = (
   }
 
   let resultType = resolveMemberType(ctx, baseType_, propName, loc);
+
+  if (isNullable && !optional) {
+    ctx.error(
+      "Object may be null when accessing '" + propName + "'.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return new ErrorType();
+  }
+
+  if (narrowedPathType != null) {
+    return narrowedPathType as Type;
+  }
 
   // If the original type was nullable and this is optional chaining,
   // wrap the result in a union with null.
@@ -6149,15 +6547,26 @@ let checkBinaryExpression = (
     let leftType = checkExpression(ctx, left, null);
     // Extract null-guard narrowing from the left side and apply to right.
     let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, left);
+    let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, left);
     var rightType: Type = new ErrorType();
-    if (guardInfo != null) {
-      let si = guardInfo as SymbolInfo;
-      let origType = guardOrigType as Type;
+    if (guardInfo != null || guardPathKey != null) {
       ctx.enterScope();
-      if (isEqualNull) {
-        ctx.narrowBinding(si, new NullType());
+      if (guardInfo != null) {
+        let si = guardInfo as SymbolInfo;
+        let origType = guardOrigType as Type;
+        if (isEqualNull) {
+          ctx.narrowBinding(si, new NullType());
+        } else {
+          ctx.narrowBinding(si, subtractNullFromType(origType));
+        }
       } else {
-        ctx.narrowBinding(si, subtractNullFromType(origType));
+        let pathKey = guardPathKey as String;
+        let origType = guardPathOrigType as Type;
+        if (pathIsEqualNull) {
+          ctx.narrowMemberPath(pathKey, new NullType());
+        } else {
+          ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+        }
       }
       rightType = checkExpression(ctx, right, null);
       ctx.exitScope();
@@ -6169,7 +6578,33 @@ let checkBinaryExpression = (
   }
   if (operator == "||") {
     let leftType = checkExpression(ctx, left, null);
-    let rightType = checkExpression(ctx, right, null);
+    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, left);
+    let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, left);
+    var rightType: Type = new ErrorType();
+    if (guardInfo != null || guardPathKey != null) {
+      ctx.enterScope();
+      if (guardInfo != null) {
+        let si = guardInfo as SymbolInfo;
+        let origType = guardOrigType as Type;
+        if (isEqualNull) {
+          ctx.narrowBinding(si, subtractNullFromType(origType));
+        } else {
+          ctx.narrowBinding(si, new NullType());
+        }
+      } else {
+        let pathKey = guardPathKey as String;
+        let origType = guardPathOrigType as Type;
+        if (pathIsEqualNull) {
+          ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+        } else {
+          ctx.narrowMemberPath(pathKey, new NullType());
+        }
+      }
+      rightType = checkExpression(ctx, right, null);
+      ctx.exitScope();
+    } else {
+      rightType = checkExpression(ctx, right, null);
+    }
     // || returns union of both types.
     let types = new Array<Type>();
     types.push(leftType);
