@@ -384,12 +384,12 @@ tests/language/semantics/
 │   │   └── alias-to-union.zena                 [done]
 │   │
 │   ├── unions/
-│   │   ├── basic-assignability.zena            [ts] checker-union_test — i32 | String
-│   │   ├── null-union.zena                     [ts] — String | null
-│   │   ├── non-member-access.zena              [ts] checker-union_test — member not on all types
-│   │   ├── union-of-classes.zena               [ts] — Cat | Dog assigned to base Animal
-│   │   ├── flatten-nested.zena                 [new] — (A | B) | C same as A | B | C
-│   │   └── primitive-mix-rejected.zena         [ts] union_validation_test — i32 | String error
+│   │   ├── basic-assignability.zena            [done]
+│   │   ├── null-union.zena                     [done]
+│   │   ├── non-member-access.zena              [done]
+│   │   ├── union-of-classes.zena               [done]
+│   │   ├── flatten-nested.zena                 [done]
+│   │   └── primitive-mix-rejected.zena         [done]
 │   │
 │   ├── literal-types/
 │   │   ├── string-literal.zena                 [ts] literal-types_test — let x: "hello" = "hello"
