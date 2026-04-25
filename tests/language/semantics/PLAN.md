@@ -392,13 +392,13 @@ tests/language/semantics/
 │   │   └── primitive-mix-rejected.zena         [done]
 │   │
 │   ├── literal-types/
-│   │   ├── string-literal.zena                 [ts] literal-types_test — let x: "hello" = "hello"
-│   │   ├── number-literal.zena                 [ts] literal-types_test — let x: 42 = 42
-│   │   ├── boolean-literal.zena                [ts] boolean-literal-types_test
-│   │   ├── literal-in-union.zena               [ts] — "a" | "b" union
-│   │   ├── let-preserves-literal.zena          [ts] — let x = "hello" → type "hello"
-│   │   ├── var-widens-literal.zena             [ts] — var x = "hello" → type String
-│   │   └── literal-assignable-to-base.zena     [ts] — "hello" assignable to String
+│   │   ├── string-literal.zena                 [done]
+│   │   ├── number-literal.zena                 [done]
+│   │   ├── boolean-literal.zena                [done]
+│   │   ├── literal-in-union.zena               [done]
+│   │   ├── let-preserves-literal.zena          [done]
+│   │   ├── var-widens-literal.zena             [done]
+│   │   └── literal-assignable-to-base.zena     [done]
 │   │
 │   ├── distinct-types/
 │   │   ├── basic.zena                          [ts] distinct-type_test — distinct type UserId = i32

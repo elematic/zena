@@ -41,6 +41,7 @@ export sealed class Type {
   // Literal types (narrower than their base type)
   case BoolLiteralType(value: boolean)
   case StringLiteralType(value: String)
+  case NumLiteralType(raw: String)
 
   // Compound types
   case ArrayType(elementType: Type)
@@ -250,7 +251,7 @@ export class ThisType extends Type {
 /**
  * Check if a type is a numeric primitive.
  */
-export let isNumericType = (t: Type): boolean => match (t) {
+export let isNumericType = (t: Type): boolean => match (baseType(t)) {
   case I32Type: true
   case U32Type: true
   case I64Type: true
@@ -263,7 +264,7 @@ export let isNumericType = (t: Type): boolean => match (t) {
 /**
  * Check if a type is an integer type.
  */
-export let isIntegerType = (t: Type): boolean => match (t) {
+export let isIntegerType = (t: Type): boolean => match (baseType(t)) {
   case I32Type: true
   case U32Type: true
   case I64Type: true
@@ -274,7 +275,7 @@ export let isIntegerType = (t: Type): boolean => match (t) {
 /**
  * Check if a type is a floating point type.
  */
-export let isFloatType = (t: Type): boolean => match (t) {
+export let isFloatType = (t: Type): boolean => match (baseType(t)) {
   case F32Type: true
   case F64Type: true
   case _: false
@@ -283,7 +284,7 @@ export let isFloatType = (t: Type): boolean => match (t) {
 /**
  * Check if a type is a 64-bit type.
  */
-export let is64BitType = (t: Type): boolean => match (t) {
+export let is64BitType = (t: Type): boolean => match (baseType(t)) {
   case I64Type: true
   case U64Type: true
   case F64Type: true
@@ -313,20 +314,22 @@ export let isBooleanLike = (t: Type): boolean => match (t) {
 };
 
 /**
- * Widen a literal type to its base type.
- * Used for `var` bindings: `var x = true` → x: boolean (not x: true).
- */
-export let widenType = (t: Type): Type => match (t) {
-  case BoolLiteralType {}: new BooleanType()
-  case StringLiteralType {}: t  // String literals stay as String class type
-  case _: t
-};
-
-/**
  * Get the base type of a literal type, or the type itself if not literal.
  */
 export let baseType = (t: Type): Type => match (t) {
   case BoolLiteralType {}: new BooleanType()
+  case NumLiteralType {raw}: {
+    var isFloat = false;
+    var i = 0;
+    while (i < raw.length) {
+      if (raw.getByteAt(i) == 46) { // '.'
+        isFloat = true;
+        break;
+      }
+      i += 1;
+    }
+    if (isFloat) new F64Type() else new I32Type()
+  }
   case _: t
 };
 
@@ -334,7 +337,9 @@ export let baseType = (t: Type): Type => match (t) {
  * Compute the promoted numeric type for a binary operation.
  * Returns null if the types are incompatible.
  */
-export let promoteNumeric = (left: Type, right: Type): Type | null => {
+export let promoteNumeric = (leftOrig: Type, rightOrig: Type): Type | null => {
+  let left = match (leftOrig) { case NumLiteralType: baseType(leftOrig) case _: leftOrig };
+  let right = match (rightOrig) { case NumLiteralType: baseType(rightOrig) case _: rightOrig };
   // f64 dominates everything
   if (left is F64Type || right is F64Type) {
     return new F64Type();
@@ -398,6 +403,7 @@ export let typeToString = (t: Type): String => match (t) {
   case ByteArrayType: "ByteArray"
   case BoolLiteralType {value}: if (value) "true" else "false"
   case StringLiteralType {value}: "'" + value + "'"
+  case NumLiteralType {raw}: raw
   case ArrayType {elementType}: "Array<" + typeToString(elementType) + ">"
   case TupleType {elementTypes}: {
     var s = "[";

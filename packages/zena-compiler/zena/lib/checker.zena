@@ -82,7 +82,7 @@ import {
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
   BooleanType, VoidType, NullType, NeverType, ErrorType, UnknownType, AnyType,
   AnyRefType, EqRefType, ByteArrayType,
-  BoolLiteralType, StringLiteralType,
+  BoolLiteralType, StringLiteralType, NumLiteralType,
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
   UnionType as UnionT, RecordType as RecordT,
   FunctionType, ClassType, InterfaceType, MixinType,
@@ -90,7 +90,7 @@ import {
   instantiateClassType, instantiateInterfaceType, instantiateMixinType,
   instantiateTypeAliasType, GenericNamedType,
   isNumericType, isIntegerType, isFloatType, is64BitType,
-  numericTypeName, isBooleanLike, widenType, baseType,
+  numericTypeName, isBooleanLike, baseType,
   promoteNumeric, typeToString
 } from './types.zena';
 import { SemanticModel } from './semantic-model.zena';
@@ -1287,9 +1287,49 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
     let resolved = new Array<Type>();
     var i = 0;
     while (i < types.length) {
-      resolved.push(resolveTypeAnnotation(ctx, types[i]));
+      let t = resolveTypeAnnotation(ctx, types[i]);
+      resolved.push(t);
       i += 1;
     }
+
+    var hasPrimitive = false;
+    var hasReference = false;
+    let primitiveBases = new Array<String>();
+
+    for (let t in resolved) {
+      var baseName: String | null = null;
+
+      if (isNumericType(t)) {
+        baseName = typeToString(baseType(t));
+      } else if (t is BooleanType || t is BoolLiteralType) {
+        baseName = "boolean";
+      }
+
+      if (baseName != null) {
+        hasPrimitive = true;
+        var found = false;
+        for (let primitiveBase in primitiveBases) {
+          if (primitiveBase == baseName) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          primitiveBases.push(baseName);
+        }
+      } else if (t is VoidType || t is NeverType || t is ErrorType || t is UnknownType || t is NullType) {
+        // Neither primitive nor reference.
+      } else {
+        hasReference = true;
+      }      
+    }
+
+    if (hasPrimitive && hasReference) {
+      ctx.error("Union types cannot mix primitive types with reference types", DiagnosticCode.TypeMismatch, ann.loc);
+    } else if (primitiveBases.length > 1) {
+      ctx.error("Union types cannot mix primitives of different base types", DiagnosticCode.TypeMismatch, ann.loc);
+    }
+
     createUnionType(resolved)
   }
   case FunctionTypeAnnotation {params, returnType}: {
@@ -1307,8 +1347,8 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
       case BooleanLiteral {value}: new BoolLiteralType(value)
       case NumberLiteral {raw}: {
         // Number literal type — check for decimal point to decide base type.
-        // For now, treat as i32.
-        new I32Type()
+        // Or rather, instantiate NumLiteralType.
+        new NumLiteralType(raw)
       }
       case StringLiteral {value}: new StringLiteralType(value)
       case NullLiteral {}: new NullType()
@@ -1821,6 +1861,41 @@ let isPreludeClassType = (ctx: CheckerContext, ct: ClassType, preludeName: Strin
   }
 };
 
+/**
+ * Widen a literal type to its base type.
+ * Used for `var` bindings: `var x = true` → x: boolean (not x: true).
+ */
+let widenType = (ctx: CheckerContext, t: Type): Type => match (t) {
+  case BoolLiteralType {}: new BooleanType()
+  case StringLiteralType {}: {
+    let stringType = ctx.resolvePreludeType("String");
+    if (stringType != null) {
+      stringType as Type
+    } else {
+      t
+    }
+  }
+  case NumLiteralType {raw}: {
+    var isFloat = false;
+    var i = 0;
+    while (i < raw.length) {
+      if (raw.getByteAt(i) == 46) { // '.'
+        isFloat = true;
+        break;
+      }
+      i += 1;
+    }
+    if (isFloat) {
+      let expected = new F64Type();
+      expected as Type
+    } else {
+      let expected = new I32Type();
+      expected as Type
+    }
+  }
+  case _: t
+};
+
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
   // Same type (identity check via match).
   if (typesEqual(source, target)) { return true; }
@@ -1845,10 +1920,10 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
   if (source is NullType) {
     match (target) {
       case UnionT {types}: {
-        var i = 0;
-        while (i < types.length) {
-          if (types[i] is NullType) { return true; }
-          i += 1;
+        for (let type in types) {
+          if (type is NullType) {
+            return true;
+          }
         }
       }
       case _: {}
@@ -1856,8 +1931,21 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     return false;
   }
 
-  // Boolean literal assignable to boolean.
+  // Literal assignable to base.
   if (source is BoolLiteralType && target is BooleanType) { return true; }
+  if (source is StringLiteralType &&
+      target is ClassType &&
+      isPreludeClassType(ctx, target as ClassType, "String")) {
+    return true;
+  }
+  if (source is NumLiteralType && isNumericType(target)) {
+    let base = baseType(source);
+    if (base is F64Type && !isFloatType(target)) {
+      // floats not assignable to int
+    } else {
+      return true;
+    }
+  }
 
   // Union source: all members must be assignable to target.
   match (source) {
@@ -2001,6 +2089,12 @@ let typesEqual = (a: Type, b: Type): boolean => {
     case StringLiteralType {value as va}: {
       match (b) {
         case StringLiteralType {value as vb}: va == vb
+        case _: false
+      }
+    }
+    case NumLiteralType {raw as va}: {
+      match (b) {
+        case NumLiteralType {raw as vb}: va == vb
         case _: false
       }
     }
@@ -2798,7 +2892,7 @@ let checkVariableDeclaration = (
   // For `var` bindings, widen literal types.
   var declType = initType;
   if (kind == "var" && typeAnnotation == null) {
-    declType = widenType(initType);
+    declType = widenType(ctx, initType);
   }
 
   // If an explicit type annotation is present, validate assignability.
@@ -3043,6 +3137,36 @@ let checkIfBranchNode = (ctx: CheckerContext, node: Node, expectedType: Type | n
   return new VoidType();
 };
 
+let getMatchedLiteralType = (expr: Expression, expected: Type): Type | null => {
+  match (expected) {
+    case BoolLiteralType {value}: {
+      if (expr is BooleanLiteral && (expr as BooleanLiteral).value == value) {
+        return expected;
+      }
+    }
+    case StringLiteralType {value}: {
+      if (expr is StringLiteral && (expr as StringLiteral).value == value) {
+        return expected;
+      }
+    }
+    case NumLiteralType {raw}: {
+      if (expr is NumberLiteral && (expr as NumberLiteral).raw == raw) {
+        return expected;
+      }
+    }
+    case UnionT {types}: {
+      var i = 0;
+      while (i < types.length) {
+        let matched = getMatchedLiteralType(expr, types[i]);
+        if (matched != null) { return matched; }
+        i += 1;
+      }
+    }
+    case _: {}
+  }
+  return null;
+};
+
 let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
   let t = checkExpressionInner(ctx, expr, expectedType);
   // Record the inferred type in the semantic model.
@@ -3050,7 +3174,13 @@ let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type
   return t;
 };
 
-let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => match (expr) {
+let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
+  if (expectedType != null) {
+    let matched = getMatchedLiteralType(expr, expectedType as Type);
+    if (matched != null) { return matched as Type; }
+  }
+  
+  return match (expr) {
   // --- Literals ---
 
   case NumberLiteral {raw, loc}: {
@@ -3070,14 +3200,18 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let expected = expectedType as Type;
         if (expected is F64Type) { return new F64Type(); }
         if (expected is F32Type) { return new F32Type(); }
-        if (isNumericType(expected)) { return new F32Type(); }
+        if (isNumericType(expected)) {
+          if (expected is NumLiteralType) {} else { return new F32Type(); }
+        }
       }
       new F32Type()
     } else {
       // Integer literal — default to i32; use context to pick other int types.
       if (expectedType != null) {
         let expected = expectedType as Type;
-        if (isNumericType(expected)) { return expected; }
+        if (isNumericType(expected)) {
+          if (expected is NumLiteralType) {} else { return expected; }
+        }
       }
       new I32Type()
     }
@@ -3711,6 +3845,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       pipeType as Type
     }
   }
+  };
 };
 
 // ============================================================================
