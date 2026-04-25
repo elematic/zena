@@ -61,6 +61,7 @@ import {
   ClassPattern,
   LogicalPattern,
   AssignmentPattern,
+  LiteralPattern,
   MatchExpression,
   MatchCase,
   IfExpression,
@@ -892,6 +893,26 @@ export class Parser {
   #parsePattern(): Pattern {
     let startToken = this.#peek();
     
+    // Literal patterns: parsed as LiteralPattern nodes so the checker can
+    // report them as refutable in variable declarations.
+    if (this.#match(TokenType.Number)) {
+      let token = this.#previous();
+      return new LiteralPattern(new NumberLiteral(token.value, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+    }
+    if (this.#match(TokenType.String)) {
+      let token = this.#previous();
+      return new LiteralPattern(new StringLiteral(token.value, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+    }
+    if (this.#match(TokenType.True)) {
+      return new LiteralPattern(new BooleanLiteral(true, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+    }
+    if (this.#match(TokenType.False)) {
+      return new LiteralPattern(new BooleanLiteral(false, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+    }
+    if (this.#match(TokenType.Null)) {
+      return new LiteralPattern(new NullLiteral(this.#makeLocation(startToken)), this.#makeLocation(startToken));
+    }
+    
     // Record pattern: { a, b }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseRecordPattern(startToken, false);
@@ -1062,7 +1083,7 @@ export class Parser {
     return new TuplePattern(elements, this.#makeLocation(startToken));
   }
   
-  #parseParenTuplePattern(startToken: Token, matchContext: boolean): TuplePattern {
+  #parseParenTuplePattern(startToken: Token, matchContext: boolean): Pattern {
     let elements = new Array<Node | null>(4);
 
     while (!this.#check(TokenType.RParen) && !this.#isAtEnd()) {
@@ -1072,9 +1093,28 @@ export class Parser {
         continue;
       }
 
-      elements.push(if (matchContext) { this.#parseMatchPattern() } else { this.#parsePattern() });
+      let elem: Node = if (matchContext) { this.#parseMatchPattern() } else {
+        let p: Node = this.#parsePattern();
+        p
+      };
+
+      // In declaration context, detect OR patterns: (A {} | B {}) becomes LogicalPattern
+      if (!matchContext && this.#check(TokenType.Pipe)) {
+        var orLeft: Node = elem;
+        while (this.#match(TokenType.Pipe)) {
+          let orRight: Node = this.#parsePattern();
+          orLeft = new LogicalPattern('||', orLeft, orRight, this.#makeLocation(startToken));
+        }
+        this.#consume(TokenType.RParen, "Expected ')' after pattern");
+        return orLeft as Pattern;
+      }
+
+      elements.push(elem);
 
       if (!this.#check(TokenType.RParen)) {
+        if (!matchContext && this.#check(TokenType.Pipe)) {
+          throw this.#error("Refutable pattern: OR pattern is not allowed in a 'let' or 'var' declaration");
+        }
         this.#consume(TokenType.Comma, "Expected ',' in tuple pattern");
       }
     }

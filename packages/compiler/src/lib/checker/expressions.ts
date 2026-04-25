@@ -4617,10 +4617,11 @@ function subtractType(
         // Only nested refining patterns (literals, nested class/record patterns) may
         // cause a partial match.
         if (classPattern.properties.length === 0) return Types.Never;
-        const allBindings = classPattern.properties.every(
-          (p) => p.value.type === NodeType.Identifier,
-        );
-        if (allBindings) return Types.Never;
+        const allCovering = classPattern.properties.every((p) => {
+          const fieldType = classType.fields.get(p.name.name);
+          return classPatternPropertyCovers(ctx, p.value, fieldType);
+        });
+        if (allCovering) return Types.Never;
       }
 
       // Sealed class exhaustiveness: matching a variant subtracts it from the set.
@@ -4661,6 +4662,47 @@ function subtractType(
       }
       if (covers) return Types.Never;
     }
+    return type;
+  }
+
+  // Handle TuplePattern / InlineTuplePattern
+  if (
+    pattern.type === NodeType.TuplePattern ||
+    pattern.type === NodeType.InlineTuplePattern
+  ) {
+    const tuplePattern = pattern as TuplePattern;
+    if (type.kind === TypeKind.Tuple || type.kind === TypeKind.InlineTuple) {
+      const elementTypes = (type as unknown as {elementTypes: Type[]})
+        .elementTypes;
+      const elements = tuplePattern.elements;
+      if (elements.length === elementTypes.length) {
+        const allCovering = elements.every((elem, i) => {
+          if (elem === null) return false;
+          if (
+            elem.type === NodeType.Identifier &&
+            (elem as Identifier).name === '_'
+          )
+            return true;
+          if (elem.type === NodeType.Identifier && !(elem as any).inferredType)
+            return true;
+          const rem = subtractType(ctx, elementTypes[i], elem as Pattern);
+          return rem.kind === TypeKind.Never;
+        });
+        if (allCovering) return Types.Never;
+      }
+    }
+    return type;
+  }
+
+  // Handle LogicalPattern (||)
+  if (pattern.type === NodeType.LogicalPattern) {
+    const lp = pattern as LogicalPattern;
+    if (lp.operator === '||') {
+      // Union: subtract left branch, then subtract right from the remainder.
+      const afterLeft = subtractType(ctx, type, lp.left as Pattern);
+      return subtractType(ctx, afterLeft, lp.right as Pattern);
+    }
+    // && patterns: conservatively don't subtract (may not be exhaustive on their own)
     return type;
   }
 
@@ -4735,6 +4777,33 @@ function subtractType(
   }
 
   return type;
+}
+
+/**
+ * Recursively checks if a class pattern property value fully covers the given field type.
+ * An Identifier binding always covers (it binds anything).
+ * A ClassPattern recursively checks its own properties against the field's class type.
+ */
+function classPatternPropertyCovers(
+  ctx: CheckerContext,
+  valueNode: Pattern,
+  fieldType: Type | undefined,
+): boolean {
+  if (valueNode.type === NodeType.Identifier) return true;
+  if (!fieldType) return true;
+  if (valueNode.type === NodeType.ClassPattern) {
+    const cp = valueNode as ClassPattern;
+    const patType = cp.inferredType;
+    if (!patType || !isAssignableTo(ctx, fieldType, patType)) return false;
+    if (cp.properties.length === 0) return true;
+    if (fieldType.kind !== TypeKind.Class) return true;
+    const ft = fieldType as ClassType;
+    return cp.properties.every((p) => {
+      const subFieldType = ft.fields.get(p.name.name);
+      return classPatternPropertyCovers(ctx, p.value, subFieldType);
+    });
+  }
+  return false;
 }
 
 function checkRangeExpression(

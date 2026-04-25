@@ -461,22 +461,35 @@ tests/language/semantics/
 │   │   `while-let`, and declaration contexts.
 │   │
 │   ├── class/
-│   │   ├── basic.zena                          [ts] — class pattern binds fields to their declared types
-│   │   ├── nested-field.zena                   [ts] — nested class pattern
-│   │   ├── refutable-in-let.zena               [ts] — let Some {value} = x is refutable (error)
-│   │   └── refutable-in-for.zena               [ts] — for (let Some {v} in arr) is refutable (error)
+│   │   ├── basic.zena                          [done]
+│   │   ├── nested-field.zena                   [done]
+│   │   ├── refutable-in-let.zena               [done]
+│   │   └── refutable-in-for.zena               [done]
 │   │
 │   ├── literal/
-│   │   ├── match-arm.zena                      [ts] refutable-pattern_test — literal in match arm ok
-│   │   └── refutable-in-let.zena               [ts] refutable-pattern_test — let 42 = x is refutable (error)
+│   │   ├── match-arm.zena                      [done]
+│   │   └── refutable-in-let.zena               [done]
 │   │
 │   ├── composite/
-│   │   ├── or-pattern.zena                     [ts] — case A {} | B {}: ... binds to union type
-│   │   ├── and-pattern.zena                    [ts] — case Foo {} & Bar {}: ... binds to intersection
-│   │   └── or-refutable-in-let.zena            [ts] — let A {} | B {} = x is refutable (error)
+│   │   ├── or-pattern.zena                     [done]
+│   │   ├── and-pattern.zena                    [done]
+│   │   └── or-refutable-in-let.zena            [done]
+│   │
+│   ├── record/
+│   │   ├── basic.zena                          [done]
+│   │   ├── rename.zena                         [done]
+│   │   └── partial.zena                        [done]
+│   │
+│   ├── tuple/
+│   │   ├── basic.zena                          [done]
+│   │   └── wildcard-element.zena               [done]
+│   │
+│   ├── wildcard/
+│   │   ├── catch-all.zena                      [done]
+│   │   └── identifier-binding.zena             [done]
 │   │
 │   └── as/
-│       └── binding.zena                        [done] (as-pattern-binding.zena) — p as x binds x
+│       └── binding.zena                        [done]
 │
 ├── null-coalescing/
 │   ├── basic.zena                              [done]

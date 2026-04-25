@@ -98,7 +98,6 @@ suite('TypeChecker - Logical Patterns', () => {
       let r: Rec = {x: 1, y: 2};
       let res = match (r) {
         case {x} | {y}: 0
-        case _: 0
       };
     `;
     const parser = new Parser(input);

@@ -66,7 +66,7 @@ import {
   ExportFromDeclaration, DeclareFunction, SymbolDeclaration,
   // Patterns
   Pattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
-  ClassPattern, LogicalPattern, AssignmentPattern,
+  ClassPattern, LogicalPattern, AssignmentPattern, LiteralPattern,
   // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
   FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
@@ -2904,6 +2904,13 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       let elementType = getElementType(ctx, iterableType, iterable);
       ctx.enterScope();
       ctx.enterLoop();
+      if (isRefutableDeclarationPattern(pattern)) {
+        ctx.error(
+          "Refutable pattern in variable declaration; use `if (let ...)` or `while (let ...)` for patterns that may not match.",
+          DiagnosticCode.TypeMismatch,
+          pattern.loc
+        );
+      }
       bindPattern(ctx, pattern, elementType);
       checkStatement(ctx, body);
       ctx.exitLoop();
@@ -2948,8 +2955,57 @@ let checkVariableDeclaration = (
     declType = expected;
   }
 
+  if (isRefutableDeclarationPattern(pattern)) {
+    ctx.error(
+      "Refutable pattern in variable declaration; use `if (let ...)` or `while (let ...)` for patterns that may not match.",
+      DiagnosticCode.TypeMismatch,
+      pattern.loc
+    );
+  }
+
   // Bind the declared names in the pattern.
   bindPattern(ctx, pattern, declType);
+};
+
+let isRefutableDeclarationPattern = (pattern: Pattern): boolean => {
+  match (pattern) {
+    case IdentifierPattern: { return false; }
+    case ClassPattern: { return true; }
+    case LogicalPattern: { return true; }
+    case LiteralPattern: { return true; }
+    case AsPattern {pattern as inner}: {
+      return if (inner is Pattern) {
+        isRefutableDeclarationPattern(inner as Pattern)
+      } else {
+        true
+      };
+    }
+    case AssignmentPattern {left}: {
+      return isRefutableDeclarationPattern(left as Pattern);
+    }
+    case RecordPattern {properties}: {
+      var i = 0;
+      while (i < properties.length) {
+        if (isRefutableDeclarationPattern((properties[i].value as Node) as Pattern)) {
+          return true;
+        }
+        i += 1;
+      }
+      return false;
+    }
+    case TuplePattern {elements}: {
+      var i = 0;
+      while (i < elements.length) {
+        if (elements[i] != null) {
+          if (isRefutableDeclarationPattern((elements[i] as Node) as Pattern)) {
+            return true;
+          }
+        }
+        i += 1;
+      }
+      return false;
+    }
+  }
 };
 
 /**
@@ -3135,6 +3191,9 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       // For | (or) and & (and) patterns, bind variables from both sides.
       bindPattern(ctx, left as Pattern, t);
       bindPattern(ctx, right as Pattern, t);
+    }
+    case LiteralPattern: {
+      // Literal patterns introduce no bindings.
     }
   }
 };

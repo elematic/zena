@@ -1903,6 +1903,24 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
  * The iterable must implement Iterable<T>, and pattern variables are typed as T.
  */
 function checkForInStatement(ctx: CheckerContext, stmt: ForInStatement) {
+  // Class patterns, logical patterns, and literal patterns are refutable and
+  // cannot be used as for-in loop variables.
+  const patType = stmt.pattern.type;
+  if (
+    patType === NodeType.ClassPattern ||
+    patType === NodeType.LogicalPattern ||
+    patType === NodeType.NumberLiteral ||
+    patType === NodeType.StringLiteral ||
+    patType === NodeType.BooleanLiteral
+  ) {
+    ctx.diagnostics.reportError(
+      'Refutable pattern in variable declaration; use `if (let ...)` or `while (let ...)` for patterns that may not match',
+      DiagnosticCode.TypeMismatch,
+      ctx.getLocation(stmt.pattern.loc),
+    );
+    return;
+  }
+
   // Check the iterable expression
   const iterableType = checkExpression(ctx, stmt.iterable);
 
@@ -2404,6 +2422,19 @@ export function checkPattern(
 
     case NodeType.AssignmentPattern:
       checkAssignmentPattern(ctx, pattern, type, kind, declaration);
+      break;
+
+    case NodeType.ClassPattern:
+    case NodeType.LogicalPattern:
+    case NodeType.NumberLiteral:
+    case NodeType.StringLiteral:
+    case NodeType.BooleanLiteral:
+    case NodeType.NullLiteral:
+      ctx.diagnostics.reportError(
+        'Refutable pattern in variable declaration; use `if (let ...)` or `while (let ...)` for patterns that may not match',
+        DiagnosticCode.TypeMismatch,
+        ctx.getLocation(pattern.loc),
+      );
       break;
   }
 }
