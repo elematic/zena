@@ -14,6 +14,7 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
+import { StringBuilder } from 'zena:string-builder';
 
 import { Expression } from './ast.zena';
 
@@ -213,7 +214,8 @@ export class TypeAliasType(
   name: String,
   var typeParameters: Array<TypeParameterType> | null,
   var target: Type,
-  isDistinct: boolean
+  isDistinct: boolean,
+  var typeArguments: Array<Type> | null
 ) extends Type {
   /**
    * Ephemeral flag used by the checker to detect generic type resolution cycles.
@@ -233,7 +235,8 @@ export let instantiateTypeAliasType = (
     source.name,
     source.typeParameters,
     source.target, // We substitute the target in the checker since it needs the map
-    source.isDistinct
+    source.isDistinct,
+    typeArguments
   );
 };
 
@@ -508,7 +511,24 @@ export let typeToString = (t: Type): String => match (t) {
     }
   }
   case TypeParameterType as tp: tp.name
-  case TypeAliasType as ta: ta.name
+  case TypeAliasType as ta: {
+    if (ta.typeArguments != null) {
+      let sb = new StringBuilder();
+      let args = ta.typeArguments as Array<Type>;
+      sb.append(ta.name);
+      sb.append("<");
+      for (var i = 0; i < args.length; i += 1) {
+        if (i > 0) {
+          sb.append(", ");
+        }
+        sb.append(typeToString(args[i]));
+      }
+      sb.append(">");
+      sb.toString()
+    } else {
+      ta.name
+    }
+  }
   case SymbolType as sym: {
     if (sym.debugName != null) {
       "symbol(" + (sym.debugName as String) + ")"

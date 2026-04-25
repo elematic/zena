@@ -518,19 +518,23 @@ class CheckerContext {
    */
   resolveTypeName(name: String): Type | null {
     // Check local scopes first (innermost to outermost).
-    var i = this.#typeScopes.length - 1;
-    while (i >= 0) {
-      if (this.#typeScopes[i].has(name)) {
-        return this.#typeScopes[i][name];
+    for (var i = this.#typeScopes.length - 1; i >= 0; i -= 1) {
+      let scope = this.#typeScopes[i];
+      if (let (t, true) = scope.get(name)) {
+        return t;
       }
-      i = i - 1;
+    }
+    // On-demand: look up in scope analysis and materialize.
+    // This allows module-level declarations to shadow prelude types.
+    let localType = this.#materializeFromScope(name);
+    if (localType != null) {
+      return localType;
     }
     // Fall back to prelude types.
     if (this.#preludeTypes.has(name)) {
       return this.#preludeTypes[name];
     }
-    // On-demand: look up in scope analysis and materialize.
-    return this.#materializeFromScope(name);
+    return null;
   }
 
   /**
@@ -619,7 +623,7 @@ class CheckerContext {
         return ct;
       }
       case EnumDeclaration as ed: {
-        return new TypeAliasType(ed.name.name, null, new I32Type(), true);
+        return new TypeAliasType(ed.name.name, null, new I32Type(), true, null);
       }
       case TypeAliasDeclaration as ta: {
         this.enterScope();
@@ -651,7 +655,7 @@ class CheckerContext {
         let targetType = new ErrorType();
         this.exitScope();
         
-        return new TypeAliasType(ta.name.name, typeParams, targetType, ta.isDistinct);
+        return new TypeAliasType(ta.name.name, typeParams, targetType, ta.isDistinct, null);
       }
       case _: {
         return null;
@@ -976,6 +980,16 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
 
   // Box<T> - optional wrapper
   let boxType = new ClassType(ctx.freshTypeId(), "Box");
+  let boxTParam = new TypeParameterType("T", null, null);
+  
+  let boxParams = new Array<TypeParameterType>();
+  boxParams.push(boxTParam);
+  boxType.typeParameters = boxParams;
+  
+  let boxCtorParams = new Array<Type>();
+  boxCtorParams.push(boxTParam);
+  boxType.constructorType = new FunctionType(boxCtorParams, null, boxType);
+  
   ctx.registerPreludeType("Box", boxType);
   ctx.registerPreludeValue("Box", boxType);
 
@@ -1982,11 +1996,15 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case ClassType as srcClass: {
       match (target) {
         case ClassType as tgtClass: {
+          // If they match by id but didn't pass typesEqual early, they have different
+          // type arguments. For invariant nominal types, they are not assignable.
+          if (srcClass.id == tgtClass.id) { return false; }
           // Walk the supertype chain.
           var current: ClassType | null = srcClass.superType;
           while (current != null) {
             let cur = current as ClassType;
-            if (cur.id == tgtClass.id) { return true; }
+            if (typesEqual(cur, tgtClass)) { return true; }
+            if (cur.id == tgtClass.id) { return false; }
             current = cur.superType;
           }
         }
@@ -2226,7 +2244,28 @@ let typesEqual = (a: Type, b: Type): boolean => {
     case ThisType: b is ThisType
     case TypeAliasType as ta: {
       match (b) {
-        case TypeAliasType as tb: ta.name == tb.name
+        case TypeAliasType as tb: {
+          if (ta.name != tb.name) {
+            return false;
+          }
+          if (ta.typeArguments == null && tb.typeArguments == null) {
+            return true;
+          }
+          if (ta.typeArguments == null || tb.typeArguments == null) {
+            return false;
+          }
+          let argsA = ta.typeArguments as Array<Type>;
+          let argsB = tb.typeArguments as Array<Type>;
+          if (argsA.length != argsB.length) {
+            return false;
+          }
+          for (var i = 0; i < argsA.length; i += 1) {
+            if (!typesEqual(argsA[i], argsB[i])) {
+              return false;
+            }
+          }
+          true
+        }
         case _: false
       }
     }
@@ -5222,7 +5261,7 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
       backingType = new ErrorType();
     }
   }
-  let enumType = new TypeAliasType(name, null, backingType, true);
+  let enumType = new TypeAliasType(name, null, backingType, true, null);
 
   // Register the enum in the type namespace.
   ctx.declareTypeName(name, enumType);
