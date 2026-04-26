@@ -1186,6 +1186,38 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   hmGetOrParams.push(hashMapVParam);
   hashMapType.methods["getOr"] = new FunctionType(hmGetOrParams, null, hashMapVParam);
   hashMapType.methods["clear"] = new FunctionType(new Array<Type>(), null, new VoidType());
+  let hmKeysParams = new Array<Type>();
+  let hmKeysTypeArgs = new Array<Type>();
+  hmKeysTypeArgs.push(hashMapKParam);
+  let hmKeysRetType = instantiateInterfaceType(iterableType, hmKeysTypeArgs);
+  hashMapType.methods["keys"] = new FunctionType(hmKeysParams, null, hmKeysRetType);
+
+  // Iterable<MapEntry<K, V>>
+  let mapEntryType = new ClassType(ctx.freshTypeId(), "MapEntry");
+  let mapEntryKParam = new TypeParameterType("K", null, null);
+  let mapEntryVParam = new TypeParameterType("V", null, null);
+  let mapEntryTypeParams = new Array<TypeParameterType>();
+  mapEntryTypeParams.push(mapEntryKParam);
+  mapEntryTypeParams.push(mapEntryVParam);
+  mapEntryType.typeParameters = mapEntryTypeParams;
+
+  let mapEntryKArg = new Array<Type>();
+  let mapEntryVArg = new Array<Type>();
+  mapEntryKArg.push(hashMapKParam);
+  mapEntryVArg.push(hashMapVParam);
+
+  let mapEntryInstArgs = new Array<Type>();
+  mapEntryInstArgs.push(hashMapKParam);
+  mapEntryInstArgs.push(hashMapVParam);
+  let mapEntryInst = instantiateClassType(mapEntryType, mapEntryInstArgs);
+
+  let hmIterTypeArgs = new Array<Type>();
+  hmIterTypeArgs.push(mapEntryInst);
+  let hmIterRetType = instantiateInterfaceType(iterableType, hmIterTypeArgs);
+
+  // HashMap implements Iterable<MapEntry<K, V>>
+  hashMapType.implementsList.push(hmIterRetType as InterfaceType);
+  
   let hmForEachCbParams = new Array<Type>();
   hmForEachCbParams.push(hashMapKParam);
   hmForEachCbParams.push(hashMapVParam);
