@@ -44,7 +44,7 @@ import {
   MapEntry, LetPatternCondition, SetterInfo, SuperInitializer,
   BindingProperty, ImportSpecifier,
   CaseClassParam, SealedVariant, PropertySignature,
-  MethodSignature, AccessorSignature
+  MethodSignature, AccessorSignature, CatchClause
 } from './ast.zena';
 
 /**
@@ -1107,7 +1107,15 @@ export class ScopeBuilder {
       case TryExpression {body, handler, finalizer}: {
         this.#processNode(body);
         if (handler != null) {
-          this.#processNode(handler);
+          let clause = handler as CatchClause;
+          this.#enterScope(ScopeKind.Block);
+          if (clause.param != null) {
+            let param = clause.param as Identifier;
+            this.#current.declareValue(param.name, "let", param, this.#modulePath);
+            this.#declarations.record(param, this.#current.getLocalValue(param.name) as SymbolInfo);
+          }
+          this.#processNode(clause.body);
+          this.#exitScope();
         }
         if (finalizer != null) {
           this.#processNode(finalizer);

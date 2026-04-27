@@ -4453,7 +4453,16 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     checkMatchExpr(ctx, discriminant, cases, loc, expectedType)
   }
   case ThrowExpression {argument, loc}: {
-    checkExpression(ctx, argument, null);
+    let argType = checkExpression(ctx, argument, null);
+    let errorType = ctx.resolveTypeName("Error");
+    if (errorType != null) {
+      if (!isAssignableTo(ctx, argType, errorType as Type)) {
+        ctx.error(
+          "Thrown value must be an instance of Error, got '" + typeToString(argType) + "'.",
+          DiagnosticCode.TypeMismatch, loc
+        );
+      }
+    }
     new NeverType()
   }
   case TryExpression {body, handler, finalizer, loc}: {

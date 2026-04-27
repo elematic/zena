@@ -549,14 +549,14 @@ tests/language/semantics/
 │   ├── instance-field-rejected.zena            [done]
 │   ├── union-ambiguity.zena                    [done]
 │   ├── match-ambiguity.zena                    [done]
-│   └── method-access.zena                      [done] — extension methods accessible via cast
+│   └── method-access.zena                      [done]
 │
 ├── throw-try/
-│   ├── throw-type.zena                         [ts] throw_test — throw returns never
-│   ├── throw-non-error.zena                    [ts] — throw non-Error value error
-│   ├── try-catch-basic.zena                    [ts] throw_test — try/catch type checking
-│   ├── try-catch-typed.zena                    [ts] — catch param is Error
-│   └── try-catch-finally.zena                  [ts] — finally block type checking
+│   ├── throw-type.zena                         [done]
+│   ├── throw-non-error.zena                    [done]
+│   ├── try-catch-basic.zena                    [done]
+│   ├── try-catch-typed.zena                    [done]
+│   └── try-catch-finally.zena                  [done]
 │
 ├── this-type/
 │   ├── in-class-method.zena                    [ts] checker-this-type_test
