@@ -544,11 +544,12 @@ tests/language/semantics/
 │   └── length-type.zena                        [done] — arr.length → i32
 │
 ├── extensions/
-│   ├── basic-usage.zena                        [ts] extension_test
-│   ├── static-field-ok.zena                    [ts] — extension with static fields
-│   ├── instance-field-rejected.zena            [ts] — extension with instance field error
-│   ├── union-ambiguity.zena                    [ts] extension_union_test
-│   └── match-ambiguity.zena                    [ts] extension_match_test
+│   ├── basic-usage.zena                        [done]
+│   ├── static-field-ok.zena                    [done]
+│   ├── instance-field-rejected.zena            [done]
+│   ├── union-ambiguity.zena                    [done]
+│   ├── match-ambiguity.zena                    [done]
+│   └── method-access.zena                      [done] — extension methods accessible via cast
 │
 ├── throw-try/
 │   ├── throw-type.zena                         [ts] throw_test — throw returns never
@@ -622,14 +623,14 @@ tests/language/semantics/
 | **Mixins**                 | 0       | ~10          | 0       | 0           | ~10      |
 | **Enums**                  | 0       | 0            | 5       | 0           | 5        |
 | **Arrays**                 | 5       | 0            | 1       | 0           | 6        |
-| **Extensions**             | 0       | 4            | 0       | 0           | 4        |
+| **Extensions**             | 6       | 0            | 0       | 0           | 6        |
 | **Throw/Try**              | 0       | 5            | 0       | 0           | 5        |
 | **This Type**              | 0       | 5            | 0       | 0           | 5        |
 | **Shadowing**              | 0       | 1            | 1       | 0           | 2        |
 | **Template Strings**       | 4       | 0            | 0       | 0           | 4        |
 | **Misc**                   | 4       | 2            | 0       | 0           | 6        |
 | **Type Inference**         | 0       | 0            | 0       | 12          | 12       |
-| **TOTAL**                  | **160** | **~93**      | **~14** | **12**      | **~279** |
+| **TOTAL**                  | **166** | **~89**      | **~14** | **12**      | **~281** |
 
 ## Porting Priority
 

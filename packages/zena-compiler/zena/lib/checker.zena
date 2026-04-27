@@ -1519,6 +1519,52 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
       ctx.error("Union types cannot mix primitives of different base types", DiagnosticCode.TypeMismatch, ann.loc);
     }
 
+    // Check for multiple extension types on the same underlying type.
+    var ei = 0;
+    while (ei < resolved.length) {
+      var ext1: ClassType | null = null;
+      match (resolved[ei]) {
+        case ClassType as ct: {
+          if (ct.isExtension && ct.onType != null) {
+            ext1 = ct;
+          }
+        }
+        case _: {}
+      }
+      
+      if (ext1 != null) {
+        var ej = ei + 1;
+        while (ej < resolved.length) {
+          var ext2: ClassType | null = null;
+          match (resolved[ej]) {
+            case ClassType as ct: {
+              if (ct.isExtension && ct.onType != null) {
+                ext2 = ct;
+              }
+            }
+            case _: {}
+          }
+          
+          if (ext2 != null && ext1 != null) {
+            let onType1 = ext1.onType;
+            let onType2 = ext2.onType;
+            if (onType1 != null && onType2 != null) {
+              if (isAssignableTo(ctx, onType1 as Type, onType2 as Type) && isAssignableTo(ctx, onType2 as Type, onType1 as Type)) {
+                ctx.error(
+                  "Union types cannot contain multiple extension types on the same underlying type: '" +
+                  typeToString(ext1) + "' and '" + typeToString(ext2) + "'.",
+                  DiagnosticCode.TypeMismatch,
+                  ann.loc
+                );
+              }
+            }
+          }
+          ej += 1;
+        }
+      }
+      ei += 1;
+    }
+
     createUnionType(resolved)
   }
   case FunctionTypeAnnotation {params, returnType}: {
@@ -4219,7 +4265,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       ctx.error("'this' used outside of a class.", DiagnosticCode.SymbolNotFound, loc);
       new ErrorType()
     } else {
-      cc as Type
+      let cls = cc as ClassType;
+      // In extension classes, 'this' resolves to the underlying type, not the extension class.
+      if (cls.isExtension && cls.onType != null) {
+        cls.onType as Type
+      } else {
+        cc as Type
+      }
     }
   }
   case SuperExpression {loc}: {
@@ -4517,6 +4569,17 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   classType.isSealed = cd.isSealed;
   classType.isCaseClass = false;
 
+  // Extension classes: resolve the underlying type from the 'on' clause.
+  if (cd.isExtension && cd.onType != null) {
+    let resolvedOnType = resolveTypeAnnotation(ctx, cd.onType as TypeAnnotation);
+    match (resolvedOnType) {
+      case ClassType as ct: {
+        classType.onType = ct;
+      }
+      case _: {}
+    }
+  }
+
   // Sealed classes are implicitly abstract (cannot be instantiated directly).
   if (cd.isSealed) {
     classType.isAbstract = true;
@@ -4810,6 +4873,15 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         } else {
           new ErrorType() as Type
         };
+
+        // Extension classes cannot have instance fields.
+        if (cd.isExtension && !fd.isStatic && !fd.isDeclare) {
+          ctx.error(
+            "Extension classes cannot have instance fields.",
+            DiagnosticCode.IncompatibleTypes,
+            fd.loc
+          );
+        }
 
         // Abstract fields can only appear in abstract or sealed classes.
         if (fd.isAbstract) {
@@ -7241,6 +7313,9 @@ let checkMatchExpr = (
 
   // Collect result types from each case.
   let resultTypes = new Array<Type>();
+  
+  // Track matched pattern types for ambiguity detection.
+  let matchedTypes = new Array<Type>();
 
   var i = 0;
   while (i < cases.length) {
@@ -7260,6 +7335,79 @@ let checkMatchExpr = (
 
     // Check the pattern and bind variables.
     checkPattern(ctx, matchCase.pattern, scrutineeType);
+    
+    // Get pattern type for ambiguity detection.
+    var patternType: Type | null = null;
+    match (matchCase.pattern) {
+      case ClassPattern as cp: {
+        let clsName = cp.name.name;
+        let classType = ctx.resolveTypeName(clsName);
+        if (classType != null) {
+          patternType = classType as Type;
+        }
+      }
+      case Identifier as ident: {
+        let classType = ctx.resolveTypeName(ident.name);
+        if (classType != null) {
+          match (classType as Type) {
+            case ClassType: {
+              patternType = classType as Type;
+            }
+            case _: {}
+          }
+        }
+      }
+      case _: {}
+    }
+    
+    // Check for ambiguous extension types.
+    if (patternType != null) {
+      var pi = 0;
+      while (pi < matchedTypes.length) {
+        let prev = matchedTypes[pi];
+        
+        var ext1: ClassType | null = null;
+        var ext2: ClassType | null = null;
+        
+        match (patternType) {
+          case ClassType as ct: {
+            if (ct.isExtension && ct.onType != null) {
+              ext1 = ct;
+            }
+          }
+          case _: {}
+        }
+        
+        match (prev) {
+          case ClassType as ct: {
+            if (ct.isExtension && ct.onType != null) {
+              ext2 = ct;
+            }
+          }
+          case _: {}
+        }
+        
+        if (ext1 != null) {
+          if (ext2 != null) {
+            let onType1 = ext1.onType;
+            let onType2 = ext2.onType;
+            if (onType1 != null && onType2 != null) {
+              if (isAssignableTo(ctx, onType1 as Type, onType2 as Type) && isAssignableTo(ctx, onType2 as Type, onType1 as Type)) {
+                ctx.error(
+                  "Ambiguous match case: '" + typeToString(patternType) + "' and '" + 
+                  typeToString(prev) + "' extend the same underlying type and are indistinguishable at runtime.",
+                  DiagnosticCode.TypeMismatch,
+                  matchCase.loc
+                );
+              }
+            }
+          }
+        }
+        
+        pi = pi + 1;
+      }
+      matchedTypes.push(patternType);
+    }
 
     // Update remaining type (only if no guard — guards prevent exhaustiveness).
     if (matchCase.guard == null) {
