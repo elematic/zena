@@ -535,13 +535,13 @@ tests/language/semantics/
 │   └── empty-enum-rejected.zena                [done] — enums must have at least one member
 │
 ├── arrays/
-│   ├── literal-inference.zena                  [ts] checker-array_test — #[1, 2, 3] → Array<i32>
-│   ├── element-type-mismatch.zena              [ts] — #[1, "hello"] error
-│   ├── index-access.zena                       [ts] — arr[0] → element type
-│   ├── empty-with-annotation.zena              [ts] — let arr: Array<i32> = #[];
-│   ├── method-map.zena                         [ts] — arr.map(f) return type
-│   ├── push-type-check.zena                    [ts] — arr.push("hello") on Array<i32> error
-│   └── length-type.zena                        [ts] — arr.length → i32
+│   ├── literal-inference.zena                  [done] — [1, 2, 3] infers element type i32
+│   ├── element-type-mismatch.zena              [done] — [1, "hello"] error
+│   ├── index-access.zena                       [done] — arr[0] → element type
+│   ├── empty-with-annotation.zena              [done] — let arr: Array<i32> = new Array<i32>()
+│   ├── method-map.zena                         [new] — arr.map(f) return type (blocked: map not in prelude)
+│   ├── push-type-check.zena                    [done] — arr.push("hello") on Array<i32> error
+│   └── length-type.zena                        [done] — arr.length → i32
 │
 ├── extensions/
 │   ├── basic-usage.zena                        [ts] extension_test
@@ -621,7 +621,7 @@ tests/language/semantics/
 | **Null Coal. / Opt Chain** | 9       | 0            | 2       | 0           | 11       |
 | **Mixins**                 | 0       | ~10          | 0       | 0           | ~10      |
 | **Enums**                  | 0       | 0            | 5       | 0           | 5        |
-| **Arrays**                 | 0       | ~7           | 0       | 0           | ~7       |
+| **Arrays**                 | 5       | 0            | 1       | 0           | 6        |
 | **Extensions**             | 0       | 4            | 0       | 0           | 4        |
 | **Throw/Try**              | 0       | 5            | 0       | 0           | 5        |
 | **This Type**              | 0       | 5            | 0       | 0           | 5        |

@@ -346,7 +346,7 @@ function checkExpressionInternal(
     case NodeType.SuperExpression:
       return checkSuperExpression(ctx, expr as SuperExpression);
     case NodeType.ArrayLiteral:
-      return checkArrayLiteral(ctx, expr as ArrayLiteral);
+      return checkArrayLiteral(ctx, expr as ArrayLiteral, expectedType);
     case NodeType.RecordLiteral:
       return checkRecordLiteral(ctx, expr as RecordLiteral);
     case NodeType.MapLiteral:
@@ -3803,10 +3803,29 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
   return ctx.currentClass;
 }
 
-function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
+function checkArrayLiteral(
+  ctx: CheckerContext,
+  expr: ArrayLiteral,
+  expectedType?: Type,
+): Type {
   let elementType: Type;
   if (expr.elements.length === 0) {
-    elementType = Types.Error;
+    // Try to infer element type from contextual type (e.g., Array<i32>, FixedArray<i32>)
+    // For empty arrays, we need the context to determine the element type.
+    if (expectedType && expectedType.kind === TypeKind.Class) {
+      const expectedClass = expectedType as ClassType;
+      // Extract element type from any generic class with type arguments
+      if (
+        expectedClass.typeArguments &&
+        expectedClass.typeArguments.length > 0
+      ) {
+        elementType = expectedClass.typeArguments[0];
+      } else {
+        elementType = Types.Error;
+      }
+    } else {
+      elementType = Types.Error;
+    }
   } else {
     const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
     // Check if all element types are compatible.

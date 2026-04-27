@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compileAndRun, checkSource} from './utils.js';
+import {compileAndRun} from './utils.js';
 
 suite('i64 comparison with as expression', () => {
   test('comparison with parenthesized as expression', async () => {
@@ -215,24 +215,19 @@ export let main = (): i32 => {
     assert.strictEqual(result, 1);
   });
 
-  test('variable declaration still requires explicit type or cast', () => {
-    // Contextual typing does NOT apply to variable declarations with type annotations.
-    // This is intentional: annotations on declarations serve as explicit programmer intent
-    // and should be validated against the literal's default type. If contextual typing
-    // applied, a typo in the annotation would silently create a value of the wrong type.
-    // Explicit casts make intent clear and catch annotation errors at compile time.
+  test('variable declaration with explicit type annotation uses contextual typing', async () => {
+    // Contextual typing applies to variable declarations with type annotations.
+    // This allows the literal 1 (default type i32) to be coerced to i64.
+    // This matches the self-hosted compiler's behavior and is consistent with
+    // supporting idioms like `let arr: Array<i32> = []`.
     const source = `
 export let main = (): i32 => {
   let x: i64 = 1;
   return 0;
 };
 `;
-    const diagnostics = checkSource(source);
-    assert.strictEqual(diagnostics.length, 1);
-    assert.match(
-      diagnostics[0].message,
-      /Type mismatch: expected i64, got i32/,
-    );
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 0);
   });
 
   test('contextual typing - literal on LHS (bidirectional)', async () => {

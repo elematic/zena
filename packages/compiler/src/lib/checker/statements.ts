@@ -2265,9 +2265,17 @@ function checkVariableDeclaration(
     ctx.startResolvingFunction(decl);
   }
 
+  // Resolve type annotation early if present, so it can be passed to checkExpression
+  // for contextual typing (e.g., inferring empty array element type from Array<i32>)
+  let explicitType: Type | undefined;
+  if (decl.typeAnnotation) {
+    explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
+    validateNoInlineTuple(explicitType, ctx, 'variable types');
+  }
+
   let type: Type;
   try {
-    type = checkExpression(ctx, decl.init);
+    type = checkExpression(ctx, decl.init, explicitType);
   } finally {
     if (isFunctionDecl) {
       ctx.stopResolvingFunction(decl);
@@ -2288,20 +2296,20 @@ function checkVariableDeclaration(
   }
 
   if (decl.typeAnnotation) {
-    const explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
-
-    // Inline tuples cannot appear in variable type annotations
-    validateNoInlineTuple(explicitType, ctx, 'variable types');
-
+    // explicitType was already resolved earlier for contextual typing
+    validateNoInlineTuple(explicitType as Type, ctx, 'variable types');
     // Special handling for literal types
-    let compatible = isAssignableTo(ctx, type, explicitType);
+    let compatible = isAssignableTo(ctx, type, explicitType as Type);
     if (!compatible) {
-      if (explicitType.kind === TypeKind.Literal) {
+      if ((explicitType as Type).kind === TypeKind.Literal) {
         // Check if the init expression is a matching literal
-        compatible = checkLiteralMatch(decl.init, explicitType as LiteralType);
-      } else if (explicitType.kind === TypeKind.Union) {
+        compatible = checkLiteralMatch(
+          decl.init,
+          explicitType as Type as LiteralType,
+        );
+      } else if ((explicitType as Type).kind === TypeKind.Union) {
         // Check if the init expression matches any literal in the union
-        const unionType = explicitType as UnionType;
+        const unionType = explicitType as Type as UnionType;
         compatible = unionType.types.some((t) => {
           if (t.kind === TypeKind.Literal) {
             return checkLiteralMatch(decl.init, t as LiteralType);
@@ -2313,7 +2321,7 @@ function checkVariableDeclaration(
 
     if (!compatible) {
       ctx.diagnostics.reportError(
-        `Type mismatch: expected ${typeToString(explicitType)}, got ${typeToString(type)}`,
+        `Type mismatch: expected ${typeToString(explicitType as Type)}, got ${typeToString(type)}`,
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(decl.init.loc),
       );
@@ -2328,7 +2336,7 @@ function checkVariableDeclaration(
     // Also handle type aliases that resolve to records/tuples.
     if (compatible && decl.init.type === NodeType.RecordLiteral) {
       // Resolve through type aliases to find the underlying record type
-      let targetType = explicitType;
+      let targetType = explicitType as Type;
       while (targetType.kind === TypeKind.TypeAlias) {
         targetType = (targetType as TypeAliasType).target;
       }
@@ -2339,7 +2347,7 @@ function checkVariableDeclaration(
         decl.init.inferredType = targetType;
       }
     } else if (compatible && decl.init.type === NodeType.TupleLiteral) {
-      let targetType = explicitType;
+      let targetType = explicitType as Type;
       while (targetType.kind === TypeKind.TypeAlias) {
         targetType = (targetType as TypeAliasType).target;
       }
@@ -2348,7 +2356,7 @@ function checkVariableDeclaration(
       }
     }
 
-    type = explicitType;
+    type = explicitType as Type;
   }
 
   // Set the inferred type on the declaration
