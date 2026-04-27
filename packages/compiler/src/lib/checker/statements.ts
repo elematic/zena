@@ -1356,11 +1356,6 @@ function makeNullableType(type: Type): Type {
 function predeclareTypeAlias(ctx: CheckerContext, decl: TypeAliasDeclaration) {
   const name = decl.name.name;
 
-  // Skip if already declared (e.g., imported or from previous pass)
-  if (ctx.resolveTypeLocal(name)) {
-    return;
-  }
-
   // If the AST node already has an inferred type, reuse it
   if (decl.inferredType && decl.inferredType.kind === TypeKind.TypeAlias) {
     const existingType = decl.inferredType as TypeAliasType;

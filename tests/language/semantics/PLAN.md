@@ -567,9 +567,10 @@ tests/language/semantics/
 │   └── generic-this.zena                       [done]
 │
 ├── shadowing/
-│   ├── builtin-shadowing.zena                  [ts] shadowing_builtins_test
-│   ├── variable-shadowing.zena                 [new] — inner block shadows outer
-│   └── type-name-shadowing.zena                [ts] — local type alias shadows outer
+│   ├── builtin-shadowing.zena                  [done]
+│   ├── variable-shadowing.zena                 [done]
+│   ├── type-name-shadowing.zena                [done]
+│   └── type-param-shadowing.zena               [done] — type parameter shadows outer class name
 │
 ├── template-strings/
 │   ├── readonly-index-assign.zena              [done]

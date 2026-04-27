@@ -466,7 +466,13 @@ export class ScopeResult(
    * to their SymbolInfo. Used by the checker at declaration-processing
    * time to find the SymbolInfo and store the binding's type.
    */
-  declarations: DeclarationMap
+  declarations: DeclarationMap,
+
+  /**
+   * Names that were declared twice in the same scope.
+   * Each entry is an error: same-scope redeclaration.
+   */
+  duplicateDeclarations: Array<UnresolvedName>
 )
 
 /**
@@ -493,6 +499,7 @@ export class ScopeBuilder {
   #unresolvedTypes = new Array<UnresolvedName>();
   #references = new ReferenceMap();
   #declarations = new DeclarationMap();
+  #duplicateDeclarations = new Array<UnresolvedName>();
 
   new(modulePath: String) : #modulePath = modulePath;
 
@@ -514,7 +521,8 @@ export class ScopeBuilder {
       this.#unresolvedValues,
       this.#unresolvedTypes,
       this.#references,
-      this.#declarations
+      this.#declarations,
+      this.#duplicateDeclarations
     );
   }
 
@@ -657,7 +665,10 @@ export class ScopeBuilder {
         }
       }
       case TypeAliasDeclaration {name, exported}: {
-        this.#current.declareType(name.name, stmt, this.#modulePath);
+        let ok = this.#current.declareType(name.name, stmt, this.#modulePath);
+        if (!ok) {
+          this.#duplicateDeclarations.push(new UnresolvedName(name.name, stmt));
+        }
         if (exported) {
           let info = new SymbolInfo("type", stmt, this.#modulePath);
           this.#exports.setType(name.name, info);

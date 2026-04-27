@@ -394,8 +394,9 @@ export class CheckerContext {
         return;
       }
 
+      const label = kind === 'type' ? 'Type' : 'Variable';
       this.diagnostics.reportError(
-        `Variable '${name}' is already declared in this scope.`,
+        `${label} '${name}' is already declared in this scope.`,
         DiagnosticCode.DuplicateDeclaration,
       );
       return;

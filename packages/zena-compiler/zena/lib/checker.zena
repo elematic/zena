@@ -1349,6 +1349,16 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult, depExports: Has
     fi += 1;
   }
 
+  // Emit errors for same-scope redeclarations detected by the scope builder.
+  for (let dup in scopeResult.duplicateDeclarations) {
+    var loc: SourceLocation | null = null;
+    match (dup.node) {
+      case TypeAliasDeclaration {name}: { loc = name.loc; }
+      case _: {}
+    }
+    ctx.error("Type '" + dup.name + "' is already declared in this scope.", DiagnosticCode.DuplicateDeclaration, loc);
+  }
+
   // === Phase 1: Register all declaration signatures ===
   // Process imports and register type declarations (classes, interfaces,
   // enums, mixins, type aliases, declared functions, symbols) so that ALL
