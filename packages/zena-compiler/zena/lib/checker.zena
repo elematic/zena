@@ -5784,76 +5784,64 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
 // ============================================================================
 
 let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
+  let i32Type = new I32Type();
+  let stringType = ctx.resolvePreludeType("String");
   let name = ed.name.name;
   let members = ed.members;
-
-  // Determine backing type: string or i32.
   var isStringEnum = false;
-  var mi = 0;
-  while (mi < members.length) {
-    let member = members[mi];
-    if (member.initializer != null) {
-      if (member.initializer is StringLiteral) {
-        isStringEnum = true;
-      }
-      // If NumberLiteral, stays as i32 (default).
-      mi = members.length; // break
-    }
-    mi += 1;
-  }
 
-  // Validate members and collect values.
-  var nextValue: i32 = 0;
-  var vi = 0;
-  while (vi < members.length) {
-    let member = members[vi];
-    if (member.initializer != null) {
-      let initType = checkExpression(ctx, member.initializer as Expression, null);
-      if (isStringEnum) {
-        let stringType = ctx.resolveTypeName("String");
-        if (stringType != null && !isAssignableTo(ctx, initType, stringType as Type)) {
+  if (members.length == 0) {
+    ctx.error(
+      "Enum '" + name + "' must have at least one member.",
+      DiagnosticCode.TypeMismatch,
+      ed.loc
+    );
+    // We don't return early so that we still register type and value names for
+    // the enum.
+  } else {
+    // Validate members in a single pass. The first enum member determins the
+    // enum type: numeric by default, or based on the initializer.
+    isStringEnum = members[0].initializer is StringLiteral;
+
+    if (isStringEnum) {
+      for (let member in members) {
+        if (member.initializer == null) {
           ctx.error(
-            "Enum member initializer must be assignable to 'String'.",
+            "String enum member '" + member.name.name + "' must have an initializer.",
             DiagnosticCode.TypeMismatch,
             member.loc
           );
-        }
-      } else {
-        if (!isAssignableTo(ctx, initType, new I32Type())) {
-          ctx.error(
-            "Enum member initializer must be assignable to 'i32'.",
-            DiagnosticCode.TypeMismatch,
-            member.loc
-          );
+        } else {
+          let initType = checkExpression(ctx, member.initializer, null);
+          if (!(member.initializer is StringLiteral)) {
+            ctx.error(
+              "Enum member initializer must be a string literal.",
+              DiagnosticCode.TypeMismatch,
+              member.loc
+            );
+          }
         }
       }
     } else {
-      if (isStringEnum) {
-        ctx.error(
-          "String enum member '" + member.name.name + "' must have an initializer.",
-          DiagnosticCode.TypeMismatch,
-          member.loc
-        );
+      for (let member in members) {
+        if (member.initializer == null) {
+        } else {
+          let initType = checkExpression(ctx, member.initializer, null);
+          if (!isAssignableTo(ctx, initType, i32Type) || 
+              !(member.initializer is NumberLiteral)) {
+            ctx.error(
+              "Enum member initializer must be an i32 literal.",
+              DiagnosticCode.TypeMismatch,
+              member.loc
+            );
+          }
+        }
       }
-      nextValue += 1;
     }
-    vi += 1;
   }
 
   // Create the enum type as a distinct type alias over the backing type.
-  var backingType: Type = new I32Type();
-  if (isStringEnum) {
-    let st = ctx.resolveTypeName("String");
-    if (st != null) { backingType = st as Type; }
-    else {
-      ctx.error(
-        "Built-in type 'String' is not available. Ensure the standard prelude is loaded.",
-        DiagnosticCode.SymbolNotFound,
-        ed.name.loc
-      );
-      backingType = new ErrorType();
-    }
-  }
+  let backingType = if (isStringEnum) { stringType } else { i32Type };
   let enumType = new TypeAliasType(name, null, backingType, true, null);
 
   // Register the enum in the type namespace.
@@ -5861,17 +5849,15 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
 
   // Create a record type for the value namespace (e.g., Color.Red).
   let fields = new HashMap<String, Type>();
-  var fi = 0;
-  while (fi < members.length) {
-    fields[members[fi].name.name] = enumType;
-    fi += 1;
+  for (let member in members) {
+    fields[member.name.name] = enumType;
   }
   let enumValueType = new RecordT(fields, null);
 
   // Register the enum value in the value namespace.
   let info = ctx.model.resolveDeclaration(ed);
   if (info != null) {
-    ctx.declareBinding(info as SymbolInfo, enumValueType);
+    ctx.declareBinding(info, enumValueType);
   }
 };
 

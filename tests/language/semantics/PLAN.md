@@ -520,11 +520,19 @@ tests/language/semantics/
 │   └── mixin-base-private-field.zena           [done]
 │
 ├── enums/
-│   ├── basic-usage.zena                        [new] — enum Color { Red, Green, Blue }
-│   ├── value-access.zena                       [new] — Color.Red usage
-│   ├── type-checking.zena                      [new] — Color not assignable to i32
-│   ├── with-values.zena                        [new] — enum with explicit values
-│   └── exhaustive-match.zena                   [new] — match on enum is exhaustive
+│   ├── basic-usage.zena                        [done] — enum Color { Red, Green, Blue }
+│   ├── value-access.zena                       [done] — Color.Red usage
+│   ├── type-checking.zena                      [done] — Color not assignable to i32
+│   ├── with-values.zena                        [done] — enum with explicit values
+│   ├── exhaustive-match.zena                   [done] — match on enum is exhaustive
+│   ├── integer-type-mismatch-initializer.zena  [done] — i32 enum member rejects String initializer
+│   ├── string-type-mismatch-initializer.zena   [done] — String enum member rejects i32 initializer
+│   ├── string-missing-initializer.zena         [done] — String enum member requires initializer
+│   ├── integer-non-literal-initializer.zena    [done] — i32 enum member requires number literal
+│   ├── string-non-literal-initializer.zena     [done] — String enum member requires string literal
+│   ├── mixed-string-initializer-requires-all.zena [done] — first member determines kind; later string initializer in numeric enum errors
+│   ├── mixed-integer-initializers-allowed.zena [done] — implicit + explicit numeric members are allowed
+│   └── empty-enum-rejected.zena                [done] — enums must have at least one member
 │
 ├── arrays/
 │   ├── literal-inference.zena                  [ts] checker-array_test — #[1, 2, 3] → Array<i32>

@@ -5930,23 +5930,18 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
     return;
   }
 
-  // 1. Determine backing type
-  let isStringEnum = false;
-  let isIntegerEnum = true;
-
-  for (const member of decl.members) {
-    if (member.initializer) {
-      if (member.initializer.type === NodeType.StringLiteral) {
-        isStringEnum = true;
-        isIntegerEnum = false;
-        break;
-      } else if (member.initializer.type === NodeType.NumberLiteral) {
-        isIntegerEnum = true;
-        isStringEnum = false;
-        break;
-      }
-    }
+  if (decl.members.length === 0) {
+    ctx.diagnostics.reportError(
+      `Enum '${name}' must have at least one member.`,
+      DiagnosticCode.TypeMismatch,
+      ctx.getLocation(decl.name.loc),
+    );
   }
+
+  // 1. Determine backing type from first member initializer.
+  const first = decl.members[0];
+  const isStringEnum = first?.initializer?.type === NodeType.StringLiteral;
+  const isIntegerEnum = !isStringEnum;
 
   let nextValue = 0;
   const memberValues = new Map<string, number | string>();
