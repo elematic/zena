@@ -424,10 +424,10 @@ tests/language/semantics/
 │   │   └── element-mismatch.zena               [done] — (i32, String) != (i32, i32)
 │   │
 │   └── never-type/
-│       ├── assignable-to-anything.zena         [ts] never_test
-│       ├── throw-returns-never.zena            [ts] throw_test
-│       ├── unreachable-after-throw.zena        [ts] never_test
-│       └── never-in-union.zena                 [ts] — never | i32 simplifies to i32
+│       ├── assignable-to-anything.zena         [done] never_test
+│       ├── throw-returns-never.zena            [done] throw_test
+│       ├── unreachable-after-throw.zena        [done] never_test
+│       └── never-in-union.zena                 [done] — never | i32 simplifies to i32
 │
 ├── destructuring/
 │   │
