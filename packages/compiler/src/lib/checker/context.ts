@@ -591,6 +591,8 @@ export class CheckerContext {
         return Types.Void;
       case TypeNames.Never:
         return Types.Never;
+      case TypeNames.Hole:
+        return Types.Hole;
       case TypeNames.Null:
         return Types.Null;
       case TypeNames.Array:

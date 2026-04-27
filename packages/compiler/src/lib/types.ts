@@ -28,6 +28,7 @@ export const TypeKind = {
   Unknown: 'Unknown',
   Error: 'Error',
   Never: 'Never',
+  Hole: 'Hole',
   Literal: 'Literal',
   Symbol: 'Symbol',
   This: 'This',
@@ -261,6 +262,7 @@ export const Types = {
   EqRef: {kind: TypeKind.EqRef} as Type,
   Any: {kind: TypeKind.Any} as Type,
   Never: {kind: TypeKind.Never} as Type,
+  Hole: {kind: TypeKind.Hole} as Type,
   /** Base symbol type used for 'symbol' type annotations. ID -1 means "any symbol". */
   Symbol: {kind: TypeKind.Symbol, id: -1} as SymbolType,
   Array: {
@@ -277,6 +279,7 @@ export const Decorators = {
 export const TypeNames = {
   Void: 'void',
   Never: 'never',
+  Hole: '_',
   Null: 'null',
   Boolean: 'boolean',
   String: 'String',

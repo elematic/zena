@@ -43,7 +43,7 @@ import type {ClassInfo} from './types.js';
  * For InlineTupleType, returns multiple elements (one per tuple element) to
  * support WASM multi-value returns.
  *
- * For unions of inline tuples (e.g., (true, T) | (false, never)), extracts
+ * For unions of inline tuples (e.g., (true, T) | (false, _)), extracts
  * the first tuple variant to determine the WASM signature. At runtime, all
  * variants must have the same WASM representation.
  */
@@ -51,7 +51,11 @@ export function mapReturnTypeToWasmResults(
   ctx: CodegenContext,
   type: Type,
 ): number[][] {
-  if (type.kind === TypeKind.Void || type.kind === TypeKind.Never) {
+  if (
+    type.kind === TypeKind.Void ||
+    type.kind === TypeKind.Never ||
+    type.kind === TypeKind.Hole
+  ) {
     return [];
   }
   if (type.kind === TypeKind.InlineTuple) {
@@ -60,7 +64,7 @@ export function mapReturnTypeToWasmResults(
       mapCheckerTypeToWasmType(ctx, el),
     );
   }
-  // Handle union of inline tuples: (true, T) | (false, never)
+  // Handle union of inline tuples: (true, T) | (false, _)
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
     // If union contains void, treat entire expression as void.

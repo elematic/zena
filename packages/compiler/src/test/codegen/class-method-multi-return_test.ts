@@ -25,7 +25,7 @@ suite('class method multi-value returns', () => {
           new(v: i32) : #wrapper = new Wrapper(v) {}
 
           // Returns union of tuples with reference type element
-          next(): inline (true, Wrapper) | inline (false, never) {
+          next(): inline (true, Wrapper) | inline (false, _) {
             if (this.#done) {
               // The _ here must generate ref.null, not i32 0
               return (false, _);
@@ -59,7 +59,7 @@ suite('class method multi-value returns', () => {
 
           new(max: i32) : #max = max {}
 
-          next(): inline (true, i32) | inline (false, never) {
+          next(): inline (true, i32) | inline (false, _) {
             if (this.#count >= this.#max) {
               return (false, _);
             }
@@ -99,7 +99,7 @@ suite('class method multi-value returns', () => {
             return opt;
           }
 
-          unwrap(): inline (true, Box<i32>) | inline (false, never) {
+          unwrap(): inline (true, Box<i32>) | inline (false, _) {
             if (this.#hasValue) {
               return (true, this.#box);
             }
@@ -162,7 +162,7 @@ suite('class method multi-value returns', () => {
       // Use multiplication instead of division to avoid f32 issues
       const source = `
         class Calculator {
-          safeMul(a: i32, b: i32, limit: i32): inline (true, i32) | inline (false, never) {
+          safeMul(a: i32, b: i32, limit: i32): inline (true, i32) | inline (false, _) {
             let result = a * b;
             if (result > limit) {
               return (false, _);
@@ -173,8 +173,7 @@ suite('class method multi-value returns', () => {
 
         export let testSuccess = (): i32 => {
           let c = new Calculator();
-          let (ok, result) = c.safeMul(3, 4, 100);
-          if (ok) {
+          if (let (true, result) = c.safeMul(3, 4, 100)) {
             return result;
           }
           return -1;

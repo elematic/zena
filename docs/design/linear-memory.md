@@ -173,10 +173,10 @@ decision is using **multi-return values** to force error handling:
 ```zena
 interface Allocator {
   /** Returns (true, ptr) on success, (false, _) on failure. */
-  alloc(bytes: i32): (true, i32) | (false, never);
+  alloc(bytes: i32): (true, i32) | (false, _);
 
   /** Allocate with alignment (align must be power of 2). */
-  allocAligned(bytes: i32, align: i32): (true, i32) | (false, never);
+  allocAligned(bytes: i32, align: i32): (true, i32) | (false, _);
 
   /** Free a previously allocated pointer. May be a no-op for some allocators. */
   free(ptr: i32): void;
@@ -218,7 +218,7 @@ export final class FreeListAllocator implements Allocator {
   #nextPtr: i32;      // Bump pointer for fresh allocations
   #freeList: i32;     // Head of free list (0 = empty)
 
-  alloc(bytes: i32): (true, i32) | (false, never) {
+  alloc(bytes: i32): (true, i32) | (false, _) {
     // 1. Search free list for suitable block
     // 2. If found, split if large enough, return
     // 3. Otherwise bump allocate, grow memory if needed
@@ -258,7 +258,7 @@ export final class BumpAllocator implements Allocator {
     this.#nextPtr = startPtr;
   }
 
-  alloc(bytes: i32): (true, i32) | (false, never) {
+  alloc(bytes: i32): (true, i32) | (false, _) {
     let ptr = this.#nextPtr;
     let newNext = ptr + bytes;
     if (newNext > this.#endPtr) {

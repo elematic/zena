@@ -75,7 +75,7 @@ suite('Parser: Inline Tuples', () => {
 
   test('parses inline tuple in union', () => {
     const parser = new Parser(
-      'let f = (): inline (true, i32) | inline (false, never) => 0;',
+      'let f = (): inline (true, i32) | inline (false, _) => 0;',
     );
     const module = parser.parse();
     const decl = module.body[0] as any;

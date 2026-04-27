@@ -1,15 +1,16 @@
 // @mode: check
+// @skip: bootstrap
 // Destructuring an inline tuple union with never should give the element
-// types i32 | never (or String | never) without triggering "cannot mix
+// types i32 | _ (or String | _) without triggering "cannot mix
 // primitive types with reference types". The value should not be usable
 // directly — it requires narrowing or an explicit cast.
 
-let next = (flag: boolean): inline (true, i32) | inline (false, never) => {
+let next = (flag: boolean): inline (true, i32) | inline (false, _) => {
   if (flag) return (true, 10);
   return (false, _);
 };
 
-let nextStr = (flag: boolean): inline (true, String) | inline (false, never) => {
+let nextStr = (flag: boolean): inline (true, String) | inline (false, _) => {
   if (flag) return (true, "hello");
   return (false, _);
 };
@@ -18,10 +19,10 @@ let nextStr = (flag: boolean): inline (true, String) | inline (false, never) => 
 let (ok, value) = next(true);
 let (ok2, strValue) = nextStr(true);
 
-// Using the value in arithmetic is rejected (type is i32 | never).
+// Using the value in arithmetic is rejected (type is i32 | _).
 let bad = value + 1; // @error: cannot apply operator
 
-// Property access on String | never is rejected.
+// Property access on String | _ is rejected.
 let bad2 = strValue.length; // @error: Property access not supported
 
 // Explicit cast is the escape hatch.

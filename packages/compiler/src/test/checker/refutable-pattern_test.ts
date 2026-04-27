@@ -157,17 +157,19 @@ suite('Checker: refutable patterns in let/var declarations', () => {
   });
 
   suite('discriminated union of inline tuples', () => {
-    test('let binding filters never from discriminated union element types', async () => {
-      // next(): (true, i32) | (false, never)
-      // In let destructuring, `value` gets type `i32` (never is filtered)
+    test('if-let narrows discriminated union element types', async () => {
+      // next(): (true, i32) | (false, _)
+      // In if-let success branch, `value` is narrowed to i32.
       const source = `
-        let next = (flag: boolean): inline (true, i32) | inline (false, never) => {
+        let next = (flag: boolean): inline (true, i32) | inline (false, _) => {
           if (flag) return (true, 42);
           return (false, _);
         };
         export let main = (): i32 => {
-          let (_, value) = next(true);
-          return value;
+          if (let (true, value) = next(true)) {
+            return value;
+          }
+          return 0;
         };
       `;
       const result = await compileAndRun(source);
@@ -177,7 +179,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
     test('i32 | never value rejected by arithmetic operator', async () => {
       // value has type i32 | never — cannot use with + without casting
       const source = `
-        let next = (flag: boolean): inline (true, i32) | inline (false, never) => {
+        let next = (flag: boolean): inline (true, i32) | inline (false, _) => {
           if (flag) return (true, 10);
           return (false, _);
         };
@@ -197,7 +199,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
       );
     });
 
-    test('let binding with class iterator returning discriminated union', async () => {
+    test('if-let with class iterator returning discriminated union', async () => {
       const source = `
         class Counter {
           var count: i32;
@@ -205,7 +207,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
 
           new(max: i32) : count = 0, max = max {}
 
-          next(): inline (true, i32) | inline (false, never) {
+          next(): inline (true, i32) | inline (false, _) {
             if (this.count < this.max) {
               let current = this.count;
               this.count = this.count + 1;
@@ -217,8 +219,10 @@ suite('Checker: refutable patterns in let/var declarations', () => {
 
         export let main = (): i32 => {
           let counter = new Counter(5);
-          let (_, first) = counter.next();
-          return first;
+          if (let (true, first) = counter.next()) {
+            return first;
+          }
+          return 0;
         };
       `;
       const result = await compileAndRun(source);
@@ -228,7 +232,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
     test('i32 | never value rejected even when false variant taken', async () => {
       // Same as above — the type is i32 | never regardless of runtime value
       const source = `
-        let next = (flag: boolean): inline (true, i32) | inline (false, never) => {
+        let next = (flag: boolean): inline (true, i32) | inline (false, _) => {
           if (flag) return (true, 10);
           return (false, _);
         };
@@ -247,7 +251,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
     test('String | never value rejected for property access', async () => {
       // value has type String | never — property access is rejected
       const source = `
-        let next = (flag: boolean): inline (true, String) | inline (false, never) => {
+        let next = (flag: boolean): inline (true, String) | inline (false, _) => {
           if (flag) return (true, 'hello');
           return (false, _);
         };
@@ -273,7 +277,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
     test('i32 | never value usable with as cast', async () => {
       // Explicit cast is the escape hatch for using never-union values
       const source = `
-        let next = (flag: boolean): inline (true, i32) | inline (false, never) => {
+        let next = (flag: boolean): inline (true, i32) | inline (false, _) => {
           if (flag) return (true, 10);
           return (false, _);
         };
@@ -311,7 +315,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
 
     test('discriminated unions still work in if-let', async () => {
       const source = `
-        let next = (flag: boolean): inline (true, i32) | inline (false, never) => {
+        let next = (flag: boolean): inline (true, i32) | inline (false, _) => {
           if (flag) return (true, 42);
           return (false, _);
         };
@@ -331,7 +335,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
         class Counter {
           var count: i32;
           new() : count = 0 {}
-          next(): inline (true, i32) | inline (false, never) {
+          next(): inline (true, i32) | inline (false, _) {
             if (this.count < 3) {
               let c = this.count;
               this.count = this.count + 1;

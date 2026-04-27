@@ -48,7 +48,7 @@ suite('Codegen: Exception handling with multi-module imports', () => {
   });
 
   // This test should trigger the bug - imports Map which has internal try/catch
-  // Map.get returns (value, found) tuple - destructure properly
+  // Map.get returns (found, value) and value is narrowed in if-let.
   test('module importing Map compiles and instantiates', async () => {
     const exports = await compileAndInstantiate(`
       import {HashMap} from 'zena:map';
@@ -56,8 +56,7 @@ suite('Codegen: Exception handling with multi-module imports', () => {
       export let main = (): i32 => {
         let m = new HashMap<i32, i32>();
         m[1] = 100;
-        let (value, found) = m.get(1);
-        return if (found) { value } else { 0 };
+        return if (let (true, value) = m.get(1)) { value } else { 0 };
       };
     `);
     assert.ok(exports, 'compileAndInstantiate returned undefined');
@@ -113,15 +112,14 @@ suite('Codegen: Exception handling with multi-module imports', () => {
   });
 
   // Test that combines imports + try/catch in the same module
-  // Map.get returns (value, found) - handle properly
+  // Map.get returns (found, value) and value is narrowed in if-let.
   test('module with Map import and local try/catch', async () => {
     const exports = await compileAndInstantiate(`
       import {HashMap} from 'zena:map';
       
       let safeLookup = (m: HashMap<i32, i32>, key: i32): i32 => {
         return try {
-          let (value, found) = m.get(key);
-          if (found) { value } else { -1 }
+          if (let (true, value) = m.get(key)) { value } else { -1 }
         } catch (e) {
           -1
         };

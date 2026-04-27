@@ -142,43 +142,42 @@ export class ModuleResolver {
     moduleName: String,
     referrer: String
   ): ResolvedModule {
-    let (config, found) = this.#packages.get(packageName);
-    if (!found) {
-      throw new Error("Unknown package: '" + packageName + "'");
-    }
+    if (let (true, config) = this.#packages.get(packageName)) {
 
-    // Internal modules bypass exports — only accessible within the package.
-    if (config.isInternal(moduleName)) {
-      if (!this.isInPackage(referrer, packageName)) {
-        throw new Error(
-          "Cannot import internal module '" + packageName + ":" + moduleName + "'"
-        );
+      // Internal modules bypass exports — only accessible within the package.
+      if (config.isInternal(moduleName)) {
+        if (!this.isInPackage(referrer, packageName)) {
+          throw new Error(
+            "Cannot import internal module '" + packageName + ":" + moduleName + "'"
+          );
+        }
+        return makeCanonicalPath(packageName, moduleName, config);
       }
+
+      // Check exports if the package has an explicit export list.
+      if (config.exports != null) {
+        let exports = config.exports as HashMap<String, ModuleExport>;
+        if (!exports.has(moduleName)) {
+          throw new Error(
+            "Module '" + moduleName + "' not found in package '" + packageName + "'"
+          );
+        }
+
+        let moduleExport = exports[moduleName];
+
+        // Resolve virtual modules (target-conditional).
+        if (moduleExport.virtual != null) {
+          let virtual = moduleExport.virtual as HashMap<String, String>;
+          if (let (true, resolvedName) = virtual.get(this.#target)) {
+            return makeCanonicalPath(packageName, resolvedName, config);
+          }
+        }
+      }
+
       return makeCanonicalPath(packageName, moduleName, config);
     }
 
-    // Check exports if the package has an explicit export list.
-    if (config.exports != null) {
-      let exports = config.exports as HashMap<String, ModuleExport>;
-      if (!exports.has(moduleName)) {
-        throw new Error(
-          "Module '" + moduleName + "' not found in package '" + packageName + "'"
-        );
-      }
-
-      let moduleExport = exports[moduleName];
-
-      // Resolve virtual modules (target-conditional).
-      if (moduleExport.virtual != null) {
-        let virtual = moduleExport.virtual as HashMap<String, String>;
-        let (resolvedName, virtualFound) = virtual.get(this.#target);
-        if (virtualFound) {
-          return makeCanonicalPath(packageName, resolvedName, config);
-        }
-      }
-    }
-
-    return makeCanonicalPath(packageName, moduleName, config);
+    throw new Error("Unknown package: '" + packageName + "'");
   }
 
   // Check if a referrer path is inside a given package.
@@ -186,9 +185,10 @@ export class ModuleResolver {
     if (packageName == "zena") {
       return referrer.startsWith("zena:");
     }
-    let (config, found) = this.#packages.get(packageName);
-    if (!found) { return false; }
-    return referrer.startsWith(config.root);
+    if (let (true, config) = this.#packages.get(packageName)) {
+      return referrer.startsWith(config.root);
+    }
+    return false;
   }
 
   // Find which package (if any) contains the given path.

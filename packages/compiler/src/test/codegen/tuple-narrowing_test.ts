@@ -8,7 +8,7 @@ suite('tuple narrowing', () => {
   // The narrowing logic works on TypeKind.Tuple and TypeKind.InlineTuple equally.
 
   test('while (let (true, elem) = ...) narrows elem from T | never to T', async () => {
-    // Pattern (true, elem) against (true, i32) | (false, never) should narrow
+    // Pattern (true, elem) against (true, i32) | (false, _) should narrow
     // elem to i32, not i32 | never. This is verified by using elem where
     // only i32 is accepted (arithmetic).
     const result = await compileAndRun(
@@ -18,7 +18,7 @@ suite('tuple narrowing', () => {
         
         new() : count = 0 {}
         
-        next(): inline (true, i32) | inline (false, never) {
+        next(): inline (true, i32) | inline (false, _) {
           if (this.count < 3) {
             let current = this.count;
             this.count = this.count + 1;
@@ -47,7 +47,7 @@ suite('tuple narrowing', () => {
   test('if-let tuple pattern narrows second element', async () => {
     const result = await compileAndRun(
       `
-      let getResult = (flag: boolean): inline (true, i32) | inline (false, never) => {
+      let getResult = (flag: boolean): inline (true, i32) | inline (false, _) => {
         if (flag) return (true, 42);
         return (false, _);
       };
@@ -69,7 +69,7 @@ suite('tuple narrowing', () => {
   test('if (let (true, value) = ...) narrows value', async () => {
     const result = await compileAndRun(
       `
-      let maybeValue = (flag: boolean): inline (true, i32) | inline (false, never) => {
+      let maybeValue = (flag: boolean): inline (true, i32) | inline (false, _) => {
         if (flag) return (true, 100);
         return (false, _);
       };

@@ -83,7 +83,7 @@ import {
 } from './ast.zena';
 import {
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
-  BooleanType, VoidType, NullType, NeverType, ErrorType, UnknownType, AnyType,
+  BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType, AnyType,
   AnyRefType, EqRefType, ByteArrayType,
   BoolLiteralType, StringLiteralType, NumLiteralType,
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
@@ -289,6 +289,7 @@ class CheckerContext {
     this.declareBuiltinType("void", new VoidType());
     this.declareBuiltinType("null", new NullType());
     this.declareBuiltinType("never", new NeverType());
+    this.declareBuiltinType("_", new HoleType());
   }
 
   /**
@@ -699,7 +700,7 @@ class CheckerContext {
 
   #resolveCheckerTypeName(name: String): Type | null {
     for (var i = this.#typeScopes.length - 1; i >= 0; i -= 1) {
-      if (let (t, true) = this.#typeScopes[i].get(name)) {
+      if (let (true, t) = this.#typeScopes[i].get(name)) {
         return t;
       }
     }
@@ -931,7 +932,7 @@ class CheckerContext {
 
   resolveNarrowedMemberPath(path: String): Type | null {    
     for (var i = this.#memberPathNarrowings.length - 1; i >= 0; i -= 1) {
-      if (let (t, true) = this.#memberPathNarrowings[i].get(path)) {
+      if (let (true, t) = this.#memberPathNarrowings[i].get(path)) {
         return t;
       }
     }
@@ -1168,10 +1169,16 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   // HashMap members: get, set, has, delete, size, [], []=, keys, forEach, getOr, find, clear
   let hmGetParams = new Array<Type>();
   hmGetParams.push(hashMapKParam);
-  let hmGetRetTypes = new Array<Type>();
-  hmGetRetTypes.push(hashMapVParam);
-  hmGetRetTypes.push(new BooleanType());
-  let hmGetRetType: Type = new InlineTupleT(hmGetRetTypes);
+  let hmGetFoundRetTypes = new Array<Type>();
+  hmGetFoundRetTypes.push(new BoolLiteralType(true));
+  hmGetFoundRetTypes.push(hashMapVParam);
+  let hmGetMissRetTypes = new Array<Type>();
+  hmGetMissRetTypes.push(new BoolLiteralType(false));
+  hmGetMissRetTypes.push(new HoleType());
+  let hmGetUnionTypes = new Array<Type>();
+  hmGetUnionTypes.push(new InlineTupleT(hmGetFoundRetTypes));
+  hmGetUnionTypes.push(new InlineTupleT(hmGetMissRetTypes));
+  let hmGetRetType: Type = new UnionT(hmGetUnionTypes);
   hashMapType.methods["get"] = new FunctionType(hmGetParams, null, hmGetRetType);
   let hmSetParams = new Array<Type>();
   hmSetParams.push(hashMapKParam);
@@ -2383,6 +2390,7 @@ let typesEqual = (a: Type, b: Type): boolean => {
     case VoidType: b is VoidType
     case NullType: b is NullType
     case NeverType: b is NeverType
+    case HoleType: b is HoleType
     case ErrorType: b is ErrorType
     case UnknownType: b is UnknownType
     case AnyType: b is AnyType
@@ -3058,8 +3066,9 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       match (test) {
         case LetPatternCondition as lpc: {
           let initType = checkExpression(ctx, lpc.init, null);
+          let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
           ctx.enterScope();
-          checkPattern(ctx, lpc.pattern, initType);
+          checkPattern(ctx, lpc.pattern, narrowedInitType);
           checkStatement(ctx, consequent);
           ctx.exitScope();
           if (alternate != null) {
@@ -3252,9 +3261,10 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       match (test) {
         case LetPatternCondition as lpc: {
           let initType = checkExpression(ctx, lpc.init, null);
+          let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
           ctx.enterLoop();
           ctx.enterScope();
-          checkPattern(ctx, lpc.pattern, initType);
+          checkPattern(ctx, lpc.pattern, narrowedInitType);
           checkStatement(ctx, body);
           ctx.exitScope();
           ctx.exitLoop();
@@ -3606,6 +3616,198 @@ let isRefutableDeclarationPattern = (pattern: Pattern): boolean => {
 };
 
 /**
+ * Extract element types for tuple-pattern binding/checking.
+ * Supports TupleType, InlineTupleType, and unions of tuple-like members.
+ */
+let getTuplePatternElementTypes = (t: Type): Array<Type> | null => {
+  match (t) {
+    case TupleT {elementTypes}: {
+      return elementTypes;
+    }
+    case InlineTupleT {elementTypes}: {
+      return elementTypes;
+    }
+    case UnionT {types}: {
+      if (types.length == 0) {
+        return null;
+      }
+
+      let tupleMembers = new Array<Array<Type>>();
+      for (let member in types) {
+        match (member) {
+          case TupleT {elementTypes}: {
+            tupleMembers.push(elementTypes);
+          }
+          case InlineTupleT {elementTypes}: {
+            tupleMembers.push(elementTypes);
+          }
+          case _: {
+            return null;
+          }
+        }
+      }
+
+      if (tupleMembers.length == 0) {
+        return null;
+      }
+      let arity = tupleMembers[0].length;
+
+      for (let member in tupleMembers) {
+        if (member.length != arity) {
+          return null;
+        }
+      }
+
+      let merged = new Array<Type>();
+      
+      for (var i = 0; i < arity; i += 1) {
+        let atIndex = new Array<Type>();
+        for (let member in tupleMembers) {
+          let slotType = member[i];
+          if (slotType is NeverType) {
+            atIndex.push(new HoleType());
+          } else {
+            atIndex.push(slotType);
+          }
+        }
+        merged.push(createUnionType(atIndex));
+      }
+
+      return merged;
+    }
+    case _: {
+      return null;
+    }
+  }
+};
+
+let literalPatternCanMatchType = (value: Expression, t: Type): boolean => {
+  match (t) {
+    case BoolLiteralType {value as expected}: {
+      return value is BooleanLiteral && (value as BooleanLiteral).value == expected;
+    }
+    case BooleanType: {
+      return value is BooleanLiteral;
+    }
+    case StringLiteralType {value as expected}: {
+      return value is StringLiteral && (value as StringLiteral).value == expected;
+    }
+    case ClassType {name}: {
+      return name == "String" && value is StringLiteral;
+    }
+    case NumLiteralType {raw as expected}: {
+      return value is NumberLiteral && (value as NumberLiteral).raw == expected;
+    }
+    case UnionT {types}: {
+      for (let member in types) {
+        if (literalPatternCanMatchType(value, member)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case _: {
+      if (isNumericType(t)) {
+        return value is NumberLiteral;
+      }
+      return false;
+    }
+  }
+};
+
+let patternCanMatchType = (ctx: CheckerContext, pattern: Node, t: Type): boolean => {
+  match (pattern) {
+    case IdentifierPattern: { return true; }
+    case Identifier: { return true; }
+    case BooleanLiteral as lit: {
+      return literalPatternCanMatchType(lit, t);
+    }
+    case StringLiteral as lit: {
+      return literalPatternCanMatchType(lit, t);
+    }
+    case NumberLiteral as lit: {
+      return literalPatternCanMatchType(lit, t);
+    }
+    case LiteralPattern {value}: {
+      return literalPatternCanMatchType(value, t);
+    }
+    case AssignmentPattern {left}: {
+      return patternCanMatchType(ctx, left as Node, t);
+    }
+    case AsPattern {pattern as inner}: {
+      return patternCanMatchType(ctx, inner as Node, t);
+    }
+    case LogicalPattern {operator, left, right}: {
+      if (operator == "|") {
+        return patternCanMatchType(ctx, left as Node, t)
+          || patternCanMatchType(ctx, right as Node, t);
+      }
+      return patternCanMatchType(ctx, left as Node, t)
+        && patternCanMatchType(ctx, right as Node, t);
+    }
+    case TuplePattern {elements}: {
+      match (t) {
+        case TupleT {elementTypes}: {
+          if (elements.length > elementTypes.length) { return false; }
+          for (var i = 0; i < elements.length; i += 1) {
+            let elem = elements[i];
+            if (elem != null && !patternCanMatchType(ctx, elem as Node, elementTypes[i])) {
+              return false;
+            }
+          }
+          return true;
+        }
+        case InlineTupleT {elementTypes}: {
+          if (elements.length > elementTypes.length) { return false; }
+          for (var i = 0; i < elements.length; i += 1) {
+            let elem = elements[i];
+            if (elem != null && !patternCanMatchType(ctx, elem as Node, elementTypes[i])) {
+              return false;
+            }
+          }
+          return true;
+        }
+        case UnionT {types}: {
+          for (let member in types) {
+            if (patternCanMatchType(ctx, pattern, member)) {
+              return true;
+            }
+          }
+          return false;
+        }
+        case _: {
+          return false;
+        }
+      }
+    }
+    case _: {
+      // Keep non-literal complex patterns conservative for narrowing.
+      return true;
+    }
+  }
+};
+
+let narrowTypeByPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): Type => {
+  match (t) {
+    case UnionT {types}: {
+      let matched = new Array<Type>();
+      for (let member in types) {
+        if (patternCanMatchType(ctx, pattern, member)) {
+          matched.push(member);
+        }
+      }
+      if (matched.length > 0) {
+        return createUnionType(matched);
+      }
+      return t;
+    }
+    case _: {
+      return t;
+    }
+  }
+};
+
+/**
  * Bind names from a pattern, registering their types via the
  * DeclarationMap → SymbolInfo → SemanticModel.setBindingType path.
  */
@@ -3670,56 +3872,34 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       }
     }
     case TuplePattern {elements, loc}: {
-      match (t) {
-        case TupleT {elementTypes}: {
-          if (elements.length > elementTypes.length) {
-            ctx.error(
-              "Tuple pattern has more elements than the tuple type.",
-              DiagnosticCode.TypeMismatch,
-              loc
-            );
-          }
-          var i = 0;
-          while (i < elements.length) {
-            if (elements[i] != null) {
-              let elem = elements[i] as Node;
-              if (i < elementTypes.length) {
-                bindPattern(ctx, elem as Pattern, elementTypes[i]);
-              } else {
-                bindPattern(ctx, elem as Pattern, new ErrorType());
-              }
-            }
-            i += 1;
+      let elementTypes = getTuplePatternElementTypes(t);
+      if (elementTypes == null) {
+        for (let element in elements) {
+          if (element != null) {
+            bindPattern(ctx, element as Pattern, new ErrorType());
           }
         }
-        case InlineTupleT {elementTypes}: {
-          if (elements.length > elementTypes.length) {
-            ctx.error(
-              "Tuple pattern has more elements than the tuple type.",
-              DiagnosticCode.TypeMismatch,
-              loc
-            );
-          }
-          var i = 0;
-          while (i < elements.length) {
-            if (elements[i] != null) {
-              let elem = elements[i] as Node;
-              if (i < elementTypes.length) {
-                bindPattern(ctx, elem as Pattern, elementTypes[i]);
-              } else {
-                bindPattern(ctx, elem as Pattern, new ErrorType());
-              }
-            }
-            i += 1;
-          }
-        }
-        case _: {
-          var i = 0;
-          while (i < elements.length) {
-            if (elements[i] != null) {
-              bindPattern(ctx, (elements[i] as Node) as Pattern, new ErrorType());
-            }
-            i += 1;
+        return;
+      }
+      // TODO: we seem to have a narrowing bug here. `elementTypes` should
+      // already be non-null.
+      let tupleElementTypes = elementTypes as Array<Type>;
+      if (elements.length > tupleElementTypes.length) {
+        ctx.error(
+          "Tuple pattern has more elements than the tuple type.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+
+      
+      for (var i = 0; i < elements.length; i += 1) {
+        let element = elements[i];
+        if (element != null) {
+          if (i < tupleElementTypes.length) {
+            bindPattern(ctx, element as Pattern, tupleElementTypes[i]);
+          } else {
+            bindPattern(ctx, element as Pattern, new ErrorType());
           }
         }
       }
@@ -3938,8 +4118,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   // --- Identifiers ---
 
   case Identifier {name, loc}: {
-    // The hole literal `_` has type `never`.
-    if (name == "_") { return new NeverType(); }
+    // The hole literal `_` carries an internal unreadable placeholder type.
+    // It is intended for inline tuple hole slots and requires control-flow
+    // narrowing before safe use.
+    if (name == "_") { return new HoleType(); }
 
     if (name == "__LOCATION__") {
       let stringType = ctx.resolveTypeName("String");
@@ -4202,8 +4384,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     match (test) {
       case LetPatternCondition as lpc: {
         let initType = checkExpression(ctx, lpc.init, null);
+        let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
         ctx.enterScope();
-        checkPattern(ctx, lpc.pattern, initType);
+        checkPattern(ctx, lpc.pattern, narrowedInitType);
         let consType = checkIfBranchNode(ctx, consequent, expectedType);
         ctx.exitScope();
 
@@ -4436,13 +4619,46 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     new RecordT(propTypes, null)
   }
   case TupleLiteral {elements, loc}: {
+    // Inline tuple literals are parsed as TupleLiteral nodes.
+    // If the expected type is an inline tuple (or union of inline tuples),
+    // check against those element expectations and produce an InlineTupleType.
+    var expectedElementTypes: Array<Type> | null = null;
+    var useInlineTuple = false;
+    if (expectedType != null) {
+      let maybeElems = getTuplePatternElementTypes(expectedType as Type);
+      if (maybeElems != null) {
+        expectedElementTypes = maybeElems as Array<Type>;
+      }
+      match (expectedType as Type) {
+        case InlineTupleT {}: {
+          useInlineTuple = true;
+        }
+        case UnionT {types}: {
+          for (let member in types) {
+            if (member is InlineTupleT) {
+              useInlineTuple = true;
+              break;
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+
     // Check each element and collect their types.
     let elementTypes = new Array<Type>();
     var i = 0;
     while (i < elements.length) {
-      let elemType = checkExpression(ctx, elements[i], null);
+      var elemExpected: Type | null = null;
+      if (expectedElementTypes != null && i < (expectedElementTypes as Array<Type>).length) {
+        elemExpected = (expectedElementTypes as Array<Type>)[i];
+      }
+      let elemType = checkExpression(ctx, elements[i], elemExpected);
       elementTypes.push(elemType);
       i += 1;
+    }
+    if (useInlineTuple) {
+      return new InlineTupleT(elementTypes);
     }
     new TupleT(elementTypes)
   }
@@ -7646,42 +7862,25 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       }
     }
     case TuplePattern {elements}: {
-      match (expectedType) {
-        case TupleT {elementTypes}: {
-          var i = 0;
-          while (i < elements.length) {
-            if (elements[i] != null) {
-              let elem = elements[i] as Node;
-              if (i < elementTypes.length) {
-                checkPattern(ctx, elem, elementTypes[i]);
-              } else {
-                checkPattern(ctx, elem, new ErrorType());
-              }
-            }
-            i = i + 1;
+      let elementTypes = getTuplePatternElementTypes(expectedType);
+      if (elementTypes == null) {
+        for (let element in elements) {
+          if (element != null) {
+            checkPattern(ctx, element, new ErrorType());
           }
         }
-        case InlineTupleT {elementTypes}: {
-          var i = 0;
-          while (i < elements.length) {
-            if (elements[i] != null) {
-              let elem = elements[i] as Node;
-              if (i < elementTypes.length) {
-                checkPattern(ctx, elem, elementTypes[i]);
-              } else {
-                checkPattern(ctx, elem, new ErrorType());
-              }
-            }
-            i = i + 1;
-          }
-        }
-        case _: {
-          var i = 0;
-          while (i < elements.length) {
-            if (elements[i] != null) {
-              checkPattern(ctx, (elements[i] as Node), new ErrorType());
-            }
-            i = i + 1;
+        return;
+      }
+
+      let tupleElementTypes = elementTypes as Array<Type>;
+      
+      for (var i = 0; i < elements.length; i += 1) {
+        let elem = elements[i];
+        if (elem != null) {
+          if (i < tupleElementTypes.length) {
+            checkPattern(ctx, elem, tupleElementTypes[i]);
+          } else {
+            checkPattern(ctx, elem, new ErrorType());
           }
         }
       }

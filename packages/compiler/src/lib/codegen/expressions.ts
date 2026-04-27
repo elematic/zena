@@ -8912,7 +8912,7 @@ function generateTupleLiteral(
  *
  * Handles the special `_` hole literal which is used to satisfy `never` in
  * discriminated unions like `(false, _)` where the return type is
- * `(true, T) | (false, never)`.
+ * `(true, T) | (false, _)`.
  */
 function generateInlineTupleValues(
   ctx: CodegenContext,

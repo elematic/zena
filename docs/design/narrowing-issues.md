@@ -54,7 +54,7 @@ The exhaustiveness checker doesn't recognize that tuple patterns with literals
 cover their respective union members.
 
 ```zena
-let getResult = (): (true, i32) | (false, never) => { ... };
+let getResult = (): (true, i32) | (false, _) => { ... };
 
 return match (getResult()) {
   case (true, value): value * 2
@@ -186,7 +186,7 @@ let r: Success | Error = ...;
 Parser can't handle function types that return unions of tuples.
 
 ```zena
-let makeIterator = (): (() => (true, i32) | (false, never)) => { ... };
+let makeIterator = (): (() => (true, i32) | (false, _)) => { ... };
 // Error: Expected type annotation or '=>'
 ```
 

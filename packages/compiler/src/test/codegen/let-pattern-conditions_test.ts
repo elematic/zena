@@ -130,7 +130,7 @@ suite('let-pattern conditions', () => {
   suite('with union of tuples', () => {
     test('if let with discriminated union', async () => {
       const result = await compileAndRun(`
-        let maybeValue = (flag: boolean): inline (true, i32) | inline (false, never) => {
+        let maybeValue = (flag: boolean): inline (true, i32) | inline (false, _) => {
           if (flag) {
             return (true, 999);
           }
@@ -153,7 +153,7 @@ suite('let-pattern conditions', () => {
           var index: i32;
           new() : index = 0 {}
           
-          next(): inline (true, i32) | inline (false, never) {
+          next(): inline (true, i32) | inline (false, _) {
             this.index = this.index + 1;
             if (this.index <= 3) {
               return (true, this.index);

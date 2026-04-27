@@ -6,12 +6,14 @@ suite('tuple unions', () => {
   suite('basic returns', () => {
     test('return (true, value) from union type', async () => {
       const result = await compileAndRun(`
-        let getResult = (): inline (true, i32) | inline (false, never) => {
+        let getResult = (): inline (true, i32) | inline (false, _) => {
           return (true, 42);
         };
         export let main = (): i32 => {
-          let (_, value) = getResult();
-          return value;
+          if (let (true, value) = getResult()) {
+            return value;
+          }
+          return 0;
         };
       `);
       strictEqual(result, 42);
@@ -19,7 +21,7 @@ suite('tuple unions', () => {
 
     test('return (false, _) from union type', async () => {
       const result = await compileAndRun(`
-        let getResult = (): inline (true, i32) | inline (false, never) => {
+        let getResult = (): inline (true, i32) | inline (false, _) => {
           return (false, _);
         };
         export let main = (): i32 => {
@@ -35,17 +37,15 @@ suite('tuple unions', () => {
 
     test('conditional return from union type', async () => {
       const result = await compileAndRun(`
-        let maybeGet = (flag: boolean): inline (true, i32) | inline (false, never) => {
+        let maybeGet = (flag: boolean): inline (true, i32) | inline (false, _) => {
           if (flag) {
             return (true, 99);
           }
           return (false, _);
         };
         export let main = (): i32 => {
-          let (ok1, v1) = maybeGet(true);
-          let (ok2, _) = maybeGet(false);
-          if (ok1) {
-            if (!ok2) {
+          if (let (true, v1) = maybeGet(true)) {
+            if (let (false, _) = maybeGet(false)) {
               return v1;
             }
           }
@@ -57,17 +57,14 @@ suite('tuple unions', () => {
   });
 
   suite('type narrowing', () => {
-    test('value type narrows after boolean check', async () => {
-      // After checking hasMore is true, value should narrow from T | never to T
+    test('value type narrows in if-let pattern', async () => {
+      // `if (let (true, value) = ...)` narrows value to i32 in the success branch.
       const result = await compileAndRun(`
-        let getResult = (): inline (true, i32) | inline (false, never) => {
+        let getResult = (): inline (true, i32) | inline (false, _) => {
           return (true, 42);
         };
         export let main = (): i32 => {
-          let (hasMore, value) = getResult();
-          // value is: i32 | never
-          // After this check, value should be: i32
-          if (hasMore) {
+          if (let (true, value) = getResult()) {
             return value;
           }
           return 0;
@@ -76,22 +73,18 @@ suite('tuple unions', () => {
       strictEqual(result, 42);
     });
 
-    test('value not usable in else branch', async () => {
-      // This test verifies the type system (value is 'never' in else branch)
-      // We can't actually use value in else branch, but we can return 0
+    test('if-let else branch when false tuple returned', async () => {
       const result = await compileAndRun(`
-        let getResult = (flag: boolean): inline (true, i32) | inline (false, never) => {
+        let getResult = (flag: boolean): inline (true, i32) | inline (false, _) => {
           if (flag) {
             return (true, 100);
           }
           return (false, _);
         };
         export let main = (): i32 => {
-          let (hasMore, value) = getResult(false);
-          if (hasMore) {
+          if (let (true, value) = getResult(false)) {
             return value;
           }
-          // value is 'never' here - cannot be used
           return -1;
         };
       `);
@@ -110,7 +103,7 @@ suite('tuple unions', () => {
           new(v: i32) : value = v {}
         }
         
-        let maybeBox = (flag: boolean): inline (true, Box) | inline (false, never) => {
+        let maybeBox = (flag: boolean): inline (true, Box) | inline (false, _) => {
           if (flag) {
             return (true, new Box(123));
           }
@@ -140,7 +133,7 @@ suite('tuple unions', () => {
       // Type narrowing of the second element based on the first element's
       // boolean value is a future feature
       const result = await compileAndRun(`
-        let maybe = <T>(flag: boolean, value: T): inline (true, T) | inline (false, never) => {
+        let maybe = <T>(flag: boolean, value: T): inline (true, T) | inline (false, _) => {
           if (flag) {
             return (true, value);
           }

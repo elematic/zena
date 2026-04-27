@@ -145,7 +145,7 @@ suite('for-in loops', () => {
         
         new(max: i32) : #current = 0, #max = max {}
         
-        next(): inline (true, i32) | inline (false, never) {
+        next(): inline (true, i32) | inline (false, _) {
           if (this.#current < this.#max) {
             let val = this.#current;
             this.#current = this.#current + 1;
@@ -192,7 +192,7 @@ suite('for-in loops', () => {
         
         new(start: i32, end: i32) : #current = start, #end = end {}
         
-        next(): inline (true, i32) | inline (false, never) {
+        next(): inline (true, i32) | inline (false, _) {
           if (this.#current < this.#end) {
             let val = this.#current;
             this.#current = this.#current + 1;

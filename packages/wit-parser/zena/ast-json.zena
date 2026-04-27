@@ -160,8 +160,7 @@ class SerializeContext {
   
   /** Get or create an anonymous type with the given key. */
   getOrCreateAnonType(key: String, kind: TypeKind): i32 {
-    if (this.anonTypeIndices.has(key)) {
-      let (idx, _) = this.anonTypeIndices.get(key);
+    if (let (true, idx) = this.anonTypeIndices.get(key)) {
       return idx;
     }
     let entry = new TypeEntry(null, kind, none, null);
@@ -172,8 +171,7 @@ class SerializeContext {
   
   /** Get or create a borrow<resource> type for the given resource index. */
   getBorrowType(resourceIdx: i32): i32 {
-    if (this.borrowTypeIndices.has(resourceIdx)) {
-      let (idx, _) = this.borrowTypeIndices.get(resourceIdx);
+    if (let (true, idx) = this.borrowTypeIndices.get(resourceIdx)) {
       return idx;
     }
     // Create new borrow type
@@ -187,8 +185,7 @@ class SerializeContext {
   
   /** Get or create an own<resource> type for the given resource index. */
   getOwnType(resourceIdx: i32): i32 {
-    if (this.ownTypeIndices.has(resourceIdx)) {
-      let (idx, _) = this.ownTypeIndices.get(resourceIdx);
+    if (let (true, idx) = this.ownTypeIndices.get(resourceIdx)) {
       return idx;
     }
     // Ensure borrow type exists first (wasm-tools ordering: borrow before own)
@@ -211,8 +208,7 @@ class SerializeContext {
     if (t.tag == TypeTag.Name) {
       let id = t.name as Id;
       let name = normalizeId(id.name);
-      if (this.typeIndices.has(name)) {
-        let (idx, _) = this.typeIndices.get(name);
+      if (let (true, idx) = this.typeIndices.get(name)) {
         // If it's a resource, return own<resource> instead
         if (this.resourceTypeIndices.has(idx)) {
           return TypeRef.idx(this.getOwnType(idx));
@@ -246,8 +242,7 @@ class SerializeContext {
       let id = t.name as Id;
       let name = normalizeId(id.name);
       // Check if it's a user-defined type
-      if (this.typeIndices.has(name)) {
-        let (idx, _) = this.typeIndices.get(name);
+      if (let (true, idx) = this.typeIndices.get(name)) {
         return TypeRef.idx(idx);
       }
       // Not a registered type - return as string (shouldn't happen for valid WIT)
@@ -337,8 +332,7 @@ class SerializeContext {
         resourceIdx = innerRef.indexValue;
       } else {
         // Named resource - look up in typeIndices
-        if (this.typeIndices.has(innerRef.strValue)) {
-          let (idx, _) = this.typeIndices.get(innerRef.strValue);
+        if (let (true, idx) = this.typeIndices.get(innerRef.strValue)) {
           resourceIdx = idx;
         }
       }
@@ -359,8 +353,7 @@ class SerializeContext {
         resourceIdx = innerRef.indexValue;
       } else {
         // Named resource - look up in typeIndices
-        if (this.typeIndices.has(innerRef.strValue)) {
-          let (idx, _) = this.typeIndices.get(innerRef.strValue);
+        if (let (true, idx) = this.typeIndices.get(innerRef.strValue)) {
           resourceIdx = idx;
         }
       }
@@ -625,8 +618,7 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
   
   // Get the resource type index
   var resourceTypeIdx = 0;
-  if (ctx.typeIndices.has(resourceName)) {
-    let (idx, _) = ctx.typeIndices.get(resourceName);
+  if (let (true, idx) = ctx.typeIndices.get(resourceName)) {
     resourceTypeIdx = idx;
   }
   

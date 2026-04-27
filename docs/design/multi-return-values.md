@@ -203,9 +203,13 @@ class ArrayIterator<T> implements Iterator<T> {
 ### The Hole Literal (`_`)
 
 The `_` identifier, when used as an expression, is a **hole literal** that
-generates a zero/null value for the expected type. It has type `never`, making
-it only assignable where `never` is expected (e.g., in discriminated union
-returns).
+generates a zero/null value for the expected type. It has the internal type
+`_` (HoleType). Its key feature is that it can appear in a union alongside any
+other type without triggering the "cannot mix primitive and reference types"
+error. `_` is only valid as an element in an inline tuple literal whose
+annotated element type is also `_` — e.g. in `return (false, _)` where the
+return type is `inline (true, V) | inline (false, _)`. Using `_` outside of a
+typed hole slot is an error.
 
 **Behavior by type:**
 
@@ -227,9 +231,9 @@ return (false, _);
 // Multiple holes
 return (_, _, 99);
 
-// NOT allowed outside of inline tuples (type is never)
+// NOT allowed outside of inline tuples (type is _)
 let x = _;  // Error: cannot infer type
-foo(_);     // Error: _ (never) not assignable to parameter type
+foo(_);     // Error: _ (hole) not assignable to parameter type
 ```
 
 The `_` literal is symmetric with `_` as a pattern wildcard:
@@ -517,7 +521,7 @@ to WASM.
 
    ```zena
    interface Iterator<T> {
-     next(): (true, T) | (false, never);
+     next(): (true, T) | (false, _);
    }
    ```
 
@@ -525,12 +529,12 @@ to WASM.
 
    ```zena
    let (hasMore, value) = iter.next();
-   // Type of value: T | never
+   // Type of value: T | _
 
    if (hasMore) {
      process(value);  // ✅ value narrowed to T
    } else {
-     process(value);  // ❌ Error: cannot use value of type 'never'
+     process(value);  // ❌ Error: cannot use value of type '_'
    }
    ```
 
@@ -547,13 +551,13 @@ to WASM.
    ```zena
    match iter.next() {
      case (true, value) => process(value),  // value: T
-     case (false, _) => done(),             // _ is never, can't be bound
+     case (false, _) => done(),             // _ is "hole", can't be bound
    }
 
    // Or with while-let:
    while (let (true, item) = iter.next()) {
      // Only matches when first element is true
-     // item is T, not T | never
+     // item is T, not T | _
    }
    ```
 

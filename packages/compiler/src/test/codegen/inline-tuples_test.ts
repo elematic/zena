@@ -186,7 +186,7 @@ suite('codegen: inline tuples', () => {
   suite('hole literal (_)', () => {
     test('(false, _) with i32 never slot', async () => {
       const source = `
-        let getOrZero = (hasValue: boolean): inline (boolean, i32) => {
+        let getOrZero = (hasValue: boolean): inline (true, i32) | inline (false, _) => {
           if (hasValue) {
             return (true, 42);
           } else {
@@ -195,10 +195,7 @@ suite('codegen: inline tuples', () => {
         };
         
         export let main = (): i32 => {
-          let (has1, val1) = getOrZero(true);
-          let (has2, val2) = getOrZero(false);
-          // val1 should be 42, val2 is unspecified (hole)
-          if (has1) {
+          if (let (true, val1) = getOrZero(true)) {
             return val1;
           }
           return 0;
@@ -212,7 +209,7 @@ suite('codegen: inline tuples', () => {
       const source = `
         class Box { value: i32; new(v: i32) : value = v {} }
         
-        let maybeBox = (hasValue: boolean): inline (boolean, Box | null) => {
+        let maybeBox = (hasValue: boolean): inline (true, Box | null) | inline (false, _) => {
           if (hasValue) {
             return (true, new Box(100));
           } else {
@@ -221,10 +218,7 @@ suite('codegen: inline tuples', () => {
         };
         
         export let main = (): i32 => {
-          let (has, box) = maybeBox(true);
-          // After destructuring, box has type Box | null
-          // We need to check separately since we don't have && narrowing in destructuring
-          if (has) {
+          if (let (true, box) = maybeBox(true)) {
             if (box !== null) {
               return box.value;
             }
@@ -238,18 +232,23 @@ suite('codegen: inline tuples', () => {
 
     test('triple tuple with hole (i32, _, i32)', async () => {
       const source = `
-        let getValues = (flag: boolean): inline (i32, i32, i32) => {
+        let getValues = (flag: boolean): inline (true, i32, i32, i32) | inline (false, i32, _, i32) => {
           if (flag) {
-            return (1, 2, 3);
+            return (true, 1, 2, 3);
           } else {
-            return (10, _, 30);
+            return (false, 10, _, 30);
           }
         };
         
         export let main = (): i32 => {
-          let (a, b, c) = getValues(true);
-          let (x, y, z) = getValues(false);
-          return a + c + x + z;
+          var sum = 0;
+          if (let (true, a, b, c) = getValues(true)) {
+            sum = sum + a + c;
+          }
+          if (let (false, x, _, z) = getValues(false)) {
+            sum = sum + x + z;
+          }
+          return sum;
         };
       `;
       const result = await compileAndRun(source);
@@ -259,13 +258,18 @@ suite('codegen: inline tuples', () => {
 
     test('multiple holes (_, _, i32)', async () => {
       const source = `
-        let getThird = (): inline (i32, i32, i32) => {
-          return (_, _, 99);
+        let getThird = (flag: boolean): inline (true, i32, i32, i32) | inline (false, _, _, i32) => {
+          if (flag) {
+            return (true, 1, 2, 99);
+          }
+          return (false, _, _, 99);
         };
         
         export let main = (): i32 => {
-          let (a, b, c) = getThird();
-          return c;
+          if (let (true, a, b, c) = getThird(true)) {
+            return c;
+          }
+          return 0;
         };
       `;
       const result = await compileAndRun(source);
@@ -276,7 +280,7 @@ suite('codegen: inline tuples', () => {
       // Note: Using integer comparison because f64 literals have a pre-existing
       // typing issue (3.14 defaults to f32, causing type mismatch)
       const source = `
-        let maybeFloat = (has: boolean): inline (boolean, f64) => {
+        let maybeFloat = (has: boolean): inline (true, f64) | inline (false, _) => {
           if (has) {
             // Use an integer that gets promoted to f64
             return (true, 100 as f64);
@@ -285,10 +289,11 @@ suite('codegen: inline tuples', () => {
         };
         
         export let main = (): i32 => {
-          let (has, val) = maybeFloat(true);
-          // val should be 100.0, hole case returns 0.0
-          if (has && val > 50 as f64) {
-            return 1;
+          if (let (true, val) = maybeFloat(true)) {
+            // val should be 100.0 when present
+            if (val > 50 as f64) {
+              return 1;
+            }
           }
           return 0;
         };

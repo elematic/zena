@@ -9,8 +9,10 @@ suite('Codegen - Map Literals', () => {
 
       export let main = (): i32 => {
         let m = {"a" => 1, "b" => 2, "c" => 3};
-        let (value, _) = m.get("b");
-        return value;
+        if (let (true, value) = m.get("b")) {
+          return value;
+        }
+        return 0;
       };
     `);
     assert.strictEqual(result, 2);
@@ -22,8 +24,10 @@ suite('Codegen - Map Literals', () => {
 
       export let main = (): i32 => {
         let m = {100 => 10, 200 => 20};
-        let (value, _) = m.get(200);
-        return value;
+        if (let (true, value) = m.get(200)) {
+          return value;
+        }
+        return 0;
       };
     `);
     assert.strictEqual(result, 20);
@@ -35,8 +39,10 @@ suite('Codegen - Map Literals', () => {
 
       export let main = (): i32 => {
         let m = {"key" => 42};
-        let (value, _) = m.get("key");
-        return value;
+        if (let (true, value) = m.get("key")) {
+          return value;
+        }
+        return 0;
       };
     `);
     assert.strictEqual(result, 42);
@@ -63,9 +69,12 @@ suite('Codegen - Map Literals', () => {
           "x" => 10,
           "y" => 20,
         };
-        let (x, found1) = m.get("x");
-        let (y, found2) = m.get("y");
-        return x + y;
+        if (let (true, x) = m.get("x")) {
+          if (let (true, y) = m.get("y")) {
+            return x + y;
+          }
+        }
+        return 0;
       };
     `);
     assert.strictEqual(result, 30);
@@ -94,8 +103,10 @@ suite('Codegen - Map Literals', () => {
 
       export let main = (): i32 => {
         let m = makeMap();
-        let (value, _) = m.get("two");
-        return value;
+        if (let (true, value) = m.get("two")) {
+          return value;
+        }
+        return 0;
       };
     `);
     assert.strictEqual(result, 2);

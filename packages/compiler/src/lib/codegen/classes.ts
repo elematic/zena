@@ -7065,6 +7065,7 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Boolean) return [ValType.i32];
   if (type.kind === TypeKind.Void) return [];
   if (type.kind === TypeKind.Never) return [];
+  if (type.kind === TypeKind.Hole) return [];
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
   if (type.kind === TypeKind.Any || type.kind === TypeKind.AnyRef)
     return [ValType.anyref];
@@ -7220,10 +7221,10 @@ export function mapCheckerTypeToWasmType(
     if (unionType.types.some((t) => t.kind === TypeKind.Void)) {
       return [];
     }
-    // Filter out never types - never is uninhabited so it has no runtime
-    // representation. e.g., i32 | never should map to i32 at the WASM level.
+    // Filter out never/hole types - they have no runtime representation.
+    // e.g., i32 | _ should map to i32 at the WASM level.
     const nonNeverTypes = unionType.types.filter(
-      (t) => t.kind !== TypeKind.Never,
+      (t) => t.kind !== TypeKind.Never && t.kind !== TypeKind.Hole,
     );
     if (nonNeverTypes.length === 0) return [];
     if (nonNeverTypes.length < unionType.types.length) {

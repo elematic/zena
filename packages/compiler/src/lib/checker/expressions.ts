@@ -285,11 +285,11 @@ function checkExpressionInternal(
     case NodeType.NullLiteral:
       return Types.Null;
     case NodeType.Identifier: {
-      // Special case: _ is a "hole" literal that has type `never`.
-      // It can only be used to satisfy `never` in discriminated union returns.
-      // Example: return (false, _);  // where return type is (true, T) | (false, never)
+      // Special case: _ is a hole literal used in inline tuple discriminants.
+      // It has dedicated type `_` to preserve guard-dependent payload typing.
+      // Example: return (false, _);  // where return type is (true, T) | (false, _)
       if (expr.name === '_') {
-        return Types.Never;
+        return Types.Hole;
       }
 
       if (expr.name === '__LOCATION__') {
@@ -1173,7 +1173,7 @@ export function checkMatchPattern(
  * the tuple members to only those where that position's type is compatible
  * with the literal value.
  *
- * For example, with pattern `(true, elem)` matching `(true, T) | (false, never)`:
+ * For example, with pattern `(true, elem)` matching `(true, T) | (false, _)`:
  * - Position 0 is literal `true`
  * - Filter tuples: only `(true, T)` has first element compatible with `true`
  * - Result: `[(true, T)]`
@@ -4011,7 +4011,7 @@ function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {
     expr.inferredType = resultType;
     return resultType;
   }
-  // Also handle union-of-inline-tuples return type (e.g. (true, T) | (false, never))
+  // Also handle union-of-inline-tuples return type (e.g. (true, T) | (false, _))
   if (
     returnType &&
     returnType.kind === TypeKind.Union &&

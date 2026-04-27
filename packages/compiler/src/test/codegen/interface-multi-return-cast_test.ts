@@ -16,7 +16,7 @@ suite('interface multi-return ref cast', () => {
 
         new(value: String) : #value = value, #done = false {}
 
-        next(): inline (true, String) | inline (false, never) {
+        next(): inline (true, String) | inline (false, _) {
           if (!this.#done) {
             this.#done = true;
             return (true, this.#value);
@@ -50,7 +50,7 @@ suite('interface multi-return ref cast', () => {
 
         new(value: String) : #value = value, #done = false {}
 
-        next(): inline (true, String) | inline (false, never) {
+        next(): inline (true, String) | inline (false, _) {
           if (!this.#done) {
             this.#done = true;
             return (true, this.#value);

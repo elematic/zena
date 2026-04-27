@@ -37,7 +37,7 @@ class OrderedMapKeyIterator<K, V> implements Iterator<K> {
 
   new(head: OrderedEntry<K, V> | null) : #current = head;
 
-  next(): inline (true, K) | inline (false, never) {
+  next(): inline (true, K) | inline (false, _) {
     if (this.#current == null) {
       return (false, _);
     }
@@ -55,7 +55,7 @@ class OrderedMapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
 
   new(head: OrderedEntry<K, V> | null) : #current = head;
 
-  next(): inline (true, MapEntry<K, V>) | inline (false, never) {
+  next(): inline (true, MapEntry<K, V>) | inline (false, _) {
     if (this.#current == null) {
       return (false, _);
     }
@@ -145,10 +145,10 @@ export class OrderedMap<K, V> implements Map<K, V> {
   }
 
   /**
-   * Gets the value for a key, returning (value, true) if found or (_, false) if not.
+   * Gets the value for a key, returning (true, value) if found or (false, _) if not.
    * Zero allocation overhead.
    */
-  get(key: K): inline (V, boolean) {
+  get(key: K): inline (true, V) | inline (false, _) {
     let h = hash(key);
     let len = this.#buckets.length;
     var index = h % len;
@@ -158,11 +158,11 @@ export class OrderedMap<K, V> implements Map<K, V> {
     while (current != null) {
       let entry = current as OrderedEntry<K, V>;
       if (equals(entry.key, key)) {
-        return (entry.value, true);
+        return (true, entry.value);
       }
       current = entry.bucketNext;
     }
-    return (_, false);
+    return (false, _);
   }
 
   /**

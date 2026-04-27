@@ -116,7 +116,7 @@ export final class Memory {
  * Interface for linear memory allocators.
  * Libraries should accept Allocator to allow flexible memory strategies.
  *
- * Allocation methods return `(true, ptr) | (false, never)` to force callers
+ * Allocation methods return `(true, ptr) | (false, _)` to force callers
  * to handle allocation failures. Use pattern matching:
  * ```zena
  * if (let (true, ptr) = alloc.alloc(size)) {
@@ -128,10 +128,10 @@ export final class Memory {
  */
 export interface Allocator {
   /** Allocate `bytes` bytes. Returns (true, ptr) on success, (false, _) on failure. */
-  alloc(bytes: i32): inline (true, i32) | inline (false, never);
+  alloc(bytes: i32): inline (true, i32) | inline (false, _);
   
   /** Allocate `bytes` bytes aligned to `align` (must be power of 2). */
-  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, never);
+  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, _);
   
   /** Free a previously allocated pointer. May be a no-op for some allocators. */
   free(ptr: i32): void;
@@ -163,7 +163,7 @@ export final class FreeListAllocator implements Allocator {
   {}
 
   /** Allocate `bytes` bytes of linear memory. */
-  alloc(bytes: i32): inline (true, i32) | inline (false, never) {
+  alloc(bytes: i32): inline (true, i32) | inline (false, _) {
     // Minimum allocation is 8 bytes (for free list pointers when freed)
     var size = bytes;
     if (size < 8) {
@@ -233,7 +233,7 @@ export final class FreeListAllocator implements Allocator {
   }
 
   /** Allocate with alignment. */
-  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, never) {
+  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, _) {
     // For simplicity, allocate extra and align within
     // This wastes some space but keeps the implementation simple
     if (let (true, ptr) = this.alloc(bytes + align - 1)) {
@@ -313,7 +313,7 @@ export final class BumpAllocator implements Allocator {
   {}
 
   /** Allocate `bytes` bytes. Returns (true, ptr) on success, (false, _) if exhausted. */
-  alloc(bytes: i32): inline (true, i32) | inline (false, never) {
+  alloc(bytes: i32): inline (true, i32) | inline (false, _) {
     let ptr = this.#nextPtr;
     let newNext = ptr + bytes;
     
@@ -327,7 +327,7 @@ export final class BumpAllocator implements Allocator {
   }
 
   /** Allocate with alignment. Returns (true, ptr) on success, (false, _) if exhausted. */
-  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, never) {
+  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, _) {
     let mask = align - 1;
     let notMask = mask ^ -1;
     let aligned = (this.#nextPtr + mask) & notMask;

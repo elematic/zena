@@ -604,8 +604,12 @@ function resolveTypeAnnotationInternal(
         const unbounded = getUnboundedTypeParam(t);
         if (unbounded) {
           unboundedParams.push(unbounded);
-        } else if (t.kind !== TypeKind.Void && t.kind !== TypeKind.Never) {
-          // Don't count void or never as reference types
+        } else if (
+          t.kind !== TypeKind.Void &&
+          t.kind !== TypeKind.Never &&
+          t.kind !== TypeKind.Hole
+        ) {
+          // Don't count void, never, or hole as reference types
           hasReference = true;
         }
       }
@@ -972,7 +976,11 @@ export function validateType(type: Type, ctx: CheckerContext) {
         const unbounded = getUnboundedTypeParam(t);
         if (unbounded) {
           unboundedParams.push(unbounded);
-        } else if (t.kind !== TypeKind.Void && t.kind !== TypeKind.Never) {
+        } else if (
+          t.kind !== TypeKind.Void &&
+          t.kind !== TypeKind.Never &&
+          t.kind !== TypeKind.Hole
+        ) {
           hasReference = true;
         }
       }
@@ -1542,6 +1550,7 @@ export function typesEqual(a: Type, b: Type): boolean {
     case TypeKind.Void:
     case TypeKind.Null:
     case TypeKind.Never:
+    case TypeKind.Hole:
     case TypeKind.Any:
     case TypeKind.AnyRef:
     case TypeKind.Unknown:
@@ -1559,6 +1568,8 @@ export function typeToString(type: Type): string {
   switch (type.kind) {
     case TypeKind.Never:
       return TypeNames.Never;
+    case TypeKind.Hole:
+      return TypeNames.Hole;
     case TypeKind.Number:
       return (type as NumberType).name;
     case TypeKind.Boolean:

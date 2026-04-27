@@ -2567,7 +2567,7 @@ function checkInlineTuplePattern(
   kind: 'let' | 'var',
   declaration?: VariableDeclaration,
 ) {
-  // Handle union of inline tuples: (true, T) | (false, never)
+  // Handle union of inline tuples: (true, T) | (false, _)
   // Compute element types as unions across all tuple variants
   const elementTypes = getInlineTupleElementTypes(type);
 
@@ -2619,7 +2619,7 @@ function checkInlineTuplePattern(
  *
  * Examples:
  * - `(i32, boolean)` -> [i32, boolean]
- * - `(true, i32) | (false, never)` -> [true | false, i32 | never]
+ * - `(true, i32) | (false, _)` -> [true | false, i32 | never]
  */
 function getInlineTupleElementTypes(type: Type): Type[] | null {
   if (type.kind === TypeKind.InlineTuple) {

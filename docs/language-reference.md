@@ -1720,7 +1720,7 @@ class Counter {
   value: i32;
   new() { this.value = 0; }
 
-  next(): inline (true, i32) | inline (false, never) {
+  next(): inline (true, i32) | inline (false, _) {
     this.value = this.value + 1;
     if (this.value <= 3) {
       return (true, this.value);
@@ -2916,11 +2916,11 @@ This enables discriminated unions with inline tuples.
 
 ```zena
 // A function that may or may not return a value
-let tryParse = (s: String): inline (true, i32) | inline (false, never) => {
+let tryParse = (s: String): inline (true, i32) | inline (false, _) => {
   if (s == "42") {
     return (true, 42);
   }
-  return (false, _);  // _ is the hole literal for 'never'
+  return (false, _);  // _ is the literal for 'hole'
 };
 ```
 
@@ -2931,10 +2931,10 @@ values, the type system automatically narrows the union based on the literal
 pattern. This enables ergonomic iteration with discriminated unions.
 
 ```zena
-// Iterator.next() returns inline (true, T) | inline (false, never)
+// Iterator.next() returns inline (true, T) | inline (false, _)
 // When pattern includes 'true', only (true, T) variants are considered
 while (let (true, elem) = iterator.next()) {
-  // elem is narrowed to T (not T | never)
+  // elem is narrowed to T (not T | _)
   process(elem);
 }
 
@@ -2948,11 +2948,11 @@ if (let (true, value) = maybeValue()) {
 The narrowing works by filtering tuple union variants based on literal patterns:
 
 ```zena
-let data = (): inline (true, true, i32) | inline (true, false, never) | inline (false, never, never) => { ... };
+let data = (): inline (true, true, i32) | inline (true, false, _) | inline (false, _, _) => { ... };
 
 // Pattern (true, true, value) filters to just the first variant
 if (let (true, true, value) = data()) {
-  // value is i32, not i32 | never
+  // value is i32, not i32 | _
 }
 ```
 

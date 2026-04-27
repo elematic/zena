@@ -49,7 +49,7 @@ export interface Map<K, V> extends Iterable<MapEntry<K, V>> {
   size: i32 { get; }
   operator [](key: K): V;
   operator []=(key: K, value: V): void;
-  get(key: K): inline (V, boolean);
+  get(key: K): inline (true, V) | inline (false, _);
   getOr(key: K, defaultValue: V): V;
   has(key: K): boolean;
   delete(key: K): boolean;
@@ -88,7 +88,7 @@ class HashMapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
     }
   }
 
-  next(): inline (true, MapEntry<K, V>) | inline (false, never) {
+  next(): inline (true, MapEntry<K, V>) | inline (false, _) {
     if (this.#current == null) {
       return (false, _);
     }
@@ -107,7 +107,7 @@ class HashMapKeyIterator<K, V> implements Iterator<K> {
   new(buckets: FixedArray<MapEntry<K, V> | null>)
     : #inner = new HashMapEntryIterator<K, V>(buckets);
 
-  next(): inline (true, K) | inline (false, never) {
+  next(): inline (true, K) | inline (false, _) {
     if (let (true, entry) = this.#inner.next()) {
       return (true, entry.key);
     }
@@ -179,17 +179,16 @@ export class HashMap<K, V> implements Map<K, V> {
   }
 
   /**
-   * Gets the value for a key, returning (value, true) if found or (_, false)
+   * Gets the value for a key, returning (true, value) if found or (false, _)
    * if not. This is the preferred method for checking if a key exists and
-   * getting its value, as it has zero allocation overhead. The first element is
-   * undefined when not found and must not be accessed.
+   * getting its value, as it has zero allocation overhead.
    */
-  get(key: K): inline (V, boolean) {
+  get(key: K): inline (true, V) | inline (false, _) {
     let entry = this.#findEntry(key);
     if (entry != null) {
-      return (entry.value, true);
+      return (true, entry.value);
     }
-    return (_, false);
+    return (false, _);
   }
 
   /**

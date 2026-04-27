@@ -110,7 +110,7 @@ class EntryIterator<K, V> {
 
   // Multi-value return with a generic class - the return type involves
   // Entry<K, V> which must be correctly resolved
-  next(): inline (true, Entry<K, V>) | inline (false, never) {
+  next(): inline (true, Entry<K, V>) | inline (false, _) {
     if (this.hasMore) {
       this.hasMore = false;
       return (true, new Entry<K, V>(this.currentKey, this.currentValue));

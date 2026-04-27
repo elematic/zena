@@ -588,7 +588,7 @@ function generateForInStatement(
   body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(iterLocal));
 
   // 3. Pre-declare temp locals for next() return values
-  // next() returns (true, T) | (false, never), which is (i32, T) in WASM
+  // next() returns (true, T) | (false, _), which is (i32, T) in WASM
   const boolTemp = ctx.declareLocal('$$for_in_hasMore', [ValType.i32]);
   const elemWasmType = mapCheckerTypeToWasmType(ctx, elementType);
   const elemTemp = ctx.declareLocal('$$for_in_elem', elemWasmType);
@@ -1332,7 +1332,7 @@ export function generateLocalVariableDeclaration(
  * 1. Generate the expression (pushes N values onto stack)
  * 2. Pop values in REVERSE order to locals (WASM stack is LIFO)
  *
- * Supports unions of inline tuples (e.g., (true, T) | (false, never)):
+ * Supports unions of inline tuples (e.g., (true, T) | (false, _)):
  * At runtime, the union is erased - we just have the WASM values on the stack.
  */
 function generateInlineTuplePatternBinding(
