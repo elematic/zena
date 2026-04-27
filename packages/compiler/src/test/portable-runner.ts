@@ -697,6 +697,17 @@ for (const group of directiveGroups) {
 
     for (const filePath of group.tests) {
       const testName = basename(filePath, '.zena');
+      const fileContent = readFileSync(filePath, 'utf-8');
+      const skipMatch = fileContent.match(/^\s*\/\/ @skip: (.*)$/m);
+      const skipCompilers = skipMatch
+        ? skipMatch[1].trim().split(/\s*,\s*/)
+        : [];
+      if (skipCompilers.includes('bootstrap')) {
+        test(testName, {skip: 'not supported in bootstrap compiler'}, () => {
+          results.skip++;
+        });
+        continue;
+      }
       test(testName, async () => {
         try {
           await runTestFile(filePath);

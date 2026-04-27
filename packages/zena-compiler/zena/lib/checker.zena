@@ -166,6 +166,9 @@ class CheckerContext {
    */
   #classStack = new Array<ClassType>();
 
+  /** Whether we are currently checking an interface declaration body. */
+  var #inInterface = false;
+
   /**
    * Loop nesting depth (for break/continue validation).
    */
@@ -903,6 +906,13 @@ class CheckerContext {
     }
   }
 
+  /** Enter an interface declaration context (for ThisType resolution). */
+  enterInterface(): void { this.#inInterface = true; }
+  /** Exit an interface declaration context. */
+  exitInterface(): void { this.#inInterface = false; }
+  /** Whether we are currently checking an interface declaration body. */
+  inInterface: boolean { get { return this.#inInterface; } }
+
   // --- Narrowing ---
 
   /**
@@ -1620,7 +1630,18 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
     }
     new InlineTupleT(elTypes)
   }
-  case ThisTypeAnnotation {}: new ThisType()
+  case ThisTypeAnnotation {loc}: {
+    if (ctx.currentClass != null || ctx.inInterface) {
+      new ThisType()
+    } else {
+      ctx.error(
+        "'this' type is only valid inside a class or interface.",
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+      new ErrorType()
+    }
+  }
 };
 
 /**
@@ -1894,6 +1915,45 @@ let substituteTypeParams = (
         }
       }
       return t;
+    }
+    case _: { return t; }
+  }
+};
+
+/**
+ * Substitutes ThisType with a concrete receiver type.
+ * Used when resolving method types at call sites and method body checking.
+ */
+let substituteThisType = (receiverType: Type, t: Type): Type => {
+  match (t) {
+    case ThisType: { return receiverType; }
+    case FunctionType as ft: {
+      let subParams = new Array<Type>();
+      var changed = false;
+      for (let param in ft.parameters) {
+        let sub = substituteThisType(receiverType, param);
+        if (!typesEqual(sub, param)) { changed = true; }
+        subParams.push(sub);
+      }
+      let subRet = substituteThisType(receiverType, ft.returnType);
+      if (!changed && typesEqual(subRet, ft.returnType)) { return t; }
+      let newFt = new FunctionType(subParams, ft.parameterNames, subRet);
+      newFt.typeParameters = ft.typeParameters;
+      newFt.optionalParameters = ft.optionalParameters;
+      newFt.parameterInitializers = ft.parameterInitializers;
+      newFt.isFinal = ft.isFinal;
+      newFt.isAbstract = ft.isAbstract;
+      return newFt;
+    }
+    case UnionT {types}: {
+      let substituted = new Array<Type>();
+      for (let type in types) {
+        substituted.push(substituteThisType(receiverType, type));
+      }
+      return createUnionType(substituted);
+    }
+    case ArrayType {elementType}: {
+      return new ArrayType(substituteThisType(receiverType, elementType));
     }
     case _: { return t; }
   }
@@ -5464,7 +5524,8 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
             let ifaceMethod = iface.methods[methodName];
             if (classType.methods.has(methodName)) {
               // Check signature compatibility.
-              let expectedMethodType = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
+              let expectedMethodType0 = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
+              let expectedMethodType = substituteThisType(classType as Type, expectedMethodType0);
               let classMethod = classType.methods[methodName];
               if (!isAssignableTo(ctx, classMethod, expectedMethodType)) {
                 ctx.error(
@@ -5665,11 +5726,14 @@ let checkMethodBody = (
     }
   }
 
+  // Substitute ThisType with the concrete class type for params and return type.
+  let effectiveReturnType = substituteThisType(classType as Type, methodType.returnType);
+
   // Declare parameters.
   var i = 0;
   while (i < md.params.length) {
     let param = md.params[i];
-    let paramType = methodType.parameters[i];
+    let paramType = substituteThisType(classType as Type, methodType.parameters[i]);
     let paramInfo = ctx.model.resolveDeclaration(param);
     if (paramInfo != null) {
       ctx.declareBinding(paramInfo as SymbolInfo, paramType);
@@ -5683,7 +5747,7 @@ let checkMethodBody = (
 
   // Set expected return type.
   let prevReturnType = ctx.returnType;
-  ctx.setReturnType(methodType.returnType);
+  ctx.setReturnType(effectiveReturnType);
 
   // Check body.
   match (md.body as Node) {
@@ -5695,11 +5759,11 @@ let checkMethodBody = (
       }
     }
     case Expression as bodyExpr: {
-      let bodyType = checkExpression(ctx, bodyExpr, methodType.returnType);
-      if (!isAssignableTo(ctx, bodyType, methodType.returnType)) {
+      let bodyType = checkExpression(ctx, bodyExpr, effectiveReturnType);
+      if (!isAssignableTo(ctx, bodyType, effectiveReturnType)) {
         ctx.error(
           "Type mismatch: method body returns '" + typeToString(bodyType) +
-          "' but expects '" + typeToString(methodType.returnType) + "'.",
+          "' but expects '" + typeToString(effectiveReturnType) + "'.",
           DiagnosticCode.TypeMismatch,
           md.loc
         );
@@ -5772,6 +5836,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   }
 
   // Process body members.
+  ctx.enterInterface();
   var bi = 0;
   while (bi < id.body.length) {
     let member = id.body[bi];
@@ -5820,6 +5885,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
     }
     bi = bi + 1;
   }
+  ctx.exitInterface();
 
   // Register interface in type namespace.
   ctx.declareTypeName(ifaceName, ifaceType);
@@ -6045,6 +6111,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
 
   // Process body members.
+  ctx.enterInterface();
   var bi = 0;
   while (bi < md.body.length) {
     let member = md.body[bi];
@@ -6126,6 +6193,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
     }
     bi += 1;
   }
+  ctx.exitInterface();
 
   // 2. Check bodies
   // Create a synthetic ClassType for "this" inside the mixin
@@ -6533,19 +6601,22 @@ let resolveMemberType = (
       if (ct.fields.has(propName)) {
         let fieldType = ct.fields[propName];
         // Substitute type parameters if this is an instantiated generic class.
-        return substituteTypeParams(ct.typeParameters, ct.typeArguments, fieldType);
+        let subField = substituteTypeParams(ct.typeParameters, ct.typeArguments, fieldType);
+        return substituteThisType(ct as Type, subField);
       }
       // Check methods.
       if (ct.methods.has(propName)) {
         let methodType = ct.methods[propName];
-        return substituteTypeParams(ct.typeParameters, ct.typeArguments, methodType);
+        let subMethod = substituteTypeParams(ct.typeParameters, ct.typeArguments, methodType);
+        return substituteThisType(ct as Type, subMethod);
       }
       // Check for getter method (get#propName)
       let getterName = "get#" + propName;
       if (ct.methods.has(getterName)) {
         let getterType = ct.methods[getterName];
         // Return the return type of the getter
-        return substituteTypeParams(ct.typeParameters, ct.typeArguments, getterType.returnType);
+        let subGetter = substituteTypeParams(ct.typeParameters, ct.typeArguments, getterType.returnType);
+        return substituteThisType(ct as Type, subGetter);
       }
       ctx.error(
         "Property '" + propName + "' does not exist on type '" + ct.name + "'.",

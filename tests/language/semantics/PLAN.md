@@ -559,12 +559,12 @@ tests/language/semantics/
 │   └── try-catch-finally.zena                  [done]
 │
 ├── this-type/
-│   ├── in-class-method.zena                    [ts] checker-this-type_test
-│   ├── in-interface.zena                       [ts] checker-this-type_test
-│   ├── in-mixin.zena                           [ts] checker-this-type_test
-│   ├── outside-class-error.zena                [ts] — this.type outside class
-│   ├── return-this.zena                        [ts] — method returns This type
-│   └── generic-this.zena                       [ts] — This in generic class context
+│   ├── in-class-method.zena                    [done]
+│   ├── in-interface.zena                       [done]
+│   ├── in-mixin.zena                           [done] (skip: bootstrap — mixin this-type not yet supported there)
+│   ├── outside-class-error.zena                [done]
+│   ├── return-this.zena                        [done]
+│   └── generic-this.zena                       [done]
 │
 ├── shadowing/
 │   ├── builtin-shadowing.zena                  [ts] shadowing_builtins_test
