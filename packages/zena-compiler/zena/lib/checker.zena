@@ -66,6 +66,7 @@ import {
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration,
   ExportFromDeclaration, DeclareFunction, SymbolDeclaration,
+  SymbolPropertyName,
   // Patterns
   Pattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern, LiteralPattern,
@@ -988,6 +989,100 @@ class CheckerContext {
  * Stubs to Real Stdlib".
  */
 let registerStandardPrelude = (ctx: CheckerContext): void => {
+  // Builtin types
+  ctx.registerPreludeType("any", new AnyType());
+  ctx.registerPreludeType("anyref", new AnyRefType());
+
+  // =========================
+  // Compiler Intrinsics
+  // =========================
+  // ByteArray type
+  let byteArrayType = new ByteArrayType();
+  ctx.registerPreludeType("ByteArray", byteArrayType);
+
+  // __byte_array_new(size: i32): ByteArray
+  let baNewParams = new Array<Type>();
+  baNewParams.push(new I32Type());
+  let baNewType = new FunctionType(baNewParams, null, byteArrayType);
+  ctx.registerPreludeValue("__byte_array_new", baNewType);
+
+  // __byte_array_length(arr: ByteArray): i32
+  let baLenParams = new Array<Type>();
+  baLenParams.push(byteArrayType);
+  let baLenType = new FunctionType(baLenParams, null, new I32Type());
+  ctx.registerPreludeValue("__byte_array_length", baLenType);
+
+  // __byte_array_get(arr: ByteArray, index: i32): i32
+  let baGetParams = new Array<Type>();
+  baGetParams.push(byteArrayType);
+  baGetParams.push(new I32Type());
+  let baGetType = new FunctionType(baGetParams, null, new I32Type());
+  ctx.registerPreludeValue("__byte_array_get", baGetType);
+
+  // __byte_array_set(arr: ByteArray, index: i32, value: i32): void
+  let baSetParams = new Array<Type>();
+  baSetParams.push(byteArrayType);
+  baSetParams.push(new I32Type());
+  baSetParams.push(new I32Type());
+  let baSetType = new FunctionType(baSetParams, null, new VoidType());
+  ctx.registerPreludeValue("__byte_array_set", baSetType);
+
+  // __byte_array_copy(dest: ByteArray, destOffset: i32, src: ByteArray, srcOffset: i32, len: i32): void
+  let baCopyParams = new Array<Type>();
+  baCopyParams.push(byteArrayType);
+  baCopyParams.push(new I32Type());
+  baCopyParams.push(byteArrayType);
+  baCopyParams.push(new I32Type());
+  baCopyParams.push(new I32Type());
+  let baCopyType = new FunctionType(baCopyParams, null, new VoidType());
+  ctx.registerPreludeValue("__byte_array_copy", baCopyType);
+
+  // Primitive array intrinsics
+  let primArrayTParam = new TypeParameterType("T", null, null);
+  let primArrayTParams = new Array<TypeParameterType>();
+  primArrayTParams.push(primArrayTParam);
+  let primArrayType = new ArrayType(primArrayTParam);
+  ctx.registerPreludeType("array", primArrayType);
+
+  // __array_len<T>(arr: array<T>): i32
+  let arrLenParams = new Array<Type>();
+  arrLenParams.push(primArrayType);
+  let arrLenType = new FunctionType(arrLenParams, null, new I32Type());
+  arrLenType.typeParameters = primArrayTParams;
+  ctx.registerPreludeValue("__array_len", arrLenType);
+
+  // __array_get<T>(arr: array<T>, index: i32): T
+  let arrGetParams = new Array<Type>();
+  arrGetParams.push(primArrayType);
+  arrGetParams.push(new I32Type());
+  let arrGetType = new FunctionType(arrGetParams, null, primArrayTParam);
+  arrGetType.typeParameters = primArrayTParams;
+  ctx.registerPreludeValue("__array_get", arrGetType);
+
+  // __array_set<T>(arr: array<T>, index: i32, value: T): void
+  let arrSetParams = new Array<Type>();
+  arrSetParams.push(primArrayType);
+  arrSetParams.push(new I32Type());
+  arrSetParams.push(primArrayTParam);
+  let arrSetType = new FunctionType(arrSetParams, null, new VoidType());
+  arrSetType.typeParameters = primArrayTParams;
+  ctx.registerPreludeValue("__array_set", arrSetType);
+
+  // __array_new<T>(size: i32, value: T): array<T>
+  let arrNewParams = new Array<Type>();
+  arrNewParams.push(new I32Type());
+  arrNewParams.push(primArrayTParam);
+  let arrNewType = new FunctionType(arrNewParams, null, primArrayType);
+  arrNewType.typeParameters = primArrayTParams;
+  ctx.registerPreludeValue("__array_new", arrNewType);
+
+  // __array_new_empty<T>(size: i32): array<T>
+  let arrNewEmptyParams = new Array<Type>();
+  arrNewEmptyParams.push(new I32Type());
+  let arrNewEmptyType = new FunctionType(arrNewEmptyParams, null, primArrayType);
+  arrNewEmptyType.typeParameters = primArrayTParams;
+  ctx.registerPreludeValue("__array_new_empty", arrNewEmptyType);
+
   // String - the fundamental string type
   let stringType = new ClassType(ctx.freshTypeId(), "String");
   // Register operator + for string concatenation.
@@ -1489,6 +1584,13 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
           }
           return if (tat.isDistinct || tat.resolving) tat else tat.target;
         }
+      }
+      case ArrayType as at: {
+        if (!hasTypeArgs || resolvedArgs.length != 1) {
+          ctx.error("Type 'array' is generic and requires exactly 1 type argument.", DiagnosticCode.TypeMismatch, ann.loc);
+          return new ErrorType();
+        }
+        return new ArrayType(resolvedArgs[0]);
       }
       case _: {
         if (hasTypeArgs) {
@@ -2289,6 +2391,27 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
   // For now, require exact numeric type match (strict).
   // This matches Zena's no-coercion design.
 
+  match (source) {
+    case FunctionType as srcFunc: {
+      match (target) {
+        case FunctionType as tgtFunc: {
+          if (srcFunc.parameters.length != tgtFunc.parameters.length) { return false; }
+          // Covariant return type
+          if (!isAssignableTo(ctx, srcFunc.returnType, tgtFunc.returnType)) { return false; }
+          var i = 0;
+          while (i < srcFunc.parameters.length) {
+            // Contravariant parameter types
+            if (!isAssignableTo(ctx, tgtFunc.parameters[i], srcFunc.parameters[i])) { return false; }
+            i += 1;
+          }
+          return true;
+        }
+        case _: {}
+      }
+    }
+    case _: {}
+  }
+
   // Class subtyping: a subclass is assignable to its superclass chain.
   match (source) {
     case ClassType as srcClass: {
@@ -2304,6 +2427,67 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
             if (typesEqual(cur, tgtClass)) { return true; }
             if (cur.id == tgtClass.id) { return false; }
             current = cur.superType;
+          }
+        }
+        case InterfaceType as tgtIface: {
+          var implList = srcClass.implementsList;
+          if (implList.length == 0 && srcClass.genericSource != null) {
+            let srcGen = srcClass.genericSource as ClassType;
+            if (srcGen.implementsList.length > 0 && srcClass.typeArguments != null) {
+              implList = srcGen.implementsList;
+            }
+          }
+          var i = 0;
+          while (i < implList.length) {
+            let impl = implList[i];
+            var substitutedImpl = impl as Type;
+            let typeParamsList = (srcClass.genericSource ?? srcClass).typeParameters;
+            if (typeParamsList != null && srcClass.typeArguments != null) {
+              substitutedImpl = substituteTypeParams(typeParamsList, srcClass.typeArguments, substitutedImpl);
+            }
+            if (typesEqual(substitutedImpl, tgtIface) || isAssignableTo(ctx, substitutedImpl, target)) { return true; }
+            i += 1;
+          }
+          var current: ClassType | null = srcClass.superType;
+          while (current != null) {
+            let cur = current as ClassType;
+            var curImplList = cur.implementsList;
+            if (curImplList.length == 0 && cur.genericSource != null) {
+              let curGen = cur.genericSource as ClassType;
+              if (curGen.implementsList.length > 0 && cur.typeArguments != null) {
+                curImplList = curGen.implementsList;
+              }
+            }
+            var j = 0;
+            while (j < curImplList.length) {
+              let impl = curImplList[j];
+              var substitutedImpl = impl as Type;
+              let typeParamsList = (cur.genericSource ?? cur).typeParameters;
+              if (typeParamsList != null && cur.typeArguments != null) {
+                substitutedImpl = substituteTypeParams(typeParamsList, cur.typeArguments, substitutedImpl);
+              }
+              if (typesEqual(substitutedImpl, tgtIface) || isAssignableTo(ctx, substitutedImpl, target)) { return true; }
+              j += 1;
+            }
+            current = cur.superType;
+          }
+        }
+        case _: {}
+      }
+    }
+    case InterfaceType as srcIface: {
+      match (target) {
+        case InterfaceType as tgtIface: {
+          var i = 0;
+          while (i < srcIface.extendsList.length) {
+            let p = srcIface.extendsList[i];
+            var substitutedP = p as Type;
+            let typeParamsList = (srcIface.genericSource ?? srcIface).typeParameters;
+            if (typeParamsList != null && srcIface.typeArguments != null) {
+              substitutedP = substituteTypeParams(typeParamsList, srcIface.typeArguments, substitutedP);
+            }
+            if (typesEqual(substitutedP, tgtIface) || isAssignableTo(ctx, substitutedP, target)) { return true; }
+            i += 1;
           }
         }
         case _: {}
@@ -4136,15 +4320,22 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
     // Resolve through the scope pass's ReferenceMap → SymbolInfo → binding type.
     let resolved = ctx.resolveIdentifier(expr);
-    if (resolved == null) {
-      ctx.error(
-        "Variable '" + name + "' not found.",
-        DiagnosticCode.SymbolNotFound,
-        loc
-      );
-      return new ErrorType();
+    if (resolved != null) {
+      resolved as Type
+    } else {
+      // Fall back to prelude values (intrinsics / built-ins without scope info)
+      let preludeVal = ctx.resolvePreludeValue(name);
+      if (preludeVal != null) {
+        preludeVal as Type
+      } else {
+        ctx.error(
+          "Variable '" + name + "' not found.",
+          DiagnosticCode.SymbolNotFound,
+          loc
+        );
+        new ErrorType() as Type
+      }
     }
-    resolved as Type
   }
 
   // --- Binary Expressions ---
@@ -4215,6 +4406,18 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             if (!ct.methods.has("[]=")) {
               // Check if there's a getter only (read-only indexer)
               if (ct.methods.has("[]")) {
+                ctx.error(
+                  "Cannot assign to read-only indexer.",
+                  DiagnosticCode.InvalidAssignment,
+                  loc
+                );
+                return new ErrorType();
+              }
+            }
+          }
+          case InterfaceType as it: {
+            if (!it.methods.has("[]=")) {
+              if (it.methods.has("[]")) {
                 ctx.error(
                   "Cannot assign to read-only indexer.",
                   DiagnosticCode.InvalidAssignment,
@@ -4742,7 +4945,23 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     let argType = checkExpression(ctx, argument, null);
     let errorType = ctx.resolveTypeName("Error");
     if (errorType != null) {
-      if (!isAssignableTo(ctx, argType, errorType as Type)) {
+      let isError = isAssignableTo(ctx, argType, errorType as Type);
+      var isActuallyError = isError;
+      if (!isError) {
+        match (argType) {
+          case ClassType as cType: {
+            var cur: ClassType | null = cType;
+            while (cur != null) {
+              let c = cur as ClassType;
+              if (c.name == "Error") { isActuallyError = true; }
+              cur = c.superType;
+            }
+          }
+          case _: {}
+        }
+      }
+
+      if (!isActuallyError) {
         ctx.error(
           "Thrown value must be an instance of Error, got '" + typeToString(argType) + "'.",
           DiagnosticCode.TypeMismatch, loc
@@ -4864,15 +5083,36 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   classType.isSealed = cd.isSealed;
   classType.isCaseClass = false;
 
+  // Type parameters.
+  ctx.enterScope();
+  if (cd.typeParameters != null) {
+    let tps = cd.typeParameters as Array<TypeParameter>;
+    var tpi = 0;
+    while (tpi < tps.length) {
+      let tp = tps[tpi];
+      var constraint: Type | null = null;
+      if (tp.constraint != null) {
+        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+      }
+      var defaultT: Type | null = null;
+      if (tp.defaultType != null) {
+        defaultT = resolveTypeAnnotation(ctx, tp.defaultType as TypeAnnotation);
+      }
+      let tpType = new TypeParameterType(tp.name, constraint, defaultT);
+      ctx.declareTypeName(tp.name, tpType);
+      ctx.registerTypeParameter(tp, tpType);
+
+      if (classType.typeParameters == null) {
+        classType.typeParameters = new Array<TypeParameterType>();
+      }
+      (classType.typeParameters as Array<TypeParameterType>).push(tpType);
+      tpi = tpi + 1;
+    }
+  }
+
   // Extension classes: resolve the underlying type from the 'on' clause.
   if (cd.isExtension && cd.onType != null) {
-    let resolvedOnType = resolveTypeAnnotation(ctx, cd.onType as TypeAnnotation);
-    match (resolvedOnType) {
-      case ClassType as ct: {
-        classType.onType = ct;
-      }
-      case _: {}
-    }
+    classType.onType = resolveTypeAnnotation(ctx, cd.onType as TypeAnnotation);
   }
 
   // Sealed classes are implicitly abstract (cannot be instantiated directly).
@@ -4902,33 +5142,6 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         }
       }
       fvi = fvi + 1;
-    }
-  }
-
-  // Type parameters.
-  ctx.enterScope();
-  if (cd.typeParameters != null) {
-    let tps = cd.typeParameters as Array<TypeParameter>;
-    var tpi = 0;
-    while (tpi < tps.length) {
-      let tp = tps[tpi];
-      var constraint: Type | null = null;
-      if (tp.constraint != null) {
-        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
-      }
-      var defaultT: Type | null = null;
-      if (tp.defaultType != null) {
-        defaultT = resolveTypeAnnotation(ctx, tp.defaultType as TypeAnnotation);
-      }
-      let tpType = new TypeParameterType(tp.name, constraint, defaultT);
-      ctx.declareTypeName(tp.name, tpType);
-      ctx.registerTypeParameter(tp, tpType);
-
-      if (classType.typeParameters == null) {
-        classType.typeParameters = new Array<TypeParameterType>();
-      }
-      (classType.typeParameters as Array<TypeParameterType>).push(tpType);
-      tpi = tpi + 1;
     }
   }
 
@@ -5241,6 +5454,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       case MethodDefinition as md: {
         let methodName = match (md.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
 
@@ -5294,7 +5512,18 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
 
           let methodType = checkMethodSignature(ctx, classType, md);
-          classType.methods[methodName] = methodType;
+          if (classType.methods.has(methodName)) {
+            let existing = classType.methods[methodName];
+            if (existing.overloads == null) {
+              let ovArray = new Array<FunctionType>();
+              ovArray.push(existing);
+              existing.overloads = ovArray;
+            }
+            let ovs = existing.overloads as Array<FunctionType>;
+            ovs.push(methodType);
+          } else {
+            classType.methods[methodName] = methodType;
+          }
 
           // Track abstract methods for checking in subclasses.
           trackAbstractMethod(ctx, classType, methodName, md.isAbstract);
@@ -5666,6 +5895,11 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
         if (md.body != null) {
           let methodName = match (md.name) {
             case Identifier {name}: name
+            case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+              case Identifier {name}: name
+              case MemberExpression {property}: property.name
+              case _: "<symbol>"
+            }
             case _: "<unknown>"
           };
           if (methodName == "<constructor>") {
@@ -5682,7 +5916,8 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
             }
           } else {
             if (classType.methods.has(methodName)) {
-              checkMethodBody(ctx, classType, classType.methods[methodName], md);
+              let methodType = checkMethodSignature(ctx, classType, md);
+              checkMethodBody(ctx, classType, methodType, md);
             }
           }
         }
@@ -5751,7 +5986,18 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
             if (classType.methods.has(methodName)) {
               // Check signature compatibility.
               let expectedMethodType0 = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
-              let expectedMethodType = substituteThisType(classType as Type, expectedMethodType0);
+              
+              var receiverType: Type = classType as Type;
+              let tParams = classType.typeParameters;
+              if (tParams != null) {
+                if (tParams.length > 0) {
+                  let typeArgs = new Array<Type>();
+                  for (let tp in tParams) { typeArgs.push(tp as Type); }
+                  receiverType = instantiateClassType(classType, typeArgs) as Type;
+                }
+              }
+              
+              let expectedMethodType = substituteThisType(receiverType, expectedMethodType0);
               let classMethod = classType.methods[methodName];
               if (!isAssignableTo(ctx, classMethod, expectedMethodType)) {
                 ctx.error(
@@ -5762,8 +6008,10 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
                   cd.loc
                 );
               }
-            } else if (classType.fields.has(methodName)) {
-              // A field can satisfy a getter/setter interface method.
+            } else if (methodName.startsWith("get#") && classType.fields.has(methodName.sliceBytes(4, methodName.length))) {
+              // A field can satisfy a getter interface method.
+            } else if (methodName.startsWith("set#") && classType.fields.has(methodName.sliceBytes(4, methodName.length))) {
+              // A field can satisfy a setter interface method.
             } else {
               ctx.error(
                 "Class '" + className + "' incorrectly implements interface '" + iface.name +
@@ -6022,6 +6270,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   ctx.enterScope();
   if (id.typeParameters != null) {
     let tps = id.typeParameters as Array<TypeParameter>;
+    ifaceType.typeParameters = new Array<TypeParameterType>();
     var tpi = 0;
     while (tpi < tps.length) {
       let tp = tps[tpi];
@@ -6032,6 +6281,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       let tpType = new TypeParameterType(tp.name, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
       ctx.registerTypeParameter(tp, tpType);
+      (ifaceType.typeParameters as Array<TypeParameterType>).push(tpType);
       tpi = tpi + 1;
     }
   }
@@ -6068,6 +6318,26 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
     let member = id.body[bi];
     match (member) {
       case MethodSignature as ms: {
+        ctx.enterScope();
+        var typeParams: Array<TypeParameterType> | null = null;
+        if (ms.typeParameters != null) {
+          let tpArr = new Array<TypeParameterType>();
+          let tps = ms.typeParameters as Array<TypeParameter>;
+          var k = 0;
+          while (k < tps.length) {
+            let tp = tps[k];
+            var constraint: Type | null = null;
+            if (tp.constraint != null) {
+              constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+            }
+            let tpType = new TypeParameterType(tp.name, constraint, null);
+            ctx.declareTypeName(tp.name, tpType);
+            ctx.registerTypeParameter(tp, tpType);
+            tpArr.push(tpType);
+            k = k + 1;
+          }
+          typeParams = tpArr;
+        }
         let paramTypes = new Array<Type>();
         var pi = 0;
         while (pi < ms.params.length) {
@@ -6083,7 +6353,19 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         if (ms.returnType != null) {
           retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation);
         }
-        ifaceType.methods[(ms.name as Identifier).name] = new FunctionType(paramTypes, null, retType);
+        let methodName = match (ms.name) {
+          case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
+          case _: "<unknown>"
+        };
+        let ft = new FunctionType(paramTypes, null, retType);
+        ft.typeParameters = typeParams;
+        ifaceType.methods[methodName] = ft;
+        ctx.exitScope();
       }
       case PropertySignature as ps: {
         let propType = resolveTypeAnnotation(ctx, ps.typeAnnotation);
@@ -6104,7 +6386,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       case AccessorSignature as as_: {
         let accType = resolveTypeAnnotation(ctx, as_.typeAnnotation);
         if (as_.hasGetter) {
-          ifaceType.methods[as_.name.name] = new FunctionType(new Array<Type>(), null, accType);
+          ifaceType.methods["get#" + as_.name.name] = new FunctionType(new Array<Type>(), null, accType);
         }
       }
       case _: {}
@@ -6369,6 +6651,11 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       case MethodDefinition as methDef: {
         let methodName = match (methDef.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
 
@@ -6467,10 +6754,16 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       case MethodDefinition as methDef: {
         let methodName = match (methDef.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
         if (methodName != "<constructor>" && methDef.body != null && mixinType.methods.has(methodName)) {
-           checkMethodBody(ctx, thisType, mixinType.methods[methodName], methDef);
+           let methodType = checkMethodSignature(ctx, thisType, methDef);
+           checkMethodBody(ctx, thisType, methodType, methDef);
         }
       }
       case _: {}
@@ -6864,6 +7157,8 @@ let resolveMemberType = (
         let getterType = it.methods[getterName];
         return getterType.returnType;
       }
+      console.log("InterfaceType check failed for '" + propName + "' on '" + it.name + "'.");
+      console.log("  fields: " + i32ToString(it.fields.size) + "  methods: " + i32ToString(it.methods.size));
       ctx.error(
         "Property '" + propName + "' does not exist on interface '" + it.name + "'.",
         DiagnosticCode.PropertyNotFound,
@@ -7042,6 +7337,18 @@ let resolveIndexType = (
       }
       ctx.error(
         "Type '" + ct.name + "' does not support indexing (no 'operator []' method).",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case InterfaceType as it: {
+      if (it.methods.has("[]")) {
+        let opMethod = it.methods["[]"];
+        return substituteTypeParams(it.typeParameters, it.typeArguments, opMethod.returnType);
+      }
+      ctx.error(
+        "Interface '" + it.name + "' does not support indexing (no 'operator []' method).",
         DiagnosticCode.PropertyNotFound,
         loc
       );

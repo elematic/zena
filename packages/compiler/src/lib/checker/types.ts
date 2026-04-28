@@ -1983,14 +1983,6 @@ export function isAssignableTo(
     }
   }
 
-  // Allow assigning primitive FixedArray to Extension Class wrapping it
-  if (source.kind === TypeKind.Array && target.kind === TypeKind.Class) {
-    const targetClass = target as ClassType;
-    if (targetClass.isExtension && targetClass.onType) {
-      return isAssignableTo(ctx, source, targetClass.onType);
-    }
-  }
-
   // Check if source type has an extension that implements the target interface
   if (target.kind === TypeKind.Interface && source.kind === TypeKind.Array) {
     // For raw array<T> types, check extension classes that implement the target.

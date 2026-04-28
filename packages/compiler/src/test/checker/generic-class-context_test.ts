@@ -269,7 +269,7 @@ suite('Generic Class Context Consistency', () => {
         }
         
         export let main = (): i32 => {
-          let arr: ArrayExt<i32> = [42, 2, 3];
+          let arr: ArrayExt<i32> = [42, 2, 3] as ArrayExt<i32>;
           return arr.firstOrDefault(0);
         };
       `;

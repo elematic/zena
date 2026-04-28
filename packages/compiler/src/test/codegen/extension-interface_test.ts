@@ -45,7 +45,7 @@ suite('Extension Class Interfaces', () => {
       }
 
       export let createArray = (): ArrayWithFirst => {
-        let a = [2, 3, 5];
+        let a = [2, 3, 5] as ArrayWithFirst;
         return a;
       };
 
@@ -80,7 +80,7 @@ suite('Extension Class Interfaces', () => {
       }
 
       export let createArray = (): ArrayWithFirst<i32> => {
-        let a = [2, 3, 5];
+        let a = [2, 3, 5] as ArrayWithFirst<i32>;
         return a;
       };
 
