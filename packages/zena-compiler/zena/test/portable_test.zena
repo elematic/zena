@@ -19,6 +19,9 @@ import { ExpressionStatement } from '../lib/ast.zena';
 import { ScopeBuilder } from '../lib/scope.zena';
 import { checkModule, CheckResult } from '../lib/checker.zena';
 import { Diagnostic, DiagnosticSeverity, formatDiagnostic } from '../lib/diagnostics.zena';
+import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
+import { CompilerHost } from '../lib/library-loader.zena';
+import { loadPackageMap } from '../lib/package-manifest.zena';
 
 // ============================================================================
 // Skip list — tests that the self-hosted parser cannot yet match
@@ -129,6 +132,29 @@ let getTarget = (directives: Array<Directive>): String => {
   return "module";
 };
 
+class FsHost implements CompilerHost {
+  #stdlibRoot: String;
+  #fileSourceOverride: String;
+  #filePathOverride: String;
+
+  new(stdlibRoot: String, filePathOverride: String, fileSourceOverride: String)
+    : #stdlibRoot = stdlibRoot,
+      #filePathOverride = filePathOverride,
+      #fileSourceOverride = fileSourceOverride;
+
+  readFile(path: String): String {
+    if (path == this.#filePathOverride) {
+      return this.#fileSourceOverride;
+    }
+    if (path.startsWith("zena:")) {
+      let moduleName = path.sliceBytes(5, path.length);
+      let fsPath = this.#stdlibRoot + "/" + moduleName + ".zena";
+      return readFile(fsPath);
+    }
+    return readFile(path);
+  }
+}
+
 /**
  * Run a semantic test: parse → scope → check, then match diagnostics.
  */
@@ -146,16 +172,23 @@ let runSemanticTest = (
     }
   }
 
-  // Parse.
-  let ast = parse(source, filePath);
-
-  // Scope analysis.
-  let scopeBuilder = new ScopeBuilder(filePath);
-  let scopeResult = scopeBuilder.build(ast);
-
-  // Type check.
-  let result = checkModule(ast, scopeResult, null);
-  let diagnostics = result.diagnostics;
+  let stdlibRoot = "packages/stdlib/zena";
+  let host = new FsHost(stdlibRoot, filePath, source);
+  let packages = loadPackageMap(host, "zena-packages.json");
+  let options = new CompilerOptions("host", stdlibRoot, packages, null);
+  let compiler = createCompiler(host, options);
+  let result = compiler.compile(filePath);
+  let checkResult = checkCompilation(result);
+  
+  // Aggregate all diagnostics from all files
+  let diagnostics = new Array<Diagnostic>(4);
+  let iter = checkResult.results.keys();
+  while (let (true, k) = iter.next()) {
+    let modResult = checkResult.results[k];
+    for (let diag in modResult.diagnostics) {
+      diagnostics.push(diag);
+    }
+  }
 
   // Collect only errors (not warnings).
   let errors = new Array<Diagnostic>(4);

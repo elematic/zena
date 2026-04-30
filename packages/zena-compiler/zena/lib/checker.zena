@@ -586,6 +586,20 @@ class CheckerContext {
   }
 
   /**
+   * Materialize a type for its declaration node.
+   */
+  materializeDeclaration(node: Node, fallbackName: String): Type | null {
+    let info = this.model.resolveDeclaration(node);
+    if (info != null) {
+      let t = this.#materializeFromSymbol(info as SymbolInfo, fallbackName);
+      if (t != null) {
+        return t;
+      }
+    }
+    return this.resolveTypeName(fallbackName);
+  }
+
+  /**
    * Look up a type name in scope analysis and materialize a Type object
    * on demand. Returns null if the name doesn't exist in scope analysis.
    * Sets all boolean flags from the AST node at creation time.
@@ -680,6 +694,26 @@ class CheckerContext {
               this.declareBinding(valueInfo as SymbolInfo, materialized);
             }
           }
+          case TypeAliasDeclaration: {
+            let valueInfo = this.model.resolveDeclaration(declNode);
+            if (valueInfo != null) {
+              this.declareBinding(valueInfo as SymbolInfo, materialized);
+            }
+          }
+          case EnumDeclaration as ed: {
+            let valueInfo = this.model.resolveDeclaration(declNode);
+            if (valueInfo != null) {
+              let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
+              let backingType = if (isStringEnum) { this.resolvePreludeType("String") as Type } else { new I32Type() as Type };
+              let enumType = new TypeAliasType(ed.name.name, null, backingType, true, null);
+              let fields = new HashMap<String, Type>();
+              for (let member in ed.members) {
+                fields[member.name.name] = enumType;
+              }
+              let enumValueType = new RecordT(fields, null);
+              this.declareBinding(valueInfo as SymbolInfo, enumValueType);
+            }
+          }
           case _: {}
         }
       }
@@ -757,7 +791,9 @@ class CheckerContext {
         return ct;
       }
       case EnumDeclaration as ed: {
-        return new TypeAliasType(ed.name.name, null, new I32Type(), true, null);
+        let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
+        let backingType = if (isStringEnum) { this.resolvePreludeType("String") as Type } else { new I32Type() as Type };
+        return new TypeAliasType(ed.name.name, null, backingType, true, null);
       }
       case TypeAliasDeclaration as ta: {
         this.enterScope();
@@ -787,7 +823,7 @@ class CheckerContext {
           }
         }
         
-        let targetType = new ErrorType();
+        let targetType: Type = new HoleType();
         this.exitScope();
         
         return new TypeAliasType(ta.name.name, typeParams, targetType, ta.isDistinct, null);
@@ -1580,7 +1616,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
           return target;
         } else {
           if (hasTypeArgs) {
-             ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
+            ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
           }
           return if (tat.isDistinct || tat.resolving) tat else tat.target;
         }
@@ -1594,7 +1630,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
       }
       case _: {
         if (hasTypeArgs) {
-           ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
+          ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
         }
       }
     }
@@ -1823,6 +1859,14 @@ let getElementType = (
       return getElementTypeFromClass(ctx, ct, iterableExpr);
     }
     case InterfaceType as it: {
+      // If the interface IS Iterator, use its first type argument.
+      if (it.name == "Iterator" || it.name == "Iterable") {
+         if (it.typeArguments != null) {
+            let args = it.typeArguments as Array<Type>;
+            if (args.length > 0) { return args[0]; }
+         }
+      }
+
       let elemType = findIterableInterface(ctx, it);
       if (elemType != null) {
         return elemType as Type;
@@ -1854,6 +1898,18 @@ let getElementTypeFromClass = (
   ct: ClassType,
   iterableExpr: Expression
 ): Type => {
+  // If the class IS Iterator, use its first type argument.
+  let iteratorPrelude = ctx.resolvePreludeType("Iterator");
+  if (iteratorPrelude != null && iteratorPrelude is InterfaceType) {
+    let pt = iteratorPrelude as InterfaceType;
+    if (ct.name == pt.name) {
+       if (ct.typeArguments != null) {
+          let args = ct.typeArguments as Array<Type>;
+          if (args.length > 0) { return args[0]; }
+       }
+    }
+  }
+
   // Check if the class implements Iterable<T> (walk implementsList).
   var i = 0;
   while (i < ct.implementsList.length) {
@@ -1893,7 +1949,7 @@ let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | 
       } else {
         iface.id
       };
-      if (sourceId == iterableType.id) {
+      if (sourceId == iterableType.id || iface.name == iterableType.name) {
         if (iface.typeArguments != null) {
           let args = iface.typeArguments as Array<Type>;
           if (args.length > 0) { return args[0]; }
@@ -2270,7 +2326,7 @@ let isPreludeClassType = (ctx: CheckerContext, ct: ClassType, preludeName: Strin
   let prelude = ctx.resolvePreludeType(preludeName);
   if (prelude == null) { return false; }
   match (prelude as Type) {
-    case ClassType as pt: { return ct.id == pt.id; }
+    case ClassType as pt: { return ct.id == pt.id || ct.name == pt.name; }
     case _: { return false; }
   }
 };
@@ -2311,6 +2367,15 @@ let widenType = (ctx: CheckerContext, t: Type): Type => match (t) {
 };
 
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
+  // Automatically unwrap non-distinct type aliases
+  match (source) {
+    case TypeAliasType as ta: { if (!ta.isDistinct) { return isAssignableTo(ctx, ta.target, target); } }
+    case _: {}
+  }
+  match (target) {
+    case TypeAliasType as tb: { if (!tb.isDistinct) { return isAssignableTo(ctx, source, tb.target); } }
+    case _: {}
+  }
   // Same type (identity check via match).
   if (typesEqual(source, target)) { return true; }
 
@@ -2325,6 +2390,51 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
       null
     );
     return true;
+  }
+
+  // Handle distinct types explicitly
+  match (source) {
+    case TypeAliasType as srcAlias: {
+      if (srcAlias.isDistinct) {
+        match (target) {
+          case UnionT {types}: {
+            var i = 0;
+            while (i < types.length) {
+              if (isAssignableTo(ctx, source, types[i])) { return true; }
+              i += 1;
+            }
+            return false;
+          }
+          case TypeAliasType as tgtAlias: {
+            if (tgtAlias.isDistinct) {
+              return srcAlias.name == tgtAlias.name && isAssignableTo(ctx, srcAlias.target, tgtAlias.target);
+            }
+          }
+          case _: {}
+        }
+        return false;
+      }
+    }
+    case _: {}
+  }
+
+  match (target) {
+    case TypeAliasType as tgtAlias: {
+      if (tgtAlias.isDistinct) {
+        return false;
+      }
+    }
+    case _: {}
+  }
+
+  // Automatically unwrap non-distinct type aliases
+  match (source) {
+    case TypeAliasType as ta: { return isAssignableTo(ctx, ta.target, target); }
+    case _: {}
+  }
+  match (target) {
+    case TypeAliasType as tb: { return isAssignableTo(ctx, source, tb.target); }
+    case _: {}
   }
 
   // Anything is assignable to `any`.
@@ -2419,13 +2529,16 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
         case ClassType as tgtClass: {
           // If they match by id but didn't pass typesEqual early, they have different
           // type arguments. For invariant nominal types, they are not assignable.
-          if (srcClass.id == tgtClass.id) { return false; }
+          let tgtBase = if (tgtClass.genericSource != null) tgtClass.genericSource as ClassType else tgtClass;
+          let srcBase = if (srcClass.genericSource != null) srcClass.genericSource as ClassType else srcClass;
+          if (areBaseTypesEqual(srcBase.name, tgtBase.name, srcBase.id, tgtBase.id)) { return false; }
           // Walk the supertype chain.
           var current: ClassType | null = srcClass.superType;
           while (current != null) {
             let cur = current as ClassType;
             if (typesEqual(cur, tgtClass)) { return true; }
-            if (cur.id == tgtClass.id) { return false; }
+            let curBase = if (cur.genericSource != null) cur.genericSource as ClassType else cur;
+            if (areBaseTypesEqual(curBase.name, tgtBase.name, curBase.id, tgtBase.id)) { return false; }
             current = cur.superType;
           }
         }
@@ -2544,6 +2657,15 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
   return false;
 };
 
+let isPreludeBaseType = (name: String): boolean => {
+  return name == "String" || name == "Array" || name == "HashMap" || name == "Error" || name == "Option" || name == "Some" || name == "None" || name == "HashSet" || name == "Map" || name == "Set" || name == "Console" || name == "TemplateStringsArray" || name == "Box" || name == "MapEntry" || name == "ImmutableArray" || name == "FixedArray" || name == "Sequence" || name == "MutableSequence" || name == "Iterable" || name == "Iterator" || name == "BoundedRange" || name == "FromRange" || name == "ToRange" || name == "FullRange";
+};
+
+let areBaseTypesEqual = (nameA: String, nameB: String, idA: i32, idB: i32): boolean => {
+  if (idA == idB) { return true; }
+  return nameA == nameB && isPreludeBaseType(nameA);
+};
+
 /**
  * Check if two type arrays (tuple elements) are structurally equal.
  */
@@ -2603,9 +2725,9 @@ let typesEqual = (a: Type, b: Type): boolean => {
       match (b) {
         case ClassType as cb: {
           // Compare canonical base type (follow genericSource chain)
-          let baseA = if (ca.genericSource != null) (ca.genericSource as ClassType).id else ca.id;
-          let baseB = if (cb.genericSource != null) (cb.genericSource as ClassType).id else cb.id;
-          if (baseA != baseB) { return false; }
+          let baseA = if (ca.genericSource != null) ca.genericSource as ClassType else ca;
+          let baseB = if (cb.genericSource != null) cb.genericSource as ClassType else cb;
+          if (!areBaseTypesEqual(baseA.name, baseB.name, baseA.id, baseB.id)) { return false; }
           // Compare type arguments for generic instantiations
           if (ca.typeArguments == null && cb.typeArguments == null) { return true; }
           if (ca.typeArguments == null || cb.typeArguments == null) { return false; }
@@ -2626,9 +2748,9 @@ let typesEqual = (a: Type, b: Type): boolean => {
       match (b) {
         case InterfaceType as ib: {
           // Compare canonical base type (follow genericSource chain)
-          let baseA = if (ia.genericSource != null) (ia.genericSource as InterfaceType).id else ia.id;
-          let baseB = if (ib.genericSource != null) (ib.genericSource as InterfaceType).id else ib.id;
-          if (baseA != baseB) { return false; }
+          let baseA = if (ia.genericSource != null) ia.genericSource as InterfaceType else ia;
+          let baseB = if (ib.genericSource != null) ib.genericSource as InterfaceType else ib;
+          if (!areBaseTypesEqual(baseA.name, baseB.name, baseA.id, baseB.id)) { return false; }
           // Compare type arguments for generic instantiations
           if (ia.typeArguments == null && ib.typeArguments == null) { return true; }
           if (ia.typeArguments == null || ib.typeArguments == null) { return false; }
@@ -2878,12 +3000,13 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
       }
       return "s" + i32ToString((info as SymbolInfo).id as i32);
     }
-    case MemberExpression {object, property}: {
+    case MemberExpression {object, property, isSymbolAccess}: {
       let base = getMemberPathKey(ctx, object);
       if (base == null) {
         return null;
       }
-      return (base as String) + "." + property.name;
+      let propStr = if (isSymbolAccess) ":" + property.name else property.name;
+      return (base as String) + "." + propStr;
     }
     case _: {
       return null;
@@ -2894,13 +3017,15 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
 let getMemberPathKeyFromAccess = (
   ctx: CheckerContext,
   object: Expression,
-  property: Identifier
+  property: Identifier,
+  isSymbolAccess: boolean
 ): String | null => {
   let base = getMemberPathKey(ctx, object);
   if (base == null) {
     return null;
   }
-  return (base as String) + "." + property.name;
+  let propStr = if (isSymbolAccess) ":" + property.name else property.name;
+  return (base as String) + "." + propStr;
 };
 
 let isImmutableFieldAccess = (objectType: Type, propName: String): boolean => {
@@ -2939,9 +3064,10 @@ let isImmutableFieldAccess = (objectType: Type, propName: String): boolean => {
 
 let isImmutableMemberPath = (ctx: CheckerContext, expr: Expression): boolean => {
   match (expr) {
-    case MemberExpression {object, property}: {
+    case MemberExpression {object, property, isSymbolAccess}: {
       let objectType = checkExpression(ctx, object, null);
-      if (!isImmutableFieldAccess(objectType, property.name)) {
+      let propName = if (isSymbolAccess) ":" + property.name else property.name;
+      if (!isImmutableFieldAccess(objectType, propName)) {
         return false;
       }
 
@@ -3093,7 +3219,56 @@ let extractNullGuardPathNarrowing = (
   }
 };
 
-let applyFalseNullNarrowingFromCondition = (ctx: CheckerContext, condition: Expression): void => {
+let applyTrueNarrowingFromCondition = (ctx: CheckerContext, condition: Expression): void => {
+  let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, condition);
+  if (guardInfo != null) {
+    let si = guardInfo as SymbolInfo;
+    let origType = guardOrigType as Type;
+    if (isEqualNull) {
+      ctx.narrowBinding(si, new NullType());
+    } else {
+      ctx.narrowBinding(si, subtractNullFromType(origType));
+    }
+    return;
+  }
+
+  let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, condition);
+  if (guardPathKey != null) {
+    let pathKey = guardPathKey as String;
+    let origType = guardPathOrigType as Type;
+    if (pathIsEqualNull) {
+      ctx.narrowMemberPath(pathKey, new NullType());
+    } else {
+      ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
+    }
+    return;
+  }
+
+  let (isInfo, isTargetType, isOrigType) = extractIsNarrowing(ctx, condition);
+  if (isInfo != null) {
+    let si = isInfo as SymbolInfo;
+    ctx.narrowBinding(si, isTargetType as Type);
+    return;
+  }
+
+  let (isPathKey, isPathTargetType, isPathOrigType_) = extractIsPathNarrowing(ctx, condition);
+  if (isPathKey != null) {
+    ctx.narrowMemberPath(isPathKey as String, isPathTargetType as Type);
+    return;
+  }
+
+  match (condition) {
+    case BinaryExpression {operator, left, right}: {
+      if (operator == "&&") {
+        applyTrueNarrowingFromCondition(ctx, left);
+        applyTrueNarrowingFromCondition(ctx, right);
+      }
+    }
+    case _: {}
+  }
+};
+
+let applyFalseNarrowingFromCondition = (ctx: CheckerContext, condition: Expression): void => {
   let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, condition);
   if (guardInfo != null) {
     let si = guardInfo as SymbolInfo;
@@ -3117,12 +3292,25 @@ let applyFalseNullNarrowingFromCondition = (ctx: CheckerContext, condition: Expr
     }
     return;
   }
+  
+  let (isInfo, isTargetType, isOrigType) = extractIsNarrowing(ctx, condition);
+  if (isInfo != null) {
+    let si = isInfo as SymbolInfo;
+    ctx.narrowBinding(si, subtractTypeFromUnion(isOrigType as Type, isTargetType as Type));
+    return;
+  }
+
+  let (isPathKey, isPathTargetType, isPathOrigType_) = extractIsPathNarrowing(ctx, condition);
+  if (isPathKey != null) {
+    ctx.narrowMemberPath(isPathKey as String, subtractTypeFromUnion(isPathOrigType_ as Type, isPathTargetType as Type));
+    return;
+  }
 
   match (condition) {
     case BinaryExpression {operator, left, right}: {
       if (operator == "||") {
-        applyFalseNullNarrowingFromCondition(ctx, left);
-        applyFalseNullNarrowingFromCondition(ctx, right);
+        applyFalseNarrowingFromCondition(ctx, left);
+        applyFalseNarrowingFromCondition(ctx, right);
       }
     }
     case _: {}
@@ -3261,181 +3449,51 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
             ctx.exitScope();
           }
         }
-        case _: {
+case _: {
           let testExpr = test as Expression;
           let testType = checkExpression(ctx, testExpr, null);
           validateConditionType(ctx, testType, testExpr);
 
-          // Extract null-guard narrowing from the condition.
-          let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
-          let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
+          // Consequent body with TRUE narrowings
+          ctx.enterScope();
+          applyTrueNarrowingFromCondition(ctx, testExpr);
+          checkStatement(ctx, consequent);
+          ctx.exitScope();
 
-          // Also try is-expression narrowing if no null-guard found.
-          var isInfo: SymbolInfo | null = null;
-          var isTargetType: Type | null = null;
-          var isOrigType: Type | null = null;
-          var isPathKey: String | null = null;
-          var isPathTargetType: Type | null = null;
-          var isPathOrigType: Type | null = null;
-          if (guardInfo == null && guardPathKey == null) {
-            let (info, target, orig) = extractIsNarrowing(ctx, testExpr);
-            isInfo = info;
-            isTargetType = target;
-            isOrigType = orig;
-
-            if (isInfo == null) {
-              let (pathKey, pathTarget, pathOrig) = extractIsPathNarrowing(ctx, testExpr);
-              isPathKey = pathKey;
-              isPathTargetType = pathTarget;
-              isPathOrigType = pathOrig;
-            }
-          }
-
-          // Check consequent with narrowing applied.
-          // For `x == null`: consequent has x narrowed to null
-          // For `x != null`: consequent has x narrowed to non-null
-          // For `x is T`: consequent has x narrowed to T
-          if (guardInfo != null) {
-            let si = guardInfo as SymbolInfo;
-            let origType = guardOrigType as Type;
-            ctx.enterScope();
-            if (isEqualNull) {
-              ctx.narrowBinding(si, new NullType());
-            } else {
-              ctx.narrowBinding(si, subtractNullFromType(origType));
-            }
-            checkStatement(ctx, consequent);
-            ctx.exitScope();
-          } else if (guardPathKey != null) {
-            let pathKey = guardPathKey as String;
-            let origType = guardPathOrigType as Type;
-            ctx.enterScope();
-            if (pathIsEqualNull) {
-              ctx.narrowMemberPath(pathKey, new NullType());
-            } else {
-              ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
-            }
-            checkStatement(ctx, consequent);
-            ctx.exitScope();
-          } else if (isInfo != null) {
-            let si = isInfo as SymbolInfo;
-            ctx.enterScope();
-            ctx.narrowBinding(si, isTargetType as Type);
-            checkStatement(ctx, consequent);
-            ctx.exitScope();
-          } else if (isPathKey != null) {
-            ctx.enterScope();
-            ctx.narrowMemberPath(isPathKey as String, isPathTargetType as Type);
-            checkStatement(ctx, consequent);
-            ctx.exitScope();
-          } else {
-            checkStatement(ctx, consequent);
-          }
-
-          // Check alternate with inverse narrowing applied.
+          // Alternate body with FALSE narrowings
           if (alternate != null) {
-            if (guardInfo != null) {
-              let si = guardInfo as SymbolInfo;
-              let origType = guardOrigType as Type;
-              ctx.enterScope();
-              if (isEqualNull) {
-                ctx.narrowBinding(si, subtractNullFromType(origType));
-              } else {
-                ctx.narrowBinding(si, new NullType());
-              }
-              checkStatement(ctx, alternate as Statement);
-              ctx.exitScope();
-            } else if (guardPathKey != null) {
-              let pathKey = guardPathKey as String;
-              let origType = guardPathOrigType as Type;
-              ctx.enterScope();
-              if (pathIsEqualNull) {
-                ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
-              } else {
-                ctx.narrowMemberPath(pathKey, new NullType());
-              }
-              checkStatement(ctx, alternate as Statement);
-              ctx.exitScope();
-            } else if (isInfo != null) {
-              // `x is T` else branch: x is NOT T, subtract T from original type
-              let si = isInfo as SymbolInfo;
-              let narrowed = subtractTypeFromUnion(isOrigType as Type, isTargetType as Type);
-              ctx.enterScope();
-              ctx.narrowBinding(si, narrowed);
-              checkStatement(ctx, alternate as Statement);
-              ctx.exitScope();
-            } else if (isPathKey != null) {
-              let narrowed = subtractTypeFromUnion(isPathOrigType as Type, isPathTargetType as Type);
-              ctx.enterScope();
-              ctx.narrowMemberPath(isPathKey as String, narrowed);
-              checkStatement(ctx, alternate as Statement);
-              ctx.exitScope();
-            } else {
-              checkStatement(ctx, alternate as Statement);
-            }
+            ctx.enterScope();
+            applyFalseNarrowingFromCondition(ctx, testExpr);
+            checkStatement(ctx, alternate as Statement);
+            ctx.exitScope();
           }
 
           // Narrowing past definite exits:
           // If the consequent always exits and there is no else branch,
           // the inverse narrowing holds for subsequent code.
           if (alternate == null && branchDefinitelyExits(consequent)) {
-            applyFalseNullNarrowingFromCondition(ctx, testExpr);
-            if (isInfo != null) {
-              // `if (x is T) { return; }` → x is NOT T after
-              let si = isInfo as SymbolInfo;
-              ctx.narrowBinding(si, subtractTypeFromUnion(isOrigType as Type, isTargetType as Type));
-            }
-            if (isPathKey != null) {
-              ctx.narrowMemberPath(
-                isPathKey as String,
-                subtractTypeFromUnion(isPathOrigType as Type, isPathTargetType as Type)
-              );
-            }
+            applyFalseNarrowingFromCondition(ctx, testExpr);
           }
 
           // If the alternate always exits, the regular narrowing holds.
           if (alternate != null && branchDefinitelyExits(alternate as Statement)) {
-            if (guardInfo != null) {
-              let si = guardInfo as SymbolInfo;
-              let origType = guardOrigType as Type;
-              if (isEqualNull) {
-                // `if (x == null) { ... } else { return; }` → x is null after
-                ctx.narrowBinding(si, new NullType());
-              } else {
-                // `if (x != null) { ... } else { return; }` → x is non-null after
-                ctx.narrowBinding(si, subtractNullFromType(origType));
-              }
-            }
-            if (guardPathKey != null) {
-              let pathKey = guardPathKey as String;
-              let origType = guardPathOrigType as Type;
-              if (pathIsEqualNull) {
-                ctx.narrowMemberPath(pathKey, new NullType());
-              } else {
-                ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
-              }
-            }
-            if (isInfo != null) {
-              // `if (x is T) { ... } else { return; }` → x IS T after
-              let si = isInfo as SymbolInfo;
-              ctx.narrowBinding(si, isTargetType as Type);
-            }
-            if (isPathKey != null) {
-              ctx.narrowMemberPath(isPathKey as String, isPathTargetType as Type);
-            }
+            applyTrueNarrowingFromCondition(ctx, testExpr);
           }
 
           // Narrowing via assignment in null-guard body:
           // `if (x == null) { x = value; }` → x is non-null after
-          // Both paths guarantee non-null: the non-null branch didn't enter,
-          // and the null branch assigned a (presumably non-null) value.
           if (alternate == null && !branchDefinitelyExits(consequent)) {
+            let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
             if (guardInfo != null && isEqualNull) {
               let si = guardInfo as SymbolInfo;
               let origType = guardOrigType as Type;
               if (bodyAssignsToVariable(ctx, consequent, si.id)) {
                 ctx.narrowBinding(si, subtractNullFromType(origType));
               }
+            }
+            let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
+            if (guardPathKey != null && pathIsEqualNull) {
+              // Path assignment checking not yet implemented
             }
           }
         }
@@ -3681,7 +3739,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     case TypeAliasDeclaration as ta: {
       // Force materialization so errors inside constraints or the target type
       // are reported once (in their proper generic scope).
-      ctx.resolveTypeName(ta.name.name);
+      ctx.materializeDeclaration(ta, ta.name.name);
       checkTypeAliasDeclaration(ctx, ta);
     }
     case DeclareFunction as df: {
@@ -4277,9 +4335,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   }
 
   case StringLiteral {value, loc}: {
-    // String literals have type String (the stdlib class).
-    // For now, look up "String" in the type scope.
-    let stringType = ctx.resolveTypeName("String");
+    // String literals ALWAYS have type String (the stdlib class from the prelude).
+    let stringType = ctx.resolvePreludeType("String");
     if (stringType != null) {
       return stringType as Type;
     }
@@ -4430,8 +4487,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           case _: {}
         }
       }
-      case MemberExpression {object, property}: {
-        let propName = property.name;
+      case MemberExpression {object, property, isSymbolAccess}: {
+        let propName = if (isSymbolAccess) ":" + property.name else property.name;
         // Handle private field assignment outside class
         if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
           if (ctx.currentClass == null) {
@@ -4709,8 +4766,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
   // --- TODO: Other expression types ---
 
-  case MemberExpression {object, property, optional, loc}: {
-    checkMemberExpression(ctx, object, property, optional, loc)
+  case MemberExpression {object, property, optional, isSymbolAccess, loc}: {
+    checkMemberExpression(ctx, object, property, optional, isSymbolAccess, loc)
   }
   case IndexExpression {object, index, optional, loc}: {
     checkIndexExpression(ctx, object, index, optional, loc)
@@ -5192,7 +5249,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             }
           }
           if (!isAbstractInSuper) {
-            classType.fields[key] = st.fields[key];
+            classType.fields[key] = substituteTypeParams(st.typeParameters, st.typeArguments, st.fields[key]);
             if (st.fieldMutability.has(key)) {
               classType.fieldMutability[key] = st.fieldMutability[key];
             }
@@ -5200,7 +5257,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         }
         let methodKeys = st.methods.keys();
         while (let (true, key) = methodKeys.next()) {
-          classType.methods[key] = st.methods[key];
+          classType.methods[key] = substituteTypeParams(st.typeParameters, st.typeArguments, st.methods[key]) as FunctionType;
         }
         // Inherit abstract fields from superclass.
         if (st.abstractFields != null) {
@@ -5267,7 +5324,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           // Copy fields
           let fieldKeys = mt.fields.keys();
           while (let (true, key) = fieldKeys.next()) {
-            classType.fields[key] = mt.fields[key];
+            classType.fields[key] = substituteTypeParams(mt.typeParameters, mt.typeArguments, mt.fields[key]);
             if (mt.fieldMutability.has(key)) {
               classType.fieldMutability[key] = mt.fieldMutability[key];
             }
@@ -5287,7 +5344,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 );
               }
             }
-            classType.methods[key] = mMethod;
+            classType.methods[key] = substituteTypeParams(mt.typeParameters, mt.typeArguments, mMethod) as FunctionType;
           }
         }
         case _: {
@@ -5374,6 +5431,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       case FieldDefinition as fd: {
         let fieldName = match (fd.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
         let fieldType = if (fd.typeAnnotation != null) {
@@ -5532,6 +5594,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       case AccessorDeclaration as acc: {
         let accName = match (acc.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
@@ -5831,6 +5898,11 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       case FieldDefinition as fd: {
         let fn = match (fd.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
         fieldOrder.push(fn);
@@ -5849,7 +5921,12 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
         if (fd.value != null) {
           let fieldName = match (fd.name) {
             case Identifier {name}: name
-            case _: "<unknown>"
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
+          case _: "<unknown>"
           };
 
           // Temporarily hide fields declared after this one so that
@@ -5925,6 +6002,11 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       case AccessorDeclaration as acc: {
         let accName = match (acc.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
@@ -6298,11 +6380,11 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
           // Inherit methods and fields.
           let methodKeys = pt.methods.keys();
           while (let (true, key) = methodKeys.next()) {
-            ifaceType.methods[key] = pt.methods[key];
+            ifaceType.methods[key] = substituteTypeParams(pt.typeParameters, pt.typeArguments, pt.methods[key]) as FunctionType;
           }
           let fieldKeys = pt.fields.keys();
           while (let (true, key) = fieldKeys.next()) {
-            ifaceType.fields[key] = pt.fields[key];
+            ifaceType.fields[key] = substituteTypeParams(pt.typeParameters, pt.typeArguments, pt.fields[key]);
           }
         }
         case _: {}
@@ -6374,6 +6456,11 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       case FieldDefinition as fd: {
         let fieldName = match (fd.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
         let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
@@ -6414,7 +6501,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
 // ============================================================================
 
 let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration): void => {
-  let tat = ctx.resolveTypeName(ta.name.name);
+  let tat = ctx.materializeDeclaration(ta, ta.name.name);
   if (tat != null) {
     match (tat as Type) {
       case TypeAliasType as t: {
@@ -6627,6 +6714,11 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       case FieldDefinition as fd: {
         let fieldName = match (fd.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
         let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation);
@@ -6695,6 +6787,11 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
         let accName = match (acc.name) {
           case Identifier {name}: name
+          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+            case Identifier {name}: name
+            case MemberExpression {property}: property.name
+            case _: "<symbol>"
+          }
           case _: "<unknown>"
         };
         mixinType.fields[accName] = accType;
@@ -7029,11 +7126,12 @@ let checkMemberExpression = (
   object: Expression,
   property: Identifier,
   optional: boolean,
+  isSymbolAccess: boolean,
   loc: SourceLocation | null
 ): Type => {
   let objectType = checkExpression(ctx, object, null);
-  let propName = property.name;
-  let pathKey = getMemberPathKeyFromAccess(ctx, object, property);
+  let propName = if (isSymbolAccess) ":" + property.name else property.name;
+  let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
   let narrowedPathType = if (pathKey != null) {
     ctx.resolveNarrowedMemberPath(pathKey as String)
   } else {
@@ -7157,8 +7255,6 @@ let resolveMemberType = (
         let getterType = it.methods[getterName];
         return getterType.returnType;
       }
-      console.log("InterfaceType check failed for '" + propName + "' on '" + it.name + "'.");
-      console.log("  fields: " + i32ToString(it.fields.size) + "  methods: " + i32ToString(it.methods.size));
       ctx.error(
         "Property '" + propName + "' does not exist on interface '" + it.name + "'.",
         DiagnosticCode.PropertyNotFound,
@@ -7222,6 +7318,9 @@ let resolveMemberType = (
         loc
       );
       return new ErrorType();
+    }
+    case TypeAliasType as tat: {
+      return resolveMemberType(ctx, tat.target, propName, loc);
     }
     case ErrorType: { return new ErrorType(); }
     case _: {
@@ -7376,66 +7475,19 @@ let checkBinaryExpression = (
   // For && and ||, handle short-circuit evaluation and narrowing.
   if (operator == "&&") {
     let leftType = checkExpression(ctx, left, null);
-    // Extract null-guard narrowing from the left side and apply to right.
-    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, left);
-    let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, left);
-    var rightType: Type = new ErrorType();
-    if (guardInfo != null || guardPathKey != null) {
-      ctx.enterScope();
-      if (guardInfo != null) {
-        let si = guardInfo as SymbolInfo;
-        let origType = guardOrigType as Type;
-        if (isEqualNull) {
-          ctx.narrowBinding(si, new NullType());
-        } else {
-          ctx.narrowBinding(si, subtractNullFromType(origType));
-        }
-      } else {
-        let pathKey = guardPathKey as String;
-        let origType = guardPathOrigType as Type;
-        if (pathIsEqualNull) {
-          ctx.narrowMemberPath(pathKey, new NullType());
-        } else {
-          ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
-        }
-      }
-      rightType = checkExpression(ctx, right, null);
-      ctx.exitScope();
-    } else {
-      rightType = checkExpression(ctx, right, null);
-    }
+    ctx.enterScope();
+    applyTrueNarrowingFromCondition(ctx, left);
+    let rightType = checkExpression(ctx, right, null);
+    ctx.exitScope();
     // && returns the type of the right operand (if left is truthy).
     return rightType;
   }
   if (operator == "||") {
     let leftType = checkExpression(ctx, left, null);
-    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, left);
-    let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, left);
-    var rightType: Type = new ErrorType();
-    if (guardInfo != null || guardPathKey != null) {
-      ctx.enterScope();
-      if (guardInfo != null) {
-        let si = guardInfo as SymbolInfo;
-        let origType = guardOrigType as Type;
-        if (isEqualNull) {
-          ctx.narrowBinding(si, subtractNullFromType(origType));
-        } else {
-          ctx.narrowBinding(si, new NullType());
-        }
-      } else {
-        let pathKey = guardPathKey as String;
-        let origType = guardPathOrigType as Type;
-        if (pathIsEqualNull) {
-          ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
-        } else {
-          ctx.narrowMemberPath(pathKey, new NullType());
-        }
-      }
-      rightType = checkExpression(ctx, right, null);
-      ctx.exitScope();
-    } else {
-      rightType = checkExpression(ctx, right, null);
-    }
+    ctx.enterScope();
+    applyFalseNarrowingFromCondition(ctx, left);
+    let rightType = checkExpression(ctx, right, null);
+    ctx.exitScope();
     // || returns union of both types.
     let types = new Array<Type>();
     types.push(leftType);
