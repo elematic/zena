@@ -124,9 +124,38 @@ import { ScopeResult, SymbolInfo, SymbolId, ModuleExports } from './scope.zena';
  * #materializedTypes. Type parameters are registered there via
  * registerTypeParameter() as soon as each TypeParameterType is created.
  */
+export class SharedCheckerState {
+  var nextTypeId: i32 = 0;
+  preludeTypes = new HashMap<String, Type>();
+  preludeValues = new HashMap<String, Type>();
+  var preludeRegistered: boolean = false;
+}
+
+/**
+ * Internal state for the type checker.
+ *
+ * Name resolution for values (variables, parameters, functions) is
+ * delegated to the scope pass's ReferenceMap. The checker no longer
+ * maintains its own value scope stack. Instead:
+ *
+ *   Declaration time: the checker stores a binding's type in the
+ *   SemanticModel via `model.setBindingType(symbolInfo, type)`.
+ *
+ *   Reference time: an Identifier is resolved through the ReferenceMap
+ *   to its SymbolInfo, then `model.getBindingType(info)` recovers the
+ *   type. Narrowings are checked first (keyed by SymbolInfo.id).
+ *
+ * The checker keeps a flat type-name map for built-in primitive types
+ * (i32, f64, etc.) at #typeScopes[0]. Type annotation resolution for
+ * all other names — including type parameters — delegates to the scope
+ * pass's ReferenceMap: model.resolve(node) → SymbolInfo.id →
+ * #materializedTypes. Type parameters are registered there via
+ * registerTypeParameter() as soon as each TypeParameterType is created.
+ */
 class CheckerContext {
   model = new SemanticModel();
   diagnostics: DiagnosticBag;
+  #sharedState: SharedCheckerState;
 
   /**
    * Type namespace map for built-in primitive types (i32, u32, f64, etc.).
@@ -202,11 +231,6 @@ class CheckerContext {
   #scopeResult: ScopeResult;
 
   /**
-   * Type ID counter for generating unique IDs (ClassType, InterfaceType).
-   */
-  var #nextTypeId = 0;
-
-  /**
    * SymbolInfo IDs currently being materialized (cycle detection).
    * Prevents infinite recursion when type A references type B
    * which references type A. Keyed by SymbolInfo.id rather than
@@ -227,18 +251,6 @@ class CheckerContext {
   #materializedDeclTypes = new HashMap<i32, Type>();
 
   /**
-   * Prelude exports: types available globally from stdlib modules.
-   * Populated by the Compiler before checking user modules.
-   * Falls back to these when local type lookup fails.
-   */
-  #preludeTypes = new HashMap<String, Type>();
-
-  /**
-   * Prelude value exports: values available globally from stdlib modules.
-   */
-  #preludeValues = new HashMap<String, Type>();
-
-  /**
    * Dependency exports map: import specifier → ModuleExports.
    * Populated by the compiler so the checker can resolve imported types.
    */
@@ -257,12 +269,14 @@ class CheckerContext {
   emitLocations: boolean;
 
   new(
+      sharedState: SharedCheckerState,
       file: String,
       scopeResult: ScopeResult,
       depExports: HashMap<String, ModuleExports> | null,
       depModels: HashMap<String, SemanticModel> | null,
       emitLocations: boolean = false)
     : diagnostics = new DiagnosticBag(file),
+      #sharedState = sharedState,
       #filePath = file,
       #scopeResult = scopeResult,
       #depExports = depExports,
@@ -304,8 +318,8 @@ class CheckerContext {
    * Generate a fresh type ID.
    */
   freshTypeId(): i32 {
-    let id = this.#nextTypeId;
-    this.#nextTypeId = this.#nextTypeId + 1;
+    let id = this.#sharedState.nextTypeId;
+    this.#sharedState.nextTypeId = this.#sharedState.nextTypeId + 1;
     return id;
   }
 
@@ -727,8 +741,8 @@ class CheckerContext {
     if (this.#typeScopes.length > 0 && this.#typeScopes[0].has(name)) {
       return this.#typeScopes[0][name];
     }
-    if (this.#preludeTypes.has(name)) {
-      return this.#preludeTypes[name];
+    if (this.#sharedState.preludeTypes.has(name)) {
+      return this.#sharedState.preludeTypes[name];
     }
     return null;
   }
@@ -754,7 +768,17 @@ class CheckerContext {
     let node = decl as Node;
     match (node) {
       case ClassDeclaration as cd: {
-        let ct = new ClassType(this.freshTypeId(), cd.name.name);
+        var typeId = this.freshTypeId();
+        let isPrelude = this.filePath.startsWith("zena:");
+        if (isPrelude && this.#sharedState.preludeTypes.has(cd.name.name)) {
+          let stub = this.#sharedState.preludeTypes[cd.name.name] as Type;
+          match (stub) {
+            case ClassType as pt: { typeId = pt.id; }
+            case _: {}
+          }
+        }
+        let ct = new ClassType(typeId, cd.name.name);
+        if (isPrelude) { this.#sharedState.preludeTypes[cd.name.name] = ct; }
         ct.isFinal = cd.isFinal;
         ct.isAbstract = cd.isAbstract;
         ct.isSealed = cd.isSealed;
@@ -779,7 +803,18 @@ class CheckerContext {
         return ct;
       }
       case InterfaceDeclaration as id: {
-        return new InterfaceType(this.freshTypeId(), id.name.name);
+        var typeId = this.freshTypeId();
+        let isPrelude = this.filePath.startsWith("zena:");
+        if (isPrelude && this.#sharedState.preludeTypes.has(id.name.name)) {
+          let stub = this.#sharedState.preludeTypes[id.name.name] as Type;
+          match (stub) {
+            case InterfaceType as pt: { typeId = pt.id; }
+            case _: {}
+          }
+        }
+        let it = new InterfaceType(typeId, id.name.name);
+        if (isPrelude) { this.#sharedState.preludeTypes[id.name.name] = it; }
+        return it;
       }
       case MixinDeclaration as md: {
         return new MixinType(md.name.name);
@@ -838,22 +873,22 @@ class CheckerContext {
    * Register a prelude type (available globally without import).
    */
   registerPreludeType(name: String, t: Type): void {
-    this.#preludeTypes[name] = t;
+    this.#sharedState.preludeTypes[name] = t;
   }
 
   /**
    * Register a prelude value (available globally without import).
    */
   registerPreludeValue(name: String, t: Type): void {
-    this.#preludeValues[name] = t;
+    this.#sharedState.preludeValues[name] = t;
   }
 
   /**
    * Resolve a prelude value by name.
    */
   resolvePreludeValue(name: String): Type | null {
-    if (this.#preludeValues.has(name)) {
-      return this.#preludeValues[name];
+    if (this.#sharedState.preludeValues.has(name)) {
+      return this.#sharedState.preludeValues[name];
     }
     return null;
   }
@@ -863,8 +898,8 @@ class CheckerContext {
    * (e.g. checking if a ClassType is the prelude Array).
    */
   resolvePreludeType(name: String): Type | null {
-    if (this.#preludeTypes.has(name)) {
-      return this.#preludeTypes[name];
+    if (this.#sharedState.preludeTypes.has(name)) {
+      return this.#sharedState.preludeTypes[name];
     }
     return null;
   }
@@ -1452,11 +1487,22 @@ export class CheckResult(
  * This version loads the standard prelude types (String, Array, etc.)
  * automatically.
  */
-export let checkModule = (ast: Module, scopeResult: ScopeResult, depExports: HashMap<String, ModuleExports> | null, depModels: HashMap<String, SemanticModel> | null = null, emitLocations: boolean = false): CheckResult => {
-  let ctx = new CheckerContext(ast.path, scopeResult, depExports, depModels, emitLocations);
+export let checkModule = (
+  ast: Module,
+  scopeResult: ScopeResult,
+  depExports: HashMap<String, ModuleExports> | null,
+  depModels: HashMap<String, SemanticModel> | null = null,
+  emitLocations: boolean = false,
+  sharedState: SharedCheckerState | null = null
+): CheckResult => {
+  let state = if (sharedState != null) sharedState as SharedCheckerState else new SharedCheckerState();
+  let ctx = new CheckerContext(state, ast.path, scopeResult, depExports, depModels, emitLocations);
 
-  // Register standard prelude types.
-  registerStandardPrelude(ctx);
+  // Register standard prelude types only once per shared state.
+  if (!state.preludeRegistered) {
+    registerStandardPrelude(ctx);
+    state.preludeRegistered = true;
+  }
 
   // Pre-pass: index function declarations for lazy resolution.
   // This enables forward references and mutual recursion for annotated functions.
@@ -1902,7 +1948,7 @@ let getElementTypeFromClass = (
   let iteratorPrelude = ctx.resolvePreludeType("Iterator");
   if (iteratorPrelude != null && iteratorPrelude is InterfaceType) {
     let pt = iteratorPrelude as InterfaceType;
-    if (ct.name == pt.name) {
+    if (ct.id == pt.id) {
        if (ct.typeArguments != null) {
           let args = ct.typeArguments as Array<Type>;
           if (args.length > 0) { return args[0]; }
@@ -1949,7 +1995,7 @@ let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | 
       } else {
         iface.id
       };
-      if (sourceId == iterableType.id || iface.name == iterableType.name) {
+      if (sourceId == iterableType.id) {
         if (iface.typeArguments != null) {
           let args = iface.typeArguments as Array<Type>;
           if (args.length > 0) { return args[0]; }
@@ -2326,7 +2372,7 @@ let isPreludeClassType = (ctx: CheckerContext, ct: ClassType, preludeName: Strin
   let prelude = ctx.resolvePreludeType(preludeName);
   if (prelude == null) { return false; }
   match (prelude as Type) {
-    case ClassType as pt: { return ct.id == pt.id || ct.name == pt.name; }
+    case ClassType as pt: { return ct.id == pt.id; }
     case _: { return false; }
   }
 };
@@ -2529,16 +2575,13 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
         case ClassType as tgtClass: {
           // If they match by id but didn't pass typesEqual early, they have different
           // type arguments. For invariant nominal types, they are not assignable.
-          let tgtBase = if (tgtClass.genericSource != null) tgtClass.genericSource as ClassType else tgtClass;
-          let srcBase = if (srcClass.genericSource != null) srcClass.genericSource as ClassType else srcClass;
-          if (areBaseTypesEqual(srcBase.name, tgtBase.name, srcBase.id, tgtBase.id)) { return false; }
+          if (srcClass.id == tgtClass.id) { return false; }
           // Walk the supertype chain.
           var current: ClassType | null = srcClass.superType;
           while (current != null) {
             let cur = current as ClassType;
             if (typesEqual(cur, tgtClass)) { return true; }
-            let curBase = if (cur.genericSource != null) cur.genericSource as ClassType else cur;
-            if (areBaseTypesEqual(curBase.name, tgtBase.name, curBase.id, tgtBase.id)) { return false; }
+            if (cur.id == tgtClass.id) { return false; }
             current = cur.superType;
           }
         }
@@ -2657,17 +2700,9 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
   return false;
 };
 
-let isPreludeBaseType = (name: String): boolean => {
-  return name == "String" || name == "Array" || name == "HashMap" || name == "Error" || name == "Option" || name == "Some" || name == "None" || name == "HashSet" || name == "Map" || name == "Set" || name == "Console" || name == "TemplateStringsArray" || name == "Box" || name == "MapEntry" || name == "ImmutableArray" || name == "FixedArray" || name == "Sequence" || name == "MutableSequence" || name == "Iterable" || name == "Iterator" || name == "BoundedRange" || name == "FromRange" || name == "ToRange" || name == "FullRange";
-};
-
-let areBaseTypesEqual = (nameA: String, nameB: String, idA: i32, idB: i32): boolean => {
-  if (idA == idB) { return true; }
-  return nameA == nameB && isPreludeBaseType(nameA);
-};
-
 /**
  * Check if two type arrays (tuple elements) are structurally equal.
+
  */
 let tupleElementsEqual = (ea: Array<Type>, eb: Array<Type>): boolean => {
   if (ea.length != eb.length) { return false; }
@@ -2725,9 +2760,9 @@ let typesEqual = (a: Type, b: Type): boolean => {
       match (b) {
         case ClassType as cb: {
           // Compare canonical base type (follow genericSource chain)
-          let baseA = if (ca.genericSource != null) ca.genericSource as ClassType else ca;
-          let baseB = if (cb.genericSource != null) cb.genericSource as ClassType else cb;
-          if (!areBaseTypesEqual(baseA.name, baseB.name, baseA.id, baseB.id)) { return false; }
+          let baseA = if (ca.genericSource != null) (ca.genericSource as ClassType).id else ca.id;
+          let baseB = if (cb.genericSource != null) (cb.genericSource as ClassType).id else cb.id;
+          if (baseA != baseB) { return false; }
           // Compare type arguments for generic instantiations
           if (ca.typeArguments == null && cb.typeArguments == null) { return true; }
           if (ca.typeArguments == null || cb.typeArguments == null) { return false; }
@@ -2748,9 +2783,9 @@ let typesEqual = (a: Type, b: Type): boolean => {
       match (b) {
         case InterfaceType as ib: {
           // Compare canonical base type (follow genericSource chain)
-          let baseA = if (ia.genericSource != null) ia.genericSource as InterfaceType else ia;
-          let baseB = if (ib.genericSource != null) ib.genericSource as InterfaceType else ib;
-          if (!areBaseTypesEqual(baseA.name, baseB.name, baseA.id, baseB.id)) { return false; }
+          let baseA = if (ia.genericSource != null) (ia.genericSource as InterfaceType).id else ia.id;
+          let baseB = if (ib.genericSource != null) (ib.genericSource as InterfaceType).id else ib.id;
+          if (baseA != baseB) { return false; }
           // Compare type arguments for generic instantiations
           if (ia.typeArguments == null && ib.typeArguments == null) { return true; }
           if (ia.typeArguments == null || ib.typeArguments == null) { return false; }

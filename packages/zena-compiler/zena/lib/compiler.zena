@@ -48,7 +48,7 @@ import {
   Node, Module, SourceLocation
 } from './ast.zena';
 import { parse } from './parser.zena';
-import { checkModule, CheckResult } from './checker.zena';
+import { checkModule, CheckResult, SharedCheckerState } from './checker.zena';
 import { walk } from './visitor.zena';
 import { Diagnostic, SourceSpan } from './diagnostics.zena';
 import { SemanticModel } from './semantic-model.zena';
@@ -171,11 +171,15 @@ export class ProgramCheckResult {
   /** The entry module's check result (convenience accessor). */
   entry: CheckResult;
 
+  /** Shared checker state containing ID counters and prelude types. */
+  sharedState: SharedCheckerState;
+
   new(
     this.results: HashMap<String, CheckResult>,
     this.sources: HashMap<String, String>,
     this.exportSignatures: HashMap<String, HashMap<String, Type>>,
-    this.entry: CheckResult
+    this.entry: CheckResult,
+    this.sharedState: SharedCheckerState
   ) {
     // Aggregate diagnostics from all modules.
     let iter = results.keys();
@@ -1061,7 +1065,8 @@ let checkFile = (
   file: SourceFile,
   allResults: HashMap<String, CheckResult>,
   allFiles: Array<SourceFile>,
-  emitLocations: boolean
+  emitLocations: boolean,
+  sharedState: SharedCheckerState
 ): CheckResult => {
   let depExports = new HashMap<String, ScopeModuleExports>();
   let depModels = new HashMap<String, SemanticModel>();
@@ -1081,7 +1086,7 @@ let checkFile = (
       li = li + 1;
     }
   }
-  return checkModule(file.ast, file.scopeResult, depExports, depModels, emitLocations);
+  return checkModule(file.ast, file.scopeResult, depExports, depModels, emitLocations, sharedState);
 };
 
 /**
@@ -1115,6 +1120,13 @@ export let checkCompilation = (
   let allSources = new HashMap<String, String>();
   let allSignatures = new HashMap<String, HashMap<String, Type>>();
 
+  let sharedState = if (previous != null) {
+    let prev = previous as ProgramCheckResult;
+    prev.sharedState
+  } else {
+    new SharedCheckerState()
+  };
+
   // Build reverse dependency map for invalidation propagation.
   let reverseDeps = buildReverseDeps(result.files);
 
@@ -1147,7 +1159,7 @@ export let checkCompilation = (
     }
 
     // (Re-)check this file.
-    let checkResult = checkFile(file, allResults, result.files, emitLocations);
+    let checkResult = checkFile(file, allResults, result.files, emitLocations, sharedState);
     allResults[file.path] = checkResult;
     allSources[file.path] = file.source;
 
@@ -1199,7 +1211,7 @@ export let checkCompilation = (
 
   // The entry module's result is always the last in topo order.
   let entryResult = allResults[result.entry.path];
-  return new ProgramCheckResult(allResults, allSources, allSignatures, entryResult);
+  return new ProgramCheckResult(allResults, allSources, allSignatures, entryResult, sharedState);
 };
 
 // ============================================================================
