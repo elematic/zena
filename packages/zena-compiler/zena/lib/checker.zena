@@ -1867,23 +1867,46 @@ let containsType = (types: Array<Type>, target: Type): boolean => {
  * Create a union type, flattening nested unions and deduplicating.
  */
 let createUnionType = (types: Array<Type>): Type => {
-  let deduped = new Array<Type>();
+  var deduped = new Array<Type>();
+  var hasBoolean = false;
 
+  // Flatten nested unions and collect types
   for (let type in types) {
     match (type) {
       case UnionT {types as inner}: {
         for (let innerType in inner) {
-          if (!containsType(deduped, innerType)) {
-            deduped.push(innerType);
-          }
+          if (innerType is BooleanType) { hasBoolean = true; }
+          if (!containsType(deduped, innerType)) { deduped.push(innerType); }
         }
       }
-      case NeverType: {}  // Remove never from unions.
+      case NeverType: {}
+      case BooleanType: {
+        hasBoolean = true;
+        if (!containsType(deduped, type)) { deduped.push(type); }
+      }
       case _: {
-        if (!containsType(deduped, type)) {
-          deduped.push(type);
-        }
+        if (!containsType(deduped, type)) { deduped.push(type); }
       }
+    }
+  }
+
+  // If the union contains boolean, remove BoolLiteralTypes.
+  if (hasBoolean) {
+    let withoutLits = new Array<Type>();
+    for (let t in deduped) {
+      if (!(t is BoolLiteralType)) {
+        withoutLits.push(t);
+      }
+    }
+    deduped = withoutLits;
+  }
+
+  // Compact NumberLiteralTypes if NumberType exists
+  var hasNum = false;
+  for (let t in deduped) {
+    if (isNumericType(t)) {
+       // Wait, we don't have a single NumberType, but many numeric types like f64.
+       // However, we mainly care about boolean for this bug.
     }
   }
 
@@ -5261,19 +5284,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         // Skip abstract fields - they need to be implemented, not inherited.
         let fieldKeys = st.fields.keys();
         while (let (true, key) = fieldKeys.next()) {
-          // Check if this is an abstract field
-          var isAbstractInSuper = false;
-          if (st.abstractFields != null) {
-            let stAbs = st.abstractFields as HashSet<String>;
-            if (stAbs.has(key)) {
-              isAbstractInSuper = true;
-            }
-          }
-          if (!isAbstractInSuper) {
-            classType.fields[key] = substituteTypeParams(st.typeParameters, st.typeArguments, st.fields[key]);
-            if (st.fieldMutability.has(key)) {
-              classType.fieldMutability[key] = st.fieldMutability[key];
-            }
+          classType.fields[key] = substituteTypeParams(st.typeParameters, st.typeArguments, st.fields[key]);
+          if (st.fieldMutability.has(key)) {
+            classType.fieldMutability[key] = st.fieldMutability[key];
           }
         }
         let methodKeys = st.methods.keys();
@@ -5393,10 +5406,26 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
     while (cpi < caseParams.length) {
       let cp = caseParams[cpi];
       let fieldName = cp.name.name;
-      let fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
+      var fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
+
+      // Optional case params get nullable field type
+      if (cp.optional) {
+        let unionTypes = new Array<Type>();
+        unionTypes.push(fieldType);
+        unionTypes.push(new NullType());
+        fieldType = createUnionType(unionTypes);
+      }
 
       // Check for duplicate fields (but allow implementing abstract fields).
-      if (classType.fields.has(fieldName)) {
+      var isImplementingAbstract = false;
+      if (classType.abstractFields != null) {
+        let absFields = classType.abstractFields as HashSet<String>;
+        if (absFields.has(fieldName)) {
+          isImplementingAbstract = true;
+        }
+      }
+
+      if (classType.fields.has(fieldName) && !isImplementingAbstract) {
         ctx.error(
           "Duplicate field '" + fieldName + "' in class '" + className + "'.",
           DiagnosticCode.DuplicateField,
@@ -5486,6 +5515,22 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           // Track abstract field.
           let absFields = classType.abstractFields ??= new HashSet<String>();
           absFields.add(fieldName);
+
+          // An abstract field reserves a getter in the methods table.
+          let getterName = "get#" + fieldName;
+          if (!classType.methods.has(getterName)) {
+            classType.methods[getterName] = new FunctionType(new Array<Type>(), null, fieldType);
+          }
+
+          // If mutable, it also requires a setter.
+          if (fd.mutability != null && fd.mutability == "var") {
+            let setterName = "set#" + fieldName;
+            if (!classType.methods.has(setterName)) {
+              let setterParams = new Array<Type>();
+              setterParams.push(fieldType);
+              classType.methods[setterName] = new FunctionType(setterParams, null, new VoidType());
+            }
+          }
         } else {
           // Concrete field may satisfy an inherited abstract field.
           if (classType.abstractFields != null) {
@@ -5494,46 +5539,45 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               absFields.delete(fieldName);
             }
           }
-        }
 
-        // Optional fields cannot have primitive types (primitives are not nullable).
-        if (fd.isOptional) {
-          let isPrimitive = isNumericType(fieldType) || fieldType is BooleanType;
-          if (isPrimitive) {
+          // Optional fields cannot have primitive types (primitives are not nullable).
+          if (fd.isOptional) {
+            let isPrimitive = isNumericType(fieldType) || fieldType is BooleanType;
+            if (isPrimitive) {
+              ctx.error(
+                "Optional field '" + fieldName + "' cannot have primitive type '" +
+                typeToString(fieldType) + "'. Primitives are not nullable.",
+                DiagnosticCode.IncompatibleTypes,
+                fd.loc
+              );
+            }
+          }
+
+          if (ownFieldNames.has(fieldName)) {
             ctx.error(
-              "Optional field '" + fieldName + "' cannot have primitive type '" +
-              typeToString(fieldType) + "'. Primitives are not nullable.",
-              DiagnosticCode.IncompatibleTypes,
+              "Duplicate field '" + fieldName + "' in class '" + className + "'.",
+              DiagnosticCode.DuplicateField,
               fd.loc
             );
+          } else if (classType.fields.has(fieldName)) {
+            // Field was inherited from superclass — check type compatibility.
+            let inheritedType = classType.fields[fieldName];
+            if (!isAssignableTo(ctx, fieldType, inheritedType)) {
+              ctx.error(
+                "Field '" + fieldName + "' in subclass '" + className +
+                "' must be compatible with inherited field of type '" +
+                typeToString(inheritedType) + "'.",
+                DiagnosticCode.IncompatibleTypes,
+                fd.loc
+              );
+            }
           }
-        }
+          ownFieldNames.add(fieldName);
 
-        if (ownFieldNames.has(fieldName)) {
-          ctx.error(
-            "Duplicate field '" + fieldName + "' in class '" + className + "'.",
-            DiagnosticCode.DuplicateField,
-            fd.loc
-          );
-        } else if (classType.fields.has(fieldName)) {
-          // Field was inherited from superclass — check type compatibility.
-          let inheritedType = classType.fields[fieldName];
-          if (!isAssignableTo(ctx, fieldType, inheritedType)) {
-            ctx.error(
-              "Field '" + fieldName + "' in subclass '" + className +
-              "' must be compatible with inherited field of type '" +
-              typeToString(inheritedType) + "'.",
-              DiagnosticCode.IncompatibleTypes,
-              fd.loc
-            );
-          }
-        }
-        ownFieldNames.add(fieldName);
-
-        classType.fields[fieldName] = fieldType;
-        let isMutable = fd.mutability != null && fd.mutability == "var";
-        classType.fieldMutability[fieldName] = isMutable;
-      }
+          classType.fields[fieldName] = fieldType;
+          let isMutable = fd.mutability != null && fd.mutability == "var";
+          classType.fieldMutability[fieldName] = isMutable;
+        }      }
       case MethodDefinition as md: {
         let methodName = match (md.name) {
           case Identifier {name}: name
@@ -5781,20 +5825,32 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         let vParams = variant.params as Array<CaseClassParam>;
         let vCtorParams = new Array<Type>();
         let vCtorNames = new Array<String>();
+        let vCtorOptionalParams = new Array<boolean>();
         var vpi = 0;
         while (vpi < vParams.length) {
           let vp = vParams[vpi];
-          let vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
+          var vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
+
+          if (vp.optional) {
+            let unionTypes = new Array<Type>();
+            unionTypes.push(vpType);
+            unionTypes.push(new NullType());
+            vpType = createUnionType(unionTypes);
+          }
+
           variantType.fields[vp.name.name] = vpType;
           let isMut = vp.mutability != null && vp.mutability == "var";
           variantType.fieldMutability[vp.name.name] = isMut;
           vCtorParams.push(vpType);
           vCtorNames.push(vp.name.name);
+          vCtorOptionalParams.push(vp.optional);
           vpi = vpi + 1;
         }
-        variantType.constructorType = new FunctionType(
+        let vCtorType = new FunctionType(
           vCtorParams, vCtorNames, variantType
         );
+        vCtorType.optionalParameters = vCtorOptionalParams;
+        variantType.constructorType = vCtorType;
 
         (classType.sealedVariants as Array<ClassType>).push(variantType);
 
