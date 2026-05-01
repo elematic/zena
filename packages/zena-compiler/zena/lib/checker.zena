@@ -641,26 +641,6 @@ class CheckerContext {
       }
     }
 
-    // For imports, type/value namespace entries are distinct SymbolInfos
-    // that share an ImportSpecifier declaration node. Reuse the declaration
-    // symbol's bound type if already populated.
-    if (info.declaration != null) {
-      match (info.declaration as Node) {
-        case ImportSpecifier: {
-          let declInfo = this.model.resolveDeclaration(info.declaration as Node);
-          if (declInfo != null) {
-            let bt = this.model.getBindingType(declInfo as SymbolInfo);
-            if (bt != null) {
-              let resolved = bt as Type;
-              this.#materializedTypes[info.id] = resolved;
-              return resolved;
-            }
-          }
-        }
-        case _: {}
-      }
-    }
-
     if (info.declaration == null) {
       return this.#resolveBuiltinOrPreludeType(nameHint);
     }
@@ -1570,9 +1550,7 @@ export let checkModule = (
   // This is the actual checking phase where the full structure is validated
   // (bodies, statements, type aliases, etc.), relying on the signatures
   // registered in Phase 1 to seamlessly resolve forward references.
-  var i = 0;
-  while (i < ast.body.length) {
-    let stmt = ast.body[i];
+  for (let stmt in ast.body) {
     match (stmt) {
       case ClassDeclaration as cd: { checkClassBodies(ctx, cd); }
       // Already fully handled in Phase 1.
@@ -1588,18 +1566,42 @@ export let checkModule = (
       // Everything else: variable declarations, expression statements, etc.
       case _: { checkStatement(ctx, stmt); }
     }
-    i += 1;
   }
 
   // Collect diagnostics from the bag into the model.
-  let bagDiags = ctx.diagnostics.diagnostics;
-  var j = 0;
-  while (j < bagDiags.length) {
-    ctx.model.addDiagnostic(bagDiags[j]);
-    j = j + 1;
+  for (let diagnostic in ctx.diagnostics.diagnostics) {
+    ctx.model.addDiagnostic(diagnostic);
   }
 
-  return new CheckResult(ctx.model, bagDiags);
+  // Finalize: bind exported types directly onto export SymbolInfos
+  // so importers can resolve them cleanly.
+  for (let tName in scopeResult.exports.typeNames()) {
+    let exTypeInfo = scopeResult.exports.getType(tName);
+    let t = ctx.resolveTypeName(tName);
+    if (exTypeInfo == null || t == null) {
+      continue;
+    }
+    ctx.model.setBindingType(exTypeInfo, t);
+  }
+
+  for (let valueName in scopeResult.exports.valueNames()) {
+    let exValInfo = scopeResult.exports.getValue(valueName);
+    let declaration = exValInfo?.declaration;
+    if (declaration == null) {
+      continue;
+    }
+    let localSi = ctx.model.resolveDeclaration(declaration);
+    if (localSi == null) {
+      continue;
+    }
+    let t = ctx.model.getBindingType(localSi);
+    if (t == null) {
+      continue;
+    }
+    ctx.model.setBindingType(exValInfo, t);
+  }
+
+  return new CheckResult(ctx.model, ctx.diagnostics.diagnostics);
 };
 
 /**
@@ -3648,29 +3650,21 @@ case _: {
             if (typeExport != null) {
               let si = typeExport as SymbolInfo;
 
-              // Try to get the fully resolved type from the dependency's checker.
-              // The export SymbolInfo has a different id than the local
-              // declaration SymbolInfo, so we bridge through the declaration
-              // node to find the local SymbolInfo used during checking.
               var resolvedType: Type | null = null;
               if (depModel != null) {
                 let dm = depModel as SemanticModel;
-                let declNode = si.declaration;
-                if (declNode != null) {
-                  let localSi = dm.resolveDeclaration(declNode as Node);
-                  if (localSi != null) {
-                    resolvedType = dm.getBindingType(localSi as SymbolInfo);
-                  }
-                }
+                resolvedType = dm.getBindingType(si);
               }
 
               if (resolvedType != null) {
                 // Use the actual resolved type from the dependency.
                 let rt = resolvedType as Type;
                 ctx.declareTypeName(localName, rt);
-                let localInfo = ctx.model.resolveDeclaration(spec);
-                if (localInfo != null) {
-                  ctx.declareBinding(localInfo as SymbolInfo, rt);
+                
+                // Bind directly to the local TYPE symbol for this import.
+                let localTypeInfo = ctx.scopeResult.rootScope.getLocalType(localName);
+                if (localTypeInfo != null) {
+                  ctx.declareBinding(localTypeInfo as SymbolInfo, rt);
                 }
               } else {
                 // Fallback: create stub types from the declaration AST node.
@@ -3678,41 +3672,37 @@ case _: {
                 // member definitions (fields, methods, constructors).
                 let decl = si.declaration;
                 if (decl != null) {
+                  let localTypeInfo = ctx.scopeResult.rootScope.getLocalType(localName);
                   match (decl as Node) {
                     case ClassDeclaration {name}: {
                       let preludeType = ctx.resolveTypeName(name.name);
                       if (preludeType != null) {
                         let pt = preludeType as Type;
                         ctx.declareTypeName(localName, pt);
-                        let localInfo = ctx.model.resolveDeclaration(spec);
-                        if (localInfo != null) {
-                          ctx.declareBinding(localInfo as SymbolInfo, pt);
+                        if (localTypeInfo != null) {
+                          ctx.declareBinding(localTypeInfo as SymbolInfo, pt);
                         }
                       } else {
                         let ct = new ClassType(ctx.freshTypeId(), name.name);
                         ctx.declareTypeName(localName, ct);
-                        let localInfo = ctx.model.resolveDeclaration(spec);
-                        if (localInfo != null) {
-                          ctx.declareBinding(localInfo as SymbolInfo, ct);
+                        if (localTypeInfo != null) {
+                          ctx.declareBinding(localTypeInfo as SymbolInfo, ct);
                         }
                       }
                     }
                     case InterfaceDeclaration {name}: {
                       let it = new InterfaceType(ctx.freshTypeId(), name.name);
                       ctx.declareTypeName(localName, it);
-                      let localInfo = ctx.model.resolveDeclaration(spec);
-                      if (localInfo != null) {
-                        ctx.declareBinding(localInfo as SymbolInfo, it);
+                      if (localTypeInfo != null) {
+                        ctx.declareBinding(localTypeInfo as SymbolInfo, it);
                       }
                     }
                     case SealedVariant {name}: {
-                      // Sealed variant used as a type (e.g., for pattern matching).
                       let ct = new ClassType(ctx.freshTypeId(), name.name);
                       ct.isCaseClass = true;
                       ctx.declareTypeName(localName, ct);
-                      let localInfo = ctx.model.resolveDeclaration(spec);
-                      if (localInfo != null) {
-                        ctx.declareBinding(localInfo as SymbolInfo, ct);
+                      if (localTypeInfo != null) {
+                        ctx.declareBinding(localTypeInfo as SymbolInfo, ct);
                       }
                     }
                     case _: {
@@ -3727,26 +3717,18 @@ case _: {
 
             // Register value imports (functions, variables).
             let valueExport = depMod.getValue(importedName);
-            if (valueExport != null && typeExport == null) {
-              // Pure value import (not also a type).
-              let localInfo = ctx.model.resolveDeclaration(spec);
-              if (localInfo != null) {
+            if (valueExport != null) {
+              let localValInfo = ctx.scopeResult.rootScope.getLocalValue(localName);
+              if (localValInfo != null) {
                 var resolvedValType: Type | null = null;
                 if (depModel != null) {
                   let dm = depModel as SemanticModel;
-                  let valSi = valueExport as SymbolInfo;
-                  let declNode = valSi.declaration;
-                  if (declNode != null) {
-                    let localSi = dm.resolveDeclaration(declNode as Node);
-                    if (localSi != null) {
-                      resolvedValType = dm.getBindingType(localSi as SymbolInfo);
-                    }
-                  }
+                  resolvedValType = dm.getBindingType(valueExport as SymbolInfo);
                 }
                 if (resolvedValType != null) {
-                  ctx.declareBinding(localInfo as SymbolInfo, resolvedValType as Type);
-                } else {
-                  ctx.declareBinding(localInfo as SymbolInfo, new ErrorType());
+                  ctx.declareBinding(localValInfo as SymbolInfo, resolvedValType as Type);
+                } else if (typeExport == null) {
+                  ctx.declareBinding(localValInfo as SymbolInfo, new ErrorType());
                 }
               }
             }
