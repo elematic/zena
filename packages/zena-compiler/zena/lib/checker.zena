@@ -5976,7 +5976,11 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
 
           // Infer field type from initializer when no explicit annotation.
           if (fieldType is ErrorType && !(initType is ErrorType)) {
-            classType.fields[fieldName] = initType;
+            var inferredType = initType;
+            if (fd.mutability != null && fd.mutability == "var") {
+              inferredType = widenType(ctx, initType);
+            }
+            classType.fields[fieldName] = inferredType;
           } else if (!isAssignableTo(ctx, initType, fieldType)) {
             ctx.error(
               "Type mismatch: field '" + fieldName + "' has type '" +
