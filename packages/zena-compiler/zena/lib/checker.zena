@@ -182,7 +182,7 @@ class CheckerContext {
   /**
    * The current function's expected return type, or null if not in a function.
    */
-  var #returnType?: Type = null;
+  var #returnType: Type | null = null;
 
   /**
    * Inferred return types collected from return statements.
@@ -1590,7 +1590,10 @@ export let checkModule = (
 
   for (let valueName in scopeResult.exports.valueNames()) {
     let exValInfo = scopeResult.exports.getValue(valueName);
-    let declaration = exValInfo?.declaration;
+    if (exValInfo == null) {
+      continue;
+    }
+    let declaration = exValInfo.declaration;
     if (declaration == null) {
       continue;
     }
@@ -2719,6 +2722,34 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
         }
         case ArrayType {elementType as tgtElem}: {
           return isAssignableTo(ctx, elementType, tgtElem);
+        }
+        case _: {}
+      }
+    }
+    case TupleT {elementTypes as srcElems}: {
+      match (target) {
+        case TupleT {elementTypes as tgtElems}: {
+          if (srcElems.length != tgtElems.length) { return false; }
+          var i = 0;
+          while (i < srcElems.length) {
+            if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
+            i += 1;
+          }
+          return true;
+        }
+        case _: {}
+      }
+    }
+    case InlineTupleT {elementTypes as srcElems}: {
+      match (target) {
+        case InlineTupleT {elementTypes as tgtElems}: {
+          if (srcElems.length != tgtElems.length) { return false; }
+          var i = 0;
+          while (i < srcElems.length) {
+            if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
+            i += 1;
+          }
+          return true;
         }
         case _: {}
       }
