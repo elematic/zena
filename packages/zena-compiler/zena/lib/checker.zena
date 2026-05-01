@@ -7291,16 +7291,21 @@ let resolveMemberType = (
     }
     case InterfaceType as it: {
       if (it.fields.has(propName)) {
-        return it.fields[propName];
+        let fieldType = it.fields[propName];
+        let subField = substituteTypeParams(it.typeParameters, it.typeArguments, fieldType);
+        return substituteThisType(it as Type, subField);
       }
       if (it.methods.has(propName)) {
-        return it.methods[propName];
+        let methodType = it.methods[propName];
+        let subMethod = substituteTypeParams(it.typeParameters, it.typeArguments, methodType);
+        return substituteThisType(it as Type, subMethod);
       }
       // Check for getter method
       let getterName = "get#" + propName;
       if (it.methods.has(getterName)) {
         let getterType = it.methods[getterName];
-        return getterType.returnType;
+        let subGetter = substituteTypeParams(it.typeParameters, it.typeArguments, getterType.returnType);
+        return substituteThisType(it as Type, subGetter);
       }
       ctx.error(
         "Property '" + propName + "' does not exist on interface '" + it.name + "'.",
