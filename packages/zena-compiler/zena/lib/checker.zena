@@ -838,10 +838,14 @@ class CheckerContext {
           }
         }
         
-        let targetType: Type = new HoleType();
+        let aliasType = new TypeAliasType(ta.name.name, typeParams, new HoleType(), ta.isDistinct, null);
+        this.#materializedTypes[info.id] = aliasType;
+        
+        let targetType: Type = resolveTypeAnnotation(this, ta.typeAnnotation);
+        aliasType.target = targetType;
         this.exitScope();
         
-        return new TypeAliasType(ta.name.name, typeParams, targetType, ta.isDistinct, null);
+        return aliasType;
       }
       case _: {
         return null;
@@ -7622,12 +7626,14 @@ let checkBinaryExpression = (
     let leftType = checkExpression(ctx, left, contextualType);
 
     if (!isNumericType(leftType) || !isNumericType(rightType)) {
-      ctx.error(
-        "Type mismatch: cannot apply operator '" + operator + "' to " +
-        typeToString(leftType) + " and " + typeToString(rightType),
-        DiagnosticCode.InvalidOperator,
-        loc
-      );
+      if (!(leftType is TypeParameterType && rightType is TypeParameterType && isAssignableTo(ctx, leftType, rightType) && isAssignableTo(ctx, rightType, leftType))) {
+        ctx.error(
+          "Type mismatch: cannot apply operator '" + operator + "' to " +
+          typeToString(leftType) + " and " + typeToString(rightType),
+          DiagnosticCode.InvalidOperator,
+          loc
+        );
+      }
     } else {
       // Reject mixed signedness (e.g., u32 < i32)
       let promoted = promoteNumeric(leftType, rightType);
