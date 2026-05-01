@@ -1790,7 +1790,14 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     let bestMatch: FunctionType | null = null;
 
     for (const candidate of candidates) {
-      if (candidate.parameters.length !== argTypes.length) continue;
+      const expectedCount = candidate.parameters.length;
+      const minArity = candidate.optionalParameters
+        ? candidate.optionalParameters.filter((o) => !o).length
+        : expectedCount;
+
+      if (argTypes.length < minArity || argTypes.length > expectedCount) {
+        continue;
+      }
 
       let match = true;
       // TODO: Handle generic overloads

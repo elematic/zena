@@ -6929,10 +6929,14 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   // Parameter types.
   let paramTypes = new Array<Type>();
   let paramNames = new Array<String>();
+  let optionals = new Array<boolean>();
+  let initializers = new Array<Expression | null>();
   var pi = 0;
   while (pi < df.params.length) {
     let param = df.params[pi];
     paramNames.push(param.name.name);
+    optionals.push(param.optional || param.defaultValue != null);
+    initializers.push(param.defaultValue);
     if (param.typeAnnotation != null) {
       paramTypes.push(resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation));
     } else {
@@ -6948,6 +6952,8 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
 
   // Build function type.
   let funcType = new FunctionType(paramTypes, paramNames, retType);
+  funcType.optionalParameters = optionals;
+  funcType.parameterInitializers = initializers;
   if (resolvedTypeParams != null) {
     funcType.typeParameters = resolvedTypeParams;
   }
@@ -6955,7 +6961,23 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   // Declare in value namespace.
   let info = ctx.model.resolveDeclaration(df);
   if (info != null) {
-    ctx.declareBinding(info as SymbolInfo, funcType);
+    let existingType = ctx.model.getBindingType(info as SymbolInfo);
+    if (existingType != null && existingType is FunctionType) {
+      let existingFunc = existingType as FunctionType;
+      if (existingFunc.overloads == null) {
+        let ovArray = new Array<FunctionType>();
+        ovArray.push(existingFunc);
+        existingFunc.overloads = ovArray;
+      }
+      let ovs = existingFunc.overloads as Array<FunctionType>;
+      ovs.push(funcType);
+      ctx.model.setNodeType(df, funcType);
+    } else {
+      ctx.declareBinding(info as SymbolInfo, funcType);
+      if (info.declaration != df) {
+        ctx.model.setNodeType(df, funcType);
+      }
+    }
   }
 };
 
@@ -8570,59 +8592,102 @@ let checkCallExpressionInner = (
 ): Type => {
   match (calleeType) {
     case FunctionType as ft: {
-      // Handle generic function calls.
       var effectiveFt = ft;
-      if (ft.typeParameters != null) {
-        let typeParams = ft.typeParameters as Array<TypeParameterType>;
+
+      // Evaluate argument types once for overload resolution
+      let argTypes = new Array<Type>();
+      for (var i = 0; i < args.length; i += 1) {
+        let expectedParamType = if (i < ft.parameters.length) {
+          ft.parameters[i]
+        } else {
+          null
+        };
+        argTypes.push(checkExpression(ctx, args[i], expectedParamType));
+      }
+
+      // Overload resolution
+      let {overloads} = ft;
+      if (overloads != null) {
+        let candidates = new Array<FunctionType>();
+        candidates.push(ft);
+        for (let overload in overloads) {
+          candidates.push(overload);
+        }
+
+        var bestMatch: FunctionType | null = null;
+        for (let candidate in candidates) {
+          let expectedCount = candidate.parameters.length;
+          var requiredCount = expectedCount;
+          let optionals = candidate.optionalParameters;
+          if (optionals != null) {
+            requiredCount = 0;
+            for (let optional in optionals) {
+              if (!optional) {
+                requiredCount = requiredCount + 1;
+              }
+            }
+          }
+
+          if (args.length >= requiredCount && args.length <= expectedCount) {
+            var matchOk = true;            
+            for (var i = 0; i < args.length && i < expectedCount; i += 1) {
+              if (!isAssignableTo(ctx, argTypes[i], candidate.parameters[i])) {
+                matchOk = false;
+              }
+            }
+            if (matchOk) {
+              bestMatch = candidate;
+              break;
+            }
+          }
+        }
+
+        if (bestMatch != null) {
+          effectiveFt = bestMatch as FunctionType;
+        }
+      }
+
+      // Handle generic function calls.
+      let typeParams = effectiveFt.typeParameters;
+      if (typeParams != null) {
         if (typeParams.length > 0) {
           if (typeArguments != null) {
-            // Explicit type arguments provided.
-            let explicit = typeArguments as Array<TypeAnnotation>;
             let typeArgs = new Array<Type>();
-            var ti = 0;
-            while (ti < explicit.length) {
-              typeArgs.push(resolveTypeAnnotation(ctx, explicit[ti]));
-              ti += 1;
+            for (let typeArg in typeArguments) {
+              typeArgs.push(resolveTypeAnnotation(ctx, typeArg));
             }
             // Substitute type parameters in params and return type.
             let subParams = new Array<Type>();
-            var si = 0;
-            while (si < ft.parameters.length) {
-              subParams.push(substituteTypeParams(ft.typeParameters, typeArgs, ft.parameters[si]));
-              si += 1;
+            for (let param in effectiveFt.parameters) {
+              subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
-            let subRet = substituteTypeParams(ft.typeParameters, typeArgs, ft.returnType);
-            effectiveFt = new FunctionType(subParams, ft.parameterNames, subRet);
+            let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
+            effectiveFt = new FunctionType(subParams, effectiveFt.parameterNames, subRet);
           } else {
             // Infer type arguments from argument types.
             let inferred = new HashMap<String, Type>();
-            var ai = 0;
-            while (ai < args.length && ai < ft.parameters.length) {
-              let argType = checkExpression(ctx, args[ai], null);
-              inferTypeArg(ft.parameters[ai], argType, inferred);
-              ai += 1;
+            for (var i = 0; i < args.length && i < effectiveFt.parameters.length; i += 1) {
+              let argType = argTypes[i];
+              inferTypeArg(effectiveFt.parameters[i], argType, inferred);
             }
             // Build type args array from inferred map.
-            let typeArgs = new Array<Type>();
-            var pi = 0;
-            while (pi < typeParams.length) {
-              let paramName = typeParams[pi].name;
-              if (inferred.has(paramName)) {
-                typeArgs.push(inferred[paramName]);
-              } else {
-                typeArgs.push(new ErrorType());
-              }
-              pi += 1;
-            }
+            let typeArgs = typeParams.map((typeParam) => {
+              let paramName = typeParam.name;
+              return if (inferred.has(paramName)) {
+                  inferred[paramName];
+                } else {
+                  // TODO: This is a bug that Array<Type | ErrorType> is not
+                  // assignable to Array<Type>
+                  new ErrorType() as Type;
+                };
+            });
             // Substitute type parameters in params and return type.
             let subParams = new Array<Type>();
-            var si = 0;
-            while (si < ft.parameters.length) {
-              subParams.push(substituteTypeParams(ft.typeParameters, typeArgs, ft.parameters[si]));
-              si += 1;
+            for (let param in effectiveFt.parameters) {
+              subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
-            let subRet = substituteTypeParams(ft.typeParameters, typeArgs, ft.returnType);
-            effectiveFt = new FunctionType(subParams, ft.parameterNames, subRet);
+            let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
+            effectiveFt = new FunctionType(subParams, effectiveFt.parameterNames, subRet);
           }
         }
       }
@@ -8691,7 +8756,7 @@ let checkCallExpressionInner = (
         );
       }
 
-      // Check argument types.
+      // Check argument types (re-evaluating to apply generic substitutions and defaults).
       var j = 0;
       while (j < actualCount && j < expectedCount) {
         let expectedParamType = effectiveFt.parameters[j];
