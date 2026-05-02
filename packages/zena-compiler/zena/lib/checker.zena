@@ -2115,7 +2115,16 @@ let substituteTypeParams = (
         subParams.push(substituteTypeParams(typeParams, typeArgs, param));
       }
       let subRet = substituteTypeParams(typeParams, typeArgs, ft.returnType);
-      return new FunctionType(subParams, ft.parameterNames, subRet);
+      let res = new FunctionType(subParams, ft.parameterNames, subRet);
+      res.typeParameters = ft.typeParameters;
+      res.optionalParameters = ft.optionalParameters;
+      res.parameterInitializers = ft.parameterInitializers;
+      res.overloads = ft.overloads;
+      res.isFinal = ft.isFinal;
+      res.isAbstract = ft.isAbstract;
+      res.typeArguments = ft.typeArguments;
+      res.genericSource = ft.genericSource;
+      return res;
     }
     case ClassType as ct: {
       if (ct.typeArguments != null) {
@@ -2585,7 +2594,8 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case FunctionType as srcFunc: {
       match (target) {
         case FunctionType as tgtFunc: {
-          if (srcFunc.parameters.length != tgtFunc.parameters.length) { return false; }
+          // Allow argument adaptation: source can have fewer parameters.
+          if (srcFunc.parameters.length > tgtFunc.parameters.length) { return false; }
           // Covariant return type
           if (!isAssignableTo(ctx, srcFunc.returnType, tgtFunc.returnType)) { return false; }
           var i = 0;
@@ -3498,7 +3508,11 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       let expectedReturn = ctx.returnType;
       if (argument != null) {
         let argExpr = argument as Expression;
-        let argType = checkExpression(ctx, argExpr, expectedReturn);
+        // By convention, if expectedReturn is VoidType, we are inferring the return type.
+        // We should not pass it down as expectedType since it will force if-expressions to void.
+        let isInferring = expectedReturn != null && expectedReturn is VoidType;
+        let passedExpected = if (isInferring) { null } else { expectedReturn };
+        let argType = checkExpression(ctx, argExpr, passedExpected);
         if (expectedReturn != null) {
           let expected = expectedReturn as Type;
           if (expected is VoidType) {
@@ -6302,6 +6316,7 @@ let checkMethodSignature = (
 ): FunctionType => {
   ctx.enterScope();
   let astTypeParameters = md.typeParameters;
+  var resolvedTypeParams: Array<TypeParameterType> | null = null;
   if (astTypeParameters != null) {
     let typeParameters = new Array<TypeParameterType>();
     for (let astParam in astTypeParameters) {
@@ -6310,6 +6325,7 @@ let checkMethodSignature = (
       ctx.declareTypeName(astParam.name, tpType);
       ctx.registerTypeParameter(astParam, tpType);
     }
+    resolvedTypeParams = typeParameters;
   }
 
   let paramTypes = new Array<Type>();
@@ -6373,6 +6389,7 @@ let checkMethodSignature = (
   }
 
   let ft = new FunctionType(paramTypes, paramNames, retType);
+  ft.typeParameters = resolvedTypeParams;
   ft.isFinal = md.isFinal;
   ft.isAbstract = md.isAbstract;
   if (hasOptionals) {
@@ -6705,8 +6722,8 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
     }
   }
 
-  // Create the enum type as a distinct type alias over the backing type.
-  let backingType = if (isStringEnum) { stringType } else { i32Type };
+  let strType = if (stringType != null) { stringType as Type } else { new ErrorType() as Type };
+  let backingType = if (isStringEnum) { strType } else { i32Type as Type };
   let enumType = new TypeAliasType(name, null, backingType, true, null);
 
   // Register the enum in the type namespace.
@@ -6841,7 +6858,11 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           }
           case _: "<unknown>"
         };
-        let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation);
+        let fieldType = if (fd.typeAnnotation != null) {
+          resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation)
+        } else {
+          new ErrorType() as Type
+        };
         mixinType.fields[fieldName] = fieldType;
         let isMutable = fd.mutability != null && fd.mutability == "var";
         mixinType.fieldMutability[fieldName] = isMutable;
@@ -8576,10 +8597,7 @@ let checkFunctionExpression = (
   var needsInference = false;
   if (returnTypeAnn != null) {
     retType = resolveTypeAnnotation(ctx, returnTypeAnn as TypeAnnotation);
-  } else if (contextualFn != null) {
-    retType = (contextualFn as FunctionType).returnType;
   } else {
-    // No explicit return type - will infer from return statements
     needsInference = true;
   }
 
@@ -8613,9 +8631,12 @@ let checkFunctionExpression = (
       }
     }
     case Expression as bodyExpr: {
-      let bodyType = checkExpression(ctx, bodyExpr, retType);
-      // Expression body: validate return type if annotated or contextual.
-      if (returnTypeAnn != null || contextualFn != null) {
+      // If we don't have an expected type, don't pass retType (which is VoidType by default).
+      let expectedBodyType = if (needsInference) { null } else { retType };
+      let bodyType = checkExpression(ctx, bodyExpr, expectedBodyType);
+      
+      // Expression body: validate return type if annotated
+      if (returnTypeAnn != null) {
         if (!isAssignableTo(ctx, bodyType, retType)) {
           ctx.error(
             "Type mismatch: expression body returns '" + typeToString(bodyType) +
