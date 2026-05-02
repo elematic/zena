@@ -3483,7 +3483,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       checkVariableDeclaration(ctx, kind, pattern, typeAnnotation, init, loc);
     }
     case ExpressionStatement {expression}: {
-      checkExpression(ctx, expression, null);
+      checkExpression(ctx, expression, new VoidType());
     }
     case BlockStatement {body}: {
       ctx.enterScope();
@@ -4734,6 +4734,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           ctx.exitScope();
         }
 
+        if (expectedType != null && expectedType is VoidType) {
+          return new VoidType();
+        }
         let branches = new Array<Type>();
         branches.push(consType);
         branches.push(altType);
@@ -4833,6 +4836,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         }
 
         // Result type is the union of both branches.
+        if (expectedType != null && expectedType is VoidType) {
+          return new VoidType();
+        }
         let branches = new Array<Type>();
         branches.push(consType);
         branches.push(altType);
@@ -8253,6 +8259,9 @@ let checkMatchExpr = (
   }
 
   // Result is union of all case body types.
+  if (expectedType != null && expectedType is VoidType) {
+    return new VoidType();
+  }
   if (resultTypes.length == 0) {
     return new NeverType();
   }
