@@ -217,6 +217,13 @@ export class Parser {
   }
   
   #check(type: TokenType): boolean {
+    // If we previously split a `>>` or `>>>` token in a generic context (like
+    // `Array<Array<i32>>`), we pretend the current token is `>` until all
+    // 'extra' greaters are consumed. This prevents `#match` from prematurely
+    // checking the next underlying stream token.
+    if (this.#extraGreaters > 0) {
+      return type == TokenType.Greater;
+    }
     if (this.#isAtEnd()) {
       return false;
     }
@@ -1703,7 +1710,9 @@ export class Parser {
             let t2 = this.#tokens[this.#current + i];
             if (t2.kind == TokenType.EOF) { return false; }
             if (t2.kind == TokenType.Less) { depth2 = depth2 + 1; }
-            if (t2.kind == TokenType.Greater) { depth2 = depth2 - 1; }
+            else if (t2.kind == TokenType.Greater) { depth2 = depth2 - 1; }
+            else if (t2.kind == TokenType.GreaterGreater) { depth2 = depth2 - 2; }
+            else if (t2.kind == TokenType.GreaterGreaterGreater) { depth2 = depth2 - 3; }
             i += 1;
           }
         } else {
@@ -1724,6 +1733,8 @@ export class Parser {
       if (token.kind == TokenType.EOF) { return false; }
       if (token.kind == TokenType.Less) { depth = depth + 1; }
       else if (token.kind == TokenType.Greater) { depth = depth - 1; }
+      else if (token.kind == TokenType.GreaterGreater) { depth = depth - 2; }
+      else if (token.kind == TokenType.GreaterGreaterGreater) { depth = depth - 3; }
       i += 1;
     }
     
