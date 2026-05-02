@@ -1257,7 +1257,7 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
       checkVariableDeclaration(ctx, stmt as VariableDeclaration);
       break;
     case NodeType.ExpressionStatement:
-      checkExpression(ctx, stmt.expression);
+      checkExpression(ctx, stmt.expression, Types.Void);
       break;
     case NodeType.BlockStatement:
       ctx.enterScope();

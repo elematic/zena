@@ -375,9 +375,9 @@ function checkExpressionInternal(
     case NodeType.TryExpression:
       return checkTryExpression(ctx, expr as TryExpression);
     case NodeType.MatchExpression:
-      return checkMatchExpression(ctx, expr as MatchExpression);
+      return checkMatchExpression(ctx, expr as MatchExpression, expectedType);
     case NodeType.IfExpression:
-      return checkIfExpression(ctx, expr as IfExpression);
+      return checkIfExpression(ctx, expr as IfExpression, expectedType);
     case NodeType.RangeExpression:
       return checkRangeExpression(ctx, expr as RangeExpression);
     case NodeType.PipelineExpression:
@@ -392,6 +392,7 @@ function checkExpressionInternal(
 function checkMatchExpression(
   ctx: CheckerContext,
   expr: MatchExpression,
+  expectedType?: Type,
 ): Type {
   const discriminantType = checkExpression(ctx, expr.discriminant);
   const caseTypes: Type[] = [];
@@ -457,7 +458,7 @@ function checkMatchExpression(
       }
     }
 
-    const bodyType = checkMatchCaseBody(ctx, c.body);
+    const bodyType = checkMatchCaseBody(ctx, c.body, expectedType);
     caseTypes.push(bodyType);
     ctx.exitScope();
   }
@@ -471,26 +472,36 @@ function checkMatchExpression(
   }
 
   if (caseTypes.length === 0) return Types.Void;
-  return createUnionType(caseTypes);
+
+  if (expectedType && expectedType.kind === TypeKind.Void) {
+    return Types.Void;
+  }
+
+  return createUnionType(caseTypes, ctx);
 }
 
 function checkMatchCaseBody(
   ctx: CheckerContext,
   body: Expression | BlockStatement,
+  expectedType?: Type,
 ): Type {
   if (body.type === NodeType.BlockStatement) {
-    return checkBlockExpressionType(ctx, body as BlockStatement);
+    return checkBlockExpressionType(ctx, body as BlockStatement, expectedType);
   }
-  return checkExpression(ctx, body);
+  return checkExpression(ctx, body, expectedType);
 }
 
-function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
+function checkIfExpression(
+  ctx: CheckerContext,
+  expr: IfExpression,
+  expectedType?: Type,
+): Type {
   if (expr.test.type === NodeType.LetPatternCondition) {
     const initType = checkExpression(ctx, expr.test.init);
 
     ctx.enterScope();
     checkMatchPattern(ctx, expr.test.pattern, initType);
-    const consequentType = checkIfBranch(ctx, expr.consequent);
+    const consequentType = checkIfBranch(ctx, expr.consequent, expectedType);
     ctx.exitScope();
 
     if (!expr.alternate) {
@@ -498,10 +509,14 @@ function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
     }
 
     ctx.enterScope();
-    const alternateType = checkIfBranch(ctx, expr.alternate);
+    const alternateType = checkIfBranch(ctx, expr.alternate, expectedType);
     ctx.exitScope();
 
-    return createUnionType([consequentType, alternateType]);
+    if (expectedType && expectedType.kind === TypeKind.Void) {
+      return Types.Void;
+    }
+
+    return createUnionType([consequentType, alternateType], ctx);
   }
 
   const testType = checkExpression(ctx, expr.test);
@@ -521,7 +536,7 @@ function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
   if (narrowing) {
     ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
   }
-  const consequentType = checkIfBranch(ctx, expr.consequent);
+  const consequentType = checkIfBranch(ctx, expr.consequent, expectedType);
   ctx.exitScope();
 
   // If there is no else branch, the if expression has type void
@@ -538,25 +553,35 @@ function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
       inverseNarrowing.narrowedType,
     );
   }
-  const alternateType = checkIfBranch(ctx, expr.alternate);
+  const alternateType = checkIfBranch(ctx, expr.alternate, expectedType);
   ctx.exitScope();
 
-  return createUnionType([consequentType, alternateType]);
+  if (expectedType && expectedType.kind === TypeKind.Void) {
+    return Types.Void;
+  }
+
+  return createUnionType([consequentType, alternateType], ctx);
 }
 
 function checkIfBranch(
   ctx: CheckerContext,
   branch: Expression | BlockStatement,
+  expectedType?: Type,
 ): Type {
   if (branch.type === NodeType.BlockStatement) {
-    return checkBlockExpressionType(ctx, branch as BlockStatement);
+    return checkBlockExpressionType(
+      ctx,
+      branch as BlockStatement,
+      expectedType,
+    );
   }
-  return checkExpression(ctx, branch);
+  return checkExpression(ctx, branch, expectedType);
 }
 
 function checkBlockExpressionType(
   ctx: CheckerContext,
   block: BlockStatement,
+  expectedType?: Type,
 ): Type {
   ctx.enterScope();
 
@@ -575,7 +600,11 @@ function checkBlockExpressionType(
   if (block.body.length > 0) {
     const lastStmt = block.body[block.body.length - 1];
     if (lastStmt.type === NodeType.ExpressionStatement) {
-      resultType = checkExpression(ctx, (lastStmt as any).expression);
+      resultType = checkExpression(
+        ctx,
+        (lastStmt as any).expression,
+        expectedType,
+      );
     } else {
       // For return statements, the type is void since we exit the function
       checkStatement(ctx, lastStmt);
@@ -1275,7 +1304,7 @@ function isTypeCompatibleWithLiteral(
   return false;
 }
 
-function createUnionType(types: Type[]): Type {
+function createUnionType(types: Type[], ctx?: CheckerContext): Type {
   if (types.length === 0) return Types.Void;
   if (types.length === 1) return types[0];
 
@@ -1335,10 +1364,16 @@ function createUnionType(types: Type[]): Type {
 
   if (uniqueTypes.length === 1) return uniqueTypes[0];
 
-  return {
+  const resultType = {
     kind: TypeKind.Union,
     types: uniqueTypes,
   } as UnionType;
+
+  if (ctx) {
+    validateType(resultType, ctx);
+  }
+
+  return resultType;
 }
 
 function checkUnaryExpression(
@@ -3047,11 +3082,15 @@ function checkFunctionExpression(
 
   let bodyType: Type = Types.Error;
   if (expr.body.type === NodeType.BlockStatement) {
-    checkStatement(ctx, expr.body);
+    checkBlockExpressionType(
+      ctx,
+      expr.body as BlockStatement,
+      expectedReturnType,
+    );
 
     if (expectedReturnType.kind === Types.Error.kind) {
       if (ctx.inferredReturnTypes.length === 0) {
-        bodyType = Types.Void;
+        bodyType = Types.Void; // Revert back to Types.Void for block bodies
       } else {
         // For now, take the first one. Ideally check LUB.
         bodyType = ctx.inferredReturnTypes[0];

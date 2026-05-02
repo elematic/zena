@@ -1701,44 +1701,6 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
       i += 1;
     }
 
-    var hasPrimitive = false;
-    var hasReference = false;
-    let primitiveBases = new Array<String>();
-
-    for (let t in resolved) {
-      var baseName: String | null = null;
-
-      if (isNumericType(t)) {
-        baseName = typeToString(baseType(t));
-      } else if (t is BooleanType || t is BoolLiteralType) {
-        baseName = "boolean";
-      }
-
-      if (baseName != null) {
-        hasPrimitive = true;
-        var found = false;
-        for (let primitiveBase in primitiveBases) {
-          if (primitiveBase == baseName) {
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          primitiveBases.push(baseName);
-        }
-      } else if (t is VoidType || t is NeverType || t is ErrorType || t is UnknownType || t is NullType) {
-        // Neither primitive nor reference.
-      } else {
-        hasReference = true;
-      }      
-    }
-
-    if (hasPrimitive && hasReference) {
-      ctx.error("Union types cannot mix primitive types with reference types", DiagnosticCode.TypeMismatch, ann.loc);
-    } else if (primitiveBases.length > 1) {
-      ctx.error("Union types cannot mix primitives of different base types", DiagnosticCode.TypeMismatch, ann.loc);
-    }
-
     // Check for multiple extension types on the same underlying type.
     var ei = 0;
     while (ei < resolved.length) {
@@ -1785,7 +1747,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
       ei += 1;
     }
 
-    createUnionType(resolved)
+    createUnionType(resolved, ctx, ann.loc)
   }
   case FunctionTypeAnnotation {params, returnType}: {
     let paramTypes = new Array<Type>();
@@ -1869,7 +1831,7 @@ let containsType = (types: Array<Type>, target: Type): boolean => {
 /**
  * Create a union type, flattening nested unions and deduplicating.
  */
-let createUnionType = (types: Array<Type>): Type => {
+let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, loc: SourceLocation | null = null): Type => {
   var deduped = new Array<Type>();
   var hasBoolean = false;
 
@@ -1915,6 +1877,46 @@ let createUnionType = (types: Array<Type>): Type => {
 
   if (deduped.length == 0) { return new NeverType(); }
   if (deduped.length == 1) { return deduped[0]; }
+
+  if (ctx != null) {
+    var hasPrimitive = false;
+    var hasReference = false;
+    let primitiveBases = new Array<String>();
+
+    for (let t in deduped) {
+      var baseName: String | null = null;
+      if (isNumericType(t)) {
+        baseName = typeToString(baseType(t));
+      } else if (t is BooleanType || t is BoolLiteralType) {
+        baseName = "boolean";
+      }
+
+      if (baseName != null) {
+        hasPrimitive = true;
+        var found = false;
+        for (let primitiveBase in primitiveBases) {
+          if (primitiveBase == baseName) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          primitiveBases.push(baseName);
+        }
+      } else if (t is VoidType || t is NeverType || t is ErrorType || t is UnknownType || t is HoleType) {
+        // Neither primitive nor reference.
+      } else {
+        hasReference = true;
+      }      
+    }
+
+    if (hasPrimitive && hasReference) {
+      ctx.error("Union types cannot mix primitive types with reference types", DiagnosticCode.TypeMismatch, loc);
+    } else if (primitiveBases.length > 1) {
+      ctx.error("Union types cannot mix primitives of different base types", DiagnosticCode.TypeMismatch, loc);
+    }
+  }
+
   return new UnionT(deduped);
 };
 
@@ -4735,7 +4737,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let branches = new Array<Type>();
         branches.push(consType);
         branches.push(altType);
-        createUnionType(branches)
+        createUnionType(branches, ctx, loc)
       }
       case _: {
         let testExpr = test as Expression;
@@ -4834,7 +4836,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let branches = new Array<Type>();
         branches.push(consType);
         branches.push(altType);
-        createUnionType(branches)
+        createUnionType(branches, ctx, loc)
       }
     }
   }
@@ -7631,7 +7633,7 @@ let checkBinaryExpression = (
     let types = new Array<Type>();
     types.push(leftType);
     types.push(rightType);
-    return createUnionType(types);
+    return createUnionType(types, ctx, left.loc);
   }
 
   // Arithmetic operators: +, -, *, /, %
@@ -7820,7 +7822,7 @@ let checkBinaryExpression = (
         }
         // Result type: union of non-null left members with right type.
         nonNullMembers.push(rightType);
-        return createUnionType(nonNullMembers);
+        return createUnionType(nonNullMembers, ctx, left.loc);
       }
       case NullType: {
         // Left is just null, result is right type.
@@ -8257,7 +8259,7 @@ let checkMatchExpr = (
   if (resultTypes.length == 1) {
     return resultTypes[0];
   }
-  return createUnionType(resultTypes);
+  return createUnionType(resultTypes, ctx, loc);
 };
 
 /**
