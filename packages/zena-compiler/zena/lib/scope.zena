@@ -181,6 +181,22 @@ export class Scope {
   }
 
   /**
+   * Inject an existing value SymbolInfo into this scope.
+   * Useful for constructing composite scopes like the prelude.
+   */
+  injectValue(name: String, info: SymbolInfo): void {
+    this.#values[name] = info;
+  }
+
+  /**
+   * Inject an existing type SymbolInfo into this scope.
+   * Useful for constructing composite scopes like the prelude.
+   */
+  injectType(name: String, info: SymbolInfo): void {
+    this.#types[name] = info;
+  }
+
+  /**
    * Look up a value in this scope only (no parent walk).
    */
   getLocalValue(name: String): SymbolInfo | null {
@@ -502,8 +518,8 @@ export class ScopeResult(
 export class ScopeBuilder {
   #modulePath: String;
   #exports = new ModuleExports();
-  var #current  = new Scope(ScopeKind.Module, null);
-
+  var #current: Scope;
+  
   /**
    * Unresolved identifiers found during the walk.
    * These may be resolved later when cross-module imports are wired up.
@@ -514,7 +530,9 @@ export class ScopeBuilder {
   #declarations = new DeclarationMap();
   #duplicateDeclarations = new Array<UnresolvedName>();
 
-  new(modulePath: String) : #modulePath = modulePath;
+  new(modulePath: String, preludeScope: Scope | null = null)
+    : #modulePath = modulePath,
+      #current = new Scope(ScopeKind.Module, preludeScope);
 
   /**
    * Build scopes for a module AST.
@@ -544,7 +562,7 @@ export class ScopeBuilder {
    * Creates a parent "builtins" scope so user declarations can shadow them.
    */
   #declareBuiltins(): void {
-    let builtins = new Scope(ScopeKind.Module, null);
+    let builtins = new Scope(ScopeKind.Module, this.#current.parent);
     builtins.declareType("i32", null, "");
     builtins.declareType("u32", null, "");
     builtins.declareType("i64", null, "");
@@ -555,30 +573,6 @@ export class ScopeBuilder {
     builtins.declareType("void", null, "");
     builtins.declareType("never", null, "");
     builtins.declareType("null", null, "");
-
-    // Prelude types are semantically available at module entry.
-    builtins.declareType("String", null, "");
-    builtins.declareType("Error", null, "");
-    builtins.declareType("Iterable", null, "");
-    builtins.declareType("Iterator", null, "");
-    builtins.declareType("FixedArray", null, "");
-    builtins.declareType("Array", null, "");
-    builtins.declareType("ImmutableArray", null, "");
-    builtins.declareType("TemplateStringsArray", null, "");
-    builtins.declareType("Box", null, "");
-    builtins.declareType("Option", null, "");
-    builtins.declareType("Some", null, "");
-    builtins.declareType("None", null, "");
-    builtins.declareType("Map", null, "");
-    builtins.declareType("HashMap", null, "");
-    builtins.declareType("Set", null, "");
-    builtins.declareType("HashSet", null, "");
-    builtins.declareType("Sequence", null, "");
-    builtins.declareType("MutableSequence", null, "");
-    builtins.declareType("BoundedRange", null, "");
-    builtins.declareType("FromRange", null, "");
-    builtins.declareType("ToRange", null, "");
-    builtins.declareType("FullRange", null, "");
 
     // Re-parent the module scope onto the builtins scope.
     this.#current = new Scope(ScopeKind.Module, builtins);

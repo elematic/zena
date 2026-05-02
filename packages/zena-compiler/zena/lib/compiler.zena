@@ -33,10 +33,12 @@ import {
   SourceFileGraph
 } from './library-loader.zena';
 import { buildStdlibConfig, loadPackageMap } from './package-manifest.zena';
+import { getStandardPrelude } from './prelude.zena';
 import {
   ScopeBuilder,
   ScopeResult,
   Scope,
+  ScopeKind,
   ModuleExports as ScopeModuleExports,
   SymbolInfo,
   UnresolvedName
@@ -68,6 +70,7 @@ export { CompilerHost } from './library-loader.zena';
 export { PackageConfig, ModuleExport, ResolvedModule } from './module-resolver.zena';
 export { SourceFile, SourceFileGraph } from './library-loader.zena';
 export { loadPackageMap, buildStdlibConfig } from './package-manifest.zena';
+export { getStandardPrelude } from './prelude.zena';
 export { ScopeResult, SymbolInfo, UnresolvedName } from './scope.zena';
 export { CheckResult } from './checker.zena';
 export { SemanticModel } from './semantic-model.zena';
@@ -111,19 +114,11 @@ export class CompilerOptions {
   /** Whether to emit source locations for __LOCATION__ defaults. */
   emitLocations: boolean = false;
 
-  /**
-   * Modules to inject as implicit imports in every source file (the prelude).
-   * Each entry is a specifier (e.g., "zena:string").
-   * If null, no prelude is injected.
-   */
-  prelude: Array<String> | null;
-
   new(
     target: String,
     stdlibRoot: String,
-    packages: HashMap<String, PackageConfig>,
-    prelude: Array<String> | null
-  ) : target = target, stdlibRoot = stdlibRoot, packages = packages, prelude = prelude;
+    packages: HashMap<String, PackageConfig>
+  ) : target = target, stdlibRoot = stdlibRoot, packages = packages;
 }
 
 // ============================================================================
@@ -276,20 +271,22 @@ export class Compiler {
    * In pull-based environments, call `refreshCache()` first.
    */
   compile(entryPoint: String, version: String | null = null): CompilationResult {
-    // Load prelude modules first (if configured).
-    if (this.#options.prelude != null) {
-      let prelude = this.#options.prelude as Array<String>;
-      for (let specifier in prelude) {
-        let resolved = this.#resolver.resolve(specifier, "");
-        this.#loader.load(resolved.path);
-      }
+    let entries = new Array<SourceFile>();
+
+    // Load prelude modules first.
+    let prelude = getStandardPrelude();
+    let specifierIter = prelude.keys();
+    while (let (true, specifier) = specifierIter.next()) {
+      let resolved = this.#resolver.resolve(specifier, "");
+      entries.push(this.#loader.load(resolved.path));
     }
 
     // Load the entry point and all transitive dependencies.
     let entry = this.#loader.load(entryPoint, version);
+    entries.push(entry);
 
     // Compute topological order.
-    let graph = this.#loader.computeGraph(entry);
+    let graph = this.#loader.computeGraph(entries);
 
     // Run scope analysis on all source files in dependency order.
     this.#resolveScopes(graph.files);
@@ -326,7 +323,17 @@ export class Compiler {
    * import wiring is stable when all dependencies are also unchanged.
    */
   #resolveScopes(files: Array<SourceFile>): void {
+    var preludeScope: Scope | null = null;
+    var builtPrelude = false;
+
     for (let lib in files) {
+
+      // Build the prelude scope just before the first non-stdlib file.
+      // At this point, all prelude dependencies must have been scope-analyzed.
+      if (!lib.isStdlib && !builtPrelude) {
+        preludeScope = this.#buildPreludeScope();
+        builtPrelude = true;
+      }
 
       // Skip files that already have a scope result from a previous
       // compilation — the file was reused from the loader cache, so
@@ -336,13 +343,46 @@ export class Compiler {
       }
 
       // Phase 1: Build file-local scopes.
-      let builder = new ScopeBuilder(lib.path);
+      let builder = new ScopeBuilder(lib.path, if (lib.isStdlib) { null } else { preludeScope });
       let result = builder.build(lib.ast);
       lib.scopeResult = result;
 
       // Phase 2: Wire up cross-module imports.
       this.#wireImports(lib, result);
     }
+  }
+
+  #buildPreludeScope(): Scope | null {
+    let prelude = getStandardPrelude();
+    let scope = new Scope(ScopeKind.Module, null);
+
+    let specifierIter = prelude.keys();
+    while (let (true, specifier) = specifierIter.next()) {
+      let resolved = this.#resolver.resolve(specifier, "");
+      let lib = this.#loader.get(resolved.path);
+      if (lib != null && lib.scopeResult != null) {
+        let exports = (lib.scopeResult as ScopeResult).exports;
+        let namesToImport = prelude[specifier];
+        
+        var i = 0;
+        while (i < namesToImport.length) {
+          let name = namesToImport[i];
+          
+          let valueExport = exports.getValue(name);
+          if (valueExport != null) {
+            scope.injectValue(name, valueExport as SymbolInfo);
+          }
+          
+          let typeExport = exports.getType(name);
+          if (typeExport != null) {
+            scope.injectType(name, typeExport as SymbolInfo);
+          }
+          
+          i = i + 1;
+        }
+      }
+    }
+    return scope;
   }
 
   /**
@@ -472,7 +512,7 @@ export let createCompiler = (host: CompilerHost, options: CompilerOptions): Comp
  */
 export let checkSource = (source: String, path: String): CheckResult => {
   let ast = parse(source, path);
-  let builder = new ScopeBuilder(path);
+  let builder = new ScopeBuilder(path, null);
   let scopeResult = builder.build(ast);
   return checkModule(ast, scopeResult, null, null, false);
 };
@@ -1079,13 +1119,20 @@ let checkFile = (
       if (dep.path == depPath && dep.scopeResult != null) {
         let sr = dep.scopeResult as ScopeResult;
         depExports[specifier] = sr.exports;
-        if (allResults.has(dep.path)) {
-          depModels[specifier] = allResults[dep.path].model;
-        }
       }
       li = li + 1;
     }
+    if (allResults.has(depPath)) {
+      depModels[specifier] = allResults[depPath].model;
+    }
   }
+
+  // Populate depModels with all known semantics models by their absolute path.
+  let resIter = allResults.keys();
+  while (let (true, path) = resIter.next()) {
+    depModels[path] = allResults[path].model;
+  }
+
   return checkModule(
     file.ast,
     file.scopeResult as ScopeResult,

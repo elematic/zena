@@ -123,17 +123,24 @@ export let tests = suite('Compiler Scope Integration', () => {
       let compiler = makeCompiler(host);
       let result = compiler.compile("/project/main.zena");
 
+      let userFiles = new Array<SourceFile>();
+      for (let f in result.files) {
+        if (!f.isStdlib) {
+          userFiles.push(f);
+        }
+      }
+
       // All three source files should have scope results (dependency order).
-      equal(result.files.length, 3);
+      equal(userFiles.length, 3);
       var i = 0;
-      while (i < result.files.length) {
-        isTrue(result.files[i].scopeResult != null);
+      while (i < userFiles.length) {
+        isTrue(userFiles[i].scopeResult != null);
         i += 1;
       }
 
       // a.zena should come before b.zena in the ordering.
-      let first = result.files[0];
-      let second = result.files[1];
+      let first = userFiles[0];
+      let second = userFiles[1];
       equal(first.path, "/project/a.zena");
       equal(second.path, "/project/b.zena");
     });

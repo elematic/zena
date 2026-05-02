@@ -75,6 +75,13 @@ export class SemanticModel {
    */
   #diagnostics = new Array<Diagnostic>();
 
+  /**
+   * Map from exported names to their resolved Type.
+   * Used for cross-module type lookups, especially for built-in
+   * primitives where SymbolInfo ids may differ natively.
+   */
+  #exportTypes = new HashMap<String, Type>();
+
   // --- Reference and declaration maps ---
 
   /**
@@ -149,6 +156,25 @@ export class SemanticModel {
   getBindingType(info: SymbolInfo): Type | null {
     if (this.#bindingTypes.has(info.id)) {
       return this.#bindingTypes[info.id];
+    }
+    return null;
+  }
+
+  // --- Exports ---
+
+  /**
+   * Register a type as exported under the given name.
+   */
+  setExportType(name: String, type: Type): void {
+    this.#exportTypes[name] = type;
+  }
+
+  /**
+   * Get an exported type by name.
+   */
+  getExportType(name: String): Type | null {
+    if (this.#exportTypes.has(name)) {
+      return this.#exportTypes[name];
     }
     return null;
   }

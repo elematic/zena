@@ -380,6 +380,18 @@ class CheckerContext {
     let bt = this.model.getBindingType(si);
     if (bt != null) { return bt as Type; }
 
+    // Check dependency models in case this binding came from an import.
+    let models = this.#depModels;
+    if (models != null) {
+      let depModels = models as HashMap<String, SemanticModel>;
+      let iter = depModels.keys();
+      while (let (true, depKey) = iter.next()) {
+        let depModel = depModels[depKey];
+        let dbt = depModel.getBindingType(si);
+        if (dbt != null) { return dbt as Type; }
+      }
+    }
+
     // No type stored yet — attempt lazy resolution for pending functions.
     if (this.#pendingFunctions.has(si.id)) {
       return this.lazyResolveFunction(si, this.#pendingFunctions[si.id]);
@@ -627,6 +639,20 @@ class CheckerContext {
   #materializeFromSymbol(info: SymbolInfo, nameHint: String): Type | null {
     if (this.#materializedTypes.has(info.id)) {
       return this.#materializedTypes[info.id];
+    }
+
+    let models = this.#depModels;
+    if (models != null) {
+      let depModels = models as HashMap<String, SemanticModel>;
+      let iter = depModels.keys();
+      while (let (true, depKey) = iter.next()) {
+        let depModel = depModels[depKey];
+        let bt = depModel.getBindingType(info);
+        if (bt != null) {
+          this.#materializedTypes[info.id] = bt as Type;
+          return bt as Type;
+        }
+      }
     }
 
     if (info.declaration != null) {

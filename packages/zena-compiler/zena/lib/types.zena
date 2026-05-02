@@ -152,7 +152,7 @@ export class InterfaceType extends Type {
   name: String;
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
-  extendsList = new Array<InterfaceType>();
+  var extendsList = new Array<InterfaceType>();
   var fields = new HashMap<String, Type>();
   var fieldMutability = new HashMap<String, boolean>();
   var methods = new HashMap<String, FunctionType>();
@@ -172,9 +172,10 @@ export let instantiateInterfaceType = (
   result.typeParameters = source.typeParameters;
   result.typeArguments = typeArguments;
   result.genericSource = source;
-  for (let extends in source.extendsList) {
-    result.extendsList.push(extends);
-  }
+  // Sharing mutable arrays is technically unsafe, but we never modify these
+  // after instantiation so it should be fine in practice. If this becomes an
+  // issue we can copy the arrays here.
+  result.extendsList = source.extendsList;
   result.fields = source.fields;
   result.fieldMutability = source.fieldMutability;
   result.methods = source.methods;

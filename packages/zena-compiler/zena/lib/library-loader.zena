@@ -129,7 +129,7 @@ export class SourceFileGraph(
  * Usage:
  *   let loader = new LibraryLoader(host, resolver);
  *   let entry = loader.load("/path/to/main.zena");
- *   let graph = loader.computeGraph(entry);
+ *   let graph = loader.computeGraph([entry]);
  */
 export class LibraryLoader {
   #host: CompilerHost;
@@ -318,11 +318,16 @@ export class LibraryLoader {
    * before A. This ordering is required for correct type checking (a module's
    * dependencies must be checked before the module itself).
    */
-  computeGraph(entry: SourceFile): SourceFileGraph {
+  computeGraph(entries: Array<SourceFile>): SourceFileGraph {
     let visited = new HashMap<String, i32>();
     let stack = new HashMap<String, i32>();
     let sorted = new Array<SourceFile>();
-    let hasCycle = this.#topoVisit(entry, visited, stack, sorted);
+    var hasCycle = false;
+    for (let entry in entries) {
+      if (this.#topoVisit(entry, visited, stack, sorted)) {
+        hasCycle = true;
+      }
+    }
     return new SourceFileGraph(sorted, hasCycle);
   }
 
