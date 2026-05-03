@@ -47,13 +47,13 @@ export let tests = suite('Scope', (): void => {
       let mod = parse('let x = 1;', 'test.zena');
       let decl = mod.body[0];
 
-      let ok = scope.declareValue("x", "let", decl, "test.zena");
+      let ok = scope.declare("x", false, decl, "test.zena");
       isTrue(ok);
 
-      let info = scope.resolveValue("x");
+      let info = scope.resolve("x");
       isTrue(info != null);
       let sym = info as Symbol;
-      equal(sym.kind, "let");
+      isFalse(sym.isMutable);
       equal(sym.modulePath, "test.zena");
     });
 
@@ -62,13 +62,13 @@ export let tests = suite('Scope', (): void => {
       let mod = parse('class Foo {}', 'test.zena');
       let decl = mod.body[0];
 
-      let ok = scope.declareType("Foo", decl, "test.zena");
+      let ok = scope.declare("Foo", false, decl, "test.zena");
       isTrue(ok);
 
-      let info = scope.resolveType("Foo");
+      let info = scope.resolve("Foo");
       isTrue(info != null);
       let sym = info as Symbol;
-      equal(sym.kind, "type");
+      isTrue(sym.isType());
     });
 
     test('value and type namespaces are separate', (ctx: TestContext): void => {
@@ -76,12 +76,12 @@ export let tests = suite('Scope', (): void => {
       let mod = parse('class Foo {}', 'test.zena');
       let decl = mod.body[0];
 
-      scope.declareType("Foo", decl, "test.zena");
-      scope.declareValue("Foo", "let", decl, "test.zena");
+      scope.declare("Foo", false, decl, "test.zena");
+      scope.declare("Foo", false, decl, "test.zena");
 
       // Both should resolve independently.
-      isTrue(scope.resolveType("Foo") != null);
-      isTrue(scope.resolveValue("Foo") != null);
+      isTrue(scope.resolve("Foo") != null);
+      isTrue(scope.resolve("Foo") != null);
     });
 
     test('duplicate declaration returns false', (ctx: TestContext): void => {
@@ -89,13 +89,13 @@ export let tests = suite('Scope', (): void => {
       let mod = parse('let x = 1;', 'test.zena');
       let decl = mod.body[0];
 
-      isTrue(scope.declareValue("x", "let", decl, "test.zena"));
-      isFalse(scope.declareValue("x", "let", decl, "test.zena"));
+      isTrue(scope.declare("x", false, decl, "test.zena"));
+      isFalse(scope.declare("x", false, decl, "test.zena"));
     });
 
     test('unresolved name returns null', (ctx: TestContext): void => {
       let scope = new Scope(ScopeKind.Module, null);
-      let info = scope.resolveValue("nonexistent");
+      let info = scope.resolve("nonexistent");
       isTrue(info == null);
     });
   });
@@ -111,10 +111,10 @@ export let tests = suite('Scope', (): void => {
       let mod = parse('let x = 1;', 'test.zena');
       let decl = mod.body[0];
 
-      parent.declareValue("x", "let", decl, "test.zena");
+      parent.declare("x", false, decl, "test.zena");
 
       // Resolve from child should find parent's binding.
-      let info = child.resolveValue("x");
+      let info = child.resolve("x");
       isTrue(info != null);
     });
 
@@ -123,11 +123,11 @@ export let tests = suite('Scope', (): void => {
       let child = new Scope(ScopeKind.Block, parent);
       let mod = parse('let x = 1; let y = 2;', 'test.zena');
 
-      parent.declareValue("x", "let", mod.body[0], "test.zena");
-      child.declareValue("x", "let", mod.body[1], "test.zena");
+      parent.declare("x", false, mod.body[0], "test.zena");
+      child.declare("x", false, mod.body[1], "test.zena");
 
       // Child's binding wins.
-      let info = child.resolveValue("x");
+      let info = child.resolve("x");
       isTrue(info != null);
       let sym = info as Symbol;
       // The declaration should be the child's (body[1]), not parent's.
@@ -139,10 +139,10 @@ export let tests = suite('Scope', (): void => {
       let child = new Scope(ScopeKind.Block, parent);
       let mod = parse('let x = 1;', 'test.zena');
 
-      parent.declareValue("x", "let", mod.body[0], "test.zena");
+      parent.declare("x", false, mod.body[0], "test.zena");
 
       // getLocal on child should not find parent's binding.
-      let info = child.getLocalValue("x");
+      let info = child.getLocal("x");
       isTrue(info == null);
     });
 
@@ -151,10 +151,10 @@ export let tests = suite('Scope', (): void => {
       let child = new Scope(ScopeKind.Block, parent);
       let mod = parse('let x = 1;', 'test.zena');
 
-      parent.declareValue("x", "let", mod.body[0], "test.zena");
+      parent.declare("x", false, mod.body[0], "test.zena");
 
-      isFalse(child.hasValue("x"));
-      isTrue(parent.hasValue("x"));
+      isFalse(child.has("x"));
+      isTrue(parent.has("x"));
     });
   });
 
@@ -167,20 +167,20 @@ export let tests = suite('Scope', (): void => {
       let exports = new HashMap<String, Symbol>();
       let mod = parse('export let x = 1;', 'test.zena');
       let decl = mod.body[0];
-      let info = new Symbol("let", decl, "test.zena");
+      let info = new Symbol(decl, "test.zena");
 
       exports["x"] = info;
 
       let got = if (let (true, val) = exports.get("x")) { val } else { null };
       isTrue(got != null);
-      equal((got as Symbol).kind, "let");
+      isFalse((got as Symbol).isMutable);
     });
 
     test('set and get type export', (ctx: TestContext): void => {
       let exports = new HashMap<String, Symbol>();
       let mod = parse('class Foo {}', 'test.zena');
       let decl = mod.body[0];
-      let info = new Symbol("type", decl, "test.zena");
+      let info = new Symbol(decl, "test.zena");
 
       exports["Foo"] = info;
 
@@ -192,12 +192,12 @@ export let tests = suite('Scope', (): void => {
       let exports = new HashMap<String, Symbol>();
       let mod = parse('export class Foo {}', 'test.zena');
       let decl = mod.body[0];
-      let info = new Symbol("type-and-value", decl, "test.zena");
+      let info = new Symbol(decl, "test.zena");
 
       exports["Foo"] = info;
 
       isTrue(exports.has("Foo"));
-      isTrue(exports["Foo"].kind == "type-and-value");
+      isTrue(exports["Foo"].isType() && exports["Foo"].isValue());
       isFalse(exports.has("Bar"));
     });
   });
@@ -212,9 +212,9 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      let info = result.rootScope.resolveValue("x");
+      let info = result.rootScope.resolve("x");
       isTrue(info != null);
-      equal((info as Symbol).kind, "let");
+      isFalse((info as Symbol).isMutable);
     });
 
     test('var declaration is in scope', (ctx: TestContext): void => {
@@ -222,9 +222,9 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      let info = result.rootScope.resolveValue("y");
+      let info = result.rootScope.resolve("y");
       isTrue(info != null);
-      equal((info as Symbol).kind, "var");
+      isTrue((info as Symbol).isMutable);
     });
 
     test('exported variable appears in exports', (ctx: TestContext): void => {
@@ -254,8 +254,8 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isTrue(result.rootScope.resolveValue("Point") != null);
-      isTrue(result.rootScope.resolveType("Point") != null);
+      isTrue(result.rootScope.resolve("Point") != null);
+      isTrue(result.rootScope.resolve("Point") != null);
     });
 
     test('exported class in both export namespaces', (ctx: TestContext): void => {
@@ -264,7 +264,7 @@ export let tests = suite('Scope', (): void => {
       let result = builder.build(mod);
 
       isTrue(result.exports.has("Point"));
-      isTrue(result.exports["Point"].kind == "type-and-value");
+      isTrue(result.exports["Point"].isType() && result.exports["Point"].isValue());
     });
   });
 
@@ -280,7 +280,7 @@ export let tests = suite('Scope', (): void => {
       let result = builder.build(mod);
 
       // Annotated functions should be pre-declared.
-      isTrue(result.rootScope.resolveValue("add") != null);
+      isTrue(result.rootScope.resolve("add") != null);
     });
 
     test('exported function appears in exports', (ctx: TestContext): void => {
@@ -305,8 +305,8 @@ export let tests = suite('Scope', (): void => {
       let result = builder.build(mod);
 
       // Imports should be declared in both namespaces.
-      isTrue(result.rootScope.resolveValue("HashMap") != null);
-      isTrue(result.rootScope.resolveType("HashMap") != null);
+      isTrue(result.rootScope.resolve("HashMap") != null);
+      isTrue(result.rootScope.resolve("HashMap") != null);
     });
   });
 
@@ -322,8 +322,8 @@ export let tests = suite('Scope', (): void => {
       let result = builder.build(mod);
 
       // 'y' is not declared, so it should be unresolved.
-      isTrue(result.unresolvedValues.length > 0);
-      equal(result.unresolvedValues[0].name, "y");
+      isTrue(result.unresolvedNames.length > 0);
+      equal(result.unresolvedNames[0].name, "y");
     });
 
     test('reference to declared name is not unresolved', (ctx: TestContext): void => {
@@ -333,7 +333,7 @@ export let tests = suite('Scope', (): void => {
       let result = builder.build(mod);
 
       // All names should resolve.
-      equal(result.unresolvedValues.length, 0);
+      equal(result.unresolvedNames.length, 0);
     });
 
     test('type alias unknown target is unresolved type', (ctx: TestContext): void => {
@@ -342,8 +342,8 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isTrue(result.unresolvedTypes.length > 0);
-      equal(result.unresolvedTypes[0].name, "MissingType");
+      isTrue(result.unresolvedNames.length > 0);
+      equal(result.unresolvedNames[0].name, "MissingType");
     });
   });
 
@@ -358,9 +358,10 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isTrue(result.rootScope.resolveType("ID") != null);
+      isTrue(result.rootScope.resolve("ID") != null);
       // Type aliases are NOT in value namespace.
-      isTrue(result.rootScope.resolveValue("ID") == null);
+      let idSym = result.rootScope.resolve("ID") as Symbol;
+      isTrue(idSym.isType() && !idSym.isValue());
     });
 
     test('exported type alias in exports', (ctx: TestContext): void => {
@@ -370,7 +371,7 @@ export let tests = suite('Scope', (): void => {
       let result = builder.build(mod);
 
       isTrue(result.exports.has("ID"));
-      isTrue(result.exports["ID"].kind == "type");
+      isTrue(result.exports["ID"].isType() && !result.exports["ID"].isValue());
     });
   });
 
@@ -384,14 +385,14 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isTrue(result.rootScope.resolveType("i32") != null);
-      isTrue(result.rootScope.resolveType("i64") != null);
-      isTrue(result.rootScope.resolveType("f32") != null);
-      isTrue(result.rootScope.resolveType("f64") != null);
-      isTrue(result.rootScope.resolveType("boolean") != null);
-      isTrue(result.rootScope.resolveType("void") != null);
-      isTrue(result.rootScope.resolveType("never") != null);
-      isTrue(result.rootScope.resolveType("null") != null);
+      isTrue(result.rootScope.resolve("i32") != null);
+      isTrue(result.rootScope.resolve("i64") != null);
+      isTrue(result.rootScope.resolve("f32") != null);
+      isTrue(result.rootScope.resolve("f64") != null);
+      isTrue(result.rootScope.resolve("boolean") != null);
+      isTrue(result.rootScope.resolve("void") != null);
+      isTrue(result.rootScope.resolve("never") != null);
+      isTrue(result.rootScope.resolve("null") != null);
     });
 
     test('built-in types have null declaration', (ctx: TestContext): void => {
@@ -399,9 +400,9 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      let info = result.rootScope.resolveType("i32") as Symbol;
+      let info = result.rootScope.resolve("i32") as Symbol;
       isTrue(info.declaration == null);
-      equal(info.kind, "type");
+      isTrue(info.isType());
       equal(info.modulePath, "");
     });
 
@@ -410,7 +411,8 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isTrue(result.rootScope.resolveValue("i32") == null);
+      let i32Sym = result.rootScope.resolve("i32") as Symbol;
+      isTrue(i32Sym.isType() && !i32Sym.isValue());
     });
 
     test('user type shadows built-in', (ctx: TestContext): void => {
@@ -419,7 +421,7 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      let info = result.rootScope.resolveType("i32") as Symbol;
+      let info = result.rootScope.resolve("i32") as Symbol;
       // User's type alias should shadow the built-in.
       isTrue(info.declaration != null);
     });
@@ -437,9 +439,9 @@ export let tests = suite('Scope', (): void => {
       let result = builder.build(mod);
 
       // Both should be declared.
-      isTrue(result.rootScope.resolveValue("make") != null);
-      isTrue(result.rootScope.resolveValue("Point") != null);
-      isTrue(result.rootScope.resolveType("Point") != null);
+      isTrue(result.rootScope.resolve("make") != null);
+      isTrue(result.rootScope.resolve("Point") != null);
+      isTrue(result.rootScope.resolve("Point") != null);
     });
   });
 
@@ -456,7 +458,7 @@ export let tests = suite('Scope', (): void => {
       let xRef = yDecl.init as Identifier;
       let sym = result.references.getByNode(xRef);
       isTrue(sym != null);
-      equal((sym as Symbol).kind, "let");
+      isFalse((sym as Symbol).isMutable);
     });
 
     test('new expression callee is tracked', (ctx: TestContext): void => {
@@ -469,7 +471,7 @@ export let tests = suite('Scope', (): void => {
       let newExpr = xDecl.init as NewExpression;
       let sym = result.references.getByNode(newExpr.callee);
       isTrue(sym != null);
-      equal((sym as Symbol).kind, "let");
+      isFalse((sym as Symbol).isMutable);
     });
 
     test('unresolved identifier is not tracked', (ctx: TestContext): void => {

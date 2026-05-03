@@ -371,11 +371,11 @@ export class Compiler {
           let exp = if (let (true, val) = exports.get(name)) { val } else { null };
           if (exp != null) {
             let info = exp as Symbol;
-            if (info.kind == "type-and-value" || info.kind == "let" || info.kind == "var") {
-              scope.injectValue(name, info);
+            if (info.isValue()) {
+              scope.inject(name, info);
             }
-            if (info.kind == "type-and-value" || info.kind == "type") {
-              scope.injectType(name, info);
+            if (info.isType()) {
+              scope.inject(name, info);
             }
           }
           
@@ -428,7 +428,7 @@ export class Compiler {
                   if (!depExports.has(importedName)) {
                     // The imported name doesn't exist in the dependency's exports.
                     // Record as unresolved for later error reporting.
-                    result.unresolvedValues.push(new UnresolvedName(importedName, spec));
+                    result.unresolvedNames.push(new UnresolvedName(importedName, spec));
                   }
 
                   k = k + 1;
@@ -458,7 +458,7 @@ export class Compiler {
                   let exp = if (let (true, val) = depExports.get(importedName)) { val } else { null };
 
                   if (exp == null) {
-                    result.unresolvedValues.push(new UnresolvedName(importedName, spec));
+                    result.unresolvedNames.push(new UnresolvedName(importedName, spec));
                   } else {
                     let info = exp as Symbol;
                     result.exports[localName] = info;
@@ -536,8 +536,8 @@ let computeExportSignature = (
   let iter = exports.keys();
   while (let (true, name) = iter.next()) {
     let exp = exports[name];
-    if (exp.kind == "type-and-value" || exp.kind == "let" || exp.kind == "var") {
-      let scopeInfo = rootScope.getLocalValue(name);
+    if (exp.isValue()) {
+      let scopeInfo = rootScope.getLocal(name);
       let bt = if (scopeInfo != null) {
         model.getBindingType(scopeInfo as Symbol)
       } else {
@@ -548,7 +548,7 @@ let computeExportSignature = (
       }
     }
     
-    if (exp.kind == "type-and-value" || exp.kind == "type") {
+    if (exp.isType()) {
       // For types, prefer the explicitly registered exportType over localType binding if possible.
       // We'll just read from getExportType first, fallback to getBindingType(localType).
       // Wait, this is just for hashing signatures right now in compiler.zena.
@@ -557,7 +557,7 @@ let computeExportSignature = (
       let t = if (bt != null) {
         bt
       } else {
-        let scopeInfo = rootScope.getLocalType(name);
+        let scopeInfo = rootScope.getLocal(name);
         if (scopeInfo != null) {
           model.getBindingType(scopeInfo as Symbol)
         } else {
@@ -1219,14 +1219,14 @@ export let checkCompilation = (
       let iter = exports.keys();
       while (let (true, name) = iter.next()) {
         let exp = exports[name];
-        if (exp.kind == "type-and-value" || exp.kind == "type") {
+        if (exp.isType()) {
           let bt = checkResult.model.getExportType(name);
           let t = if (bt != null) { bt } else { checkResult.model.getBindingType(exp) };
           if (t != null) {
             sharedState.preludeTypes[name] = t as Type;
           }
         }
-        if (exp.kind == "type-and-value" || exp.kind == "let" || exp.kind == "var") {
+        if (exp.isValue()) {
           let t = checkResult.model.getBindingType(exp);
           if (t != null) {
             sharedState.preludeValues[name] = t as Type;

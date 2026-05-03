@@ -104,6 +104,14 @@ for (const wasmFile of wasmFiles.sort()) {
     console.log(
       `${GREEN}✔${NC} ${displayName} ${DIM}(${testCount} tests)${NC}`,
     );
+    // Show any logs that were printed during the test
+    if (
+      report &&
+      report.trim() &&
+      !report.match(/^✓ \d+ of \d+ test\(s\) passed$/)
+    ) {
+      console.log(report);
+    }
     passed++;
   } else {
     // Show the full report from runAndReport on failure

@@ -397,30 +397,32 @@ class CheckerContext {
 
     // On-demand: if the declaration is a type (class, interface, mixin,
     // sealed variant), materialize it via resolveTypeName so forward
-    // references in the value namespace work.
+    // references work.
     // For DeclareFunction, register a placeholder so forward refs don't fail.
+    // TODO: It feels like this might be duplicating some functionality...
     let decl = si.declaration;
     if (decl != null) {
-      let declNode = decl as Node;
-      var typeName: String | null = null;
-      match (declNode) {
-        case ClassDeclaration {name}: { typeName = name.name; }
-        case InterfaceDeclaration {name}: { typeName = name.name; }
-        case MixinDeclaration {name}: { typeName = name.name; }
-        case SealedVariant {name}: { typeName = name.name; }
+      // Extract type name from declaration node
+      // TODO: Let's make a named Node interface or at least
+      // a getName() utility. We should definitely add an isType() utility.
+      let tn = match (decl) {
+        case ClassDeclaration {name}: { name.name }
+        case InterfaceDeclaration {name}: { name.name }
+        case MixinDeclaration {name}: { name.name }
+        case SealedVariant {name}: { name.name }
         case DeclareFunction: {
-          // Forward reference to a declare function — bind as unknown
-          // placeholder; the main pass will replace with the real type.
           this.declareBinding(si, new ErrorType());
-          return new ErrorType();
+          null
         }
-        case _: {}
-      }
-      if (typeName != null) {
-        // resolveTypeName will materialize + declareBinding if needed.
-        let t = this.resolveTypeName(typeName as String);
+        case _: { null }
+      };
+      
+      if (tn != null) {
+        let t = this.resolveTypeName(tn);
         if (t != null) { return t; }
       }
+      
+      
     }
     return null;
   }
@@ -549,6 +551,10 @@ class CheckerContext {
     let top = this.#typeScopes[this.#typeScopes.length - 1];
     top[name] = t;
   }
+  
+  registerType(info: Symbol, t: Type): void {
+    this.#materializedTypes[info.id] = t;
+  }
 
   /**
    * Register a TypeParameterType in the materialized types cache by the
@@ -623,7 +629,7 @@ class CheckerContext {
    * Sets all boolean flags from the AST node at creation time.
    */
   #materializeFromScope(name: String): Type | null {
-    let si = this.#scopeResult.rootScope.resolveType(name);
+    let si = this.#scopeResult.rootScope.resolve(name);
     if (si == null) { return null; }
     return this.#materializeFromSymbol(si as Symbol, name);
   }
@@ -631,6 +637,11 @@ class CheckerContext {
   #materializeFromSymbol(info: Symbol, nameHint: String): Type | null {
     if (let (true, mat) = this.#materializedTypes.get(info.id)) {
       return mat;
+    }
+    
+    let btType = this.model.getBindingType(info);
+    if (btType != null) {
+      return btType as Type;
     }
 
     let models = this.#depModels;
@@ -3377,7 +3388,7 @@ case _: {
 
             // Register type imports (classes, interfaces, etc.)
             let typeExport = if (let (true, exp) = depMod.get(importedName)) {
-              if (exp.kind == "type-and-value" || exp.kind == "type") { exp } else { null }
+              if (exp.isType()) { exp } else { null }
             } else { null };
             if (typeExport != null) {
               let si = typeExport as Symbol;
@@ -3397,9 +3408,9 @@ case _: {
                 ctx.declareTypeName(localName, rt);
                 
                 // Bind directly to the local TYPE symbol for this import.
-                let localTypeInfo = ctx.scopeResult.rootScope.getLocalType(localName);
+                let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
                 if (localTypeInfo != null) {
-                  ctx.declareBinding(localTypeInfo as Symbol, rt);
+                  ctx.registerType(localTypeInfo as Symbol, rt as Type);
                 }
               } else {
                 // Fallback: create stub types from the declaration AST node.
@@ -3407,7 +3418,7 @@ case _: {
                 // member definitions (fields, methods, constructors).
                 let decl = si.declaration;
                 if (decl != null) {
-                  let localTypeInfo = ctx.scopeResult.rootScope.getLocalType(localName);
+                  let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
                   match (decl as Node) {
                     case ClassDeclaration {name}: {
                       let preludeType = ctx.resolveTypeName(name.name);
@@ -3452,10 +3463,10 @@ case _: {
 
             // Register value imports (functions, variables).
             let valueExport = if (let (true, exp) = depMod.get(importedName)) {
-              if (exp.kind == "type-and-value" || exp.kind == "let" || exp.kind == "var") { exp } else { null }
+              if (exp.isValue()) { exp } else { null }
             } else { null };
             if (valueExport != null) {
-              let localValInfo = ctx.scopeResult.rootScope.getLocalValue(localName);
+              let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
               if (localValInfo != null) {
                 var resolvedValType: Type | null = null;
                 if (depModel != null) {
@@ -4194,7 +4205,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let info = ctx.model.resolve(left);
         if (info != null) {
           let si = info as Symbol;
-          if (si.kind == "let") {
+          if (!si.isMutable) {
             ctx.error(
               "Cannot assign to immutable variable '" + name + "'.",
               DiagnosticCode.InvalidAssignment,
@@ -5503,8 +5514,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           // If it's a ClassDeclaration or other node, it's a name conflict.
           var isForwardVariant = false;
           if (ctx.scopeResult != null) {
-            let scopeInfo = (ctx.scopeResult as ScopeResult).rootScope.resolveType(variantName);
-            if (scopeInfo != null && (scopeInfo as Symbol).declaration is SealedVariant) {
+            let scopeInfo = ctx.scopeResult.rootScope.resolve(variantName);
+            if (scopeInfo?.declaration is SealedVariant) {
               isForwardVariant = true;
             }
           }
@@ -6360,7 +6371,10 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
 
   // Register the enum in the type namespace.
   ctx.declareTypeName(name, enumType);
-
+  let info2 = ctx.model.resolveDeclaration(ed);
+  if (info2 != null) {
+    ctx.registerType(info2, enumType as Type);
+  }
   // Create a record type for the value namespace (e.g., Color.Red).
   let fields = new HashMap<String, Type>();
   for (let member in members) {

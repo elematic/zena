@@ -29,7 +29,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       // The entry library should have a scope result.
       isTrue(result.entry.scopeResult != null);
       let scope = result.entry.scopeResult as ScopeResult;
-      isTrue(scope.rootScope.resolveValue("x") != null);
+      isTrue(scope.rootScope.resolve("x") != null);
     });
 
     test('all libraries in graph get scope results', () => {
@@ -76,7 +76,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       // 'greet' is imported and used — should not appear in unresolved.
       // Note: the scope builder marks it as resolved because imports are
       // declared in the scope. Wire-up validates the export exists.
-      equal(mainScope.unresolvedValues.length, 0);
+      equal(mainScope.unresolvedNames.length, 0);
     });
 
     test('import of non-exported name is flagged', () => {
@@ -88,8 +88,8 @@ export let tests = suite('Compiler Scope Integration', () => {
 
       let mainScope = result.entry.scopeResult as ScopeResult;
       // 'secret' is not exported from lib.zena — wire-up should add an unresolved entry.
-      isTrue(mainScope.unresolvedValues.length > 0);
-      equal(mainScope.unresolvedValues[0].name, "secret");
+      isTrue(mainScope.unresolvedNames.length > 0);
+      equal(mainScope.unresolvedNames[0].name, "secret");
     });
 
     test('exported class is validated as type and value', () => {
@@ -105,11 +105,11 @@ export let tests = suite('Compiler Scope Integration', () => {
       let pointLib = pointLibMaybe as SourceFile;
       let pointScope = pointLib.scopeResult as ScopeResult;
       isTrue(pointScope.exports.has("Point"));
-      isTrue(pointScope.exports["Point"].kind == "type-and-value");
+      isTrue(pointScope.exports["Point"].isType() && pointScope.exports["Point"].isValue());
 
       // No unresolved names in main.
       let mainScope = result.entry.scopeResult as ScopeResult;
-      equal(mainScope.unresolvedValues.length, 0);
+      equal(mainScope.unresolvedNames.length, 0);
     });
   });
 
@@ -169,7 +169,7 @@ export let tests = suite('Compiler Scope Integration', () => {
 
       let mainScope = result.entry.scopeResult as ScopeResult;
       // Array is exported from the stub stdlib — should pass validation.
-      equal(mainScope.unresolvedValues.length, 0);
+      equal(mainScope.unresolvedNames.length, 0);
     });
   });
 
@@ -205,7 +205,7 @@ export let tests = suite('Compiler Scope Integration', () => {
 
       let result1 = compiler.compile("/project/main.zena", "v1");
       let scope1 = result1.entry.scopeResult as ScopeResult;
-      isTrue(scope1.rootScope.resolveValue("x") != null);
+      isTrue(scope1.rootScope.resolve("x") != null);
 
       // Change the entry file.
       host.addFile("/project/main.zena", "let y = 2;");
@@ -213,8 +213,8 @@ export let tests = suite('Compiler Scope Integration', () => {
       let scope2 = result2.entry.scopeResult as ScopeResult;
 
       // New scope should have 'y', not 'x'.
-      isTrue(scope2.rootScope.resolveValue("y") != null);
-      isTrue(scope2.rootScope.resolveValue("x") == null);
+      isTrue(scope2.rootScope.resolve("y") != null);
+      isTrue(scope2.rootScope.resolve("x") == null);
     });
 
     test('cross-module imports resolve correctly after cached recompile', () => {
@@ -226,7 +226,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       // First compile.
       let result1 = compiler.compile("/project/main.zena", "v1");
       let scope1 = result1.entry.scopeResult as ScopeResult;
-      equal(scope1.unresolvedValues.length, 0);
+      equal(scope1.unresolvedNames.length, 0);
 
       // Second compile with changed entry — lib.zena cached.
       host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let b = greet;");
@@ -234,8 +234,8 @@ export let tests = suite('Compiler Scope Integration', () => {
       let scope2 = result2.entry.scopeResult as ScopeResult;
 
       // Imports should still resolve correctly against cached dependency.
-      equal(scope2.unresolvedValues.length, 0);
-      isTrue(scope2.rootScope.resolveValue("greet") != null);
+      equal(scope2.unresolvedNames.length, 0);
+      isTrue(scope2.rootScope.resolve("greet") != null);
     });
 
   });

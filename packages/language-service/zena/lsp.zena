@@ -487,7 +487,7 @@ let getPatternName = (pattern: Node): String => match (pattern) {
 // ============================================================================
 
 /**
- * Check if a comment is a doc comment (/** ... * / block comments only).
+ * Check if a comment is a doc comment (/ ** ... * / block comments only).
  */
 let isDocComment = (comment: Comment): boolean => {
   // Only block comments starting with /** are doc comments.
@@ -497,7 +497,7 @@ let isDocComment = (comment: Comment): boolean => {
 
 /**
  * Format a block doc comment value into clean text.
- * Input is the text between delimiters, e.g. "* Docs " for a /** Docs * / comment.
+ * Input is the text between delimiters, e.g. "* Docs " for a / ** Docs * / comment.
  * Strips leading/trailing whitespace and * prefixes from each line.
  */
 let formatBlockDoc = (value: String): String => {
@@ -542,7 +542,7 @@ let formatBlockDoc = (value: String): String => {
 
 /**
  * Extract and format doc comments from an array of leading comments.
- * Filters for doc comments only (/** ... * /) and joins them with newlines.
+ * Filters for doc comments only (/ ** ... * /) and joins them with newlines.
  */
 let extractDocComment = (comments: Array<Comment>): String => {
   var result = "";
@@ -1178,15 +1178,11 @@ let getHoverLabel = (node: Node, typeStr: String, scopeResult: ScopeResult | nul
           case Parameter: { prefix = "(parameter)"; }
           case ClassDeclaration: { prefix = "class"; }
           case _: {
-            let kind = sym.kind;
-            if (kind == "var") { prefix = "var"; }
-            if (kind == "type") { prefix = "type"; }
+            if (sym.isType() && !sym.isValue()) { prefix = "type"; } else if (sym.isValue() && sym.isMutable) { prefix = "var"; }
           }
         }
       } else {
-        let kind = sym.kind;
-        if (kind == "var") { prefix = "var"; }
-        if (kind == "type") { prefix = "type"; }
+        if (sym.isType() && !sym.isValue()) { prefix = "type"; } else if (sym.isValue() && sym.isMutable) { prefix = "var"; }
       }
     }
   }
