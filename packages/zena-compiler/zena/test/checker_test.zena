@@ -17,11 +17,12 @@ import { equal, isTrue, isFalse } from 'zena:assert';
 import { Array } from 'zena:array';
 import { parse } from '../lib/parser.zena';
 import { ScopeBuilder, ScopeResult, SymbolInfo } from '../lib/scope.zena';
-import { checkModule, CheckResult } from '../lib/checker.zena';
+import { checkModule, CheckResult, SharedCheckerState } from '../lib/checker.zena';
 import { SemanticModel } from '../lib/semantic-model.zena';
 import { Diagnostic, DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
 import {
   Type, I32Type, F64Type, BooleanType, VoidType, NullType, NeverType,
+  TypeParameterType,
   BoolLiteralType, ClassType, FunctionType, UnionType, TupleType,
   typeToString
 } from '../lib/types.zena';
@@ -34,6 +35,62 @@ import {
 // Helpers
 // ============================================================================
 
+// TODO: In the future, instead of manually mocking types here, we should
+// parse and check exactly the stdlib modules needed once, and share those
+// AST/Types across test runs.
+let createTestSharedState = (): SharedCheckerState => {
+  let sharedState = new SharedCheckerState();
+  let stringClass = new ClassType(9000, "String");
+  stringClass.fields["length"] = new I32Type() as Type;
+  sharedState.preludeTypes["String"] = stringClass as Type;
+  
+  let fixedArrayClass = new ClassType(9001, "FixedArray");
+  let faT = new TypeParameterType("T", null, null);
+  let faTArr = new Array<TypeParameterType>();
+  faTArr.push(faT);
+  fixedArrayClass.typeParameters = faTArr;
+  fixedArrayClass.fields["length"] = new I32Type() as Type;
+  let faPushParams = new Array<Type>();
+  faPushParams.push(faT as Type);
+  fixedArrayClass.methods["push"] = new FunctionType(faPushParams, null, new VoidType() as Type);
+  sharedState.preludeTypes["FixedArray"] = fixedArrayClass as Type;
+
+  let arrayClass = new ClassType(9003, "Array");
+  let arrT = new TypeParameterType("T", null, null);
+  let arrTArr = new Array<TypeParameterType>();
+  arrTArr.push(arrT);
+  arrayClass.typeParameters = arrTArr;
+  arrayClass.fields["length"] = new I32Type() as Type;
+  let arrPushParams = new Array<Type>();
+  arrPushParams.push(arrT as Type);
+  arrayClass.methods["push"] = new FunctionType(arrPushParams, null, new VoidType() as Type);
+  sharedState.preludeTypes["Array"] = arrayClass as Type;
+
+  let mapClass = new ClassType(9005, "HashMap");
+  let mapK = new TypeParameterType("K", null, null);
+  let mapV = new TypeParameterType("V", null, null);
+  let mapTArr = new Array<TypeParameterType>();
+  mapTArr.push(mapK);
+  mapTArr.push(mapV);
+  mapClass.typeParameters = mapTArr;
+  let getParams = new Array<Type>();
+  getParams.push(mapK as Type);
+  mapClass.methods["get"] = new FunctionType(getParams, null, mapV as Type);
+  let hasParams = new Array<Type>();
+  hasParams.push(mapK as Type);
+  mapClass.methods["has"] = new FunctionType(hasParams, null, new BooleanType() as Type);
+  let setParams = new Array<Type>();
+  setParams.push(mapK as Type);
+  setParams.push(mapV as Type);
+  mapClass.methods["[]="] = new FunctionType(setParams, null, new VoidType() as Type);
+  let idxParams = new Array<Type>();
+  idxParams.push(mapK as Type);
+  mapClass.methods["[]"] = new FunctionType(idxParams, null, mapV as Type);
+  sharedState.preludeTypes["HashMap"] = mapClass as Type;
+  
+  return sharedState;
+};
+
 /**
  * Parse, scope-analyse, and type-check a source string.
  */
@@ -41,7 +98,7 @@ let check = (source: String): CheckResult => {
   let ast = parse(source, "<test>");
   let scopeBuilder = new ScopeBuilder("<test>");
   let scopeResult = scopeBuilder.build(ast);
-  return checkModule(ast, scopeResult, null);
+  return checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 };
 
 /**
@@ -166,7 +223,7 @@ export let tests = suite('Checker API', (): void => {
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
-      let result = checkModule(ast, scopeResult, null);
+      let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       // Navigate AST: body[0] is VariableDeclaration, its init is NumberLiteral
       let decl = ast.body[0] as VariableDeclaration;
@@ -180,7 +237,7 @@ export let tests = suite('Checker API', (): void => {
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
-      let result = checkModule(ast, scopeResult, null);
+      let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       let decl = ast.body[0] as VariableDeclaration;
       let initType = result.model.getNodeType(decl.init);
@@ -193,7 +250,7 @@ export let tests = suite('Checker API', (): void => {
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
-      let result = checkModule(ast, scopeResult, null);
+      let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       let decl = ast.body[0] as VariableDeclaration;
       let initType = result.model.getNodeType(decl.init);
@@ -206,7 +263,7 @@ export let tests = suite('Checker API', (): void => {
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
-      let result = checkModule(ast, scopeResult, null);
+      let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       let decl = ast.body[0] as VariableDeclaration;
       let initType = result.model.getNodeType(decl.init);
@@ -219,7 +276,7 @@ export let tests = suite('Checker API', (): void => {
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
-      let result = checkModule(ast, scopeResult, null);
+      let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       let decl = ast.body[0] as VariableDeclaration;
       let initType = result.model.getNodeType(decl.init);
@@ -241,7 +298,7 @@ export let tests = suite('Checker API', (): void => {
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
-      let result = checkModule(ast, scopeResult, null);
+      let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       // Look up x in scope, then get its binding type
       let info = scopeResult.rootScope.resolveValue("x");
@@ -256,7 +313,7 @@ export let tests = suite('Checker API', (): void => {
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
-      let result = checkModule(ast, scopeResult, null);
+      let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       let info = scopeResult.rootScope.resolveValue("x");
       isTrue(info != null);
@@ -270,7 +327,7 @@ export let tests = suite('Checker API', (): void => {
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
-      let result = checkModule(ast, scopeResult, null);
+      let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       let info = scopeResult.rootScope.resolveValue("x");
       isTrue(info != null);
@@ -326,7 +383,7 @@ export let tests = suite('Checker API', (): void => {
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
-      let result = checkModule(ast, scopeResult, null);
+      let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       let errors = errorDiagnostics(result.diagnostics);
       equal(errors.length, 0);

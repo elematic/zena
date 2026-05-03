@@ -1189,7 +1189,6 @@ export let checkCompilation = (
   if (previous != null) {
     let prev = previous as ProgramCheckResult;
     for (let file in result.files) {
-      if (file.isStdlib) { continue; }
       if (!prev.sources.has(file.path) || prev.sources[file.path] != file.source) {
         mustCheck.add(file.path);
       }
@@ -1215,6 +1214,31 @@ export let checkCompilation = (
     let checkResult = checkFile(file, allResults, result.files, emitLocations, sharedState);
     allResults[file.path] = checkResult;
     allSources[file.path] = file.source;
+
+    // Fast-path: register stdlib types with the shared state as they compile.
+    if (file.isStdlib && file.scopeResult != null) {
+      let exports = (file.scopeResult as ScopeResult).exports;
+      for (let tName in exports.typeNames()) {
+        let exTypeInfo = exports.getType(tName);
+        if (exTypeInfo == null) {
+          continue;
+        }
+        let t = checkResult.model.getBindingType(exTypeInfo);
+        if (t != null) {
+          sharedState.preludeTypes[tName] = t as Type;
+        }
+      }
+      for (let vName in exports.valueNames()) {
+        let exValInfo = exports.getValue(vName);
+        if (exValInfo == null) {
+          continue;
+        }
+        let t = checkResult.model.getBindingType(exValInfo);
+        if (t != null) {
+          sharedState.preludeValues[vName] = t as Type;
+        }
+      }
+    }
 
     // Compute export signature and compare with previous.
     if (file.scopeResult != null) {
