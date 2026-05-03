@@ -2170,10 +2170,8 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
       if (srcAlias.isDistinct) {
         match (target) {
           case UnionT {types}: {
-            var i = 0;
-            while (i < types.length) {
-              if (isAssignableTo(ctx, source, types[i])) { return true; }
-              i += 1;
+            for (let t in types) {
+              if (isAssignableTo(ctx, source, t)) { return true; }
             }
             return false;
           }
@@ -2246,10 +2244,8 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
   // Union source: all members must be assignable to target.
   match (source) {
     case UnionT {types as sourceTypes}: {
-      var i = 0;
-      while (i < sourceTypes.length) {
-        if (!isAssignableTo(ctx, sourceTypes[i], target)) { return false; }
-        i += 1;
+      for (let st in sourceTypes) {
+        if (!isAssignableTo(ctx, st, target)) { return false; }
       }
       return true;
     }
@@ -2259,10 +2255,8 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
   // Union target: source must be assignable to at least one member.
   match (target) {
     case UnionT {types as targetTypes}: {
-      var i = 0;
-      while (i < targetTypes.length) {
-        if (isAssignableTo(ctx, source, targetTypes[i])) { return true; }
-        i += 1;
+      for (let tt in targetTypes) {
+        if (isAssignableTo(ctx, source, tt)) { return true; }
       }
       return false;
     }
@@ -2281,11 +2275,9 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
           if (srcFunc.parameters.length > tgtFunc.parameters.length) { return false; }
           // Covariant return type
           if (!isAssignableTo(ctx, srcFunc.returnType, tgtFunc.returnType)) { return false; }
-          var i = 0;
-          while (i < srcFunc.parameters.length) {
+          for (var i = 0; i < srcFunc.parameters.length; i += 1) {
             // Contravariant parameter types
             if (!isAssignableTo(ctx, tgtFunc.parameters[i], srcFunc.parameters[i])) { return false; }
-            i += 1;
           }
           return true;
         }
@@ -2320,16 +2312,13 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
               implList = srcGen.implementsList;
             }
           }
-          var i = 0;
-          while (i < implList.length) {
-            let impl = implList[i];
+          for (let impl in implList) {
             var substitutedImpl = impl as Type;
             let typeParamsList = (srcClass.genericSource ?? srcClass).typeParameters;
             if (typeParamsList != null && srcClass.typeArguments != null) {
               substitutedImpl = substituteTypeParams(typeParamsList, srcClass.typeArguments, substitutedImpl);
             }
             if (typesEqual(substitutedImpl, tgtIface) || isAssignableTo(ctx, substitutedImpl, target)) { return true; }
-            i += 1;
           }
           var current: ClassType | null = srcClass.superType;
           while (current != null) {
@@ -2341,16 +2330,13 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
                 curImplList = curGen.implementsList;
               }
             }
-            var j = 0;
-            while (j < curImplList.length) {
-              let impl = curImplList[j];
+            for (let impl in curImplList) {
               var substitutedImpl = impl as Type;
               let typeParamsList = (cur.genericSource ?? cur).typeParameters;
               if (typeParamsList != null && cur.typeArguments != null) {
                 substitutedImpl = substituteTypeParams(typeParamsList, cur.typeArguments, substitutedImpl);
               }
               if (typesEqual(substitutedImpl, tgtIface) || isAssignableTo(ctx, substitutedImpl, target)) { return true; }
-              j += 1;
             }
             current = cur.superType;
           }
@@ -2361,16 +2347,13 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case InterfaceType as srcIface: {
       match (target) {
         case InterfaceType as tgtIface: {
-          var i = 0;
-          while (i < srcIface.extendsList.length) {
-            let p = srcIface.extendsList[i];
+          for (let p in srcIface.extendsList) {
             var substitutedP = p as Type;
             let typeParamsList = (srcIface.genericSource ?? srcIface).typeParameters;
             if (typeParamsList != null && srcIface.typeArguments != null) {
               substitutedP = substituteTypeParams(typeParamsList, srcIface.typeArguments, substitutedP);
             }
             if (typesEqual(substitutedP, tgtIface) || isAssignableTo(ctx, substitutedP, target)) { return true; }
-            i += 1;
           }
         }
         case _: {}
@@ -2385,10 +2368,16 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case RecordT {properties as srcProps}: {
       match (target) {
         case RecordT {properties as tgtProps}: {
-          let keys = tgtProps.keys();
-          while (let (true, key) = keys.next()) {
-            if (!srcProps.has(key)) { return false; }
-            if (!isAssignableTo(ctx, srcProps[key], tgtProps[key])) { return false; }
+          for (let key in tgtProps.keys()) {
+            if (let (true, srcType) = srcProps.get(key)) {
+              if (let (true, tgtType) = tgtProps.get(key)) {
+                if (!isAssignableTo(ctx, srcType, tgtType)) {
+                  return false;
+                }
+              }
+            } else {
+              return false;
+            }
           }
           return true;
         }
@@ -2425,10 +2414,8 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
       match (target) {
         case TupleT {elementTypes as tgtElems}: {
           if (srcElems.length != tgtElems.length) { return false; }
-          var i = 0;
-          while (i < srcElems.length) {
+          for (var i = 0; i < srcElems.length; i += 1) {
             if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
-            i += 1;
           }
           return true;
         }
@@ -2439,10 +2426,8 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
       match (target) {
         case InlineTupleT {elementTypes as tgtElems}: {
           if (srcElems.length != tgtElems.length) { return false; }
-          var i = 0;
-          while (i < srcElems.length) {
+          for (var i = 0; i < srcElems.length; i += 1) {
             if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
-            i += 1;
           }
           return true;
         }
@@ -2460,11 +2445,13 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
 
  */
 let tupleElementsEqual = (ea: Array<Type>, eb: Array<Type>): boolean => {
-  if (ea.length != eb.length) { return false; }
-  var i = 0;
-  while (i < ea.length) {
-    if (!typesEqual(ea[i], eb[i])) { return false; }
-    i += 1;
+  if (ea.length != eb.length) {
+    return false;
+  }
+  for (var i = 0; i < ea.length; i += 1) {
+    if (!typesEqual(ea[i], eb[i])) {
+      return false;
+    }
   }
   return true;
 };
@@ -2524,10 +2511,8 @@ let typesEqual = (a: Type, b: Type): boolean => {
           let argsA = ca.typeArguments as Array<Type>;
           let argsB = cb.typeArguments as Array<Type>;
           if (argsA.length != argsB.length) { return false; }
-          var i = 0;
-          while (i < argsA.length) {
+          for (var i = 0; i < argsA.length; i += 1) {
             if (!typesEqual(argsA[i], argsB[i])) { return false; }
-            i += 1;
           }
           true
         }
@@ -2547,10 +2532,8 @@ let typesEqual = (a: Type, b: Type): boolean => {
           let argsA = ia.typeArguments as Array<Type>;
           let argsB = ib.typeArguments as Array<Type>;
           if (argsA.length != argsB.length) { return false; }
-          var i = 0;
-          while (i < argsA.length) {
+          for (var i = 0; i < argsA.length; i += 1) {
             if (!typesEqual(argsA[i], argsB[i])) { return false; }
-            i += 1;
           }
           true
         }
@@ -2586,10 +2569,8 @@ let typesEqual = (a: Type, b: Type): boolean => {
         case FunctionType as fb: {
           if (fa.parameters.length != fb.parameters.length) { return false; }
           if (!typesEqual(fa.returnType, fb.returnType)) { return false; }
-          var i = 0;
-          while (i < fa.parameters.length) {
+          for (var i = 0; i < fa.parameters.length; i += 1) {
             if (!typesEqual(fa.parameters[i], fb.parameters[i])) { return false; }
-            i += 1;
           }
           true
         }
@@ -2600,10 +2581,8 @@ let typesEqual = (a: Type, b: Type): boolean => {
       match (b) {
         case UnionT {types as ub}: {
           if (ua.length != ub.length) { return false; }
-          var i = 0;
-          while (i < ua.length) {
+          for (var i = 0; i < ua.length; i += 1) {
             if (!typesEqual(ua[i], ub[i])) { return false; }
-            i += 1;
           }
           true
         }
@@ -6154,9 +6133,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   if (id.typeParameters != null) {
     let tps = id.typeParameters as Array<TypeParameter>;
     ifaceType.typeParameters = new Array<TypeParameterType>();
-    var tpi = 0;
-    while (tpi < tps.length) {
-      let tp = tps[tpi];
+    for (let tp in tps) {
       var constraint: Type | null = null;
       if (tp.constraint != null) {
         constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
@@ -6165,40 +6142,37 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       ctx.declareTypeName(tp.name, tpType);
       ctx.registerTypeParameter(tp, tpType);
       (ifaceType.typeParameters as Array<TypeParameterType>).push(tpType);
-      tpi = tpi + 1;
     }
   }
 
   // Resolve extends list.
   if (id.extendsList != null) {
     let extends_ = id.extendsList as Array<TypeAnnotation>;
-    var ei = 0;
-    while (ei < extends_.length) {
-      let parentType = resolveTypeAnnotation(ctx, extends_[ei]);
+    for (let currentExtends in extends_) {
+      let parentType = resolveTypeAnnotation(ctx, currentExtends);
       match (parentType) {
         case InterfaceType as pt: {
           ifaceType.extendsList.push(pt);
           // Inherit methods and fields.
-          let methodKeys = pt.methods.keys();
-          while (let (true, key) = methodKeys.next()) {
-            ifaceType.methods[key] = substituteTypeParams(pt.typeParameters, pt.typeArguments, pt.methods[key]) as FunctionType;
+          for (let key in pt.methods.keys()) {
+            if (let (true, methodType) = pt.methods.get(key)) {
+              ifaceType.methods[key] = substituteTypeParams(pt.typeParameters, pt.typeArguments, methodType) as FunctionType;
+            }
           }
-          let fieldKeys = pt.fields.keys();
-          while (let (true, key) = fieldKeys.next()) {
-            ifaceType.fields[key] = substituteTypeParams(pt.typeParameters, pt.typeArguments, pt.fields[key]);
+          for (let key in pt.fields.keys()) {
+            if (let (true, fieldType) = pt.fields.get(key)) {
+              ifaceType.fields[key] = substituteTypeParams(pt.typeParameters, pt.typeArguments, fieldType);
+            }
           }
         }
         case _: {}
       }
-      ei = ei + 1;
     }
   }
 
   // Process body members.
   ctx.enterInterface();
-  var bi = 0;
-  while (bi < id.body.length) {
-    let member = id.body[bi];
+  for (let member in id.body) {
     match (member) {
       case MethodSignature as ms: {
         ctx.enterScope();
@@ -6206,9 +6180,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         if (ms.typeParameters != null) {
           let tpArr = new Array<TypeParameterType>();
           let tps = ms.typeParameters as Array<TypeParameter>;
-          var k = 0;
-          while (k < tps.length) {
-            let tp = tps[k];
+          for (let tp in tps) {
             var constraint: Type | null = null;
             if (tp.constraint != null) {
               constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
@@ -6217,20 +6189,16 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
             ctx.declareTypeName(tp.name, tpType);
             ctx.registerTypeParameter(tp, tpType);
             tpArr.push(tpType);
-            k = k + 1;
           }
           typeParams = tpArr;
         }
         let paramTypes = new Array<Type>();
-        var pi = 0;
-        while (pi < ms.params.length) {
-          let param = ms.params[pi];
+        for (let param in ms.params) {
           var paramType: Type = new ErrorType();
           if (param.typeAnnotation != null) {
             paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
           }
           paramTypes.push(paramType);
-          pi = pi + 1;
         }
         var retType: Type = new VoidType();
         if (ms.returnType != null) {
@@ -6279,7 +6247,6 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       }
       case _: {}
     }
-    bi = bi + 1;
   }
   ctx.exitInterface();
 
@@ -6429,9 +6396,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   if (md.typeParameters != null) {
     let tps = md.typeParameters as Array<TypeParameter>;
     var resolvedTps = new Array<TypeParameterType>();
-    var tpi = 0;
-    while (tpi < tps.length) {
-      let tp = tps[tpi];
+    for (let tp in tps) {
       var constraint: Type | null = null;
       if (tp.constraint != null) {
         constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
@@ -6440,7 +6405,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       ctx.declareTypeName(tp.name, tpType);
       ctx.registerTypeParameter(tp, tpType);
       resolvedTps.push(tpType);
-      tpi += 1;
     }
     mixinType.typeParameters = resolvedTps;
   }
@@ -6474,22 +6438,23 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   // Resolve composed mixins.
   if (md.mixins != null) {
     let mixinAnns = md.mixins as Array<TypeAnnotation>;
-    var ci = 0;
-    while (ci < mixinAnns.length) {
-      let composedType = resolveTypeAnnotation(ctx, mixinAnns[ci]);
+    for (let ma in mixinAnns) {
+      let composedType = resolveTypeAnnotation(ctx, ma);
       match (composedType) {
         case MixinType as composedMixin: {
           // Copy fields and methods from composed mixin.
-          let fieldKeys = composedMixin.fields.keys();
-          while (let (true, key) = fieldKeys.next()) {
-            mixinType.fields[key] = composedMixin.fields[key];
-            if (composedMixin.fieldMutability.has(key)) {
-              mixinType.fieldMutability[key] = composedMixin.fieldMutability[key];
+          for (let key in composedMixin.fields.keys()) {
+            if (let (true, fType) = composedMixin.fields.get(key)) {
+              mixinType.fields[key] = fType;
+            }
+            if (let (true, isMut) = composedMixin.fieldMutability.get(key)) {
+              mixinType.fieldMutability[key] = isMut;
             }
           }
-          let methodKeys = composedMixin.methods.keys();
-          while (let (true, key) = methodKeys.next()) {
-            mixinType.methods[key] = composedMixin.methods[key];
+          for (let key in composedMixin.methods.keys()) {
+            if (let (true, mType) = composedMixin.methods.get(key)) {
+              mixinType.methods[key] = mType;
+            }
           }
         }
         case _: {
@@ -6502,15 +6467,12 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           }
         }
       }
-      ci += 1;
     }
   }
 
   // Process body members.
   ctx.enterInterface();
-  var bi = 0;
-  while (bi < md.body.length) {
-    let member = md.body[bi];
+  for (let member in md.body) {
     match (member) {
       case FieldDefinition as fd: {
         let fieldName = match (fd.name) {
@@ -6567,16 +6529,13 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           // Build FunctionType from annotations.
           let paramTypes = new Array<Type>();
           let paramNames = new Array<String>();
-          var mpi = 0;
-          while (mpi < methDef.params.length) {
-            let param = methDef.params[mpi];
+          for (let param in methDef.params) {
             var paramType: Type = new ErrorType();
             if (param.typeAnnotation != null) {
               paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
             }
             paramTypes.push(paramType);
             paramNames.push(param.name.name);
-            mpi += 1;
           }
           var retType: Type = new VoidType();
           if (methDef.returnType != null) {
@@ -6606,7 +6565,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       }
       case _: {}
     }
-    bi += 1;
   }
   ctx.exitInterface();
 
@@ -6617,34 +6575,38 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   if (mixinType.onType != null) {
     thisType.superType = mixinType.onType;
     let onClass = mixinType.onType as ClassType;
-    let onKeys = onClass.fields.keys();
-    while (let (true, k) = onKeys.next()) {
+    for (let k in onClass.fields.keys()) {
       if (!k.startsWith("#") && !thisType.fields.has(k)) {
-        thisType.fields[k] = onClass.fields[k];
-        if (onClass.fieldMutability.has(k)) {
-          thisType.fieldMutability[k] = onClass.fieldMutability[k];
+        if (let (true, fdType) = onClass.fields.get(k)) {
+          thisType.fields[k] = fdType;
+        }
+        if (let (true, isMut) = onClass.fieldMutability.get(k)) {
+          thisType.fieldMutability[k] = isMut;
         }
       }
     }
-    let onMethods = onClass.methods.keys();
-    while (let (true, k) = onMethods.next()) {
+    for (let k in onClass.methods.keys()) {
       if (!thisType.methods.has(k)) {
-        thisType.methods[k] = onClass.methods[k];
+        if (let (true, mdType) = onClass.methods.get(k)) {
+          thisType.methods[k] = mdType;
+        }
       }
     }
   }
 
   // Add mixin own members
-  let mKeys = mixinType.fields.keys();
-  while (let (true, k) = mKeys.next()) {
-    thisType.fields[k] = mixinType.fields[k];
-    if (mixinType.fieldMutability.has(k)) {
-      thisType.fieldMutability[k] = mixinType.fieldMutability[k];
+  for (let k in mixinType.fields.keys()) {
+    if (let (true, fdType) = mixinType.fields.get(k)) {
+      thisType.fields[k] = fdType;
+    }
+    if (let (true, isMut) = mixinType.fieldMutability.get(k)) {
+      thisType.fieldMutability[k] = isMut;
     }
   }
-  let mmKeys = mixinType.methods.keys();
-  while (let (true, k) = mmKeys.next()) {
-    thisType.methods[k] = mixinType.methods[k];
+  for (let k in mixinType.methods.keys()) {
+    if (let (true, mdType) = mixinType.methods.get(k)) {
+      thisType.methods[k] = mdType;
+    }
   }
 
   ctx.enterClass(thisType);
