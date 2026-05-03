@@ -368,14 +368,15 @@ export class Compiler {
         while (i < namesToImport.length) {
           let name = namesToImport[i];
           
-          let valueExport = exports.getValue(name);
-          if (valueExport != null) {
-            scope.injectValue(name, valueExport as SymbolInfo);
-          }
-          
-          let typeExport = exports.getType(name);
-          if (typeExport != null) {
-            scope.injectType(name, typeExport as SymbolInfo);
+          let exp = if (let (true, val) = exports.get(name)) { val } else { null };
+          if (exp != null) {
+            let info = exp as SymbolInfo;
+            if (info.kind == "type-and-value" || info.kind == "let" || info.kind == "var") {
+              scope.injectValue(name, info);
+            }
+            if (info.kind == "type-and-value" || info.kind == "type") {
+              scope.injectType(name, info);
+            }
           }
           
           i = i + 1;
@@ -424,10 +425,7 @@ export class Compiler {
                   let importedName = spec.imported.name;
 
                   // Check if the dependency exports this name as a value or type.
-                  let valueExport = depExports.getValue(importedName);
-                  let typeExport = depExports.getType(importedName);
-
-                  if (valueExport == null && typeExport == null) {
+                  if (!depExports.has(importedName)) {
                     // The imported name doesn't exist in the dependency's exports.
                     // Record as unresolved for later error reporting.
                     result.unresolvedValues.push(new UnresolvedName(importedName, spec));
@@ -457,17 +455,13 @@ export class Compiler {
                   let importedName = spec.imported.name;
                   let localName = spec.local.name;
 
-                  let valueExport = depExports.getValue(importedName);
-                  let typeExport = depExports.getType(importedName);
+                  let exp = if (let (true, val) = depExports.get(importedName)) { val } else { null };
 
-                  if (valueExport == null && typeExport == null) {
+                  if (exp == null) {
                     result.unresolvedValues.push(new UnresolvedName(importedName, spec));
-                  }
-                  if (valueExport != null) {
-                    result.exports.setValue(localName, valueExport as SymbolInfo);
-                  }
-                  if (typeExport != null) {
-                    result.exports.setType(localName, typeExport as SymbolInfo);
+                  } else {
+                    let info = exp as SymbolInfo;
+                    result.exports[localName] = info;
                   }
 
                   m = m + 1;
@@ -539,37 +533,41 @@ let computeExportSignature = (
 ): HashMap<String, Type> => {
   let sig = new HashMap<String, Type>();
 
-  // Collect value exports.
-  // NOTE: We resolve each name through the root scope to get the
-  // SymbolInfo the checker actually set the type on. The export
-  // catalog creates its own SymbolInfo objects (different IDs) so
-  // looking up via exports.valueEntries[name] would miss the type.
-  let valueEntries = exports.valueEntries;
-  let valueIter = valueEntries.keys();
-  while (let (true, name) = valueIter.next()) {
-    let scopeInfo = rootScope.getLocalValue(name);
-    let bt = if (scopeInfo != null) {
-      model.getBindingType(scopeInfo as SymbolInfo)
-    } else {
-      null
-    };
-    if (bt != null) {
-      sig["v:" + name] = bt as Type;
+  let iter = exports.keys();
+  while (let (true, name) = iter.next()) {
+    let exp = exports[name];
+    if (exp.kind == "type-and-value" || exp.kind == "let" || exp.kind == "var") {
+      let scopeInfo = rootScope.getLocalValue(name);
+      let bt = if (scopeInfo != null) {
+        model.getBindingType(scopeInfo as SymbolInfo)
+      } else {
+        null
+      };
+      if (bt != null) {
+        sig["v:" + name] = bt as Type;
+      }
     }
-  }
-
-  // Collect type exports.
-  let typeEntries = exports.typeEntries;
-  let typeIter = typeEntries.keys();
-  while (let (true, name) = typeIter.next()) {
-    let scopeInfo = rootScope.getLocalType(name);
-    let bt = if (scopeInfo != null) {
-      model.getBindingType(scopeInfo as SymbolInfo)
-    } else {
-      null
-    };
-    if (bt != null) {
-      sig["t:" + name] = bt as Type;
+    
+    if (exp.kind == "type-and-value" || exp.kind == "type") {
+      // For types, prefer the explicitly registered exportType over localType binding if possible.
+      // We'll just read from getExportType first, fallback to getBindingType(localType).
+      // Wait, this is just for hashing signatures right now in compiler.zena.
+      // Let's use getExportType correctly.
+      let bt = model.getExportType(name);
+      let t = if (bt != null) {
+        bt
+      } else {
+        let scopeInfo = rootScope.getLocalType(name);
+        if (scopeInfo != null) {
+          model.getBindingType(scopeInfo as SymbolInfo)
+        } else {
+          null
+        }
+      };
+      
+      if (t != null) {
+        sig["t:" + name] = t as Type;
+      }
     }
   }
 
@@ -1218,24 +1216,21 @@ export let checkCompilation = (
     // Fast-path: register stdlib types with the shared state as they compile.
     if (file.isStdlib && file.scopeResult != null) {
       let exports = (file.scopeResult as ScopeResult).exports;
-      for (let tName in exports.typeNames()) {
-        let exTypeInfo = exports.getType(tName);
-        if (exTypeInfo == null) {
-          continue;
+      let iter = exports.keys();
+      while (let (true, name) = iter.next()) {
+        let exp = exports[name];
+        if (exp.kind == "type-and-value" || exp.kind == "type") {
+          let bt = checkResult.model.getExportType(name);
+          let t = if (bt != null) { bt } else { checkResult.model.getBindingType(exp) };
+          if (t != null) {
+            sharedState.preludeTypes[name] = t as Type;
+          }
         }
-        let t = checkResult.model.getBindingType(exTypeInfo);
-        if (t != null) {
-          sharedState.preludeTypes[tName] = t as Type;
-        }
-      }
-      for (let vName in exports.valueNames()) {
-        let exValInfo = exports.getValue(vName);
-        if (exValInfo == null) {
-          continue;
-        }
-        let t = checkResult.model.getBindingType(exValInfo);
-        if (t != null) {
-          sharedState.preludeValues[vName] = t as Type;
+        if (exp.kind == "type-and-value" || exp.kind == "let" || exp.kind == "var") {
+          let t = checkResult.model.getBindingType(exp);
+          if (t != null) {
+            sharedState.preludeValues[name] = t as Type;
+          }
         }
       }
     }

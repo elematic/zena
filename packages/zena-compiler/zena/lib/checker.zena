@@ -1264,33 +1264,27 @@ export let checkModule = (
 
   // Finalize: bind exported types directly onto export SymbolInfos
   // so importers can resolve them cleanly.
-  for (let tName in scopeResult.exports.typeNames()) {
-    let exTypeInfo = scopeResult.exports.getType(tName);
-    let t = ctx.resolveTypeName(tName);
-    if (exTypeInfo == null || t == null) {
-      continue;
+  for (let {key as expName, value as exInfo} in scopeResult.exports) {
+    let declaration = exInfo.declaration;
+    
+    let exportType = ctx.resolveTypeName(expName);
+    if (exportType != null) {
+      ctx.model.setExportType(expName, exportType);
     }
-    ctx.model.setBindingType(exTypeInfo, t);
-  }
 
-  for (let valueName in scopeResult.exports.valueNames()) {
-    let exValInfo = scopeResult.exports.getValue(valueName);
-    if (exValInfo == null) {
-      continue;
+    var valueType: Type | null = null;
+    if (declaration != null) {
+      let localSi = ctx.model.resolveDeclaration(declaration);
+      if (localSi != null) {
+        valueType = ctx.model.getBindingType(localSi);
+      }
     }
-    let declaration = exValInfo.declaration;
-    if (declaration == null) {
-      continue;
+    if (valueType == null) {
+      valueType = exportType;
     }
-    let localSi = ctx.model.resolveDeclaration(declaration);
-    if (localSi == null) {
-      continue;
+    if (valueType != null) {
+      ctx.model.setBindingType(exInfo, valueType);
     }
-    let t = ctx.model.getBindingType(localSi);
-    if (t == null) {
-      continue;
-    }
-    ctx.model.setBindingType(exValInfo, t);
   }
 
   return new CheckResult(ctx.model, ctx.diagnostics.diagnostics);
@@ -3382,14 +3376,19 @@ case _: {
             let localName = spec.local.name;
 
             // Register type imports (classes, interfaces, etc.)
-            let typeExport = depMod.getType(importedName);
+            let typeExport = if (let (true, exp) = depMod.get(importedName)) {
+              if (exp.kind == "type-and-value" || exp.kind == "type") { exp } else { null }
+            } else { null };
             if (typeExport != null) {
               let si = typeExport as SymbolInfo;
 
               var resolvedType: Type | null = null;
               if (depModel != null) {
                 let dm = depModel as SemanticModel;
-                resolvedType = dm.getBindingType(si);
+                resolvedType = dm.getExportType(importedName);
+                if (resolvedType == null) {
+                  resolvedType = dm.getBindingType(si);
+                }
               }
 
               if (resolvedType != null) {
@@ -3452,7 +3451,9 @@ case _: {
             }
 
             // Register value imports (functions, variables).
-            let valueExport = depMod.getValue(importedName);
+            let valueExport = if (let (true, exp) = depMod.get(importedName)) {
+              if (exp.kind == "type-and-value" || exp.kind == "let" || exp.kind == "var") { exp } else { null }
+            } else { null };
             if (valueExport != null) {
               let localValInfo = ctx.scopeResult.rootScope.getLocalValue(localName);
               if (localValInfo != null) {

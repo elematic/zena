@@ -164,44 +164,41 @@ export let tests = suite('Scope', (): void => {
 
   suite('Module exports', (): void => {
     test('set and get value export', (ctx: TestContext): void => {
-      let exports = new ModuleExports();
+      let exports = new HashMap<String, SymbolInfo>();
       let mod = parse('export let x = 1;', 'test.zena');
       let decl = mod.body[0];
       let info = new SymbolInfo("let", decl, "test.zena");
 
-      exports.setValue("x", info);
+      exports["x"] = info;
 
-      let got = exports.getValue("x");
+      let got = if (let (true, val) = exports.get("x")) { val } else { null };
       isTrue(got != null);
       equal((got as SymbolInfo).kind, "let");
     });
 
     test('set and get type export', (ctx: TestContext): void => {
-      let exports = new ModuleExports();
+      let exports = new HashMap<String, SymbolInfo>();
       let mod = parse('class Foo {}', 'test.zena');
       let decl = mod.body[0];
       let info = new SymbolInfo("type", decl, "test.zena");
 
-      exports.setType("Foo", info);
+      exports["Foo"] = info;
 
-      let got = exports.getType("Foo");
+      let got = if (let (true, val) = exports.get("Foo")) { val } else { null };
       isTrue(got != null);
     });
 
-    test('hasValue and hasType', (ctx: TestContext): void => {
-      let exports = new ModuleExports();
+    test('hasValue and hasType equivalent', (ctx: TestContext): void => {
+      let exports = new HashMap<String, SymbolInfo>();
       let mod = parse('export class Foo {}', 'test.zena');
       let decl = mod.body[0];
-      let typeInfo = new SymbolInfo("type", decl, "test.zena");
-      let valueInfo = new SymbolInfo("let", decl, "test.zena");
+      let info = new SymbolInfo("type-and-value", decl, "test.zena");
 
-      exports.setType("Foo", typeInfo);
-      exports.setValue("Foo", valueInfo);
+      exports["Foo"] = info;
 
-      isTrue(exports.hasType("Foo"));
-      isTrue(exports.hasValue("Foo"));
-      isFalse(exports.hasType("Bar"));
-      isFalse(exports.hasValue("Bar"));
+      isTrue(exports.has("Foo"));
+      isTrue(exports["Foo"].kind == "type-and-value");
+      isFalse(exports.has("Bar"));
     });
   });
 
@@ -235,7 +232,7 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isTrue(result.exports.hasValue("z"));
+      isTrue(result.exports.has("z"));
     });
 
     test('non-exported variable not in exports', (ctx: TestContext): void => {
@@ -243,7 +240,7 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isFalse(result.exports.hasValue("w"));
+      isFalse(result.exports.has("w"));
     });
   });
 
@@ -266,8 +263,8 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isTrue(result.exports.hasValue("Point"));
-      isTrue(result.exports.hasType("Point"));
+      isTrue(result.exports.has("Point"));
+      isTrue(result.exports["Point"].kind == "type-and-value");
     });
   });
 
@@ -292,7 +289,7 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isTrue(result.exports.hasValue("add"));
+      isTrue(result.exports.has("add"));
     });
   });
 
@@ -372,7 +369,8 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      isTrue(result.exports.hasType("ID"));
+      isTrue(result.exports.has("ID"));
+      isTrue(result.exports["ID"].kind == "type");
     });
   });
 

@@ -271,84 +271,7 @@ export class Scope {
  *
  * Separate maps for value and type exports mirror the scope structure.
  */
-export class ModuleExports {
-  #values = new HashMap<String, SymbolInfo>();
-  #types = new HashMap<String, SymbolInfo>();
-
-  /**
-   * Register an exported value.
-   */
-  setValue(name: String, info: SymbolInfo): void {
-    this.#values[name] = info;
-  }
-
-  /**
-   * Register an exported type.
-   */
-  setType(name: String, info: SymbolInfo): void {
-    this.#types[name] = info;
-  }
-
-  /**
-   * Look up an exported value.
-   */
-  getValue(name: String): SymbolInfo | null {
-    return if (let (true, info) = this.#values.get(name)) {
-      info
-    } else {
-      null
-    };
-  }
-
-  /**
-   * Look up an exported type.
-   */
-  getType(name: String): SymbolInfo | null {
-    return if (let (true, info) = this.#types.get(name)) {
-      info
-    } else {
-      null
-    };
-  }
-
-  /**
-   * Get iterator over all exported type names.
-   */
-  typeNames(): Iterator<String> {
-    return this.#types.keys();
-  }
-
-  /**
-   * Get iterator over all exported value names.
-   */
-  valueNames(): Iterator<String> {
-    return this.#values.keys();
-  }
-
-  /**
-   * Check if a value export exists.
-   */
-  hasValue(name: String): boolean {
-    return this.#values.has(name);
-  }
-
-  /**
-   * Check if a type export exists.
-   */
-  hasType(name: String): boolean {
-    return this.#types.has(name);
-  }
-
-  /** All exported values (name → SymbolInfo). */
-  valueEntries: HashMap<String, SymbolInfo> {
-    get { return this.#values; }
-  }
-
-  /** All exported types (name → SymbolInfo). */
-  typeEntries: HashMap<String, SymbolInfo> {
-    get { return this.#types; }
-  }
-}
+export type ModuleExports = HashMap<String, SymbolInfo>;
 
 /**
  * A name that could not be resolved during scope building.
@@ -517,7 +440,7 @@ export class ScopeResult(
  */
 export class ScopeBuilder {
   #modulePath: String;
-  #exports = new ModuleExports();
+  #exports = new HashMap<String, SymbolInfo>();
   var #current: Scope;
   
   /**
@@ -613,10 +536,8 @@ export class ScopeBuilder {
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
         this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
-          let info = new SymbolInfo("type", stmt, this.#modulePath);
-          this.#exports.setType(name.name, info);
-          let valueInfo = new SymbolInfo("let", stmt, this.#modulePath);
-          this.#exports.setValue(name.name, valueInfo);
+          let info = new SymbolInfo("type-and-value", stmt, this.#modulePath);
+          this.#exports[name.name] = info;
         }
         // Export sealed variant names so they can be imported individually.
         if (sealedVariants != null) {
@@ -629,10 +550,8 @@ export class ScopeBuilder {
             this.#current.declareValue(svName, "let", sv, this.#modulePath);
             this.#declarations.record(sv, this.#current.getLocalValue(svName) as SymbolInfo);
             if (exported) {
-              let svTypeInfo = new SymbolInfo("type", sv, this.#modulePath);
-              this.#exports.setType(svName, svTypeInfo);
-              let svValueInfo = new SymbolInfo("let", sv, this.#modulePath);
-              this.#exports.setValue(svName, svValueInfo);
+              let svInfo = new SymbolInfo("type-and-value", sv, this.#modulePath);
+              this.#exports[svName] = svInfo;
             }
             svi += 1;
           }
@@ -643,10 +562,8 @@ export class ScopeBuilder {
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
         this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
-          let info = new SymbolInfo("type", stmt, this.#modulePath);
-          this.#exports.setType(name.name, info);
-          let valueInfo = new SymbolInfo("let", stmt, this.#modulePath);
-          this.#exports.setValue(name.name, valueInfo);
+          let info = new SymbolInfo("type-and-value", stmt, this.#modulePath);
+          this.#exports[name.name] = info;
         }
       }
       case EnumDeclaration {name, exported}: {
@@ -654,10 +571,8 @@ export class ScopeBuilder {
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
         this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
-          let info = new SymbolInfo("type", stmt, this.#modulePath);
-          this.#exports.setType(name.name, info);
-          let valueInfo = new SymbolInfo("let", stmt, this.#modulePath);
-          this.#exports.setValue(name.name, valueInfo);
+          let info = new SymbolInfo("type-and-value", stmt, this.#modulePath);
+          this.#exports[name.name] = info;
         }
       }
       case MixinDeclaration {name, exported}: {
@@ -665,10 +580,8 @@ export class ScopeBuilder {
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
         this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
-          let info = new SymbolInfo("type", stmt, this.#modulePath);
-          this.#exports.setType(name.name, info);
-          let valueInfo = new SymbolInfo("let", stmt, this.#modulePath);
-          this.#exports.setValue(name.name, valueInfo);
+          let info = new SymbolInfo("type-and-value", stmt, this.#modulePath);
+          this.#exports[name.name] = info;
         }
       }
       case TypeAliasDeclaration {name, exported}: {
@@ -679,7 +592,7 @@ export class ScopeBuilder {
         this.#declarations.record(stmt, this.#current.getLocalType(name.name) as SymbolInfo);
         if (exported) {
           let info = new SymbolInfo("type", stmt, this.#modulePath);
-          this.#exports.setType(name.name, info);
+          this.#exports[name.name] = info;
         }
       }
       case VariableDeclaration {kind, pattern, init, exported}: {
@@ -692,7 +605,7 @@ export class ScopeBuilder {
                 this.#declarations.record(pat, this.#current.getLocalValue(name) as SymbolInfo);
                 if (exported) {
                   let info = new SymbolInfo(kind, pat, this.#modulePath);
-                  this.#exports.setValue(name, info);
+                  this.#exports[name] = info;
                 }
               }
               case _: {}
@@ -706,7 +619,7 @@ export class ScopeBuilder {
         this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
           let info = new SymbolInfo("let", stmt, this.#modulePath);
-          this.#exports.setValue(name.name, info);
+          this.#exports[name.name] = info;
         }
       }
       case SymbolDeclaration {name, exported}: {
@@ -714,7 +627,7 @@ export class ScopeBuilder {
         this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
           let info = new SymbolInfo("let", stmt, this.#modulePath);
-          this.#exports.setValue(name.name, info);
+          this.#exports[name.name] = info;
         }
       }
       case _: {}
@@ -743,7 +656,7 @@ export class ScopeBuilder {
               this.#declarations.record(pat, this.#current.getLocalValue(name) as SymbolInfo);
               if (exported) {
                 let info = new SymbolInfo(kind, pat, this.#modulePath);
-                this.#exports.setValue(name, info);
+                this.#exports[name] = info;
               }
             }
           }
