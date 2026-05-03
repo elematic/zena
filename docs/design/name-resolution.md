@@ -234,7 +234,7 @@ Using `WeakMap` with AST nodes as keys enables identity-based lookup.
 
 - `bindings.ts` with `ResolvedBinding` types and helper functions
 - `SemanticContext.setResolvedBinding()` / `getResolvedBinding()`
-- `SymbolInfo` extended with `declaration` and `modulePath` fields
+- `Symbol` extended with `declaration` and `modulePath` fields
 - `CheckerContext.resolveValueInfo()` for creating bindings
 - `CodegenContext` declaration → index WeakMaps and registration methods
 - `generateIdentifier()` uses resolved bindings

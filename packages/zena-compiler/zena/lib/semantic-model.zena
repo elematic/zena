@@ -7,9 +7,9 @@
  *   1. Node types — the inferred type for any AST node (expression,
  *      declaration pattern, parameter, etc.).
  *   2. Binding types — the type carried by a named binding, keyed by
- *      SymbolInfo.id so each destructured name gets its own entry.
+ *      Symbol.id so each destructured name gets its own entry.
  *   3. Name resolution — delegates to the ReferenceMap from scope
- *      analysis to find the SymbolInfo for any identifier reference.
+ *      analysis to find the Symbol for any identifier reference.
  *   4. Diagnostics collected during type checking.
  *
  * Two kinds of "type" live here, both accessible via getNodeType():
@@ -41,7 +41,7 @@ import {
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
 import { Node, SourceLocation } from './ast.zena';
-import { SymbolInfo, SymbolId, ReferenceMap, DeclarationMap } from './scope.zena';
+import { Symbol, SymbolId, ReferenceMap, DeclarationMap } from './scope.zena';
 
 export class SemanticModel {
   /**
@@ -51,7 +51,7 @@ export class SemanticModel {
   #nodeTypes = new HashMap<i32, Type>();
 
   /**
-   * Map from SymbolInfo.id → Type for named bindings.
+   * Map from Symbol.id → Type for named bindings.
    * Parallel to #nodeTypes but keyed by binding identity, which is
    * stable across reference sites. The checker populates this when
    * processing declarations; identifier resolution looks up here.
@@ -59,14 +59,14 @@ export class SemanticModel {
   #bindingTypes = new HashMap<SymbolId, Type>();
 
   /**
-   * Scope analysis reference map (identifier → SymbolInfo).
+   * Scope analysis reference map (identifier → Symbol).
    * Owned by the SemanticModel so consumers have a single object to query.
    */
   var #references: ReferenceMap | null = null;
 
   /**
-   * Scope analysis declaration map (binding-site node → SymbolInfo).
-   * Used at declaration-processing time to find the SymbolInfo.
+   * Scope analysis declaration map (binding-site node → Symbol).
+   * Used at declaration-processing time to find the Symbol.
    */
   var #declarations: DeclarationMap | null = null;
 
@@ -78,7 +78,7 @@ export class SemanticModel {
   /**
    * Map from exported names to their resolved Type.
    * Used for cross-module type lookups, especially for built-in
-   * primitives where SymbolInfo ids may differ natively.
+   * primitives where Symbol ids may differ natively.
    */
   #exportTypes = new HashMap<String, Type>();
 
@@ -96,21 +96,21 @@ export class SemanticModel {
   }
 
   /**
-   * Resolve an identifier node to its SymbolInfo (from scope analysis).
+   * Resolve an identifier node to its Symbol (from scope analysis).
    * Returns null if the identifier was unresolved or no ReferenceMap is set.
    */
-  resolve(node: Node): SymbolInfo | null {
+  resolve(node: Node): Symbol | null {
     if (this.#references == null) { return null; }
     let refs = this.#references as ReferenceMap;
     return refs.getByNode(node);
   }
 
   /**
-   * Find the SymbolInfo for a declaration-site node.
+   * Find the Symbol for a declaration-site node.
    * Used at declaration-processing time (e.g., when the checker processes
    * a VariableDeclaration and needs to store the type for its binding).
    */
-  resolveDeclaration(node: Node): SymbolInfo | null {
+  resolveDeclaration(node: Node): Symbol | null {
     if (this.#declarations == null) { return null; }
     let decls = this.#declarations as DeclarationMap;
     return decls.getByNode(node);
@@ -141,19 +141,19 @@ export class SemanticModel {
     return null;
   }
 
-  // --- Binding types (keyed by SymbolInfo.id) ---
+  // --- Binding types (keyed by Symbol.id) ---
 
   /**
    * Store the type for a named binding.
    */
-  setBindingType(info: SymbolInfo, type: Type): void {
+  setBindingType(info: Symbol, type: Type): void {
     this.#bindingTypes[info.id] = type;
   }
 
   /**
    * Get the type for a named binding, or null if not yet checked.
    */
-  getBindingType(info: SymbolInfo): Type | null {
+  getBindingType(info: Symbol): Type | null {
     if (this.#bindingTypes.has(info.id)) {
       return this.#bindingTypes[info.id];
     }

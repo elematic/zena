@@ -40,7 +40,7 @@ import {
   Scope,
   ScopeKind,
   ModuleExports as ScopeModuleExports,
-  SymbolInfo,
+  Symbol,
   UnresolvedName
 } from './scope.zena';
 import {
@@ -71,7 +71,7 @@ export { PackageConfig, ModuleExport, ResolvedModule } from './module-resolver.z
 export { SourceFile, SourceFileGraph } from './library-loader.zena';
 export { loadPackageMap, buildStdlibConfig } from './package-manifest.zena';
 export { getStandardPrelude } from './prelude.zena';
-export { ScopeResult, SymbolInfo, UnresolvedName } from './scope.zena';
+export { ScopeResult, Symbol, UnresolvedName } from './scope.zena';
 export { CheckResult } from './checker.zena';
 export { SemanticModel } from './semantic-model.zena';
 export { ProgramCheckResult } from './compiler.zena';
@@ -370,7 +370,7 @@ export class Compiler {
           
           let exp = if (let (true, val) = exports.get(name)) { val } else { null };
           if (exp != null) {
-            let info = exp as SymbolInfo;
+            let info = exp as Symbol;
             if (info.kind == "type-and-value" || info.kind == "let" || info.kind == "var") {
               scope.injectValue(name, info);
             }
@@ -460,7 +460,7 @@ export class Compiler {
                   if (exp == null) {
                     result.unresolvedValues.push(new UnresolvedName(importedName, spec));
                   } else {
-                    let info = exp as SymbolInfo;
+                    let info = exp as Symbol;
                     result.exports[localName] = info;
                   }
 
@@ -539,7 +539,7 @@ let computeExportSignature = (
     if (exp.kind == "type-and-value" || exp.kind == "let" || exp.kind == "var") {
       let scopeInfo = rootScope.getLocalValue(name);
       let bt = if (scopeInfo != null) {
-        model.getBindingType(scopeInfo as SymbolInfo)
+        model.getBindingType(scopeInfo as Symbol)
       } else {
         null
       };
@@ -559,7 +559,7 @@ let computeExportSignature = (
       } else {
         let scopeInfo = rootScope.getLocalType(name);
         if (scopeInfo != null) {
-          model.getBindingType(scopeInfo as SymbolInfo)
+          model.getBindingType(scopeInfo as Symbol)
         } else {
           null
         }
@@ -1372,7 +1372,7 @@ export let resolveMemberDefinition = (
 /**
  * Resolve the type of a member expression's object node.
  *
- * For simple identifiers, uses the scope system (ReferenceMap → SymbolInfo
+ * For simple identifiers, uses the scope system (ReferenceMap → Symbol
  * → binding type) to avoid the loc.start collision issue with getNodeType.
  * For compound expressions, falls back to getNodeType if they have a
  * different start offset than their parent MemberExpression.
@@ -1385,14 +1385,14 @@ let resolveObjectType = (
   ast: Module
 ): Type | null => {
   // For identifiers, resolve via the model's own reference map.
-  // This ensures the SymbolInfo matches the model's binding types,
+  // This ensures the Symbol matches the model's binding types,
   // even when the AST is from a newer compilation than the model
   // (carry-forward scenario).
   match (object as Node) {
     case Identifier {name, loc as objLoc}: {
       let maybeInfo = model.resolve(object);
       if (maybeInfo != null) {
-        let sym = maybeInfo as SymbolInfo;
+        let sym = maybeInfo as Symbol;
         let bindingType = model.getBindingType(sym);
         if (bindingType != null) { return bindingType; }
       }

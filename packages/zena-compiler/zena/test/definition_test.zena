@@ -1,8 +1,8 @@
 // Tests for goto-definition: ReferenceMap and DeclarationMap recording.
 //
 // These tests verify that the ScopeBuilder correctly records entries
-// in the ReferenceMap (use-site → SymbolInfo) and DeclarationMap
-// (binding-site → SymbolInfo) for all node types that should support
+// in the ReferenceMap (use-site → Symbol) and DeclarationMap
+// (binding-site → Symbol) for all node types that should support
 // goto-definition in the LSP.
 
 import { suite, test, TestContext } from 'zena:test';
@@ -40,7 +40,7 @@ import {
 import {
   ScopeBuilder,
   ScopeResult,
-  SymbolInfo,
+  Symbol,
   DeclarationMap,
   ReferenceMap
 } from '../lib/scope.zena';
@@ -301,7 +301,7 @@ export let tests = suite('Goto Definition', (): void => {
       let s = "let x: i32 = 1;";
       let result = buildScope(s);
       // 'i32' at offset 7 — built-in types WITH NO declaration should resolve
-      // but the reference map should still have them (they point to built-in SymbolInfo)
+      // but the reference map should still have them (they point to built-in Symbol)
       isTrue(hasRef(result, 7));
     });
 
@@ -389,20 +389,20 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasDecl(result, 4));
     });
 
-    test('declaration SymbolInfo has correct kind', (ctx: TestContext): void => {
+    test('declaration Symbol has correct kind', (ctx: TestContext): void => {
       let s = "let x = 1;";
       let result = buildScope(s);
       let info = result.declarations.getByOffset(4);
       isTrue(info != null);
-      equal((info as SymbolInfo).kind, "let");
+      equal((info as Symbol).kind, "let");
     });
 
-    test('var declaration SymbolInfo has var kind', (ctx: TestContext): void => {
+    test('var declaration Symbol has var kind', (ctx: TestContext): void => {
       let s = "var x = 1;";
       let result = buildScope(s);
       let info = result.declarations.getByOffset(4);
       isTrue(info != null);
-      equal((info as SymbolInfo).kind, "var");
+      equal((info as Symbol).kind, "var");
     });
   });
 
@@ -416,7 +416,7 @@ export let tests = suite('Goto Definition', (): void => {
       let result = buildScope(s);
       let ref = result.references.getByOffset(19);
       isTrue(ref != null);
-      let sym = ref as SymbolInfo;
+      let sym = ref as Symbol;
       equal(sym.kind, "let");
       // The declaration node should be the IdentifierPattern
       isTrue(sym.declaration is IdentifierPattern);
@@ -427,7 +427,7 @@ export let tests = suite('Goto Definition', (): void => {
       let result = buildScope(s);
       let ref = result.references.getByOffset(25);
       isTrue(ref != null);
-      let sym = ref as SymbolInfo;
+      let sym = ref as Symbol;
       // Class declarations are stored with kind "let"
       equal(sym.kind, "let");
       isTrue(sym.declaration is ClassDeclaration);
@@ -440,7 +440,7 @@ export let tests = suite('Goto Definition', (): void => {
       let result = buildScope(s);
       let ref = result.references.getByOffset(20);
       isTrue(ref != null);
-      let sym = ref as SymbolInfo;
+      let sym = ref as Symbol;
       // Type namespace — classes are resolved in the type namespace
       isTrue(sym.declaration is ClassDeclaration);
     });
@@ -450,7 +450,7 @@ export let tests = suite('Goto Definition', (): void => {
       let result = buildScope(s);
       let ref = result.references.getByOffset(44);
       isTrue(ref != null);
-      isTrue((ref as SymbolInfo).declaration is ImportSpecifier);
+      isTrue((ref as Symbol).declaration is ImportSpecifier);
     });
   });
 

@@ -23,13 +23,13 @@
  *
  * Name resolution:
  * - Value names delegate to the scope pass's ReferenceMap
- *   (Identifier → SymbolInfo → binding type). The checker has no value
+ *   (Identifier → Symbol → binding type). The checker has no value
  *   scope stack.
- * - Binding types are stored in SemanticModel via SymbolInfo.id keys,
+ * - Binding types are stored in SemanticModel via Symbol.id keys,
  *   set at declaration time and read at reference time.
  * - Type annotation resolution also delegates to the scope pass's
- *   ReferenceMap (NamedTypeAnnotation → SymbolInfo), then materializes
- *   declaration types on demand by SymbolInfo identity.
+ *   ReferenceMap (NamedTypeAnnotation → Symbol), then materializes
+ *   declaration types on demand by Symbol identity.
  * - Built-in type objects (primitives, prelude types) are pre-registered
  *   in the checker's internal type scope so annotation resolution works
  *   even before stdlib module exports are wired in.
@@ -40,7 +40,7 @@
  *   full Phase 1 registration runs.
  *
  * Other:
- * - Narrowing uses SymbolInfo.id keys for identity-based precision.
+ * - Narrowing uses Symbol.id keys for identity-based precision.
  * - The checker produces a SemanticModel + diagnostics as output.
  */
 
@@ -101,7 +101,7 @@ import { SemanticModel } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
-import { ScopeResult, SymbolInfo, SymbolId, ModuleExports } from './scope.zena';
+import { ScopeResult, Symbol, SymbolId, ModuleExports } from './scope.zena';
 
 /**
  * Internal state for the type checker.
@@ -114,13 +114,13 @@ import { ScopeResult, SymbolInfo, SymbolId, ModuleExports } from './scope.zena';
  *   SemanticModel via `model.setBindingType(symbolInfo, type)`.
  *
  *   Reference time: an Identifier is resolved through the ReferenceMap
- *   to its SymbolInfo, then `model.getBindingType(info)` recovers the
- *   type. Narrowings are checked first (keyed by SymbolInfo.id).
+ *   to its Symbol, then `model.getBindingType(info)` recovers the
+ *   type. Narrowings are checked first (keyed by Symbol.id).
  *
  * The checker keeps a flat type-name map for built-in primitive types
  * (i32, f64, etc.) at #typeScopes[0]. Type annotation resolution for
  * all other names — including type parameters — delegates to the scope
- * pass's ReferenceMap: model.resolve(node) → SymbolInfo.id →
+ * pass's ReferenceMap: model.resolve(node) → Symbol.id →
  * #materializedTypes. Type parameters are registered there via
  * registerTypeParameter() as soon as each TypeParameterType is created.
  */
@@ -142,13 +142,13 @@ export class SharedCheckerState {
  *   SemanticModel via `model.setBindingType(symbolInfo, type)`.
  *
  *   Reference time: an Identifier is resolved through the ReferenceMap
- *   to its SymbolInfo, then `model.getBindingType(info)` recovers the
- *   type. Narrowings are checked first (keyed by SymbolInfo.id).
+ *   to its Symbol, then `model.getBindingType(info)` recovers the
+ *   type. Narrowings are checked first (keyed by Symbol.id).
  *
  * The checker keeps a flat type-name map for built-in primitive types
  * (i32, f64, etc.) at #typeScopes[0]. Type annotation resolution for
  * all other names — including type parameters — delegates to the scope
- * pass's ReferenceMap: model.resolve(node) → SymbolInfo.id →
+ * pass's ReferenceMap: model.resolve(node) → Symbol.id →
  * #materializedTypes. Type parameters are registered there via
  * registerTypeParameter() as soon as each TypeParameterType is created.
  */
@@ -166,7 +166,7 @@ class CheckerContext {
 
   /**
    * Narrowed types (control-flow narrowing) per scope level.
-   * Keyed by SymbolInfo.id so narrowing survives across scopes that
+   * Keyed by Symbol.id so narrowing survives across scopes that
    * reference the same binding, and is robust against shadowing.
    * Kept as a stack so narrowings are automatically discarded when
    * their enclosing scope exits.
@@ -205,7 +205,7 @@ class CheckerContext {
   var #loopDepth = 0;
 
   /**
-   * Pending function declarations indexed by SymbolInfo.id.
+   * Pending function declarations indexed by Symbol.id.
    * Populated by a pre-scan in checkModule so that resolveIdentifier
    * can lazily resolve forward-referenced function types from their
    * annotations without waiting for the main pass to reach them.
@@ -213,7 +213,7 @@ class CheckerContext {
   #pendingFunctions = new HashMap<SymbolId, Node>();
 
   /**
-   * SymbolInfo IDs currently being lazily resolved.
+   * Symbol IDs currently being lazily resolved.
    * Used for cycle detection: if we re-enter resolution for an ID
    * already in this set, we've found a recursive reference.
    */
@@ -231,9 +231,9 @@ class CheckerContext {
   #scopeResult: ScopeResult;
 
   /**
-   * SymbolInfo IDs currently being materialized (cycle detection).
+   * Symbol IDs currently being materialized (cycle detection).
    * Prevents infinite recursion when type A references type B
-   * which references type A. Keyed by SymbolInfo.id rather than
+   * which references type A. Keyed by Symbol.id rather than
    * name strings, since names only have meaning within a scope.
    */
   #pendingTypes = new HashSet<SymbolId>();
@@ -342,13 +342,13 @@ class CheckerContext {
     this.#memberPathNarrowings.pop();
   }
 
-  // --- Value binding (via SemanticModel + SymbolInfo) ---
+  // --- Value binding (via SemanticModel + Symbol) ---
 
   /**
-   * Store a binding's type in the SemanticModel, keyed by SymbolInfo.
+   * Store a binding's type in the SemanticModel, keyed by Symbol.
    * Called when processing declarations (VariableDeclaration, parameters).
    */
-  declareBinding(info: SymbolInfo, t: Type): void {
+  declareBinding(info: Symbol, t: Type): void {
     this.model.setBindingType(info, t);
     // Also store on the declaration node for getNodeType() queries.
     if (info.declaration != null) {
@@ -365,7 +365,7 @@ class CheckerContext {
   resolveIdentifier(node: Node): Type | null {
     let info = this.model.resolve(node);
     if (info == null) { return null; }
-    let si = info as SymbolInfo;
+    let si = info as Symbol;
 
     // Check narrowings first (innermost to outermost).
     for (let narrowing in this.#narrowings) {
@@ -442,7 +442,7 @@ class CheckerContext {
    * checks the function body to infer the type. If it's in a recursive
    * cycle without a return type annotation, reports an error.
    */
-  lazyResolveFunction(si: SymbolInfo, funcNode: Node): Type | null {
+  lazyResolveFunction(si: Symbol, funcNode: Node): Type | null {
     match (funcNode) {
       case FunctionExpression {typeParameters, params, returnType, body, loc}: {
         // Check for cycle — if we're already resolving this symbol,
@@ -494,7 +494,7 @@ class CheckerContext {
     typeParameters: Array<TypeParameter> | null,
     params: Array<Parameter>,
     returnTypeAnn: TypeAnnotation,
-    si: SymbolInfo
+    si: Symbol
   ): Type {
     // Enter a temporary scope for type parameter names.
     this.enterScope();
@@ -552,17 +552,17 @@ class CheckerContext {
 
   /**
    * Register a TypeParameterType in the materialized types cache by the
-   * SymbolInfo identity of the corresponding TypeParameter AST node.
+   * Symbol identity of the corresponding TypeParameter AST node.
    *
    * Called immediately after creating each TypeParameterType so that
    * resolveTypeReference → model.resolve → #materializeFromSymbol finds
-   * the correct object (by SymbolInfo.id) instead of falling back to the
+   * the correct object (by Symbol.id) instead of falling back to the
    * name-string #typeScopes stack.
    */
   registerTypeParameter(tp: TypeParameter, tpType: TypeParameterType): void {
     let info = this.model.resolveDeclaration(tp as Node);
     if (info != null) {
-      this.#materializedTypes[(info as SymbolInfo).id] = tpType as Type;
+      this.#materializedTypes[(info as Symbol).id] = tpType as Type;
     }
   }
 
@@ -593,7 +593,7 @@ class CheckerContext {
   resolveTypeReference(node: Node, fallbackName: String): Type | null {
     let info = this.model.resolve(node);
     if (info != null) {
-      let t = this.#materializeFromSymbol(info as SymbolInfo, fallbackName);
+      let t = this.#materializeFromSymbol(info as Symbol, fallbackName);
       if (t != null) {
         return t;
       }
@@ -609,7 +609,7 @@ class CheckerContext {
   materializeDeclaration(node: Node, fallbackName: String): Type | null {
     let info = this.model.resolveDeclaration(node);
     if (info != null) {
-      let t = this.#materializeFromSymbol(info as SymbolInfo, fallbackName);
+      let t = this.#materializeFromSymbol(info as Symbol, fallbackName);
       if (t != null) {
         return t;
       }
@@ -625,10 +625,10 @@ class CheckerContext {
   #materializeFromScope(name: String): Type | null {
     let si = this.#scopeResult.rootScope.resolveType(name);
     if (si == null) { return null; }
-    return this.#materializeFromSymbol(si as SymbolInfo, name);
+    return this.#materializeFromSymbol(si as Symbol, name);
   }
 
-  #materializeFromSymbol(info: SymbolInfo, nameHint: String): Type | null {
+  #materializeFromSymbol(info: Symbol, nameHint: String): Type | null {
     if (let (true, mat) = this.#materializedTypes.get(info.id)) {
       return mat;
     }
@@ -662,7 +662,7 @@ class CheckerContext {
       return this.#resolveBuiltinOrPreludeType(nameHint);
     }
 
-    // Cycle detection — keyed by SymbolInfo.id, not name.
+    // Cycle detection — keyed by Symbol.id, not name.
     if (this.#pendingTypes.has(info.id)) {
       return null;
     }
@@ -684,31 +684,31 @@ class CheckerContext {
           case ClassDeclaration: {
             let valueInfo = this.model.resolveDeclaration(declNode);
             if (valueInfo != null) {
-              this.declareBinding(valueInfo as SymbolInfo, materialized);
+              this.declareBinding(valueInfo as Symbol, materialized);
             }
           }
           case InterfaceDeclaration: {
             let valueInfo = this.model.resolveDeclaration(declNode);
             if (valueInfo != null) {
-              this.declareBinding(valueInfo as SymbolInfo, materialized);
+              this.declareBinding(valueInfo as Symbol, materialized);
             }
           }
           case MixinDeclaration: {
             let valueInfo = this.model.resolveDeclaration(declNode);
             if (valueInfo != null) {
-              this.declareBinding(valueInfo as SymbolInfo, materialized);
+              this.declareBinding(valueInfo as Symbol, materialized);
             }
           }
           case SealedVariant: {
             let valueInfo = this.model.resolveDeclaration(declNode);
             if (valueInfo != null) {
-              this.declareBinding(valueInfo as SymbolInfo, materialized);
+              this.declareBinding(valueInfo as Symbol, materialized);
             }
           }
           case TypeAliasDeclaration: {
             let valueInfo = this.model.resolveDeclaration(declNode);
             if (valueInfo != null) {
-              this.declareBinding(valueInfo as SymbolInfo, materialized);
+              this.declareBinding(valueInfo as Symbol, materialized);
             }
           }
           case EnumDeclaration as ed: {
@@ -722,7 +722,7 @@ class CheckerContext {
                 fields[member.name.name] = enumType;
               }
               let enumValueType = new RecordT(fields, null);
-              this.declareBinding(valueInfo as SymbolInfo, enumValueType);
+              this.declareBinding(valueInfo as Symbol, enumValueType);
             }
           }
           case _: {}
@@ -756,10 +756,10 @@ class CheckerContext {
   }
 
   /**
-   * Create a Type from a SymbolInfo's declaration node.
+   * Create a Type from a Symbol's declaration node.
    * Sets all boolean flags immediately from the AST.
    */
-  #materializeType(info: SymbolInfo): Type | null {
+  #materializeType(info: Symbol): Type | null {
     let decl = info.declaration;
     if (decl == null) {
       return null;
@@ -995,9 +995,9 @@ class CheckerContext {
 
   /**
    * Narrow a binding's type within the current scope.
-   * Keyed by SymbolInfo.id for identity-based precision.
+   * Keyed by Symbol.id for identity-based precision.
    */
-  narrowBinding(info: SymbolInfo, t: Type): void {
+  narrowBinding(info: Symbol, t: Type): void {
     let top = this.#narrowings[this.#narrowings.length - 1];
     top[info.id] = t;
   }
@@ -1188,7 +1188,7 @@ export let checkModule = (
               case FunctionExpression as fe: {
                 let info = ctx.model.resolveDeclaration(pat);
                 if (info != null) {
-                  ctx.registerPendingFunction((info as SymbolInfo).id, fe as Node);
+                  ctx.registerPendingFunction((info as Symbol).id, fe as Node);
                 }
               }
               case _: {}
@@ -1262,7 +1262,7 @@ export let checkModule = (
     ctx.model.addDiagnostic(diagnostic);
   }
 
-  // Finalize: bind exported types directly onto export SymbolInfos
+  // Finalize: bind exported types directly onto export Symbols
   // so importers can resolve them cleanly.
   for (let {key as expName, value as exInfo} in scopeResult.exports) {
     let declaration = exInfo.declaration;
@@ -2761,7 +2761,7 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
       if (info == null) {
         return null;
       }
-      return "s" + i32ToString((info as SymbolInfo).id as i32);
+      return "s" + i32ToString((info as Symbol).id as i32);
     }
     case MemberExpression {object, property, isSymbolAccess}: {
       let base = getMemberPathKey(ctx, object);
@@ -2854,12 +2854,12 @@ let isImmutableMemberPath = (ctx: CheckerContext, expr: Expression): boolean => 
 
 /**
  * Extract is-expression narrowing from a condition like `x is T`.
- * Returns the SymbolInfo, the target type, and the original type.
+ * Returns the Symbol, the target type, and the original type.
  */
 let extractIsNarrowing = (
   ctx: CheckerContext,
   condition: Expression
-): (SymbolInfo | null, Type | null, Type | null) => {
+): (Symbol | null, Type | null, Type | null) => {
   match (condition) {
     case IsExpression {expression, typeAnnotation}: {
       match (expression) {
@@ -2868,7 +2868,7 @@ let extractIsNarrowing = (
           if (info == null) {
             return (null, null, null);
           }
-          let si = info as SymbolInfo;
+          let si = info as Symbol;
           let originalType = ctx.resolveIdentifier(expression as Node);
           if (originalType == null) {
             return (null, null, null);
@@ -2885,7 +2885,7 @@ let extractIsNarrowing = (
 
 /**
  * Extract null-guard narrowing from a condition like `x == null` or `x != null`.
- * Returns the SymbolInfo and the narrowed type for the "after-exit" context.
+ * Returns the Symbol and the narrowed type for the "after-exit" context.
  *
  * For `x == null` with definite exit: inverse narrowing removes null from x.
  * For `x != null` with definite exit: inverse narrowing narrows x to null.
@@ -2893,7 +2893,7 @@ let extractIsNarrowing = (
 let extractNullGuardNarrowing = (
   ctx: CheckerContext,
   condition: Expression
-): (SymbolInfo | null, Type | null, boolean) => {
+): (Symbol | null, Type | null, boolean) => {
   match (condition) {
     case BinaryExpression {operator, left, right}: {
       if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
@@ -2919,7 +2919,7 @@ let extractNullGuardNarrowing = (
             if (info == null) {
               return (null, null, false);
             }
-            let si = info as SymbolInfo;
+            let si = info as Symbol;
             let originalType = ctx.resolveIdentifier(targetExpr as Node);
             if (originalType == null) {
               return (null, null, false);
@@ -2985,7 +2985,7 @@ let extractNullGuardPathNarrowing = (
 let applyTrueNarrowingFromCondition = (ctx: CheckerContext, condition: Expression): void => {
   let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, condition);
   if (guardInfo != null) {
-    let si = guardInfo as SymbolInfo;
+    let si = guardInfo as Symbol;
     let origType = guardOrigType as Type;
     if (isEqualNull) {
       ctx.narrowBinding(si, new NullType());
@@ -3009,7 +3009,7 @@ let applyTrueNarrowingFromCondition = (ctx: CheckerContext, condition: Expressio
 
   let (isInfo, isTargetType, isOrigType) = extractIsNarrowing(ctx, condition);
   if (isInfo != null) {
-    let si = isInfo as SymbolInfo;
+    let si = isInfo as Symbol;
     ctx.narrowBinding(si, isTargetType as Type);
     return;
   }
@@ -3034,7 +3034,7 @@ let applyTrueNarrowingFromCondition = (ctx: CheckerContext, condition: Expressio
 let applyFalseNarrowingFromCondition = (ctx: CheckerContext, condition: Expression): void => {
   let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, condition);
   if (guardInfo != null) {
-    let si = guardInfo as SymbolInfo;
+    let si = guardInfo as Symbol;
     let origType = guardOrigType as Type;
     if (isEqualNull) {
       ctx.narrowBinding(si, subtractNullFromType(origType));
@@ -3058,7 +3058,7 @@ let applyFalseNarrowingFromCondition = (ctx: CheckerContext, condition: Expressi
   
   let (isInfo, isTargetType, isOrigType) = extractIsNarrowing(ctx, condition);
   if (isInfo != null) {
-    let si = isInfo as SymbolInfo;
+    let si = isInfo as Symbol;
     ctx.narrowBinding(si, subtractTypeFromUnion(isOrigType as Type, isTargetType as Type));
     return;
   }
@@ -3110,7 +3110,7 @@ let extractIsPathNarrowing = (
 
 /**
  * Check if a statement (or block) contains an assignment to a variable
- * identified by its SymbolInfo id. Used to detect patterns like:
+ * identified by its Symbol id. Used to detect patterns like:
  *   if (x == null) { x = value; }
  * for post-if narrowing.
  */
@@ -3128,7 +3128,7 @@ let bodyAssignsToVariable = (ctx: CheckerContext, stmt: Statement, targetId: Sym
           match (left) {
             case Identifier: {
               let info = ctx.model.resolve(left);
-              if (info != null && (info as SymbolInfo).id == targetId) {
+              if (info != null && (info as Symbol).id == targetId) {
                 return true;
               }
               false
@@ -3252,7 +3252,7 @@ case _: {
           if (alternate == null && !branchDefinitelyExits(consequent)) {
             let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
             if (guardInfo != null && isEqualNull) {
-              let si = guardInfo as SymbolInfo;
+              let si = guardInfo as Symbol;
               let origType = guardOrigType as Type;
               if (bodyAssignsToVariable(ctx, consequent, si.id)) {
                 ctx.narrowBinding(si, subtractNullFromType(origType));
@@ -3288,7 +3288,7 @@ case _: {
           if (guardInfo != null || guardPathKey != null) {
             ctx.enterScope();
             if (guardInfo != null) {
-              let si = guardInfo as SymbolInfo;
+              let si = guardInfo as Symbol;
               let origType = guardOrigType as Type;
               if (isEqualNull) {
                 ctx.narrowBinding(si, new NullType());
@@ -3380,7 +3380,7 @@ case _: {
               if (exp.kind == "type-and-value" || exp.kind == "type") { exp } else { null }
             } else { null };
             if (typeExport != null) {
-              let si = typeExport as SymbolInfo;
+              let si = typeExport as Symbol;
 
               var resolvedType: Type | null = null;
               if (depModel != null) {
@@ -3399,7 +3399,7 @@ case _: {
                 // Bind directly to the local TYPE symbol for this import.
                 let localTypeInfo = ctx.scopeResult.rootScope.getLocalType(localName);
                 if (localTypeInfo != null) {
-                  ctx.declareBinding(localTypeInfo as SymbolInfo, rt);
+                  ctx.declareBinding(localTypeInfo as Symbol, rt);
                 }
               } else {
                 // Fallback: create stub types from the declaration AST node.
@@ -3415,13 +3415,13 @@ case _: {
                         let pt = preludeType as Type;
                         ctx.declareTypeName(localName, pt);
                         if (localTypeInfo != null) {
-                          ctx.declareBinding(localTypeInfo as SymbolInfo, pt);
+                          ctx.declareBinding(localTypeInfo as Symbol, pt);
                         }
                       } else {
                         let ct = new ClassType(ctx.freshTypeId(), name.name);
                         ctx.declareTypeName(localName, ct);
                         if (localTypeInfo != null) {
-                          ctx.declareBinding(localTypeInfo as SymbolInfo, ct);
+                          ctx.declareBinding(localTypeInfo as Symbol, ct);
                         }
                       }
                     }
@@ -3429,7 +3429,7 @@ case _: {
                       let it = new InterfaceType(ctx.freshTypeId(), name.name);
                       ctx.declareTypeName(localName, it);
                       if (localTypeInfo != null) {
-                        ctx.declareBinding(localTypeInfo as SymbolInfo, it);
+                        ctx.declareBinding(localTypeInfo as Symbol, it);
                       }
                     }
                     case SealedVariant {name}: {
@@ -3437,7 +3437,7 @@ case _: {
                       ct.isCaseClass = true;
                       ctx.declareTypeName(localName, ct);
                       if (localTypeInfo != null) {
-                        ctx.declareBinding(localTypeInfo as SymbolInfo, ct);
+                        ctx.declareBinding(localTypeInfo as Symbol, ct);
                       }
                     }
                     case _: {
@@ -3460,12 +3460,12 @@ case _: {
                 var resolvedValType: Type | null = null;
                 if (depModel != null) {
                   let dm = depModel as SemanticModel;
-                  resolvedValType = dm.getBindingType(valueExport as SymbolInfo);
+                  resolvedValType = dm.getBindingType(valueExport as Symbol);
                 }
                 if (resolvedValType != null) {
-                  ctx.declareBinding(localValInfo as SymbolInfo, resolvedValType as Type);
+                  ctx.declareBinding(localValInfo as Symbol, resolvedValType as Type);
                 } else if (typeExport == null) {
-                  ctx.declareBinding(localValInfo as SymbolInfo, new ErrorType());
+                  ctx.declareBinding(localValInfo as Symbol, new ErrorType());
                 }
               }
             }
@@ -3805,14 +3805,14 @@ let narrowTypeByPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): Type
 
 /**
  * Bind names from a pattern, registering their types via the
- * DeclarationMap → SymbolInfo → SemanticModel.setBindingType path.
+ * DeclarationMap → Symbol → SemanticModel.setBindingType path.
  */
 let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
   match (pattern) {
     case IdentifierPattern as pat: {
       let info = ctx.model.resolveDeclaration(pat);
       if (info != null) {
-        let si = info as SymbolInfo;
+        let si = info as Symbol;
         if (si.declaration != null && (si.declaration as Node) != pat) {
           ctx.error(
             "Variable '" + pat.name + "' is already declared in this scope.",
@@ -3920,7 +3920,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       }
       let info = ctx.model.resolveDeclaration(name);
       if (info != null) {
-        ctx.declareBinding(info as SymbolInfo, narrowedType);
+        ctx.declareBinding(info as Symbol, narrowedType);
       }
     }
     case AssignmentPattern {left, right}: {
@@ -4129,7 +4129,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       return new UnknownType();
     }
 
-    // Resolve through the scope pass's ReferenceMap → SymbolInfo → binding type.
+    // Resolve through the scope pass's ReferenceMap → Symbol → binding type.
     let resolved = ctx.resolveIdentifier(expr);
     if (resolved != null) {
       resolved as Type
@@ -4193,7 +4193,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       case Identifier {name}: {
         let info = ctx.model.resolve(left);
         if (info != null) {
-          let si = info as SymbolInfo;
+          let si = info as Symbol;
           if (si.kind == "let") {
             ctx.error(
               "Cannot assign to immutable variable '" + name + "'.",
@@ -4344,7 +4344,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         case Identifier: {
           let info = ctx.model.resolve(left);
           if (info != null) {
-            ctx.narrowBinding(info as SymbolInfo, nonNullType);
+            ctx.narrowBinding(info as Symbol, nonNullType);
           }
         }
         case _: {}
@@ -4360,7 +4360,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       case Identifier: {
         let info = ctx.model.resolve(left);
         if (info != null) {
-          let bindingType = ctx.model.getBindingType(info as SymbolInfo);
+          let bindingType = ctx.model.getBindingType(info as Symbol);
           if (bindingType != null) {
             leftType = bindingType as Type;
           }
@@ -4428,7 +4428,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
         let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
 
-        var isInfo: SymbolInfo | null = null;
+        var isInfo: Symbol | null = null;
         var isTargetType: Type | null = null;
         var isOrigType: Type | null = null;
         var isPathKey: String | null = null;
@@ -4452,7 +4452,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           ctx.enterScope();
         }
         if (guardInfo != null) {
-          let si = guardInfo as SymbolInfo;
+          let si = guardInfo as Symbol;
           let origType = guardOrigType as Type;
           if (isEqualNull) {
             ctx.narrowBinding(si, new NullType());
@@ -4468,7 +4468,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
           }
         } else if (isInfo != null) {
-          ctx.narrowBinding(isInfo as SymbolInfo, isTargetType as Type);
+          ctx.narrowBinding(isInfo as Symbol, isTargetType as Type);
         } else if (isPathKey != null) {
           ctx.narrowMemberPath(isPathKey as String, isPathTargetType as Type);
         }
@@ -4484,7 +4484,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             ctx.enterScope();
           }
           if (guardInfo != null) {
-            let si = guardInfo as SymbolInfo;
+            let si = guardInfo as Symbol;
             let origType = guardOrigType as Type;
             if (isEqualNull) {
               ctx.narrowBinding(si, subtractNullFromType(origType));
@@ -4501,7 +4501,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             }
           } else if (isInfo != null) {
             let narrowed = subtractTypeFromUnion(isOrigType as Type, isTargetType as Type);
-            ctx.narrowBinding(isInfo as SymbolInfo, narrowed);
+            ctx.narrowBinding(isInfo as Symbol, narrowed);
           } else if (isPathKey != null) {
             let narrowed = subtractTypeFromUnion(isPathOrigType as Type, isPathTargetType as Type);
             ctx.narrowMemberPath(isPathKey as String, narrowed);
@@ -4797,7 +4797,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let paramId = clause.param as Identifier;
         let info = ctx.model.resolveDeclaration(paramId);
         if (info != null) {
-          ctx.declareBinding(info as SymbolInfo, new ErrorType());
+          ctx.declareBinding(info as Symbol, new ErrorType());
         }
       }
       catchType = checkMatchCaseBody(ctx, clause.body as Node, expectedType);
@@ -5179,7 +5179,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   // Also register in the value namespace (for `new ClassName` and as a binding).
   let classInfo = ctx.model.resolveDeclaration(cd);
   if (classInfo != null) {
-    ctx.declareBinding(classInfo as SymbolInfo, classType);
+    ctx.declareBinding(classInfo as Symbol, classType);
   }
 
   // Enter class context for body checking.
@@ -5504,7 +5504,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           var isForwardVariant = false;
           if (ctx.scopeResult != null) {
             let scopeInfo = (ctx.scopeResult as ScopeResult).rootScope.resolveType(variantName);
-            if (scopeInfo != null && (scopeInfo as SymbolInfo).declaration is SealedVariant) {
+            if (scopeInfo != null && (scopeInfo as Symbol).declaration is SealedVariant) {
               isForwardVariant = true;
             }
           }
@@ -5568,11 +5568,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         // Register variant in type and value namespaces (module scope
         // so the name is visible in match patterns outside the class).
         ctx.declareModuleTypeName(variant.name.name, variantType);
-        // Also bind the variant type to its SymbolInfo so cross-module
+        // Also bind the variant type to its Symbol so cross-module
         // import resolution can find the fully-typed ClassType.
         let variantInfo = ctx.model.resolveDeclaration(variant);
         if (variantInfo != null) {
-          ctx.declareBinding(variantInfo as SymbolInfo, variantType);
+          ctx.declareBinding(variantInfo as Symbol, variantType);
         }
       } else {
         // Forward-declared variant or unit variant (no params).
@@ -5819,7 +5819,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               ctx.enterScope();
               let paramInfo = ctx.model.resolveDeclaration(si.param);
               if (paramInfo != null) {
-                ctx.declareBinding(paramInfo as SymbolInfo, accType);
+                ctx.declareBinding(paramInfo as Symbol, accType);
               }
               for (let stmt in si.body.body) {
                 checkStatement(ctx, stmt);
@@ -6073,7 +6073,7 @@ let checkMethodBody = (
     let paramType = substituteThisType(classType as Type, methodType.parameters[i]);
     let paramInfo = ctx.model.resolveDeclaration(param);
     if (paramInfo != null) {
-      ctx.declareBinding(paramInfo as SymbolInfo, paramType);
+      ctx.declareBinding(paramInfo as Symbol, paramType);
     }
     // For destructured params, also bind the pattern fields.
     if (param.pattern != null) {
@@ -6255,7 +6255,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   ctx.declareTypeName(ifaceName, ifaceType);
   let ifaceInfo = ctx.model.resolveDeclaration(id);
   if (ifaceInfo != null) {
-    ctx.declareBinding(ifaceInfo as SymbolInfo, ifaceType);
+    ctx.declareBinding(ifaceInfo as Symbol, ifaceType);
   }
 
   ctx.exitScope();
@@ -6642,7 +6642,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   ctx.declareTypeName(mixinName, mixinType);
   let info = ctx.model.resolveDeclaration(md);
   if (info != null) {
-    ctx.declareBinding(info as SymbolInfo, mixinType);
+    ctx.declareBinding(info as Symbol, mixinType);
   }
 
   ctx.exitScope();
@@ -6712,7 +6712,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   // Declare in value namespace.
   let info = ctx.model.resolveDeclaration(df);
   if (info != null) {
-    let existingType = ctx.model.getBindingType(info as SymbolInfo);
+    let existingType = ctx.model.getBindingType(info as Symbol);
     if (existingType != null && existingType is FunctionType) {
       let existingFunc = existingType as FunctionType;
       if (existingFunc.overloads == null) {
@@ -6724,7 +6724,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
       ovs.push(funcType);
       ctx.model.setNodeType(df, funcType);
     } else {
-      ctx.declareBinding(info as SymbolInfo, funcType);
+      ctx.declareBinding(info as Symbol, funcType);
       if (info.declaration != df) {
         ctx.model.setNodeType(df, funcType);
       }
@@ -6744,7 +6744,7 @@ let checkSymbolDeclaration = (ctx: CheckerContext, sd: SymbolDeclaration): void 
   // Declare in value namespace.
   let info = ctx.model.resolveDeclaration(sd);
   if (info != null) {
-    ctx.declareBinding(info as SymbolInfo, symbolType);
+    ctx.declareBinding(info as Symbol, symbolType);
   }
 };
 
@@ -7963,7 +7963,7 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
 
 /**
  * Check a pattern against an expected type and bind pattern variables.
- * Uses bindPattern for identifier bindings through the DeclarationMap → SymbolInfo path.
+ * Uses bindPattern for identifier bindings through the DeclarationMap → Symbol path.
  */
 let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): void => {
   match (pattern) {
@@ -7972,7 +7972,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         // Use the same binding mechanism as variable declarations.
         let info = ctx.model.resolveDeclaration(pat);
         if (info != null) {
-          ctx.declareBinding(info as SymbolInfo, expectedType);
+          ctx.declareBinding(info as Symbol, expectedType);
         } else {
           // Fallback: register in type scope.
           ctx.declareTypeName(pat.name, expectedType);
@@ -8063,7 +8063,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       }
       let info = ctx.model.resolveDeclaration(ap.name);
       if (info != null) {
-        ctx.declareBinding(info as SymbolInfo, narrowedType);
+        ctx.declareBinding(info as Symbol, narrowedType);
       } else {
         ctx.declareTypeName(ap.name.name, narrowedType);
       }
@@ -8088,7 +8088,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         if (!isVariant) {
           let info = ctx.model.resolveDeclaration(ident);
           if (info != null) {
-            ctx.declareBinding(info as SymbolInfo, expectedType);
+            ctx.declareBinding(info as Symbol, expectedType);
           } else {
             ctx.declareTypeName(ident.name, expectedType);
           }
@@ -8207,10 +8207,10 @@ let checkFunctionExpression = (
     }
 
     paramTypes.push(paramType);
-    // Store the parameter's type via its SymbolInfo (from the DeclarationMap).
+    // Store the parameter's type via its Symbol (from the DeclarationMap).
     let paramInfo = ctx.model.resolveDeclaration(param);
     if (paramInfo != null) {
-      ctx.declareBinding(paramInfo as SymbolInfo, paramType);
+      ctx.declareBinding(paramInfo as Symbol, paramType);
     }
     // For destructured params, also bind the pattern fields.
     if (param.pattern != null) {

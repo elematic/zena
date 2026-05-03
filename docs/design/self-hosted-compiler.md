@@ -228,18 +228,18 @@ The `ScopeBuilder` registers every name in the appropriate namespace:
 classes, interfaces, mixins, enums, type aliases, sealed variants, imports,
 and local bindings. Prelude types (`String`, `Array`, `Box`, `Option`, etc.)
 are implicit imports at the root scope — not special-cased. By the time the
-checker runs, every name reference resolves to a `SymbolInfo` in the scope
+checker runs, every name reference resolves to a `Symbol` in the scope
 chain, or doesn't exist (and scope analysis has already flagged it).
 
 #### The Checker Materializes Types
 
-The checker maintains a single `SymbolInfo → Type` map. When it needs a
-type for a name, it asks scope analysis for the `SymbolInfo`, then
+The checker maintains a single `Symbol → Type` map. When it needs a
+type for a name, it asks scope analysis for the `Symbol`, then
 materializes a `Type` object on demand based on the declaration kind:
 
 ```zena
 resolveTypeName(name: String): Type | null {
-  // 1. Scope lookup → get SymbolInfo
+  // 1. Scope lookup → get Symbol
   let si = this.scopeResult.resolveType(name);
   if (si == null) { return null; }
 
@@ -253,7 +253,7 @@ resolveTypeName(name: String): Type | null {
   return t;
 }
 
-let materializeType = (si: SymbolInfo): Type => match (si.declaration) {
+let materializeType = (si: Symbol): Type => match (si.declaration) {
   case ClassDeclaration as cd: {
     let ct = new ClassType(freshTypeId(), cd.name.name);
     // Set ALL boolean flags immediately from the AST node
@@ -316,7 +316,7 @@ developers to order their classes topologically.
 
 #### Cycle Detection
 
-A `#pendingTypes: Set<SymbolInfo>` tracks types currently being materialized.
+A `#pendingTypes: Set<Symbol>` tracks types currently being materialized.
 If `resolveTypeName` encounters a name already in the pending set, that's a
 circular type reference. For most declaration kinds, cycles through type
 annotations are errors. But note that _structural_ cycles (class A has a
@@ -1132,9 +1132,9 @@ consistent style. This is:
 
 ```zena
 // Scope hierarchy
-class Scope { parent, bindings: HashMap<String, SymbolInfo>, kind: ScopeKind }
-class SymbolInfo { name, kind: SymbolKind, declaration: Node }
-class ModuleExports { #values, #types: HashMap<String, SymbolInfo> }
+class Scope { parent, bindings: HashMap<String, Symbol>, kind: ScopeKind }
+class Symbol { name, kind: SymbolKind, declaration: Node }
+class ModuleExports { #values, #types: HashMap<String, Symbol> }
 
 // Module resolution
 class ModuleResolver { resolve(specifier, referrer): ResolvedModule }

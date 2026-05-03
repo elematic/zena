@@ -34,7 +34,7 @@ import { getStandardPrelude } from 'zena-compiler:prelude';
 import {
   Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
 } from 'zena-compiler:diagnostics';
-import { SymbolInfo, ReferenceMap, DeclarationMap, ScopeResult, ModuleExports } from 'zena-compiler:scope';
+import { Symbol, ReferenceMap, DeclarationMap, ScopeResult, ModuleExports } from 'zena-compiler:scope';
 import {
   Comment, Node, SourceLocation, Identifier, IdentifierPattern,
   ThisExpression, MemberExpression, Expression, Module,
@@ -632,7 +632,7 @@ let findDocCommentByOffset = (ast: Module, offset: i32, commentMap: CommentMap):
  * (from variable declarations), we search the module body for the
  * enclosing statement.
  */
-let findDocComment = (sym: SymbolInfo, ast: Module, commentMap: CommentMap): String => {
+let findDocComment = (sym: Symbol, ast: Module, commentMap: CommentMap): String => {
   let decl = sym.declaration;
   if (decl == null) { return ""; }
   let declNode = decl as Node;
@@ -659,10 +659,10 @@ let findDocComment = (sym: SymbolInfo, ast: Module, commentMap: CommentMap): Str
  * When a symbol's declaration is an ImportSpecifier, we follow the import
  * to the dependency module to find the original declaration and its doc comment.
  */
-let findCrossFileDocComment = (sym: SymbolInfo, compiler: Compiler): String => {
+let findCrossFileDocComment = (sym: Symbol, compiler: Compiler): String => {
   let origSym = resolveImportedSymbol(sym, compiler);
   if (origSym == null) { return ""; }
-  let orig = origSym as SymbolInfo;
+  let orig = origSym as Symbol;
 
   // Get the source file for the original symbol's module.
   let sourceFile = compiler.getSourceFile(orig.modulePath);
@@ -678,10 +678,10 @@ let findCrossFileDocComment = (sym: SymbolInfo, compiler: Compiler): String => {
 /**
  * Resolve the filesystem path of the module that exports an imported symbol.
  *
- * Given a SymbolInfo whose declaration is an ImportSpecifier, resolves the
+ * Given a Symbol whose declaration is an ImportSpecifier, resolves the
  * import to find the actual file path of the dependency module.
  */
-let resolveImportFilePath = (sym: SymbolInfo, compiler: Compiler): String => {
+let resolveImportFilePath = (sym: Symbol, compiler: Compiler): String => {
   if (sym.declaration == null) { return ""; }
   let decl = sym.declaration as Node;
   if (!(decl is ImportSpecifier)) { return ""; }
@@ -731,13 +731,13 @@ let resolveImportFilePath = (sym: SymbolInfo, compiler: Compiler): String => {
 /**
  * Resolve an imported symbol back to the original export in its source module.
  *
- * Given a SymbolInfo whose declaration is an ImportSpecifier, walks the AST
+ * Given a Symbol whose declaration is an ImportSpecifier, walks the AST
  * to find the parent ImportDeclaration, resolves the module specifier to
- * a canonical path, then looks up the exported SymbolInfo from the dependency.
+ * a canonical path, then looks up the exported Symbol from the dependency.
  *
  * Returns null if the symbol is not an import or cannot be resolved.
  */
-let resolveImportedSymbol = (sym: SymbolInfo, compiler: Compiler): SymbolInfo | null => {
+let resolveImportedSymbol = (sym: Symbol, compiler: Compiler): Symbol | null => {
   if (sym.declaration == null) { return null; }
   let decl = sym.declaration as Node;
   if (!(decl is ImportSpecifier)) { return null; }
@@ -872,7 +872,7 @@ export class LanguageService {
     }
 
     if (maybeInfo != null) {
-      let sym = maybeInfo as SymbolInfo;
+      let sym = maybeInfo as Symbol;
 
       // For imported symbols, resolve through the import to the original
       // declaration in the dependency module.
@@ -880,7 +880,7 @@ export class LanguageService {
         let origSym = resolveImportedSymbol(sym, this.#compiler);
         let depFilePath = resolveImportFilePath(sym, this.#compiler);
         if (origSym != null && depFilePath.length > 0) {
-          let orig = origSym as SymbolInfo;
+          let orig = origSym as Symbol;
           if (orig.declaration != null) {
             let origDecl = orig.declaration as Node;
             if (origDecl.loc != null) {
@@ -1017,10 +1017,10 @@ export class LanguageService {
     // Try to get the type directly from the SemanticModel.
     var nodeType = theModel.getNodeType(foundNode);
 
-    // Look up the SymbolInfo for this identifier (needed for both
+    // Look up the Symbol for this identifier (needed for both
     // fallback type resolution and doc comment extraction).
     let hasScopeResult = this.#scopeResults.has(path);
-    var symbolInfo: SymbolInfo | null = null;
+    var symbolInfo: Symbol | null = null;
 
     if (hasScopeResult) {
       let sr = this.#scopeResults[path];
@@ -1031,16 +1031,16 @@ export class LanguageService {
         maybeInfo = decls.getByOffset(offset);
       }
       if (maybeInfo != null) {
-        symbolInfo = maybeInfo as SymbolInfo;
+        symbolInfo = maybeInfo as Symbol;
         if (nodeType == null) {
-          nodeType = theModel.getBindingType(symbolInfo as SymbolInfo);
+          nodeType = theModel.getBindingType(symbolInfo as Symbol);
         }
-        // For type references (e.g. SymbolInfo in HashMap<String, SymbolInfo>),
+        // For type references (e.g. Symbol in HashMap<String, Symbol>),
         // getBindingType may fail because the reference map stores a different
-        // SymbolInfo (type namespace) than the one the checker used to store
+        // Symbol (type namespace) than the one the checker used to store
         // the binding type (value namespace). Try the declaration's node type.
         if (nodeType == null) {
-          let sym = symbolInfo as SymbolInfo;
+          let sym = symbolInfo as Symbol;
           if (sym.declaration != null) {
             // For imported symbols, the declaration is an ImportSpecifier in the
             // current file. The declaration offset won't match anything useful in
@@ -1083,14 +1083,14 @@ export class LanguageService {
     };
 
     // Extract doc comment from the symbol's declaration site.
-    // Only use the SymbolInfo-based lookup (follows refs → declaration).
+    // Only use the Symbol-based lookup (follows refs → declaration).
     // Do NOT fall back to offset-based search here — that would pick up
     // the enclosing field's or class's doc when hovering on a reference
     // inside it. Offset-based lookup is only used for class member
     // definition sites (in resolveClassMemberHover above).
     let commentMap = attachComments(theAst);
     let docComment = if (symbolInfo != null) {
-      let sym = symbolInfo as SymbolInfo;
+      let sym = symbolInfo as Symbol;
       // For imported symbols, follow the import to the source module.
       if (sym.declaration != null && (sym.declaration as Node) is ImportSpecifier) {
         findCrossFileDocComment(sym, this.#compiler)
@@ -1109,20 +1109,20 @@ export class LanguageService {
    * ImportSpecifier in the current file. We resolve through the import to
    * the original symbol in the dependency module and look up its type there.
    */
-  #getCrossFileNodeType(sym: SymbolInfo): Type | null {
+  #getCrossFileNodeType(sym: Symbol): Type | null {
     if (this.#cachedCheckResult == null) { return null; }
     let checkResult = this.#cachedCheckResult as ProgramCheckResult;
 
     // Resolve through the import to find the original symbol.
     let origSym = resolveImportedSymbol(sym, this.#compiler);
     if (origSym == null) { return null; }
-    let orig = origSym as SymbolInfo;
+    let orig = origSym as Symbol;
 
     let modulePath = orig.modulePath;
     if (!checkResult.results.has(modulePath)) { return null; }
     let depModel = checkResult.results[modulePath].model;
 
-    // Try binding type first (keyed by SymbolInfo.id — stable across modules).
+    // Try binding type first (keyed by Symbol.id — stable across modules).
     let bt = depModel.getBindingType(orig);
     if (bt != null) { return bt; }
     // Fall back to node type (keyed by declaration offset — only valid in the source module).
@@ -1170,7 +1170,7 @@ let getHoverLabel = (node: Node, typeStr: String, scopeResult: ScopeResult | nul
       maybeInfo = decls.getByNode(node);
     }
     if (maybeInfo != null) {
-      let sym = maybeInfo as SymbolInfo;
+      let sym = maybeInfo as Symbol;
       // Check if the declaration is a parameter.
       if (sym.declaration != null) {
         let declNode = sym.declaration as Node;
@@ -1233,7 +1233,7 @@ let findEnclosingClassType = (ast: Module, thisExpr: Expression, model: Semantic
             // Fallback: resolve via declaration map → binding type.
             let sym = model.resolveDeclaration(ast.body[i]);
             if (sym != null) {
-              return model.getBindingType(sym as SymbolInfo);
+              return model.getBindingType(sym as Symbol);
             }
           }
         }
@@ -1267,7 +1267,7 @@ let resolveClassMemberHover = (ast: Module, offset: i32, model: SemanticModel): 
             if (classTypeRef == null) {
               let sym = model.resolveDeclaration(stmt);
               if (sym != null) {
-                classTypeRef = model.getBindingType(sym as SymbolInfo);
+                classTypeRef = model.getBindingType(sym as Symbol);
               }
             }
             if (classTypeRef == null) { return null; }

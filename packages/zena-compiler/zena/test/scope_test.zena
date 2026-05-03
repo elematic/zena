@@ -22,7 +22,7 @@ import {
 import {
   Scope,
   ScopeKind,
-  SymbolInfo,
+  Symbol,
   ModuleExports,
   ReferenceMap,
   ScopeBuilder,
@@ -52,7 +52,7 @@ export let tests = suite('Scope', (): void => {
 
       let info = scope.resolveValue("x");
       isTrue(info != null);
-      let sym = info as SymbolInfo;
+      let sym = info as Symbol;
       equal(sym.kind, "let");
       equal(sym.modulePath, "test.zena");
     });
@@ -67,7 +67,7 @@ export let tests = suite('Scope', (): void => {
 
       let info = scope.resolveType("Foo");
       isTrue(info != null);
-      let sym = info as SymbolInfo;
+      let sym = info as Symbol;
       equal(sym.kind, "type");
     });
 
@@ -129,7 +129,7 @@ export let tests = suite('Scope', (): void => {
       // Child's binding wins.
       let info = child.resolveValue("x");
       isTrue(info != null);
-      let sym = info as SymbolInfo;
+      let sym = info as Symbol;
       // The declaration should be the child's (body[1]), not parent's.
       isTrue(sym.declaration === mod.body[1]);
     });
@@ -164,23 +164,23 @@ export let tests = suite('Scope', (): void => {
 
   suite('Module exports', (): void => {
     test('set and get value export', (ctx: TestContext): void => {
-      let exports = new HashMap<String, SymbolInfo>();
+      let exports = new HashMap<String, Symbol>();
       let mod = parse('export let x = 1;', 'test.zena');
       let decl = mod.body[0];
-      let info = new SymbolInfo("let", decl, "test.zena");
+      let info = new Symbol("let", decl, "test.zena");
 
       exports["x"] = info;
 
       let got = if (let (true, val) = exports.get("x")) { val } else { null };
       isTrue(got != null);
-      equal((got as SymbolInfo).kind, "let");
+      equal((got as Symbol).kind, "let");
     });
 
     test('set and get type export', (ctx: TestContext): void => {
-      let exports = new HashMap<String, SymbolInfo>();
+      let exports = new HashMap<String, Symbol>();
       let mod = parse('class Foo {}', 'test.zena');
       let decl = mod.body[0];
-      let info = new SymbolInfo("type", decl, "test.zena");
+      let info = new Symbol("type", decl, "test.zena");
 
       exports["Foo"] = info;
 
@@ -189,10 +189,10 @@ export let tests = suite('Scope', (): void => {
     });
 
     test('hasValue and hasType equivalent', (ctx: TestContext): void => {
-      let exports = new HashMap<String, SymbolInfo>();
+      let exports = new HashMap<String, Symbol>();
       let mod = parse('export class Foo {}', 'test.zena');
       let decl = mod.body[0];
-      let info = new SymbolInfo("type-and-value", decl, "test.zena");
+      let info = new Symbol("type-and-value", decl, "test.zena");
 
       exports["Foo"] = info;
 
@@ -214,7 +214,7 @@ export let tests = suite('Scope', (): void => {
 
       let info = result.rootScope.resolveValue("x");
       isTrue(info != null);
-      equal((info as SymbolInfo).kind, "let");
+      equal((info as Symbol).kind, "let");
     });
 
     test('var declaration is in scope', (ctx: TestContext): void => {
@@ -224,7 +224,7 @@ export let tests = suite('Scope', (): void => {
 
       let info = result.rootScope.resolveValue("y");
       isTrue(info != null);
-      equal((info as SymbolInfo).kind, "var");
+      equal((info as Symbol).kind, "var");
     });
 
     test('exported variable appears in exports', (ctx: TestContext): void => {
@@ -399,7 +399,7 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      let info = result.rootScope.resolveType("i32") as SymbolInfo;
+      let info = result.rootScope.resolveType("i32") as Symbol;
       isTrue(info.declaration == null);
       equal(info.kind, "type");
       equal(info.modulePath, "");
@@ -419,7 +419,7 @@ export let tests = suite('Scope', (): void => {
       let builder = new ScopeBuilder("test.zena");
       let result = builder.build(mod);
 
-      let info = result.rootScope.resolveType("i32") as SymbolInfo;
+      let info = result.rootScope.resolveType("i32") as Symbol;
       // User's type alias should shadow the built-in.
       isTrue(info.declaration != null);
     });
@@ -456,7 +456,7 @@ export let tests = suite('Scope', (): void => {
       let xRef = yDecl.init as Identifier;
       let sym = result.references.getByNode(xRef);
       isTrue(sym != null);
-      equal((sym as SymbolInfo).kind, "let");
+      equal((sym as Symbol).kind, "let");
     });
 
     test('new expression callee is tracked', (ctx: TestContext): void => {
@@ -469,7 +469,7 @@ export let tests = suite('Scope', (): void => {
       let newExpr = xDecl.init as NewExpression;
       let sym = result.references.getByNode(newExpr.callee);
       isTrue(sym != null);
-      equal((sym as SymbolInfo).kind, "let");
+      equal((sym as Symbol).kind, "let");
     });
 
     test('unresolved identifier is not tracked', (ctx: TestContext): void => {
@@ -508,7 +508,7 @@ export let tests = suite('Scope', (): void => {
       isTrue(sym != null);
       // The declaration should be the ImportSpecifier — the signal
       // that further resolution through the imported module is needed.
-      isTrue((sym as SymbolInfo).declaration is ImportSpecifier);
+      isTrue((sym as Symbol).declaration is ImportSpecifier);
     });
   });
 });
