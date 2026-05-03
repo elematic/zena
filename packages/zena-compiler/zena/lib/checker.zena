@@ -368,12 +368,10 @@ class CheckerContext {
     let si = info as SymbolInfo;
 
     // Check narrowings first (innermost to outermost).
-    var i = this.#narrowings.length - 1;
-    while (i >= 0) {
-      if (this.#narrowings[i].has(si.id)) {
-        return this.#narrowings[i][si.id];
+    for (let narrowing in this.#narrowings) {
+      if (let (true, v) = narrowing.get(si.id)) {
+        return v;
       }
-      i = i - 1;
     }
 
     // Fall back to the binding type stored by the checker.
@@ -384,17 +382,17 @@ class CheckerContext {
     let models = this.#depModels;
     if (models != null) {
       let depModels = models as HashMap<String, SemanticModel>;
-      let iter = depModels.keys();
-      while (let (true, depKey) = iter.next()) {
-        let depModel = depModels[depKey];
-        let dbt = depModel.getBindingType(si);
-        if (dbt != null) { return dbt as Type; }
+      for (let depKey in depModels.keys()) {
+        if (let (true, depModel) = depModels.get(depKey)) {
+          let dbt = depModel.getBindingType(si);
+          if (dbt != null) { return dbt as Type; }
+        }
       }
     }
 
     // No type stored yet — attempt lazy resolution for pending functions.
-    if (this.#pendingFunctions.has(si.id)) {
-      return this.lazyResolveFunction(si, this.#pendingFunctions[si.id]);
+    if (let (true, pendingFunc) = this.#pendingFunctions.get(si.id)) {
+      return this.lazyResolveFunction(si, pendingFunc);
     }
 
     // On-demand: if the declaration is a type (class, interface, mixin,
@@ -504,9 +502,7 @@ class CheckerContext {
     if (typeParameters != null) {
       let tps = typeParameters as Array<TypeParameter>;
       resolvedTypeParams = new Array<TypeParameterType>();
-      var tpi = 0;
-      while (tpi < tps.length) {
-        let tp = tps[tpi];
+      for (let tp in tps) {
         var constraint: Type | null = null;
         if (tp.constraint != null) {
           constraint = resolveTypeAnnotation(this, tp.constraint as TypeAnnotation);
@@ -515,23 +511,19 @@ class CheckerContext {
         this.declareTypeName(tp.name, tpType);
         this.registerTypeParameter(tp, tpType);
         (resolvedTypeParams as Array<TypeParameterType>).push(tpType);
-        tpi += 1;
       }
     }
 
     // Resolve parameter types.
     let paramTypes = new Array<Type>();
     let paramNames = new Array<String>();
-    var pi = 0;
-    while (pi < params.length) {
-      let param = params[pi];
+    for (let param in params) {
       paramNames.push(param.name.name);
       if (param.typeAnnotation != null) {
         paramTypes.push(resolveTypeAnnotation(this, param.typeAnnotation as TypeAnnotation));
       } else {
         paramTypes.push(new ErrorType());
       }
-      pi += 1;
     }
 
     // Resolve return type.
@@ -637,20 +629,20 @@ class CheckerContext {
   }
 
   #materializeFromSymbol(info: SymbolInfo, nameHint: String): Type | null {
-    if (this.#materializedTypes.has(info.id)) {
-      return this.#materializedTypes[info.id];
+    if (let (true, mat) = this.#materializedTypes.get(info.id)) {
+      return mat;
     }
 
     let models = this.#depModels;
     if (models != null) {
       let depModels = models as HashMap<String, SemanticModel>;
-      let iter = depModels.keys();
-      while (let (true, depKey) = iter.next()) {
-        let depModel = depModels[depKey];
-        let bt = depModel.getBindingType(info);
-        if (bt != null) {
-          this.#materializedTypes[info.id] = bt as Type;
-          return bt as Type;
+      for (let depKey in depModels.keys()) {
+        if (let (true, depModel) = depModels.get(depKey)) {
+          let bt = depModel.getBindingType(info);
+          if (bt != null) {
+            this.#materializedTypes[info.id] = bt as Type;
+            return bt as Type;
+          }
         }
       }
     }
@@ -659,8 +651,7 @@ class CheckerContext {
       let declNode = info.declaration as Node;
       if (declNode.loc != null) {
         let declLoc = declNode.loc as SourceLocation;
-        if (this.#materializedDeclTypes.has(declLoc.start)) {
-          let cached = this.#materializedDeclTypes[declLoc.start];
+        if (let (true, cached) = this.#materializedDeclTypes.get(declLoc.start)) {
           this.#materializedTypes[info.id] = cached;
           return cached;
         }
@@ -744,11 +735,13 @@ class CheckerContext {
   }
 
   #resolveBuiltinOrPreludeType(name: String): Type | null {
-    if (this.#typeScopes.length > 0 && this.#typeScopes[0].has(name)) {
-      return this.#typeScopes[0][name];
+    if (this.#typeScopes.length > 0) {
+      if (let (true, t) = this.#typeScopes[0].get(name)) {
+        return t;
+      }
     }
-    if (this.#sharedState.preludeTypes.has(name)) {
-      return this.#sharedState.preludeTypes[name];
+    if (let (true, t) = this.#sharedState.preludeTypes.get(name)) {
+      return t;
     }
     return null;
   }
@@ -776,11 +769,12 @@ class CheckerContext {
       case ClassDeclaration as cd: {
         var typeId = this.freshTypeId();
         let isPrelude = this.filePath.startsWith("zena:");
-        if (isPrelude && this.#sharedState.preludeTypes.has(cd.name.name)) {
-          let stub = this.#sharedState.preludeTypes[cd.name.name] as Type;
-          match (stub) {
-            case ClassType as pt: { typeId = pt.id; }
-            case _: {}
+        if (isPrelude) {
+          if (let (true, stub) = this.#sharedState.preludeTypes.get(cd.name.name)) {
+            match (stub as Type) {
+              case ClassType as pt: { typeId = pt.id; }
+              case _: {}
+            }
           }
         }
         let ct = new ClassType(typeId, cd.name.name);
@@ -811,11 +805,12 @@ class CheckerContext {
       case InterfaceDeclaration as id: {
         var typeId = this.freshTypeId();
         let isPrelude = this.filePath.startsWith("zena:");
-        if (isPrelude && this.#sharedState.preludeTypes.has(id.name.name)) {
-          let stub = this.#sharedState.preludeTypes[id.name.name] as Type;
-          match (stub) {
-            case InterfaceType as pt: { typeId = pt.id; }
-            case _: {}
+        if (isPrelude) {
+          if (let (true, stub) = this.#sharedState.preludeTypes.get(id.name.name)) {
+            match (stub as Type) {
+              case InterfaceType as pt: { typeId = pt.id; }
+              case _: {}
+            }
           }
         }
         let it = new InterfaceType(typeId, id.name.name);
@@ -897,8 +892,8 @@ class CheckerContext {
    * Resolve a prelude value by name.
    */
   resolvePreludeValue(name: String): Type | null {
-    if (this.#sharedState.preludeValues.has(name)) {
-      return this.#sharedState.preludeValues[name];
+    if (let (true, t) = this.#sharedState.preludeValues.get(name)) {
+      return t;
     }
     return null;
   }
@@ -908,8 +903,8 @@ class CheckerContext {
    * (e.g. checking if a ClassType is the prelude Array).
    */
   resolvePreludeType(name: String): Type | null {
-    if (this.#sharedState.preludeTypes.has(name)) {
-      return this.#sharedState.preludeTypes[name];
+    if (let (true, t) = this.#sharedState.preludeTypes.get(name)) {
+      return t;
     }
     return null;
   }
@@ -2016,16 +2011,14 @@ let instantiateGenericClass = (
 
   // Build typeArguments array from inferred map.
   let typeArgs = new Array<Type>();
-  var pi = 0;
-  while (pi < params.length) {
-    let paramName = params[pi].name;
-    if (inferred.has(paramName)) {
-      typeArgs.push(inferred[paramName]);
+  for (let param in params) {
+    let paramName = param.name;
+    if (let (true, t) = inferred.get(paramName)) {
+      typeArgs.push(t);
     } else {
       // No inference possible; use unknown.
       typeArgs.push(new ErrorType());
     }
-    pi += 1;
   }
 
   // Apply missing default types and check constraints before instantiating.
@@ -5217,9 +5210,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   // a private method defined later in the class body).
   // Track fields declared directly in this class body (not inherited).
   let ownFieldNames = new HashSet<String>();
-  var bi = 0;
-  while (bi < cd.body.length) {
-    let member = cd.body[bi];
+  for (let member in cd.body) {
     match (member) {
       case FieldDefinition as fd: {
         let fieldName = match (fd.name) {
@@ -5509,16 +5500,13 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       }
       case _: {}
     }
-    bi = bi + 1;
   }
 
   // Handle sealed class variants.
   if (cd.isSealed && cd.sealedVariants != null) {
     let variants = cd.sealedVariants as Array<SealedVariant>;
     classType.sealedVariants = new Array<ClassType>();
-    var vi = 0;
-    while (vi < variants.length) {
-      let variant = variants[vi];
+    for (let variant in variants) {
       let variantName = variant.name.name;
 
       // Forward-declared variants (null params, like `case Circle, Rect`)
@@ -5669,8 +5657,6 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
         }
       }
-
-      vi = vi + 1;
     }
   }
 
@@ -5701,9 +5687,8 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   if (classType.typeParameters != null) {
     let tps = classType.typeParameters as Array<TypeParameterType>;
     var tpi = 0;
-    while (tpi < tps.length) {
-      ctx.declareTypeName(tps[tpi].name, tps[tpi]);
-      tpi = tpi + 1;
+    for (let tp in tps) {
+      ctx.declareTypeName(tp.name, tp);
     }
   }
 
@@ -5712,9 +5697,8 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   // Check method bodies and field initializers.
   // Collect field names in declaration order for forward-reference detection.
   let fieldOrder = new Array<String>();
-  var foi = 0;
-  while (foi < cd.body.length) {
-    match (cd.body[foi]) {
+  for (let bodyMember in cd.body) {
+    match (bodyMember) {
       case FieldDefinition as fd: {
         let fn = match (fd.name) {
           case Identifier {name}: name
@@ -5729,13 +5713,11 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       }
       case _: {}
     }
-    foi = foi + 1;
   }
 
   var fieldIndex = 0;
   var bi = 0;
-  while (bi < cd.body.length) {
-    let member = cd.body[bi];
+  for (let member in cd.body) {
     match (member) {
       case FieldDefinition as fd: {
         if (fd.value != null) {
@@ -5859,10 +5841,8 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               if (paramInfo != null) {
                 ctx.declareBinding(paramInfo as SymbolInfo, accType);
               }
-              var sbi = 0;
-              while (sbi < si.body.body.length) {
-                checkStatement(ctx, si.body.body[sbi]);
-                sbi += 1;
+              for (let stmt in si.body.body) {
+                checkStatement(ctx, stmt);
               }
               ctx.exitScope();
             }
@@ -5872,64 +5852,59 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       }
       case _: {}
     }
-    bi = bi + 1;
   }
 
   // Check interface conformance.
   if (cd.implementsList != null) {
     let implList = cd.implementsList as Array<TypeAnnotation>;
-    var ii = 0;
-    while (ii < implList.length) {
-      let ifaceAnn = implList[ii];
+    for (let ifaceAnn in implList) {
       let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
       match (ifaceType) {
         case InterfaceType as iface: {
           classType.implementsList.push(iface);
           // Check all interface methods are implemented.
-          let ifaceMethodKeys = iface.methods.keys();
-          while (let (true, methodName) = ifaceMethodKeys.next()) {
-            let ifaceMethod = iface.methods[methodName];
-            if (classType.methods.has(methodName)) {
-              // Check signature compatibility.
-              let expectedMethodType0 = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
-              
-              var receiverType: Type = classType as Type;
-              let tParams = classType.typeParameters;
-              if (tParams != null) {
-                if (tParams.length > 0) {
-                  let typeArgs = new Array<Type>();
-                  for (let tp in tParams) { typeArgs.push(tp as Type); }
-                  receiverType = instantiateClassType(classType, typeArgs) as Type;
+          for (let methodName in iface.methods.keys()) {
+            if (let (true, ifaceMethod) = iface.methods.get(methodName)) {
+              if (let (true, classMethod) = classType.methods.get(methodName)) {
+                // Check signature compatibility.
+                let expectedMethodType0 = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
+                
+                var receiverType: Type = classType as Type;
+                let tParams = classType.typeParameters;
+                if (tParams != null) {
+                  if (tParams.length > 0) {
+                    let typeArgs = new Array<Type>();
+                    for (let tp in tParams) { typeArgs.push(tp as Type); }
+                    receiverType = instantiateClassType(classType, typeArgs) as Type;
+                  }
                 }
-              }
-              
-              let expectedMethodType = substituteThisType(receiverType, expectedMethodType0);
-              let classMethod = classType.methods[methodName];
-              if (!isAssignableTo(ctx, classMethod, expectedMethodType)) {
+                
+                let expectedMethodType = substituteThisType(receiverType, expectedMethodType0);
+                if (!isAssignableTo(ctx, classMethod, expectedMethodType)) {
+                  ctx.error(
+                    "Class '" + className + "' incorrectly implements interface '" + iface.name +
+                    "': Method '" + methodName + "' is type '" + typeToString(classMethod) +
+                    "' but expected '" + typeToString(expectedMethodType) + "'.",
+                    DiagnosticCode.IncompatibleTypes,
+                    cd.loc
+                  );
+                }
+              } else if (methodName.startsWith("get#") && classType.fields.has(methodName.sliceBytes(4, methodName.length))) {
+                // A field can satisfy a getter interface method.
+              } else if (methodName.startsWith("set#") && classType.fields.has(methodName.sliceBytes(4, methodName.length))) {
+                // A field can satisfy a setter interface method.
+              } else {
                 ctx.error(
                   "Class '" + className + "' incorrectly implements interface '" + iface.name +
-                  "': Method '" + methodName + "' is type '" + typeToString(classMethod) +
-                  "' but expected '" + typeToString(expectedMethodType) + "'.",
+                  "': Method '" + methodName + "' is missing.",
                   DiagnosticCode.IncompatibleTypes,
                   cd.loc
                 );
               }
-            } else if (methodName.startsWith("get#") && classType.fields.has(methodName.sliceBytes(4, methodName.length))) {
-              // A field can satisfy a getter interface method.
-            } else if (methodName.startsWith("set#") && classType.fields.has(methodName.sliceBytes(4, methodName.length))) {
-              // A field can satisfy a setter interface method.
-            } else {
-              ctx.error(
-                "Class '" + className + "' incorrectly implements interface '" + iface.name +
-                "': Method '" + methodName + "' is missing.",
-                DiagnosticCode.IncompatibleTypes,
-                cd.loc
-              );
             }
           }
           // Check all interface fields are implemented.
-          let ifaceFieldKeys = iface.fields.keys();
-          while (let (true, fieldName) = ifaceFieldKeys.next()) {
+          for (let fieldName in iface.fields.keys()) {
             // Interface field requires at least a getter.
             let getterName = "get#" + fieldName;
             let hasField = classType.fields.has(fieldName);
@@ -5946,7 +5921,6 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
         }
         case _: {}
       }
-      ii += 1;
     }
   }
 
