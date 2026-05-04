@@ -1,0 +1,118 @@
+import { Node, InterfaceDeclaration, TypeAliasDeclaration, TypeParameter,
+  ClassDeclaration, EnumDeclaration, MixinDeclaration,
+  ImportSpecifier
+} from '../ast.zena';
+
+/**
+ * Distinct type for Symbol identity keys.
+ * Prevents accidental use of arbitrary i32 values as symbol IDs.
+ */
+export distinct type SymbolId = i32;
+
+// Auto-incrementing counter for Symbol.id.
+var _nextSymbolId: i32 = 0;
+let makeSymbolId = (): SymbolId => {
+  let id = _nextSymbolId;
+  _nextSymbolId += 1;
+  return id as SymbolId;
+};
+
+/**
+ * Information about a declared name in a scope.
+ *
+ * Stored in scope bindings. The `declaration` field references the
+ * AST node that introduced this name.
+ *
+ * Each Symbol has a unique `id` that can be used as a HashMap key
+ * by downstream passes (e.g., the type checker maps id → Type).
+ */
+export class Symbol {
+  /**
+   * Unique identity for this binding. Auto-incremented at
+   * construction time. Enables identity-keyed maps (HashMap<SymbolId, T>)
+   * without requiring object-identity hashing.
+   */
+  id = makeSymbolId();
+
+  /**
+   * Whether this binding can be reassigned (defined with `var` instead of `let`).
+   * 
+   * Implementation Note: We track this directly on the Symbol rather than querying 
+   * the `declaration` node. The `declaration` field usually points to a leaf 
+   * pattern (like an `IdentifierPattern`), which doesn't know if it was bound by 
+   * a `let` or `var`. Since Zena AST nodes lack parent pointers, the checker 
+   * cannot traverse upward to check the parent `VariableDeclaration`.
+   *
+   * TODO: Immutability is better resolved during type checking rather than scope 
+   * analysis. Scope building cannot easily account for complex mutability rules 
+   * like accessors with getters but no setters, or the true mutability of imported 
+   * cross-module exports. We should eventually move mutability checks fully to the 
+   * checker. To handle the lack of AST parent pointers, the checker could build 
+   * parent references dynamically during its traversal, or we can pass the explicit 
+   * parent declaration node downward to the leaf patterns.
+   */
+  isMutable: boolean;
+
+  /**
+   * The AST node at the binding site, or null for built-in types.
+   *
+   * Points to the most specific node that introduces the name:
+   *   - Simple variables (`let x = 5`): IdentifierPattern
+   *   - Destructured variables (`let {x, y} = p`): each IdentifierPattern
+   *   - Functions (annotated, predeclared): IdentifierPattern
+   *   - Parameters: Parameter
+   *   - Classes: ClassDeclaration
+   *   - Interfaces: InterfaceDeclaration
+   *   - Enums: EnumDeclaration
+   *   - Mixins: MixinDeclaration
+   *   - Type aliases: TypeAliasDeclaration
+   *   - Imports: ImportSpecifier
+   *   - Pattern bindings (match): the leaf pattern node
+   *   - Built-ins (i32, boolean, etc.): null
+   *
+   * The checker stores each binding's type on this node via
+   * SemanticModel.setNodeType(declaration, type). Reference sites
+   * follow ReferenceMap → Symbol → declaration → getNodeType
+   * to recover the type.
+   */
+  declaration: Node | null;
+
+  /**
+   * The module path where this symbol was declared.
+   * Empty string for built-in types and locals/parameters.
+   */
+  modulePath: String;
+
+  new(
+    this.declaration: Node | null,
+    this.modulePath: String,
+    this.isMutable: boolean = false);
+
+  // TODO: `isValue()` and `isType()` shouldn't belong on `Symbol`.
+  // For cross-module imports (`ImportSpecifier`), the true namespace
+  // depends on the actual exported declaration in the target module.
+  // These should be moved to the Checker which can follow import links.
+  isValue(): boolean {
+    return match (this.declaration) {
+      case null: false
+      case InterfaceDeclaration: false
+      case TypeAliasDeclaration: false
+      case TypeParameter: false
+      case _: true
+    };
+  }
+
+  isType(): boolean {
+    return match (this.declaration) {
+      case null: true
+      case ClassDeclaration: true
+      case InterfaceDeclaration: true
+      case EnumDeclaration: true
+      case MixinDeclaration: true
+      case TypeAliasDeclaration: true
+      case ImportSpecifier: true // Conservatively true
+      case TypeParameter: true
+      case _: false
+    };
+  }
+}
