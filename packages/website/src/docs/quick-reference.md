@@ -639,19 +639,22 @@ case true: ...
 case null: ...
 
 // Identifier (binds value)
-case x: x + 1
+case let x: x + 1
 
 // Wildcard (matches anything)
 case _: ...
 
 // Tuple destructuring
-case (a, b): a + b
+case let (a, b): a + b
 
 // Record destructuring
-case { x, y }: x + y
+case let { x, y }: x + y
+
+// Note: Without `let` or `var`, indentifiers are evaluated as existing variables to match against
+case { x, y }: "matches record where fields equal the values of existing variables `x` and `y`"
 
 // Class destructuring
-case Point { x: 0, y }: "on y-axis"
+case let Point { x: 0, y }: "on y-axis"
 
 // Or patterns
 case 1 | 2 | 3: "small"
@@ -1436,9 +1439,9 @@ let expr = new Binary(new Literal(1), '+', new Literal(2));
 
 // Exhaustive match—compiler ensures all cases are covered
 let result = match (expr) {
-  case Binary { left, op, right }: eval(left) + eval(right)
-  case Literal { value }: value
-  case Unary { op, expr }: -eval(expr)
+  case let Binary { left, op, right }: eval(left) + eval(right)
+  case let Literal { value }: value
+  case let Unary { op, expr }: -eval(expr)
 };
 ```
 

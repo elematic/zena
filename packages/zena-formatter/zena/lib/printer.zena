@@ -27,7 +27,7 @@ import {
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
   ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration,
   // Patterns
-  Pattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
+  Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern, LiteralPattern,
   // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
@@ -1589,10 +1589,11 @@ let printTryExpression = (expr: TryExpression): Doc => {
 // Patterns
 // ============================================================================
 
-let printPattern = (pattern: Pattern): Doc => match (pattern) {
+let printPattern = (pat: Pattern): Doc => match (pat) {
+  case BindingPattern {kind, pattern}: concat(docs3(text(kind), text(' '), printPattern(pattern)))
   case IdentifierPattern {name}: text(name)
-  case RecordPattern {}: printRecordPattern(pattern as RecordPattern)
-  case TuplePattern {}: printTuplePattern(pattern as TuplePattern)
+  case RecordPattern {}: printRecordPattern(pat as RecordPattern)
+  case TuplePattern {}: printTuplePattern(pat as TuplePattern)
   case AsPattern {pattern, name}: {
     concat(docs3(printNode(pattern), text(' as '), text(name.name)))
   }
@@ -1844,6 +1845,7 @@ let printNode = (node: Node): Doc => match (node) {
   case DeclareFunction {}: printStatement(node as Statement)
   case SymbolDeclaration {}: printStatement(node as Statement)
   // Patterns
+  case BindingPattern {}: printPattern(node as Pattern)
   case IdentifierPattern {}: printPattern(node as Pattern)
   case RecordPattern {}: printPattern(node as Pattern)
   case TuplePattern {}: printPattern(node as Pattern)

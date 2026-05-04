@@ -86,6 +86,7 @@ export const NodeType = {
   PropertySignature: 'PropertySignature',
   TupleTypeAnnotation: 'TupleTypeAnnotation',
   InlineTupleTypeAnnotation: 'InlineTupleTypeAnnotation',
+  BindingPattern: 'BindingPattern',
   RecordPattern: 'RecordPattern',
   TuplePattern: 'TuplePattern',
   InlineTuplePattern: 'InlineTuplePattern',
@@ -365,6 +366,12 @@ export interface IndexExpression extends Node {
   extensionClassType?: ClassType;
 }
 
+export interface BindingPattern extends Node {
+  type: typeof NodeType.BindingPattern;
+  kind: 'let' | 'var';
+  pattern: Pattern;
+}
+
 export interface RecordPattern extends Node {
   type: typeof NodeType.RecordPattern;
   properties: BindingProperty[];
@@ -393,6 +400,7 @@ export interface AssignmentPattern extends Node {
 }
 
 export type Pattern =
+  | BindingPattern
   | Identifier
   | RecordPattern
   | TuplePattern

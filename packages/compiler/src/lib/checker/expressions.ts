@@ -644,8 +644,14 @@ export function checkMatchPattern(
     | BooleanLiteral
     | NullLiteral,
   discriminantType: Type,
+  kind: 'let' | 'var' = 'let',
 ) {
   switch (pattern.type) {
+    case NodeType.BindingPattern: {
+      const binding = pattern as any; // or import BindingPattern
+      checkMatchPattern(ctx, binding.pattern, discriminantType, binding.kind);
+      break;
+    }
     case NodeType.Identifier: {
       // Variable pattern: matches anything, binds variable
       // If name is '_', it's a wildcard (no binding)
@@ -705,17 +711,17 @@ export function checkMatchPattern(
             (pattern as any).inferredType = resolvedType;
           }
         }
-        ctx.declare(pattern.name, discriminantType, 'let', pattern);
+        ctx.declare(pattern.name, discriminantType, kind, pattern);
       }
       break;
     }
     case NodeType.AsPattern: {
       const asPattern = pattern as AsPattern;
-      checkMatchPattern(ctx, asPattern.pattern, discriminantType);
+      checkMatchPattern(ctx, asPattern.pattern, discriminantType, kind);
       // Use the narrowed type from the inner pattern if available
       const narrowedType =
         (asPattern.pattern as any).inferredType ?? discriminantType;
-      ctx.declare(asPattern.name.name, narrowedType, 'let', asPattern.name);
+      ctx.declare(asPattern.name.name, narrowedType, kind, asPattern.name);
       break;
     }
     case NodeType.NumberLiteral: {
@@ -783,7 +789,7 @@ export function checkMatchPattern(
         ctx.diagnostics.reportError(
           `'${className}' is not a class.`,
           DiagnosticCode.SymbolNotFound,
-          undefined /* TODO fix location */,
+          ctx.getLocation(pattern.loc),
         );
         return;
       }
@@ -908,7 +914,7 @@ export function checkMatchPattern(
         }
 
         // Recursively check pattern
-        checkMatchPattern(ctx, prop.value as any, propType);
+        checkMatchPattern(ctx, prop.value as any, propType, kind);
       }
       break;
     }
@@ -929,7 +935,7 @@ export function checkMatchPattern(
             continue;
           }
           const propType = recordType.properties.get(propName)!;
-          checkMatchPattern(ctx, prop.value, propType);
+          checkMatchPattern(ctx, prop.value, propType, kind);
         }
       } else if (discriminantType.kind === TypeKind.Class) {
         const classType = discriminantType as ClassType;
@@ -959,7 +965,7 @@ export function checkMatchPattern(
             );
             continue;
           }
-          checkMatchPattern(ctx, prop.value, propType);
+          checkMatchPattern(ctx, prop.value, propType, kind);
         }
       } else if (discriminantType.kind === TypeKind.Union) {
         const unionType = discriminantType as UnionType;
@@ -988,7 +994,7 @@ export function checkMatchPattern(
               (t) => (t as RecordType).properties.get(prop.name.name)!,
             );
             const propType = createUnionType(propTypes);
-            checkMatchPattern(ctx, prop.value, propType);
+            checkMatchPattern(ctx, prop.value, propType, kind);
           }
         }
       } else {
@@ -1037,7 +1043,12 @@ export function checkMatchPattern(
         for (let i = 0; i < tuplePattern.elements.length; i++) {
           const elemPattern = tuplePattern.elements[i];
           if (elemPattern && i < tupleType.elementTypes.length) {
-            checkMatchPattern(ctx, elemPattern, tupleType.elementTypes[i]);
+            checkMatchPattern(
+              ctx,
+              elemPattern,
+              tupleType.elementTypes[i],
+              kind,
+            );
           }
         }
       } else if (discriminantType.kind === TypeKind.Union) {
@@ -1094,7 +1105,7 @@ export function checkMatchPattern(
               elemTypes.length === 1
                 ? elemTypes[0]
                 : createUnionType(elemTypes);
-            checkMatchPattern(ctx, elemPattern, elemType);
+            checkMatchPattern(ctx, elemPattern, elemType, kind);
           }
         }
       } else if (discriminantType.kind === TypeKind.Array) {
@@ -1102,7 +1113,7 @@ export function checkMatchPattern(
         const arrayType = discriminantType as ArrayType;
         for (const elemPattern of tuplePattern.elements) {
           if (elemPattern) {
-            checkMatchPattern(ctx, elemPattern, arrayType.elementType);
+            checkMatchPattern(ctx, elemPattern, arrayType.elementType, kind);
           }
         }
       } else {
@@ -1119,18 +1130,18 @@ export function checkMatchPattern(
     case NodeType.LogicalPattern: {
       const logicalPattern = pattern as LogicalPattern;
       if (logicalPattern.operator === '&&') {
-        checkMatchPattern(ctx, logicalPattern.left, discriminantType);
-        checkMatchPattern(ctx, logicalPattern.right, discriminantType);
+        checkMatchPattern(ctx, logicalPattern.left, discriminantType, kind);
+        checkMatchPattern(ctx, logicalPattern.right, discriminantType, kind);
       } else {
         // OR Pattern
         ctx.enterScope();
-        checkMatchPattern(ctx, logicalPattern.left, discriminantType);
+        checkMatchPattern(ctx, logicalPattern.left, discriminantType, kind);
         const leftScope = ctx.scopes[ctx.scopes.length - 1];
         const leftVars = new Map(leftScope);
         ctx.exitScope();
 
         ctx.enterScope();
-        checkMatchPattern(ctx, logicalPattern.right, discriminantType);
+        checkMatchPattern(ctx, logicalPattern.right, discriminantType, kind);
         const rightScope = ctx.scopes[ctx.scopes.length - 1];
         const rightVars = new Map(rightScope);
         ctx.exitScope();
@@ -4468,6 +4479,8 @@ export function getPatternType(
     | NullLiteral,
 ): Type | null {
   switch (pattern.type) {
+    case NodeType.BindingPattern:
+      return getPatternType(ctx, (pattern as any).pattern);
     case NodeType.ClassPattern: {
       const classPattern = pattern as ClassPattern;
       if (
@@ -4510,6 +4523,10 @@ function subtractType(
   // Handle Wildcard
   if (pattern.type === NodeType.Identifier && pattern.name === '_') {
     return Types.Never;
+  }
+
+  if (pattern.type === NodeType.BindingPattern) {
+    return subtractType(ctx, type, (pattern as any).pattern);
   }
 
   // Helper: subtract a pattern type from sealed variants, handling transitive

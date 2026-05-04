@@ -68,7 +68,7 @@ import {
   ExportFromDeclaration, DeclareFunction, SymbolDeclaration,
   SymbolPropertyName,
   // Patterns
-  Pattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
+  Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern, LiteralPattern,
   // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
@@ -3583,6 +3583,9 @@ let checkVariableDeclaration = (
 
 let isRefutableDeclarationPattern = (pattern: Pattern): boolean => {
   match (pattern) {
+    case BindingPattern as bp: {
+      return isRefutableDeclarationPattern(bp.pattern);
+    }
     case IdentifierPattern: { return false; }
     case ClassPattern: { return true; }
     case LogicalPattern: { return true; }
@@ -3820,6 +3823,9 @@ let narrowTypeByPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): Type
  */
 let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
   match (pattern) {
+    case BindingPattern as bp: {
+      bindPattern(ctx, bp.pattern, t);
+    }
     case IdentifierPattern as pat: {
       let info = ctx.model.resolveDeclaration(pat);
       if (info != null) {
@@ -3954,7 +3960,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       let classType = ctx.resolveTypeName(clsName);
       if (classType == null) {
         ctx.error(
-          "Unknown class '" + clsName + "' in pattern.",
+          "'" + clsName + "' is not a class.",
           DiagnosticCode.SymbolNotFound,
           cp.loc
         );
@@ -7981,6 +7987,9 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
  */
 let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): void => {
   match (pattern) {
+    case BindingPattern as bp: {
+      checkPattern(ctx, bp.pattern, expectedType);
+    }
     case IdentifierPattern as pat: {
       if (pat.name != "_") {
         // Use the same binding mechanism as variable declarations.
@@ -7999,7 +8008,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       let classType = ctx.resolveTypeName(clsName);
       if (classType == null) {
         ctx.error(
-          "Unknown class '" + clsName + "' in pattern.",
+          "'" + clsName + "' is not a class.",
           DiagnosticCode.SymbolNotFound,
           cp.loc
         );

@@ -2427,6 +2427,12 @@ export function checkPattern(
       checkAssignmentPattern(ctx, pattern, type, kind, declaration);
       break;
 
+    case NodeType.BindingPattern: {
+      const binding = pattern as any; // Cast as any or import BindingPattern
+      checkPattern(ctx, binding.pattern, type, binding.kind, declaration);
+      break;
+    }
+
     case NodeType.ClassPattern:
     case NodeType.LogicalPattern:
     case NodeType.NumberLiteral:

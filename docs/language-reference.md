@@ -1912,7 +1912,7 @@ let result = match (x) {
 - **Identifiers**: Bind the matched value to a variable.
 
   ```zena
-  case x: x + 1
+  case let x: x + 1
   ```
 
 - **Wildcard**: `_` matches any value without binding.
@@ -1924,32 +1924,45 @@ let result = match (x) {
 - **Class Patterns**: Match class instances and destructure fields.
 
   ```zena
-  case Point { x: 0, y }: ... // Matches Point with x=0, binds y
+  case let Point { x: 0, y }: ... // Matches Point with x=0, binds y
   ```
 
 - **Record Patterns**: Match records and destructure fields.
 
   ```zena
-  case { a: 1, b }: ...
+  case let { a: 1, b }: ...
+  ```
+
+  *Note on explicit bindings*: Identifiers in object, record, and tuple patterns are treated as existing constants or variables to match against unless they are explicitly prefixed with a binding keyword (`let` or `var`).
+
+  ```zena
+  let b = 10;
+  match (record) {
+    // Shorthand field match: matches against the existing variable `b`
+    case { a: 1, b }: "matched"
+    
+    // Explicit binding: creates local variables `a` and `b`
+    case let { a, b }: "bound new vars" 
+  }
   ```
 
 - **Tuple Patterns**: Match tuples and destructure elements.
 
   ```zena
-  case (1, x): ...
+  case let (1, x): ...
   ```
 
 - **Logical Patterns**: Combine patterns using `|` (OR) and `&` (AND).
 
   ```zena
   case 1 | 2: ... // Matches 1 or 2
-  case Point { x } & { y }: ... // Matches Point and binds x and y
+  case let Point { x } & { y }: ... // Matches Point and binds x and y
   ```
 
 Patterns can be nested.
 
 ```zena
-case Point { x: 0, y: (1, z) }: ...
+case let Point { x: 0, y: (1, z) }: ...
 ```
 
 #### Guard Patterns
@@ -1960,9 +1973,9 @@ can reference variables bound in the pattern.
 
 ```zena
 match (x) {
-  case i if i > 10: "greater than 10"
-  case i if i < 0: "negative"
-    case _: "between 0 and 10"
+  case let i if i > 10: "greater than 10"
+  case let i if i < 0: "negative"
+  case _: "between 0 and 10"
 }
 ```
 
@@ -2332,8 +2345,8 @@ Match expressions on sealed class types must cover all variants:
 
 ```zena
 let area = match (s) {
-  case Circle { radius as r }: r * r * 3
-  case Rect { width as w, height as h }: w * h
+  case let Circle { radius as r }: r * r * 3
+  case let Rect { width as w, height as h }: w * h
 };
 ```
 
@@ -2772,11 +2785,7 @@ limitations:
     that match against extension classes on the same underlying type.
     ```zena
     match (arr) {
-      case A {}: ...
-    ```
-
-## 8. Modules & Exports
-
+      case let A {}: ...
 ### Records
 
 Records are immutable, structural types that hold a fixed set of named fields.

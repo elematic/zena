@@ -49,12 +49,34 @@ Pattern matching is a high-level syntax that desugars into a sequence of `is` ch
 
 ### 3.1 Syntax Proposal
 
+Pattern matching is fully implemented using the `match` keyword.
+
+### 3.2 Binding Modifiers vs Expression Matching
+
+A critical distinction in Zena's pattern syntax (similar to Swift and Dart 3) is that pattern paths do not implicitly bind variables unless prefixed with a binding modifier (`let` or `var`).
+
+- **Matching existing identifiers**: A bare identifier inside a pattern (or a bare shorthand `{ id }`) evaluates the surrounding scope's `id` and validates that the matched value is structurally equivalent to that identifier. It is an expression match.
+- **Binding new identifiers**: Adding `let` (e.g., `case let { id }`) changes the behavior from checking equivalence against an external `id`, to binding a new local `id`.
+
+```zena
+let userId = "admin";
+match (event) {
+  // Matches IF event.userId == "admin"
+  case { userId }: ... 
+
+  // Extracts event.userId into a local variable `userId`
+  case let { userId }: ...
+}
+```
+
+This ensures explicit and safe shadowing semantics without confusing implicit bindings.
+
 Zena uses `match` as an **expression**.
 
 ```zena
 let area = match (shape) {
-  case Circle { radius }: Math.PI * radius * radius
-  case Square { side }: side * side
+  case let Circle { radius }: Math.PI * radius * radius
+  case let Square { side }: side * side
   case _: 0
 };
 ```
@@ -91,14 +113,14 @@ Patterns can be categorized based on whether they are guaranteed to match or not
 
 - **Refutable Patterns (Fallible)**: These patterns _may_ fail to match.
   - Used in `match` cases, `if case`, and `catch` blocks.
-  - Example: `case Circle { r }` is refutable because the value might be a `Square`.
+  - Example: `case let Circle { r }` is refutable because the value might be a `Square`.
 
 #### Supported Patterns
 
 Zena aims to support a rich set of patterns similar to modern languages like Dart and Rust:
 
 1.  **Variable Pattern**: Matches any value and binds it to a variable.
-    - `case x:` (Irrefutable in isolation, but used in refutable contexts)
+    - `case let x:` (Irrefutable in isolation, but used in refutable contexts)
 
 2.  **Constant Pattern**: Matches a specific primitive value.
     - `case 10:`
@@ -106,12 +128,12 @@ Zena aims to support a rich set of patterns similar to modern languages like Dar
     - `case null:`
 
 3.  **Object Pattern**: Checks the type and destructures fields.
-    - `case Point { x, y }:` (Matches if instance of `Point`, then extracts `x` and `y`)
-    - `case { name: 'Alice' }:` (Matches record with specific field value)
+    - `case let Point { x, y }:` (Matches if instance of `Point`, then extracts `x` and `y`)
+    - `case let { name: 'Alice' }:` (Matches record with specific field value)
 
 4.  **List/Array Pattern**: Matches arrays/tuples by length and elements.
-    - `case [a, b]:` (Matches array of length 2)
-    - `case [head, ...tail]:` (Rest pattern)
+    - `case let [a, b]:` (Matches array of length 2)
+    - `case let [head, ...tail]:` (Rest pattern)
 
 5.  **Wildcard Pattern**: Matches anything but discards the value.
     - `case _:`
@@ -125,7 +147,7 @@ Zena aims to support a rich set of patterns similar to modern languages like Dar
     - `case >= 10 && <= 20:`
 
 8.  **Cast Pattern**: Checks type and casts.
-    - `case x as String:`
+    - `case let x as String:`
 
 ## 5. Syntax Discussion: `match` vs `switch`
 
@@ -206,11 +228,11 @@ let dispatch = (cb: Callback) => {
 - **Basic Matching**: Implemented (`match` expression, identifier patterns, literal patterns).
 - **Object Patterns**: Implemented for Classes and Records.
 - **Tuple Patterns**: Implemented for Tuples (immutable structs).
-- **`as` Patterns**: Implemented for renaming (`case Point { x } as p`).
+- **`as` Patterns**: Implemented for renaming (`case let Point { x } as p`).
 
 ### 8.2 Array & Sequence Matching
 
-Matching on arrays (e.g., `case [a, b]`) presents a challenge compared to Tuples.
+Matching on arrays (e.g., `case let [a, b]`) presents a challenge compared to Tuples.
 
 - **Tuples**: Are structs with fixed fields. `[a, b]` compiles to field access `t.0`, `t.1`. This is safe and fast.
 - **Arrays**: Are heap objects (`FixedArray` or `Array` class).
@@ -236,8 +258,8 @@ To support arbitrary boolean tests (like `case x if x > 10:`), Zena should imple
 
 ```zena
 match (val) {
-  case x if x > 10: ...
-  case Point { x, y } if x == y: ...
+  case let x if x > 10: ...
+  case let Point { x, y } if x == y: ...
 }
 ```
 
@@ -246,8 +268,8 @@ match (val) {
 Logical patterns allow combining patterns.
 
 - **OR (`|`)**: `case 1 | 2:` or `case 'a' | 'b':`. This is high priority for conciseness.
-- **AND (`&`)**: `case Point {x} & {y}`. Useful for checking multiple properties or combining with relational checks (if implemented).
+- **AND (`&`)**: `case let Point {x} & {y}`. Useful for checking multiple properties or combining with relational checks (if implemented).
 
 ### 9.3 Relational Patterns
 
-Patterns like `case > 10` are syntactic sugar. While nice, they can often be handled by Guards (`case x if x > 10`). Implementing Guards first provides the most flexibility.
+Patterns like `case > 10` are syntactic sugar. While nice, they can often be handled by Guards (`case let x if x > 10`). Implementing Guards first provides the most flexibility.

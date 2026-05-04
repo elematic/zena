@@ -13,6 +13,7 @@ import {
   TypeAnnotation,
   Identifier,
   IdentifierPattern,
+  BindingPattern,
   NumberLiteral,
   StringLiteral,
   BooleanLiteral,
@@ -431,7 +432,7 @@ export class Parser {
   
   #parseVariableDeclaration(kind: String, exported: boolean, startToken: Token): VariableDeclaration {
     // Parse pattern (for now just identifier)
-    let pattern = this.#parsePattern();
+    let pattern = this.#parsePattern(true);
     
     // Optional type annotation
     var typeAnnotation: TypeAnnotation | null = null;
@@ -498,10 +499,10 @@ export class Parser {
     // literal elements like `true` in `let (true, x) = ...` are handled.
     let pattern: Pattern = if (this.#check(TokenType.LParen)) {
       let parenToken = this.#advance();
-      let p: Pattern = this.#parseParenTuplePattern(parenToken, true);
+      let p: Pattern = this.#parseParenTuplePattern(parenToken, false, true);
       p
     } else {
-      let p: Pattern = this.#parsePattern();
+      let p: Pattern = this.#parsePattern(true);
       p
     };
     this.#consume(TokenType.Equals, "Expected '=' after pattern in let condition");
@@ -514,7 +515,7 @@ export class Parser {
     
     if (this.#match(TokenType.Let)) {
       // Could be for-in or C-style with let declaration
-      let pattern = this.#parsePattern();
+      let pattern = this.#parsePattern(true);
       
       if (this.#match(TokenType.In)) {
         // for-in loop
@@ -534,7 +535,7 @@ export class Parser {
     if (this.#match(TokenType.Var)) {
       // C-style for with var declaration
       let varStart = this.#previous();
-      let pattern = this.#parsePattern();
+      let pattern = this.#parsePattern(true);
       
       var typeAnnotation: TypeAnnotation | null = null;
       if (this.#match(TokenType.Colon)) {
@@ -701,6 +702,13 @@ export class Parser {
   #parsePrimaryPattern(): Node {
     let startToken = this.#peek();
     
+    // Binding pattern: let x or var y
+    if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
+      let kind = if (this.#previous().kind == TokenType.Let) 'let' else 'var';
+      let inner = this.#parsePattern(true);
+      return new BindingPattern(kind, inner, this.#makeLocation(startToken));
+    }
+    
     // Number literal pattern
     if (this.#match(TokenType.Number)) {
       let token = this.#previous();
@@ -728,7 +736,7 @@ export class Parser {
     
     // Record pattern: { a, b }
     if (this.#match(TokenType.LBrace)) {
-      return this.#parseRecordPattern(startToken, true);
+      return this.#parseRecordPattern(startToken, false, true);
     }
     
     // Tuple pattern: (a, b)
@@ -897,9 +905,16 @@ export class Parser {
   // Pattern Parsing
   // ==========================================================================
   
-  #parsePattern(): Pattern {
+  #parsePattern(isUnderLet: boolean = false): Pattern {
     let startToken = this.#peek();
     
+    // Binding pattern: let x or var y
+    if (!isUnderLet && (this.#match(TokenType.Let) || this.#match(TokenType.Var))) {
+      let kind = if (this.#previous().kind == TokenType.Let) 'let' else 'var';
+      let inner = this.#parsePattern(true);
+      return new BindingPattern(kind, inner, this.#makeLocation(startToken));
+    }
+
     // Literal patterns: parsed as LiteralPattern nodes so the checker can
     // report them as refutable in variable declarations.
     if (this.#match(TokenType.Number)) {
@@ -922,17 +937,17 @@ export class Parser {
     
     // Record pattern: { a, b }
     if (this.#match(TokenType.LBrace)) {
-      return this.#parseRecordPattern(startToken, false);
+      return this.#parseRecordPattern(startToken, isUnderLet, false);
     }
     
     // Tuple pattern: [a, b]
     if (this.#match(TokenType.LBracket)) {
-      return this.#parseTuplePattern(startToken);
+      return this.#parseTuplePattern(startToken, isUnderLet);
     }
     
     // Tuple pattern with parens: (a, b)
     if (this.#match(TokenType.LParen)) {
-      return this.#parseParenTuplePattern(startToken, false);
+      return this.#parseParenTuplePattern(startToken, isUnderLet, false);
     }
     
     // Identifier or class pattern: Identifier or ClassName { fields }
@@ -977,7 +992,7 @@ export class Parser {
     throw this.#error("Expected identifier");
   }
   
-  #parseRecordPattern(startToken: Token, matchContext: boolean): RecordPattern {
+  #parseRecordPattern(startToken: Token, isUnderLet: boolean, matchContext: boolean): RecordPattern {
     let properties = new Array<BindingProperty>(4);
     
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
@@ -991,7 +1006,7 @@ export class Parser {
           let m: Node = this.#parseMatchPattern();
           m
         } else {
-          let p: Node = this.#parsePattern();
+          let p: Node = this.#parsePattern(isUnderLet);
           p
         };
       } else if (this.#match(TokenType.As)) {
@@ -1069,7 +1084,7 @@ export class Parser {
     return new RecordPattern(bindingProps, this.#makeLocation(startToken));
   }
   
-  #parseTuplePattern(startToken: Token): TuplePattern {
+  #parseTuplePattern(startToken: Token, isUnderLet: boolean): TuplePattern {
     let elements = new Array<Node | null>(4);
     
     while (!this.#check(TokenType.RBracket) && !this.#isAtEnd()) {
@@ -1079,7 +1094,7 @@ export class Parser {
         continue;
       }
 
-      elements.push(this.#parsePattern());
+      elements.push(this.#parsePattern(isUnderLet));
 
       if (!this.#check(TokenType.RBracket)) {
         this.#consume(TokenType.Comma, "Expected ',' in tuple pattern");
@@ -1090,7 +1105,7 @@ export class Parser {
     return new TuplePattern(elements, this.#makeLocation(startToken));
   }
   
-  #parseParenTuplePattern(startToken: Token, matchContext: boolean): Pattern {
+  #parseParenTuplePattern(startToken: Token, isUnderLet: boolean, matchContext: boolean): Pattern {
     let elements = new Array<Node | null>(4);
 
     while (!this.#check(TokenType.RParen) && !this.#isAtEnd()) {
@@ -1101,7 +1116,7 @@ export class Parser {
       }
 
       let elem: Node = if (matchContext) { this.#parseMatchPattern() } else {
-        let p: Node = this.#parsePattern();
+        let p: Node = this.#parsePattern(isUnderLet);
         p
       };
 
@@ -1109,7 +1124,7 @@ export class Parser {
       if (!matchContext && this.#check(TokenType.Pipe)) {
         var orLeft: Node = elem;
         while (this.#match(TokenType.Pipe)) {
-          let orRight: Node = this.#parsePattern();
+          let orRight: Node = this.#parsePattern(isUnderLet);
           orLeft = new LogicalPattern('||', orLeft, orRight, this.#makeLocation(startToken));
         }
         this.#consume(TokenType.RParen, "Expected ')' after pattern");
@@ -1911,7 +1926,7 @@ export class Parser {
     // Destructured tuple parameter: (a, b): Type or (a, b)
     if (this.#check(TokenType.LParen)) {
       let parenToken = this.#advance(); // consume '('
-      let pattern = this.#parseParenTuplePattern(parenToken, false);
+      let pattern = this.#parseParenTuplePattern(parenToken, false, false);
       
       // Type annotation (optional - contextual typing)
       var typeAnnotation2: TypeAnnotation | null = null;

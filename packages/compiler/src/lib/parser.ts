@@ -666,7 +666,7 @@ export class Parser {
 
     const kind = kindToken.type === TokenType.Let ? 'let' : 'var';
 
-    const pattern = this.#parsePattern();
+    const pattern = this.#parsePattern(true);
 
     let typeAnnotation: TypeAnnotation | undefined;
     if (this.#match(TokenType.Colon)) {
@@ -691,14 +691,25 @@ export class Parser {
     };
   }
 
-  #parsePattern(): Pattern {
-    return this.#parseLogicalOrPattern();
+  #parsePattern(isUnderLet: boolean = false): Pattern {
+    if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
+      const kindToken = this.#previous();
+      const kind = kindToken.value as 'let' | 'var';
+      const pattern = this.#parseLogicalOrPattern(true);
+      return {
+        type: NodeType.BindingPattern,
+        kind,
+        pattern,
+        loc: this.#loc(kindToken, pattern),
+      };
+    }
+    return this.#parseLogicalOrPattern(isUnderLet);
   }
 
-  #parseLogicalOrPattern(): Pattern {
-    let left = this.#parseLogicalAndPattern();
+  #parseLogicalOrPattern(isUnderLet: boolean): Pattern {
+    let left = this.#parseLogicalAndPattern(isUnderLet);
     while (this.#match(TokenType.Pipe)) {
-      const right = this.#parseLogicalAndPattern();
+      const right = this.#parseLogicalAndPattern(isUnderLet);
       left = {
         type: NodeType.LogicalPattern,
         operator: '||',
@@ -710,10 +721,10 @@ export class Parser {
     return left;
   }
 
-  #parseLogicalAndPattern(): Pattern {
-    let left = this.#parseAsPattern();
+  #parseLogicalAndPattern(isUnderLet: boolean): Pattern {
+    let left = this.#parseAsPattern(isUnderLet);
     while (this.#match(TokenType.Ampersand)) {
-      const right = this.#parseAsPattern();
+      const right = this.#parseAsPattern(isUnderLet);
       left = {
         type: NodeType.LogicalPattern,
         operator: '&&',
@@ -725,8 +736,8 @@ export class Parser {
     return left;
   }
 
-  #parseAsPattern(): Pattern {
-    const pattern = this.#parsePrimaryPattern();
+  #parseAsPattern(isUnderLet: boolean): Pattern {
+    const pattern = this.#parsePrimaryPattern(isUnderLet);
     if (this.#match(TokenType.As)) {
       const name = this.#parseIdentifier();
       return {
@@ -739,7 +750,7 @@ export class Parser {
     return pattern;
   }
 
-  #parsePrimaryPattern(): Pattern {
+  #parsePrimaryPattern(isUnderLet: boolean): Pattern {
     let pattern: Pattern;
     if (this.#match(TokenType.Number)) {
       const token = this.#previous();
@@ -773,9 +784,9 @@ export class Parser {
       const token = this.#previous();
       pattern = {type: NodeType.NullLiteral, loc: this.#locFromToken(token)};
     } else if (this.#match(TokenType.LBrace)) {
-      pattern = this.#parseRecordPattern();
+      pattern = this.#parseRecordPattern(isUnderLet);
     } else if (this.#match(TokenType.LParen)) {
-      pattern = this.#parseTupleOrInlineTuplePattern();
+      pattern = this.#parseTupleOrInlineTuplePattern(isUnderLet);
     } else if (this.#isIdentifier(this.#peek().type)) {
       const identifier = this.#parseIdentifier();
 
@@ -801,31 +812,21 @@ export class Parser {
         }
         pattern = expr;
       } else {
-        pattern = identifier;
+        if (isUnderLet || identifier.name === '_') {
+          pattern = identifier;
+        } else {
+          pattern = {
+            type: NodeType.ClassPattern,
+            name: identifier,
+            properties: [],
+            loc: identifier.loc,
+          };
+        }
       }
     } else {
       throw new Error(`Expected pattern, got ${this.#peek().type}`);
     }
 
-    return pattern;
-  }
-
-  #convertIdentifierToClassPattern(pattern: Pattern): Pattern {
-    if (pattern.type === NodeType.Identifier) {
-      if (pattern.name === '_') return pattern;
-      return {
-        type: NodeType.ClassPattern,
-        name: pattern,
-        properties: [],
-        loc: pattern.loc,
-      };
-    }
-    if (pattern.type === NodeType.AsPattern) {
-      return {
-        ...pattern,
-        pattern: this.#convertIdentifierToClassPattern(pattern.pattern),
-      };
-    }
     return pattern;
   }
 
@@ -905,7 +906,7 @@ export class Parser {
     return {pattern, typeAnnotation};
   }
 
-  #parseRecordPattern(): RecordPattern {
+  #parseRecordPattern(isUnderLet: boolean = false): RecordPattern {
     const properties: BindingProperty[] = [];
     if (!this.#check(TokenType.RBrace)) {
       do {
@@ -915,8 +916,7 @@ export class Parser {
         if (this.#match(TokenType.As)) {
           value = this.#parseIdentifier();
         } else if (this.#match(TokenType.Colon)) {
-          value = this.#parsePattern();
-          value = this.#convertIdentifierToClassPattern(value);
+          value = this.#parsePattern(isUnderLet);
         }
 
         if (this.#match(TokenType.Equals)) {
@@ -948,7 +948,7 @@ export class Parser {
    * Produces TuplePattern for boxed tuples; the checker will convert
    * to InlineTuplePattern when the value type is an inline tuple.
    */
-  #parseTupleOrInlineTuplePattern(): Pattern {
+  #parseTupleOrInlineTuplePattern(isUnderLet: boolean = false): Pattern {
     const startToken = this.#previous(); // LParen was already consumed
     const elements: (Pattern | null)[] = [];
 
@@ -960,7 +960,7 @@ export class Parser {
         if (this.#check(TokenType.Comma)) {
           elements.push(null);
         } else {
-          elements.push(this.#parsePattern());
+          elements.push(this.#parsePattern(isUnderLet));
         }
       } while (this.#match(TokenType.Comma));
     }
@@ -1249,7 +1249,7 @@ export class Parser {
           };
         } else if (this.#check(TokenType.LParen)) {
           this.#advance(); // consume '('
-          const tuplePattern = this.#parseTupleOrInlineTuplePattern();
+          const tuplePattern = this.#parseTupleOrInlineTuplePattern(true);
           if (tuplePattern.type !== NodeType.TuplePattern) {
             throw new Error(
               'Expected tuple destructuring pattern with at least 2 elements.',
@@ -2137,7 +2137,7 @@ export class Parser {
   }
 
   #parseMatchPattern(): Pattern {
-    return this.#parsePattern();
+    return this.#parsePattern(true);
   }
 
   #parseIfExpression(): IfExpression {
@@ -2507,7 +2507,7 @@ export class Parser {
     const startToken = this.#previous(); // 'let' token
 
     // Parse the pattern
-    const pattern = this.#parsePattern();
+    const pattern = this.#parsePattern(true);
 
     // Expect '=' followed by expression
     this.#consume(
@@ -2533,7 +2533,7 @@ export class Parser {
     if (this.#match(TokenType.Let)) {
       // Could be for-in or C-style for with let declaration
       // Parse as pattern first, then check for 'in'
-      const pattern = this.#parsePattern();
+      const pattern = this.#parsePattern(true);
 
       if (this.#match(TokenType.In)) {
         // It's a for-in loop
