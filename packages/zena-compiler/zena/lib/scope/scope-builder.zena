@@ -1,0 +1,1132 @@
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { Iterator } from 'zena:iterator';
+import {
+  Node, Module, SourceLocation,
+  // Sealed base types
+  Expression, Statement, Pattern, TypeAnnotation,
+  // Expressions
+  Identifier, NumberLiteral, StringLiteral, BooleanLiteral,
+  NullLiteral, TemplateLiteral, TaggedTemplateExpression, BinaryExpression,
+  UnaryExpression, AssignmentExpression, AsExpression, IsExpression,
+  RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression,
+  CallExpression, MemberExpression, IndexExpression, ThisExpression,
+  SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
+  TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression,
+  // Statements
+  VariableDeclaration, ExpressionStatement, BlockStatement,
+  ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
+  WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
+  InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
+  ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration,
+  DeclareFunction, SymbolDeclaration,
+  // Patterns
+  BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
+  ClassPattern, LogicalPattern, AssignmentPattern, LiteralPattern,
+  // Type annotations
+  NamedTypeAnnotation, UnionTypeAnnotation, FunctionTypeAnnotation,
+  RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation,
+  // Helper types
+  TypeParameter, Parameter, MethodDefinition, AccessorDeclaration,
+  FieldDefinition, FieldInitializer, MatchCase, PropertyAssignment,
+  SpreadElement, LetPatternCondition, SetterInfo, SuperInitializer,
+  CaseClassParam, SealedVariant, PropertySignature, MethodSignature,
+  AccessorSignature, CatchClause
+} from '../ast.zena';
+import {Symbol} from './symbol.zena';
+import {Scope, ScopeKind} from './scope.zena';
+
+
+/**
+ * The export catalog for a module.
+ *
+ * Populated during name resolution by scanning exported declarations.
+ * Used by importing modules to wire up cross-module references.
+ *
+ * Separate maps for value and type exports mirror the scope structure.
+ */
+export type ModuleExports = HashMap<String, Symbol>;
+
+/**
+ * A name that could not be resolved during scope building.
+ *
+ * Since built-in types are pre-seeded and imports are declared from
+ * their specifiers, an unresolved name is a genuine error: a typo,
+ * a missing import, or a reference to a name that doesn't exist.
+ */
+export class UnresolvedName(
+  name: String,
+  node: Node
+)
+
+
+/**
+ * Maps nodes to their resolved symbols. Keyed by source offset for efficient 
+ * position-based lookup (useful for LSP jump-to-definition).
+ *
+ * To follow through imports: if `getByNode(node).declaration` is an
+ * `ImportSpecifier`, resolve the imported module's exports to find the
+ * original declaration.
+ */
+export class SymbolMap {
+  #byOffset = new HashMap<i32, Symbol>();
+
+  /** Record a resolved reference or declaration. */
+  record(node: Node, info: Symbol): void {
+    if (node.loc != null) {
+      let loc = node.loc as SourceLocation;
+      this.#byOffset[loc.start] = info;
+    }
+  }
+
+  /**
+   * Look up the symbol a node refers to. Returns null if unresolved.
+   */
+  getByNode(node: Node): Symbol | null {
+    if (node.loc == null) {
+      return null;
+    }
+    let loc = node.loc as SourceLocation;
+    return if (let (true, info) = this.#byOffset.get(loc.start)) {
+      info
+    } else {
+      null
+    };
+  }
+
+  /**
+   * Look up by source offset (0-based). For LSP position-based queries.
+   */
+  getByOffset(offset: i32): Symbol | null {
+    return if (let (true, info) = this.#byOffset.get(offset)) {
+      info
+    } else {
+      null
+    };
+  }
+}
+
+/**
+ * The result of scope building for a single module.
+ */
+export class ScopeResult(
+  /**
+   * The module's root scope (contains all top-level declarations).
+   */
+  rootScope: Scope,
+
+  /**
+   * Exported symbols from this module.
+   */
+  exports: ModuleExports,
+
+  /**
+   * Value names that couldn't be resolved.
+   * Each entry is an error: missing import or undeclared name.
+   */
+  unresolvedNames: Array<UnresolvedName>,
+
+  /**
+   * All successfully resolved references and declarations in this module.
+   * Maps nodes to their symbols.
+   */
+  symbols: SymbolMap,
+
+  /**
+   * Names that were declared twice in the same scope.
+   * Each entry is an error: same-scope redeclaration.
+   */
+  duplicateDeclarations: Array<UnresolvedName>
+)
+
+/**
+ * Builds the scope tree and export catalog for a single module.
+ *
+ * Pre-seeds built-in primitive types (i32, boolean, etc.), then walks
+ * the AST to declare names and resolve references. This is a file-local
+ * operation: cross-module import wiring happens separately.
+ *
+ * Usage:
+ *   let builder = new ScopeBuilder(modulePath);
+ *   let result = builder.build(ast);
+ */
+export class ScopeBuilder {
+  #modulePath: String;
+  #exports = new HashMap<String, Symbol>();
+  var #current: Scope;
+  
+  /**
+   * Unresolved identifiers found during the walk.
+   * These may be resolved later when cross-module imports are wired up.
+   */
+  #unresolvedNames = new Array<UnresolvedName>();
+  #symbols = new SymbolMap();
+  #duplicateDeclarations = new Array<UnresolvedName>();
+
+  new(modulePath: String, preludeScope: Scope | null = null)
+    : #modulePath = modulePath,
+      #current = new Scope(ScopeKind.Module, preludeScope);
+
+  /**
+   * Build scopes for a module AST.
+   * Returns the result containing the root scope, exports, and unresolved names.
+   */
+  build(ast: Node): ScopeResult {
+    this.#declareBuiltins();
+    match (ast) {
+      case Module {body}: {
+        this.#processStatements(body);
+      }
+      case _: {}
+    }
+    return new ScopeResult(
+      this.#current,
+      this.#exports,
+      this.#unresolvedNames,
+      this.#symbols,
+      this.#duplicateDeclarations
+    );
+  }
+
+  /**
+   * Seed the root scope with built-in primitive types.
+   * Creates a parent "builtins" scope so user declarations can shadow them.
+   */
+  #declareBuiltins(): void {
+    // TODO: This is duplicated with the checker's built-in and intrinsics
+    // seeding. We should unify this into a single shared prelude scope that
+    // both the ScopeBuilder and Checker can use as a parent for all modules.
+    let builtins = new Scope(ScopeKind.Module, this.#current.parent);
+    builtins.declare("i32", false, null, "");
+    builtins.declare("u32", false, null, "");
+    builtins.declare("i64", false, null, "");
+    builtins.declare("u64", false, null, "");
+    builtins.declare("f32", false, null, "");
+    builtins.declare("f64", false, null, "");
+    builtins.declare("boolean", false, null, "");
+    builtins.declare("void", false, null, "");
+    builtins.declare("never", false, null, "");
+    builtins.declare("null", false, null, "");
+
+    // Re-parent the module scope onto the builtins scope.
+    this.#current = new Scope(ScopeKind.Module, builtins);
+  }
+
+  /**
+   * Process a list of statements, declaring names into the current scope.
+   *
+   * Two-pass: first pre-declares types and annotated functions (enabling
+   * forward references), then processes all statements fully.
+   */
+  #processStatements(stmts: Array<Statement>): void {
+    // First pass: pre-declare classes, interfaces, enums, type aliases,
+    // and annotated functions (enables mutual recursion).
+    var i = 0;
+    while (i < stmts.length) {
+      this.#predeclare(stmts[i]);
+      i += 1;
+    }
+
+    // Second pass: process all statements fully.
+    i = 0;
+    while (i < stmts.length) {
+      this.#processStatement(stmts[i]);
+      i += 1;
+    }
+  }
+
+  /**
+   * Pre-declare type names and annotated functions.
+   * This allows forward references within the same scope.
+   */
+  #predeclare(stmt: Statement): void {
+    match (stmt) {
+      case ClassDeclaration {name, exported, sealedVariants}: {
+        // Classes go in BOTH namespaces.
+        this.#current.declare(name.name, false, stmt, this.#modulePath);
+        this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
+        if (exported) {
+          let info = new Symbol(stmt, this.#modulePath);
+          this.#exports[name.name] = info;
+        }
+        // Export sealed variant names so they can be imported individually.
+        if (sealedVariants != null) {
+          let svs = sealedVariants as Array<SealedVariant>;
+          var svi = 0;
+          while (svi < svs.length) {
+            let sv = svs[svi];
+            let svName = sv.name.name;
+            this.#current.declare(svName, false, sv, this.#modulePath);
+            this.#symbols.record(sv, this.#current.getLocal(svName) as Symbol);
+            if (exported) {
+              let svInfo = new Symbol(sv, this.#modulePath);
+              this.#exports[svName] = svInfo;
+            }
+            svi += 1;
+          }
+        }
+      }
+      case InterfaceDeclaration {name, exported}: {
+        this.#current.declare(name.name, false, stmt, this.#modulePath);
+        this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
+        if (exported) {
+          let info = new Symbol(stmt, this.#modulePath);
+          this.#exports[name.name] = info;
+        }
+      }
+      case EnumDeclaration {name, exported}: {
+        this.#current.declare(name.name, false, stmt, this.#modulePath);
+        this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
+        if (exported) {
+          let info = new Symbol(stmt, this.#modulePath);
+          this.#exports[name.name] = info;
+        }
+      }
+      case MixinDeclaration {name, exported}: {
+        this.#current.declare(name.name, false, stmt, this.#modulePath);
+        this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
+        if (exported) {
+          let info = new Symbol(stmt, this.#modulePath);
+          this.#exports[name.name] = info;
+        }
+      }
+      case TypeAliasDeclaration {name, exported}: {
+        let ok = this.#current.declare(name.name, false, stmt, this.#modulePath);
+        if (!ok) {
+          this.#duplicateDeclarations.push(new UnresolvedName(name.name, stmt));
+        }
+        this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
+        if (exported) {
+          let info = new Symbol(stmt, this.#modulePath);
+          this.#exports[name.name] = info;
+        }
+      }
+      case VariableDeclaration {kind, pattern, init, exported}: {
+        // Pre-declare all function bindings for forward references / mutual recursion.
+        match (pattern) {
+          case IdentifierPattern {name} as pat: {
+            match (init) {
+              case FunctionExpression: {
+                this.#current.declare(name, kind == "var", pat, this.#modulePath);
+                this.#symbols.record(pat, this.#current.getLocal(name) as Symbol);
+                if (exported) {
+                  this.#exports[name] = new Symbol(pat, this.#modulePath, kind == "var");
+                }
+              }
+              case _: {}
+            }
+          }
+          case _: {}
+        }
+      }
+      case DeclareFunction {name, exported}: {
+        this.#current.declare(name.name, false, stmt, this.#modulePath);
+        this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
+        if (exported) {
+          this.#exports[name.name] = new Symbol(stmt, this.#modulePath);
+        }
+      }
+      case SymbolDeclaration {name, exported}: {
+        // TODO: declare() then record() is such a common pattern that we
+        // should probably unify it into a helper method like
+        // `declareAndRecord(name, stmt)`.
+        this.#current.declare(name.name, false, stmt, this.#modulePath);
+        this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
+        if (exported) {
+          this.#exports[name.name] = new Symbol(stmt, this.#modulePath);
+        }
+      }
+      case _: {}
+    }
+  }
+
+  /** Process a single statement, creating nested scopes as needed. */
+  #processStatement(stmt: Statement): void {
+    match (stmt) {
+      case VariableDeclaration {kind, pattern, typeAnnotation, init, exported}: {
+        // Process the initializer first (before declaring the name,
+        // so the name isn't visible in its own initializer).
+        this.#processExpression(init);
+
+        // Process the type annotation for type reference recording.
+        if (typeAnnotation != null) {
+          this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+        }
+
+        // Declare the variable name(s).
+        match (pattern) {
+          case IdentifierPattern {name} as pat: {
+            // May already be declared by predeclare (annotated functions).
+            if (!this.#current.has(name)) {
+              this.#current.declare(name, kind == "var", pat, this.#modulePath);
+              this.#symbols.record(pat, this.#current.getLocal(name) as Symbol);
+              if (exported) {
+                let info = new Symbol(pat, this.#modulePath, kind == "var");
+                this.#exports[name] = info;
+              }
+            }
+          }
+          case _: {
+            this.#declarePattern(pattern, kind, stmt);
+          }
+        }
+      }
+      case ExpressionStatement {expression}: {
+        this.#processExpression(expression);
+      }
+      case BlockStatement {body}: {
+        this.#enterScope(ScopeKind.Block);
+        this.#processStatements(body);
+        this.#exitScope();
+      }
+      case IfStatement {test, consequent, alternate}: {
+        match (test) {
+          case LetPatternCondition {pattern, init}: {
+            this.#processExpression(init);
+            this.#enterScope(ScopeKind.Block);
+            this.#declarePattern(pattern, "let", test as LetPatternCondition);
+            this.#processStatement(consequent);
+            this.#exitScope();
+            if (alternate != null) {
+              this.#enterScope(ScopeKind.Block);
+              this.#processStatement(alternate as Statement);
+              this.#exitScope();
+            }
+          }
+          case _: {
+            this.#processNode(test);
+            this.#processStatement(consequent);
+            if (alternate != null) {
+              this.#processStatement(alternate as Statement);
+            }
+          }
+        }
+      }
+      case WhileStatement {test, body}: {
+        match (test) {
+          case LetPatternCondition {pattern, init}: {
+            this.#processExpression(init);
+            this.#enterScope(ScopeKind.Block);
+            this.#declarePattern(pattern, "let", test as LetPatternCondition);
+            this.#processStatement(body);
+            this.#exitScope();
+          }
+          case _: {
+            this.#processNode(test);
+            this.#processStatement(body);
+          }
+        }
+      }
+      case ForStatement {init, test, update, body}: {
+        this.#enterScope(ScopeKind.Block);
+        if (init != null) { this.#processNode(init as Node); }
+        if (test != null) { this.#processExpression(test as Expression); }
+        if (update != null) { this.#processExpression(update as Expression); }
+        this.#processStatement(body);
+        this.#exitScope();
+      }
+      case ForInStatement {pattern, iterable, body}: {
+        this.#processExpression(iterable);
+        this.#enterScope(ScopeKind.Block);
+        this.#declarePattern(pattern, "let", stmt);
+        this.#processStatement(body);
+        this.#exitScope();
+      }
+      case ReturnStatement {argument}: {
+        if (argument != null) {
+          this.#processExpression(argument as Expression);
+        }
+      }
+      case ClassDeclaration {name, typeParameters, caseParams, superClass, mixins, implementsList, body, sealedVariants, onType}: {
+        // Class body gets its own scope for `this`, type params, members.
+        this.#enterScope(ScopeKind.Class);
+        if (typeParameters != null) {
+          let tps = typeParameters as Array<TypeParameter>;
+          this.#declareTypeParameters(tps);
+        }
+        if (onType != null) {
+          this.#processTypeAnnotation(onType as TypeAnnotation);
+        }
+        // Process superclass and interface type annotations.
+        if (superClass != null) {
+          this.#processTypeAnnotation(superClass as TypeAnnotation);
+        }
+        if (mixins != null) {
+          let ms = mixins as Array<TypeAnnotation>;
+          var mi = 0;
+          while (mi < ms.length) {
+            this.#processTypeAnnotation(ms[mi]);
+            mi += 1;
+          }
+        }
+        if (implementsList != null) {
+          let impls = implementsList as Array<TypeAnnotation>;
+          var ii = 0;
+          while (ii < impls.length) {
+            this.#processTypeAnnotation(impls[ii]);
+            ii += 1;
+          }
+        }
+        // Process case class parameter type annotations.
+        if (caseParams != null) {
+          let cps = caseParams as Array<CaseClassParam>;
+          var ci = 0;
+          while (ci < cps.length) {
+            this.#processTypeAnnotation(cps[ci].typeAnnotation);
+            ci += 1;
+          }
+        }
+        // Process sealed variant parameter type annotations.
+        if (sealedVariants != null) {
+          let svs = sealedVariants as Array<SealedVariant>;
+          var si = 0;
+          while (si < svs.length) {
+            if (svs[si].params != null) {
+              let vparams = svs[si].params as Array<CaseClassParam>;
+              var vi = 0;
+              while (vi < vparams.length) {
+                this.#processTypeAnnotation(vparams[vi].typeAnnotation);
+                vi += 1;
+              }
+            }
+            si += 1;
+          }
+        }
+        this.#processClassBody(body);
+        this.#exitScope();
+      }
+      case InterfaceDeclaration {name, typeParameters, extendsList, body}: {
+        this.#enterScope(ScopeKind.Class);
+        if (typeParameters != null) {
+          let tps = typeParameters as Array<TypeParameter>;
+          this.#declareTypeParameters(tps);
+        }
+        if (extendsList != null) {
+          let exts = extendsList as Array<TypeAnnotation>;
+          var ei = 0;
+          while (ei < exts.length) {
+            this.#processTypeAnnotation(exts[ei]);
+            ei += 1;
+          }
+        }
+        // Process interface body for method/property type annotations.
+        this.#processInterfaceBody(body);
+        this.#exitScope();
+      }
+      case MixinDeclaration {name, typeParameters, mixins, body}: {
+        this.#enterScope(ScopeKind.Class);
+        if (typeParameters != null) {
+          let tps = typeParameters as Array<TypeParameter>;
+          this.#declareTypeParameters(tps);
+        }
+        // Traverse `with` clause so mixin names are linked in the ReferenceMap.
+        if (mixins != null) {
+          for (let mixin in mixins) {
+            this.#processTypeAnnotation(mixin);
+          }
+        }
+        this.#processClassBody(body);
+        this.#exitScope();
+      }
+      case ImportDeclaration {imports}: {
+        // Declare imported names into the current scope.
+        // The actual bindings come from the imported module's exports.
+        var j = 0;
+        while (j < imports.length) {
+          let spec = imports[j];
+          let localName = spec.local.name;
+          // Imports go in both namespaces (we don't know yet if it's
+          // a type or value — that's resolved during import wiring).
+          this.#current.declare(localName, false, spec, this.#modulePath);
+          this.#symbols.record(spec, this.#current.getLocal(localName) as Symbol);
+          j = j + 1;
+        }
+      }
+      case BreakStatement: {}
+      case ContinueStatement: {}
+      case EnumDeclaration: {}
+      case TypeAliasDeclaration {typeParameters, typeAnnotation}: {
+        this.#enterScope(ScopeKind.Block);
+        if (typeParameters != null) {
+          let tps = typeParameters as Array<TypeParameter>;
+          this.#declareTypeParameters(tps);
+        }
+        this.#processTypeAnnotation(typeAnnotation);
+        this.#exitScope();
+      }
+      case ExportAllDeclaration: {}
+      case ExportFromDeclaration: {}
+      case DeclareFunction {typeParameters, params, returnType}: {
+        this.#enterScope(ScopeKind.Function);
+        if (typeParameters != null) {
+          let tps = typeParameters as Array<TypeParameter>;
+          this.#declareTypeParameters(tps);
+        }
+        for (let param in params) {
+          if (param.typeAnnotation != null) {
+            this.#processTypeAnnotation(param.typeAnnotation);
+          }
+        }
+        this.#processTypeAnnotation(returnType);
+        this.#exitScope();
+      }
+      case SymbolDeclaration: {}
+    }
+  }
+
+  /**
+   * Process an expression, recording identifier references.
+   */
+  #processExpression(expr: Expression): void {
+    match (expr) {
+      case Identifier {name}: {
+        let info = this.#current.resolve(name);
+        if (info == null) {
+          this.#unresolvedNames.push(new UnresolvedName(name, expr));
+        } else {
+          this.#symbols.record(expr, info);
+        }
+      }
+      case FunctionExpression {typeParameters, params, returnType, body}: {
+        this.#enterScope(ScopeKind.Function);
+        if (typeParameters != null) {
+          let tps = typeParameters as Array<TypeParameter>;
+          this.#declareTypeParameters(tps);
+        }
+        var k = 0;
+        while (k < params.length) {
+          this.#declareParameter(params[k]);
+          if (params[k].typeAnnotation != null) {
+            this.#processTypeAnnotation(params[k].typeAnnotation as TypeAnnotation);
+          }
+          k = k + 1;
+        }
+        if (returnType != null) {
+          this.#processTypeAnnotation(returnType as TypeAnnotation);
+        }
+        this.#processNode(body);
+        this.#exitScope();
+      }
+      case BinaryExpression {left, right}: {
+        this.#processExpression(left);
+        this.#processExpression(right);
+      }
+      case UnaryExpression {argument}: {
+        this.#processExpression(argument);
+      }
+      case AssignmentExpression {left, value}: {
+        this.#processExpression(left);
+        this.#processExpression(value);
+      }
+      case CallExpression {callee, args, typeArguments}: {
+        this.#processExpression(callee);
+        if (typeArguments != null) {
+          let tas = typeArguments as Array<TypeAnnotation>;
+          var ta = 0;
+          while (ta < tas.length) {
+            this.#processTypeAnnotation(tas[ta]);
+            ta += 1;
+          }
+        }
+        var a = 0;
+        while (a < args.length) {
+          this.#processExpression(args[a]);
+          a = a + 1;
+        }
+      }
+      case NewExpression {callee, typeArguments, args}: {
+        let info = this.#current.resolve(callee.name);
+        if (info == null) {
+          this.#unresolvedNames.push(new UnresolvedName(callee.name, callee));
+        } else {
+          this.#symbols.record(callee, info);
+        }
+        if (typeArguments != null) {
+          let tas = typeArguments as Array<TypeAnnotation>;
+          var ta = 0;
+          while (ta < tas.length) {
+            this.#processTypeAnnotation(tas[ta]);
+            ta += 1;
+          }
+        }
+        var a = 0;
+        while (a < args.length) {
+          this.#processExpression(args[a]);
+          a = a + 1;
+        }
+      }
+      case MemberExpression {object}: {
+        this.#processExpression(object);
+        // property is resolved against the object's type during checking.
+      }
+      case IndexExpression {object, index}: {
+        this.#processExpression(object);
+        this.#processExpression(index);
+      }
+      case ArrayLiteral {elements}: {
+        var a = 0;
+        while (a < elements.length) {
+          this.#processExpression(elements[a]);
+          a = a + 1;
+        }
+      }
+      case RecordLiteral {properties}: {
+        var a = 0;
+        while (a < properties.length) {
+          this.#processRecordProperty(properties[a]);
+          a = a + 1;
+        }
+      }
+      case TupleLiteral {elements}: {
+        var a = 0;
+        while (a < elements.length) {
+          this.#processExpression(elements[a]);
+          a = a + 1;
+        }
+      }
+      case MapLiteral {entries}: {
+        var a = 0;
+        while (a < entries.length) {
+          let entry = entries[a];
+          this.#processExpression(entry.key);
+          this.#processExpression(entry.value);
+          a = a + 1;
+        }
+      }
+      case TemplateLiteral {expressions}: {
+        var a = 0;
+        while (a < expressions.length) {
+          this.#processExpression(expressions[a]);
+          a = a + 1;
+        }
+      }
+      case TaggedTemplateExpression {tag, quasi}: {
+        this.#processExpression(tag);
+        this.#processExpression(quasi);
+      }
+      case AsExpression {expression, typeAnnotation}: {
+        this.#processExpression(expression);
+        this.#processTypeAnnotation(typeAnnotation);
+      }
+      case IsExpression {expression, typeAnnotation}: {
+        this.#processExpression(expression);
+        this.#processTypeAnnotation(typeAnnotation);
+      }
+      case MatchExpression {discriminant, cases}: {
+        this.#processExpression(discriminant);
+        var a = 0;
+        while (a < cases.length) {
+          this.#processMatchCase(cases[a]);
+          a = a + 1;
+        }
+      }
+      case IfExpression {test, consequent, alternate}: {
+        match (test) {
+          case LetPatternCondition {pattern, init}: {
+            this.#processExpression(init);
+            this.#enterScope(ScopeKind.Block);
+            this.#declarePattern(pattern, "let", test as LetPatternCondition);
+            this.#processNode(consequent);
+            this.#exitScope();
+            if (alternate != null) {
+              this.#enterScope(ScopeKind.Block);
+              this.#processNode(alternate as Node);
+              this.#exitScope();
+            }
+          }
+          case _: {
+            this.#processNode(test);
+            this.#processNode(consequent);
+            if (alternate != null) { this.#processNode(alternate); }
+          }
+        }
+      }
+      case ThrowExpression {argument}: {
+        this.#processExpression(argument);
+      }
+      case TryExpression {body, handler, finalizer}: {
+        this.#processNode(body);
+        if (handler != null) {
+          let clause = handler as CatchClause;
+          this.#enterScope(ScopeKind.Block);
+          if (clause.param != null) {
+            let param = clause.param as Identifier;
+            this.#current.declare(param.name, false, param, this.#modulePath);
+            this.#symbols.record(param, this.#current.getLocal(param.name) as Symbol);
+          }
+          this.#processNode(clause.body);
+          this.#exitScope();
+        }
+        if (finalizer != null) {
+          this.#processNode(finalizer);
+        }
+      }
+      case PipelineExpression {left, right}: {
+        this.#processExpression(left);
+        this.#processExpression(right);
+      }
+      case RangeExpression {start, end}: {
+        if (start != null) { this.#processExpression(start as Expression); }
+        if (end != null) { this.#processExpression(end as Expression); }
+      }
+      case ThisExpression: {}
+      case SuperExpression: {}
+      case NumberLiteral: {}
+      case StringLiteral: {}
+      case BooleanLiteral: {}
+      case NullLiteral: {}
+      case PipePlaceholder: {}
+    }
+  }
+
+  /**
+   * Process a generic AST node (could be expression, statement, or other).
+   */
+  #processNode(node: Node): void {
+    match (node) {
+      case Expression: { this.#processExpression(node as Expression); }
+      case Statement: { this.#processStatement(node as Statement); }
+      case LetPatternCondition {pattern, init}: {
+        this.#processExpression(init);
+        // The pattern introduces bindings visible in the then-branch.
+        // This is handled by the parent if/while processing.
+      }
+      case _: {}
+    }
+  }
+
+  /**
+   * Process class body members.
+   */
+  #processClassBody(members: Array<Node>): void {
+    var i = 0;
+    while (i < members.length) {
+      match (members[i]) {
+        case MethodDefinition as md: {
+          // Process method parameter and return type annotations.
+          this.#enterScope(ScopeKind.Function);
+          if (md.typeParameters != null) {
+            let tps = md.typeParameters as Array<TypeParameter>;
+            this.#declareTypeParameters(tps);
+          }
+          var pk = 0;
+          while (pk < md.params.length) {
+            this.#declareParameter(md.params[pk]);
+            if (md.params[pk].typeAnnotation != null) {
+              this.#processTypeAnnotation(md.params[pk].typeAnnotation as TypeAnnotation);
+            }
+            pk += 1;
+          }
+          if (md.returnType != null) {
+            this.#processTypeAnnotation(md.returnType as TypeAnnotation);
+          }
+          if (md.initializerList != null) {
+            let inits = md.initializerList as Array<Node>;
+            var il = 0;
+            while (il < inits.length) {
+              match (inits[il]) {
+                case FieldInitializer {value}: {
+                  this.#processExpression(value);
+                }
+                case _: {}
+              }
+              il += 1;
+            }
+          }
+          if (md.superInitializer != null) {
+            match (md.superInitializer as Node) {
+              case SuperInitializer {args}: {
+                var sa = 0;
+                while (sa < args.length) {
+                  this.#processExpression(args[sa]);
+                  sa += 1;
+                }
+              }
+              case _: {}
+            }
+          }
+          if (md.body != null) {
+            this.#processNode(md.body as Node);
+          }
+          this.#exitScope();
+        }
+        case AccessorDeclaration as acc: {
+          // Process accessor type annotation.
+          this.#processTypeAnnotation(acc.typeAnnotation);
+          if (acc.getter != null) {
+            this.#enterScope(ScopeKind.Function);
+            this.#processNode(acc.getter as Node);
+            this.#exitScope();
+          }
+          if (acc.setter != null) {
+            let s = acc.setter as SetterInfo;
+            this.#enterScope(ScopeKind.Function);
+            this.#current.declare(s.param.name, false, s.param, this.#modulePath);
+            this.#symbols.record(s.param, this.#current.getLocal(s.param.name) as Symbol);
+            this.#processNode(s.body);
+            this.#exitScope();
+          }
+        }
+        case FieldDefinition {typeAnnotation, value}: {
+          if (typeAnnotation != null) {
+            this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+          }
+          if (value != null) {
+            this.#processExpression(value as Expression);
+          }
+        }
+        case FieldInitializer {value}: {
+          this.#processExpression(value);
+        }
+        case _: {}
+      }
+      i += 1;
+    }
+  }
+
+  /**
+   * Process interface body members for type annotation references.
+   */
+  #processInterfaceBody(members: Array<Node>): void {
+    var i = 0;
+    while (i < members.length) {
+      match (members[i]) {
+        case MethodSignature as ms: {
+          this.#enterScope(ScopeKind.Function);
+          if (ms.typeParameters != null) {
+            let tps = ms.typeParameters as Array<TypeParameter>;
+            this.#declareTypeParameters(tps);
+          }
+          var pk = 0;
+          while (pk < ms.params.length) {
+            if (ms.params[pk].typeAnnotation != null) {
+              this.#processTypeAnnotation(ms.params[pk].typeAnnotation as TypeAnnotation);
+            }
+            pk += 1;
+          }
+          if (ms.returnType != null) {
+            this.#processTypeAnnotation(ms.returnType as TypeAnnotation);
+          }
+          this.#exitScope();
+        }
+        case AccessorSignature as as_: {
+          this.#processTypeAnnotation(as_.typeAnnotation);
+        }
+        case PropertySignature as ps: {
+          this.#processTypeAnnotation(ps.typeAnnotation);
+        }
+        case FieldDefinition {typeAnnotation, value}: {
+          if (typeAnnotation != null) {
+            this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+          }
+          if (value != null) {
+            this.#processExpression(value as Expression);
+          }
+        }
+        case _: {}
+      }
+      i += 1;
+    }
+  }
+
+  /**
+   * Process a match case (pattern + optional guard + body).
+   */
+  #processMatchCase(mc: MatchCase): void {
+    this.#enterScope(ScopeKind.Block);
+    this.#declarePatternBindings(mc.pattern);
+    if (mc.guard != null) {
+      this.#processExpression(mc.guard as Expression);
+    }
+    this.#processNode(mc.body);
+    this.#exitScope();
+  }
+
+  /**
+   * Declare bindings introduced by a pattern (destructuring, match, for-in).
+   */
+  #declarePattern(pat: Pattern, kind: String, declaration: Node): void {
+    match (pat) {
+      case BindingPattern as bp: {
+        this.#declarePattern(bp.pattern, bp.kind, declaration);
+      }
+      case IdentifierPattern {name} as ip: {
+        // Use the leaf IdentifierPattern as declaration (not the parent
+        // statement). Each binding gets a unique declaration node, which
+        // the checker uses as the key for storing per-binding types.
+        this.#current.declare(name, kind == "var", ip, this.#modulePath);
+        this.#symbols.record(ip, this.#current.getLocal(name) as Symbol);
+      }
+      case RecordPattern {properties}: {
+        var i = 0;
+        while (i < properties.length) {
+          let prop = properties[i];
+          this.#declarePatternNode(prop.value, kind, declaration);
+          i += 1;
+        }
+      }
+      case TuplePattern {elements}: {
+        var i = 0;
+        while (i < elements.length) {
+          if (elements[i] != null) {
+            this.#declarePatternNode(elements[i] as Node, kind, declaration);
+          }
+          i += 1;
+        }
+      }
+      case AsPattern {pattern, name}: {
+        // Use the `name` Identifier as the declaration for the alias binding.
+        this.#current.declare(name.name, false, name, this.#modulePath);
+        this.#symbols.record(name, this.#current.getLocal(name.name) as Symbol);
+        this.#declarePatternNode(pattern, kind, declaration);
+      }
+      case ClassPattern {properties}: {
+        var i = 0;
+        while (i < properties.length) {
+          let prop = properties[i];
+          this.#declarePatternNode(prop.value, kind, declaration);
+          i += 1;
+        }
+      }
+      case LogicalPattern {left, right}: {
+        this.#declarePatternNode(left, kind, declaration);
+        this.#declarePatternNode(right, kind, declaration);
+      }
+      case AssignmentPattern {left}: {
+        this.#declarePatternNode(left, kind, declaration);
+      }
+      case LiteralPattern: {
+        // Literal patterns introduce no bindings.
+      }
+    }
+  }
+
+  #declarePatternBindings(node: Node): void {
+    match (node) {
+      case Pattern: { this.#declarePattern(node as Pattern, "let", node); }
+      case Identifier as ident: {
+        if (ident.name != "_") {
+          this.#current.declare(ident.name, false, ident, this.#modulePath);
+          this.#symbols.record(ident, this.#current.getLocal(ident.name) as Symbol);
+        }
+      }
+      case _: {}
+    }
+  }
+
+  #declarePatternNode(node: Node, kind: String, declaration: Node): void {
+    match (node) {
+      case Pattern: { this.#declarePattern(node as Pattern, kind, declaration); }
+      case Identifier as ident: {
+        if (ident.name != "_") {
+          this.#current.declare(ident.name, false, ident, this.#modulePath);
+          this.#symbols.record(ident, this.#current.getLocal(ident.name) as Symbol);
+        }
+      }
+      case _: {}
+    }
+  }
+
+  #declareParameter(param: Parameter): void {
+    this.#current.declare(param.name.name, false, param, this.#modulePath);
+    this.#symbols.record(param, this.#current.getLocal(param.name.name) as Symbol);
+    // For destructured params, also declare the pattern bindings (x, y, etc.).
+    if (param.pattern != null) {
+      this.#declarePattern(param.pattern as Pattern, "let", param);
+    }
+  }
+
+  #declareTypeParameters(tps: Array<TypeParameter>): void {
+    for (let typeParam in tps) {
+      this.#current.declare(typeParam.name, false, typeParam, this.#modulePath);
+      // Record each TypeParameter in the declarations map so the checker can
+      // look up its Symbol via model.resolveDeclaration(typeParam) and store
+      // the TypeParameterType by identity (Symbol.id) rather than by name.
+      let si = this.#current.getLocal(typeParam.name);
+      if (si != null) {
+        this.#symbols.record(typeParam, si as Symbol);
+      }
+    }
+
+    // After all params are in scope, resolve constraints/defaults.
+    for (let typeParam in tps) {
+      if (typeParam.constraint != null) {
+        this.#processTypeAnnotation(typeParam.constraint);
+      }
+      if (typeParam.defaultType != null) {
+        this.#processTypeAnnotation(typeParam.defaultType);
+      }
+    }
+  }
+
+  /**
+   * Walk a type annotation and record type name references.
+   */
+  #processTypeAnnotation(ann: TypeAnnotation): void {
+    match (ann) {
+      case NamedTypeAnnotation {name, typeArguments, loc}: {
+        let info = this.#current.resolve(name);
+        if (info != null) {
+          this.#symbols.record(ann, info);
+        } else {
+          this.#unresolvedNames.push(new UnresolvedName(name, ann));
+        }
+        if (typeArguments != null) {
+          let args = typeArguments as Array<TypeAnnotation>;
+          for (let arg in args) {
+            this.#processTypeAnnotation(arg);
+          }
+        }
+      }
+      case UnionTypeAnnotation {types}: {
+        for (let type in types) {
+          this.#processTypeAnnotation(type);
+        }
+      }
+      case FunctionTypeAnnotation {params, returnType}: {
+        for (let param in params) {
+          this.#processTypeAnnotation(param);
+        }
+        this.#processTypeAnnotation(returnType);
+      }
+      case RecordTypeAnnotation {properties}: {
+        for (let property in properties) {
+          this.#processTypeAnnotation(property.typeAnnotation);
+        }
+      }
+      case TupleTypeAnnotation {elementTypes}: {
+        for (let elementType in elementTypes) {
+          this.#processTypeAnnotation(elementType);
+        }
+      }
+      case InlineTupleTypeAnnotation {elementTypes}: {
+        for (let elementType in elementTypes) {
+          this.#processTypeAnnotation(elementType);
+        }
+      }
+      case _: {}
+    }
+  }
+
+  #processRecordProperty(node: Node): void {
+    match (node) {
+      case PropertyAssignment {value}: {
+        this.#processExpression(value);
+      }
+      case SpreadElement {argument}: {
+        this.#processExpression(argument);
+      }
+      case _: {}
+    }
+  }
+
+  #enterScope(kind: ScopeKind): void {
+    this.#current = new Scope(kind, this.#current);
+  }
+
+  #exitScope(): void {
+    if (this.#current.parent != null) {
+      this.#current = this.#current.parent as Scope;
+    }
+  }
+}

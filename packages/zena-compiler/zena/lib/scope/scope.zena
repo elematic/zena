@@ -1,0 +1,85 @@
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { Node } from '../ast.zena';
+import {Symbol} from './symbol.zena';
+
+/**
+ * What kind of lexical scope this is.
+ * Determines variable visibility rules and serves as documentation.
+ */
+export enum ScopeKind {
+  Module,   // Top-level module scope
+  Function, // Function or method body
+  Block,    // Block statement, if/while/for body
+  Class     // Class body (for `this`, type parameters)
+}
+
+/**
+ * A lexical scope containing name bindings.
+ *
+ * Scopes are organized in a parent chain: each scope (except the module
+ * root) has a parent scope. Name resolution walks the chain outward.
+ */
+export class Scope {
+  scopeKind: ScopeKind;
+  parent: Scope | null;
+  #bindings = new HashMap<String, Symbol>();
+
+  new(this.scopeKind: ScopeKind, this.parent: Scope | null);
+
+  /**
+   * Declare a name in this scope.
+   * Returns false if the name already exists in this scope (duplicate).
+   */
+  declare(name: String, isMutable: boolean, declaration: Node | null, modulePath: String): boolean {
+    if (this.#bindings.has(name)) {
+      // TODO: This should be an error, but we call declare() multiple times
+      // for overloads and sealed variants, which currently share the same name.
+      // We should refactor to only call declare() once per unique name.
+      return false;
+    }
+    this.#bindings[name] = new Symbol(declaration, modulePath, isMutable);
+    return true;
+  }
+
+  /**
+   * Inject an existing Symbol into this scope.
+   * Useful for constructing composite scopes like the prelude.
+   */
+  inject(name: String, info: Symbol): void {
+    this.#bindings[name] = info;
+  }
+
+  /**
+   * Look up a name in this scope only (no parent walk).
+   */
+  getLocal(name: String): Symbol | null {
+    return if (let (true, info) = this.#bindings.get(name)) {
+      info
+    } else {
+      null
+    };
+  }
+
+  /**
+   * Resolve a name by walking the scope chain outward.
+   */
+  resolve(name: String): Symbol | null {
+    var current: Scope | null = this;
+    while (current != null) {
+      let scope = current as Scope;
+      if (let (true, info) = scope.#bindings.get(name)) {
+        return info;
+      }
+      current = scope.parent;
+    }
+    return null;
+  }
+
+  /**
+   * Check if a name exists in this scope (not parents).
+   */
+  has(name: String): boolean {
+    return this.#bindings.has(name);
+  }
+}

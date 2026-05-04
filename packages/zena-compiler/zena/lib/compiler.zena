@@ -34,15 +34,9 @@ import {
 } from './library-loader.zena';
 import { buildStdlibConfig, loadPackageMap } from './package-manifest.zena';
 import { getStandardPrelude } from './prelude.zena';
-import {
-  ScopeBuilder,
-  ScopeResult,
-  Scope,
-  ScopeKind,
-  ModuleExports as ScopeModuleExports,
-  Symbol,
-  UnresolvedName
-} from './scope.zena';
+import { Symbol } from './scope/symbol.zena';
+import { Scope, ScopeKind } from './scope/scope.zena';
+import { ScopeBuilder, ScopeResult, ModuleExports as ScopeModuleExports, UnresolvedName } from './scope/scope-builder.zena';
 import {
   ImportDeclaration, ImportSpecifier, ExportFromDeclaration,
   MemberExpression, FieldDefinition, MethodDefinition, ClassDeclaration,
@@ -368,7 +362,7 @@ export class Compiler {
         while (i < namesToImport.length) {
           let name = namesToImport[i];
           
-          let exp = if (let (true, val) = exports.get(name)) { val } else { null };
+          let exp = (if (let (true, val) = exports.get(name)) { val } else { null }) as Symbol;
           if (exp != null) {
             let info = exp as Symbol;
             if (info.isValue()) {
@@ -535,7 +529,7 @@ let computeExportSignature = (
 
   let iter = exports.keys();
   while (let (true, name) = iter.next()) {
-    let exp = exports[name];
+    let exp = (if (let (true, val) = exports.get(name)) { val } else { null }) as Symbol;
     if (exp.isValue()) {
       let scopeInfo = rootScope.getLocal(name);
       let bt = if (scopeInfo != null) {
@@ -1218,7 +1212,7 @@ export let checkCompilation = (
       let exports = (file.scopeResult as ScopeResult).exports;
       let iter = exports.keys();
       while (let (true, name) = iter.next()) {
-        let exp = exports[name];
+        let exp = (if (let (true, val) = exports.get(name)) { val } else { null }) as Symbol;
         if (exp.isType()) {
           let bt = checkResult.model.getExportType(name);
           let t = if (bt != null) { bt } else { checkResult.model.getBindingType(exp) };
