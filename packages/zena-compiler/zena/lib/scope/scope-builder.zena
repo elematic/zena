@@ -59,7 +59,6 @@ export class UnresolvedName(
   node: Node
 )
 
-
 /**
  * Maps nodes to their resolved symbols. Keyed by source offset for efficient 
  * position-based lookup (useful for LSP jump-to-definition).
@@ -74,8 +73,7 @@ export class SymbolMap {
   /** Record a resolved reference or declaration. */
   record(node: Node, info: Symbol): void {
     if (node.loc != null) {
-      let loc = node.loc as SourceLocation;
-      this.#byOffset[loc.start] = info;
+      this.#byOffset[(node.loc as SourceLocation).start] = info;
     }
   }
 
@@ -218,20 +216,16 @@ export class ScopeBuilder {
    * Two-pass: first pre-declares types and annotated functions (enabling
    * forward references), then processes all statements fully.
    */
-  #processStatements(stmts: Array<Statement>): void {
+  #processStatements(statements: Array<Statement>): void {
     // First pass: pre-declare classes, interfaces, enums, type aliases,
     // and annotated functions (enables mutual recursion).
-    var i = 0;
-    while (i < stmts.length) {
-      this.#predeclare(stmts[i]);
-      i += 1;
+    for (let statement in statements) {
+      this.#predeclare(statement);
     }
 
     // Second pass: process all statements fully.
-    i = 0;
-    while (i < stmts.length) {
-      this.#processStatement(stmts[i]);
-      i += 1;
+    for (let statement in statements) {
+      this.#processStatement(statement);
     }
   }
 
@@ -242,7 +236,6 @@ export class ScopeBuilder {
   #predeclare(stmt: Statement): void {
     match (stmt) {
       case ClassDeclaration {name, exported, sealedVariants}: {
-        // Classes go in BOTH namespaces.
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
@@ -251,18 +244,14 @@ export class ScopeBuilder {
         }
         // Export sealed variant names so they can be imported individually.
         if (sealedVariants != null) {
-          let svs = sealedVariants as Array<SealedVariant>;
-          var svi = 0;
-          while (svi < svs.length) {
-            let sv = svs[svi];
-            let svName = sv.name.name;
-            this.#current.declare(svName, false, sv, this.#modulePath);
-            this.#symbols.record(sv, this.#current.getLocal(svName) as Symbol);
+          for (let variant in sealedVariants) {
+            let variantName = variant.name.name;
+            this.#current.declare(variantName, false, variant, this.#modulePath);
+            this.#symbols.record(variant, this.#current.getLocal(variantName) as Symbol);
             if (exported) {
-              let svInfo = new Symbol(sv, this.#modulePath);
-              this.#exports[svName] = svInfo;
+              let svInfo = new Symbol(variant, this.#modulePath);
+              this.#exports[variantName] = svInfo;
             }
-            svi += 1;
           }
         }
       }
@@ -419,9 +408,9 @@ export class ScopeBuilder {
       }
       case ForStatement {init, test, update, body}: {
         this.#enterScope(ScopeKind.Block);
-        if (init != null) { this.#processNode(init as Node); }
-        if (test != null) { this.#processExpression(test as Expression); }
-        if (update != null) { this.#processExpression(update as Expression); }
+        if (init != null) { this.#processNode(init); }
+        if (test != null) { this.#processExpression(test); }
+        if (update != null) { this.#processExpression(update); }
         this.#processStatement(body);
         this.#exitScope();
       }
@@ -434,62 +423,55 @@ export class ScopeBuilder {
       }
       case ReturnStatement {argument}: {
         if (argument != null) {
-          this.#processExpression(argument as Expression);
+          this.#processExpression(argument);
         }
       }
-      case ClassDeclaration {name, typeParameters, caseParams, superClass, mixins, implementsList, body, sealedVariants, onType}: {
+      case ClassDeclaration {
+        name,
+        typeParameters,
+        caseParams,
+        superClass,
+        mixins,
+        implementsList,
+        body,
+        sealedVariants,
+        onType}: {
         // Class body gets its own scope for `this`, type params, members.
         this.#enterScope(ScopeKind.Class);
         if (typeParameters != null) {
-          let tps = typeParameters as Array<TypeParameter>;
-          this.#declareTypeParameters(tps);
+          this.#declareTypeParameters(typeParameters);
         }
         if (onType != null) {
-          this.#processTypeAnnotation(onType as TypeAnnotation);
+          this.#processTypeAnnotation(onType);
         }
         // Process superclass and interface type annotations.
         if (superClass != null) {
-          this.#processTypeAnnotation(superClass as TypeAnnotation);
+          this.#processTypeAnnotation(superClass);
         }
         if (mixins != null) {
-          let ms = mixins as Array<TypeAnnotation>;
-          var mi = 0;
-          while (mi < ms.length) {
-            this.#processTypeAnnotation(ms[mi]);
-            mi += 1;
+          for (let mixin in mixins) {
+            this.#processTypeAnnotation(mixin);
           }
         }
         if (implementsList != null) {
-          let impls = implementsList as Array<TypeAnnotation>;
-          var ii = 0;
-          while (ii < impls.length) {
-            this.#processTypeAnnotation(impls[ii]);
-            ii += 1;
+          for (let impl in implementsList) {
+            this.#processTypeAnnotation(impl);
           }
         }
         // Process case class parameter type annotations.
         if (caseParams != null) {
-          let cps = caseParams as Array<CaseClassParam>;
-          var ci = 0;
-          while (ci < cps.length) {
-            this.#processTypeAnnotation(cps[ci].typeAnnotation);
-            ci += 1;
+          for (let param in caseParams) {
+            this.#processTypeAnnotation(param.typeAnnotation);
           }
         }
         // Process sealed variant parameter type annotations.
         if (sealedVariants != null) {
-          let svs = sealedVariants as Array<SealedVariant>;
-          var si = 0;
-          while (si < svs.length) {
-            if (svs[si].params != null) {
-              let vparams = svs[si].params as Array<CaseClassParam>;
-              var vi = 0;
-              while (vi < vparams.length) {
-                this.#processTypeAnnotation(vparams[vi].typeAnnotation);
-                vi += 1;
+          for (let variant in sealedVariants) {
+            if (variant.params != null) {
+              for (let param in variant.params as Array<CaseClassParam>) {
+                this.#processTypeAnnotation(param.typeAnnotation);
               }
             }
-            si += 1;
           }
         }
         this.#processClassBody(body);
@@ -498,15 +480,11 @@ export class ScopeBuilder {
       case InterfaceDeclaration {name, typeParameters, extendsList, body}: {
         this.#enterScope(ScopeKind.Class);
         if (typeParameters != null) {
-          let tps = typeParameters as Array<TypeParameter>;
-          this.#declareTypeParameters(tps);
+          this.#declareTypeParameters(typeParameters);
         }
         if (extendsList != null) {
-          let exts = extendsList as Array<TypeAnnotation>;
-          var ei = 0;
-          while (ei < exts.length) {
-            this.#processTypeAnnotation(exts[ei]);
-            ei += 1;
+          for (let extnd in extendsList) {
+            this.#processTypeAnnotation(extnd);
           }
         }
         // Process interface body for method/property type annotations.
@@ -516,8 +494,7 @@ export class ScopeBuilder {
       case MixinDeclaration {name, typeParameters, mixins, body}: {
         this.#enterScope(ScopeKind.Class);
         if (typeParameters != null) {
-          let tps = typeParameters as Array<TypeParameter>;
-          this.#declareTypeParameters(tps);
+          this.#declareTypeParameters(typeParameters);
         }
         // Traverse `with` clause so mixin names are linked in the ReferenceMap.
         if (mixins != null) {
@@ -531,15 +508,12 @@ export class ScopeBuilder {
       case ImportDeclaration {imports}: {
         // Declare imported names into the current scope.
         // The actual bindings come from the imported module's exports.
-        var j = 0;
-        while (j < imports.length) {
-          let spec = imports[j];
+        for (let spec in imports) {
           let localName = spec.local.name;
           // Imports go in both namespaces (we don't know yet if it's
           // a type or value — that's resolved during import wiring).
           this.#current.declare(localName, false, spec, this.#modulePath);
           this.#symbols.record(spec, this.#current.getLocal(localName) as Symbol);
-          j = j + 1;
         }
       }
       case BreakStatement: {}
@@ -548,8 +522,7 @@ export class ScopeBuilder {
       case TypeAliasDeclaration {typeParameters, typeAnnotation}: {
         this.#enterScope(ScopeKind.Block);
         if (typeParameters != null) {
-          let tps = typeParameters as Array<TypeParameter>;
-          this.#declareTypeParameters(tps);
+          this.#declareTypeParameters(typeParameters);
         }
         this.#processTypeAnnotation(typeAnnotation);
         this.#exitScope();
@@ -559,8 +532,7 @@ export class ScopeBuilder {
       case DeclareFunction {typeParameters, params, returnType}: {
         this.#enterScope(ScopeKind.Function);
         if (typeParameters != null) {
-          let tps = typeParameters as Array<TypeParameter>;
-          this.#declareTypeParameters(tps);
+          this.#declareTypeParameters(typeParameters);
         }
         for (let param in params) {
           if (param.typeAnnotation != null) {
@@ -593,16 +565,14 @@ export class ScopeBuilder {
           let tps = typeParameters as Array<TypeParameter>;
           this.#declareTypeParameters(tps);
         }
-        var k = 0;
-        while (k < params.length) {
-          this.#declareParameter(params[k]);
-          if (params[k].typeAnnotation != null) {
-            this.#processTypeAnnotation(params[k].typeAnnotation as TypeAnnotation);
+        for (let param in params) {
+          this.#declareParameter(param);
+          if (param.typeAnnotation != null) {
+            this.#processTypeAnnotation(param.typeAnnotation);
           }
-          k = k + 1;
         }
         if (returnType != null) {
-          this.#processTypeAnnotation(returnType as TypeAnnotation);
+          this.#processTypeAnnotation(returnType);
         }
         this.#processNode(body);
         this.#exitScope();
@@ -621,17 +591,12 @@ export class ScopeBuilder {
       case CallExpression {callee, args, typeArguments}: {
         this.#processExpression(callee);
         if (typeArguments != null) {
-          let tas = typeArguments as Array<TypeAnnotation>;
-          var ta = 0;
-          while (ta < tas.length) {
-            this.#processTypeAnnotation(tas[ta]);
-            ta += 1;
+          for (let typeArgument in typeArguments) {
+            this.#processTypeAnnotation(typeArgument);
           }
         }
-        var a = 0;
-        while (a < args.length) {
-          this.#processExpression(args[a]);
-          a = a + 1;
+        for (let arg in args) {
+          this.#processExpression(arg);
         }
       }
       case NewExpression {callee, typeArguments, args}: {
@@ -642,17 +607,12 @@ export class ScopeBuilder {
           this.#symbols.record(callee, info);
         }
         if (typeArguments != null) {
-          let tas = typeArguments as Array<TypeAnnotation>;
-          var ta = 0;
-          while (ta < tas.length) {
-            this.#processTypeAnnotation(tas[ta]);
-            ta += 1;
+          for (let typeArgument in typeArguments) {
+            this.#processTypeAnnotation(typeArgument);
           }
         }
-        var a = 0;
-        while (a < args.length) {
-          this.#processExpression(args[a]);
-          a = a + 1;
+        for (let arg in args) {
+          this.#processExpression(arg);
         }
       }
       case MemberExpression {object}: {
@@ -664,40 +624,29 @@ export class ScopeBuilder {
         this.#processExpression(index);
       }
       case ArrayLiteral {elements}: {
-        var a = 0;
-        while (a < elements.length) {
-          this.#processExpression(elements[a]);
-          a = a + 1;
+        for (let element in elements) {
+          this.#processExpression(element);
         }
       }
       case RecordLiteral {properties}: {
-        var a = 0;
-        while (a < properties.length) {
-          this.#processRecordProperty(properties[a]);
-          a = a + 1;
+        for (let property in properties) {
+          this.#processRecordProperty(property);
         }
       }
       case TupleLiteral {elements}: {
-        var a = 0;
-        while (a < elements.length) {
-          this.#processExpression(elements[a]);
-          a = a + 1;
+        for (let element in elements) {
+          this.#processExpression(element);
         }
       }
       case MapLiteral {entries}: {
-        var a = 0;
-        while (a < entries.length) {
-          let entry = entries[a];
+        for (let entry in entries) {
           this.#processExpression(entry.key);
           this.#processExpression(entry.value);
-          a = a + 1;
         }
       }
       case TemplateLiteral {expressions}: {
-        var a = 0;
-        while (a < expressions.length) {
-          this.#processExpression(expressions[a]);
-          a = a + 1;
+        for (let expression in expressions) {
+          this.#processExpression(expression);
         }
       }
       case TaggedTemplateExpression {tag, quasi}: {
@@ -714,10 +663,8 @@ export class ScopeBuilder {
       }
       case MatchExpression {discriminant, cases}: {
         this.#processExpression(discriminant);
-        var a = 0;
-        while (a < cases.length) {
-          this.#processMatchCase(cases[a]);
-          a = a + 1;
+        for (let matchCase in cases) {
+          this.#processMatchCase(matchCase);
         }
       }
       case IfExpression {test, consequent, alternate}: {
@@ -747,14 +694,13 @@ export class ScopeBuilder {
       case TryExpression {body, handler, finalizer}: {
         this.#processNode(body);
         if (handler != null) {
-          let clause = handler as CatchClause;
           this.#enterScope(ScopeKind.Block);
-          if (clause.param != null) {
-            let param = clause.param as Identifier;
+          if (handler.param != null) {
+            let param = handler.param as Identifier;
             this.#current.declare(param.name, false, param, this.#modulePath);
             this.#symbols.record(param, this.#current.getLocal(param.name) as Symbol);
           }
-          this.#processNode(clause.body);
+          this.#processNode(handler.body);
           this.#exitScope();
         }
         if (finalizer != null) {
@@ -766,8 +712,8 @@ export class ScopeBuilder {
         this.#processExpression(right);
       }
       case RangeExpression {start, end}: {
-        if (start != null) { this.#processExpression(start as Expression); }
-        if (end != null) { this.#processExpression(end as Expression); }
+        if (start != null) { this.#processExpression(start); }
+        if (end != null) { this.#processExpression(end); }
       }
       case ThisExpression: {}
       case SuperExpression: {}
@@ -799,54 +745,45 @@ export class ScopeBuilder {
    * Process class body members.
    */
   #processClassBody(members: Array<Node>): void {
-    var i = 0;
-    while (i < members.length) {
-      match (members[i]) {
+    for (let member in members) {
+      match (member) {
         case MethodDefinition as md: {
           // Process method parameter and return type annotations.
           this.#enterScope(ScopeKind.Function);
           if (md.typeParameters != null) {
-            let tps = md.typeParameters as Array<TypeParameter>;
-            this.#declareTypeParameters(tps);
+            this.#declareTypeParameters(md.typeParameters);
           }
-          var pk = 0;
-          while (pk < md.params.length) {
-            this.#declareParameter(md.params[pk]);
-            if (md.params[pk].typeAnnotation != null) {
-              this.#processTypeAnnotation(md.params[pk].typeAnnotation as TypeAnnotation);
+          for (let param in md.params) {
+            this.#declareParameter(param);
+            if (param.typeAnnotation != null) {
+              this.#processTypeAnnotation(param.typeAnnotation);
             }
-            pk += 1;
           }
           if (md.returnType != null) {
-            this.#processTypeAnnotation(md.returnType as TypeAnnotation);
+            this.#processTypeAnnotation(md.returnType);
           }
           if (md.initializerList != null) {
-            let inits = md.initializerList as Array<Node>;
-            var il = 0;
-            while (il < inits.length) {
-              match (inits[il]) {
+            for (let init in md.initializerList as Array<Node>) {
+              match (init) {
                 case FieldInitializer {value}: {
                   this.#processExpression(value);
                 }
                 case _: {}
               }
-              il += 1;
             }
           }
           if (md.superInitializer != null) {
-            match (md.superInitializer as Node) {
+            match (md.superInitializer) {
               case SuperInitializer {args}: {
-                var sa = 0;
-                while (sa < args.length) {
-                  this.#processExpression(args[sa]);
-                  sa += 1;
+                for (let arg in args) {
+                  this.#processExpression(arg);
                 }
               }
               case _: {}
             }
           }
           if (md.body != null) {
-            this.#processNode(md.body as Node);
+            this.#processNode(md.body);
           }
           this.#exitScope();
         }
@@ -855,24 +792,25 @@ export class ScopeBuilder {
           this.#processTypeAnnotation(acc.typeAnnotation);
           if (acc.getter != null) {
             this.#enterScope(ScopeKind.Function);
-            this.#processNode(acc.getter as Node);
+            this.#processNode(acc.getter);
             this.#exitScope();
           }
           if (acc.setter != null) {
-            let s = acc.setter as SetterInfo;
+            let setter = acc.setter as SetterInfo;
+            let param = setter.param;
             this.#enterScope(ScopeKind.Function);
-            this.#current.declare(s.param.name, false, s.param, this.#modulePath);
-            this.#symbols.record(s.param, this.#current.getLocal(s.param.name) as Symbol);
-            this.#processNode(s.body);
+            this.#current.declare(param.name, false, param, this.#modulePath);
+            this.#symbols.record(param, this.#current.getLocal(param.name) as Symbol);
+            this.#processNode(setter.body);
             this.#exitScope();
           }
         }
         case FieldDefinition {typeAnnotation, value}: {
           if (typeAnnotation != null) {
-            this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+            this.#processTypeAnnotation(typeAnnotation);
           }
           if (value != null) {
-            this.#processExpression(value as Expression);
+            this.#processExpression(value);
           }
         }
         case FieldInitializer {value}: {
@@ -880,7 +818,6 @@ export class ScopeBuilder {
         }
         case _: {}
       }
-      i += 1;
     }
   }
 
@@ -888,24 +825,21 @@ export class ScopeBuilder {
    * Process interface body members for type annotation references.
    */
   #processInterfaceBody(members: Array<Node>): void {
-    var i = 0;
-    while (i < members.length) {
-      match (members[i]) {
+    for (let member in members) {
+      match (member) {
         case MethodSignature as ms: {
           this.#enterScope(ScopeKind.Function);
           if (ms.typeParameters != null) {
             let tps = ms.typeParameters as Array<TypeParameter>;
             this.#declareTypeParameters(tps);
           }
-          var pk = 0;
-          while (pk < ms.params.length) {
-            if (ms.params[pk].typeAnnotation != null) {
-              this.#processTypeAnnotation(ms.params[pk].typeAnnotation as TypeAnnotation);
+          for (let param in ms.params) {
+            if (param.typeAnnotation != null) {
+              this.#processTypeAnnotation(param.typeAnnotation);
             }
-            pk += 1;
           }
           if (ms.returnType != null) {
-            this.#processTypeAnnotation(ms.returnType as TypeAnnotation);
+            this.#processTypeAnnotation(ms.returnType);
           }
           this.#exitScope();
         }
@@ -917,15 +851,14 @@ export class ScopeBuilder {
         }
         case FieldDefinition {typeAnnotation, value}: {
           if (typeAnnotation != null) {
-            this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+            this.#processTypeAnnotation(typeAnnotation);
           }
           if (value != null) {
-            this.#processExpression(value as Expression);
+            this.#processExpression(value);
           }
         }
         case _: {}
       }
-      i += 1;
     }
   }
 
@@ -936,7 +869,7 @@ export class ScopeBuilder {
     this.#enterScope(ScopeKind.Block);
     this.#declarePatternBindings(mc.pattern);
     if (mc.guard != null) {
-      this.#processExpression(mc.guard as Expression);
+      this.#processExpression(mc.guard);
     }
     this.#processNode(mc.body);
     this.#exitScope();
@@ -958,20 +891,15 @@ export class ScopeBuilder {
         this.#symbols.record(ip, this.#current.getLocal(name) as Symbol);
       }
       case RecordPattern {properties}: {
-        var i = 0;
-        while (i < properties.length) {
-          let prop = properties[i];
+        for (let prop in properties) {
           this.#declarePatternNode(prop.value, kind, declaration);
-          i += 1;
         }
       }
       case TuplePattern {elements}: {
-        var i = 0;
-        while (i < elements.length) {
-          if (elements[i] != null) {
-            this.#declarePatternNode(elements[i] as Node, kind, declaration);
+        for (let element in elements) {
+          if (element != null) {
+            this.#declarePatternNode(element, kind, declaration);
           }
-          i += 1;
         }
       }
       case AsPattern {pattern, name}: {
@@ -981,11 +909,8 @@ export class ScopeBuilder {
         this.#declarePatternNode(pattern, kind, declaration);
       }
       case ClassPattern {properties}: {
-        var i = 0;
-        while (i < properties.length) {
-          let prop = properties[i];
+        for (let prop in properties) {
           this.#declarePatternNode(prop.value, kind, declaration);
-          i += 1;
         }
       }
       case LogicalPattern {left, right}: {
@@ -1044,7 +969,7 @@ export class ScopeBuilder {
       // the TypeParameterType by identity (Symbol.id) rather than by name.
       let si = this.#current.getLocal(typeParam.name);
       if (si != null) {
-        this.#symbols.record(typeParam, si as Symbol);
+        this.#symbols.record(typeParam, si);
       }
     }
 
