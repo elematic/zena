@@ -186,6 +186,7 @@ import {
   isNullableType,
   getNonNullableType,
   makeNullable,
+  typesEqual,
 } from './types.js';
 import {
   checkPattern,
@@ -1562,6 +1563,17 @@ function isValidCast(sourceType: Type, targetType: Type): boolean {
 function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
   const sourceType = checkExpression(ctx, expr.expression);
   const targetType = resolveTypeAnnotation(ctx, expr.typeAnnotation);
+
+  if (
+    ctx.compiler?.options.warnUnnecessaryCasts &&
+    typesEqual(sourceType, targetType)
+  ) {
+    ctx.diagnostics.reportWarning(
+      `Unnecessary cast: expression is already of type '${typeToString(targetType)}'.`,
+      DiagnosticCode.UnnecessaryCast,
+      ctx.getLocation(expr.loc),
+    );
+  }
 
   // Reject union types as cast targets
   if (targetType.kind === TypeKind.Union) {

@@ -297,6 +297,9 @@ value to its own type, or casting between a distinct type and its underlying
 type), the cast is **elided** at runtime. In these cases, the cast serves purely
 as a compile-time assertion and incurs no runtime overhead.
 
+The compiler can optionally warn you about unnecessary casts (casting an expression
+to a type it already has) by enabling the `--warn-unnecessary-casts` CLI flag.
+
 ```zena
 distinct type ID = i32;
 let id = 1 as ID; // Checked at compile time, elided at runtime

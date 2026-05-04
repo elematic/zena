@@ -24,6 +24,7 @@ import {
 export type {SymbolInfo, Declaration} from './context.js';
 export {SemanticContext} from './semantic-context.js';
 import type {SemanticContext} from './semantic-context.js';
+import type {CompilerOptions} from '../compiler.js';
 
 /**
  * The TypeChecker analyzes the AST to validate types, resolve symbols,
@@ -46,8 +47,15 @@ export class TypeChecker {
    *
    * @param ast The Module AST to check (must be created by Parser with options)
    */
-  static forModule(ast: Module): TypeChecker {
-    const ctx = new CheckerContext();
+  static forModule(ast: Module, options?: CompilerOptions): TypeChecker {
+    // Wrap options in a mock Compiler to pass them down
+    const mockCompiler = options
+      ? ({
+          options,
+          getModule: () => undefined,
+        } as any)
+      : undefined;
+    const ctx = new CheckerContext(mockCompiler);
     ctx.setCurrentLibrary(ast);
     return new TypeChecker(ctx, ast);
   }

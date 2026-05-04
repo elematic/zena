@@ -167,11 +167,15 @@ let runSemanticTest = (
     directives: Array<Directive>): void => {
   let expectedErrors = new Array<Directive>(4);
   let expectedWarnings = new Array<Directive>(4);
+  var warnUnnecessaryCasts = false;
+  
   for (let directive in directives) {
     if (directive.name == "error") {
       expectedErrors.push(directive);
     } else if (directive.name == "warning") {
       expectedWarnings.push(directive);
+    } else if (directive.name == "warnUnnecessaryCasts") {
+      warnUnnecessaryCasts = directive.value == "true";
     }
   }
 
@@ -179,9 +183,10 @@ let runSemanticTest = (
   let host = new FsHost(stdlibRoot, filePath, source);
   let packages = loadPackageMap(host, "zena-packages.json");
   let options = new CompilerOptions("host", stdlibRoot, packages);
+  options.warnUnnecessaryCasts = warnUnnecessaryCasts;
   let compiler = createCompiler(host, options);
   let result = compiler.compile(filePath);
-  let checkResult = checkCompilation(result);
+  let checkResult = checkCompilation(result, null, false, warnUnnecessaryCasts);
   
   // Aggregate all diagnostics from all files
   let diagnostics = new Array<Diagnostic>(4);

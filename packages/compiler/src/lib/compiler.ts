@@ -27,6 +27,8 @@ export interface CompilerOptions {
    * - true: fields are mutable (legacy behavior for migration)
    */
   mutableFields?: boolean;
+  /** Warn when an `as` cast targets the exact same type the expression already has. */
+  warnUnnecessaryCasts?: boolean;
   /** Emit source locations for __LOCATION__ defaults (otherwise injects null) */
   emitLocations?: boolean;
 }

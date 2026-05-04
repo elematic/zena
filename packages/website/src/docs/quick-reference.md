@@ -1855,7 +1855,8 @@ class Data {
 
 The `as` operator performs type casts. Numeric conversions compile to WASM
 conversion instructions. Reference type casts are checked at runtime and throw
-if invalid.
+if invalid. Unnecessary casts (casting a value to its exact type) can be warned
+against by enabling the CLI flag `--warn-unnecessary-casts`.
 
 ```ts
 // Numeric conversions

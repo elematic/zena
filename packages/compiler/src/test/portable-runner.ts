@@ -369,7 +369,10 @@ async function runCheckTest(
       },
     };
 
-    const compiler = new Compiler(host, {emitLocations: true});
+    const compiler = new Compiler(host, {
+      emitLocations: true,
+      warnUnnecessaryCasts: directives.warnUnnecessaryCasts === 'true',
+    });
     const modules = compiler.compile(filePath);
 
     // Collect all diagnostics
@@ -381,7 +384,9 @@ async function runCheckTest(
     // Simple case - no imports, use TypeChecker directly
     const parser = new Parser(content);
     const ast = parser.parse();
-    const checker = TypeChecker.forModule(ast);
+    const checker = TypeChecker.forModule(ast, {
+      warnUnnecessaryCasts: directives.warnUnnecessaryCasts === 'true',
+    });
     diagnostics = checker.check();
   }
 
@@ -396,7 +401,23 @@ async function runCheckTest(
         .map((d) => formatDiagnostic(d, content))
         .join('\n');
       throw new Error(
-        `Expected error matching ${expected.regex} on line ${expected.line}, but found none.\nActual errors:\n${formatted || '(none)'}`,
+        `Expected error matching ${expected.regex} on line ${expected.line}, but found none.\nActual diagnostics:\n${formatted || '(none)'}`,
+      );
+    }
+  }
+
+  // Match expected warnings
+  for (const expected of expectedWarnings) {
+    const found = diagnostics.find((d) => {
+      return expected.regex.test(d.message);
+    });
+
+    if (!found) {
+      const formatted = diagnostics
+        .map((d) => formatDiagnostic(d, content))
+        .join('\n');
+      throw new Error(
+        `Expected warning matching ${expected.regex} on line ${expected.line}, but found none.\nActual diagnostics:\n${formatted || '(none)'}`,
       );
     }
   }
