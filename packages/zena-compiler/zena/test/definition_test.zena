@@ -41,8 +41,7 @@ import {
   ScopeBuilder,
   ScopeResult,
   Symbol,
-  DeclarationMap,
-  ReferenceMap
+  SymbolMap
 } from '../lib/scope.zena';
 
 let buildScope = (source: String): ScopeResult => {
@@ -56,11 +55,11 @@ let buildScope = (source: String): ScopeResult => {
 // ============================================================================
 
 let hasRef = (result: ScopeResult, offset: i32): boolean => {
-  return result.references.getByOffset(offset) != null;
+  return result.symbols.getByOffset(offset) != null;
 };
 
 let hasDecl = (result: ScopeResult, offset: i32): boolean => {
-  return result.declarations.getByOffset(offset) != null;
+  return result.symbols.getByOffset(offset) != null;
 };
 
 // ============================================================================
@@ -392,7 +391,7 @@ export let tests = suite('Goto Definition', (): void => {
     test('declaration Symbol has correct kind', (ctx: TestContext): void => {
       let s = "let x = 1;";
       let result = buildScope(s);
-      let info = result.declarations.getByOffset(4);
+      let info = result.symbols.getByOffset(4);
       isTrue(info != null);
       isFalse((info as Symbol).isMutable);
     });
@@ -400,7 +399,7 @@ export let tests = suite('Goto Definition', (): void => {
     test('var declaration Symbol has var kind', (ctx: TestContext): void => {
       let s = "var x = 1;";
       let result = buildScope(s);
-      let info = result.declarations.getByOffset(4);
+      let info = result.symbols.getByOffset(4);
       isTrue(info != null);
       isTrue((info as Symbol).isMutable);
     });
@@ -414,7 +413,7 @@ export let tests = suite('Goto Definition', (): void => {
     test('variable reference points to let declaration', (ctx: TestContext): void => {
       let s = "let x = 1; let y = x;";
       let result = buildScope(s);
-      let ref = result.references.getByOffset(19);
+      let ref = result.symbols.getByOffset(19);
       isTrue(ref != null);
       let sym = ref as Symbol;
       isFalse(sym.isMutable);
@@ -425,7 +424,7 @@ export let tests = suite('Goto Definition', (): void => {
     test('new expression reference points to class', (ctx: TestContext): void => {
       let s = "class Foo {} let x = new Foo();";
       let result = buildScope(s);
-      let ref = result.references.getByOffset(25);
+      let ref = result.symbols.getByOffset(25);
       isTrue(ref != null);
       let sym = ref as Symbol;
       // Class declarations are stored with kind "let"
@@ -438,7 +437,7 @@ export let tests = suite('Goto Definition', (): void => {
       //       0123456789012345678901234567890123456
       let s = "class Foo {} let x: Foo = new Foo();";
       let result = buildScope(s);
-      let ref = result.references.getByOffset(20);
+      let ref = result.symbols.getByOffset(20);
       isTrue(ref != null);
       let sym = ref as Symbol;
       // Type namespace — classes are resolved in the type namespace
@@ -448,7 +447,7 @@ export let tests = suite('Goto Definition', (): void => {
     test('import reference points to import specifier', (ctx: TestContext): void => {
       let s = "import { HashMap } from 'zena:map'; let m = HashMap;";
       let result = buildScope(s);
-      let ref = result.references.getByOffset(44);
+      let ref = result.symbols.getByOffset(44);
       isTrue(ref != null);
       isTrue((ref as Symbol).declaration is ImportSpecifier);
     });

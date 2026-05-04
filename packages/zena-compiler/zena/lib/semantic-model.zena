@@ -41,7 +41,7 @@ import {
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
 import { Node, SourceLocation } from './ast.zena';
-import { Symbol, SymbolId, ReferenceMap, DeclarationMap } from './scope.zena';
+import { Symbol, SymbolId, SymbolMap } from './scope.zena';
 
 export class SemanticModel {
   /**
@@ -59,16 +59,10 @@ export class SemanticModel {
   #bindingTypes = new HashMap<SymbolId, Type>();
 
   /**
-   * Scope analysis reference map (identifier → Symbol).
+   * Scope analysis symbol map (nodes → Symbol).
    * Owned by the SemanticModel so consumers have a single object to query.
    */
-  var #references: ReferenceMap | null = null;
-
-  /**
-   * Scope analysis declaration map (binding-site node → Symbol).
-   * Used at declaration-processing time to find the Symbol.
-   */
-  var #declarations: DeclarationMap | null = null;
+  var #symbols: SymbolMap | null = null;
 
   /**
    * All diagnostics from type checking.
@@ -87,22 +81,18 @@ export class SemanticModel {
   /**
    * Attach the scope analysis maps.
    */
-  setReferences(refs: ReferenceMap): void {
-    this.#references = refs;
-  }
-
-  setDeclarations(decls: DeclarationMap): void {
-    this.#declarations = decls;
+  setSymbols(symbols: SymbolMap): void {
+    this.#symbols = symbols;
   }
 
   /**
    * Resolve an identifier node to its Symbol (from scope analysis).
-   * Returns null if the identifier was unresolved or no ReferenceMap is set.
+   * Returns null if the identifier was unresolved or no SymbolMap is set.
    */
   resolve(node: Node): Symbol | null {
-    if (this.#references == null) { return null; }
-    let refs = this.#references as ReferenceMap;
-    return refs.getByNode(node);
+    if (this.#symbols == null) { return null; }
+    let syms = this.#symbols as SymbolMap;
+    return syms.getByNode(node);
   }
 
   /**
@@ -111,9 +101,7 @@ export class SemanticModel {
    * a VariableDeclaration and needs to store the type for its binding).
    */
   resolveDeclaration(node: Node): Symbol | null {
-    if (this.#declarations == null) { return null; }
-    let decls = this.#declarations as DeclarationMap;
-    return decls.getByNode(node);
+    return this.resolve(node);
   }
 
   // --- Node types (expressions and declaration nodes) ---

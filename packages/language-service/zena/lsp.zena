@@ -34,7 +34,7 @@ import { getStandardPrelude } from 'zena-compiler:prelude';
 import {
   Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
 } from 'zena-compiler:diagnostics';
-import { Symbol, ReferenceMap, DeclarationMap, ScopeResult, ModuleExports } from 'zena-compiler:scope';
+import { Symbol, SymbolMap, ScopeResult, ModuleExports } from 'zena-compiler:scope';
 import {
   Comment, Node, SourceLocation, Identifier, IdentifierPattern,
   ThisExpression, MemberExpression, Expression, Module,
@@ -863,13 +863,8 @@ export class LanguageService {
     if (!this.#scopeResults.has(path)) { return null; }
     let scopeResult = this.#scopeResults[path];
 
-    let refs = scopeResult.references;
-    var maybeInfo = refs.getByOffset(offset);
-
-    if (maybeInfo == null) {
-      let decls = scopeResult.declarations;
-      maybeInfo = decls.getByOffset(offset);
-    }
+    let syms = scopeResult.symbols;
+    var maybeInfo = syms.getByOffset(offset);
 
     if (maybeInfo != null) {
       let sym = maybeInfo as Symbol;
@@ -1024,12 +1019,8 @@ export class LanguageService {
 
     if (hasScopeResult) {
       let sr = this.#scopeResults[path];
-      let refs = sr.references;
-      var maybeInfo = refs.getByOffset(offset);
-      if (maybeInfo == null) {
-        let decls = sr.declarations;
-        maybeInfo = decls.getByOffset(offset);
-      }
+      let syms = sr.symbols;
+      var maybeInfo = syms.getByOffset(offset);
       if (maybeInfo != null) {
         symbolInfo = maybeInfo as Symbol;
         if (nodeType == null) {
@@ -1163,12 +1154,9 @@ let getHoverLabel = (node: Node, typeStr: String, scopeResult: ScopeResult | nul
   var prefix = "let";
   if (scopeResult != null) {
     let sr = scopeResult as ScopeResult;
-    let refs = sr.references;
-    var maybeInfo = refs.getByNode(node);
-    if (maybeInfo == null) {
-      let decls = sr.declarations;
-      maybeInfo = decls.getByNode(node);
-    }
+    let syms = sr.symbols;
+    var maybeInfo = syms.getByNode(node);
+
     if (maybeInfo != null) {
       let sym = maybeInfo as Symbol;
       // Check if the declaration is a parameter.
