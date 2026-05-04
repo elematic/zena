@@ -6940,7 +6940,14 @@ let checkMemberExpression = (
   isSymbolAccess: boolean,
   loc: SourceLocation | null
 ): Type => {
-  let objectType = checkExpression(ctx, object, null);
+  let objectTypeRaw = checkExpression(ctx, object, null);
+  var objectType = objectTypeRaw;
+  if (objectType is ThisType) {
+    if (ctx.currentClass != null) {
+      objectType = ctx.currentClass as Type;
+    }
+  }
+
   let propName = if (isSymbolAccess) ":" + property.name else property.name;
   let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
   let narrowedPathType = if (pathKey != null) {

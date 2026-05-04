@@ -461,25 +461,47 @@ export function substituteType(
   }
   if (type.kind === TypeKind.Function) {
     const ft = type as FunctionType;
+    const newParameters = ft.parameters.map((t) =>
+      substituteType(t, typeMap, ctx),
+    );
+    const newReturnType = substituteType(ft.returnType, typeMap, ctx);
+
+    // Return original if nothing changed
+    const paramsChanged = newParameters.some((t, i) => t !== ft.parameters[i]);
+    if (!paramsChanged && newReturnType === ft.returnType) {
+      return type;
+    }
+
     return {
       ...ft,
-      parameters: ft.parameters.map((t) => substituteType(t, typeMap, ctx)),
-      returnType: substituteType(ft.returnType, typeMap, ctx),
+      parameters: newParameters,
+      returnType: newReturnType,
     } as FunctionType;
   }
   if (type.kind === TypeKind.Union) {
     const ut = type as UnionType;
+    const newTypes = ut.types.map((t) => substituteType(t, typeMap, ctx));
+
+    const typesChanged = newTypes.some((t, i) => t !== ut.types[i]);
+    if (!typesChanged) {
+      return type;
+    }
+
     return {
       ...ut,
-      types: ut.types.map((t) => substituteType(t, typeMap, ctx)),
+      types: newTypes,
     } as UnionType;
   }
   if (type.kind === TypeKind.Record) {
     const rt = type as RecordType;
     const newProperties = new Map<string, Type>();
+    let changed = false;
     for (const [key, value] of rt.properties) {
-      newProperties.set(key, substituteType(value, typeMap, ctx));
+      const newValue = substituteType(value, typeMap, ctx);
+      if (newValue !== value) changed = true;
+      newProperties.set(key, newValue);
     }
+    if (!changed) return type;
     return {
       ...rt,
       properties: newProperties,
@@ -487,16 +509,26 @@ export function substituteType(
   }
   if (type.kind === TypeKind.Tuple) {
     const tt = type as TupleType;
+    const newElementTypes = tt.elementTypes.map((t) =>
+      substituteType(t, typeMap, ctx),
+    );
+    const changed = newElementTypes.some((t, i) => t !== tt.elementTypes[i]);
+    if (!changed) return type;
     return {
       ...tt,
-      elementTypes: tt.elementTypes.map((t) => substituteType(t, typeMap, ctx)),
+      elementTypes: newElementTypes,
     } as TupleType;
   }
   if (type.kind === TypeKind.InlineTuple) {
     const ut = type as InlineTupleType;
+    const newElementTypes = ut.elementTypes.map((t) =>
+      substituteType(t, typeMap, ctx),
+    );
+    const changed = newElementTypes.some((t, i) => t !== ut.elementTypes[i]);
+    if (!changed) return type;
     return {
       ...ut,
-      elementTypes: ut.elementTypes.map((t) => substituteType(t, typeMap, ctx)),
+      elementTypes: newElementTypes,
     } as InlineTupleType;
   }
   return type;
@@ -550,12 +582,7 @@ function resolveTypeAnnotationInternal(
 
   // Handle `this` type annotation
   if (annotation.type === NodeType.ThisTypeAnnotation) {
-    // In a class context, resolve immediately to the class type
-    if (ctx.currentClass) {
-      return ctx.currentClass;
-    }
-    // In an interface context, keep as ThisType (resolved during implementation checking)
-    if (ctx.currentInterface) {
+    if (ctx.currentClass || ctx.currentInterface) {
       return {kind: TypeKind.This} as ThisType;
     }
     // Not in a class or interface
@@ -1556,7 +1583,6 @@ export function typesEqual(a: Type, b: Type): boolean {
     case TypeKind.Unknown:
     case TypeKind.Error:
     case TypeKind.ByteArray:
-    case TypeKind.This:
       return true;
     default:
       // Fall back to string comparison for unhandled cases
@@ -1664,6 +1690,21 @@ export function isAssignableTo(
   if (source.kind === TypeKind.Never) return true;
   if (source.kind === TypeKind.Error || target.kind === TypeKind.Error)
     return true;
+  if (source.kind === TypeKind.This && target.kind === TypeKind.This)
+    return true;
+
+  if (target.kind === TypeKind.This) {
+    if (ctx.currentClass && isAssignableTo(ctx, source, ctx.currentClass)) {
+      return true;
+    }
+  }
+
+  if (source.kind === TypeKind.This) {
+    if (ctx.currentClass && isAssignableTo(ctx, ctx.currentClass, target)) {
+      return true;
+    }
+  }
+
   if (source.kind === TypeKind.Unknown || target.kind === TypeKind.Unknown) {
     // Record internal error if it leaked to assignability checks unnoticed ? Wait, is that safe? Let's trace it.
     ctx.diagnostics.reportError(

@@ -207,28 +207,27 @@ function resolveMemberType(
   memberType: Type,
   ctx: CheckerContext,
 ): Type {
-  // If the class doesn't have type arguments, no substitution needed
-  if (!classType.typeArguments || classType.typeArguments.length === 0) {
-    return memberType;
-  }
+  const typeMap = new Map<string, Type>();
+  // We ALWAYS substitute $this so that polymorphic 'this' returns correctly.
+  typeMap.set('$this', classType);
 
-  // Get the type parameters from genericSource or the class itself
   const source = (classType as ClassType).genericSource || classType;
   const typeParameters = source.typeParameters;
 
-  if (!typeParameters || typeParameters.length === 0) {
-    return memberType;
+  if (
+    typeParameters &&
+    typeParameters.length > 0 &&
+    (classType as ClassType).typeArguments
+  ) {
+    typeParameters.forEach((param: TypeParameterType, index: number) => {
+      const typeArgs = (classType as ClassType).typeArguments!;
+      if (index < typeArgs.length) {
+        typeMap.set(param.name, typeArgs[index]);
+      }
+    });
   }
 
-  // Create a typeMap from type parameter names to type arguments
-  const typeMap = new Map<string, Type>();
-  typeParameters.forEach((param: TypeParameterType, index: number) => {
-    if (index < classType.typeArguments!.length) {
-      typeMap.set(param.name, classType.typeArguments![index]);
-    }
-  });
-
-  // Substitute type parameters in the member type
+  // Substitute type parameters and 'this' in the member type
   return substituteType(memberType, typeMap, ctx);
 }
 
@@ -3683,6 +3682,14 @@ function checkMemberExpression(
     return Types.Error;
   }
 
+  if (objectType.kind === TypeKind.This) {
+    if (ctx.currentClass) {
+      objectType = ctx.currentClass;
+    } else if (ctx.currentInterface) {
+      objectType = ctx.currentInterface;
+    }
+  }
+
   if (
     objectType.kind !== TypeKind.Class &&
     objectType.kind !== TypeKind.Interface
@@ -3892,8 +3899,6 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
     return ctx.currentClass.onType;
   }
 
-  // ctx.currentClass already has typeArguments = typeParameters for generic classes
-  // (set by enterClass), so we can just return it directly.
   return ctx.currentClass;
 }
 
