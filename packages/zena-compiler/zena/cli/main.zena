@@ -1,0 +1,39 @@
+import { getArguments, exit, ExitCode } from 'zena:cli';
+import { console } from 'zena:console';
+import { readFile } from 'zena:fs';
+import { CompilerHost } from '../lib/library-loader.zena';
+import { PackageConfig } from '../lib/module-resolver.zena';
+import { createCompiler, CompilerOptions } from '../lib/compiler.zena';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { HashMap } from 'zena:map';
+import { Program } from '../lib/program.zena';
+
+class WasiHost implements CompilerHost {
+  readFile(path: String): String {
+    // For now, let's just attempt to read it from the underlying mapped directory.
+    return readFile(path);
+  }
+}
+
+export let main = (): i32 => {
+  let args = getArguments();
+  if (args.length < 2) {
+    console.error('Usage: zc <filename>');
+    exit(1);
+  }
+
+  let filename = args[1];
+
+  let host = new WasiHost();
+  let packages = new HashMap<String, PackageConfig>();
+  // We'll hardcode stdlib path mapping for now or assume it will be passed 
+  let options = new CompilerOptions("wasi", "/stdlib", packages);
+  let compiler = createCompiler(host, options);
+
+  console.log("Compiling " + filename + "...");
+  
+  // TODO: Call compiler, get result, pass to WatGenerator, output to stdout.
+  // let result = compiler.compile(filename);
+
+  return 0;
+};
