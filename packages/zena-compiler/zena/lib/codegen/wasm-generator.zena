@@ -1,7 +1,7 @@
 import { 
-  Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern, Identifier, 
-  NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement, ReturnStatement, 
-  ExpressionStatement, Statement, Expression, CallExpression
+  Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern,
+  Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
+  ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { CodeGenerator } from './code-generator.zena';
@@ -14,48 +14,134 @@ import { SectionId, ValType, Opcode } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 
-class FunctionSignature {
-  params: Array<i32>;
-  returns: Array<i32>;
-  new(params: Array<i32>, returns: Array<i32>) : params = params, returns = returns {}
+/**
+ * Represents a reference to an entity that has a WebAssembly type index.
+ * Before layout runs, the index is -1.
+ */
+class WasmType {
+  var index: i32 = -1;
 }
 
 /**
- * The stateless entry point for WebAssembly code generation.
- * Creates a module builder and delegates the compilation of the given program.
+ * A WebAssembly function signature.
+ * Deduped by the module so identical signatures share the same type index.
+ * Params and returns are represented by WebAssembly ValType enums (e.g. i32, f64).
  */
-export class WasmGenerator implements CodeGenerator<ByteBuffer> {
-  backendName(): String { return 'wasm'; }
+class WasmSignature extends WasmType {
+  params: Array<ValType>;
+  returns: Array<ValType>;
+  new(this.params, this.returns) : super();
+}
+
+/**
+ * Represents a single compiled WebAssembly function.
+ * Tracks its eventual index, signature, and the AST node it was derived from.
+ */
+class WasmFunction {
+  var index: i32 = -1;
+  signature: WasmSignature;
+  node: FunctionExpression;
+  new(this.signature, this.node);
+}
+
+/**
+ * Owns the intermediate representation of the WebAssembly module layout.
+ * Acts as the registry for all WebAssembly entities (types, functions).
+ * The DiscoveryPass populates this during AST traversal.
+ */
+class WasmModule {
+  types = new Array<WasmType>();
   
-  generate(program: Program): ByteBuffer {
-    let builder = new WasmModuleBuilder(program);
-    return builder.build();
+  /** 
+   * A complete list of all functions in the module, including anonymous
+   * functions that do not have a corresponding symbol. Array order dictates
+   * the final WebAssembly function index.
+   */
+  functions = new Array<WasmFunction>();
+  
+  /**
+   * Maps a Zena symbol ID to its compiled WebAssembly function.
+   * Used to resolve call targets. Anonymous functions will not be in this map.
+   */
+  functionMap = new HashMap<SymbolId, WasmFunction>();
+  
+  /**
+   * Gets an existing WasmSignature if one matches the given parameters and
+   * returns, or creates a new one and adds it to the type pool.
+   * 
+   * This performs a linear search through the existing types to find a
+   * structural match, deduplicating identical signatures so they share the same
+   * WebAssembly type index.
+   */
+  getSignature(params: Array<ValType>, returns: Array<ValType>): WasmSignature {
+    for (let t in this.types) {
+      if (t is WasmSignature) {
+        let sig = t as WasmSignature;
+        if (sig.params.length == params.length &&
+            sig.returns.length == returns.length) {
+          var match = true;
+          // TODO: we really need array.equals() or at least array.every()
+          for (var i = 0; i < params.length; i += 1) {
+            if (sig.params[i] != params[i]) {
+              match = false;
+              break;
+            }
+          }
+          if (match) {
+            for (var i = 0; i < returns.length; i += 1) {
+              if (sig.returns[i] != returns[i]) {
+                match = false;
+                break;
+              }
+            }
+          }
+          if (match) {
+            return sig;
+          }
+        }
+      }
+    }
+    let sig = new WasmSignature(params, returns);
+    this.types.push(sig);
+    return sig;
+  }
+  
+  addFunction(func: WasmFunction): void {
+    this.functions.push(func);
+  }
+  
+  /**
+   * Locks in the module layout, assigning final WebAssembly indices (i32)
+   * to all types, functions, and globals. Must be called after all
+   * discoveries are made, but before the emission passes begin.
+   */
+  layout(): void {
+    for (var i = 0; i < this.types.length; i += 1) {
+      let t = this.types[i];
+      t.index = i;
+    }
+    for (var i = 0; i < this.functions.length; i += 1) {
+      let f = this.functions[i];
+      f.index = i;
+    }
   }
 }
 
 /**
- * Manages the global state and construction of a single WebAssembly module.
- * Handles section layout, function signature collection, global indices,
- * and orchestrates the building of individual functions.
+ * Traverses a Zena Program's AST to discover all functions, structs, and 
+ * imports that need to be emitted into the WebAssembly module.
+ * Dedupes signatures and assigns Zena Symbols to WasmFunctions.
  */
-class WasmModuleBuilder {
+class DiscoveryPass {
   program: Program;
-  signatures = new Array<FunctionSignature>();
-  functions = new Array<FunctionExpression>();
-  functionIndices = new HashMap<SymbolId, i32>();
-
-  new(this.program);
-
-  build(): ByteBuffer {
-    let bb = new ByteBuffer();
+  wasm: WasmModule;
+  new(this.program, this.wasm);
+  
+  /**
+   * Run the discovery pass on the program, populating the given WasmModule.
+   */
+  run(): void {
     let model = this.program.model;
-    
-    // Magic: \0asm
-    bb.writeU32(0x6D736100);
-    // Version: 1
-    bb.writeU32(0x00000001);
-    
-    // First pass: collect function signatures
     for (let mod in this.program.modules) {
       for (let stmt in mod.body) {
         match (stmt) {
@@ -64,21 +150,19 @@ class WasmModuleBuilder {
             let varDecl = stmt as VariableDeclaration;
             if (varDecl.init is FunctionExpression) {
               let funcExpr = varDecl.init as FunctionExpression;
-              let params = new Array<i32>();
-              let returns = new Array<i32>();
-              returns.push(ValType.i32 as i32); // Hardcoded i32 return for main
+              let params = new Array<ValType>();
+              let returns = new Array<ValType>();
+              returns.push(ValType.i32); // Hardcoded i32 return for main
               
-              let sigIndex = this.signatures.length;
-              this.signatures.push(new FunctionSignature(params, returns));
-              
-              let funcIndex = this.functions.length;
-              this.functions.push(funcExpr);
+              let sig = this.wasm.getSignature(params, returns);
+              let wasmFunc = new WasmFunction(sig, funcExpr);
+              this.wasm.addFunction(wasmFunc);
               
               if (varDecl.pattern is IdentifierPattern) {
                 let ident = varDecl.pattern as IdentifierPattern;
                 let sym = model.resolveDeclaration(ident);
                 if (sym != null) {
-                  this.functionIndices[sym.id] = funcIndex;
+                  this.wasm.functionMap[sym.id] = wasmFunc;
                 }
               }
             }
@@ -89,66 +173,108 @@ class WasmModuleBuilder {
         }
       }
     }
+  }
+}
+
+/**
+ * The stateless entry point for WebAssembly code generation.
+ * Creates a module builder and delegates the compilation of the given program.
+ */
+export class WasmGenerator implements CodeGenerator<ByteBuffer> {
+  backendName(): String { return 'wasm'; }
+  
+  generate(program: Program): ByteBuffer {
+    let wasm = new WasmModule();
+    let pass = new DiscoveryPass(program, wasm);
+    pass.run();
+    wasm.layout();
     
-    if (this.signatures.length > 0) {
+    let builder = new WasmModuleBuilder(wasm, program.entryPoint, program.model);
+    return builder.build();
+  }
+}
+
+/**
+ * Manages the global state and construction of a single WebAssembly module.
+ * Handles section layout, function signature collection, global indices,
+ * and orchestrates the building of individual functions.
+ */
+class WasmModuleBuilder {
+  wasm: WasmModule;
+  entryPoint: VariableDeclaration;
+  model: SemanticModel;
+
+  new(this.wasm, this.entryPoint, this.model);
+
+  build(): ByteBuffer {
+    let bb = new ByteBuffer();
+    
+    // Magic: \0asm
+    bb.writeU32(0x6D736100);
+    // Version: 1
+    bb.writeU32(0x00000001);
+    
+    if (this.wasm.types.length > 0) {
       // Type section (1)
       let typeSection = new ByteBuffer();
-      typeSection.writeULEB128(this.signatures.length); // count
-      for (let sig in this.signatures) {
-        typeSection.writeByte(0x60); // func
-        typeSection.writeULEB128(sig.params.length);
-        for (let param in sig.params) {
-          typeSection.writeByte(param);
-        }
-        typeSection.writeULEB128(sig.returns.length);
-        for (let ret in sig.returns) {
-          typeSection.writeByte(ret);
+      typeSection.writeULEB128(this.wasm.types.length); // count
+      for (let t in this.wasm.types) {
+        if (t is WasmSignature) {
+          let sig = t as WasmSignature;
+          typeSection.writeByte(ValType.func as i32);
+          typeSection.writeULEB128(sig.params.length);
+          for (let param in sig.params) {
+            typeSection.writeByte(param as i32);
+          }
+          typeSection.writeULEB128(sig.returns.length);
+          for (let ret in sig.returns) {
+            typeSection.writeByte(ret as i32);
+          }
         }
       }
       this.writeSection(bb, SectionId.Type as i32, typeSection);
     }
     
-    // Function section (3) - tie func to type 0
-    if (this.functions.length > 0) {
+    // Function section (3)
+    if (this.wasm.functions.length > 0) {
       let funcSection = new ByteBuffer();
-      funcSection.writeULEB128(this.functions.length); // count
-      for (var i = 0; i < this.functions.length; i += 1) {
-        funcSection.writeULEB128(i); // type index (assuming 1:1 mapping for now)
+      funcSection.writeULEB128(this.wasm.functions.length); // count
+      for (let f in this.wasm.functions) {
+        funcSection.writeULEB128(f.signature.index);
       }
       this.writeSection(bb, SectionId.Function as i32, funcSection);
     }
     
-    let varDecl = this.program.entryPoint;
+    let varDecl = this.entryPoint;
     if (varDecl != null) {
       if (varDecl.pattern is IdentifierPattern) {
         let ident = varDecl.pattern as IdentifierPattern;
-        let sym = model.resolveDeclaration(ident);
-        if (sym != null && this.functionIndices.has(sym.id)) {
-          let funcIdx = this.functionIndices[sym.id];
+        let sym = this.model.resolveDeclaration(ident);
+        if (sym != null && this.wasm.functionMap.has(sym.id)) {
+          let wasmFunc = this.wasm.functionMap[sym.id];
           // Export section (7)
           let exportSection = new ByteBuffer();
           exportSection.writeULEB128(1); // count
           
           let nameLen = ident.name.length;
           exportSection.writeULEB128(nameLen); // name length
-          // TODO: Add ByteBuffer.writeString()
           for (var i = 0; i < nameLen; i += 1) {
             exportSection.writeByte(ident.name.getByteAt(i));
           }
           
           exportSection.writeByte(0); // export kind: func
-          exportSection.writeULEB128(funcIdx); // func index
+          exportSection.writeULEB128(wasmFunc.index); // func index
           this.writeSection(bb, SectionId.Export as i32, exportSection);
         }
       }
     }
     
-    if (this.functions.length > 0) {
+    if (this.wasm.functions.length > 0) {
       let codeSection = new ByteBuffer();
-      codeSection.writeULEB128(this.functions.length); // count
+      codeSection.writeULEB128(this.wasm.functions.length); // count
       
-      for (let funcExpr in this.functions) {
-        let funcBuilder = new WasmFunctionBuilder(this, funcExpr);
+      for (let wasmFunc in this.wasm.functions) {
+        let funcBuilder = new WasmFunctionBuilder(this, wasmFunc);
         let funcBuffer = funcBuilder.build();
         
         let funcBody = new ByteBuffer();
@@ -167,24 +293,24 @@ class WasmModuleBuilder {
 
   writeSection(bb: ByteBuffer, id: i32, payload: ByteBuffer): void {
     bb.writeByte(id);
-/**
- * Manages the local state for compiling a single Zena function into WebAssembly.
- * Tracks local opcodes, variables, and control flow blocks.
- */
     bb.writeULEB128(payload.length);
     bb.writeBuffer(payload);
   }
 }
 
+/**
+ * Manages the local state for compiling a single WebAssembly function.
+ * Tracks local indices and control flow blocks for a single function scope.
+ */
 class WasmFunctionBuilder {
   moduleBuilder: WasmModuleBuilder;
-  node: FunctionExpression;
+  wasmFunction: WasmFunction;
   var #code = new ByteBuffer();
 
-  new(this.moduleBuilder, this.node);
+  new(this.moduleBuilder, this.wasmFunction);
 
   build(): ByteBuffer {
-    let body = this.node.body;
+    let body = this.wasmFunction.node.body;
     match (body) {
       case BlockStatement: {
         let block = body as BlockStatement;
@@ -234,14 +360,16 @@ class WasmFunctionBuilder {
         match (callee) {
           case Identifier: {
             let ident = callee as Identifier;
-            let model = this.moduleBuilder.program.model;
+            let model = this.moduleBuilder.model;
             let sym = model.resolve(ident);
-            if (sym != null && this.moduleBuilder.functionIndices.has(sym.id)) {
+            if (sym != null && 
+                this.moduleBuilder.wasm.functionMap.has(sym.id)) {
               for (let arg in args) {
                 this.generateExpression(arg);
               }
               this.writeOpcode(Opcode.call);
-              this.#code.writeULEB128(this.moduleBuilder.functionIndices[sym.id]);
+              this.#code.writeULEB128(
+                this.moduleBuilder.wasm.functionMap[sym.id].index);
               return;
             }
           }
@@ -254,11 +382,11 @@ class WasmFunctionBuilder {
         let (ok, val) = parseI32(raw);
         if (!ok) {
           throw new Error(
-            `Failed to parse i32 from number literal (unsupported format?): ${raw}`
-          );
+            'Failed to parse i32 from number literal (unsupported format?): ' +
+                raw);
         }
         this.writeOpcode(Opcode.i32_const);
-        // TODO: val should already be narrowed to i33
+        // TODO: val should already be narrowed to i32
         this.#code.writeSLEB128(val as i32);
       }
       case BooleanLiteral {value}: {
