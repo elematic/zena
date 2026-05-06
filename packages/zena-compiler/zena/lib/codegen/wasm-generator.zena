@@ -1,17 +1,19 @@
 import { 
   Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
-  ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression
+  ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
+  ImportDeclaration, ImportSpecifier
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { CodeGenerator } from './code-generator.zena';
-import { Program } from '../program.zena';
-import { SymbolId } from '../scope/symbol.zena';
+import { Program, CompilationUnit } from '../program.zena';
+import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ByteBuffer } from 'zena:byte-buffer';
 import { parseI32 } from 'zena:string-convert';
 import { SectionId, ValType, Opcode } from './wasm.zena';
 import { Array } from 'zena:array';
+import { console } from 'zena:console';
 import { HashMap } from 'zena:map';
 
 /**
@@ -38,10 +40,12 @@ class WasmSignature extends WasmType {
  * Tracks its eventual index, signature, and the AST node it was derived from.
  */
 class WasmFunction {
+  /** The semantic model of the module that declares this function. */
+  model: SemanticModel;
   var index: i32 = -1;
   signature: WasmSignature;
   node: FunctionExpression;
-  new(this.signature, this.node);
+  new(this.signature, this.node, this.model);
 }
 
 /**
@@ -64,6 +68,7 @@ class WasmModule {
    * Used to resolve call targets. Anonymous functions will not be in this map.
    */
   functionMap = new HashMap<SymbolId, WasmFunction>();
+  exportMap = new HashMap<String, WasmFunction>();
   
   /**
    * Gets an existing WasmSignature if one matches the given parameters and
@@ -141,8 +146,9 @@ class DiscoveryPass {
    * Run the discovery pass on the program, populating the given WasmModule.
    */
   run(): void {
-    let model = this.program.model;
-    for (let mod in this.program.modules) {
+    for (let unit in this.program.units) {
+      let mod = unit.ast;
+      let moduleModel = unit.model;
       for (let stmt in mod.body) {
         match (stmt) {
           case VariableDeclaration: {
@@ -155,18 +161,23 @@ class DiscoveryPass {
               returns.push(ValType.i32); // Hardcoded i32 return for main
               
               let sig = this.wasm.getSignature(params, returns);
-              let wasmFunc = new WasmFunction(sig, funcExpr);
+              // moduleModel already extracted from unit
+                let wasmFunc = new WasmFunction(sig, funcExpr, moduleModel);
               this.wasm.addFunction(wasmFunc);
               
               if (varDecl.pattern is IdentifierPattern) {
                 let ident = varDecl.pattern as IdentifierPattern;
-                let sym = model.resolveDeclaration(ident);
+                let sym = moduleModel.resolveDeclaration(ident);
                 if (sym != null) {
                   this.wasm.functionMap[sym.id] = wasmFunc;
+                    if (varDecl.exported) {
+                      this.wasm.exportMap[ident.name] = wasmFunc;
+                    }
                 }
               }
             }
           }
+          case ImportDeclaration: {}
           case _: {
             throw new Error("Unsupported top-level statement type in codegen");
           }
@@ -189,7 +200,7 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
     pass.run();
     wasm.layout();
     
-    let builder = new WasmModuleBuilder(wasm, program.entryPoint, program.model);
+    let builder = new WasmModuleBuilder(wasm, program.entryPoint);
     return builder.build();
   }
 }
@@ -201,10 +212,9 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
  */
 class WasmModuleBuilder {
   wasm: WasmModule;
-  entryPoint: Module | null;
-  model: SemanticModel;
+  entryPoint: CompilationUnit | null;
 
-  new(this.wasm, this.entryPoint, this.model);
+  new(this.wasm, this.entryPoint);
 
   build(): ByteBuffer {
     let bb = new ByteBuffer();
@@ -245,8 +255,9 @@ class WasmModuleBuilder {
       this.writeSection(bb, SectionId.Function as i32, funcSection);
     }
     
-    let entryMod = this.entryPoint;
-    if (entryMod != null) {
+    if (this.entryPoint != null) {
+      let entryMod = (this.entryPoint as CompilationUnit).ast;
+      let model = (this.entryPoint as CompilationUnit).model;
       let exports = new Array<WasmFunction>();
       let exportNames = new Array<String>();
       
@@ -255,7 +266,7 @@ class WasmModuleBuilder {
           let varDecl = stmt as VariableDeclaration;
           if (varDecl.exported && varDecl.pattern is IdentifierPattern) {
             let ident = varDecl.pattern as IdentifierPattern;
-            let sym = this.model.resolveDeclaration(ident);
+            let sym = model.resolveDeclaration(ident);
             if (sym != null && this.wasm.functionMap.has(sym.id)) {
               let wasmFunc = this.wasm.functionMap[sym.id];
               exports.push(wasmFunc);
@@ -379,17 +390,44 @@ class WasmFunctionBuilder {
         match (callee) {
           case Identifier: {
             let ident = callee as Identifier;
-            let model = this.moduleBuilder.model;
+            let model = this.wasmFunction.model;
             let sym = model.resolve(ident);
-            if (sym != null && 
-                this.moduleBuilder.wasm.functionMap.has(sym.id)) {
+            
+            // To generate a function call, we first look up the identifier's
+            // resolved symbol. There are a few possibilities:
+            // 1. The symbol is null (compilation error, shouldn't reach codegen).
+            // 2. The symbol points to a function directly declared in the AST,
+            //    so it was recorded in the `functionMap` during the DiscoveryPass.
+            // 3. The symbol points to an `ImportSpecifier`. We extract the imported
+            //    name and locate the actual function in the global `exportMap`.
+
+            if (sym == null) {
+              throw new Error("Unresolved identifier in codegen: " + ident.name);
+            }
+            
+            // TODO: fix narrowing after throws
+            if (this.moduleBuilder.wasm.functionMap.has((sym as Symbol).id)) {
               for (let arg in args) {
                 this.generateExpression(arg);
               }
               this.writeOpcode(Opcode.call);
-              this.#code.writeULEB128(
-                this.moduleBuilder.wasm.functionMap[sym.id].index);
+              this.#code.writeULEB128(this.moduleBuilder.wasm.functionMap[(sym as Symbol).id].index);
               return;
+            } else {
+              if ((sym as Symbol).declaration is ImportSpecifier) {
+                let spec = (sym as Symbol).declaration as ImportSpecifier;
+                let importedName = spec.imported.name;
+                if (this.moduleBuilder.wasm.exportMap.has(importedName)) {
+                  for (let arg in args) {
+                    this.generateExpression(arg);
+                  }
+                  this.writeOpcode(Opcode.call);
+                  this.#code.writeULEB128(this.moduleBuilder.wasm.exportMap[importedName].index);
+                  return;
+                }
+                throw new Error("Export map missing: " + importedName);
+              }
+              throw new Error("Could not resolve function call target");
             }
           }
           case _: {

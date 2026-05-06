@@ -7,7 +7,7 @@ import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compil
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { WasmGenerator } from '../lib/codegen/wasm-generator.zena';
 import { HashMap } from 'zena:map';
-import { Program } from '../lib/program.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
 import { Module, Statement, VariableDeclaration } from '../lib/ast.zena';
 import { Array } from 'zena:array';
 import { SemanticModel } from '../lib/semantic-model.zena';
@@ -48,7 +48,6 @@ export let main = (): i32 => {
       console.error("Dependency cycle detected");
       exit(1);
     }
-    console.log("Compile result ok");
 
     let checkResults = checkCompilation(compResult, null, false);
     let diagnostics = checkResults.diagnostics;
@@ -63,14 +62,24 @@ export let main = (): i32 => {
     if (hasError) {
       exit(1);
     }
+    
     let mainModel = checkResults.results[filename].model;
-
-    let ast = compResult.entry.ast as Module;
-    console.log("Compile hit ast");
-
-    let modules = new Array<Module>();
-    modules.push(ast);
-    let program = new Program(modules, mainModel, ast);
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkResults.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    let program = new Program(units, entryUnit);
     
     let generator = new WasmGenerator();
     let wasmBytes = generator.generate(program).toByteArray();

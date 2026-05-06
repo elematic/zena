@@ -1,18 +1,30 @@
 import { Module, VariableDeclaration } from './ast.zena';
 import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
 import { SemanticModel } from './semantic-model.zena';
+
+export type CompilationUnit = {
+  ast: Module,
+  model: SemanticModel
+};
 
 /**
  * An immutable snapshot of a single compilation state.
- * Encapsulates the modules, semantic model, and entry point.
- * 
- * TODO: In the future, this will also encapsulate caching and fast lookups
- * to support incremental compilation and Language Server (LSP) functionality.
+ * Encapsulates the compilation units and entry point.
  */
 export class Program {
-  modules: Array<Module>;
-  model: SemanticModel;
-  entryPoint: Module | null;
+  // This array maintains topological ordering guarantees from the compiler
+  // pipeline, which is necessary for sequential WebAssembly code emission.
+  // Although a tree walk (DFS) over a module dependency graph could derive
+  // the order dynamically, doing the topological sort once up front and storing
+  // it prevents redundant walks during code generation.
+  units: Array<CompilationUnit>;
+  unitsByPath = new HashMap<String, CompilationUnit>();
+  entryPoint: CompilationUnit | null;
 
-  new(this.modules, this.model, this.entryPoint = null);
+  new(this.units, this.entryPoint = null) {
+    for (let u in this.units) {
+      this.unitsByPath[u.ast.path] = u;
+    }
+  }
 }
