@@ -67,25 +67,10 @@ export let main = (): i32 => {
 
     let ast = compResult.entry.ast as Module;
     console.log("Compile hit ast");
-    var entryVar: VariableDeclaration | null = null;
-    for (let stmt in ast.body) {
-      if (stmt is VariableDeclaration) {
-        let varDecl = stmt as VariableDeclaration;
-        if (varDecl.exported) {
-          entryVar = varDecl;
-          break;
-        }
-      }
-    }
-
-    if (entryVar == null) {
-      console.error("Entry point must export a let variable (e.g. export let main = ...)");
-      exit(1);
-    }
 
     let modules = new Array<Module>();
     modules.push(ast);
-    let program = new Program(modules, mainModel, entryVar);
+    let program = new Program(modules, mainModel, ast);
     
     let generator = new WasmGenerator();
     let wasmBytes = generator.generate(program).toByteArray();

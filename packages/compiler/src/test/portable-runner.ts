@@ -569,13 +569,15 @@ async function runExecutionTest(
     }
   };
 
-  // Handle @throws directive - expect an exception
+  const invokeTarget = directives.invoke || 'main';
+
+    // Handle @throws directive - expect an exception
   if (directives.throws) {
-    if (!instanceExports.main) {
-      throw new Error('Test expects throws but no main function found');
+    if (!instanceExports[invokeTarget]) {
+      throw new Error(`Test expects throws but no ${invokeTarget} function found`);
     }
     try {
-      (instanceExports.main as Function)();
+      (instanceExports[invokeTarget] as Function)();
       throw new Error(
         `Expected ${directives.throws} exception but none was thrown`,
       );
@@ -594,8 +596,8 @@ async function runExecutionTest(
     }
   }
 
-  if (instanceExports.main) {
-    const ret = (instanceExports.main as Function)();
+  if (instanceExports[invokeTarget]) {
+    const ret = (instanceExports[invokeTarget] as Function)();
     if (directives.result) {
       let actual: string;
 

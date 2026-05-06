@@ -23,26 +23,34 @@ export class WatGenerator implements CodeGenerator<String> {
     
     this.sb.append('(module\n');
     
-    let varDecl = program.entryPoint;
-    if (varDecl != null) {
-      let initNode = varDecl.init;
-      if (initNode is FunctionExpression) {
-        let fnExpr = initNode as FunctionExpression;
-        this.sb.append('  (func $main (result i32)\n');
-        
-        let body = fnExpr.body;
-        if (body is BlockStatement) {
-          let block = body as BlockStatement;
-          for (let stmt in block.body) {
-            this.processStatement(stmt);
+    let entryMod = program.entryPoint;
+    if (entryMod != null) {
+      for (let stmt in entryMod.body) {
+        if (stmt is VariableDeclaration) {
+          let varDecl = stmt as VariableDeclaration;
+          if (varDecl.exported) {
+            let initNode = varDecl.init;
+            if (initNode is FunctionExpression) {
+              let fnExpr = initNode as FunctionExpression;
+              let name = if (varDecl.pattern is IdentifierPattern) (varDecl.pattern as IdentifierPattern).name else "unknown";
+              this.sb.append('  (func $').append(name).append(' (result i32)\n');
+              
+              let body = fnExpr.body;
+              if (body is BlockStatement) {
+                let block = body as BlockStatement;
+                for (let s in block.body) {
+                  this.processStatement(s);
+                }
+              } else if (body is Expression) {
+                this.processExpression(body as Expression);
+                this.sb.append('    return\n');
+              }
+              
+              this.sb.append('  )\n');
+              this.sb.append('  (export "').append(name).append('" (func $').append(name).append('))\n');
+            }
           }
-        } else if (body is Expression) {
-          this.processExpression(body as Expression);
-          this.sb.append('    return\n');
         }
-        
-        this.sb.append('  )\n');
-        this.sb.append('  (export "main" (func $main))\n');
       }
     }
     

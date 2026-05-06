@@ -201,7 +201,7 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
  */
 class WasmModuleBuilder {
   wasm: WasmModule;
-  entryPoint: VariableDeclaration;
+  entryPoint: Module | null;
   model: SemanticModel;
 
   new(this.wasm, this.entryPoint, this.model);
@@ -245,27 +245,46 @@ class WasmModuleBuilder {
       this.writeSection(bb, SectionId.Function as i32, funcSection);
     }
     
-    let varDecl = this.entryPoint;
-    if (varDecl != null) {
-      if (varDecl.pattern is IdentifierPattern) {
-        let ident = varDecl.pattern as IdentifierPattern;
-        let sym = this.model.resolveDeclaration(ident);
-        if (sym != null && this.wasm.functionMap.has(sym.id)) {
-          let wasmFunc = this.wasm.functionMap[sym.id];
-          // Export section (7)
-          let exportSection = new ByteBuffer();
-          exportSection.writeULEB128(1); // count
+    let entryMod = this.entryPoint;
+    if (entryMod != null) {
+      let exports = new Array<WasmFunction>();
+      let exportNames = new Array<String>();
+      
+      for (let stmt in entryMod.body) {
+        if (stmt is VariableDeclaration) {
+          let varDecl = stmt as VariableDeclaration;
+          if (varDecl.exported && varDecl.pattern is IdentifierPattern) {
+            let ident = varDecl.pattern as IdentifierPattern;
+            let sym = this.model.resolveDeclaration(ident);
+            if (sym != null && this.wasm.functionMap.has(sym.id)) {
+              let wasmFunc = this.wasm.functionMap[sym.id];
+              exports.push(wasmFunc);
+              exportNames.push(ident.name);
+            }
+          }
+        }
+      }
+      
+      if (exports.length > 0) {
+        // Export section (7)
+        let exportSection = new ByteBuffer();
+        exportSection.writeULEB128(exports.length); // count
+        
+        for (var i = 0; i < exports.length; i += 1) {
+          let name = exportNames[i];
+          let wasmFunc = exports[i];
           
-          let nameLen = ident.name.length;
+          let nameLen = name.length;
           exportSection.writeULEB128(nameLen); // name length
-          for (var i = 0; i < nameLen; i += 1) {
-            exportSection.writeByte(ident.name.getByteAt(i));
+          for (var j = 0; j < nameLen; j += 1) {
+            exportSection.writeByte(name.getByteAt(j));
           }
           
           exportSection.writeByte(0); // export kind: func
           exportSection.writeULEB128(wasmFunc.index); // func index
-          this.writeSection(bb, SectionId.Export as i32, exportSection);
         }
+        
+        this.writeSection(bb, SectionId.Export as i32, exportSection);
       }
     }
     

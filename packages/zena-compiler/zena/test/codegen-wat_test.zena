@@ -8,20 +8,6 @@ import { Module, VariableDeclaration } from '../lib/ast.zena';
 import { Array } from 'zena:array';
 import { Program } from '../lib/program.zena';
 
-// Helper to mock an entrypoint declaration extraction
-let getFirstExport = (mod: Module): VariableDeclaration | null => {
-  for (var i = 0; i < mod.body.length; i += 1) {
-    let stmt = mod.body[i];
-    if (stmt is VariableDeclaration) {
-      let varDecl = stmt as VariableDeclaration;
-      if (varDecl.exported) {
-        return varDecl;
-      }
-    }
-  }
-  return null;
-};
-
 export let tests = suite('WatGenerator', (): void => {
   test('main returns i32 with block statement', (ctx: TestContext): void => {
     let source = 'export let main = (): i32 => { return 42; };';
@@ -32,9 +18,9 @@ export let tests = suite('WatGenerator', (): void => {
     let m = ast as Module;
     modules.push(m);
     
-    let entryPoint = getFirstExport(m);
-    isNotNull<VariableDeclaration>(entryPoint, 'Expected entry point');
-    let program = new Program(modules, model, entryPoint as VariableDeclaration);
+    let entryPoint = m;
+    
+    let program = new Program(modules, model, entryPoint);
 
     let generator = new WatGenerator();
     let result = generator.generate(program);
@@ -52,9 +38,9 @@ export let tests = suite('WatGenerator', (): void => {
     let m = ast as Module;
     modules.push(m);
     
-    let entryPoint = getFirstExport(m);
-    isNotNull<VariableDeclaration>(entryPoint, 'Expected entry point');
-    let program = new Program(modules, model, entryPoint as VariableDeclaration);
+    let entryPoint = m;
+    
+    let program = new Program(modules, model, entryPoint);
 
     let generator = new WatGenerator();
     let result = generator.generate(program);
@@ -74,9 +60,9 @@ export let tests = suite('WatGenerator', (): void => {
     let modules = new Array<Module>();
     let m = ast as Module;
     modules.push(m);
-    let entryPoint = getFirstExport(m);
-    isNotNull<VariableDeclaration>(entryPoint, 'Expected entry point');
-    let program = new Program(modules, model, entryPoint as VariableDeclaration);
+    let entryPoint = m;
+    
+    let program = new Program(modules, model, entryPoint);
 
     let generator = new WatGenerator();
     let result = generator.generate(program);
@@ -84,5 +70,25 @@ export let tests = suite('WatGenerator', (): void => {
     // This is currently failing/unimplemented in wat-generator, so we might just ensure it does not crash for now
     // let expected = '...';
     // equal(result, expected);
+  });
+
+  test('multiple exported functions', (ctx: TestContext): void => {
+    let source = 'export let foo = (): i32 => 1; export let bar = (): i32 => 2;';
+    let ast = parse(source, 'test.zena');
+    let model = new SemanticModel(); 
+
+    let modules = new Array<Module>();
+    let m = ast as Module;
+    modules.push(m);
+    
+    let entryPoint = m;
+    
+    let program = new Program(modules, model, entryPoint);
+
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    let expected = '(module\n  (func $foo (result i32)\n    (i32.const 1)\n    return\n  )\n  (export "foo" (func $foo))\n  (func $bar (result i32)\n    (i32.const 2)\n    return\n  )\n  (export "bar" (func $bar))\n)\n';
+    equal(result, expected);
   });
 });

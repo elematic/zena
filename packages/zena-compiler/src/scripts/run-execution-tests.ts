@@ -17,7 +17,7 @@ const DIM = '\x1b[2m';
 const NC = '\x1b[0m';
 
 async function run() {
-  const runList = ['return_42.zena', 'call_helper.zena'];
+  const runList = ['return_42.zena', 'call_helper.zena', 'invoke_test.zena'];
 
   let files = await glob(join(testsDir, '**/*.zena'));
   files = files.filter((f) => runList.some((r) => f.endsWith(r)));
@@ -35,13 +35,18 @@ async function run() {
     const relPath = relative(testsDir, file);
     const content = readFileSync(file, 'utf-8');
 
-    // Parse expected result
+    // Parse expected result and invocation target
     let expectedResult: string | undefined;
+    let invokeTarget = 'main';
     for (const line of content.split('\n')) {
-      const match = line.match(/\/\/\s*@result:\s*(\S+)/);
-      if (match) {
-        expectedResult = match[1];
-        break;
+      const matchResult = line.match(/\/\/\s*@result:\s*(\S+)/);
+      if (matchResult) {
+        expectedResult = matchResult[1];
+      }
+
+      const matchInvoke = line.match(/\/\/\s*@invoke:\s*(\S+)/);
+      if (matchInvoke) {
+        invokeTarget = matchInvoke[1];
       }
     }
 
@@ -87,7 +92,7 @@ async function run() {
         '-W',
         'function-references=y',
         '--invoke',
-        'main',
+        invokeTarget,
         wasmOut,
       ];
 
