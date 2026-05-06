@@ -20,23 +20,35 @@ class FunctionSignature {
   new(params: Array<i32>, returns: Array<i32>) : params = params, returns = returns {}
 }
 
+/**
+ * The stateless entry point for WebAssembly code generation.
+ * Creates a module builder and delegates the compilation of the given program.
+ */
 export class WasmGenerator implements CodeGenerator<ByteBuffer> {
-  var #code = new ByteBuffer();
-  var #signatures = new Array<FunctionSignature>();
-  var #functions = new Array<FunctionExpression>();
-  var #functionIndices = new HashMap<SymbolId, i32>();
-  var #model: SemanticModel | null = null;
-  
   backendName(): String { return 'wasm'; }
   
   generate(program: Program): ByteBuffer {
+    let builder = new WasmModuleBuilder(program);
+    return builder.build();
+  }
+}
+
+/**
+ * Manages the global state and construction of a single WebAssembly module.
+ * Handles section layout, function signature collection, global indices,
+ * and orchestrates the building of individual functions.
+ */
+class WasmModuleBuilder {
+  program: Program;
+  signatures = new Array<FunctionSignature>();
+  functions = new Array<FunctionExpression>();
+  functionIndices = new HashMap<SymbolId, i32>();
+
+  new(this.program);
+
+  build(): ByteBuffer {
     let bb = new ByteBuffer();
-    this.#code = new ByteBuffer();
-    this.#signatures = new Array<FunctionSignature>();
-    this.#functions = new Array<FunctionExpression>();
-    this.#functionIndices = new HashMap<SymbolId, i32>();
-    this.#model = program.model;
-    let model = program.model;
+    let model = this.program.model;
     
     // Magic: \0asm
     bb.writeU32(0x6D736100);
@@ -44,10 +56,11 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
     bb.writeU32(0x00000001);
     
     // First pass: collect function signatures
-    for (let mod in program.modules) {
+    for (let mod in this.program.modules) {
       for (let stmt in mod.body) {
         match (stmt) {
           case VariableDeclaration: {
+            // TODO: Cleanup when narrowing in match arms is fixed
             let varDecl = stmt as VariableDeclaration;
             if (varDecl.init is FunctionExpression) {
               let funcExpr = varDecl.init as FunctionExpression;
@@ -55,17 +68,17 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
               let returns = new Array<i32>();
               returns.push(ValType.i32 as i32); // Hardcoded i32 return for main
               
-              let sigIndex = this.#signatures.length;
-              this.#signatures.push(new FunctionSignature(params, returns));
+              let sigIndex = this.signatures.length;
+              this.signatures.push(new FunctionSignature(params, returns));
               
-              let funcIndex = this.#functions.length;
-              this.#functions.push(funcExpr);
+              let funcIndex = this.functions.length;
+              this.functions.push(funcExpr);
               
               if (varDecl.pattern is IdentifierPattern) {
                 let ident = varDecl.pattern as IdentifierPattern;
                 let sym = model.resolveDeclaration(ident);
                 if (sym != null) {
-                  this.#functionIndices[sym.id] = funcIndex;
+                  this.functionIndices[sym.id] = funcIndex;
                 }
               }
             }
@@ -77,11 +90,11 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
       }
     }
     
-    if (this.#signatures.length > 0) {
+    if (this.signatures.length > 0) {
       // Type section (1)
       let typeSection = new ByteBuffer();
-      typeSection.writeULEB128(this.#signatures.length); // count
-      for (let sig in this.#signatures) {
+      typeSection.writeULEB128(this.signatures.length); // count
+      for (let sig in this.signatures) {
         typeSection.writeByte(0x60); // func
         typeSection.writeULEB128(sig.params.length);
         for (let param in sig.params) {
@@ -96,22 +109,22 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
     }
     
     // Function section (3) - tie func to type 0
-    if (this.#functions.length > 0) {
+    if (this.functions.length > 0) {
       let funcSection = new ByteBuffer();
-      funcSection.writeULEB128(this.#functions.length); // count
-      for (var i = 0; i < this.#functions.length; i += 1) {
+      funcSection.writeULEB128(this.functions.length); // count
+      for (var i = 0; i < this.functions.length; i += 1) {
         funcSection.writeULEB128(i); // type index (assuming 1:1 mapping for now)
       }
       this.writeSection(bb, SectionId.Function as i32, funcSection);
     }
     
-    let varDecl = program.entryPoint;
+    let varDecl = this.program.entryPoint;
     if (varDecl != null) {
       if (varDecl.pattern is IdentifierPattern) {
         let ident = varDecl.pattern as IdentifierPattern;
         let sym = model.resolveDeclaration(ident);
-        if (sym != null && this.#functionIndices.has(sym.id)) {
-          let funcIdx = this.#functionIndices[sym.id];
+        if (sym != null && this.functionIndices.has(sym.id)) {
+          let funcIdx = this.functionIndices[sym.id];
           // Export section (7)
           let exportSection = new ByteBuffer();
           exportSection.writeULEB128(1); // count
@@ -130,17 +143,17 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
       }
     }
     
-    if (this.#functions.length > 0) {
+    if (this.functions.length > 0) {
       let codeSection = new ByteBuffer();
-      codeSection.writeULEB128(this.#functions.length); // count
+      codeSection.writeULEB128(this.functions.length); // count
       
-      for (let funcExpr in this.#functions) {
-        this.#code = new ByteBuffer(); // Reset code for each function
-        this.generateFunction(funcExpr);
+      for (let funcExpr in this.functions) {
+        let funcBuilder = new WasmFunctionBuilder(this, funcExpr);
+        let funcBuffer = funcBuilder.build();
         
         let funcBody = new ByteBuffer();
         funcBody.writeULEB128(0); // local count 0
-        funcBody.writeBuffer(this.#code);
+        funcBody.writeBuffer(funcBuffer);
         
         codeSection.writeULEB128(funcBody.length);
         codeSection.writeBuffer(funcBody);
@@ -154,17 +167,25 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
 
   writeSection(bb: ByteBuffer, id: i32, payload: ByteBuffer): void {
     bb.writeByte(id);
+/**
+ * Manages the local state for compiling a single Zena function into WebAssembly.
+ * Tracks local opcodes, variables, and control flow blocks.
+ */
     bb.writeULEB128(payload.length);
     bb.writeBuffer(payload);
   }
+}
 
-  writeOpcode(op: Opcode): void {
-    this.#code.writeByte(op as i32);
-  }
+class WasmFunctionBuilder {
+  moduleBuilder: WasmModuleBuilder;
+  node: FunctionExpression;
+  var #code = new ByteBuffer();
 
-  generateFunction(fnExpr: FunctionExpression): void {
-    let body = fnExpr.body;
-    match (fnExpr.body) {
+  new(this.moduleBuilder, this.node);
+
+  build(): ByteBuffer {
+    let body = this.node.body;
+    match (body) {
       case BlockStatement: {
         let block = body as BlockStatement;
         for (let stmt in block.body) {
@@ -177,6 +198,11 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
       }
     }
     this.writeOpcode(Opcode.end);
+    return this.#code;
+  }
+
+  writeOpcode(op: Opcode): void {
+    this.#code.writeByte(op as i32);
   }
 
   generateStatement(stmt: Statement): void {
@@ -208,14 +234,14 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
         match (callee) {
           case Identifier: {
             let ident = callee as Identifier;
-            let model = this.#model as SemanticModel;
+            let model = this.moduleBuilder.program.model;
             let sym = model.resolve(ident);
-            if (sym != null && this.#functionIndices.has(sym.id)) {
+            if (sym != null && this.moduleBuilder.functionIndices.has(sym.id)) {
               for (let arg in args) {
                 this.generateExpression(arg);
               }
               this.writeOpcode(Opcode.call);
-              this.#code.writeULEB128(this.#functionIndices[sym.id]);
+              this.#code.writeULEB128(this.moduleBuilder.functionIndices[sym.id]);
               return;
             }
           }
@@ -249,3 +275,4 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
     }
   }
 }
+
