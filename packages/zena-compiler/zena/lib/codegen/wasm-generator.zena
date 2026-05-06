@@ -1,16 +1,18 @@
 import { 
-  Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern, 
+  Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern, Identifier, 
   NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement, ReturnStatement, 
-  ExpressionStatement, Statement, Expression 
+  ExpressionStatement, Statement, Expression, CallExpression
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { CodeGenerator } from './code-generator.zena';
 import { Program } from '../program.zena';
+import { SymbolId } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ByteBuffer } from 'zena:byte-buffer';
 import { parseI32 } from 'zena:string-convert';
 import { SectionId, ValType, Opcode } from './wasm.zena';
 import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
 
 class FunctionSignature {
   params: Array<i32>;
@@ -21,6 +23,9 @@ class FunctionSignature {
 export class WasmGenerator implements CodeGenerator<ByteBuffer> {
   var #code = new ByteBuffer();
   var #signatures = new Array<FunctionSignature>();
+  var #functions = new Array<FunctionExpression>();
+  var #functionIndices = new HashMap<SymbolId, i32>();
+  var #model: SemanticModel | null = null;
   
   backendName(): String { return 'wasm'; }
   
@@ -28,6 +33,9 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
     let bb = new ByteBuffer();
     this.#code = new ByteBuffer();
     this.#signatures = new Array<FunctionSignature>();
+    this.#functions = new Array<FunctionExpression>();
+    this.#functionIndices = new HashMap<SymbolId, i32>();
+    this.#model = program.model;
     let model = program.model;
     
     // Magic: \0asm
@@ -36,17 +44,36 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
     bb.writeU32(0x00000001);
     
     // First pass: collect function signatures
-    // Currently we just collect the entry point function
-    var entryFunc: FunctionExpression | null = null;
-    let varDecl = program.entryPoint;
-    if (varDecl != null) {
-      let initNode = varDecl.init;
-      if (initNode is FunctionExpression) {
-        entryFunc = initNode as FunctionExpression;
-        let params = new Array<i32>();
-        let returns = new Array<i32>();
-        returns.push(ValType.i32 as i32); // Hardcoded i32 return for main
-        this.#signatures.push(new FunctionSignature(params, returns));
+    for (let mod in program.modules) {
+      for (let stmt in mod.body) {
+        match (stmt) {
+          case VariableDeclaration: {
+            let varDecl = stmt as VariableDeclaration;
+            if (varDecl.init is FunctionExpression) {
+              let funcExpr = varDecl.init as FunctionExpression;
+              let params = new Array<i32>();
+              let returns = new Array<i32>();
+              returns.push(ValType.i32 as i32); // Hardcoded i32 return for main
+              
+              let sigIndex = this.#signatures.length;
+              this.#signatures.push(new FunctionSignature(params, returns));
+              
+              let funcIndex = this.#functions.length;
+              this.#functions.push(funcExpr);
+              
+              if (varDecl.pattern is IdentifierPattern) {
+                let ident = varDecl.pattern as IdentifierPattern;
+                let sym = model.resolveDeclaration(ident);
+                if (sym != null) {
+                  this.#functionIndices[sym.id] = funcIndex;
+                }
+              }
+            }
+          }
+          case _: {
+            throw new Error("Unsupported top-level statement type in codegen");
+          }
+        }
       }
     }
     
@@ -69,44 +96,55 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
     }
     
     // Function section (3) - tie func to type 0
-    let funcSection = new ByteBuffer();
-    funcSection.writeULEB128(if (entryFunc != null) 1 else 0); // count
-    if (entryFunc != null) {
-      funcSection.writeULEB128(0); // type index 0
+    if (this.#functions.length > 0) {
+      let funcSection = new ByteBuffer();
+      funcSection.writeULEB128(this.#functions.length); // count
+      for (var i = 0; i < this.#functions.length; i += 1) {
+        funcSection.writeULEB128(i); // type index (assuming 1:1 mapping for now)
+      }
       this.writeSection(bb, SectionId.Function as i32, funcSection);
     }
     
+    let varDecl = program.entryPoint;
     if (varDecl != null) {
       if (varDecl.pattern is IdentifierPattern) {
         let ident = varDecl.pattern as IdentifierPattern;
-        // Export section (7)
-        let exportSection = new ByteBuffer();
-        exportSection.writeULEB128(1); // count
-        
-        let nameLen = ident.name.length;
-        exportSection.writeULEB128(nameLen); // name length
-        // TODO: Add ByteBuffer.writeString()
-        for (var i = 0; i < nameLen; i += 1) {
-          exportSection.writeByte(ident.name.getByteAt(i));
+        let sym = model.resolveDeclaration(ident);
+        if (sym != null && this.#functionIndices.has(sym.id)) {
+          let funcIdx = this.#functionIndices[sym.id];
+          // Export section (7)
+          let exportSection = new ByteBuffer();
+          exportSection.writeULEB128(1); // count
+          
+          let nameLen = ident.name.length;
+          exportSection.writeULEB128(nameLen); // name length
+          // TODO: Add ByteBuffer.writeString()
+          for (var i = 0; i < nameLen; i += 1) {
+            exportSection.writeByte(ident.name.getByteAt(i));
+          }
+          
+          exportSection.writeByte(0); // export kind: func
+          exportSection.writeULEB128(funcIdx); // func index
+          this.writeSection(bb, SectionId.Export as i32, exportSection);
         }
-        
-        exportSection.writeByte(0); // export kind: func
-        exportSection.writeULEB128(0); // func index 0
-        this.writeSection(bb, SectionId.Export as i32, exportSection);
       }
     }
     
-    if (entryFunc != null) {
-      this.generateFunction(entryFunc);
-      
-      let funcBody = new ByteBuffer();
-      funcBody.writeULEB128(0); // local count 0
-      funcBody.writeBuffer(this.#code);
-      
+    if (this.#functions.length > 0) {
       let codeSection = new ByteBuffer();
-      codeSection.writeULEB128(1); // count
-      codeSection.writeULEB128(funcBody.length);
-      codeSection.writeBuffer(funcBody);
+      codeSection.writeULEB128(this.#functions.length); // count
+      
+      for (let funcExpr in this.#functions) {
+        this.#code = new ByteBuffer(); // Reset code for each function
+        this.generateFunction(funcExpr);
+        
+        let funcBody = new ByteBuffer();
+        funcBody.writeULEB128(0); // local count 0
+        funcBody.writeBuffer(this.#code);
+        
+        codeSection.writeULEB128(funcBody.length);
+        codeSection.writeBuffer(funcBody);
+      }
       
       this.writeSection(bb, SectionId.Code as i32, codeSection);
     }
@@ -166,6 +204,26 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
 
   generateExpression(expr: Expression): void {
     match (expr) {
+      case CallExpression {callee, args}: {
+        match (callee) {
+          case Identifier: {
+            let ident = callee as Identifier;
+            let model = this.#model as SemanticModel;
+            let sym = model.resolve(ident);
+            if (sym != null && this.#functionIndices.has(sym.id)) {
+              for (let arg in args) {
+                this.generateExpression(arg);
+              }
+              this.writeOpcode(Opcode.call);
+              this.#code.writeULEB128(this.#functionIndices[sym.id]);
+              return;
+            }
+          }
+          case _: {
+            throw new Error("Unsupported call expression");
+          }        
+        }
+      }
       case NumberLiteral {raw}: {
         let (ok, val) = parseI32(raw);
         if (!ok) {

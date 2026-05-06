@@ -17,16 +17,14 @@ const DIM = '\x1b[2m';
 const NC = '\x1b[0m';
 
 async function run() {
-  const runList = [
-    'return_42.zena'
-  ];
+  const runList = ['return_42.zena', 'call_helper.zena'];
 
   let files = await glob(join(testsDir, '**/*.zena'));
-  files = files.filter(f => runList.some(r => f.endsWith(r)));
+  files = files.filter((f) => runList.some((r) => f.endsWith(r)));
 
   const filter = process.argv[2];
   if (filter) {
-    files = files.filter(f => f.includes(filter));
+    files = files.filter((f) => f.includes(filter));
   }
   files.sort();
 
@@ -60,10 +58,7 @@ async function run() {
     let compileError = false;
     // Compile using self-hosted Zena CLI to generate WASM
     try {
-      execSync(
-        `"${zcScript}" "${file}"`,
-        {stdio: 'pipe', cwd: repoRoot},
-      );
+      execSync(`"${zcScript}" "${file}"`, {stdio: 'pipe', cwd: repoRoot});
       execSync(`mv "${join(repoRoot, 'zc-out.wasm')}" "${wasmOut}"`);
     } catch (e: any) {
       console.log(`${RED}✗${NC} ${relPath} (Compile Failed)`);
