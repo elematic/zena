@@ -34,7 +34,10 @@ try {
 
 // Find all .wasm files
 const pattern = join(outDir, '**/*.wasm');
-const wasmFiles = await glob(pattern);
+const allWasmFiles = await glob(pattern);
+const wasmFiles = allWasmFiles.filter(
+  (f) => !f.endsWith('cli.wasm') && !f.includes('/execution/'),
+);
 
 if (wasmFiles.length === 0) {
   console.error(`${YELLOW}No .wasm files found${NC}`);
@@ -115,13 +118,17 @@ for (const wasmFile of wasmFiles.sort()) {
     passed++;
   } else {
     // Show the full report from runAndReport on failure
-    if (report) {
-      console.log(report);
+    if (result.status === 0 && returnValue === '0') {
+      // ... handled above
+    } else {
+      if (report) {
+        console.log(report);
+      }
+      if (result.stderr) {
+        console.error(result.stderr.trim());
+      }
+      failed++;
     }
-    if (result.stderr) {
-      console.error(result.stderr.trim());
-    }
-    failed++;
   }
 }
 

@@ -1,17 +1,28 @@
 import { getArguments, exit, ExitCode } from 'zena:cli';
 import { console } from 'zena:console';
-import { readFile } from 'zena:fs';
+import { readFile, writeFileBytes } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
-import { createCompiler, CompilerOptions } from '../lib/compiler.zena';
-import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { WasmGenerator } from '../lib/codegen/wasm-generator.zena';
 import { HashMap } from 'zena:map';
 import { Program } from '../lib/program.zena';
+import { Module, Statement, VariableDeclaration } from '../lib/ast.zena';
+import { Array } from 'zena:array';
+import { SemanticModel } from '../lib/semantic-model.zena';
 
 class WasiHost implements CompilerHost {
   readFile(path: String): String {
-    // For now, let's just attempt to read it from the underlying mapped directory.
-    return readFile(path);
+    console.log("WasiHost reading file: " + path);
+    var actualPath = path;
+    // If it's a zena: package import, map it to the wasi /stdlib dir
+    if (path.startsWith("zena:")) {
+      let moduleName = path.sliceBytes(5, path.length);
+      actualPath = `packages/stdlib/zena/${moduleName}.zena`;
+    }
+    console.log("Actual path: " + actualPath);
+    return readFile(actualPath);
   }
 }
 
@@ -31,9 +42,60 @@ export let main = (): i32 => {
   let compiler = createCompiler(host, options);
 
   console.log("Compiling " + filename + "...");
-  
-  // TODO: Call compiler, get result, pass to WatGenerator, output to stdout.
-  // let result = compiler.compile(filename);
+  try {
+    let compResult = compiler.compile(filename);
+    if (compResult.hasCycle) {
+      console.error("Dependency cycle detected");
+      exit(1);
+    }
+    console.log("Compile result ok");
+
+    let checkResults = checkCompilation(compResult, null, false);
+    let diagnostics = checkResults.diagnostics;
+    var hasError = false;
+    for (let diag in diagnostics) {
+      if (diag.severity == DiagnosticSeverity.Error) {
+        console.error("Error: " + diag.message);
+        hasError = true;
+      }
+    }
+    
+    if (hasError) {
+      exit(1);
+    }
+    let mainModel = checkResults.results[filename].model;
+
+    let ast = compResult.entry.ast as Module;
+    console.log("Compile hit ast");
+    var entryVar: VariableDeclaration | null = null;
+    for (let stmt in ast.body) {
+      if (stmt is VariableDeclaration) {
+        let varDecl = stmt as VariableDeclaration;
+        if (varDecl.exported) {
+          entryVar = varDecl;
+          break;
+        }
+      }
+    }
+
+    if (entryVar == null) {
+      console.error("Entry point must export a let variable (e.g. export let main = ...)");
+      exit(1);
+    }
+
+    let modules = new Array<Module>();
+    modules.push(ast);
+    let program = new Program(modules, mainModel, entryVar);
+    
+    let generator = new WasmGenerator();
+    let wasmBytes = generator.generate(program).toByteArray();
+    writeFileBytes("zc-out.wasm", wasmBytes);
+    
+    console.log("Success: wrote zc-out.wasm");
+  } catch (e) {
+    console.log("Exception caught!");
+    throw e;
+  }
 
   return 0;
 };

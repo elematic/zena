@@ -1,16 +1,33 @@
-import { Module, VariableDeclaration, FunctionExpression, IdentifierPattern, NumberLiteral, BlockStatement, ReturnStatement } from '../ast.zena';
+import { 
+  Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern, 
+  NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement, ReturnStatement, 
+  ExpressionStatement, Statement, Expression 
+} from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { CodeGenerator } from './code-generator.zena';
 import { Program } from '../program.zena';
+import { Error } from 'zena:error';
 import { ByteBuffer } from 'zena:byte-buffer';
+import { parseI32 } from 'zena:string-convert';
+import { SectionId, ValType, Opcode } from './wasm.zena';
+import { Array } from 'zena:array';
+
+class FunctionSignature {
+  params: Array<i32>;
+  returns: Array<i32>;
+  new(params: Array<i32>, returns: Array<i32>) : params = params, returns = returns {}
+}
 
 export class WasmGenerator implements CodeGenerator<ByteBuffer> {
+  var #code = new ByteBuffer();
+  var #signatures = new Array<FunctionSignature>();
+  
   backendName(): String { return 'wasm'; }
   
-  new();
-
   generate(program: Program): ByteBuffer {
     let bb = new ByteBuffer();
+    this.#code = new ByteBuffer();
+    this.#signatures = new Array<FunctionSignature>();
     let model = program.model;
     
     // Magic: \0asm
@@ -18,8 +35,159 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
     // Version: 1
     bb.writeU32(0x00000001);
     
-    // TODO: Write actual WASM sections based on the Program and SemanticModel
-    // For MVP, just return the empty module header
+    // First pass: collect function signatures
+    // Currently we just collect the entry point function
+    var entryFunc: FunctionExpression | null = null;
+    let varDecl = program.entryPoint;
+    if (varDecl != null) {
+      let initNode = varDecl.init;
+      if (initNode is FunctionExpression) {
+        entryFunc = initNode as FunctionExpression;
+        let params = new Array<i32>();
+        let returns = new Array<i32>();
+        returns.push(ValType.i32 as i32); // Hardcoded i32 return for main
+        this.#signatures.push(new FunctionSignature(params, returns));
+      }
+    }
+    
+    if (this.#signatures.length > 0) {
+      // Type section (1)
+      let typeSection = new ByteBuffer();
+      typeSection.writeULEB128(this.#signatures.length); // count
+      for (let sig in this.#signatures) {
+        typeSection.writeByte(0x60); // func
+        typeSection.writeULEB128(sig.params.length);
+        for (let param in sig.params) {
+          typeSection.writeByte(param);
+        }
+        typeSection.writeULEB128(sig.returns.length);
+        for (let ret in sig.returns) {
+          typeSection.writeByte(ret);
+        }
+      }
+      this.writeSection(bb, SectionId.Type as i32, typeSection);
+    }
+    
+    // Function section (3) - tie func to type 0
+    let funcSection = new ByteBuffer();
+    funcSection.writeULEB128(if (entryFunc != null) 1 else 0); // count
+    if (entryFunc != null) {
+      funcSection.writeULEB128(0); // type index 0
+      this.writeSection(bb, SectionId.Function as i32, funcSection);
+    }
+    
+    if (varDecl != null) {
+      if (varDecl.pattern is IdentifierPattern) {
+        let ident = varDecl.pattern as IdentifierPattern;
+        // Export section (7)
+        let exportSection = new ByteBuffer();
+        exportSection.writeULEB128(1); // count
+        
+        let nameLen = ident.name.length;
+        exportSection.writeULEB128(nameLen); // name length
+        // TODO: Add ByteBuffer.writeString()
+        for (var i = 0; i < nameLen; i += 1) {
+          exportSection.writeByte(ident.name.getByteAt(i));
+        }
+        
+        exportSection.writeByte(0); // export kind: func
+        exportSection.writeULEB128(0); // func index 0
+        this.writeSection(bb, SectionId.Export as i32, exportSection);
+      }
+    }
+    
+    if (entryFunc != null) {
+      this.generateFunction(entryFunc);
+      
+      let funcBody = new ByteBuffer();
+      funcBody.writeULEB128(0); // local count 0
+      funcBody.writeBuffer(this.#code);
+      
+      let codeSection = new ByteBuffer();
+      codeSection.writeULEB128(1); // count
+      codeSection.writeULEB128(funcBody.length);
+      codeSection.writeBuffer(funcBody);
+      
+      this.writeSection(bb, SectionId.Code as i32, codeSection);
+    }
+    
     return bb;
+  }
+
+  writeSection(bb: ByteBuffer, id: i32, payload: ByteBuffer): void {
+    bb.writeByte(id);
+    bb.writeULEB128(payload.length);
+    bb.writeBuffer(payload);
+  }
+
+  writeOpcode(op: Opcode): void {
+    this.#code.writeByte(op as i32);
+  }
+
+  generateFunction(fnExpr: FunctionExpression): void {
+    let body = fnExpr.body;
+    match (fnExpr.body) {
+      case BlockStatement: {
+        let block = body as BlockStatement;
+        for (let stmt in block.body) {
+          this.generateStatement(stmt);
+        }
+      }
+      case Expression: {
+        this.generateExpression(body as Expression);
+        this.writeOpcode(Opcode.return_);
+      }
+    }
+    this.writeOpcode(Opcode.end);
+  }
+
+  generateStatement(stmt: Statement): void {
+    match (stmt) {
+      case ReturnStatement {argument}: {
+        if (argument != null) {
+          this.generateExpression(argument as Expression);
+        }
+        this.writeOpcode(Opcode.return_);
+      }
+      case ExpressionStatement {expression}: {
+        this.generateExpression(expression);
+      }
+      case BlockStatement {body}: {
+        for (let s in body) {
+          this.generateStatement(s);
+        }
+      }
+      case _: {
+        // TODO: We need some kind of node.kind for error messages. We also
+        throw new Error("Unsupported statement type in codegen");
+      }
+    }
+  }
+
+  generateExpression(expr: Expression): void {
+    match (expr) {
+      case NumberLiteral {raw}: {
+        let (ok, val) = parseI32(raw);
+        if (!ok) {
+          throw new Error(
+            `Failed to parse i32 from number literal (unsupported format?): ${raw}`
+          );
+        }
+        this.writeOpcode(Opcode.i32_const);
+        // TODO: val should already be narrowed to i33
+        this.#code.writeSLEB128(val as i32);
+      }
+      case BooleanLiteral {value}: {
+        this.writeOpcode(Opcode.i32_const);
+        this.#code.writeSLEB128(if (value) 1 else 0);
+      }
+      case StringLiteral {value}: {
+        this.writeOpcode(Opcode.i32_const);
+        this.#code.writeSLEB128(0);
+      }
+      case _: {
+        throw new Error("Unsupported expression type in codegen");
+      }
+    }
   }
 }

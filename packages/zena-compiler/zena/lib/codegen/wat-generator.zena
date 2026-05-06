@@ -27,22 +27,22 @@ export class WatGenerator implements CodeGenerator<String> {
     if (varDecl != null) {
       let initNode = varDecl.init;
       if (initNode is FunctionExpression) {
-         this.sb.append('  (func $main (result i32)\n');
-         
-         let body = initNode.body;
-         if (body is BlockStatement) {
-           let block = body as BlockStatement;
-           for (let stmt in block.body) {
-             this.processStatement(stmt);
-           }
-         } else if (body is Expression) {
-           this.processExpression(body as Expression);
-           // implicit return for arrow functions with expression body
-           this.sb.append('    return\n');
-         }
-         
-         this.sb.append('  )\n');
-         this.sb.append('  (export "main" (func $main))\n');
+        let fnExpr = initNode as FunctionExpression;
+        this.sb.append('  (func $main (result i32)\n');
+        
+        let body = fnExpr.body;
+        if (body is BlockStatement) {
+          let block = body as BlockStatement;
+          for (let stmt in block.body) {
+            this.processStatement(stmt);
+          }
+        } else if (body is Expression) {
+          this.processExpression(body as Expression);
+          this.sb.append('    return\n');
+        }
+        
+        this.sb.append('  )\n');
+        this.sb.append('  (export "main" (func $main))\n');
       }
     }
     
@@ -51,45 +51,34 @@ export class WatGenerator implements CodeGenerator<String> {
   }
 
   processStatement(stmt: Statement): void {
-    match (stmt) {
-      case ReturnStatement {argument}: {
-        if (argument != null) {
-          this.processExpression(argument);
-        }
-        this.sb.append('    return\n');
+    if (stmt is ReturnStatement) {
+      let ret = stmt as ReturnStatement;
+      if (ret.argument != null) {
+        this.processExpression(ret.argument as Expression);
       }
-      case ExpressionStatement {expression}: {
-        this.processExpression(expression);
-        // drop if not used? depends on type
-        // this.sb.append('    drop\n');
-      }
-      case BlockStatement {body}: {
-        for (let s in body) {
-          this.processStatement(s);
-        }
-      }
-      case _: {
-        // TODO
+      this.sb.append('    return\n');
+    } else if (stmt is ExpressionStatement) {
+      let exprStmt = stmt as ExpressionStatement;
+      this.processExpression(exprStmt.expression);
+    } else if (stmt is BlockStatement) {
+      let block = stmt as BlockStatement;
+      for (let s in block.body) {
+        this.processStatement(s);
       }
     }
   }
 
   processExpression(expr: Expression): void {
-    match (expr) {
-      case NumberLiteral {raw}: {
-        this.sb.append('    (i32.const ').append(raw).append(')\n');
-      }
-      case BooleanLiteral {value}: {
-        let valStr = if (value) '1' else '0';
-        this.sb.append('    (i32.const ').append(valStr).append(')\n');
-      }
-      case StringLiteral {value}: {
-        this.sb.append('    ;; string literals unimplemented\n');
-        this.sb.append('    (i32.const 0)\n');
-      }
-      case _: {
-        // TODO: handle other expressions
-      }
+    if (expr is NumberLiteral) {
+      let num = expr as NumberLiteral;
+      this.sb.append('    (i32.const ').append(num.raw).append(')\n');
+    } else if (expr is BooleanLiteral) {
+      let boolExpr = expr as BooleanLiteral;
+      let valStr = if (boolExpr.value) '1' else '0';
+      this.sb.append('    (i32.const ').append(valStr).append(')\n');
+    } else if (expr is StringLiteral) {
+      this.sb.append('    ;; string literals unimplemented\n');
+      this.sb.append('    (i32.const 0)\n');
     }
   }
 }

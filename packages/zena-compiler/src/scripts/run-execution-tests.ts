@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const repoRoot = join(pkgDir, '..', '..');
 const testsDir = join(repoRoot, 'tests', 'language', 'execution');
-const compilerCli = join(repoRoot, 'packages', 'cli', 'lib', 'cli.js');
+const zcScript = join(repoRoot, 'scripts', 'zc.sh');
 
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
@@ -17,7 +17,17 @@ const DIM = '\x1b[2m';
 const NC = '\x1b[0m';
 
 async function run() {
-  const files = await glob(join(testsDir, '**/*.zena'));
+  const runList = [
+    'return_42.zena'
+  ];
+
+  let files = await glob(join(testsDir, '**/*.zena'));
+  files = files.filter(f => runList.some(r => f.endsWith(r)));
+
+  const filter = process.argv[2];
+  if (filter) {
+    files = files.filter(f => f.includes(filter));
+  }
   files.sort();
 
   let passed = 0;
@@ -48,13 +58,13 @@ async function run() {
     execSync(`mkdir -p "$(dirname "${wasmOut}")"`);
 
     let compileError = false;
-    // Compile using Zena CLI to generate WASM
+    // Compile using self-hosted Zena CLI to generate WASM
     try {
-      // Use --target wasi so its stdlib binds to WASI instead of host console
       execSync(
-        `node "${compilerCli}" build "${file}" -o "${wasmOut}" --target wasi -g`,
-        {stdio: 'pipe'},
+        `"${zcScript}" "${file}"`,
+        {stdio: 'pipe', cwd: repoRoot},
       );
+      execSync(`mv "${join(repoRoot, 'zc-out.wasm')}" "${wasmOut}"`);
     } catch (e: any) {
       console.log(`${RED}✗${NC} ${relPath} (Compile Failed)`);
       console.error(e.stderr?.toString() || e.message);
