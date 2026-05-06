@@ -11,7 +11,7 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        nodejs = pkgs.nodePackages_latest.nodejs;
+        nodejs = pkgs.nodejs_25;
 
         zena = pkgs.buildNpmPackage {
           pname = "zena";
@@ -78,6 +78,10 @@
             pkgs.wasmtime
             pkgs.wasm-tools
             pkgs.cloc
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.rustfmt
+            pkgs.rust-analyzer
           ];
 
           shellHook = ''
@@ -87,6 +91,7 @@
             echo "npm version: $(npm --version)"
             echo "wasmtime version: $(wasmtime --version)"
             echo "wasm-tools version: $(wasm-tools --version)"
+            echo "rustc version: $(rustc --version)"
             echo ""
             echo "Run 'npm install' to install dependencies"
             echo "Run 'npm run build' to build the compiler"
