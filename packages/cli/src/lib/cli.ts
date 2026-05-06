@@ -8,7 +8,7 @@ import {
   type Diagnostic,
 } from '@zena-lang/compiler';
 import {instantiate} from '@zena-lang/runtime';
-import {readFile, writeFile} from 'node:fs/promises';
+import {readFile, writeFile, mkdir} from 'node:fs/promises';
 import {existsSync} from 'node:fs';
 import {basename, dirname, join, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
@@ -169,6 +169,9 @@ const buildCommand = async (
     const bytes = codegen.generate();
 
     const outputPath = output || basename(files[0], '.zena') + '.wasm';
+    if (dirname(outputPath) !== '.') {
+      await mkdir(dirname(outputPath), {recursive: true});
+    }
     await writeFile(outputPath, bytes);
     console.log(`Built ${outputPath}`);
     return 0;
