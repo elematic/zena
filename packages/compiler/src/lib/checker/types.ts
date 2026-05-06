@@ -620,12 +620,15 @@ function resolveTypeAnnotationInternal(
     let hasPrimitive = false;
     let hasReference = false;
     const unboundedParams: TypeParameterType[] = [];
+    let hasInlineTuple = false;
 
     for (const t of types) {
       const base = getPrimitiveBase(t);
       if (base !== null) {
         hasPrimitive = true;
         primitiveBases.add(base);
+      } else if (t.kind === TypeKind.InlineTuple) {
+        hasInlineTuple = true;
       } else {
         // Check if it's an unbounded type parameter
         const unbounded = getUnboundedTypeParam(t);
@@ -642,7 +645,15 @@ function resolveTypeAnnotationInternal(
       }
     }
 
-    if (hasPrimitive && hasReference) {
+    if (
+      hasInlineTuple &&
+      (hasPrimitive || hasReference || unboundedParams.length > 0)
+    ) {
+      ctx.diagnostics.reportError(
+        `Union types cannot mix inline tuple types with other representations.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    } else if (hasPrimitive && hasReference) {
       ctx.diagnostics.reportError(
         `Union types cannot mix primitive types with reference types. Use 'Box<T>' to box primitives.`,
         DiagnosticCode.TypeMismatch,
@@ -991,6 +1002,7 @@ export function validateType(type: Type, ctx: CheckerContext) {
     const primitiveBases = new Set<string>();
     let hasPrimitive = false;
     let hasReference = false;
+    let hasInlineTuple = false;
     const unboundedParams: TypeParameterType[] = [];
 
     for (const t of ut.types) {
@@ -998,6 +1010,8 @@ export function validateType(type: Type, ctx: CheckerContext) {
       if (base !== null) {
         hasPrimitive = true;
         primitiveBases.add(base);
+      } else if (t.kind === TypeKind.InlineTuple) {
+        hasInlineTuple = true;
       } else {
         // Check if it's an unbounded type parameter
         const unbounded = getUnboundedTypeParam(t);
@@ -1013,7 +1027,15 @@ export function validateType(type: Type, ctx: CheckerContext) {
       }
     }
 
-    if (hasPrimitive && hasReference) {
+    if (
+      hasInlineTuple &&
+      (hasPrimitive || hasReference || unboundedParams.length > 0)
+    ) {
+      ctx.diagnostics.reportError(
+        `Union types cannot mix inline tuple types with other representations.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    } else if (hasPrimitive && hasReference) {
       ctx.diagnostics.reportError(
         `Union types cannot mix primitive types with reference types. Use 'Box<T>' to box primitives.`,
         DiagnosticCode.TypeMismatch,

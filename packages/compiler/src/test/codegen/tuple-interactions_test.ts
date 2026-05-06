@@ -145,7 +145,12 @@ suite('codegen: tuple interactions (boxed vs inline)', () => {
         `),
         (err: any) => {
           // Should fail at parse, check, or codegen
-          assert.ok(err instanceof Error);
+          assert.ok(
+            err.message.includes(
+              'mix inline tuple types with other representations',
+            ),
+            `Expected compiler error about mixing representations, got: ${err.message}`,
+          );
           return true;
         },
       );
