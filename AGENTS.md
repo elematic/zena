@@ -237,7 +237,7 @@ already succeeded for the current inputs. **The cached result is correct.**
 ### Running Tests
 
 **ALWAYS** use `npm` to run tests. Never use `npx`, `tsx`, or bash scripts.
-There is no `wireit` comman. Use `npm`.
+There is no `wireit` command. Use `npm test`.
 
 ```bash
 # Run all tests
@@ -258,6 +258,8 @@ npm test -w @zena-lang/compiler -- --test-only test/checker/checker_test.js
 - If test output is large and written to a file by the system, use the
   `read_file` tool, which supports `startLine` and `endLine` parameters, to read
   the file.
+- We use the Wireit quiet logger by default, which should only log test errors.
+  If you need to see full test output, use `WIREIT_LOGGER=simple`.
 
 ## ⚠️ CRITICAL: Temporary Files
 
