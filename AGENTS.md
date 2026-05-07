@@ -120,10 +120,10 @@ TypeScript-only tests in `packages/compiler/src/test/`.
 This project is an **npm monorepo** managed with **Wireit**.
 
 - **`packages/compiler`**: Bootstrap compiler (`@zena-lang/compiler`).
-- **`packages/zena-compiler`**: Self-hosted compiler (`@zena-lang/zena-compiler`).
+- **`packages/zena-compiler`**: Self-hosted compiler (`@zena-lang/zena-compiler`). (See [CONTEXT.md](packages/zena-compiler/CONTEXT.md))
 - **`packages/stdlib`**: Standard library (`@zena-lang/stdlib`).
 - **`packages/cli`**: Node-based CLI tool (`@zena-lang/cli`).
-- **`packages/zena-cli`**: Native Rust CLI for executing Zena via Wasmtime. (See [CONTEXT.md](packages/zena-cli/CONTEXT.md) and [README.md](packages/zena-cli/README.md)).
+- **`packages/zena-cli`**: Native Rust CLI for executing Zena via Wasmtime. (See [CONTEXT.md](packages/zena-cli/CONTEXT.md)).
 - **`packages/runtime`**: JS runtime helpers.
 - **`tests/language/`**: Portable tests (shared across compilers).
 - **`docs/language-reference.md`**: Official language reference.
