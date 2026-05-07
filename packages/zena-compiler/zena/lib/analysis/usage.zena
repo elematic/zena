@@ -1,0 +1,117 @@
+import { Program, CompilationUnit } from '../program.zena';
+import { Module, VariableDeclaration, IdentifierPattern, Identifier,
+  ImportDeclaration, ImportSpecifier, Node, FunctionExpression, Parameter, CallExpression
+} from '../ast.zena';
+import { walkEnter } from '../visitor.zena';
+import { HashSet } from 'zena:set';
+import { HashMap } from 'zena:map';
+import { Symbol } from '../scope/symbol.zena';
+import { SemanticModel } from '../semantic-model.zena';
+
+export class UsageAnalysisResult {
+  usedDeclarations = new HashSet<Node>();
+
+  isUsed(decl: Node): boolean {
+    return this.usedDeclarations.has(decl);
+  }
+}
+
+export class UsageAnalyzer {
+  program: Program;
+  result = new UsageAnalysisResult();
+  
+  // Maps a variable's pattern to its declaration so we can look down into its initializer
+  var patternToDecl = new HashMap<Node, VariableDeclaration>();
+
+  new(this.program);
+
+  analyze(): UsageAnalysisResult {
+    // Pass 1: Build the map from IdentifierPattern to VariableDeclaration
+    for (let unit in this.program.units) {
+      for (let stmt in unit.ast.body) {
+        if (stmt is VariableDeclaration) {
+          let varDecl = stmt as VariableDeclaration;
+          this.patternToDecl[varDecl.pattern as Node] = varDecl;
+        }
+      }
+    }
+
+    // Pass 2: Find exports in all modules and mark them as used
+    for (let unit in this.program.units) {
+      let model = unit.model;
+      for (let stmt in unit.ast.body) {
+        match (stmt) {
+          case VariableDeclaration: {
+            let varDecl = stmt as VariableDeclaration;
+            if (varDecl.exported) {
+              this.markUsed(varDecl, model, unit.ast);
+            }
+          }
+          case ImportDeclaration: {}
+          case _: {
+            throw new Error("Unexpected top-level statement type in UsageAnalyzer");
+          }
+        }
+      }
+    }
+
+    return this.result;
+  }
+
+  markUsed(decl: Node, model: SemanticModel, mod: Module): void {
+    if (this.result.usedDeclarations.has(decl)) {
+      return;
+    }
+    this.result.usedDeclarations.add(decl);
+
+    match (decl) {
+      case IdentifierPattern: {
+        // TODO: This only works for top-level declarations because it only
+        // scans mod.body!
+        // This will fail for local variables nested in blocks/functions.
+        // We should add a `parent` back-reference to AST nodes (which we can
+        // omit from JSON serialization)
+        // so we can just do `decl.parent as VariableDeclaration` here.
+        // Find the VariableDeclaration that this pattern belongs to
+        for (let stmt in mod.body) {
+          if (stmt is VariableDeclaration) {
+            let v = stmt as VariableDeclaration;
+            if (v.pattern == decl) {
+              this.markUsed(v as Node, model, mod);
+            }
+          }
+        }
+      }
+      case VariableDeclaration: {
+        // If it's a variable declaration with a function body, visit its body.
+        let varDecl = decl as VariableDeclaration;
+        if (varDecl.init is FunctionExpression) {
+          walkEnter(varDecl.init as FunctionExpression, (node: Node): void => {
+            if (node is CallExpression) {
+              let call = node as CallExpression;
+              if (call.callee is Identifier) {
+                let sym = model.resolve(call.callee as Identifier);
+                if (sym != null && sym.declaration != null) {
+                  this.markUsed(sym.declaration as Node, model, mod);
+                }
+              }
+            } else if (node is Identifier) {
+              // We should ideally mark all identifiers that are referenced, 
+              // just in case they are used as values and not directly called.
+              let id = node as Identifier;
+              let sym = model.resolve(id);
+              if (sym != null && sym.declaration != null) {
+                this.markUsed(sym.declaration as Node, model, mod);
+              }
+            }
+          });
+        }
+      }
+      case Parameter: {}
+      case ImportSpecifier: {}
+      case _: {
+        throw new Error("Unexpected declaration type in UsageAnalyzer.markUsed");
+      }
+    }
+  }
+}

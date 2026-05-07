@@ -15,6 +15,7 @@ import { SectionId, ValType, Opcode } from './wasm.zena';
 import { Array } from 'zena:array';
 import { console } from 'zena:console';
 import { HashMap } from 'zena:map';
+import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
 
 /**
  * Represents a reference to an entity that has a WebAssembly type index.
@@ -140,7 +141,8 @@ class WasmModule {
 class DiscoveryPass {
   program: Program;
   wasm: WasmModule;
-  new(this.program, this.wasm);
+  usage: UsageAnalysisResult;
+  new(this.program, this.wasm, this.usage);
   
   /**
    * Run the discovery pass on the program, populating the given WasmModule.
@@ -152,27 +154,29 @@ class DiscoveryPass {
       for (let stmt in mod.body) {
         match (stmt) {
           case VariableDeclaration: {
-            // TODO: Cleanup when narrowing in match arms is fixed
-            let varDecl = stmt as VariableDeclaration;
-            if (varDecl.init is FunctionExpression) {
-              let funcExpr = varDecl.init as FunctionExpression;
-              let params = new Array<ValType>();
-              let returns = new Array<ValType>();
-              returns.push(ValType.i32); // Hardcoded i32 return for main
-              
-              let sig = this.wasm.getSignature(params, returns);
-              // moduleModel already extracted from unit
-                let wasmFunc = new WasmFunction(sig, funcExpr, moduleModel);
-              this.wasm.addFunction(wasmFunc);
-              
-              if (varDecl.pattern is IdentifierPattern) {
-                let ident = varDecl.pattern as IdentifierPattern;
-                let sym = moduleModel.resolveDeclaration(ident);
-                if (sym != null) {
-                  this.wasm.functionMap[sym.id] = wasmFunc;
-                    if (varDecl.exported) {
-                      this.wasm.exportMap[ident.name] = wasmFunc;
-                    }
+            if (this.usage.isUsed(stmt)) {
+              // TODO: Cleanup when narrowing in match arms is fixed
+              let varDecl = stmt as VariableDeclaration;
+              if (varDecl.init is FunctionExpression) {
+                let funcExpr = varDecl.init as FunctionExpression;
+                let params = new Array<ValType>();
+                let returns = new Array<ValType>();
+                returns.push(ValType.i32); // Hardcoded i32 return for main
+                
+                let sig = this.wasm.getSignature(params, returns);
+                // moduleModel already extracted from unit
+                  let wasmFunc = new WasmFunction(sig, funcExpr, moduleModel);
+                this.wasm.addFunction(wasmFunc);
+                
+                if (varDecl.pattern is IdentifierPattern) {
+                  let ident = varDecl.pattern as IdentifierPattern;
+                  let sym = moduleModel.resolveDeclaration(ident);
+                  if (sym != null) {
+                    this.wasm.functionMap[sym.id] = wasmFunc;
+                      if (varDecl.exported) {
+                        this.wasm.exportMap[ident.name] = wasmFunc;
+                      }
+                  }
                 }
               }
             }
@@ -196,7 +200,9 @@ export class WasmGenerator implements CodeGenerator<ByteBuffer> {
   
   generate(program: Program): ByteBuffer {
     let wasm = new WasmModule();
-    let pass = new DiscoveryPass(program, wasm);
+    let usageAnalyzer = new UsageAnalyzer(program);
+    let usage = usageAnalyzer.analyze();
+    let pass = new DiscoveryPass(program, wasm, usage);
     pass.run();
     wasm.layout();
     

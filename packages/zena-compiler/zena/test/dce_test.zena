@@ -1,0 +1,40 @@
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { WasmGenerator } from '../lib/codegen/wasm-generator.zena';
+import { parse } from '../lib/parser.zena';
+import { SemanticModel } from '../lib/semantic-model.zena';
+import { Module } from '../lib/ast.zena';
+import { Array } from 'zena:array';
+import { Program, CompilationUnit } from '../lib/program.zena';
+
+export let tests = suite('Dead Code Elimination', (): void => {
+  test('binary is smaller when unused functions are eliminated', (ctx: TestContext): void => {
+    // Program 1: Only main
+    let source1 = 'export let main = (): i32 => { return 42; };';
+    let ast1 = parse(source1, 'test1.zena');
+    let model1 = new SemanticModel(); 
+    let m1 = ast1 as Module;
+    let unit1 = {ast: m1, model: model1};
+    let units1 = new Array<CompilationUnit>();
+    units1.push(unit1);
+    let program1 = new Program(units1, unit1);
+    let generator1 = new WasmGenerator();
+    let binary1 = generator1.generate(program1);
+
+    // Program 2: main + unused function
+    let source2 = 'export let main = (): i32 => { return 42; }; let unused = (): i32 => { return 100; };';
+    let ast2 = parse(source2, 'test2.zena');
+    let model2 = new SemanticModel(); 
+    let m2 = ast2 as Module;
+    let unit2 = {ast: m2, model: model2};
+    let units2 = new Array<CompilationUnit>();
+    units2.push(unit2);
+    let program2 = new Program(units2, unit2);
+    let generator2 = new WasmGenerator();
+    let binary2 = generator2.generate(program2);
+
+    // The binaries should be the exact same size because `unused` should be
+    // eliminated
+    isTrue(binary1.length == binary2.length);
+  });
+});
