@@ -29,11 +29,25 @@ class WasiHost implements CompilerHost {
 export let main = (): i32 => {
   let args = getArguments();
   if (args.length < 2) {
-    console.error('Usage: zc <filename>');
+    console.error('Usage: zc <filename> [-o <output_path>]');
     exit(1);
   }
 
-  let filename = args[1];
+  var filename = "";
+  var outPath = "zc-out.wasm";
+  for (var i = 1; i < args.length; i += 1) {
+    if (args[i] == "-o" && i + 1 < args.length) {
+      outPath = args[i + 1];
+      i += 1;
+    } else {
+      filename = args[i];
+    }
+  }
+
+  if (filename == "") {
+    console.error("Error: no input file specified");
+    exit(1);
+  }
 
   let host = new WasiHost();
   let packages = new HashMap<String, PackageConfig>();
@@ -83,11 +97,14 @@ export let main = (): i32 => {
     
     let generator = new WasmGenerator();
     let wasmBytes = generator.generate(program).toByteArray();
-    writeFileBytes("zc-out.wasm", wasmBytes);
+    writeFileBytes(outPath, wasmBytes);
     
-    console.log("Success: wrote zc-out.wasm");
+    console.log("Success: wrote " + outPath);
   } catch (e) {
-    console.log("Exception caught!");
+    console.log("Exception caught in CLI compiler!");
+    if (e is Error) {
+      console.log("Error message: " + e.message);
+    }
     throw e;
   }
 

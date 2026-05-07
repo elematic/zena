@@ -834,11 +834,58 @@ export let getRootDir = (): Descriptor => {
  * 
  * @throws FsError if the file doesn't exist or cannot be read.
  */
+/**
+ * Resolves a path to the best-matching preopened directory descriptor
+ * and returns the descriptor and the path relative to it.
+ */
+let __resolvePreopen = (path: String): (Descriptor, String) => {
+  let preopens = getPreopens();
+  if (preopens.length == 0) {
+    throw new FsError(44, "No preopened directories available");
+  }
+
+  // Exact match or prefix match logic for WASI capabilities.
+  // For now, if the path is absolute and starts with a preopen's path, we use that.
+  var bestMatch: Descriptor | null = null;
+  var longestPrefix = -1;
+  var relativePath = path;
+
+  for (var i = 0; i < preopens.length; i += 1) {
+    let preopen = preopens[i];
+    let (poDescriptor, poPath) = preopen;
+    
+    // Default to the first preopen (usually "." or root)
+    if (bestMatch == null) {
+      bestMatch = poDescriptor;
+    }
+
+    if (poPath != "." && path.startsWith(poPath)) {
+      if (poPath.length > longestPrefix) {
+        longestPrefix = poPath.length;
+        bestMatch = poDescriptor;
+        // Strip the prefix. If preopen is "/foo" and path is "/foo/bar", we want "bar".
+        // Also handle the trailing slash if necessary
+        var sliceStart = poPath.length;
+        if (path.length > sliceStart && path.sliceBytes(sliceStart, sliceStart + 1) == "/") {
+          sliceStart += 1;
+        }
+        relativePath = path.sliceBytes(sliceStart, path.length);
+      }
+    }
+  }
+
+  if (bestMatch != null) {
+    return (bestMatch, relativePath);
+  }
+  let (defD, defP) = preopens[0];
+  return (defD, path);
+};
+
 export let readFile = (path: String): String => {
-  let root = getRootDir();
+  let (dirFd, relPath) = __resolvePreopen(path);
 
   return try {
-    let file = root.openAt(path, DescriptorFlags.Read);
+    let file = dirFd.openAt(relPath, DescriptorFlags.Read);
     let content = file.readString();
     file.close();
     content
@@ -855,8 +902,8 @@ export let readFile = (path: String): String => {
  * @throws FsError if the file doesn't exist or cannot be read.
  */
 export let readFileBytes = (path: String): ByteArray => {
-  let root = getRootDir();
-  let file = root.openAt(path, DescriptorFlags.Read);
+  let (dirFd, relPath) = __resolvePreopen(path);
+  let file = dirFd.openAt(relPath, DescriptorFlags.Read);
   let content = file.readAllBytes();
   file.close();
   return content;
@@ -871,8 +918,8 @@ export let readFileBytes = (path: String): ByteArray => {
  *         directory doesn't exist, or read-only filesystem).
  */
 export let writeFile = (path: String, content: String): void => {
-  let root = getRootDir();
-  let file = root.createAt(path);
+  let (dirFd, relPath) = __resolvePreopen(path);
+  let file = dirFd.createAt(relPath);
   file.writeString(content);
   file.close();
 };
@@ -885,8 +932,8 @@ export let writeFile = (path: String, content: String): void => {
  * @throws FsError if the file cannot be written.
  */
 export let writeFileBytes = (path: String, content: ByteArray): void => {
-  let root = getRootDir();
-  let file = root.createAt(path);
+  let (dirFd, relPath) = __resolvePreopen(path);
+  let file = dirFd.createAt(relPath);
   file.writeBytes(content);
   file.close();
 };
@@ -933,9 +980,9 @@ export let listDir = (path: String): Array<DirEntry> => {
  * @returns true if the path exists, false otherwise.
  */
 export let exists = (path: String): boolean => {
-  let root = getRootDir();
+  let (dirFd, relPath) = __resolvePreopen(path);
   return try {
-    root.statAt(path);
+    dirFd.statAt(relPath);
     true
   } catch (e) {
     // Assume any error means doesn't exist (simplification)
@@ -949,9 +996,9 @@ export let exists = (path: String): boolean => {
  * @returns true if the path exists and is a file, false otherwise.
  */
 export let isFile = (path: String): boolean => {
-  let root = getRootDir();
+  let (dirFd, relPath) = __resolvePreopen(path);
   return try {
-    let stat = root.statAt(path);
+    let stat = dirFd.statAt(relPath);
     stat.fileType == FileType.RegularFile
   } catch (e) {
     false
@@ -964,9 +1011,9 @@ export let isFile = (path: String): boolean => {
  * @returns true if the path exists and is a directory, false otherwise.
  */
 export let isDirectory = (path: String): boolean => {
-  let root = getRootDir();
+  let (dirFd, relPath) = __resolvePreopen(path);
   return try {
-    let stat = root.statAt(path);
+    let stat = dirFd.statAt(relPath);
     stat.fileType == FileType.Directory
   } catch (e) {
     false
@@ -982,8 +1029,8 @@ export let isDirectory = (path: String): boolean => {
  * @throws FsError if the directory cannot be created.
  */
 export let mkdir = (path: String): void => {
-  let root = getRootDir();
-  root.mkdirAt(path);
+  let (dirFd, relPath) = __resolvePreopen(path);
+  dirFd.mkdirAt(relPath);
 };
 
 /**
@@ -994,8 +1041,8 @@ export let mkdir = (path: String): void => {
  * @throws FsError if the file doesn't exist or cannot be deleted.
  */
 export let unlink = (path: String): void => {
-  let root = getRootDir();
-  root.unlinkAt(path);
+  let (dirFd, relPath) = __resolvePreopen(path);
+  dirFd.unlinkAt(relPath);
 };
 
 /**
@@ -1008,6 +1055,6 @@ export let unlink = (path: String): void => {
  *         be deleted.
  */
 export let rmdir = (path: String): void => {
-  let root = getRootDir();
-  root.rmdirAt(path);
+  let (dirFd, relPath) = __resolvePreopen(path);
+  dirFd.rmdirAt(relPath);
 };
