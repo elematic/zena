@@ -154,7 +154,26 @@ class DiscoveryPass {
       for (let stmt in mod.body) {
         match (stmt) {
           case VariableDeclaration: {
-            if (this.usage.isUsed(stmt)) {
+            let varDecl = stmt as VariableDeclaration;
+            // Check if ANY of the underlying patterns are marked as used.
+            // Temporary hack until we rewrite pattern exhaustiveness/iteration:
+            // Since we only mark IdentifierPattern during analysis, we check that explicitly.
+            var isNeeded = false;
+            
+            if (varDecl.exported) {
+               isNeeded = true;
+            } else if (varDecl.pattern is IdentifierPattern) {
+               if (this.usage.isUsed(varDecl.pattern as Node)) {
+                 isNeeded = true;
+               }
+            }
+            
+            // If the VariableDeclaration itself was directly marked (e.g. earlier logic), respect it
+            if (this.usage.isUsed(stmt as Node)) {
+               isNeeded = true;
+            }
+
+            if (isNeeded) {
               // TODO: Cleanup when narrowing in match arms is fixed
               let varDecl = stmt as VariableDeclaration;
               if (varDecl.init is FunctionExpression) {

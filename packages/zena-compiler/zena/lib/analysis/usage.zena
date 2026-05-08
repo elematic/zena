@@ -66,45 +66,24 @@ export class UsageAnalyzer {
 
     match (decl) {
       case IdentifierPattern: {
-        // TODO: This only works for top-level declarations because it only
-        // scans mod.body!
-        // This will fail for local variables nested in blocks/functions.
-        // We should add a `parent` back-reference to AST nodes (which we can
-        // omit from JSON serialization)
-        // so we can just do `decl.parent as VariableDeclaration` here.
-        // Find the VariableDeclaration that this pattern belongs to
-        for (let stmt in mod.body) {
-          if (stmt is VariableDeclaration) {
-            let v = stmt as VariableDeclaration;
-            if (v.pattern == decl) {
-              this.markUsed(v as Node, model, mod);
-            }
+        // Mark only the specific IdentifierPattern to preserve usage granularity 
+        // for destructuring assignments (e.g., `let {used, unused} = ...;`).
+        //
+        // To continue usage traversal, we resolve the parent VariableDeclaration 
+        // using the pre-computed `patternToDecl` map and visit its initializer 
+        // directly.
+        if (this.patternToDecl.has(decl)) {
+          let varDecl = this.patternToDecl[decl] as VariableDeclaration;
+          if (varDecl.init is FunctionExpression) {
+             this.visitFunctionBody(varDecl.init as FunctionExpression, model, mod);
           }
         }
       }
       case VariableDeclaration: {
-        // If it's a variable declaration with a function body, visit its body.
+        // A top-level VariableDeclaration was marked directly (likely an export)
         let varDecl = decl as VariableDeclaration;
         if (varDecl.init is FunctionExpression) {
-          walkEnter(varDecl.init as FunctionExpression, (node: Node): void => {
-            if (node is CallExpression) {
-              let call = node as CallExpression;
-              if (call.callee is Identifier) {
-                let sym = model.resolve(call.callee as Identifier);
-                if (sym != null && sym.declaration != null) {
-                  this.markUsed(sym.declaration as Node, model, mod);
-                }
-              }
-            } else if (node is Identifier) {
-              // We should ideally mark all identifiers that are referenced, 
-              // just in case they are used as values and not directly called.
-              let id = node as Identifier;
-              let sym = model.resolve(id);
-              if (sym != null && sym.declaration != null) {
-                this.markUsed(sym.declaration as Node, model, mod);
-              }
-            }
-          });
+          this.visitFunctionBody(varDecl.init as FunctionExpression, model, mod);
         }
       }
       case Parameter: {}
@@ -113,5 +92,31 @@ export class UsageAnalyzer {
         throw new Error("Unexpected declaration type in UsageAnalyzer.markUsed");
       }
     }
+  }
+
+  visitFunctionBody(init: FunctionExpression, model: SemanticModel, mod: Module): void {
+    walkEnter(init as Node, (node: Node): void => {
+      match (node) {
+        case CallExpression: {
+          let call = node as CallExpression;
+          if (call.callee is Identifier) {
+            let sym = model.resolve(call.callee as Identifier);
+            if (sym != null && sym.declaration != null) {
+              this.markUsed(sym.declaration as Node, model, mod);
+            }
+          }
+        }
+        case Identifier: {
+          // We should ideally mark all identifiers that are referenced, 
+          // just in case they are used as values and not directly called.
+          let id = node as Identifier;
+          let sym = model.resolve(id);
+          if (sym != null && sym.declaration != null) {
+            this.markUsed(sym.declaration as Node, model, mod);
+          }
+        }
+        case _: {}
+      }
+    });
   }
 }
