@@ -19,24 +19,11 @@ export class UsageAnalysisResult {
 export class UsageAnalyzer {
   program: Program;
   result = new UsageAnalysisResult();
-  
-  // Maps a variable's pattern to its declaration so we can look down into its initializer
-  var patternToDecl = new HashMap<Node, VariableDeclaration>();
 
   new(this.program);
 
   analyze(): UsageAnalysisResult {
-    // Pass 1: Build the map from IdentifierPattern to VariableDeclaration
-    for (let unit in this.program.units) {
-      for (let stmt in unit.ast.body) {
-        if (stmt is VariableDeclaration) {
-          let varDecl = stmt as VariableDeclaration;
-          this.patternToDecl[varDecl.pattern as Node] = varDecl;
-        }
-      }
-    }
-
-    // Pass 2: Find exports in all modules and mark them as used
+    // Pass 1: Find exports in all modules and mark them as used
     for (let unit in this.program.units) {
       let model = unit.model;
       for (let stmt in unit.ast.body) {
@@ -70,10 +57,12 @@ export class UsageAnalyzer {
         // for destructuring assignments (e.g., `let {used, unused} = ...;`).
         //
         // To continue usage traversal, we resolve the parent VariableDeclaration 
-        // using the pre-computed `patternToDecl` map and visit its initializer 
+        // using the semantic model's parent map and visit its initializer 
         // directly.
-        if (this.patternToDecl.has(decl)) {
-          let varDecl = this.patternToDecl[decl] as VariableDeclaration;
+        let parent = model.getParent(decl);
+        if (parent is VariableDeclaration) {
+          // TODO: why do we need this cast?
+          let varDecl = parent as VariableDeclaration;
           if (varDecl.init is FunctionExpression) {
              this.visitFunctionBody(varDecl.init as FunctionExpression, model, mod);
           }

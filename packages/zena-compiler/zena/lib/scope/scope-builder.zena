@@ -1,6 +1,7 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Iterator } from 'zena:iterator';
+import { NodeMap } from '../node-map.zena';
 import {
   Node, NodeId, Module, SourceLocation,
   // Sealed base types
@@ -33,6 +34,7 @@ import {
   CaseClassParam, SealedVariant, PropertySignature, MethodSignature,
   AccessorSignature, CatchClause
 } from '../ast.zena';
+import { walkChildren } from '../visitor.zena';
 import {Symbol} from './symbol.zena';
 import {Scope, ScopeKind} from './scope.zena';
 
@@ -68,14 +70,14 @@ export class UnresolvedName(
  * original declaration.
  */
 export final class SymbolMap {
-    #byNodeId = new HashMap<NodeId, Symbol>();
+    #byNode = new NodeMap<Symbol>();
     #byOffset = new HashMap<i32, Symbol>();
 
     /**
      * Record a resolved reference or declaration.
      */
     record(node: Node, info: Symbol): void {
-      this.#byNodeId[node.id] = info;
+      this.#byNode[node] = info;
       if (node.loc != null) {
         this.#byOffset[(node.loc as SourceLocation).start] = info;
       }
@@ -85,7 +87,7 @@ export final class SymbolMap {
      * Look up the symbol a node refers to. Returns null if unresolved.
      */
     getByNode(node: Node): Symbol | null {
-      if (let (true, info) = this.#byNodeId.get(node.id)) {
+      if (let (true, info) = this.#byNode.get(node)) {
         return info;
       }
       return null;
@@ -135,8 +137,21 @@ export final class ScopeResult(
    * Names that were declared twice in the same scope.
    * Each entry is an error: same-scope redeclaration.
    */
-  duplicateDeclarations: Array<UnresolvedName>
+  duplicateDeclarations: Array<UnresolvedName>,
+
+  /**
+   * Parent pointer map from node → parent node.
+   */
+  parents: NodeMap<Node>
 )
+
+let populateParents = (ast: Node, parents: NodeMap<Node>): void => {
+  walkChildren(ast, (child) => {
+    parents[child] = ast;
+    populateParents(child, parents);
+    return false; // we handle recursion manually to track the parent
+  }, (child) => {});
+};
 
 /**
  * Builds the scope tree and export catalog for a single module.
@@ -161,6 +176,7 @@ export final class ScopeBuilder {
   #unresolvedNames = new Array<UnresolvedName>();
   #symbols = new SymbolMap();
   #duplicateDeclarations = new Array<UnresolvedName>();
+  #parents = new NodeMap<Node>();
 
   new(modulePath: String, preludeScope: Scope | null = null)
     : #modulePath = modulePath,
@@ -171,6 +187,7 @@ export final class ScopeBuilder {
    * Returns the result containing the root scope, exports, and unresolved names.
    */
   build(ast: Node): ScopeResult {
+    populateParents(ast, this.#parents);
     this.#declareBuiltins();
     match (ast) {
       case Module {body}: {
@@ -183,7 +200,8 @@ export final class ScopeBuilder {
       this.#exports,
       this.#unresolvedNames,
       this.#symbols,
-      this.#duplicateDeclarations
+      this.#duplicateDeclarations,
+      this.#parents
     );
   }
 

@@ -43,13 +43,14 @@ import { Diagnostic } from './diagnostics.zena';
 import { Node, NodeId, SourceLocation } from './ast.zena';
 import { Symbol, SymbolId } from './scope/symbol.zena';
 import { SymbolMap } from './scope/scope-builder.zena';
+import { NodeMap } from './node-map.zena';
 
 export class SemanticModel {
   /**
    * Map from node.id → inferred Type.
    * Used for both expression types and declaration/binding types.
    */
-  #nodeTypes = new HashMap<NodeId, Type>();
+  #nodeTypes = new NodeMap<Type>();
 
   /**
    * Map from Symbol.id → Type for named bindings.
@@ -64,6 +65,13 @@ export class SemanticModel {
    * Owned by the SemanticModel so consumers have a single object to query.
    */
   var #symbols: SymbolMap | null = null;
+
+  /**
+   * Parent pointer map from node → parent node.
+   * Useful for analyses (like DCE) that need to walk up from a node.
+   * Populated during scope analysis.
+   */
+  #parents = new NodeMap<Node>();
 
   /**
    * All diagnostics from type checking.
@@ -84,6 +92,23 @@ export class SemanticModel {
    */
   setSymbols(symbols: SymbolMap): void {
     this.#symbols = symbols;
+  }
+
+  /**
+   * Set the parent of a node.
+   */
+  setParent(child: Node, parent: Node): void {
+    this.#parents[child] = parent;
+  }
+
+  /**
+   * Get the parent of a node, or null if it is a root or not recorded.
+   */
+  getParent(child: Node): Node | null {
+    if (let (true, parent) = this.#parents.get(child)) {
+      return parent;
+    }
+    return null;
   }
 
   /**
@@ -111,14 +136,14 @@ export class SemanticModel {
    * Record the inferred type for an AST node.
    */
   setNodeType(node: Node, type: Type): void {
-    this.#nodeTypes[node.id] = type;
+    this.#nodeTypes[node] = type;
   }
 
   /**
    * Get the inferred type for an AST node, or null if not recorded.
    */
   getNodeType(node: Node): Type | null {
-    if (let (true, t) = this.#nodeTypes.get(node.id)) {
+    if (let (true, t) = this.#nodeTypes.get(node)) {
       return t;
     }
     return null;
@@ -172,7 +197,7 @@ export class SemanticModel {
     get { return this.#diagnostics; }
   }
 
-  nodeTypes: HashMap<NodeId, Type> {
+  nodeTypes: NodeMap<Type> {
     get { return this.#nodeTypes; }
   }
 }
