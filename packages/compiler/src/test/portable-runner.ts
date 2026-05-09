@@ -571,10 +571,12 @@ async function runExecutionTest(
 
   const invokeTarget = directives.invoke || 'main';
 
-    // Handle @throws directive - expect an exception
+  // Handle @throws directive - expect an exception
   if (directives.throws) {
     if (!instanceExports[invokeTarget]) {
-      throw new Error(`Test expects throws but no ${invokeTarget} function found`);
+      throw new Error(
+        `Test expects throws but no ${invokeTarget} function found`,
+      );
     }
     try {
       (instanceExports[invokeTarget] as Function)();

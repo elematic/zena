@@ -3931,61 +3931,84 @@ export function generateClassMethods(
             {expr: Expression | null; name: string}
           >();
 
-          // First, collect inline initializers from field definitions
-          for (const m of decl.body) {
-            if (m.type === NodeType.FieldDefinition && !m.isStatic) {
-              const memberName = getMemberName(m.name);
-              const fieldName = manglePrivateName(decl.name.name, memberName);
-              const fieldInfo = classInfo.fields.get(fieldName);
-              if (fieldInfo) {
-                fieldValues.set(fieldInfo.index, {
-                  expr: m.value || null,
-                  name: fieldName,
-                });
-              }
-            }
-          }
-
-          // Also collect mixin field initializers
-          if (decl.mixins && decl.mixins.length > 0) {
-            let baseName = 'Object';
-            if (decl.superClass) {
-              // Handle both TypeAnnotation and Identifier (synthetic classes)
-              if ((decl.superClass as any).type === NodeType.TypeAnnotation) {
-                baseName = getTypeAnnotationName(decl.superClass);
-              } else if (
-                (decl.superClass as any).type === NodeType.Identifier
-              ) {
-                baseName = (decl.superClass as any).name;
-              }
-            }
-            for (const mixinAnnotation of decl.mixins) {
-              const mixinType = mixinAnnotation.inferredType;
-              if (!mixinType || mixinType.kind !== TypeKind.Mixin) continue;
-              const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
-              if (!mixinDecl) continue;
-              const intermediateName = `${baseName}_${mixinDecl.name.name}`;
-              for (const m of mixinDecl.body) {
-                if (
-                  m.type === NodeType.FieldDefinition &&
-                  !m.isStatic &&
-                  m.value
-                ) {
-                  const memberName = getMemberName(m.name);
-                  const fieldName = manglePrivateName(
-                    intermediateName,
-                    memberName,
-                  );
-                  const fieldInfo = classInfo.fields.get(fieldName);
-                  if (fieldInfo) {
-                    fieldValues.set(fieldInfo.index, {
-                      expr: m.value,
-                      name: fieldName,
-                    });
-                  }
+          // Collect inline initializers and mixin field initializers from the class hierarchy
+          let currentDecl: ClassDeclaration | undefined = decl;
+          while (currentDecl) {
+            // Collect inline initializers from field definitions
+            for (const m of currentDecl.body) {
+              if (m.type === NodeType.FieldDefinition && !m.isStatic) {
+                const memberName = getMemberName(m.name);
+                const fieldName = manglePrivateName(
+                  currentDecl.name.name,
+                  memberName,
+                );
+                const fieldInfo = classInfo.fields.get(fieldName);
+                if (fieldInfo) {
+                  fieldValues.set(fieldInfo.index, {
+                    expr: (m as any).value || null,
+                    name: fieldName,
+                  });
                 }
               }
-              baseName = intermediateName;
+            }
+
+            // Also collect mixin field initializers
+            if (currentDecl.mixins && currentDecl.mixins.length > 0) {
+              let baseName = 'Object';
+              if (currentDecl.superClass) {
+                if (
+                  (currentDecl.superClass as any).type ===
+                  NodeType.TypeAnnotation
+                ) {
+                  baseName = getTypeAnnotationName(
+                    currentDecl.superClass as any,
+                  );
+                } else if (
+                  (currentDecl.superClass as any).type === NodeType.Identifier
+                ) {
+                  baseName = (currentDecl.superClass as any).name;
+                }
+              }
+              for (const mixinAnnotation of currentDecl.mixins) {
+                const mixinType = mixinAnnotation.inferredType;
+                if (!mixinType || mixinType.kind !== TypeKind.Mixin) continue;
+                const mixinDecl = ctx.getMixinDeclaration(
+                  mixinType as MixinType,
+                );
+                if (!mixinDecl) continue;
+                const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+                for (const m of mixinDecl.body) {
+                  if (
+                    m.type === NodeType.FieldDefinition &&
+                    !m.isStatic &&
+                    (m as any).value
+                  ) {
+                    const memberName = getMemberName(m.name);
+                    const fieldName = manglePrivateName(
+                      intermediateName,
+                      memberName,
+                    );
+                    const fieldInfo = classInfo.fields.get(fieldName);
+                    if (fieldInfo) {
+                      fieldValues.set(fieldInfo.index, {
+                        expr: (m as any).value,
+                        name: fieldName,
+                      });
+                    }
+                  }
+                }
+                baseName = intermediateName;
+              }
+            }
+
+            if (currentDecl.superClass) {
+              const baseName =
+                (currentDecl.superClass as any).type === NodeType.TypeAnnotation
+                  ? getTypeAnnotationName(currentDecl.superClass as any)
+                  : (currentDecl.superClass as any).name;
+              currentDecl = ctx.findClassDeclaration(baseName);
+            } else {
+              currentDecl = undefined;
             }
           }
 
@@ -4145,7 +4168,7 @@ export function generateClassMethods(
               const fieldName = manglePrivateName(decl.name.name, memberName);
               const fieldInfo = classInfo.fields.get(fieldName)!;
               body.push(Opcode.local_get, 0);
-              generateExpression(ctx, m.value, body);
+              generateExpression(ctx, (m as any).value, body);
               body.push(0xfb, GcOpcode.struct_set);
               body.push(
                 ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
@@ -4206,7 +4229,7 @@ export function generateClassMethods(
                 const fieldName = manglePrivateName(decl.name.name, memberName);
                 const fieldInfo = classInfo.fields.get(fieldName)!;
                 body.push(Opcode.local_get, 0);
-                generateExpression(ctx, m.value, body);
+                generateExpression(ctx, (m as any).value, body);
                 body.push(0xfb, GcOpcode.struct_set);
                 body.push(
                   ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
@@ -4284,7 +4307,7 @@ export function generateClassMethods(
                   );
                   const fieldInfo = classInfo.fields.get(fieldName)!;
                   body.push(Opcode.local_get, 0);
-                  generateExpression(ctx, m.value, body);
+                  generateExpression(ctx, (m as any).value, body);
                   body.push(0xfb, GcOpcode.struct_set);
                   body.push(
                     ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
@@ -4325,7 +4348,7 @@ export function generateClassMethods(
                       );
                       const fieldInfo = classInfo.fields.get(fieldName)!;
                       body.push(Opcode.local_get, 0);
-                      generateExpression(ctx, m.value, body);
+                      generateExpression(ctx, (m as any).value, body);
                       body.push(0xfb, GcOpcode.struct_set);
                       body.push(
                         ...WasmModule.encodeSignedLEB128(
@@ -4388,7 +4411,7 @@ export function generateClassMethods(
                 const fieldName = manglePrivateName(decl.name.name, memberName);
                 const fieldInfo = classInfo.fields.get(fieldName)!;
                 body.push(Opcode.local_get, 0);
-                generateExpression(ctx, m.value, body);
+                generateExpression(ctx, (m as any).value, body);
                 body.push(0xfb, GcOpcode.struct_set);
                 body.push(
                   ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
@@ -6376,7 +6399,7 @@ function generateMixinFieldInitializers(
       if (!fieldInfo) continue;
 
       body.push(Opcode.local_get, 0); // this
-      generateExpression(ctx, m.value, body);
+      generateExpression(ctx, (m as any).value, body);
       body.push(0xfb, GcOpcode.struct_set);
       body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
       body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
