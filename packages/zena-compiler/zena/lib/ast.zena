@@ -4,6 +4,19 @@
 
 import { Array } from 'zena:array';
 
+/**
+ * Distinct type for Node identity keys.
+ * Prevents accidental use of source offsets or other i32 values as Node IDs.
+ */
+export distinct type NodeId = i32;
+
+var _nextNodeId: i32 = 1;
+export let nextNodeId = (): NodeId => {
+  let id = _nextNodeId;
+  _nextNodeId += 1;
+  return id as NodeId;
+};
+
 export class SourceLocation(
   /** 1-based line number */
   line: i32,
@@ -51,6 +64,13 @@ export sealed class Node {
   case SymbolPropertyName
 
   abstract loc?: SourceLocation;
+
+  /**
+   * Unique ID assigned to this node instance during construction.
+   * Useful for mapping nodes to semantic information without relying on
+   * object identity (which is tricky for case classes) or source location.
+   */
+  id: NodeId = nextNodeId();
 }
 
 // ============================================================================

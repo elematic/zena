@@ -40,22 +40,16 @@ import {
   Type, ClassType, InterfaceType, FunctionType, TypeParameterType
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
-import { Node, SourceLocation } from './ast.zena';
+import { Node, NodeId, SourceLocation } from './ast.zena';
 import { Symbol, SymbolId } from './scope/symbol.zena';
 import { SymbolMap } from './scope/scope-builder.zena';
 
 export class SemanticModel {
   /**
-   * Map from node source offset → inferred Type.
+   * Map from node.id → inferred Type.
    * Used for both expression types and declaration/binding types.
-   * 
-   * TODO: Key this by `Node.id` once the parser has been refactored to
-   * assign unique IDs to every AST node. Currently using `loc.start`
-   * as a "poor man's Node ID" because WebAssembly/Zena doesn't have 
-   * WeakMaps at the moment and concise case classes auto-implement 
-   * structural equality/hashing, so object identity maps are difficult.
    */
-  #nodeTypes = new HashMap<i32, Type>();
+  #nodeTypes = new HashMap<NodeId, Type>();
 
   /**
    * Map from Symbol.id → Type for named bindings.
@@ -117,21 +111,15 @@ export class SemanticModel {
    * Record the inferred type for an AST node.
    */
   setNodeType(node: Node, type: Type): void {
-    if (node.loc != null) {
-      let loc = node.loc as SourceLocation;
-      this.#nodeTypes[loc.start] = type;
-    }
+    this.#nodeTypes[node.id] = type;
   }
 
   /**
    * Get the inferred type for an AST node, or null if not recorded.
    */
   getNodeType(node: Node): Type | null {
-    if (node.loc != null) {
-      let loc = node.loc as SourceLocation;
-      if (this.#nodeTypes.has(loc.start)) {
-        return this.#nodeTypes[loc.start];
-      }
+    if (let (true, t) = this.#nodeTypes.get(node.id)) {
+      return t;
     }
     return null;
   }
@@ -184,7 +172,7 @@ export class SemanticModel {
     get { return this.#diagnostics; }
   }
 
-  nodeTypes: HashMap<i32, Type> {
+  nodeTypes: HashMap<NodeId, Type> {
     get { return this.#nodeTypes; }
   }
 }

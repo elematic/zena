@@ -2,7 +2,7 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Iterator } from 'zena:iterator';
 import {
-  Node, Module, SourceLocation,
+  Node, NodeId, Module, SourceLocation,
   // Sealed base types
   Expression, Statement, Pattern, TypeAnnotation,
   // Expressions
@@ -68,29 +68,28 @@ export class UnresolvedName(
  * original declaration.
  */
 export final class SymbolMap {
-  #byOffset = new HashMap<i32, Symbol>();
+    #byNodeId = new HashMap<NodeId, Symbol>();
+    #byOffset = new HashMap<i32, Symbol>();
 
-  /** Record a resolved reference or declaration. */
-  record(node: Node, info: Symbol): void {
-    if (node.loc != null) {
-      this.#byOffset[(node.loc as SourceLocation).start] = info;
+    /**
+     * Record a resolved reference or declaration.
+     */
+    record(node: Node, info: Symbol): void {
+      this.#byNodeId[node.id] = info;
+      if (node.loc != null) {
+        this.#byOffset[(node.loc as SourceLocation).start] = info;
+      }
     }
-  }
 
-  /**
-   * Look up the symbol a node refers to. Returns null if unresolved.
-   */
-  getByNode(node: Node): Symbol | null {
-    if (node.loc == null) {
+    /**
+     * Look up the symbol a node refers to. Returns null if unresolved.
+     */
+    getByNode(node: Node): Symbol | null {
+      if (let (true, info) = this.#byNodeId.get(node.id)) {
+        return info;
+      }
       return null;
     }
-    let loc = node.loc as SourceLocation;
-    return if (let (true, info) = this.#byOffset.get(loc.start)) {
-      info
-    } else {
-      null
-    };
-  }
 
   /**
    * Look up by source offset (0-based). For LSP position-based queries.
@@ -956,7 +955,9 @@ export final class ScopeBuilder {
 
   #declareParameter(param: Parameter): void {
     this.#current.declare(param.name.name, false, param, this.#modulePath);
-    this.#symbols.record(param, this.#current.getLocal(param.name.name) as Symbol);
+    let sym = this.#current.getLocal(param.name.name) as Symbol;
+    this.#symbols.record(param, sym);
+    this.#symbols.record(param.name, sym); // Bind Identifier as well for LSP Hover
     // For destructured params, also declare the pattern bindings (x, y, etc.).
     if (param.pattern != null) {
       this.#declarePattern(param.pattern as Pattern, "let", param);
