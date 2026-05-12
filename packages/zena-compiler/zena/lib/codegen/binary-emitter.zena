@@ -1,0 +1,196 @@
+import { ByteBuffer } from 'zena:byte-buffer';
+import { WasmEmitter } from './wasm-emitter.zena';
+import { WasmType, WasmSignature, WasmFunction, WasmModule, DiscoveryPass } from './wasm-module.zena';
+import { SectionId, ValType, Opcode } from './wasm.zena';
+
+/**
+ * Implements the WasmEmitter interface by writing WebAssembly binary
+ * formatted bytes to a ByteBuffer.
+ */
+export class BinaryEmitter implements WasmEmitter {
+  mainBuffer: ByteBuffer;
+  
+  var currentSection: ByteBuffer | null = null;
+  var currentFunction: ByteBuffer | null = null;
+  
+  new(this.mainBuffer);
+
+  // Module lifecycle
+  emitModuleStart(): void {
+    // Magic: \0asm
+    this.mainBuffer.writeU32(0x6D736100);
+    // Version: 1
+    this.mainBuffer.writeU32(0x00000001);
+  }
+  
+  writeSection(id: i32, payload: ByteBuffer): void {
+    this.mainBuffer.writeByte(id);
+    this.mainBuffer.writeULEB128(payload.length);
+    this.mainBuffer.writeBuffer(payload);
+  }
+
+  var currentTypeSection: ByteBuffer | null = null;
+  
+  emitTypeSectionStart(count: i32): void {
+    if (count == 0) return;
+    this.currentTypeSection = new ByteBuffer();
+    (this.currentTypeSection as ByteBuffer).writeULEB128(count);
+  }
+  
+  emitFunctionTypeStart(index: i32): void {
+    if (this.currentTypeSection == null) return;
+    (this.currentTypeSection as ByteBuffer).writeByte(ValType.func as i32);
+  }
+  
+  emitFunctionTypeParamsStart(count: i32): void {
+    if (this.currentTypeSection == null) return;
+    (this.currentTypeSection as ByteBuffer).writeULEB128(count);
+  }
+  
+  emitFunctionTypeParam(type: ValType): void {
+    if (this.currentTypeSection == null) return;
+    (this.currentTypeSection as ByteBuffer).writeByte(type as i32);
+  }
+  
+  emitFunctionTypeResultsStart(count: i32): void {
+    if (this.currentTypeSection == null) return;
+    (this.currentTypeSection as ByteBuffer).writeULEB128(count);
+  }
+  
+  emitFunctionTypeResult(type: ValType): void {
+    if (this.currentTypeSection == null) return;
+    (this.currentTypeSection as ByteBuffer).writeByte(type as i32);
+  }
+  
+  emitFunctionTypeEnd(): void {}
+  
+  emitTypeSectionEnd(): void {
+    if (this.currentTypeSection != null) {
+      this.writeSection(SectionId.Type as i32, this.currentTypeSection as ByteBuffer);
+      this.currentTypeSection = null;
+    }
+  }
+
+  var currentFunctionSection: ByteBuffer | null = null;
+
+  emitFunctionSectionStart(count: i32): void {
+    if (count == 0) return;
+    this.currentFunctionSection = new ByteBuffer();
+    (this.currentFunctionSection as ByteBuffer).writeULEB128(count);
+  }
+
+  emitFunctionDefinition(typeIndex: i32): void {
+    if (this.currentFunctionSection != null) {
+      (this.currentFunctionSection as ByteBuffer).writeULEB128(typeIndex);
+    }
+  }
+
+  emitFunctionSectionEnd(): void {
+    if (this.currentFunctionSection != null) {
+      this.writeSection(SectionId.Function as i32, this.currentFunctionSection as ByteBuffer);
+      this.currentFunctionSection = null;
+    }
+  }
+  
+  var currentExportSection: ByteBuffer | null = null;
+  
+  emitExportSectionStart(count: i32): void {
+    if (count == 0) {
+      return;
+    }
+    this.currentExportSection = new ByteBuffer();
+    (this.currentExportSection as ByteBuffer).writeULEB128(count);
+  }
+
+  emitExport(name: String, func: WasmFunction): void {
+    let section = this.currentExportSection;
+
+    if (section == null) {
+      return;
+    }
+    
+    let nameLen = name.length;
+    section.writeULEB128(nameLen);
+    for (var j = 0; j < nameLen; j += 1) {
+      section.writeByte(name.getByteAt(j));
+    }
+    section.writeByte(0); // func
+    section.writeULEB128(func.index);
+  }
+
+  emitExportSectionEnd(): void {
+    if (this.currentExportSection != null) {
+      this.writeSection(SectionId.Export as i32, this.currentExportSection as ByteBuffer);
+      this.currentExportSection = null;
+    }
+  }
+
+  emitCodeSectionStart(count: i32): void {
+    if (count == 0) return;
+    this.currentSection = new ByteBuffer();
+    (this.currentSection as ByteBuffer).writeULEB128(count);
+  }
+  
+  emitFunctionCodeStart(func: WasmFunction): void {
+    this.currentFunction = new ByteBuffer();
+  }
+  
+  emitFunctionCodeEnd(func: WasmFunction): void {
+    let funcBody = new ByteBuffer();
+    funcBody.writeULEB128(0); // local count 0
+    let currFunc = this.currentFunction as ByteBuffer;
+    funcBody.writeBuffer(currFunc);
+    
+    let section = this.currentSection as ByteBuffer;
+    section.writeULEB128(funcBody.length);
+    section.writeBuffer(funcBody);
+    
+    this.currentFunction = null;
+  }
+  
+  emitCodeSectionEnd(): void {
+    if (this.currentSection != null) {
+      this.writeSection(SectionId.Code as i32, this.currentSection as ByteBuffer);
+      this.currentSection = null;
+    }
+  }
+
+  emitModuleEnd(): void {}
+
+  // Function lifecycle
+  emitFunctionSignatureStart(name: String, typeIndex: i32): void {}
+  emitFunctionLocalsStart(): void {}
+  
+  emitFunctionEnd(): void {
+    (this.currentFunction as ByteBuffer).writeByte(Opcode.end as i32);
+  }
+  
+  emitReturn(): void {
+    (this.currentFunction as ByteBuffer).writeByte(Opcode.return_ as i32);
+  }
+  
+  emitCall(target: WasmFunction): void {
+    let b = this.currentFunction as ByteBuffer;
+    b.writeByte(Opcode.call as i32);
+    b.writeULEB128(target.index);
+  }
+  
+  emitI32Const(value: i32): void {
+    let b = this.currentFunction as ByteBuffer;
+    b.writeByte(Opcode.i32_const as i32);
+    b.writeSLEB128(value);
+  }
+  
+  emitBooleanConst(value: boolean): void {
+    let b = this.currentFunction as ByteBuffer;
+    b.writeByte(Opcode.i32_const as i32);
+    let v = if (value) 1 else 0;    
+    b.writeSLEB128(v);
+  }
+  
+  emitStringConst(value: String): void {
+    let b = this.currentFunction as ByteBuffer;
+    b.writeByte(Opcode.i32_const as i32);
+    b.writeSLEB128(0);
+  }
+}

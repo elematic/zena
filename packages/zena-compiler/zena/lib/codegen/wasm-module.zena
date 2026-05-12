@@ -1,0 +1,210 @@
+import { 
+  Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern,
+  Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
+  ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
+  ImportDeclaration, ImportSpecifier
+} from '../ast.zena';
+import { SemanticModel } from '../semantic-model.zena';
+import { Program, CompilationUnit } from '../program.zena';
+import { SymbolId, Symbol } from '../scope/symbol.zena';
+import { Error } from 'zena:error';
+import { ValType } from './wasm.zena';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
+import { String } from "zena:string";
+export class WasmExport {
+  name: String;
+  func: WasmFunction;
+  new(this.name, this.func);
+}
+
+
+/**
+ * Represents a reference to an entity that has a WebAssembly type index.
+ * Before layout runs, the index is -1.
+ */
+export class WasmType {
+  var index: i32 = -1;
+}
+
+/**
+ * A WebAssembly function signature.
+ * Deduped by the module so identical signatures share the same type index.
+
+ * Params and returns are represented by WebAssembly ValType enums (e.g. i32, f64).
+ */
+export class WasmSignature extends WasmType {
+  params: Array<ValType>;
+  returns: Array<ValType>;
+  new(this.params, this.returns) : super();
+}
+
+/**
+ * Represents a single compiled WebAssembly function.
+ * Tracks its eventual index, signature, and the AST node it was derived from.
+ */
+export class WasmFunction {
+  /** The semantic model of the module that declares this function. */
+  model: SemanticModel;
+  var index: i32 = -1;
+  var name: String | null = null;
+  signature: WasmSignature;
+  node: FunctionExpression;
+  new(this.signature, this.node, this.model);
+}
+
+/**
+ * Owns the intermediate representation of the WebAssembly module layout.
+ * Acts as the registry for all WebAssembly entities (types, functions).
+ * The DiscoveryPass populates this during AST traversal.
+ */
+export class WasmModule {
+  types = new Array<WasmType>();
+  
+  /** 
+   * A complete list of all functions in the module, including anonymous
+   * functions that do not have a corresponding symbol. Array order dictates
+   * the final WebAssembly function index.
+   */
+  functions = new Array<WasmFunction>();
+  
+  /**
+   * Maps a Zena symbol ID to its compiled WebAssembly function.
+   * Used to resolve call targets. Anonymous functions will not be in this map.
+   */
+  functionMap = new HashMap<SymbolId, WasmFunction>();
+  exportMap = new HashMap<String, WasmFunction>();
+  
+  /**
+   * Gets an existing WasmSignature if one matches the given parameters and
+   * returns, or creates a new one and adds it to the type pool.
+   * 
+   * This performs a linear search through the existing types to find a
+   * structural match, deduplicating identical signatures so they share the same
+   * WebAssembly type index.
+   */
+  getSignature(params: Array<ValType>, returns: Array<ValType>): WasmSignature {
+    for (let t in this.types) {
+      if (t is WasmSignature) {
+        let sig = t as WasmSignature;
+        if (sig.params.length == params.length &&
+            sig.returns.length == returns.length) {
+          var match = true;
+          for (var i = 0; i < params.length; i += 1) {
+            if (sig.params[i] != params[i]) {
+              match = false;
+              break;
+            }
+          }
+          if (match) {
+            for (var i = 0; i < returns.length; i += 1) {
+              if (sig.returns[i] != returns[i]) {
+                match = false;
+                break;
+              }
+            }
+          }
+          if (match) {
+            return sig;
+          }
+        }
+      }
+    }
+    let sig = new WasmSignature(params, returns);
+    this.types.push(sig);
+    return sig;
+  }
+  
+  addFunction(func: WasmFunction): void {
+    this.functions.push(func);
+  }
+  
+  /**
+   * Locks in the module layout, assigning final WebAssembly indices (i32)
+   * to all types, functions, and globals. Must be called after all
+   * discoveries are made, but before the emission passes begin.
+   */
+  layout(): void {
+    for (var i = 0; i < this.types.length; i += 1) {
+      let t = this.types[i];
+      t.index = i;
+    }
+    for (var i = 0; i < this.functions.length; i += 1) {
+      let f = this.functions[i];
+      f.index = i;
+    }
+  }
+}
+
+/**
+ * Traverses a Zena Program's AST to discover all functions, structs, and 
+ * imports that need to be emitted into the WebAssembly module.
+ * Dedupes signatures and assigns Zena Symbols to WasmFunctions.
+ */
+export class DiscoveryPass {
+  program: Program;
+  wasm: WasmModule;
+  usage: UsageAnalysisResult;
+  new(this.program, this.wasm, this.usage);
+  
+  /**
+   * Run the discovery pass on the program, populating the given WasmModule.
+   */
+  run(): void {
+    for (let unit in this.program.units) {
+      let mod = unit.ast;
+      let moduleModel = unit.model;
+      for (let stmt in mod.body) {
+        match (stmt) {
+          case VariableDeclaration: {
+            let varDecl = stmt as VariableDeclaration;
+            var isNeeded = false;
+            
+            if (varDecl.exported) {
+               isNeeded = true;
+            } else if (varDecl.pattern is IdentifierPattern) {
+               if (this.usage.isUsed(varDecl.pattern as Node)) {
+                 isNeeded = true;
+               }
+            }
+            
+            if (this.usage.isUsed(stmt as Node)) {
+               isNeeded = true;
+            }
+
+            if (isNeeded) {
+              let varDecl = stmt as VariableDeclaration;
+              if (varDecl.init is FunctionExpression) {
+                let funcExpr = varDecl.init as FunctionExpression;
+                let params = new Array<ValType>();
+                let returns = new Array<ValType>();
+                returns.push(ValType.i32); // Hardcoded i32 return for main
+                
+                let sig = this.wasm.getSignature(params, returns);
+                let wasmFunc = new WasmFunction(sig, funcExpr, moduleModel);
+                this.wasm.addFunction(wasmFunc);
+                
+                if (varDecl.pattern is IdentifierPattern) {
+                  let ident = varDecl.pattern as IdentifierPattern;
+                  wasmFunc.name = ident.name;
+                  let sym = moduleModel.resolveDeclaration(ident);
+                  if (sym != null) {
+                    this.wasm.functionMap[sym.id] = wasmFunc;
+                    if (varDecl.exported) {
+                      this.wasm.exportMap[ident.name] = wasmFunc;
+                    }
+                  }
+                }
+              }
+            }
+          }
+          case ImportDeclaration: {}
+          case _: {
+            throw new Error("Unsupported top-level statement type in codegen");
+          }
+        }
+      }
+    }
+  }
+}

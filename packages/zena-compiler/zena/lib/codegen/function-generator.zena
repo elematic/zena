@@ -1,0 +1,146 @@
+import { 
+  Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
+  Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
+  ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
+  ImportSpecifier
+} from '../ast.zena';
+import { SemanticModel } from '../semantic-model.zena';
+import { SymbolId, Symbol } from '../scope/symbol.zena';
+import { Error } from 'zena:error';
+import { ValType } from "./wasm.zena";
+import { String } from "zena:string";
+import { i32ToString } from "zena:string-convert";
+
+import { parseI32 } from 'zena:string-convert';
+
+import { WasmEmitter } from './wasm-emitter.zena';
+import { WasmFunction, WasmModule } from './wasm-module.zena';
+
+/**
+ * Manages the generic AST traversal and code generation.
+ * Emits backend-agnostic logical instructions to a generic `WasmEmitter`.
+ */
+export class FunctionGenerator {
+  wasm: WasmModule;
+  emitter: WasmEmitter;
+  wasmFunction: WasmFunction;
+
+
+  new(this.wasm, this.emitter, this.wasmFunction);
+
+  generate(): void {
+    this.emitter.emitFunctionCodeStart(this.wasmFunction);
+    var name = "func" + i32ToString(this.wasmFunction.index);
+    if (this.wasmFunction.name != null) {
+      name = this.wasmFunction.name as String;
+    }
+    this.emitter.emitFunctionSignatureStart(name, this.wasmFunction.signature.index);
+    
+    
+    this.emitter.emitFunctionLocalsStart();
+    
+    let body = this.wasmFunction.node.body;
+    match (body) {
+      case BlockStatement: {
+        let block = body as BlockStatement;
+        for (let stmt in block.body) {
+          this.generateStatement(stmt);
+        }
+      }
+      case Expression: {
+        this.generateExpression(body as Expression);
+        this.emitter.emitReturn();
+      }
+    }
+    
+    this.emitter.emitFunctionEnd();
+    this.emitter.emitFunctionCodeEnd(this.wasmFunction);
+  }
+
+  generateStatement(stmt: Statement): void {
+    match (stmt) {
+      case ReturnStatement {argument}: {
+        if (argument != null) {
+          this.generateExpression(argument as Expression);
+        }
+        this.emitter.emitReturn();
+      }
+      case ExpressionStatement {expression}: {
+        this.generateExpression(expression);
+      }
+      case BlockStatement {body}: {
+        for (let s in body) {
+          this.generateStatement(s);
+        }
+      }
+      case VariableDeclaration: {
+        let decl = stmt as VariableDeclaration;
+        if (decl.init != null) {
+          this.generateExpression(decl.init as Expression);
+        }
+      }
+      case _: {
+        throw new Error("Unsupported statement type in codegen");
+      }
+    }
+  }
+
+  generateExpression(expr: Expression): void {
+    match (expr) {
+      case CallExpression {callee, args}: {
+        match (callee) {
+          case Identifier: {
+            let ident = callee as Identifier;
+            let model = this.wasmFunction.model;
+            let sym = model.resolve(ident);
+            
+            if (sym == null) {
+              throw new Error("Unresolved identifier in codegen: " + ident.name);
+            }
+            
+            if (this.wasm.functionMap.has((sym as Symbol).id)) {
+              for (let arg in args) {
+                this.generateExpression(arg);
+              }
+              this.emitter.emitCall(this.wasm.functionMap[(sym as Symbol).id]);
+              return;
+            } else {
+              if ((sym as Symbol).declaration is ImportSpecifier) {
+                let spec = (sym as Symbol).declaration as ImportSpecifier;
+                let importedName = spec.imported.name;
+                if (this.wasm.exportMap.has(importedName)) {
+                  for (let arg in args) {
+                    this.generateExpression(arg);
+                  }
+                  this.emitter.emitCall(this.wasm.exportMap[importedName]);
+                  return;
+                }
+                throw new Error("Export map missing: " + importedName);
+              }
+              throw new Error("Could not resolve function call target");
+            }
+          }
+          case _: {
+            throw new Error("Unsupported call expression");
+          }        
+        }
+      }
+      case NumberLiteral {raw}: {
+        let (ok, val) = parseI32(raw);
+        if (!ok) {
+          throw new Error('Failed to parse i32: ' + raw);
+        }
+        this.emitter.emitI32Const(val as i32);
+      }
+      case BooleanLiteral {value}: {
+        this.emitter.emitBooleanConst(value);
+      }
+      case StringLiteral {value}: {
+        this.emitter.emitStringConst(value);
+      }
+      case _: {
+        throw new Error("Unsupported expression type in codegen");
+      }
+    }
+  }
+}

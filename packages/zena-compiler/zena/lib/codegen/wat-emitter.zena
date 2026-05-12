@@ -1,0 +1,140 @@
+import { StringBuilder } from 'zena:string-builder';
+import { WasmEmitter } from './wasm-emitter.zena';
+import { WasmType, WasmFunction } from "./wasm-module.zena";
+import { ValType } from "./wasm.zena";
+import { WasmExport } from './wasm-module.zena';
+import { String } from 'zena:string';
+import { i32ToString } from 'zena:string-convert';
+import { Array } from 'zena:array';
+
+export class WatEmitter implements WasmEmitter {
+  sb: StringBuilder;
+  var indentDepth: i32 = 1;
+  
+  new(this.sb);
+
+  indent(): void {    
+    for (var i = 0; i < this.indentDepth; i += 1) {
+      this.sb.append('  ');
+    }
+  }
+
+  // Module lifecycle
+  emitModuleStart(): void {
+    this.sb.append('(module\n');
+  }
+  
+  emitTypeSectionStart(count: i32): void {}
+  
+  emitFunctionTypeStart(index: i32): void {
+    this.indent();
+    this.sb.append('(type (;').append(i32ToString(index)).append(';) (func');
+  }
+  
+  emitFunctionTypeParamsStart(count: i32): void {}
+  
+  emitFunctionTypeParam(type: ValType): void {
+    this.sb.append(' (param ').append(getTypeName(type)).append(')');
+  }
+  
+  emitFunctionTypeResultsStart(count: i32): void {}
+  
+  emitFunctionTypeResult(type: ValType): void {
+    this.sb.append(' (result ').append(getTypeName(type)).append(')');
+  }
+  
+  emitFunctionTypeEnd(): void {
+    this.sb.append('))\n');
+  }
+  
+  emitTypeSectionEnd(): void {}
+
+  emitFunctionSectionStart(count: i32): void {}
+  emitFunctionDefinition(typeIndex: i32): void {}
+  emitFunctionSectionEnd(): void {}
+  
+  emitExportSectionStart(count: i32): void {}
+  
+  emitExport(name: String, func: WasmFunction): void {
+    this.indent();
+    this.sb
+        .append('(export "')
+        .append(name)
+        .append('" (func $')
+        .append(getFunctionName(func))
+        .append('))\n');
+  }
+
+  emitExportSectionEnd(): void {}
+  
+  emitCodeSectionStart(count: i32): void {}
+  
+  emitFunctionCodeStart(func: WasmFunction): void {}
+  
+  emitFunctionCodeEnd(func: WasmFunction): void {}
+  emitCodeSectionEnd(): void {}
+  
+  emitModuleEnd(): void {
+    this.sb.append(')\n');
+  }
+
+  // Instruction lifecycle
+  emitFunctionSignatureStart(name: String, typeIndex: i32): void {
+    this.indent();
+    this.sb.append('(func $').append(name).append(' (type ').append(i32ToString(typeIndex)).append(')');
+  }
+
+
+  emitFunctionLocalsStart(): void {
+    this.sb.append('\n');
+    this.indentDepth += 1;
+  }
+
+  emitFunctionEnd(): void {
+    this.indentDepth -= 1;
+    this.indent();
+    this.sb.append(')\n');
+  }
+
+  emitReturn(): void {
+    this.indent();
+    this.sb.append('return\n');
+  }
+
+  emitCall(target: WasmFunction): void {
+    this.indent();
+    this.sb.append('call $').append(getFunctionName(target)).append('\n');
+  }
+
+  emitI32Const(value: i32): void {
+    this.indent();
+    this.sb.append('i32.const ').append(i32ToString(value)).append('\n');
+  }
+
+  emitBooleanConst(value: boolean): void {
+    this.indent();
+    var s = '0';
+    if (value) {
+      s = '1';
+    }
+    this.sb.append('i32.const ').append(s).append('\n');
+  }
+
+  emitStringConst(value: String): void {
+    this.indent();
+    this.sb.append(';; string "').append(value).append('"\n');
+  }
+}
+
+let getFunctionName = (func: WasmFunction): String => {
+  return func.name ?? `func${func.index}`;
+};
+
+let getTypeName = (t: ValType): String => {
+  return match (t) {
+    case ValType.i32: 'i32'
+    case ValType.f64: 'f64'
+    // TODO: support primitives in template literals
+    case _: throw new Error(`Unsupported type: ${i32ToString(t as i32)}`)
+  };
+};

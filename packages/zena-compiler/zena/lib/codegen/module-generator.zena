@@ -1,0 +1,90 @@
+import { WasmModule, WasmFunction, WasmSignature, WasmType, DiscoveryPass, WasmExport } from './wasm-module.zena';
+import { Program, CompilationUnit } from '../program.zena';
+import { VariableDeclaration, IdentifierPattern } from '../ast.zena';
+import { String } from 'zena:string';
+import { Array } from 'zena:array';
+import { FunctionGenerator } from './function-generator.zena';
+import { WasmEmitter } from './wasm-emitter.zena';
+import { UsageAnalyzer } from '../analysis/usage.zena';
+
+
+export class ModuleGenerator {
+  program: Program;
+  emitter: WasmEmitter;
+  
+  new(this.program, this.emitter);
+  
+  compile(): void {
+    let wasm = new WasmModule();
+    let usageAnalyzer = new UsageAnalyzer(this.program);
+    let usage = usageAnalyzer.analyze();
+    let pass = new DiscoveryPass(this.program, wasm, usage);
+    pass.run();
+    wasm.layout();
+
+    this.emitter.emitModuleStart();
+    this.emitter.emitTypeSectionStart(wasm.types.length);
+    var i = 0;
+    for (let t in wasm.types) {
+      if (t is WasmSignature) {
+        let sig = t as WasmSignature;
+        this.emitter.emitFunctionTypeStart(i);
+        
+        this.emitter.emitFunctionTypeParamsStart(sig.params.length);
+        for (let param in sig.params) {
+          this.emitter.emitFunctionTypeParam(param);
+        }
+        
+        this.emitter.emitFunctionTypeResultsStart(sig.returns.length);
+        for (let ret in sig.returns) {
+          this.emitter.emitFunctionTypeResult(ret);
+        }
+        
+        this.emitter.emitFunctionTypeEnd();
+      }
+      i += 1;
+    }
+    this.emitter.emitTypeSectionEnd();
+
+    this.emitter.emitFunctionSectionStart(wasm.functions.length);
+    for (let f in wasm.functions) {
+      this.emitter.emitFunctionDefinition(f.signature.index);
+    }
+    this.emitter.emitFunctionSectionEnd();
+    
+    let exports = new Array<WasmExport>();
+    let entryPoint = this.program.entryPoint;
+    if (entryPoint != null) {
+      let entryMod = (entryPoint as CompilationUnit).ast;
+      let model = (entryPoint as CompilationUnit).model;
+      for (let stmt in entryMod.body) {
+        if (stmt is VariableDeclaration) {
+          let varDecl = stmt as VariableDeclaration;
+          if (varDecl.exported && varDecl.pattern is IdentifierPattern) {
+            let ident = varDecl.pattern as IdentifierPattern;
+            let sym = model.resolveDeclaration(ident);
+            if (sym != null && wasm.functionMap.has(sym.id)) {
+              let wasmFunc = wasm.functionMap[sym.id];
+              exports.push(new WasmExport(ident.name, wasmFunc));
+            }
+          }
+        }
+      }
+    }
+    
+        this.emitter.emitExportSectionStart(exports.length);
+    for (let exp in exports) {
+      this.emitter.emitExport(exp.name, exp.func);
+    }
+    this.emitter.emitExportSectionEnd();
+    
+    this.emitter.emitCodeSectionStart(wasm.functions.length);
+    for (let wasmFunc in wasm.functions) {
+       let funcCompiler = new FunctionGenerator(wasm, this.emitter, wasmFunc);
+       funcCompiler.generate();
+    }
+    this.emitter.emitCodeSectionEnd();
+    
+    this.emitter.emitModuleEnd();
+  }
+}

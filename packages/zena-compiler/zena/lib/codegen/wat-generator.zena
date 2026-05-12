@@ -1,17 +1,11 @@
-import { 
-  Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern, 
-  NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement, ReturnStatement, 
-  ExpressionStatement, Statement, Expression 
-} from '../ast.zena';
-import { SemanticModel } from '../semantic-model.zena';
-import { Array } from 'zena:array';
-import { CodeGenerator } from './code-generator.zena';
-import { Program, CompilationUnit } from '../program.zena';
 import { StringBuilder } from 'zena:string-builder';
+import { Program } from '../program.zena';
+import { CodeGenerator } from './code-generator.zena';
+import { ModuleGenerator } from './module-generator.zena';
+import { WatEmitter } from './wat-emitter.zena';
 
 export class WatGenerator implements CodeGenerator<String> {
   var sb: StringBuilder = new StringBuilder();
-  var model: SemanticModel | null = null;
   
   backendName(): String { return 'wat'; }
   
@@ -19,74 +13,9 @@ export class WatGenerator implements CodeGenerator<String> {
 
   generate(program: Program): String {
     this.sb = new StringBuilder();
-    this.sb.append('(module\n');
-    
-    let entryUnit = program.entryPoint;
-    if (entryUnit != null) {
-      let entryMod = entryUnit.ast;
-      this.model = entryUnit.model;
-      for (let stmt in entryMod.body) {
-        if (stmt is VariableDeclaration) {
-          let varDecl = stmt as VariableDeclaration;
-          if (varDecl.exported) {
-            let initNode = varDecl.init;
-            if (initNode is FunctionExpression) {
-              let fnExpr = initNode as FunctionExpression;
-              let name = if (varDecl.pattern is IdentifierPattern) (varDecl.pattern as IdentifierPattern).name else "unknown";
-              this.sb.append('  (func $').append(name).append(' (result i32)\n');
-              
-              let body = fnExpr.body;
-              if (body is BlockStatement) {
-                let block = body as BlockStatement;
-                for (let s in block.body) {
-                  this.processStatement(s);
-                }
-              } else if (body is Expression) {
-                this.processExpression(body as Expression);
-                this.sb.append('    return\n');
-              }
-              
-              this.sb.append('  )\n');
-              this.sb.append('  (export "').append(name).append('" (func $').append(name).append('))\n');
-            }
-          }
-        }
-      }
-    }
-    
-    this.sb.append(')\n');
+    let emitter = new WatEmitter(this.sb);
+    let generator = new ModuleGenerator(program, emitter);
+    generator.compile();
     return this.sb.toString();
-  }
-
-  processStatement(stmt: Statement): void {
-    if (stmt is ReturnStatement) {
-      let ret = stmt as ReturnStatement;
-      if (ret.argument != null) {
-        this.processExpression(ret.argument as Expression);
-      }
-      this.sb.append('    return\n');
-    } else if (stmt is ExpressionStatement) {
-      let exprStmt = stmt as ExpressionStatement;
-      this.processExpression(exprStmt.expression);
-    } else if (stmt is BlockStatement) {
-      let block = stmt as BlockStatement;
-      for (let s in block.body) {
-        this.processStatement(s);
-      }
-    }
-  }
-
-  processExpression(expr: Expression): void {
-    if (expr is NumberLiteral) {
-      let num = expr as NumberLiteral;
-      this.sb.append('    (i32.const ').append(num.raw).append(')\n');
-    } else if (expr is BooleanLiteral) {
-      let boolExpr = expr as BooleanLiteral;
-      let valStr = if (boolExpr.value) '1' else '0';
-      this.sb.append('    (i32.const ').append(valStr).append(')\n');
-    } else if (expr is StringLiteral) {
-      this.sb.append('    ;; string literals unimplemented\n');
-      this.sb.append('    (i32.const 0)\n');
-    }
   }
 }

@@ -1,5 +1,23 @@
 # AI Agent Context: Zena Self-Hosted Compiler
 
+## WebAssembly Code Generation
+
+Code generation separates logical AST traversal from target text/binary
+emission:
+
+- **`wasm-module.zena`**: `WasmModule` and `DiscoveryPass`. Resolves and stores
+  target Wasm indices for AST elements.
+- **`module-generator.zena`**: `ModuleGenerator`. Iterates over `WasmModule`
+  fields and calls section hooks on `WasmEmitter`.
+- **`function-generator.zena`**: `FunctionGenerator`. Walks function ASTs and
+  translates statements/expressions into `WasmEmitter` calls.
+- **`wasm-emitter.zena`**: `WasmEmitter` interface. The required hooks for
+  generating Wasm modules and instructions.
+- **`binary-emitter.zena`**: `BinaryEmitter`. Implements `WasmEmitter` to output
+  binary `.wasm` format natively.
+- **`wat-emitter.zena`**: `WatEmitter`. Implements `WasmEmitter` to output
+  string `.wat` format representation.
+
 ## WebAssembly Code Generation Constraints
 
 - Zena emits **WebAssembly GC** and **Exceptions** native standards. Wasm
