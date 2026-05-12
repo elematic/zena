@@ -152,6 +152,9 @@ const getExpressionPath = (
   expr: Expression,
   ctx?: CheckerContext,
 ): string | null => {
+  if (expr.type === NodeType.ThisExpression) {
+    return 'this';
+  }
   if (expr.type === NodeType.Identifier) {
     return (expr as Identifier).name;
   }
@@ -3554,6 +3557,15 @@ function checkMemberExpression(
 ): Type {
   let objectType = checkExpression(ctx, expr.object);
 
+  if (isNullableType(objectType) && !expr.optional) {
+    ctx.diagnostics.reportError(
+      `Object may be null when accessing '${expr.property.name}'.`,
+      DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
+    );
+    return Types.Error;
+  }
+
   // Handle optional chaining: obj?.property
   // If the object is nullable, we extract the non-null type for property lookup
   // and make the result nullable. If non-nullable, optional chaining is a no-op.
@@ -3767,18 +3779,23 @@ function checkMemberExpression(
 
     if (ctx.currentClass.fields.has(memberName)) {
       const fieldType = ctx.currentClass.fields.get(memberName)!;
+      const resolvedType = resolveMemberType(ctx.currentClass, fieldType, ctx);
 
-      // Store private field binding (use mangled name for codegen)
+      // Check for narrowed type based on the full path (e.g., "obj.#field")
+      const path = getExpressionPath(expr, ctx);
+      const narrowedType = path ? ctx.getNarrowedType(path) : undefined;
+      const finalType = narrowedType ?? resolvedType;
+
       const binding: FieldBinding = {
         kind: 'field',
         classType: ctx.currentClass,
         fieldName: `${ctx.currentClass.name}::${memberName}`,
-        type: fieldType,
+        type: finalType,
         isStatic: isStaticAccess,
       };
       ctx.semanticContext.setResolvedBinding(expr, binding);
 
-      return wrapResult(fieldType);
+      return wrapResult(finalType);
     }
 
     const methodType = ctx.currentClass.methods.get(memberName)!;

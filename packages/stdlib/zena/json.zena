@@ -65,24 +65,20 @@ export class JsonObject {
 
   // Source location for a key (only if tracking enabled)
   locationOf(key: String): SourceLocation | null {
-    let locs = this.#locations;
-    if (locs == null) {
+    if (this.#locations == null) {
       return null;
     }
-    let locsMap = locs as HashMap<String, SourceLocation>;
-    if (!locsMap.has(key)) {
-      return null;
-    }
-    // Use getOr with dummy default since we already checked has()
-    return locsMap.getOr(key, new SourceLocation(0, 0, 0, 0));
+    return if (let (true, loc) = this.#locations.get(key)) {
+      loc
+    } else {
+      null
+    };
   }
 
   // Internal: set location for a key
   setLocation(key: String, loc: SourceLocation): void {
-    let locs = this.#locations;
-    if (locs != null) {
-      let locsMap = locs as HashMap<String, SourceLocation>;
-      locsMap[key] = loc;
+    if (this.#locations != null) {
+      this.#locations[key] = loc;
     }
   }
 
@@ -132,24 +128,20 @@ export class JsonArray {
 
   pushWithLocation(value: JsonValue, loc: SourceLocation): void {
     this.#elements.push(value);
-    let locs = this.#locations;
-    if (locs != null) {
-      let locsArr = locs as Array<SourceLocation>;
-      locsArr.push(loc);
+    if (this.#locations != null) {
+      this.#locations.push(loc);
     }
   }
 
   // Source location for an index (only if tracking enabled)
   locationOf(index: i32): SourceLocation | null {
-    let locs = this.#locations;
-    if (locs == null) {
+    if (this.#locations == null) {
       return null;
     }
-    let locsArr = locs as Array<SourceLocation>;
-    if (index < 0 || index >= locsArr.length) {
+    if (index < 0 || index >= this.#locations.length) {
       return null;
     }
-    return locsArr[index];
+    return this.#locations[index];
   }
 
   // Serialize to JSON string
@@ -221,7 +213,7 @@ let stringifyF64 = (sb: StringBuilder, n: f64): void => {
   // For finite values, value - value == 0.0
   // For infinity, infinity - infinity = NaN, which != 0.0
   let selfDiff = n - n;
-  let ZERO: f64 = 0.0 as f64;
+  let ZERO: f64 = 0.0;
   if (selfDiff != ZERO) {
     sb.append("null");
     return;

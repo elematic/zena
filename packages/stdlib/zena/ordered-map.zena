@@ -38,10 +38,10 @@ class OrderedMapKeyIterator<K, V> implements Iterator<K> {
   new(head: OrderedEntry<K, V> | null) : #current = head;
 
   next(): inline (true, K) | inline (false, _) {
-    if (this.#current == null) {
+    let entry = this.#current;
+    if (entry == null) {
       return (false, _);
     }
-    let entry = this.#current as OrderedEntry<K, V>;
     this.#current = entry.orderNext;
     return (true, entry.key);
   }
@@ -56,10 +56,10 @@ class OrderedMapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
   new(head: OrderedEntry<K, V> | null) : #current = head;
 
   next(): inline (true, MapEntry<K, V>) | inline (false, _) {
-    if (this.#current == null) {
+    let entry = this.#current;
+    if (entry == null) {
       return (false, _);
     }
-    let entry = this.#current as OrderedEntry<K, V>;
     let result = new MapEntry<K, V>(entry.key, entry.value, null);
     this.#current = entry.orderNext;
     return (true, result);
@@ -288,14 +288,13 @@ export class OrderedMap<K, V> implements Map<K, V> {
   // === Private helpers ===
 
   #appendToOrder(entry: OrderedEntry<K, V>): void {
-    if (this.#tail == null) {
-      this.#head = entry;
-      this.#tail = entry;
+    let tail = this.#tail;
+    this.#tail = entry;
+    if (tail == null) {
+      this.#head = entry;      
     } else {
-      let tail = this.#tail as OrderedEntry<K, V>;
       tail.orderNext = entry;
       entry.orderPrev = tail;
-      this.#tail = entry;
     }
   }
 
@@ -304,13 +303,13 @@ export class OrderedMap<K, V> implements Map<K, V> {
     let next = entry.orderNext;
 
     if (prev != null) {
-      (prev as OrderedEntry<K, V>).orderNext = next;
+      prev.orderNext = next;
     } else {
       this.#head = next;
     }
 
     if (next != null) {
-      (next as OrderedEntry<K, V>).orderPrev = prev;
+      next.orderPrev = prev;
     } else {
       this.#tail = prev;
     }

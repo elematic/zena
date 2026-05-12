@@ -188,6 +188,9 @@ const getExpressionPath = (
   expr: Expression,
   ctx?: CheckerContext,
 ): string | null => {
+  if (expr.type === NodeType.ThisExpression) {
+    return 'this';
+  }
   if (expr.type === NodeType.Identifier) {
     return (expr as Identifier).name;
   }
@@ -258,8 +261,11 @@ const isExpressionPathImmutable = (
       return isExpressionPathImmutable(ctx, memberExpr.object);
     }
 
-    // The base is an identifier, which is fine
-    return true;
+    // The base is an identifier or this, which is fine
+    return (
+      memberExpr.object.type === NodeType.Identifier ||
+      memberExpr.object.type === NodeType.ThisExpression
+    );
   }
 
   if (expr.type === NodeType.IndexExpression) {
@@ -605,11 +611,13 @@ const extractNullComparisonTarget = (
     const memberExpr = targetExpr as MemberExpression;
 
     // Check that all fields in the chain are immutable
-    if (!isExpressionPathImmutable(ctx, memberExpr)) {
+    const isImmutable = isExpressionPathImmutable(ctx, memberExpr);
+    const tempPath = getExpressionPath(targetExpr, ctx);
+    if (!isImmutable) {
       return null;
     }
 
-    const path = getExpressionPath(targetExpr, ctx);
+    const path = tempPath;
     if (!path) return null;
 
     const originalType = checkExpression(ctx, targetExpr);
@@ -3692,7 +3700,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
       // Register field
       classType.fields.set(fieldName, fieldType);
-      classType.fieldMutability!.set(fieldName, param.mutability !== 'var');
+      classType.fieldMutability!.set(fieldName, param.mutability === 'var');
 
       // // Track mutability
       // if (param.mutability === 'var') {
