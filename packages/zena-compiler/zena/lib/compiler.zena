@@ -743,70 +743,97 @@ let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashSet<String>): boole
   }
 };
 
-/** Compare two arrays of types elementwise. */
+/**
+ * Compare two arrays of types elementwise.
+ */
 let arrayTypesEqual = (
   a: Array<Type>, b: Array<Type>, visited: HashSet<String>
 ): boolean => {
-  if (a.length != b.length) { return false; }
-  var i = 0;
-  while (i < a.length) {
-    if (!signatureTypeEqualsRec(a[i], b[i], visited)) { return false; }
-    i += 1;
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i += 1) {
+    if (!signatureTypeEqualsRec(a[i], b[i], visited)) {
+      return false;
+    }
   }
   return true;
 };
 
-/** Compare optional type-parameter arrays. */
+/**
+ * Compare optional type-parameter arrays.
+ */
 let typeParamsEqual = (
   a: Array<TypeParameterType> | null,
   b: Array<TypeParameterType> | null,
   visited: HashSet<String>
 ): boolean => {
-  if (a == null && b == null) { return true; }
-  if (a == null || b == null) { return false; }
-  let aa = a as Array<TypeParameterType>;
-  let bb = b as Array<TypeParameterType>;
-  if (aa.length != bb.length) { return false; }
-  var i = 0;
-  while (i < aa.length) {
-    if (!signatureTypeEqualsRec(aa[i], bb[i], visited)) { return false; }
-    i += 1;
+  if (a == null && b == null) {
+    return true;
+  }
+  if (a == null || b == null) {
+    return false;
+  }
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i += 1) {
+    if (!signatureTypeEqualsRec(a[i], b[i], visited)) {
+      return false;
+    }
   }
   return true;
 };
 
-/** Compare optional type-argument arrays. */
+/** 
+ * Compare optional type-argument arrays.
+ */
 let typeArgsEqual = (
   a: Array<Type> | null,
   b: Array<Type> | null,
   visited: HashSet<String>
 ): boolean => {
-  if (a == null && b == null) { return true; }
-  if (a == null || b == null) { return false; }
-  return arrayTypesEqual(a as Array<Type>, b as Array<Type>, visited);
+  if (a == null && b == null) {
+    return true;
+  }
+  if (a == null || b == null) {
+    return false;
+  }
+  return arrayTypesEqual(a, b, visited);
 };
 
-/** Compare two HashMaps of name → Type. */
+/**
+ * Compare two HashMaps of name → Type.
+ */
 let typeMapEquals = (
   a: HashMap<String, Type>, b: HashMap<String, Type>, visited: HashSet<String>
-): boolean => {
-  if (a.size != b.size) { return false; }
-  let iter = a.keys();
-  while (let (true, key) = iter.next()) {
-    if (!b.has(key)) { return false; }
-    if (!signatureTypeEqualsRec(a[key], b[key], visited)) { return false; }
-  }
-  return true;
-};
-
-/** Compare two HashMaps of name → FunctionType. */
-let methodMapEquals = (
-  a: HashMap<String, FunctionType>, b: HashMap<String, FunctionType>, visited: HashSet<String>
 ): boolean => {
   if (a.size != b.size) {
     return false;
   }
-  for (let {key} in a) {
+  for (let key in a.keys()) {
+    if (!b.has(key)) {
+      return false;
+    }
+    if (!signatureTypeEqualsRec(a[key], b[key], visited)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+/**
+ * Compare two HashMaps of name → FunctionType.
+ */
+let methodMapEquals = (
+  a: HashMap<String, FunctionType>,
+  b: HashMap<String, FunctionType>,
+  visited: HashSet<String>
+): boolean => {
+  if (a.size != b.size) {
+    return false;
+  }
+  for (let key in a.keys()) {
     if (!b.has(key)) {
       return false;
     }
@@ -826,7 +853,7 @@ let boolMapEquals = (
   if (a.size != b.size) {
     return false;
   }
-  for (let {key} in a) {
+  for (let key in a.keys()) {
     if (!b.has(key) || a[key] != b[key]) {
       return false;
     }
@@ -855,9 +882,13 @@ let stringSetEquals = (a: HashSet<String>, b: HashSet<String>): boolean => {
 let nullableStringSetEquals = (
   a: HashSet<String> | null, b: HashSet<String> | null
 ): boolean => {
-  if (a == null && b == null) { return true; }
-  if (a == null || b == null) { return false; }
-  return stringSetEquals(a as HashSet<String>, b as HashSet<String>);
+  if (a == null && b == null) {
+    return true;
+  }
+  if (a == null || b == null) {
+    return false;
+  }
+  return stringSetEquals(a, b);
 };
 
 /** Deep comparison of FunctionType for signature purposes. */
@@ -1037,9 +1068,8 @@ let buildReverseDeps = (
 
   for (let file in files) {
     // Walk the AST to find import/re-export declarations and their names.
-    var j = 0;
-    while (j < file.ast.body.length) {
-      match (file.ast.body[j]) {
+    for (let statement in file.ast.body) {
+      match (statement) {
         case ImportDeclaration {moduleSpecifier, imports}: {
           let specifier = moduleSpecifier.value;
           if (file.imports.has(specifier)) {
@@ -1086,7 +1116,6 @@ let buildReverseDeps = (
         }
         case _: {}
       }
-      j += 1;
     }
   }
 

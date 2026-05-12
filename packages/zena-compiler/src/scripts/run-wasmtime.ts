@@ -23,6 +23,11 @@ const YELLOW = '\x1b[33m';
 const DIM = '\x1b[2m';
 const NC = '\x1b[0m';
 
+// On macOS with Nix, tool binaries land in HOST_PATH rather than PATH.
+if (process.env.HOST_PATH) {
+  process.env.PATH = `${process.env.HOST_PATH}:${process.env.PATH ?? ''}`;
+}
+
 // Check wasmtime is available
 try {
   execSync('which wasmtime', {stdio: 'pipe'});

@@ -404,7 +404,7 @@ function checkMatchExpression(
 
   for (const c of expr.cases) {
     ctx.enterScope();
-    checkMatchPattern(ctx, c.pattern, discriminantType);
+    checkMatchPattern(ctx, c.pattern, discriminantType, 'let', remainingType);
 
     // Check for unreachable code
     if (remainingType.kind === TypeKind.Never) {
@@ -648,6 +648,7 @@ export function checkMatchPattern(
     | NullLiteral,
   discriminantType: Type,
   kind: 'let' | 'var' = 'let',
+  bindingType?: Type,
 ) {
   switch (pattern.type) {
     case NodeType.BindingPattern: {
@@ -714,16 +715,23 @@ export function checkMatchPattern(
             (pattern as any).inferredType = resolvedType;
           }
         }
-        ctx.declare(pattern.name, discriminantType, kind, pattern);
+        ctx.declare(
+          pattern.name,
+          bindingType ?? discriminantType,
+          kind,
+          pattern,
+        );
       }
       break;
     }
     case NodeType.AsPattern: {
       const asPattern = pattern as AsPattern;
-      checkMatchPattern(ctx, asPattern.pattern, discriminantType, kind);
+      checkMatchPattern(ctx, asPattern.pattern, discriminantType, kind, bindingType);
       // Use the narrowed type from the inner pattern if available
       const narrowedType =
-        (asPattern.pattern as any).inferredType ?? discriminantType;
+        (asPattern.pattern as any).inferredType ??
+        bindingType ??
+        discriminantType;
       ctx.declare(asPattern.name.name, narrowedType, kind, asPattern.name);
       break;
     }
@@ -4727,6 +4735,12 @@ function subtractType(
   }
   if (pattern.type === NodeType.AsPattern) {
     return subtractType(ctx, type, (pattern as AsPattern).pattern);
+  }
+
+  // Handle NullLiteral: removes the null type from the remaining type
+  if (pattern.type === NodeType.NullLiteral) {
+    if (type.kind === TypeKind.Null) return Types.Never;
+    return type;
   }
 
   // Handle Literals

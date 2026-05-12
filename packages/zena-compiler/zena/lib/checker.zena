@@ -7690,6 +7690,9 @@ let subtractPatternFromType = (ctx: CheckerContext, t: Type, pattern: Node): Typ
       // Number literal patterns: no subtraction (no numeric literal types yet).
       return t;
     }
+    case NullLiteral {}: {
+      return subtractNullFromType(t);
+    }
     case _: {
       // Literal patterns, etc. — don't subtract from sealed types for now.
       return t;
@@ -7843,9 +7846,10 @@ let checkMatchExpr = (
     // Enter a new scope for pattern bindings.
     ctx.enterScope();
 
-    // Check the pattern and bind variables.
-    checkPattern(ctx, matchCase.pattern, scrutineeType);
-    
+    // Check the pattern and bind variables. Pass remainingType (not scrutineeType) so
+    // catch-all identifier bindings get the type narrowed by the earlier arms.
+    checkPattern(ctx, matchCase.pattern, remainingType);
+
     // Get pattern type for ambiguity detection.
     var patternType: Type | null = null;
     match (matchCase.pattern) {
@@ -7869,16 +7873,16 @@ let checkMatchExpr = (
       }
       case _: {}
     }
-    
+
     // Check for ambiguous extension types.
     if (patternType != null) {
       var pi = 0;
       while (pi < matchedTypes.length) {
         let prev = matchedTypes[pi];
-        
+
         var ext1: ClassType | null = null;
         var ext2: ClassType | null = null;
-        
+
         match (patternType) {
           case ClassType as ct: {
             if (ct.isExtension && ct.onType != null) {
@@ -7887,7 +7891,7 @@ let checkMatchExpr = (
           }
           case _: {}
         }
-        
+
         match (prev) {
           case ClassType as ct: {
             if (ct.isExtension && ct.onType != null) {
@@ -7896,7 +7900,7 @@ let checkMatchExpr = (
           }
           case _: {}
         }
-        
+
         if (ext1 != null) {
           if (ext2 != null) {
             let onType1 = ext1.onType;
@@ -7904,7 +7908,7 @@ let checkMatchExpr = (
             if (onType1 != null && onType2 != null) {
               if (isAssignableTo(ctx, onType1 as Type, onType2 as Type) && isAssignableTo(ctx, onType2 as Type, onType1 as Type)) {
                 ctx.error(
-                  "Ambiguous match case: '" + typeToString(patternType) + "' and '" + 
+                  "Ambiguous match case: '" + typeToString(patternType) + "' and '" +
                   typeToString(prev) + "' extend the same underlying type and are indistinguishable at runtime.",
                   DiagnosticCode.TypeMismatch,
                   matchCase.loc
@@ -7913,7 +7917,7 @@ let checkMatchExpr = (
             }
           }
         }
-        
+
         pi = pi + 1;
       }
       matchedTypes.push(patternType);
@@ -8012,6 +8016,11 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
 /**
  * Check a pattern against an expected type and bind pattern variables.
  * Uses bindPattern for identifier bindings through the DeclarationMap → Symbol path.
+ *
+ * @param expectedType The type to match against. For top-level match arms this is the
+ *   remaining scrutinee type after earlier arms have been subtracted, so catch-all
+ *   identifier bindings (`case b:`) get the narrowed type automatically. For nested
+ *   patterns (class fields, tuple elements, etc.) it is the field/element type.
  */
 let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): void => {
   match (pattern) {
@@ -8083,7 +8092,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       }
 
       let tupleElementTypes = elementTypes as Array<Type>;
-      
+
       for (var i = 0; i < elements.length; i += 1) {
         let elem = elements[i];
         if (elem != null) {
