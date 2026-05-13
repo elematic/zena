@@ -18,6 +18,7 @@ import { HashMap } from 'zena:map';
 
 import { parseI32, parseF64 } from 'zena:string-convert';
 import { walkEnter } from '../visitor.zena';
+import { FunctionContext } from './function-context.zena';
 
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmFunction, WasmModule } from './wasm-module.zena';
@@ -27,51 +28,11 @@ import { WasmFunction, WasmModule } from './wasm-module.zena';
  * Emits backend-agnostic logical instructions to a generic `WasmEmitter`.
  */
 export class FunctionGenerator {
-  wasm: WasmModule;
-  emitter: WasmEmitter;
-  wasmFunction: WasmFunction;
-  localIndices = new HashMap<SymbolId, i32>();
-  localTypes = new Array<ValType>();
-  var isReachable: boolean = true;
-  var needsUnreachable: boolean = false;
+  ctx: FunctionContext;
 
-  /// Stack of active loops for break/continue targets.
-  /// Tuple holds: (breakDepth: i32, continueDepth: i32)
-  var loopStack = new Array<(i32, i32)>();
+  new(wasm: WasmModule, emitter: WasmEmitter, wasmFunction: WasmFunction) : ctx = new FunctionContext(wasm, emitter, wasmFunction) {}
 
-  new(this.wasm, this.emitter, this.wasmFunction);
 
-  enterLoop(): void {
-    // For while loops: break=1 (br to outer block), continue=0 (br to loop)
-    this.loopStack.push((1, 0));
-  }
-
-  enterForLoop(): void {
-    // For for loops: break=2 (br to outer block), continue=0 (br to inner block where update happens)
-    this.loopStack.push((2, 0));
-  }
-
-  exitLoop(): void {
-    this.loopStack.pop();
-  }
-
-  enterBlockStructure(): void {
-    var i = 0;
-    while (i < this.loopStack.length) {
-      let (b, c) = this.loopStack[i];
-      this.loopStack[i] = (b + 1, c + 1);
-      i += 1;
-    }
-  }
-
-  exitBlockStructure(): void {
-    var i = 0;
-    while (i < this.loopStack.length) {
-      let (b, c) = this.loopStack[i];
-      this.loopStack[i] = (b - 1, c - 1);
-      i += 1;
-    }
-  }
 
   discoverLocalsFromExpr(expr: Expression): void {
     match (expr) {
@@ -97,7 +58,7 @@ export class FunctionGenerator {
         this.discoverLocalsFromExpr(right);
       }
       case CallExpression {callee, args}: {
-        let calleeType = this.wasmFunction.model.getNodeType(callee);
+        let calleeType = this.ctx.wasmFunction.model.getNodeType(callee);
         match (calleeType) {
           case FunctionType as ft: {
             if (ft.parameterSymbols != null) {
@@ -105,7 +66,7 @@ export class FunctionGenerator {
               var i = 0;
               while (i < symbols.length && i < ft.parameters.length) {
                 let symId = symbols[i];
-                if (symId != (-1 as SymbolId) && !this.localIndices.has(symId)) {
+                if (symId != (-1 as SymbolId) && !this.ctx.localIndices.has(symId)) {
                   let paramType = ft.parameters[i];
                   var vType = ValType.i32;
                   if (paramType is F64Type) {
@@ -113,9 +74,9 @@ export class FunctionGenerator {
                   } else if (paramType is F32Type) {
                     vType = ValType.f32;
                   }
-                  let index = this.wasmFunction.signature.params.length + this.localTypes.length;
-                  this.localIndices[symId] = index;
-                  this.localTypes.push(vType);
+                  let index = this.ctx.wasmFunction.signature.params.length + this.ctx.localTypes.length;
+                  this.ctx.localIndices[symId] = index;
+                  this.ctx.localTypes.push(vType);
                 }
                 i += 1;
               }
@@ -176,18 +137,18 @@ export class FunctionGenerator {
         }
         if (decl.pattern is IdentifierPattern) {
           let ident = decl.pattern as IdentifierPattern;
-          let sym = this.wasmFunction.model.resolveDeclaration(ident);
+          let sym = this.ctx.wasmFunction.model.resolveDeclaration(ident);
           if (sym != null) {
-            let varType = this.wasmFunction.model.getNodeType(decl);
+            let varType = this.ctx.wasmFunction.model.getNodeType(decl);
             var vType = ValType.i32;
             if (varType is F64Type) {
               vType = ValType.f64;
             } else if (varType is F32Type) {
               vType = ValType.f32;
             }
-            let index = this.wasmFunction.signature.params.length + this.localTypes.length;
-            this.localIndices[sym.id] = index;
-            this.localTypes.push(vType);
+            let index = this.ctx.wasmFunction.signature.params.length + this.ctx.localTypes.length;
+            this.ctx.localIndices[sym.id] = index;
+            this.ctx.localTypes.push(vType);
           }
         }
       }
@@ -196,12 +157,12 @@ export class FunctionGenerator {
   }
 
   generate(): void {
-    let bodyNode = this.wasmFunction.node;
+    let bodyNode = this.ctx.wasmFunction.node;
     for (var i = 0; i < bodyNode.params.length; i += 1) {
       let param = bodyNode.params[i];
-      let sym = this.wasmFunction.model.resolveDeclaration(param.name);
+      let sym = this.ctx.wasmFunction.model.resolveDeclaration(param.name);
       if (sym != null) {
-        this.localIndices[sym.id] = i;
+        this.ctx.localIndices[sym.id] = i;
       }
     }
     
@@ -216,42 +177,42 @@ export class FunctionGenerator {
       case _: {}
     }
 
-    this.emitter.emitFunctionCodeStart(this.wasmFunction);
-    var name = "func" + i32ToString(this.wasmFunction.index);
-    if (this.wasmFunction.name != null) {
-      name = this.wasmFunction.name as String;
+    this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
+    var name = "func" + i32ToString(this.ctx.wasmFunction.index);
+    if (this.ctx.wasmFunction.name != null) {
+      name = this.ctx.wasmFunction.name as String;
     }
-    this.emitter.emitFunctionSignatureStart(name, this.wasmFunction.signature.index);
+    this.ctx.emitter.emitFunctionSignatureStart(name, this.ctx.wasmFunction.signature.index);
     
     
-    this.emitter.emitFunctionLocalsStart(this.localTypes);
+    this.ctx.emitter.emitFunctionLocalsStart(this.ctx.localTypes);
     
     match (bodyNode.body) {
       case BlockStatement: {
         let block = bodyNode.body as BlockStatement;
         for (let stmt in block.body) {
           this.generateStatement(stmt);
-          if (!this.isReachable) {
+          if (!this.ctx.isReachable) {
             break;
           }
         }
-        if (this.wasmFunction.signature.returns.length > 0) {
-          if (this.isReachable) {
+        if (this.ctx.wasmFunction.signature.returns.length > 0) {
+          if (this.ctx.isReachable) {
             throw new Error("Function '" + name + "' misses a return statement");
-          } else if (this.needsUnreachable) {
-            this.emitter.emitUnreachable();
+          } else if (this.ctx.needsUnreachable) {
+            this.ctx.emitter.emitUnreachable();
           }
         }
       }
       case Expression: {
         this.generateExpression(bodyNode.body as Expression);
-        this.emitter.emitReturn();
-        this.isReachable = false;
+        this.ctx.emitter.emitReturn();
+        this.ctx.isReachable = false;
       }
     }
     
-    this.emitter.emitFunctionEnd();
-    this.emitter.emitFunctionCodeEnd(this.wasmFunction);
+    this.ctx.emitter.emitFunctionEnd();
+    this.ctx.emitter.emitFunctionCodeEnd(this.ctx.wasmFunction);
   }
 
   generateIfBranch(branch: Node, dropResult: boolean): void {
@@ -278,9 +239,9 @@ export class FunctionGenerator {
     } else if (branch is Expression) {
       this.generateExpression(branch as Expression);
       if (dropResult) {
-        let exprType = this.wasmFunction.model.getNodeType(branch);
+        let exprType = this.ctx.wasmFunction.model.getNodeType(branch);
         if (!(exprType is VoidType)) {
-          this.emitter.emitDrop();
+          this.ctx.emitter.emitDrop();
         }
       }
     } else {
@@ -289,100 +250,100 @@ export class FunctionGenerator {
   }
 
   generateStatement(stmt: Statement): void {
-    if (!this.isReachable) {
+    if (!this.ctx.isReachable) {
       return;
     }
     match (stmt) {
       case BreakStatement {}: {
-        let n = this.loopStack.length;
+        let n = this.ctx.loopStack.length;
         if (n > 0) {
-          let (bDepth, _) = this.loopStack[n - 1];
-          this.emitter.emitBr(bDepth);
+          let (bDepth, _) = this.ctx.loopStack[n - 1];
+          this.ctx.emitter.emitBr(bDepth);
         } else {
-          this.emitter.emitUnreachable();
+          this.ctx.emitter.emitUnreachable();
         }
-        this.isReachable = false;
+        this.ctx.isReachable = false;
       }
       case ContinueStatement {}: {
-        let n = this.loopStack.length;
+        let n = this.ctx.loopStack.length;
         if (n > 0) {
-          let (_, cDepth) = this.loopStack[n - 1];
-          this.emitter.emitBr(cDepth);
+          let (_, cDepth) = this.ctx.loopStack[n - 1];
+          this.ctx.emitter.emitBr(cDepth);
         } else {
-          this.emitter.emitUnreachable();
+          this.ctx.emitter.emitUnreachable();
         }
-        this.isReachable = false;
+        this.ctx.isReachable = false;
       }
       case ReturnStatement {argument}: {
         if (argument != null) {
           this.generateExpression(argument as Expression);
         }
-        this.emitter.emitReturn();
-        this.isReachable = false;
-        this.needsUnreachable = false;
+        this.ctx.emitter.emitReturn();
+        this.ctx.isReachable = false;
+        this.ctx.needsUnreachable = false;
       }
       case ExpressionStatement {expression}: {
         this.generateExpression(expression);
-        let exprType = this.wasmFunction.model.getNodeType(expression);
+        let exprType = this.ctx.wasmFunction.model.getNodeType(expression);
         if (!(exprType is VoidType)) {
-          this.emitter.emitDrop();
+          this.ctx.emitter.emitDrop();
         }
       }
       case BlockStatement {body}: {
         for (let s in body) {
           this.generateStatement(s);
-          if (!this.isReachable) {
+          if (!this.ctx.isReachable) {
             break; // Stop generating unreachable statements
           }
         }
       }
       case IfStatement {test, consequent, alternate}: {
         this.generateExpression(test as Expression);
-        this.emitter.emitIf(ValType.void);
-        this.enterBlockStructure();
+        this.ctx.emitter.emitIf(ValType.void);
+        this.ctx.enterBlockStructure();
         
-        let wasReachable = this.isReachable;
+        let wasReachable = this.ctx.isReachable;
         
         this.generateStatement(consequent);
-        let consReachable = this.isReachable;
+        let consReachable = this.ctx.isReachable;
         
-        this.isReachable = wasReachable; // Reset for alternate definition
+        this.ctx.isReachable = wasReachable; // Reset for alternate definition
         if (alternate != null) {
-          this.emitter.emitElse();
+          this.ctx.emitter.emitElse();
           this.generateStatement(alternate as Statement);
-          let altReachable = this.isReachable;
-          this.isReachable = consReachable || altReachable;
-          if (!this.isReachable) {
-            this.needsUnreachable = true;
+          let altReachable = this.ctx.isReachable;
+          this.ctx.isReachable = consReachable || altReachable;
+          if (!this.ctx.isReachable) {
+            this.ctx.needsUnreachable = true;
           }
         } else {
           // No alternate, so we just continue
-          this.isReachable = true;
+          this.ctx.isReachable = true;
         }
         
-        this.exitBlockStructure();
-        this.emitter.emitEnd();
+        this.ctx.exitBlockStructure();
+        this.ctx.emitter.emitEnd();
       }
       case WhileStatement {test, body}: {
-        this.emitter.emitBlock(ValType.void);
-        this.emitter.emitLoop(ValType.void);
+        this.ctx.emitter.emitBlock(ValType.void);
+        this.ctx.emitter.emitLoop(ValType.void);
         
         this.generateExpression(test as Expression);
-        this.emitter.emitI32Const(0);
-        this.emitter.emitI32Eq();
-        this.emitter.emitBrIf(1);
+        this.ctx.emitter.emitI32Const(0);
+        this.ctx.emitter.emitI32Eq();
+        this.ctx.emitter.emitBrIf(1);
         
-        let wasReachable = this.isReachable;
-        this.enterLoop();
+        let wasReachable = this.ctx.isReachable;
+        this.ctx.enterLoop();
         this.generateStatement(body);
-        this.exitLoop();
+        this.ctx.exitLoop();
         
-        this.isReachable = wasReachable;
-        this.emitter.emitBr(0);
-        this.emitter.emitEnd();
-        this.emitter.emitEnd();
+        this.ctx.isReachable = wasReachable;
+        this.ctx.emitter.emitBr(0);
+        this.ctx.emitter.emitEnd();
+        this.ctx.emitter.emitEnd();
         
-        this.isReachable = wasReachable;
+        this.ctx.isReachable = wasReachable;
       }
       case ForStatement {init, test, update, body}: {
         if (init != null) {
@@ -390,47 +351,47 @@ export class FunctionGenerator {
             this.generateStatement(init as Statement);
           } else if (init is Expression) {
             this.generateExpression(init as Expression);
-            let exprType = this.wasmFunction.model.getNodeType(init as Node);
+            let exprType = this.ctx.wasmFunction.model.getNodeType(init as Node);
             if (!(exprType is VoidType)) {
-              this.emitter.emitDrop();
+              this.ctx.emitter.emitDrop();
             }
           }
         }
         
-        this.emitter.emitBlock(ValType.void);
-        this.emitter.emitLoop(ValType.void);
+        this.ctx.emitter.emitBlock(ValType.void);
+        this.ctx.emitter.emitLoop(ValType.void);
         
         if (test != null) {
           this.generateExpression(test as Expression);
-          this.emitter.emitI32Const(0);
-          this.emitter.emitI32Eq();
-          this.emitter.emitBrIf(1);
+          this.ctx.emitter.emitI32Const(0);
+          this.ctx.emitter.emitI32Eq();
+          this.ctx.emitter.emitBrIf(1);
         }
         
         // Inner block for continue to jump to (skipping body, hitting update)
-        this.emitter.emitBlock(ValType.void);
-        let wasReachable = this.isReachable;
+        this.ctx.emitter.emitBlock(ValType.void);
+        let wasReachable = this.ctx.isReachable;
         
-        this.enterForLoop();
+        this.ctx.enterForLoop();
         this.generateStatement(body);
-        this.exitLoop();
+        this.ctx.exitLoop();
         
-        this.emitter.emitEnd(); // End continue block
-        this.isReachable = wasReachable;
+        this.ctx.emitter.emitEnd(); // End continue block
+        this.ctx.isReachable = wasReachable;
         
         if (update != null) {
           this.generateExpression(update as Expression);
-          let exprType = this.wasmFunction.model.getNodeType(update as Node);
+          let exprType = this.ctx.wasmFunction.model.getNodeType(update as Node);
           if (!(exprType is VoidType)) {
-            this.emitter.emitDrop();
+            this.ctx.emitter.emitDrop();
           }
         }
         
-        this.emitter.emitBr(0);
-        this.emitter.emitEnd();
-        this.emitter.emitEnd();
+        this.ctx.emitter.emitBr(0);
+        this.ctx.emitter.emitEnd();
+        this.ctx.emitter.emitEnd();
         
-        this.isReachable = wasReachable;
+        this.ctx.isReachable = wasReachable;
       }
       case VariableDeclaration: {
         let decl = stmt as VariableDeclaration;
@@ -438,9 +399,9 @@ export class FunctionGenerator {
           this.generateExpression(decl.init as Expression);
           if (decl.pattern is IdentifierPattern) {
             let ident = decl.pattern as IdentifierPattern;
-            let sym = this.wasmFunction.model.resolveDeclaration(ident);
-            if (sym != null && this.localIndices.has(sym.id)) {
-              this.emitter.emitLocalSet(this.localIndices[sym.id]);
+            let sym = this.ctx.wasmFunction.model.resolveDeclaration(ident);
+            if (sym != null && this.ctx.localIndices.has(sym.id)) {
+              this.ctx.emitter.emitLocalSet(this.ctx.localIndices[sym.id]);
             }
           }
         }
@@ -455,21 +416,21 @@ export class FunctionGenerator {
     match (expr) {
       case Identifier: {
         let ident = expr as Identifier;
-        let sym = this.wasmFunction.model.resolve(ident);
+        let sym = this.ctx.wasmFunction.model.resolve(ident);
         if (sym != null) {
-          if (this.localIndices.has((sym as Symbol).id)) {
-            this.emitter.emitLocalGet(this.localIndices[(sym as Symbol).id]);
+          if (this.ctx.localIndices.has((sym as Symbol).id)) {
+            this.ctx.emitter.emitLocalGet(this.ctx.localIndices[(sym as Symbol).id]);
             return;
           }
-          if (this.wasm.globalMap.has((sym as Symbol).id)) {
-            this.emitter.emitGlobalGet(this.wasm.globalMap[(sym as Symbol).id].index);
+          if (this.ctx.wasm.globalMap.has((sym as Symbol).id)) {
+            this.ctx.emitter.emitGlobalGet(this.ctx.wasm.globalMap[(sym as Symbol).id].index);
             return;
           }
           if ((sym as Symbol).declaration is ImportSpecifier) {
             let spec = (sym as Symbol).declaration as ImportSpecifier;
             let importedName = spec.imported.name;
-            if (this.wasm.exportGlobalMap.has(importedName)) {
-              this.emitter.emitGlobalGet(this.wasm.exportGlobalMap[importedName].index);
+            if (this.ctx.wasm.exportGlobalMap.has(importedName)) {
+              this.ctx.emitter.emitGlobalGet(this.ctx.wasm.exportGlobalMap[importedName].index);
               return;
             }
           }
@@ -477,7 +438,7 @@ export class FunctionGenerator {
         throw new Error("Could not resolve identifier: " + ident.name);
       }
       case CallExpression {callee, args}: {
-        let calleeType = this.wasmFunction.model.getNodeType(callee);
+        let calleeType = this.ctx.wasmFunction.model.getNodeType(callee);
         var ft: FunctionType | null = null;
         if (calleeType is FunctionType) {
           ft = calleeType as FunctionType;
@@ -486,44 +447,44 @@ export class FunctionGenerator {
         match (callee) {
           case Identifier: {
             let ident = callee as Identifier;
-            let model = this.wasmFunction.model;
+            let model = this.ctx.wasmFunction.model;
             let sym = model.resolve(ident);
             
             if (sym == null) {
               throw new Error("Unresolved identifier in codegen: " + ident.name);
             }
             
-            if (this.wasm.functionMap.has((sym as Symbol).id)) {
+            if (this.ctx.wasm.functionMap.has((sym as Symbol).id)) {
               var i = 0;
               while (i < args.length) {
                 this.generateExpression(args[i]);
                 if (ft != null && ft.parameterSymbols != null) {
                   let syms = ft.parameterSymbols as Array<SymbolId>;
-                  if (i < syms.length && syms[i] != (-1 as SymbolId) && this.localIndices.has(syms[i])) {
-                    this.emitter.emitLocalTee(this.localIndices[syms[i]]);
+                  if (i < syms.length && syms[i] != (-1 as SymbolId) && this.ctx.localIndices.has(syms[i])) {
+                    this.ctx.emitter.emitLocalTee(this.ctx.localIndices[syms[i]]);
                   }
                 }
                 i += 1;
               }
-              this.emitter.emitCall(this.wasm.functionMap[(sym as Symbol).id]);
+              this.ctx.emitter.emitCall(this.ctx.wasm.functionMap[(sym as Symbol).id]);
               return;
             } else {
               if ((sym as Symbol).declaration is ImportSpecifier) {
                 let spec = (sym as Symbol).declaration as ImportSpecifier;
                 let importedName = spec.imported.name;
-                if (this.wasm.exportMap.has(importedName)) {
+                if (this.ctx.wasm.exportMap.has(importedName)) {
                   var i = 0;
                   while (i < args.length) {
                     this.generateExpression(args[i]);
                     if (ft != null && ft.parameterSymbols != null) {
                       let syms = ft.parameterSymbols as Array<SymbolId>;
-                      if (i < syms.length && syms[i] != (-1 as SymbolId) && this.localIndices.has(syms[i])) {
-                        this.emitter.emitLocalTee(this.localIndices[syms[i]]);
+                      if (i < syms.length && syms[i] != (-1 as SymbolId) && this.ctx.localIndices.has(syms[i])) {
+                        this.ctx.emitter.emitLocalTee(this.ctx.localIndices[syms[i]]);
                       }
                     }
                     i += 1;
                   }
-                  this.emitter.emitCall(this.wasm.exportMap[importedName]);
+                  this.ctx.emitter.emitCall(this.ctx.wasm.exportMap[importedName]);
                   return;
                 }
                 throw new Error("Export map missing: " + importedName);
@@ -537,36 +498,36 @@ export class FunctionGenerator {
         }
       }
       case NumberLiteral {raw}: {
-        let nodeType = this.wasmFunction.model.getNodeType(expr as Node);
+        let nodeType = this.ctx.wasmFunction.model.getNodeType(expr as Node);
         if (nodeType is F64Type || nodeType is F32Type) {
           let val = parseF64(raw);
-          this.emitter.emitF64Const(val);
+          this.ctx.emitter.emitF64Const(val);
         } else {
           let (ok, val) = parseI32(raw);
           if (!ok) {
             throw new Error('Failed to parse i32: ' + raw);
           }
-          this.emitter.emitI32Const(val as i32);
+          this.ctx.emitter.emitI32Const(val as i32);
         }
       }
       case BooleanLiteral {value}: {
-        this.emitter.emitBooleanConst(value);
+        this.ctx.emitter.emitBooleanConst(value);
       }
       case StringLiteral {value}: {
-        this.emitter.emitStringConst(value);
+        this.ctx.emitter.emitStringConst(value);
       }
       case UnaryExpression: {
         let un = expr as UnaryExpression;
         if (un.operator == "-") {
-          let nodeType = this.wasmFunction.model.getNodeType(un);
+          let nodeType = this.ctx.wasmFunction.model.getNodeType(un);
           if (nodeType is F64Type || nodeType is F32Type) {
-            this.emitter.emitF64Const(0.0);
+            this.ctx.emitter.emitF64Const(0.0);
             this.generateExpression(un.argument);
-            this.emitter.emitF64Sub();
+            this.ctx.emitter.emitF64Sub();
           } else {
-            this.emitter.emitI32Const(0);
+            this.ctx.emitter.emitI32Const(0);
             this.generateExpression(un.argument);
-            this.emitter.emitI32Sub();
+            this.ctx.emitter.emitI32Sub();
           }
         } else {
           throw new Error("Unsupported unary operator: " + un.operator);
@@ -576,7 +537,7 @@ export class FunctionGenerator {
         let bin = expr as BinaryExpression;
         // TODO: Support operator overloading and custom classes
         
-        let model = this.wasmFunction.model;
+        let model = this.ctx.wasmFunction.model;
         let leftType = model.getNodeType(bin.left);
         let rightType = model.getNodeType(bin.right);
         
@@ -592,55 +553,55 @@ export class FunctionGenerator {
         // Implicit F64 upconversion logic
         if (isFloatContext && !(leftType is F64Type) && !(leftType is F32Type)) {
           this.generateExpression(bin.left);
-          this.emitter.emitF64ConvertI32S();
+          this.ctx.emitter.emitF64ConvertI32S();
         } else {
           this.generateExpression(bin.left);
         }
 
         if (isFloatContext && !(rightType is F64Type) && !(rightType is F32Type)) {
           this.generateExpression(bin.right);
-          this.emitter.emitF64ConvertI32S();
+          this.ctx.emitter.emitF64ConvertI32S();
         } else {
           this.generateExpression(bin.right);
         }
         
         if (isFloatContext) {
           match (bin.operator) {
-            case "+": this.emitter.emitF64Add()
-            case "-": this.emitter.emitF64Sub()
-            case "*": this.emitter.emitF64Mul()
-            case "/": this.emitter.emitF64Div()
-            case "==": this.emitter.emitF64Eq()
-            case "!=": this.emitter.emitF64Ne()
-            case "===": this.emitter.emitF64Eq()
-            case "!==": this.emitter.emitF64Ne()
-            case "<": this.emitter.emitF64Lt()
-            case "<=": this.emitter.emitF64Le()
-            case ">": this.emitter.emitF64Gt()
-            case ">=": this.emitter.emitF64Ge()
+            case "+": this.ctx.emitter.emitF64Add()
+            case "-": this.ctx.emitter.emitF64Sub()
+            case "*": this.ctx.emitter.emitF64Mul()
+            case "/": this.ctx.emitter.emitF64Div()
+            case "==": this.ctx.emitter.emitF64Eq()
+            case "!=": this.ctx.emitter.emitF64Ne()
+            case "===": this.ctx.emitter.emitF64Eq()
+            case "!==": this.ctx.emitter.emitF64Ne()
+            case "<": this.ctx.emitter.emitF64Lt()
+            case "<=": this.ctx.emitter.emitF64Le()
+            case ">": this.ctx.emitter.emitF64Gt()
+            case ">=": this.ctx.emitter.emitF64Ge()
             case _: throw new Error("Unsupported operator for f64: " + bin.operator)
           }
         } else {
           match (bin.operator) {
-            case "+": this.emitter.emitI32Add()
-            case "-": this.emitter.emitI32Sub()
-            case "*": this.emitter.emitI32Mul()
-            case "/": this.emitter.emitI32DivS()
-            case "%": this.emitter.emitI32RemS()
-            case "==": this.emitter.emitI32Eq()
-            case "!=": this.emitter.emitI32Ne()
-            case "===": this.emitter.emitI32Eq()
-            case "!==": this.emitter.emitI32Ne()
-            case "<": this.emitter.emitI32LtS()
-            case "<=": this.emitter.emitI32LeS()
-            case ">": this.emitter.emitI32GtS()
-            case ">=": this.emitter.emitI32GeS()
-            case "&": this.emitter.emitI32And()
-            case "|": this.emitter.emitI32Or()
-            case "^": this.emitter.emitI32Xor()
-            case "<<": this.emitter.emitI32Shl()
-            case ">>": this.emitter.emitI32ShrS()
-            case ">>>": this.emitter.emitI32ShrU()
+            case "+": this.ctx.emitter.emitI32Add()
+            case "-": this.ctx.emitter.emitI32Sub()
+            case "*": this.ctx.emitter.emitI32Mul()
+            case "/": this.ctx.emitter.emitI32DivS()
+            case "%": this.ctx.emitter.emitI32RemS()
+            case "==": this.ctx.emitter.emitI32Eq()
+            case "!=": this.ctx.emitter.emitI32Ne()
+            case "===": this.ctx.emitter.emitI32Eq()
+            case "!==": this.ctx.emitter.emitI32Ne()
+            case "<": this.ctx.emitter.emitI32LtS()
+            case "<=": this.ctx.emitter.emitI32LeS()
+            case ">": this.ctx.emitter.emitI32GtS()
+            case ">=": this.ctx.emitter.emitI32GeS()
+            case "&": this.ctx.emitter.emitI32And()
+            case "|": this.ctx.emitter.emitI32Or()
+            case "^": this.ctx.emitter.emitI32Xor()
+            case "<<": this.ctx.emitter.emitI32Shl()
+            case ">>": this.ctx.emitter.emitI32ShrS()
+            case ">>>": this.ctx.emitter.emitI32ShrU()
             case _: throw new Error("Unsupported operator for i32: " + bin.operator)
           }
         }
@@ -649,28 +610,28 @@ export class FunctionGenerator {
         let assign = expr as AssignmentExpression;
         if (assign.left is Identifier) {
           let ident = assign.left as Identifier;
-          let sym = this.wasmFunction.model.resolve(ident);
+          let sym = this.ctx.wasmFunction.model.resolve(ident);
           
           this.generateExpression(assign.value);
 
           if (sym != null) {
-            if (this.localIndices.has((sym as Symbol).id)) {
-              this.emitter.emitLocalTee(this.localIndices[(sym as Symbol).id]);
+            if (this.ctx.localIndices.has((sym as Symbol).id)) {
+              this.ctx.emitter.emitLocalTee(this.ctx.localIndices[(sym as Symbol).id]);
               return;
             }
-            if (this.wasm.globalMap.has((sym as Symbol).id)) {
-              let globalIdx = this.wasm.globalMap[(sym as Symbol).id].index;
-              this.emitter.emitGlobalSet(globalIdx);
-              this.emitter.emitGlobalGet(globalIdx);
+            if (this.ctx.wasm.globalMap.has((sym as Symbol).id)) {
+              let globalIdx = this.ctx.wasm.globalMap[(sym as Symbol).id].index;
+              this.ctx.emitter.emitGlobalSet(globalIdx);
+              this.ctx.emitter.emitGlobalGet(globalIdx);
               return;
             }
             if ((sym as Symbol).declaration is ImportSpecifier) {
               let spec = (sym as Symbol).declaration as ImportSpecifier;
               let importedName = spec.imported.name;
-              if (this.wasm.exportGlobalMap.has(importedName)) {
-                let globalIdx = this.wasm.exportGlobalMap[importedName].index;
-                this.emitter.emitGlobalSet(globalIdx);
-                this.emitter.emitGlobalGet(globalIdx);
+              if (this.ctx.wasm.exportGlobalMap.has(importedName)) {
+                let globalIdx = this.ctx.wasm.exportGlobalMap[importedName].index;
+                this.ctx.emitter.emitGlobalSet(globalIdx);
+                this.ctx.emitter.emitGlobalGet(globalIdx);
                 return;
               }
             }
@@ -681,7 +642,7 @@ export class FunctionGenerator {
         }
       }
       case IfExpression {test, consequent, alternate}: {
-        let nodeType = this.wasmFunction.model.getNodeType(expr);
+        let nodeType = this.ctx.wasmFunction.model.getNodeType(expr);
         var resultValType = ValType.void;
         if (nodeType is F64Type) {
           resultValType = ValType.f64;
@@ -692,19 +653,19 @@ export class FunctionGenerator {
         }
 
         this.generateExpression(test as Expression);
-        this.emitter.emitIf(resultValType);
-        this.enterBlockStructure();
+        this.ctx.emitter.emitIf(resultValType);
+        this.ctx.enterBlockStructure();
 
         let dropResult = resultValType == ValType.void;
         this.generateIfBranch(consequent, dropResult);
         
         if (alternate != null) {
-          this.emitter.emitElse();
+          this.ctx.emitter.emitElse();
           this.generateIfBranch(alternate as Node, dropResult);
         }
         
-        this.exitBlockStructure();
-        this.emitter.emitEnd();
+        this.ctx.exitBlockStructure();
+        this.ctx.emitter.emitEnd();
       }
       case _: {
         throw new Error("Unsupported expression type in codegen");

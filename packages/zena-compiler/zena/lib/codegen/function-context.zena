@@ -1,0 +1,54 @@
+import { SymbolId } from '../scope/symbol.zena';
+import { ValType } from './wasm.zena';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { WasmEmitter } from './wasm-emitter.zena';
+import { WasmFunction, WasmModule } from './wasm-module.zena';
+
+export class FunctionContext {
+  wasm: WasmModule;
+  emitter: WasmEmitter;
+  wasmFunction: WasmFunction;
+  localIndices = new HashMap<SymbolId, i32>();
+  localTypes = new Array<ValType>();
+  var isReachable: boolean = true;
+  var needsUnreachable: boolean = false;
+
+  /// Stack of active loops for break/continue targets.
+  /// Tuple holds: (breakDepth: i32, continueDepth: i32)
+  loopStack = new Array<(i32, i32)>();
+
+  new(this.wasm, this.emitter, this.wasmFunction);
+
+  enterLoop(): void {
+    // For while loops: break=1 (br to outer block), continue=0 (br to loop)
+    this.loopStack.push((1, 0));
+  }
+
+  enterForLoop(): void {
+    // For for loops: break=2 (br to outer block), continue=0 (br to inner block where update happens)
+    this.loopStack.push((2, 0));
+  }
+
+  exitLoop(): void {
+    this.loopStack.pop();
+  }
+
+  enterBlockStructure(): void {
+    var i = 0;
+    while (i < this.loopStack.length) {
+      let (b, c) = this.loopStack[i];
+      this.loopStack[i] = (b + 1, c + 1);
+      i += 1;
+    }
+  }
+
+  exitBlockStructure(): void {
+    var i = 0;
+    while (i < this.loopStack.length) {
+      let (b, c) = this.loopStack[i];
+      this.loopStack[i] = (b - 1, c - 1);
+      i += 1;
+    }
+  }
+}
