@@ -4,7 +4,7 @@ import {
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
@@ -120,6 +120,10 @@ export class FunctionGenerator {
       }
       case ExpressionStatement {expression}: {
         this.generateExpression(expression);
+        let exprType = this.wasmFunction.model.getNodeType(expression);
+        if (!(exprType is VoidType)) {
+          this.emitter.emitDrop();
+        }
       }
       case BlockStatement {body}: {
         for (let s in body) {
@@ -150,13 +154,25 @@ export class FunctionGenerator {
       case Identifier: {
         let ident = expr as Identifier;
         let sym = this.wasmFunction.model.resolve(ident);
-        if (sym != null && this.localIndices.has((sym as Symbol).id)) {
-          this.emitter.emitLocalGet(this.localIndices[(sym as Symbol).id]);
-        } else {
-          // It could be a top-level variable or globally imported value
-          // We don't support globals yet.
-          throw new Error("Could not resolve identifier to a local variable: " + ident.name);
+        if (sym != null) {
+          if (this.localIndices.has((sym as Symbol).id)) {
+            this.emitter.emitLocalGet(this.localIndices[(sym as Symbol).id]);
+            return;
+          }
+          if (this.wasm.globalMap.has((sym as Symbol).id)) {
+            this.emitter.emitGlobalGet(this.wasm.globalMap[(sym as Symbol).id].index);
+            return;
+          }
+          if ((sym as Symbol).declaration is ImportSpecifier) {
+            let spec = (sym as Symbol).declaration as ImportSpecifier;
+            let importedName = spec.imported.name;
+            if (this.wasm.exportGlobalMap.has(importedName)) {
+              this.emitter.emitGlobalGet(this.wasm.exportGlobalMap[importedName].index);
+              return;
+            }
+          }
         }
+        throw new Error("Could not resolve identifier: " + ident.name);
       }
       case CallExpression {callee, args}: {
         match (callee) {
@@ -311,18 +327,31 @@ export class FunctionGenerator {
           let ident = assign.left as Identifier;
           let sym = this.wasmFunction.model.resolve(ident);
           
-          // Generate the RHS value
           this.generateExpression(assign.value);
 
-          if (sym != null && this.localIndices.has((sym as Symbol).id)) {
-            // Write it using local.tee instead of local.set, because assignments are expressions
-            // evaluate to their assigned value. But wait, if this assignment is inside an ExpressionStatement,
-            // the value left on the stack will be dropped. But if it's part of another expression, it won't.
-            // Oh right, JS assignment is an expression. We should tee it. Wait, does zena drop ExpressionStatements?
-            this.emitter.emitLocalTee(this.localIndices[(sym as Symbol).id]);
-          } else {
-            throw new Error("Could not resolve assignment target to local: " + ident.name);
+          if (sym != null) {
+            if (this.localIndices.has((sym as Symbol).id)) {
+              this.emitter.emitLocalTee(this.localIndices[(sym as Symbol).id]);
+              return;
+            }
+            if (this.wasm.globalMap.has((sym as Symbol).id)) {
+              let globalIdx = this.wasm.globalMap[(sym as Symbol).id].index;
+              this.emitter.emitGlobalSet(globalIdx);
+              this.emitter.emitGlobalGet(globalIdx);
+              return;
+            }
+            if ((sym as Symbol).declaration is ImportSpecifier) {
+              let spec = (sym as Symbol).declaration as ImportSpecifier;
+              let importedName = spec.imported.name;
+              if (this.wasm.exportGlobalMap.has(importedName)) {
+                let globalIdx = this.wasm.exportGlobalMap[importedName].index;
+                this.emitter.emitGlobalSet(globalIdx);
+                this.emitter.emitGlobalGet(globalIdx);
+                return;
+              }
+            }
           }
+          throw new Error("Could not resolve assignment target: " + ident.name);
         } else {
            throw new Error("Unsupported assignment target");
         }

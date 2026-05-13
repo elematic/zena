@@ -52,6 +52,48 @@ export class WatEmitter implements WasmEmitter {
   emitFunctionSectionStart(count: i32): void {}
   emitFunctionDefinition(typeIndex: i32): void {}
   emitFunctionSectionEnd(): void {}
+
+  emitImportSectionStart(count: i32): void {}
+  emitGlobalImport(module: String, name: String, type: ValType, isMutable: boolean): void {
+    this.indent();
+    this.sb.append('(import "').append(module).append('" "').append(name).append('" (global ');
+    if (isMutable) {
+      this.sb.append('(mut ').append(getTypeName(type)).append(')');
+    } else {
+      this.sb.append(getTypeName(type));
+    }
+    this.sb.append('))\n');
+  }
+  emitImportSectionEnd(): void {}
+
+  emitGlobalSectionStart(count: i32): void {}
+  emitGlobal(type: ValType, isMutable: boolean): void {
+    this.indent();
+    this.sb.append('(global ');
+    if (isMutable) {
+      this.sb.append('(mut ').append(getTypeName(type)).append(')');
+    } else {
+      this.sb.append(getTypeName(type));
+    }
+    this.sb.append(' ');
+    // We expect an instruction next, we use the `(` on the instruction?
+    // WAT format requires (i32.const 0). We should probably just let it generate `i32.const 0` 
+    // Actually in some WAT formats:
+    // (global $name i32 (i32.const 0))
+    // We can just append `\n` here and not worry about it, or append `(\n` ?
+    this.sb.append('(');
+  }
+
+  emitGlobalEnd(): void {
+    // wait emitI32Const ends with \n. So if we had `(` from emitGlobal. It would be `(i32.const 0\n)` we need `)` at the end
+    // But then there's a trailing newline inside the parenthesis.
+    // To make it simpler we can trim the previous newline?
+    // Let's just output `)\n` 
+    this.indent();
+    this.sb.append(')\n');
+  }
+
+  emitGlobalSectionEnd(): void {}
   
   emitExportSectionStart(count: i32): void {}
   
@@ -62,6 +104,16 @@ export class WatEmitter implements WasmEmitter {
         .append(name)
         .append('" (func $')
         .append(getFunctionName(func))
+        .append('))\n');
+  }
+
+  emitExportGlobal(name: String, globalIndex: i32): void {
+    this.indent();
+    this.sb
+        .append('(export "')
+        .append(name)
+        .append('" (global ')
+        .append(i32ToString(globalIndex))
         .append('))\n');
   }
 
@@ -143,6 +195,12 @@ export class WatEmitter implements WasmEmitter {
     this.indent();
     this.sb.append(';; string "').append(value).append('"\n');
   }
+
+  emitDrop(): void {
+    this.indent();
+    this.sb.append('drop\n');
+  }
+
   // Variables
   emitLocalGet(index: i32): void {
     this.indent();
@@ -158,6 +216,17 @@ export class WatEmitter implements WasmEmitter {
     this.indent();
     this.sb.append('local.tee ').append(i32ToString(index)).append('\n');
   }
+
+  emitGlobalGet(index: i32): void {
+    this.indent();
+    this.sb.append('global.get ').append(i32ToString(index)).append('\n');
+  }
+  
+  emitGlobalSet(index: i32): void {
+    this.indent();
+    this.sb.append('global.set ').append(i32ToString(index)).append('\n');
+  }
+
   // Binary operations
   emitI32Add(): void { this.indent(); this.sb.append('i32.add\n'); }
   emitI32Sub(): void { this.indent(); this.sb.append('i32.sub\n'); }

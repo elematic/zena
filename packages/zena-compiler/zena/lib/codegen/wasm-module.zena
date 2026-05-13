@@ -14,6 +14,8 @@ import { HashMap } from 'zena:map';
 import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
 import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType } from '../types.zena';
 import { String } from "zena:string";
+import { i32ToString } from "zena:string-convert";
+
 export class WasmExport {
   name: String;
   func: WasmFunction;
@@ -55,6 +57,17 @@ export class WasmFunction {
   new(this.signature, this.node, this.model);
 }
 
+export class WasmGlobal {
+  var index: i32 = -1;
+  name: String;
+  zenaName: String;
+  type: ValType;
+  isMutable: boolean;
+  init: Expression;
+  model: SemanticModel;
+  new(this.name, this.zenaName, this.type, this.isMutable, this.init, this.model);
+}
+
 /**
  * Owns the intermediate representation of the WebAssembly module layout.
  * Acts as the registry for all WebAssembly entities (types, functions).
@@ -70,12 +83,18 @@ export class WasmModule {
    */
   functions = new Array<WasmFunction>();
   
+  globals = new Array<WasmGlobal>();
+
   /**
    * Maps a Zena symbol ID to its compiled WebAssembly function.
    * Used to resolve call targets. Anonymous functions will not be in this map.
    */
   functionMap = new HashMap<SymbolId, WasmFunction>();
+  
+  globalMap = new HashMap<SymbolId, WasmGlobal>();
+
   exportMap = new HashMap<String, WasmFunction>();
+  exportGlobalMap = new HashMap<String, WasmGlobal>();
   
   /**
    * Gets an existing WasmSignature if one matches the given parameters and
@@ -134,6 +153,10 @@ export class WasmModule {
     for (var i = 0; i < this.functions.length; i += 1) {
       let f = this.functions[i];
       f.index = i;
+    }
+    for (var i = 0; i < this.globals.length; i += 1) {
+      let g = this.globals[i];
+      g.index = i;
     }
   }
 }
@@ -219,6 +242,33 @@ export class DiscoveryPass {
                     this.wasm.functionMap[sym.id] = wasmFunc;
                     if (varDecl.exported) {
                       this.wasm.exportMap[ident.name] = wasmFunc;
+                    }
+                  }
+                }
+              } else {
+                // Global Variable
+                if (varDecl.pattern is IdentifierPattern && varDecl.init != null) {
+                  let ident = varDecl.pattern as IdentifierPattern;
+                  let expr = varDecl.init as Expression;
+                  let nodeType = moduleModel.getNodeType(varDecl);
+                  var isMutable = varDecl.kind == "var";
+                  
+                  var vType = ValType.i32;
+                  if (nodeType is F64Type) {
+                    vType = ValType.f64;
+                  } else if (nodeType is F32Type) {
+                    vType = ValType.f32;
+                  }
+
+                  let sym = moduleModel.resolveDeclaration(ident);
+                  if (sym != null) {
+                    let name = ident.name + "_" + i32ToString(sym.id as i32);
+                    let wasmGlobal = new WasmGlobal(name, ident.name, vType, isMutable, expr, moduleModel);
+                    this.wasm.globals.push(wasmGlobal);
+                    this.wasm.globalMap[sym.id] = wasmGlobal;
+                    
+                    if (varDecl.exported) {
+                      this.wasm.exportGlobalMap[ident.name] = wasmGlobal;
                     }
                   }
                 }

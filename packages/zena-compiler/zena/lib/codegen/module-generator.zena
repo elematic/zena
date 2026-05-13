@@ -1,9 +1,11 @@
 import { WasmModule, WasmFunction, WasmSignature, WasmType, DiscoveryPass,
-  WasmExport
+  WasmExport, WasmGlobal
 } from './wasm-module.zena';
 import { Program, CompilationUnit } from '../program.zena';
-import { VariableDeclaration, IdentifierPattern } from '../ast.zena';
+import { VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral } from '../ast.zena';
 import { String } from 'zena:string';
+import { ValType } from './wasm.zena';
+import { parseI32, parseF64 } from 'zena:string-convert';
 import { Array } from 'zena:array';
 import { FunctionGenerator } from './function-generator.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
@@ -15,6 +17,10 @@ export class ModuleGenerator {
   emitter: WasmEmitter;
   
   new(this.program, this.emitter);
+
+  generateExpression(expr: Expression, funcComp: FunctionGenerator): void {
+    funcComp.generateExpression(expr);
+  }
   
   compile(): void {
     let wasm = new WasmModule();
@@ -48,11 +54,48 @@ export class ModuleGenerator {
     }
     this.emitter.emitTypeSectionEnd();
 
+    // We don't have imports yet, but we will soon
+    this.emitter.emitImportSectionStart(0);
+    this.emitter.emitImportSectionEnd();
+
     this.emitter.emitFunctionSectionStart(wasm.functions.length);
     for (let f in wasm.functions) {
       this.emitter.emitFunctionDefinition(f.signature.index);
     }
     this.emitter.emitFunctionSectionEnd();
+
+    this.emitter.emitGlobalSectionStart(wasm.globals.length);
+    for (let g in wasm.globals) {
+      this.emitter.emitGlobal(g.type, g.isMutable);
+      
+      // Need a clean way to emit global initializer
+      match (g.init) {
+        case NumberLiteral {raw}: {
+           let type = g.type;
+           if (type == ValType.i32) {
+              if (let (true, val) = parseI32(raw)) {
+                this.emitter.emitI32Const(val);
+              } else {
+                this.emitter.emitI32Const(0);
+              }
+           } else if (type == ValType.f64) {
+              this.emitter.emitF64Const(parseF64(raw));
+           } else if (type == ValType.f32) {
+              this.emitter.emitF32Const(parseF64(raw)); // f32 requires casting
+           } else {
+             this.emitter.emitI32Const(0);
+           }
+        }
+        case BooleanLiteral {value}: {
+          this.emitter.emitBooleanConst(value);
+        }
+        case _: {
+           // Wait!
+        }
+      }
+      this.emitter.emitGlobalEnd();
+    }
+    this.emitter.emitGlobalSectionEnd();
     
     let exports = new Array<WasmExport>();
     let entryPoint = this.program.entryPoint;
@@ -65,18 +108,31 @@ export class ModuleGenerator {
           if (varDecl.exported && varDecl.pattern is IdentifierPattern) {
             let ident = varDecl.pattern as IdentifierPattern;
             let sym = model.resolveDeclaration(ident);
-            if (sym != null && wasm.functionMap.has(sym.id)) {
-              let wasmFunc = wasm.functionMap[sym.id];
-              exports.push(new WasmExport(ident.name, wasmFunc));
+            if (sym != null) {
+              if (wasm.functionMap.has(sym.id)) {
+                let wasmFunc = wasm.functionMap[sym.id];
+                exports.push(new WasmExport(ident.name, wasmFunc));
+              }
             }
           }
         }
       }
     }
     
-    this.emitter.emitExportSectionStart(exports.length);
+    // Compute total exports = functions + globals
+    var totalExports = exports.length;
+    let globalExports = new Array<WasmGlobal>();
+    for (let gName in wasm.exportGlobalMap.keys()) {
+      globalExports.push(wasm.exportGlobalMap[gName]);
+    }
+    totalExports += globalExports.length;
+
+    this.emitter.emitExportSectionStart(totalExports);
     for (let exp in exports) {
       this.emitter.emitExport(exp.name, exp.func);
+    }
+    for (let g in globalExports) {
+      this.emitter.emitExportGlobal(g.zenaName, g.index);
     }
     this.emitter.emitExportSectionEnd();
     
