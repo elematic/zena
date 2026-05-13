@@ -3,7 +3,7 @@ import {
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
-  IfStatement, IfExpression
+  IfStatement, IfExpression, WhileStatement, ForStatement
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -79,6 +79,28 @@ export class FunctionGenerator {
         if (alternate != null) {
           this.discoverLocalsFromStmt(alternate as Statement);
         }
+      }
+      case WhileStatement {test, body}: {
+        this.discoverLocalsFromExpr(test as Expression);
+        this.discoverLocalsFromStmt(body);
+      }
+      case ForStatement {init, test, update, body}: {
+        if (init != null) {
+          // If init is a VariableDeclaration, it will be handled as a Statement
+          // In Zena AST, a ForStatement init might be a Node but typically a VariableDeclaration or Expression
+          if (init is Statement) {
+            this.discoverLocalsFromStmt(init as Statement);
+          } else if (init is Expression) {
+            this.discoverLocalsFromExpr(init as Expression);
+          }
+        }
+        if (test != null) {
+          this.discoverLocalsFromExpr(test as Expression);
+        }
+        if (update != null) {
+          this.discoverLocalsFromExpr(update as Expression);
+        }
+        this.discoverLocalsFromStmt(body);
       }
       case ExpressionStatement {expression}: {
         this.discoverLocalsFromExpr(expression);
@@ -254,6 +276,67 @@ export class FunctionGenerator {
         }
         
         this.emitter.emitEnd();
+      }
+      case WhileStatement {test, body}: {
+        this.emitter.emitBlock(ValType.void);
+        this.emitter.emitLoop(ValType.void);
+        
+        this.generateExpression(test as Expression);
+        this.emitter.emitI32Const(0);
+        this.emitter.emitI32Eq();
+        this.emitter.emitBrIf(1);
+        
+        let wasReachable = this.isReachable;
+        this.generateStatement(body);
+        
+        this.isReachable = wasReachable;
+        this.emitter.emitBr(0);
+        this.emitter.emitEnd();
+        this.emitter.emitEnd();
+        
+        this.isReachable = wasReachable;
+      }
+      case ForStatement {init, test, update, body}: {
+        if (init != null) {
+          if (init is Statement) {
+            this.generateStatement(init as Statement);
+          } else if (init is Expression) {
+            this.generateExpression(init as Expression);
+            let exprType = this.wasmFunction.model.getNodeType(init as Node);
+            if (!(exprType is VoidType)) {
+              this.emitter.emitDrop();
+            }
+          }
+        }
+        
+        this.emitter.emitBlock(ValType.void);
+        this.emitter.emitLoop(ValType.void);
+        
+        if (test != null) {
+          this.generateExpression(test as Expression);
+          this.emitter.emitI32Const(0);
+          this.emitter.emitI32Eq();
+          this.emitter.emitBrIf(1);
+        }
+        
+        let wasReachable = this.isReachable;
+        this.generateStatement(body);
+        
+        this.isReachable = wasReachable;
+        
+        if (update != null) {
+          this.generateExpression(update as Expression);
+          let exprType = this.wasmFunction.model.getNodeType(update as Node);
+          if (!(exprType is VoidType)) {
+            this.emitter.emitDrop();
+          }
+        }
+        
+        this.emitter.emitBr(0);
+        this.emitter.emitEnd();
+        this.emitter.emitEnd();
+        
+        this.isReachable = wasReachable;
       }
       case VariableDeclaration: {
         let decl = stmt as VariableDeclaration;
