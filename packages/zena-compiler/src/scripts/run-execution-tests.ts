@@ -9,7 +9,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const repoRoot = join(pkgDir, '..', '..');
 const testsDir = join(repoRoot, 'tests', 'language', 'execution');
-const zcScript = join(repoRoot, 'scripts', 'zc.sh');
 
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
@@ -73,8 +72,7 @@ async function run() {
     let compileError = false;
     // Compile using self-hosted Zena CLI to generate WASM
     try {
-      execSync(`"${zcScript}" "${file}"`, {stdio: 'pipe', cwd: repoRoot});
-      execSync(`mv "${join(repoRoot, 'zc-out.wasm')}" "${wasmOut}"`);
+      execSync(`cargo run --release -p zena-cli -- build "${file}" -o "${wasmOut}"`, {stdio: 'pipe', cwd: repoRoot});
     } catch (e: any) {
       console.log(`${RED}✗${NC} ${relPath} (Compile Failed)`);
       console.error(e.stderr?.toString() || e.message);

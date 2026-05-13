@@ -22,10 +22,23 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Build a Zena source file to WebAssembly
+    Build {
+        /// The .zena file to compile
+        file: String,
+
+        /// Output file path
+        #[arg(short, long)]
+        output: String,
+    },
     /// Run a compiled Zena source file or WASM file
     Run {
         /// The .zena or .wasm file to run
         file: String,
+
+        /// The function to invoke
+        #[arg(long, default_value = "main")]
+        invoke: String,
     },
 }
 
@@ -36,28 +49,31 @@ struct MyState {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Run { file } => {
+        Commands::Build { file, output } => build_file(&file, &output, cli.verbose),
+        Commands::Run { file, invoke } => {
             if file.ends_with(".wasm") {
-                run_wasm(&file, cli.verbose)
+                run_wasm(&file, &invoke, cli.verbose)
             } else {
-                compile_and_run(&file, cli.verbose)
+                compile_and_run(&file, &invoke, cli.verbose)
             }
         }
     }
 }
 
+fn build_file(file: &str, output: &str, verbose: bool) -> Result<()> {
+    let cached_wasm_path = compile_to_cache(file, verbose)?;
+    std::fs::copy(&cached_wasm_path, output)?;
+    Ok(())
+}
+
+fn compile_and_run(file: &str, invoke: &str, verbose: bool) -> Result<()> {
+    let cached_wasm_path = compile_to_cache(file, verbose)?;
+    run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose)
+}
+
 /// Compiles a `.zena` source file by invoking the pre-built self-hosted compiler (`cli.wasm`)
-/// inside a Wasmtime sandbox, and then immediately executes the resulting compiled program.
-///
-/// Behavior:
-/// 1. Spins up a Wasmtime engine and instantiates the `cli.wasm` compiler binary.
-/// 2. Sets up WASI capabilities allowing the compiler to read the repo root and standard library.
-/// 3. Invokes the compiler's `main` function.
-/// 4. The Zena compiler currently writes the compiled WebAssembly bytes *to disk* as
-///    `zc-out.wasm` in the repository root (using WASI filesystem APIs).
-/// 5. After compilation finishes, this function validates that `zc-out.wasm` exists on disk
-///    and then calls `run_wasm(...)` to execute it in a fresh Wasmtime sandbox.
-fn compile_and_run(file: &str, verbose: bool) -> Result<()> {
+/// inside a Wasmtime sandbox, returning the path to the cached WebAssembly file.
+fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -168,13 +184,10 @@ fn compile_and_run(file: &str, verbose: bool) -> Result<()> {
         }
     }
 
-    if verbose {
-        println!("Running executable...");
-    }
-    run_wasm(cached_wasm_path.to_str().unwrap(), verbose)
+    Ok(cached_wasm_path)
 }
 
-fn run_wasm(file: &str, _verbose: bool) -> Result<()> {
+fn run_wasm(file: &str, invoke: &str, _verbose: bool) -> Result<()> {
     let mut config = Config::new();
     config.wasm_gc(true);
     config.wasm_function_references(true);
@@ -197,10 +210,9 @@ fn run_wasm(file: &str, _verbose: bool) -> Result<()> {
 
     let instance = linker.instantiate(&mut store, &module)?;
 
-    // Zena programs usually export "main"
     let main_export = instance
-        .get_func(&mut store, "main")
-        .expect("failed to find `main` export");
+        .get_func(&mut store, invoke)
+        .with_context(|| format!("failed to find `{}` export", invoke))?;
     let results_count = main_export.ty(&store).results().len();
     let mut results = vec![Val::I32(0); results_count];
 
