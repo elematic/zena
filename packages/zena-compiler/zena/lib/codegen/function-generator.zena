@@ -2,7 +2,7 @@ import {
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
-  ImportSpecifier, BinaryExpression, UnaryExpression
+  ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -11,6 +11,8 @@ import { Error } from 'zena:error';
 import { ValType } from "./wasm.zena";
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
 
 import { parseI32, parseF64 } from 'zena:string-convert';
 
@@ -25,11 +27,62 @@ export class FunctionGenerator {
   wasm: WasmModule;
   emitter: WasmEmitter;
   wasmFunction: WasmFunction;
-
+  localIndices = new HashMap<SymbolId, i32>();
+  localTypes = new Array<ValType>();
 
   new(this.wasm, this.emitter, this.wasmFunction);
 
+  discoverLocalsFromStmt(stmt: Statement): void {
+    match (stmt) {
+      case BlockStatement {body}: {
+        for (let s in body) {
+          this.discoverLocalsFromStmt(s);
+        }
+      }
+      case VariableDeclaration: {
+        let decl = stmt as VariableDeclaration;
+        if (decl.pattern is IdentifierPattern) {
+          let ident = decl.pattern as IdentifierPattern;
+          let sym = this.wasmFunction.model.resolveDeclaration(ident);
+          if (sym != null) {
+            let varType = this.wasmFunction.model.getNodeType(decl);
+            var vType = ValType.i32;
+            if (varType is F64Type) {
+              vType = ValType.f64;
+            } else if (varType is F32Type) {
+              vType = ValType.f32;
+            }
+            let index = this.wasmFunction.signature.params.length + this.localTypes.length;
+            this.localIndices[sym.id] = index;
+            this.localTypes.push(vType);
+          }
+        }
+      }
+      case _: {}
+    }
+  }
+
   generate(): void {
+    let bodyNode = this.wasmFunction.node;
+    for (var i = 0; i < bodyNode.params.length; i += 1) {
+      let param = bodyNode.params[i];
+      let sym = this.wasmFunction.model.resolveDeclaration(param.name);
+      if (sym != null) {
+        this.localIndices[sym.id] = i;
+      }
+    }
+    
+    let body = bodyNode.body;
+    match (body) {
+      case BlockStatement: {
+        let block = body as BlockStatement;
+        for (let stmt in block.body) {
+          this.discoverLocalsFromStmt(stmt);
+        }
+      }
+      case _: {}
+    }
+
     this.emitter.emitFunctionCodeStart(this.wasmFunction);
     var name = "func" + i32ToString(this.wasmFunction.index);
     if (this.wasmFunction.name != null) {
@@ -38,18 +91,17 @@ export class FunctionGenerator {
     this.emitter.emitFunctionSignatureStart(name, this.wasmFunction.signature.index);
     
     
-    this.emitter.emitFunctionLocalsStart();
+    this.emitter.emitFunctionLocalsStart(this.localTypes);
     
-    let body = this.wasmFunction.node.body;
-    match (body) {
+    match (bodyNode.body) {
       case BlockStatement: {
-        let block = body as BlockStatement;
+        let block = bodyNode.body as BlockStatement;
         for (let stmt in block.body) {
           this.generateStatement(stmt);
         }
       }
       case Expression: {
-        this.generateExpression(body as Expression);
+        this.generateExpression(bodyNode.body as Expression);
         this.emitter.emitReturn();
       }
     }
@@ -78,6 +130,13 @@ export class FunctionGenerator {
         let decl = stmt as VariableDeclaration;
         if (decl.init != null) {
           this.generateExpression(decl.init as Expression);
+          if (decl.pattern is IdentifierPattern) {
+            let ident = decl.pattern as IdentifierPattern;
+            let sym = this.wasmFunction.model.resolveDeclaration(ident);
+            if (sym != null && this.localIndices.has(sym.id)) {
+              this.emitter.emitLocalSet(this.localIndices[sym.id]);
+            }
+          }
         }
       }
       case _: {
@@ -88,6 +147,17 @@ export class FunctionGenerator {
 
   generateExpression(expr: Expression): void {
     match (expr) {
+      case Identifier: {
+        let ident = expr as Identifier;
+        let sym = this.wasmFunction.model.resolve(ident);
+        if (sym != null && this.localIndices.has((sym as Symbol).id)) {
+          this.emitter.emitLocalGet(this.localIndices[(sym as Symbol).id]);
+        } else {
+          // It could be a top-level variable or globally imported value
+          // We don't support globals yet.
+          throw new Error("Could not resolve identifier to a local variable: " + ident.name);
+        }
+      }
       case CallExpression {callee, args}: {
         match (callee) {
           case Identifier: {
@@ -233,6 +303,28 @@ export class FunctionGenerator {
             case ">>>": this.emitter.emitI32ShrU()
             case _: throw new Error("Unsupported operator for i32: " + bin.operator)
           }
+        }
+      }
+      case AssignmentExpression: {
+        let assign = expr as AssignmentExpression;
+        if (assign.left is Identifier) {
+          let ident = assign.left as Identifier;
+          let sym = this.wasmFunction.model.resolve(ident);
+          
+          // Generate the RHS value
+          this.generateExpression(assign.value);
+
+          if (sym != null && this.localIndices.has((sym as Symbol).id)) {
+            // Write it using local.tee instead of local.set, because assignments are expressions
+            // evaluate to their assigned value. But wait, if this assignment is inside an ExpressionStatement,
+            // the value left on the stack will be dropped. But if it's part of another expression, it won't.
+            // Oh right, JS assignment is an expression. We should tee it. Wait, does zena drop ExpressionStatements?
+            this.emitter.emitLocalTee(this.localIndices[(sym as Symbol).id]);
+          } else {
+            throw new Error("Could not resolve assignment target to local: " + ident.name);
+          }
+        } else {
+           throw new Error("Unsupported assignment target");
         }
       }
       case _: {

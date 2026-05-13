@@ -85,7 +85,16 @@ export class WatEmitter implements WasmEmitter {
   }
 
 
-  emitFunctionLocalsStart(): void {
+  emitFunctionLocalsStart(locals: Array<ValType>): void {
+    if (locals.length > 0) {
+      this.sb.append('\n');
+      this.indentDepth += 1;
+      for (let l in locals) {
+        this.indent();
+        this.sb.append('(local ').append(getTypeName(l)).append(')\n');
+      }
+      this.indentDepth -= 1;
+    }
     this.sb.append('\n');
     this.indentDepth += 1;
   }
@@ -134,7 +143,21 @@ export class WatEmitter implements WasmEmitter {
     this.indent();
     this.sb.append(';; string "').append(value).append('"\n');
   }
-
+  // Variables
+  emitLocalGet(index: i32): void {
+    this.indent();
+    this.sb.append('local.get ').append(i32ToString(index)).append('\n');
+  }
+  
+  emitLocalSet(index: i32): void {
+    this.indent();
+    this.sb.append('local.set ').append(i32ToString(index)).append('\n');
+  }
+  
+  emitLocalTee(index: i32): void {
+    this.indent();
+    this.sb.append('local.tee ').append(i32ToString(index)).append('\n');
+  }
   // Binary operations
   emitI32Add(): void { this.indent(); this.sb.append('i32.add\n'); }
   emitI32Sub(): void { this.indent(); this.sb.append('i32.sub\n'); }

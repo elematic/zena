@@ -12,6 +12,7 @@ export class BinaryEmitter implements WasmEmitter {
   
   var currentSection: ByteBuffer | null = null;
   var currentFunction: ByteBuffer | null = null;
+  var currentLocals: Array<ValType> | null = null;
   
   new(this.mainBuffer);
 
@@ -137,7 +138,19 @@ export class BinaryEmitter implements WasmEmitter {
   
   emitFunctionCodeEnd(func: WasmFunction): void {
     let funcBody = new ByteBuffer();
-    funcBody.writeULEB128(0); // local count 0
+    let locals = this.currentLocals;
+    if (locals != null && (locals as Array<ValType>).length > 0) {
+      let lArray = locals as Array<ValType>;
+      // For now, simpler: one run per local. Optimization: RLE encode consecutive types.
+      funcBody.writeULEB128(lArray.length);
+      for (let l in lArray) {
+        funcBody.writeULEB128(1); // count 1
+        funcBody.writeByte(l as i32); 
+      }
+    } else {
+      funcBody.writeULEB128(0); // local count 0
+    }
+    
     let currFunc = this.currentFunction as ByteBuffer;
     funcBody.writeBuffer(currFunc);
     
@@ -146,6 +159,7 @@ export class BinaryEmitter implements WasmEmitter {
     section.writeBuffer(funcBody);
     
     this.currentFunction = null;
+    this.currentLocals = null;
   }
   
   emitCodeSectionEnd(): void {
@@ -159,7 +173,9 @@ export class BinaryEmitter implements WasmEmitter {
 
   // Function lifecycle
   emitFunctionSignatureStart(name: String, typeIndex: i32): void {}
-  emitFunctionLocalsStart(): void {}
+  emitFunctionLocalsStart(locals: Array<ValType>): void {
+    this.currentLocals = locals;
+  }
   
   emitFunctionEnd(): void {
     (this.currentFunction as ByteBuffer).writeByte(Opcode.end as i32);
@@ -204,6 +220,25 @@ export class BinaryEmitter implements WasmEmitter {
     let b = this.currentFunction as ByteBuffer;
     b.writeByte(Opcode.i32_const as i32);
     b.writeSLEB128(0);
+  }
+
+  // Variables
+  emitLocalGet(index: i32): void {
+    let b = this.currentFunction as ByteBuffer;
+    b.writeByte(Opcode.local_get as i32);
+    b.writeULEB128(index);
+  }
+
+  emitLocalSet(index: i32): void {
+    let b = this.currentFunction as ByteBuffer;
+    b.writeByte(Opcode.local_set as i32);
+    b.writeULEB128(index);
+  }
+  
+  emitLocalTee(index: i32): void {
+    let b = this.currentFunction as ByteBuffer;
+    b.writeByte(Opcode.local_tee as i32);
+    b.writeULEB128(index);
   }
 
   emitI32Add(): void { (this.currentFunction as ByteBuffer).writeByte(Opcode.i32_add as i32); }

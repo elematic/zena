@@ -22,6 +22,7 @@ async function run() {
     'call_helper.zena',
     'invoke_test.zena',
     'operators',
+    'variables',
   ];
 
   let files = await glob(join(testsDir, '**/*.zena'));
