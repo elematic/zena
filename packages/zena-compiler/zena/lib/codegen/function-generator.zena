@@ -2,7 +2,8 @@ import {
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
-  ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression
+  ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
+  IfStatement, IfExpression
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -29,8 +30,42 @@ export class FunctionGenerator {
   wasmFunction: WasmFunction;
   localIndices = new HashMap<SymbolId, i32>();
   localTypes = new Array<ValType>();
+  var isReachable: boolean = true;
+  var needsUnreachable: boolean = false;
 
   new(this.wasm, this.emitter, this.wasmFunction);
+
+  discoverLocalsFromExpr(expr: Expression): void {
+    match (expr) {
+      case IfExpression {consequent, alternate}: {
+        if (consequent is BlockStatement) {
+          this.discoverLocalsFromStmt(consequent as BlockStatement);
+        } else if (consequent is Expression) {
+          this.discoverLocalsFromExpr(consequent as Expression);
+        }
+        if (alternate != null) {
+          if (alternate is BlockStatement) {
+            this.discoverLocalsFromStmt(alternate as BlockStatement);
+          } else if (alternate is Expression) {
+            this.discoverLocalsFromExpr(alternate as Expression);
+          }
+        }
+      }
+      case AssignmentExpression {value}: {
+        this.discoverLocalsFromExpr(value);
+      }
+      case BinaryExpression {left, right}: {
+        this.discoverLocalsFromExpr(left);
+        this.discoverLocalsFromExpr(right);
+      }
+      case CallExpression {args}: {
+        for (let arg in args) {
+          this.discoverLocalsFromExpr(arg);
+        }
+      }
+      case _: {}
+    }
+  }
 
   discoverLocalsFromStmt(stmt: Statement): void {
     match (stmt) {
@@ -39,8 +74,20 @@ export class FunctionGenerator {
           this.discoverLocalsFromStmt(s);
         }
       }
+      case IfStatement {consequent, alternate}: {
+        this.discoverLocalsFromStmt(consequent);
+        if (alternate != null) {
+          this.discoverLocalsFromStmt(alternate as Statement);
+        }
+      }
+      case ExpressionStatement {expression}: {
+        this.discoverLocalsFromExpr(expression);
+      }
       case VariableDeclaration: {
         let decl = stmt as VariableDeclaration;
+        if (decl.init != null) {
+          this.discoverLocalsFromExpr(decl.init as Expression);
+        }
         if (decl.pattern is IdentifierPattern) {
           let ident = decl.pattern as IdentifierPattern;
           let sym = this.wasmFunction.model.resolveDeclaration(ident);
@@ -98,11 +145,22 @@ export class FunctionGenerator {
         let block = bodyNode.body as BlockStatement;
         for (let stmt in block.body) {
           this.generateStatement(stmt);
+          if (!this.isReachable) {
+            break;
+          }
+        }
+        if (this.wasmFunction.signature.returns.length > 0) {
+          if (this.isReachable) {
+            throw new Error("Function '" + name + "' misses a return statement");
+          } else if (this.needsUnreachable) {
+            this.emitter.emitUnreachable();
+          }
         }
       }
       case Expression: {
         this.generateExpression(bodyNode.body as Expression);
         this.emitter.emitReturn();
+        this.isReachable = false;
       }
     }
     
@@ -110,13 +168,52 @@ export class FunctionGenerator {
     this.emitter.emitFunctionCodeEnd(this.wasmFunction);
   }
 
+  generateIfBranch(branch: Node, dropResult: boolean): void {
+    if (branch is BlockStatement) {
+      let block = branch as BlockStatement;
+      if (dropResult) {
+        this.generateStatement(block);
+      } else {
+        // Evaluate all but last statement
+        for (var i = 0; i < block.body.length - 1; i += 1) {
+          this.generateStatement(block.body[i]);
+        }
+        if (block.body.length > 0) {
+          let lastStmt = block.body[block.body.length - 1];
+          if (lastStmt is ExpressionStatement) {
+            let exprStmt = lastStmt as ExpressionStatement;
+            this.generateExpression(exprStmt.expression);
+            // Don't drop it, it's the result
+          } else {
+            this.generateStatement(lastStmt);
+          }
+        }
+      }
+    } else if (branch is Expression) {
+      this.generateExpression(branch as Expression);
+      if (dropResult) {
+        let exprType = this.wasmFunction.model.getNodeType(branch);
+        if (!(exprType is VoidType)) {
+          this.emitter.emitDrop();
+        }
+      }
+    } else {
+      throw new Error("Invalid if branch type in codegen");
+    }
+  }
+
   generateStatement(stmt: Statement): void {
+    if (!this.isReachable) {
+      return;
+    }
     match (stmt) {
       case ReturnStatement {argument}: {
         if (argument != null) {
           this.generateExpression(argument as Expression);
         }
         this.emitter.emitReturn();
+        this.isReachable = false;
+        this.needsUnreachable = false;
       }
       case ExpressionStatement {expression}: {
         this.generateExpression(expression);
@@ -128,7 +225,35 @@ export class FunctionGenerator {
       case BlockStatement {body}: {
         for (let s in body) {
           this.generateStatement(s);
+          if (!this.isReachable) {
+            break; // Stop generating unreachable statements
+          }
         }
+      }
+      case IfStatement {test, consequent, alternate}: {
+        this.generateExpression(test as Expression);
+        this.emitter.emitIf(ValType.void);
+        
+        let wasReachable = this.isReachable;
+        
+        this.generateStatement(consequent);
+        let consReachable = this.isReachable;
+        
+        this.isReachable = wasReachable; // Reset for alternate definition
+        if (alternate != null) {
+          this.emitter.emitElse();
+          this.generateStatement(alternate as Statement);
+          let altReachable = this.isReachable;
+          this.isReachable = consReachable || altReachable;
+          if (!this.isReachable) {
+            this.needsUnreachable = true;
+          }
+        } else {
+          // No alternate, so we just continue
+          this.isReachable = true;
+        }
+        
+        this.emitter.emitEnd();
       }
       case VariableDeclaration: {
         let decl = stmt as VariableDeclaration;
@@ -355,6 +480,30 @@ export class FunctionGenerator {
         } else {
            throw new Error("Unsupported assignment target");
         }
+      }
+      case IfExpression {test, consequent, alternate}: {
+        let nodeType = this.wasmFunction.model.getNodeType(expr);
+        var resultValType = ValType.void;
+        if (nodeType is F64Type) {
+          resultValType = ValType.f64;
+        } else if (nodeType is F32Type) {
+          resultValType = ValType.f32;
+        } else if (!(nodeType is VoidType)) {
+          resultValType = ValType.i32;
+        }
+
+        this.generateExpression(test as Expression);
+        this.emitter.emitIf(resultValType);
+
+        let dropResult = resultValType == ValType.void;
+        this.generateIfBranch(consequent, dropResult);
+        
+        if (alternate != null) {
+          this.emitter.emitElse();
+          this.generateIfBranch(alternate as Node, dropResult);
+        }
+        
+        this.emitter.emitEnd();
       }
       case _: {
         throw new Error("Unsupported expression type in codegen");

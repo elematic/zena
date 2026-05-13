@@ -1665,7 +1665,6 @@ let getElementType = (
       return new ErrorType();
     }
   }
-  return new ErrorType();
 };
 
 let getElementTypeFromClass = (
@@ -2472,7 +2471,7 @@ let tupleElementsEqual = (ea: Array<Type>, eb: Array<Type>): boolean => {
 let typesEqual = (a: Type, b: Type): boolean => {
   // For now, use a simple structural comparison based on type kind.
   // Identity-based comparison will come with interning.
-  match (a) {
+  return match (a) {
     case I32Type: b is I32Type
     case U32Type: b is U32Type
     case I64Type: b is I64Type
@@ -2653,7 +2652,7 @@ let typesEqual = (a: Type, b: Type): boolean => {
         case _: false
       }
     }
-  }
+  };
 };
 
 // ============================================================================
@@ -2666,17 +2665,45 @@ let typesEqual = (a: Type, b: Type): boolean => {
  *   if (x == null) { return; }
  *   // x is now non-null here
  */
+let exprDefinitelyExits = (expr: Expression): boolean => {
+  return match (expr) {
+    case ThrowExpression {}: true
+    case MatchExpression {cases}: {
+      if (cases.length == 0) { return false; }
+      var allExit = true;
+      for (let c in cases) {
+        let caseExits = if (c.body is Statement) {
+          branchDefinitelyExits(c.body as Statement)
+        } else {
+          exprDefinitelyExits(c.body as Expression)
+        };
+        if (!caseExits) { allExit = false; }
+      }
+      allExit
+    }
+    case IfExpression {consequent, alternate}: {
+      let consExits = if (consequent is Statement) {
+        branchDefinitelyExits(consequent as Statement)
+      } else {
+        exprDefinitelyExits(consequent as Expression)
+      };
+      let altExits = if (alternate is Statement) {
+        branchDefinitelyExits(alternate as Statement)
+      } else {
+        exprDefinitelyExits(alternate as Expression)
+      };
+      consExits && altExits
+    }
+    case _: false
+  };
+};
+
 let branchDefinitelyExits = (stmt: Statement): boolean => {
-  match (stmt) {
+  return match (stmt) {
     case ReturnStatement {}: true
     case BreakStatement {}: true
     case ContinueStatement {}: true
-    case ExpressionStatement {expression}: {
-      match (expression) {
-        case ThrowExpression {}: true
-        case _: false
-      }
-    }
+    case ExpressionStatement {expression}: exprDefinitelyExits(expression)
     case BlockStatement {body}: {
       if (body.length == 0) { false }
       else { branchDefinitelyExits(body[body.length - 1]) }
@@ -2686,7 +2713,7 @@ let branchDefinitelyExits = (stmt: Statement): boolean => {
       else { branchDefinitelyExits(consequent) && branchDefinitelyExits(alternate as Statement) }
     }
     case _: false
-  }
+  };
 };
 
 /**
@@ -3137,7 +3164,7 @@ let extractIsPathNarrowing = (
  * for post-if narrowing.
  */
 let bodyAssignsToVariable = (ctx: CheckerContext, stmt: Statement, targetId: SymbolId): boolean => {
-  match (stmt) {
+  return match (stmt) {
     case BlockStatement {body}: {
       for (let s in body) {
         if (bodyAssignsToVariable(ctx, s, targetId)) { return true; }
@@ -3162,7 +3189,7 @@ let bodyAssignsToVariable = (ctx: CheckerContext, stmt: Statement, targetId: Sym
       }
     }
     case _: false
-  }
+  };
 };
 
 let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
@@ -3177,7 +3204,16 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       ctx.enterScope();
       var i = 0;
       while (i < body.length) {
-        checkStatement(ctx, body[i]);
+        let stmtNode = body[i];
+        checkStatement(ctx, stmtNode);
+        if (branchDefinitelyExits(stmtNode) && i < body.length - 1) {
+          ctx.error(
+            "Unreachable code detected.",
+            DiagnosticCode.UnreachableCode,
+            body[i + 1].loc
+          );
+          break;
+        }
         i += 1;
       }
       ctx.exitScope();
@@ -7587,7 +7623,7 @@ let collectLeafVariants = (ct: ClassType): Array<ClassType> => {
  * fully covered by match patterns (sealed classes, booleans, literal types).
  */
 let isFiniteType = (t: Type): boolean => {
-  match (t) {
+  return match (t) {
     case BooleanType: true
     case BoolLiteralType: true
     case StringLiteralType: true
@@ -7603,7 +7639,7 @@ let isFiniteType = (t: Type): boolean => {
       allFinite
     }
     case _: false
-  }
+  };
 };
 
 /**
@@ -8300,7 +8336,16 @@ let checkFunctionExpression = (
     case BlockStatement as block: {
       var j = 0;
       while (j < block.body.length) {
-        checkStatement(ctx, block.body[j]);
+        let stmtNode = block.body[j];
+        checkStatement(ctx, stmtNode);
+        if (branchDefinitelyExits(stmtNode) && j < block.body.length - 1) {
+          ctx.error(
+            "Unreachable code detected.",
+            DiagnosticCode.UnreachableCode,
+            block.body[j + 1].loc
+          );
+          break;
+        }
         j = j + 1;
       }
       // After checking block body, infer return type from collected types.
@@ -8314,6 +8359,15 @@ let checkFunctionExpression = (
           // Multiple return types - create union (or use first as approximation)
           // For now, just use the first type as a simple heuristic
           retType = inferred[0];
+        }
+      } else {
+        // If it lacks a guaranteed return, error.
+        if (!(retType is VoidType) && !(retType is AnyType) && !branchDefinitelyExits(block)) {
+          ctx.error(
+            "A function whose declared type is neither 'void' nor 'any' must return a value.",
+            DiagnosticCode.MissingReturnType,
+            loc
+          );
         }
       }
     }
