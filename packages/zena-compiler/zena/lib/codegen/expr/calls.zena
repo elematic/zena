@@ -1,0 +1,67 @@
+import { Node, CallExpression, Identifier, Expression, ImportSpecifier } from '../../ast.zena';
+import { Type, FunctionType } from '../../types.zena';
+import { SymbolId, Symbol } from '../../scope/symbol.zena';
+import { FunctionContext } from '../function-context.zena';
+import { Error } from 'zena:error';
+import { Array } from 'zena:array';
+
+export let generateCallExpression = (ctx: FunctionContext, call: CallExpression, genExpr: (e: Expression) => void): void => {
+  let calleeType = ctx.wasmFunction.model.getNodeType(call.callee);
+  var ft: FunctionType | null = null;
+  if (calleeType is FunctionType) {
+    ft = calleeType as FunctionType;
+  }
+
+  match (call.callee) {
+    case Identifier: {
+      let ident = call.callee as Identifier;
+      let model = ctx.wasmFunction.model;
+      let sym = model.resolve(ident);
+      
+      if (sym == null) {
+        throw new Error("Unresolved identifier in codegen: " + ident.name);
+      }
+      
+      if (ctx.wasm.functionMap.has((sym as Symbol).id)) {
+        var i = 0;
+        while (i < call.args.length) {
+          genExpr(call.args[i]);
+          if (ft != null && ft.parameterSymbols != null) {
+            let syms = ft.parameterSymbols as Array<SymbolId>;
+            if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {
+              ctx.emitter.emitLocalTee(ctx.localIndices[syms[i]]);
+            }
+          }
+          i += 1;
+        }
+        ctx.emitter.emitCall(ctx.wasm.functionMap[(sym as Symbol).id]);
+        return;
+      } else {
+        if ((sym as Symbol).declaration is ImportSpecifier) {
+          let spec = (sym as Symbol).declaration as ImportSpecifier;
+          let importedName = spec.imported.name;
+          if (ctx.wasm.exportMap.has(importedName)) {
+            var i = 0;
+            while (i < call.args.length) {
+              genExpr(call.args[i]);
+              if (ft != null && ft.parameterSymbols != null) {
+                let syms = ft.parameterSymbols as Array<SymbolId>;
+                if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {
+                  ctx.emitter.emitLocalTee(ctx.localIndices[syms[i]]);
+                }
+              }
+              i += 1;
+            }
+            ctx.emitter.emitCall(ctx.wasm.exportMap[importedName]);
+            return;
+          }
+          throw new Error("Export map missing: " + importedName);
+        }
+        throw new Error("Could not resolve function call target");
+      }
+    }
+    case _: {
+      throw new Error("Unsupported call expression");
+    }        
+  }
+};

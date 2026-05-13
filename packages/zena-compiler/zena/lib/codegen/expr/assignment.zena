@@ -1,0 +1,27 @@
+import { Node, AssignmentExpression, Identifier, Expression } from '../../ast.zena';
+import { Type } from '../../types.zena';
+import { SymbolId, Symbol } from '../../scope/symbol.zena';
+import { FunctionContext } from '../function-context.zena';
+import { Error } from 'zena:error';
+
+export let generateAssignmentExpression = (ctx: FunctionContext, assign: AssignmentExpression, genExpr: (e: Expression) => void): void => {
+  if (assign.left is Identifier) {
+    let ident = assign.left as Identifier;
+    let sym = ctx.wasmFunction.model.resolve(ident);
+    if (sym != null) {
+      if (ctx.localIndices.has((sym as Symbol).id)) {
+        genExpr(assign.value);
+        ctx.emitter.emitLocalSet(ctx.localIndices[(sym as Symbol).id]);
+        return;
+      }
+      if (ctx.wasm.globalMap.has((sym as Symbol).id)) {
+        genExpr(assign.value);
+        ctx.emitter.emitGlobalSet(ctx.wasm.globalMap[(sym as Symbol).id].index);
+        return;
+      }
+    }
+    throw new Error("Could not resolve assignment target: " + ident.name);
+  } else {
+    throw new Error("Unsupported assignment target");
+  }
+};

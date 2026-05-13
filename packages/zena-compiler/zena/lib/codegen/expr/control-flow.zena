@@ -1,0 +1,37 @@
+import { Node, IfExpression, Expression, BlockStatement, Statement } from '../../ast.zena';
+import { Type, F64Type, F32Type, VoidType } from '../../types.zena';
+import { ValType } from '../wasm.zena';
+import { FunctionContext } from '../function-context.zena';
+import { Error } from 'zena:error';
+
+export let generateIfExpression = (
+  ctx: FunctionContext, 
+  expr: IfExpression, 
+  genExpr: (e: Expression) => void,
+  genIfBranch: (branch: Node, dropResult: boolean) => void
+): void => {
+  let nodeType = ctx.wasmFunction.model.getNodeType(expr);
+  var resultValType = ValType.void;
+  if (nodeType is F64Type) {
+    resultValType = ValType.f64;
+  } else if (nodeType is F32Type) {
+    resultValType = ValType.f32;
+  } else if (!(nodeType is VoidType)) {
+    resultValType = ValType.i32;
+  }
+
+  genExpr(expr.test as Expression);
+  ctx.emitter.emitIf(resultValType);
+  ctx.enterBlockStructure();
+
+  let dropResult = resultValType == ValType.void;
+  genIfBranch(expr.consequent, dropResult);
+  
+  if (expr.alternate != null) {
+    ctx.emitter.emitElse();
+    genIfBranch(expr.alternate as Node, dropResult);
+  }
+  
+  ctx.exitBlockStructure();
+  ctx.emitter.emitEnd();
+};
