@@ -5,7 +5,8 @@ import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { parse } from '../lib/parser.zena';
 import { SemanticModel } from '../lib/semantic-model.zena';
 import { ScopeBuilder } from '../lib/scope/scope-builder.zena';
-import { Module, VariableDeclaration } from '../lib/ast.zena';
+import { Module, VariableDeclaration, FunctionExpression, BinaryExpression } from '../lib/ast.zena';
+import { I32Type } from '../lib/types.zena';
 import { Array } from 'zena:array';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { readFile, writeFile, exists, mkdir } from 'zena:fs';
@@ -77,30 +78,36 @@ export let tests = suite('WatGenerator', (): void => {
     assertSnapshot('main_returns_i32_expr', result);
   });
 
-  // TODO: Fix support for binary expressions in the new code generator architecture
-  // test('main returns a + b requiring semantic model', (ctx: TestContext): void => {
-  //   let source = 'export let main = () => { let a = 1; let b = 2; return a + b; };';
-  //   let ast = parse(source, 'test.zena');
-  //   let model = new SemanticModel();
-  //   
-  //   // In a real scenario, Checker would run and populate model.
-  //   // model.setType(addExpr.id, i32Type);
-  // 
-  //   let modules = new Array<Module>();
-  //   let m = ast as Module;
-  //   modules.push(m);
-  //   let entryPoint = m;
-  //   
-  //   let unit = {ast: m, model: model};
-  //   let units = new Array<CompilationUnit>();
-  //   units.push(unit);
-  //   let program = new Program(units, unit);
-  // 
-  //   let generator = new WatGenerator();
-  //   let result = generator.generate(program);
-  //   
-  //   assertSnapshot('main_returns_a_plus_b', result);
-  // });
+  test('main returns 1 + 2', (ctx: TestContext): void => {
+    let source = 'export let main = (): i32 => 1 + 2;';
+    let ast = parse(source, 'test.zena');
+    let scopeBuilder = new ScopeBuilder('test.zena');
+    let scopeResult = scopeBuilder.build(ast);
+    let model = new SemanticModel(); 
+    model.setSymbols(scopeResult.symbols);
+  
+    let modules = new Array<Module>();
+    let m = ast as Module;
+    let varDecl = m.body[0] as VariableDeclaration;
+    let fnExp = varDecl.init as FunctionExpression;
+    let binExp = fnExp.body as BinaryExpression;
+    model.setNodeType(binExp, new I32Type());
+    model.setNodeType(binExp.left, new I32Type());
+    model.setNodeType(binExp.right, new I32Type());
+    
+    modules.push(m);
+    let entryPoint = m;
+    
+    let unit = {ast: m, model: model};
+    let units = new Array<CompilationUnit>();
+    units.push(unit);
+    let program = new Program(units, unit);
+  
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    assertSnapshot('main_returns_1_plus_2', result);
+  });
 
   test('multiple exported functions', (ctx: TestContext): void => {
     let source = 'export let foo = (): i32 => 1; export let bar = (): i32 => 2;';

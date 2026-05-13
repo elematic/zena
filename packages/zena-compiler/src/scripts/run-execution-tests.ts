@@ -17,10 +17,15 @@ const DIM = '\x1b[2m';
 const NC = '\x1b[0m';
 
 async function run() {
-  const runList = ['return_42.zena', 'call_helper.zena', 'invoke_test.zena'];
+  const runList = [
+    'return_42.zena',
+    'call_helper.zena',
+    'invoke_test.zena',
+    'operators',
+  ];
 
   let files = await glob(join(testsDir, '**/*.zena'));
-  files = files.filter((f) => runList.some((r) => f.endsWith(r)));
+  files = files.filter((f) => runList.some((r) => f.includes(r)));
 
   const filter = process.argv[2];
   if (filter) {

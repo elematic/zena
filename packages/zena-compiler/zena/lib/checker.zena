@@ -4170,7 +4170,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   // --- Binary Expressions ---
 
   case BinaryExpression {operator, left, right, loc}: {
-    checkBinaryExpression(ctx, operator, left, right, loc)
+    checkBinaryExpression(ctx, expectedType, operator, left, right, loc)
   }
 
   // --- Unary Expressions ---
@@ -7283,6 +7283,7 @@ let resolveIndexType = (
 
 let checkBinaryExpression = (
   ctx: CheckerContext,
+  expectedType: Type | null,
   operator: String,
   left: Expression,
   right: Expression,
@@ -7314,12 +7315,17 @@ let checkBinaryExpression = (
   // Arithmetic operators: +, -, *, /, %
   if (operator == "+" || operator == "-" || operator == "*" ||
       operator == "/" || operator == "%") {
-    // Check right first for contextual typing.
-    let rightType = checkExpression(ctx, right, null);
-    // Use right's type to give context to the left.
+    
+    // Determine the contextual type from expectedType (only for numeric context)
     var contextualType: Type | null = null;
-    if (isNumericType(rightType)) { contextualType = rightType; }
+    if (expectedType != null && isNumericType(expectedType)) {
+      contextualType = expectedType;
+    }
+
+    // Check left first with expected context
     let leftType = checkExpression(ctx, left, contextualType);
+    let rightContext = if (isNumericType(leftType)) { leftType } else { contextualType };
+    let rightType = checkExpression(ctx, right, rightContext);
 
     // If left is numeric and right was checked without context, re-check
     // right with left's type as context.

@@ -2,8 +2,9 @@ import {
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
-  ImportSpecifier
+  ImportSpecifier, BinaryExpression, UnaryExpression
 } from '../ast.zena';
+import { Type, I32Type, F64Type, F32Type } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
@@ -11,7 +12,7 @@ import { ValType } from "./wasm.zena";
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 
-import { parseI32 } from 'zena:string-convert';
+import { parseI32, parseF64 } from 'zena:string-convert';
 
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmFunction, WasmModule } from './wasm-module.zena';
@@ -126,17 +127,113 @@ export class FunctionGenerator {
         }
       }
       case NumberLiteral {raw}: {
-        let (ok, val) = parseI32(raw);
-        if (!ok) {
-          throw new Error('Failed to parse i32: ' + raw);
+        let nodeType = this.wasmFunction.model.getNodeType(expr as Node);
+        if (nodeType is F64Type || nodeType is F32Type) {
+          let val = parseF64(raw);
+          this.emitter.emitF64Const(val);
+        } else {
+          let (ok, val) = parseI32(raw);
+          if (!ok) {
+            throw new Error('Failed to parse i32: ' + raw);
+          }
+          this.emitter.emitI32Const(val as i32);
         }
-        this.emitter.emitI32Const(val as i32);
       }
       case BooleanLiteral {value}: {
         this.emitter.emitBooleanConst(value);
       }
       case StringLiteral {value}: {
         this.emitter.emitStringConst(value);
+      }
+      case UnaryExpression: {
+        let un = expr as UnaryExpression;
+        if (un.operator == "-") {
+          let nodeType = this.wasmFunction.model.getNodeType(un);
+          if (nodeType is F64Type || nodeType is F32Type) {
+            this.emitter.emitF64Const(0.0);
+            this.generateExpression(un.argument);
+            this.emitter.emitF64Sub();
+          } else {
+            this.emitter.emitI32Const(0);
+            this.generateExpression(un.argument);
+            this.emitter.emitI32Sub();
+          }
+        } else {
+          throw new Error("Unsupported unary operator: " + un.operator);
+        }
+      }
+      case BinaryExpression: {
+        let bin = expr as BinaryExpression;
+        // TODO: Support operator overloading and custom classes
+        
+        let model = this.wasmFunction.model;
+        let leftType = model.getNodeType(bin.left);
+        let rightType = model.getNodeType(bin.right);
+        
+        if (leftType == null || rightType == null) {
+          throw new Error("Missing type info in semantic model for binary expression operands");
+        }
+        
+        var isFloatContext = false;
+        if (leftType is F64Type || rightType is F64Type || leftType is F32Type || rightType is F32Type) {
+            isFloatContext = true;
+        }
+
+        // Implicit F64 upconversion logic
+        if (isFloatContext && !(leftType is F64Type) && !(leftType is F32Type)) {
+          this.generateExpression(bin.left);
+          this.emitter.emitF64ConvertI32S();
+        } else {
+          this.generateExpression(bin.left);
+        }
+
+        if (isFloatContext && !(rightType is F64Type) && !(rightType is F32Type)) {
+          this.generateExpression(bin.right);
+          this.emitter.emitF64ConvertI32S();
+        } else {
+          this.generateExpression(bin.right);
+        }
+        
+        if (isFloatContext) {
+          match (bin.operator) {
+            case "+": this.emitter.emitF64Add()
+            case "-": this.emitter.emitF64Sub()
+            case "*": this.emitter.emitF64Mul()
+            case "/": this.emitter.emitF64Div()
+            case "==": this.emitter.emitF64Eq()
+            case "!=": this.emitter.emitF64Ne()
+            case "===": this.emitter.emitF64Eq()
+            case "!==": this.emitter.emitF64Ne()
+            case "<": this.emitter.emitF64Lt()
+            case "<=": this.emitter.emitF64Le()
+            case ">": this.emitter.emitF64Gt()
+            case ">=": this.emitter.emitF64Ge()
+            case _: throw new Error("Unsupported operator for f64: " + bin.operator)
+          }
+        } else {
+          match (bin.operator) {
+            case "+": this.emitter.emitI32Add()
+            case "-": this.emitter.emitI32Sub()
+            case "*": this.emitter.emitI32Mul()
+            case "/": this.emitter.emitI32DivS()
+            case "%": this.emitter.emitI32RemS()
+            case "==": this.emitter.emitI32Eq()
+            case "!=": this.emitter.emitI32Ne()
+            case "===": this.emitter.emitI32Eq()
+            case "!==": this.emitter.emitI32Ne()
+            case "<": this.emitter.emitI32LtS()
+            case "<=": this.emitter.emitI32LeS()
+            case ">": this.emitter.emitI32GtS()
+            case ">=": this.emitter.emitI32GeS()
+            case "&": this.emitter.emitI32And()
+            case "|": this.emitter.emitI32Or()
+            case "^": this.emitter.emitI32Xor()
+            case "<<": this.emitter.emitI32Shl()
+            case ">>": this.emitter.emitI32ShrS()
+            case ">>>": this.emitter.emitI32ShrU()
+            case _: throw new Error("Unsupported operator for i32: " + bin.operator)
+          }
+        }
       }
       case _: {
         throw new Error("Unsupported expression type in codegen");

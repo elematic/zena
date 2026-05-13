@@ -12,6 +12,7 @@ import { ValType } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
+import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType } from '../types.zena';
 import { String } from "zena:string";
 export class WasmExport {
   name: String;
@@ -177,9 +178,34 @@ export class DiscoveryPass {
               let varDecl = stmt as VariableDeclaration;
               if (varDecl.init is FunctionExpression) {
                 let funcExpr = varDecl.init as FunctionExpression;
+                let funcTypeNode = moduleModel.getNodeType(funcExpr);
                 let params = new Array<ValType>();
                 let returns = new Array<ValType>();
-                returns.push(ValType.i32); // Hardcoded i32 return for main
+                
+                if (funcTypeNode is FunctionType) {
+                  let fType = funcTypeNode as FunctionType;
+                  for (let p in fType.parameters) {
+                    if (p is F64Type) {
+                      params.push(ValType.f64);
+                    } else if (p is F32Type) {
+                      params.push(ValType.f32);
+                    } else {
+                      params.push(ValType.i32);
+                    }
+                  }
+                  let rType = fType.returnType;
+                  if (rType is F64Type) {
+                    returns.push(ValType.f64);
+                  } else if (rType is F32Type) {
+                    returns.push(ValType.f32);
+                  } else if (rType is VoidType) {
+                    // void
+                  } else {
+                    returns.push(ValType.i32);
+                  }
+                } else {
+                  returns.push(ValType.i32); // Hardcoded fallback i32
+                }
                 
                 let sig = this.wasm.getSignature(params, returns);
                 let wasmFunc = new WasmFunction(sig, funcExpr, moduleModel);

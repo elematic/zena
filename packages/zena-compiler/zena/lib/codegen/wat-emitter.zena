@@ -4,7 +4,7 @@ import { WasmType, WasmFunction } from "./wasm-module.zena";
 import { ValType } from "./wasm.zena";
 import { WasmExport } from './wasm-module.zena';
 import { String } from 'zena:string';
-import { i32ToString } from 'zena:string-convert';
+import { i32ToString, f64ToString } from 'zena:string-convert';
 import { Array } from 'zena:array';
 
 export class WatEmitter implements WasmEmitter {
@@ -111,6 +111,16 @@ export class WatEmitter implements WasmEmitter {
     this.sb.append('i32.const ').append(i32ToString(value)).append('\n');
   }
 
+  emitF64Const(value: f64): void {
+    this.indent();
+    this.sb.append('f64.const ').append(f64ToString(value)).append('\n');
+  }
+
+  emitF32Const(value: f64): void {
+    this.indent();
+    this.sb.append('f32.const ').append(f64ToString(value)).append('\n');
+  }
+
   emitBooleanConst(value: boolean): void {
     this.indent();
     var s = '0';
@@ -124,6 +134,49 @@ export class WatEmitter implements WasmEmitter {
     this.indent();
     this.sb.append(';; string "').append(value).append('"\n');
   }
+
+  // Binary operations
+  emitI32Add(): void { this.indent(); this.sb.append('i32.add\n'); }
+  emitI32Sub(): void { this.indent(); this.sb.append('i32.sub\n'); }
+  emitI32Mul(): void { this.indent(); this.sb.append('i32.mul\n'); }
+  emitI32DivS(): void { this.indent(); this.sb.append('i32.div_s\n'); }
+  emitI32Eq(): void { this.indent(); this.sb.append('i32.eq\n'); }
+  emitI32Ne(): void { this.indent(); this.sb.append('i32.ne\n'); }
+  emitI32LtS(): void { this.indent(); this.sb.append('i32.lt_s\n'); }
+  emitI32LeS(): void { this.indent(); this.sb.append('i32.le_s\n'); }
+  emitI32GtS(): void { this.indent(); this.sb.append('i32.gt_s\n'); }
+  emitI32GeS(): void { this.indent(); this.sb.append('i32.ge_s\n'); }
+  emitI32RemS(): void { this.indent(); this.sb.append('i32.rem_s\n'); }
+  emitI32And(): void { this.indent(); this.sb.append('i32.and\n'); }
+  emitI32Or(): void { this.indent(); this.sb.append('i32.or\n'); }
+  emitI32Xor(): void { this.indent(); this.sb.append('i32.xor\n'); }
+  emitI32Shl(): void { this.indent(); this.sb.append('i32.shl\n'); }
+  emitI32ShrS(): void { this.indent(); this.sb.append('i32.shr_s\n'); }
+  emitI32ShrU(): void { this.indent(); this.sb.append('i32.shr_u\n'); }
+
+  emitF64Add(): void { this.indent(); this.sb.append('f64.add\n'); }
+  emitF64Sub(): void { this.indent(); this.sb.append('f64.sub\n'); }
+  emitF64Mul(): void { this.indent(); this.sb.append('f64.mul\n'); }
+  emitF64Div(): void { this.indent(); this.sb.append('f64.div\n'); }
+  emitF64Eq(): void { this.indent(); this.sb.append('f64.eq\n'); }
+  emitF64Ne(): void { this.indent(); this.sb.append('f64.ne\n'); }
+  emitF64Lt(): void { this.indent(); this.sb.append('f64.lt\n'); }
+  emitF64Gt(): void { this.indent(); this.sb.append('f64.gt\n'); }
+  emitF64Le(): void { this.indent(); this.sb.append('f64.le\n'); }
+  emitF64Ge(): void { this.indent(); this.sb.append('f64.ge\n'); }
+  emitF64ConvertI32S(): void { this.indent(); this.sb.append('f64.convert_i32_s\n'); }
+
+  emitF32Add(): void { this.indent(); this.sb.append('f32.add\n'); }
+  emitF32Sub(): void { this.indent(); this.sb.append('f32.sub\n'); }
+  emitF32Mul(): void { this.indent(); this.sb.append('f32.mul\n'); }
+  emitF32Div(): void { this.indent(); this.sb.append('f32.div\n'); }
+  emitF32Eq(): void { this.indent(); this.sb.append('f32.eq\n'); }
+  emitF32Ne(): void { this.indent(); this.sb.append('f32.ne\n'); }
+  emitF32Lt(): void { this.indent(); this.sb.append('f32.lt\n'); }
+  emitF32Le(): void { this.indent(); this.sb.append('f32.le\n'); }
+  emitF32Gt(): void { this.indent(); this.sb.append('f32.gt\n'); }
+  emitF32Ge(): void { this.indent(); this.sb.append('f32.ge\n'); }
+  emitF32ConvertI32S(): void { this.indent(); this.sb.append('f32.convert_i32_s\n'); }
 }
 
 let getFunctionName = (func: WasmFunction): String => {
@@ -133,6 +186,7 @@ let getFunctionName = (func: WasmFunction): String => {
 let getTypeName = (t: ValType): String => {
   return match (t) {
     case ValType.i32: 'i32'
+    case ValType.f32: 'f32'
     case ValType.f64: 'f64'
     // TODO: support primitives in template literals
     case _: throw new Error(`Unsupported type: ${i32ToString(t as i32)}`)
