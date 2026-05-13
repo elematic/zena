@@ -3978,10 +3978,11 @@ function generateCallExpression(
       const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
       // params[0] is 'this' (the extension object)
 
-      generateMethodCallArguments(
+      generateCallArguments(
         ctx,
         expr,
         params,
+        1,
         tempObjForDefaults ?? -1,
         body,
       );
@@ -4046,7 +4047,7 @@ function generateCallExpression(
       const params = ctx.module.getFunctionTypeParams(methodInfo.typeIndex);
       // params[0] is 'this'
 
-      generateMethodCallArguments(ctx, expr, params, tempObj, body);
+      generateCallArguments(ctx, expr, params, 1, tempObj, body);
 
       // Get function
       body.push(Opcode.local_get);
@@ -4075,10 +4076,11 @@ function generateCallExpression(
       const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
       // params[0] is 'this'
 
-      generateMethodCallArguments(
-        ctx,
-        expr,
-        params,
+generateCallArguments(
+          ctx,
+          expr,
+          params,
+          1,
         tempObjForDefaults ?? -1, // -1 won't be used if no defaults with owner
         body,
       );
@@ -4233,9 +4235,7 @@ function generateCallExpression(
         const typeIndex = ctx.module.getFunctionTypeIndex(targetFuncIndex);
         const params = ctx.module.getFunctionTypeParams(typeIndex);
 
-        for (let i = 0; i < expr.arguments.length; i++) {
-          generateAdaptedArgument(ctx, expr.arguments[i], params[i], body);
-        }
+        generateCallArguments(ctx, expr, params, 0, -1, body);
 
         body.push(Opcode.call);
         body.push(...WasmModule.encodeSignedLEB128(targetFuncIndex));
@@ -10943,10 +10943,11 @@ function findArrayIntrinsic(
  * @param thisLocalIndex Local index holding the object reference (the `this` for the method)
  * @param body Output bytecode array
  */
-function generateMethodCallArguments(
+function generateCallArguments(
   ctx: CodegenContext,
   expr: CallExpression,
   params: number[][],
+  paramsOffset: number,
   thisLocalIndex: number,
   body: number[],
 ) {
@@ -10964,7 +10965,7 @@ function generateMethodCallArguments(
 
   for (let i = 0; i < expr.arguments.length; i++) {
     const arg = expr.arguments[i];
-    const expectedType = params[i + 1]; // params[0] is `this`
+    const expectedType = params[i + paramsOffset];
     const isDefault = i >= originalArgCount;
     const hasMoreArgs = i < expr.arguments.length - 1;
     const paramName = parameterNames?.[i];

@@ -18,9 +18,10 @@ const NC = '\x1b[0m';
 
 async function run() {
   const runList = [
-    'return_42.zena',
     'call_helper.zena',
     'invoke.zena',
+    'return_42.zena',
+    // 'functions', TODO: unskip when we support conditionals
     'operators',
     'variables',
     'imports',
