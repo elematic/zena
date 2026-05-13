@@ -8,7 +8,7 @@ the `zena-cli` Rust package.
 
 1. **Host Language Integration (Rust/Wasmtime)**
    - The CLI leverages **Wasmtime** to execute Zena's output. Zena is uniquely
-     tied to experimental/advanced WebAssembly features. 
+     tied to experimental/advanced WebAssembly features.
    - Ensure the engine is always configured with Garbage Collection (`gc`),
      Exception Handling (`exceptions`), and Typed Function References
      (`function-references`). If Zena compilation/instantiation fails with
@@ -26,10 +26,10 @@ the `zena-cli` Rust package.
 
 3. **Output Standardization (Silent by Default)**
    - Following strict Unix philosophy and mirroring standard Node CLI behavior,
-     the Zena CLI execution engine is **silent by default**. 
+     the Zena CLI execution engine is **silent by default**.
    - Standard output (`stdout`) represents **only** the executing `.zena`
      program's output, enabling clean pipelines (e.g., `zena run data.zena |
-     grep foo`).
+grep foo`).
    - Diagnostic text (e.g., "Compiling...", "Running executable...") is hidden
      behind the `--verbose` / `-v` flag.
 
@@ -40,7 +40,7 @@ the `zena-cli` Rust package.
   the CLI, **always re-run the command with the `--verbose` flag**.
 - **Workspace Navigation**: Remember this is a standard Rust application living
   in an NPM monorepo. Use `cargo build`, `cargo check`, and `cargo clippy`
-  directly against `Cargo.toml`. 
+  directly against `Cargo.toml`.
 - **Tests**: When expanding standard library tests that interact with this CLI,
   remember that test environments map different paths (like `/tmp`), which rely
   entirely on `wasmtime_wasi::Dir` mappings being present in the CLI

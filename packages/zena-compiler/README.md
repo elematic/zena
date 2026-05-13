@@ -7,6 +7,7 @@ to WebAssembly (Wasm GC).
 ## Architecture
 
 The compiler is organized into traditional phases:
+
 - **Lexer**: Tokenizes Zena source code.
 - **Parser**: Produces an Abstract Syntax Tree (AST).
 - **Type Checker**: Performs name resolution and static type validation, storing

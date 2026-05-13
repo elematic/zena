@@ -1,16 +1,16 @@
 # Zena CLI (`zena-cli`)
 
 The official Rust-based command-line interface and execution engine for the Zena
-programming language. 
+programming language.
 
 ## Purpose
 
 Since Zena compiles to standard WebAssembly and targets WASI, Zena programs
-*can* run in any compliant Wasm runtime (including the web). However, this
+_can_ run in any compliant Wasm runtime (including the web). However, this
 custom Rust CLI exists for **convenience and enhanced capabilities**:
 
 - **Extended APIs:** Several tools, such as the Zena compiler and CLI, work best
-  with capabilities beyond standard WASI:  
+  with capabilities beyond standard WASI:
   - Extracting backtraces from exceptions
   - Spawning child processes
   - Dynamically compiling and running Wasm modules
@@ -41,5 +41,6 @@ cargo run --manifest-path packages/zena-cli/Cargo.toml -- --verbose run examples
 ```
 
 ## Development and Architecture
+
 For architectural insights, design constraints, and AI agent instructions
 regarding this application, please refer to [CONTEXT.md](./CONTEXT.md).

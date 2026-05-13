@@ -22,7 +22,7 @@ emission:
 
 - Zena emits **WebAssembly GC** and **Exceptions** native standards. Wasm
   modules must adhere to strict orderings. For instance, the **Type Section
-  (1)** must be serialized *before* the **Function Section (3)** and **Code
+  (1)** must be serialized _before_ the **Function Section (3)** and **Code
   Section (10)**.
 - To resolve this, `wasm-generator.zena` typically utilizes a multi-pass
   approach over the AST, allocating indices for all `FunctionSignature`s,
@@ -74,7 +74,7 @@ emission:
   `src/scripts/run-execution-tests.ts`, there is an explicit `runList` array
   (e.g., `['return_42.zena', ...]`) and only tests in the list are run. If you
   add a new end-to-end Wasmtime test and want the self-hosted compiler to run
-  it, you *must* add it to the `runList` array!
+  it, you _must_ add it to the `runList` array!
 - Run execution tests locally via: `npm run test:execution -w
-  @zena-lang/zena-compiler` explicitly to isolate generated Wasm regressions
+@zena-lang/zena-compiler` explicitly to isolate generated Wasm regressions
   natively using the `wasmtime --invoke main` interface wrapped by Node.js.

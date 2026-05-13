@@ -1933,16 +1933,16 @@ let result = match (x) {
   case let { a: 1, b }: ...
   ```
 
-  *Note on explicit bindings*: Identifiers in object, record, and tuple patterns are treated as existing constants or variables to match against unless they are explicitly prefixed with a binding keyword (`let` or `var`).
+  _Note on explicit bindings_: Identifiers in object, record, and tuple patterns are treated as existing constants or variables to match against unless they are explicitly prefixed with a binding keyword (`let` or `var`).
 
   ```zena
   let b = 10;
   match (record) {
     // Shorthand field match: matches against the existing variable `b`
     case { a: 1, b }: "matched"
-    
+
     // Explicit binding: creates local variables `a` and `b`
-    case let { a, b }: "bound new vars" 
+    case let { a, b }: "bound new vars"
   }
   ```
 
@@ -2786,6 +2786,8 @@ limitations:
     ```zena
     match (arr) {
       case let A {}: ...
+    ```
+
 ### Records
 
 Records are immutable, structural types that hold a fixed set of named fields.
