@@ -3,7 +3,8 @@ import {
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
-  IfStatement, IfExpression, WhileStatement, ForStatement
+  IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
+  ContinueStatement
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -33,7 +34,43 @@ export class FunctionGenerator {
   var isReachable: boolean = true;
   var needsUnreachable: boolean = false;
 
+  /// Stack of active loops for break/continue targets.
+  /// Tuple holds: (breakDepth: i32, continueDepth: i32)
+  var loopStack = new Array<(i32, i32)>();
+
   new(this.wasm, this.emitter, this.wasmFunction);
+
+  enterLoop(): void {
+    // For while loops: break=1 (br to outer block), continue=0 (br to loop)
+    this.loopStack.push((1, 0));
+  }
+
+  enterForLoop(): void {
+    // For for loops: break=2 (br to outer block), continue=0 (br to inner block where update happens)
+    this.loopStack.push((2, 0));
+  }
+
+  exitLoop(): void {
+    this.loopStack.pop();
+  }
+
+  enterBlockStructure(): void {
+    var i = 0;
+    while (i < this.loopStack.length) {
+      let (b, c) = this.loopStack[i];
+      this.loopStack[i] = (b + 1, c + 1);
+      i += 1;
+    }
+  }
+
+  exitBlockStructure(): void {
+    var i = 0;
+    while (i < this.loopStack.length) {
+      let (b, c) = this.loopStack[i];
+      this.loopStack[i] = (b - 1, c - 1);
+      i += 1;
+    }
+  }
 
   discoverLocalsFromExpr(expr: Expression): void {
     match (expr) {
@@ -229,6 +266,26 @@ export class FunctionGenerator {
       return;
     }
     match (stmt) {
+      case BreakStatement {}: {
+        let n = this.loopStack.length;
+        if (n > 0) {
+          let (bDepth, _) = this.loopStack[n - 1];
+          this.emitter.emitBr(bDepth);
+        } else {
+          this.emitter.emitUnreachable();
+        }
+        this.isReachable = false;
+      }
+      case ContinueStatement {}: {
+        let n = this.loopStack.length;
+        if (n > 0) {
+          let (_, cDepth) = this.loopStack[n - 1];
+          this.emitter.emitBr(cDepth);
+        } else {
+          this.emitter.emitUnreachable();
+        }
+        this.isReachable = false;
+      }
       case ReturnStatement {argument}: {
         if (argument != null) {
           this.generateExpression(argument as Expression);
@@ -255,6 +312,7 @@ export class FunctionGenerator {
       case IfStatement {test, consequent, alternate}: {
         this.generateExpression(test as Expression);
         this.emitter.emitIf(ValType.void);
+        this.enterBlockStructure();
         
         let wasReachable = this.isReachable;
         
@@ -275,6 +333,7 @@ export class FunctionGenerator {
           this.isReachable = true;
         }
         
+        this.exitBlockStructure();
         this.emitter.emitEnd();
       }
       case WhileStatement {test, body}: {
@@ -287,7 +346,9 @@ export class FunctionGenerator {
         this.emitter.emitBrIf(1);
         
         let wasReachable = this.isReachable;
+        this.enterLoop();
         this.generateStatement(body);
+        this.exitLoop();
         
         this.isReachable = wasReachable;
         this.emitter.emitBr(0);
@@ -319,9 +380,15 @@ export class FunctionGenerator {
           this.emitter.emitBrIf(1);
         }
         
+        // Inner block for continue to jump to (skipping body, hitting update)
+        this.emitter.emitBlock(ValType.void);
         let wasReachable = this.isReachable;
-        this.generateStatement(body);
         
+        this.enterForLoop();
+        this.generateStatement(body);
+        this.exitLoop();
+        
+        this.emitter.emitEnd(); // End continue block
         this.isReachable = wasReachable;
         
         if (update != null) {
@@ -577,6 +644,7 @@ export class FunctionGenerator {
 
         this.generateExpression(test as Expression);
         this.emitter.emitIf(resultValType);
+        this.enterBlockStructure();
 
         let dropResult = resultValType == ValType.void;
         this.generateIfBranch(consequent, dropResult);
@@ -586,6 +654,7 @@ export class FunctionGenerator {
           this.generateIfBranch(alternate as Node, dropResult);
         }
         
+        this.exitBlockStructure();
         this.emitter.emitEnd();
       }
       case _: {
