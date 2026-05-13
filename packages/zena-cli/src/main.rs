@@ -71,6 +71,24 @@ fn compile_and_run(file: &str, invoke: &str, verbose: bool) -> Result<()> {
     run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose)
 }
 
+fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) -> Result<Module> {
+    let needs_compile = if cwasm_path.exists() {
+        let wasm_mod = std::fs::metadata(wasm_path)?.modified()?;
+        let cwasm_mod = std::fs::metadata(cwasm_path)?.modified()?;
+        wasm_mod > cwasm_mod
+    } else {
+        true
+    };
+
+    if needs_compile {
+        let wasm_bytes = std::fs::read(wasm_path)?;
+        let serialized = engine.precompile_module(&wasm_bytes)?;
+        std::fs::write(cwasm_path, serialized)?;
+    }
+
+    unsafe { Ok(Module::deserialize_file(engine, cwasm_path)?) }
+}
+
 /// Compiles a `.zena` source file by invoking the pre-built self-hosted compiler (`cli.wasm`)
 /// inside a Wasmtime sandbox, returning the path to the cached WebAssembly file.
 fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
@@ -95,7 +113,8 @@ fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
 
     let engine = Engine::new(&config)?;
-    let compiler_module = Module::from_file(&engine, &compiler_wasm)?;
+    let cwasm_path = compiler_wasm.with_extension("cwasm");
+    let compiler_module = load_or_compile_module(&engine, &compiler_wasm, &cwasm_path)?;
 
     let mut linker: Linker<MyState> = Linker::new(&engine);
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
@@ -121,67 +140,49 @@ fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
     let cached_wasm_name = format!("{}_{:x}.wasm", file_name, hash);
     let cached_wasm_path = cache_dir.join(&cached_wasm_name);
 
-    let needs_compile = if cached_wasm_path.exists() {
-        let src_mod = std::fs::metadata(&abs_path)?.modified()?;
-        let cache_mod = std::fs::metadata(&cached_wasm_path)?.modified()?;
-        src_mod > cache_mod
-    } else {
-        true
-    };
+    let file_arg = rel_path.to_string_lossy().to_string();
 
-    if needs_compile {
-        let file_arg = rel_path.to_string_lossy().to_string();
+    // Pass the actual absolute path to the user's cache directory using the `-o` flag
+    let out_path_arg = cached_wasm_path.to_string_lossy().to_string();
 
-        // Pass the actual absolute path to the user's cache directory using the `-o` flag
-        let out_path_arg = cached_wasm_path.to_string_lossy().to_string();
+    let wasi = WasiCtxBuilder::new()
+        .inherit_stdio()
+        .inherit_env()
+        .args(&["zc", &file_arg, "-o", &out_path_arg])
+        .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
+        .preopened_dir(stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
+        // Give the guest write access directly to the user's absolute cache directory
+        .preopened_dir(
+            &cache_dir,
+            cache_dir.to_str().unwrap(),
+            DirPerms::all(),
+            FilePerms::all(),
+        )?
+        .build_p1();
 
-        let wasi = WasiCtxBuilder::new()
-            .inherit_stdio()
-            .inherit_env()
-            .args(&["zc", &file_arg, "-o", &out_path_arg])
-            .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
-            .preopened_dir(stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
-            // Give the guest write access directly to the user's absolute cache directory
-            .preopened_dir(
-                &cache_dir,
-                cache_dir.to_str().unwrap(),
-                DirPerms::all(),
-                FilePerms::all(),
-            )?
-            .build_p1();
+    let mut store = Store::new(&engine, MyState { wasi });
 
-        let mut store = Store::new(&engine, MyState { wasi });
+    let compiler_instance = linker.instantiate(&mut store, &compiler_module)?;
+    let compiler_main = compiler_instance
+        .get_func(&mut store, "main")
+        .expect("missing main export in cli.wasm");
 
-        let compiler_instance = linker.instantiate(&mut store, &compiler_module)?;
-        let compiler_main = compiler_instance
-            .get_func(&mut store, "main")
-            .expect("missing main export in cli.wasm");
+    let mut compiler_results = vec![Val::I32(0); compiler_main.ty(&store).results().len()];
 
-        let mut compiler_results = vec![Val::I32(0); compiler_main.ty(&store).results().len()];
+    if verbose {
+        println!("Compiling {}...", file);
+    }
 
-        if verbose {
-            println!("Compiling {}...", file);
-        }
+    if let Err(e) = compiler_main.call(&mut store, &[], &mut compiler_results) {
+        eprintln!("Compiler failed with error: {:?}", e);
+        anyhow::bail!("Compilation failed");
+    }
 
-        if let Err(e) = compiler_main.call(&mut store, &[], &mut compiler_results) {
-            eprintln!("Compiler failed with error: {:?}", e);
-            anyhow::bail!("Compilation failed");
-        }
-
-        if !cached_wasm_path.exists() {
-            anyhow::bail!(
-                "Compiler did not emit expected WebAssembly file to {}.",
-                cached_wasm_path.display()
-            );
-        }
-    } else {
-        if verbose {
-            println!(
-                "Using cached compilation for {}... ({})",
-                file,
-                cached_wasm_path.display()
-            );
-        }
+    if !cached_wasm_path.exists() {
+        anyhow::bail!(
+            "Compiler did not emit expected WebAssembly file to {}.",
+            cached_wasm_path.display()
+        );
     }
 
     Ok(cached_wasm_path)
@@ -195,7 +196,9 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool) -> Result<()> {
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
 
     let engine = Engine::new(&config)?;
-    let module = Module::from_file(&engine, file)?;
+    let wasm_path = Path::new(file);
+    let cwasm_path = wasm_path.with_extension("cwasm");
+    let module = load_or_compile_module(&engine, wasm_path, &cwasm_path)?;
 
     let mut linker: Linker<MyState> = Linker::new(&engine);
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;

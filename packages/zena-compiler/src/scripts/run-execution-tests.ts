@@ -72,7 +72,7 @@ async function run() {
     let compileError = false;
     // Compile using self-hosted Zena CLI to generate WASM
     try {
-      execSync(`cargo run --release -p zena-cli -- build "${file}" -o "${wasmOut}"`, {stdio: 'pipe', cwd: repoRoot});
+      execSync(`"${join(repoRoot, 'target', 'release', 'zena-cli')}" build "${file}" -o "${wasmOut}"`, {stdio: 'pipe', cwd: repoRoot});
     } catch (e: any) {
       console.log(`${RED}✗${NC} ${relPath} (Compile Failed)`);
       console.error(e.stderr?.toString() || e.message);
