@@ -1,0 +1,16 @@
+import { Error } from 'zena:error';
+import { VariableDeclaration, Expression, IdentifierPattern } from '../../ast.zena';
+import { FunctionContext } from '../function-context.zena';
+
+export let generateVariableDeclaration = (ctx: FunctionContext, stmt: VariableDeclaration, genExpr: (e: Expression) => void): void => {
+  if (stmt.init != null) {
+    genExpr(stmt.init as Expression);
+    if (stmt.pattern is IdentifierPattern) {
+      let ident = stmt.pattern as IdentifierPattern;
+      let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
+      if (sym != null && ctx.localIndices.has(sym.id)) {
+        ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
+      }
+    }
+  }
+};

@@ -1,0 +1,133 @@
+import { 
+  Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
+  Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
+  ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
+  ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
+  IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
+  ContinueStatement
+} from '../ast.zena';
+import { Type, F64Type, F32Type, FunctionType } from '../types.zena';
+import { SymbolId, Symbol } from '../scope/symbol.zena';
+import { ValType } from "./wasm.zena";
+import { Array } from 'zena:array';
+import { FunctionContext } from './function-context.zena';
+
+export let discoverLocalsFromExpr = (ctx: FunctionContext, expr: Expression, discExpr: (e: Expression) => void, discStmt: (s: Statement) => void): void => {
+  match (expr) {
+    case IfExpression {consequent, alternate}: {
+      if (consequent is BlockStatement) {
+        discStmt(consequent as BlockStatement);
+      } else if (consequent is Expression) {
+        discExpr(consequent as Expression);
+      }
+      if (alternate != null) {
+        if (alternate is BlockStatement) {
+          discStmt(alternate as BlockStatement);
+        } else if (alternate is Expression) {
+          discExpr(alternate as Expression);
+        }
+      }
+    }
+    case AssignmentExpression {value}: {
+      discExpr(value);
+    }
+    case BinaryExpression {left, right}: {
+      discExpr(left);
+      discExpr(right);
+    }
+    case CallExpression {callee, args}: {
+      let calleeType = ctx.wasmFunction.model.getNodeType(callee);
+      match (calleeType) {
+        case FunctionType as ft: {
+          if (ft.parameterSymbols != null) {
+            let symbols = ft.parameterSymbols as Array<SymbolId>;
+            var i = 0;
+            while (i < symbols.length && i < ft.parameters.length) {
+              let symId = symbols[i];
+              if (symId != (-1 as SymbolId) && !ctx.localIndices.has(symId)) {
+                let paramType = ft.parameters[i];
+                var vType = ValType.i32;
+                if (paramType is F64Type) {
+                  vType = ValType.f64;
+                } else if (paramType is F32Type) {
+                  vType = ValType.f32;
+                }
+                let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
+                ctx.localIndices[symId] = index;
+                ctx.localTypes.push(vType);
+              }
+              i += 1;
+            }
+          }
+        }
+        case _: {}
+      }
+      for (let arg in args) {
+        discExpr(arg);
+      }
+    }
+    case _: {}
+  }
+};
+
+export let discoverLocalsFromStmt = (ctx: FunctionContext, stmt: Statement, discExpr: (e: Expression) => void, discStmt: (s: Statement) => void): void => {
+  match (stmt) {
+    case BlockStatement {body}: {
+      for (let s in body) {
+        discStmt(s);
+      }
+    }
+    case IfStatement {consequent, alternate}: {
+      discStmt(consequent);
+      if (alternate != null) {
+        discStmt(alternate as Statement);
+      }
+    }
+    case WhileStatement {test, body}: {
+      discExpr(test as Expression);
+      discStmt(body);
+    }
+    case ForStatement {init, test, update, body}: {
+      if (init != null) {
+        if (init is Statement) {
+          discStmt(init as Statement);
+        } else if (init is Expression) {
+          discExpr(init as Expression);
+        }
+      }
+      if (test != null) {
+        discExpr(test as Expression);
+      }
+      if (update != null) {
+        discExpr(update as Expression);
+      }
+      discStmt(body);
+    }
+    case ExpressionStatement {expression}: {
+      discExpr(expression);
+    }
+    case VariableDeclaration: {
+      let decl = stmt as VariableDeclaration;
+      if (decl.init != null) {
+        discExpr(decl.init as Expression);
+      }
+      if (decl.pattern is IdentifierPattern) {
+        let ident = decl.pattern as IdentifierPattern;
+        let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
+        if (sym != null) {
+          let varType = ctx.wasmFunction.model.getNodeType(decl);
+          var vType = ValType.i32;
+          if (varType is F64Type) {
+            vType = ValType.f64;
+          } else if (varType is F32Type) {
+            vType = ValType.f32;
+          }
+          let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
+          ctx.localIndices[sym.id] = index;
+          ctx.localTypes.push(vType);
+        }
+      }
+    }
+    case _: {}
+  }
+};

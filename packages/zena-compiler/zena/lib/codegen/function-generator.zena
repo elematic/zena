@@ -27,6 +27,11 @@ import { generateUnaryExpression, generateBinaryExpression } from './expr/operat
 import { generateCallExpression } from './expr/calls.zena';
 import { generateAssignmentExpression } from './expr/assignment.zena';
 import { generateIfExpression } from './expr/control-flow.zena';
+import { generateReturnStatement, generateExpressionStatement, generateIfStatement } from './stmt/control-flow.zena';
+import { generateBreakStatement, generateContinueStatement, generateWhileStatement, generateForStatement } from './stmt/loops.zena';
+import { generateBlockStatement } from './stmt/blocks.zena';
+import { generateVariableDeclaration } from './stmt/bindings.zena';
+import { discoverLocalsFromExpr, discoverLocalsFromStmt } from './locals.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmFunction, WasmModule } from './wasm-module.zena';
 
@@ -42,125 +47,11 @@ export class FunctionGenerator {
 
 
   discoverLocalsFromExpr(expr: Expression): void {
-    match (expr) {
-      case IfExpression {consequent, alternate}: {
-        if (consequent is BlockStatement) {
-          this.discoverLocalsFromStmt(consequent as BlockStatement);
-        } else if (consequent is Expression) {
-          this.discoverLocalsFromExpr(consequent as Expression);
-        }
-        if (alternate != null) {
-          if (alternate is BlockStatement) {
-            this.discoverLocalsFromStmt(alternate as BlockStatement);
-          } else if (alternate is Expression) {
-            this.discoverLocalsFromExpr(alternate as Expression);
-          }
-        }
-      }
-      case AssignmentExpression {value}: {
-        this.discoverLocalsFromExpr(value);
-      }
-      case BinaryExpression {left, right}: {
-        this.discoverLocalsFromExpr(left);
-        this.discoverLocalsFromExpr(right);
-      }
-      case CallExpression {callee, args}: {
-        let calleeType = this.ctx.wasmFunction.model.getNodeType(callee);
-        match (calleeType) {
-          case FunctionType as ft: {
-            if (ft.parameterSymbols != null) {
-              let symbols = ft.parameterSymbols as Array<SymbolId>;
-              var i = 0;
-              while (i < symbols.length && i < ft.parameters.length) {
-                let symId = symbols[i];
-                if (symId != (-1 as SymbolId) && !this.ctx.localIndices.has(symId)) {
-                  let paramType = ft.parameters[i];
-                  var vType = ValType.i32;
-                  if (paramType is F64Type) {
-                    vType = ValType.f64;
-                  } else if (paramType is F32Type) {
-                    vType = ValType.f32;
-                  }
-                  let index = this.ctx.wasmFunction.signature.params.length + this.ctx.localTypes.length;
-                  this.ctx.localIndices[symId] = index;
-                  this.ctx.localTypes.push(vType);
-                }
-                i += 1;
-              }
-            }
-          }
-          case _: {}
-        }
-        for (let arg in args) {
-          this.discoverLocalsFromExpr(arg);
-        }
-      }
-      case _: {}
-    }
+    discoverLocalsFromExpr(this.ctx, expr, (e: Expression) => this.discoverLocalsFromExpr(e), (s: Statement) => this.discoverLocalsFromStmt(s));
   }
 
   discoverLocalsFromStmt(stmt: Statement): void {
-    match (stmt) {
-      case BlockStatement {body}: {
-        for (let s in body) {
-          this.discoverLocalsFromStmt(s);
-        }
-      }
-      case IfStatement {consequent, alternate}: {
-        this.discoverLocalsFromStmt(consequent);
-        if (alternate != null) {
-          this.discoverLocalsFromStmt(alternate as Statement);
-        }
-      }
-      case WhileStatement {test, body}: {
-        this.discoverLocalsFromExpr(test as Expression);
-        this.discoverLocalsFromStmt(body);
-      }
-      case ForStatement {init, test, update, body}: {
-        if (init != null) {
-          // If init is a VariableDeclaration, it will be handled as a Statement
-          // In Zena AST, a ForStatement init might be a Node but typically a VariableDeclaration or Expression
-          if (init is Statement) {
-            this.discoverLocalsFromStmt(init as Statement);
-          } else if (init is Expression) {
-            this.discoverLocalsFromExpr(init as Expression);
-          }
-        }
-        if (test != null) {
-          this.discoverLocalsFromExpr(test as Expression);
-        }
-        if (update != null) {
-          this.discoverLocalsFromExpr(update as Expression);
-        }
-        this.discoverLocalsFromStmt(body);
-      }
-      case ExpressionStatement {expression}: {
-        this.discoverLocalsFromExpr(expression);
-      }
-      case VariableDeclaration: {
-        let decl = stmt as VariableDeclaration;
-        if (decl.init != null) {
-          this.discoverLocalsFromExpr(decl.init as Expression);
-        }
-        if (decl.pattern is IdentifierPattern) {
-          let ident = decl.pattern as IdentifierPattern;
-          let sym = this.ctx.wasmFunction.model.resolveDeclaration(ident);
-          if (sym != null) {
-            let varType = this.ctx.wasmFunction.model.getNodeType(decl);
-            var vType = ValType.i32;
-            if (varType is F64Type) {
-              vType = ValType.f64;
-            } else if (varType is F32Type) {
-              vType = ValType.f32;
-            }
-            let index = this.ctx.wasmFunction.signature.params.length + this.ctx.localTypes.length;
-            this.ctx.localIndices[sym.id] = index;
-            this.ctx.localTypes.push(vType);
-          }
-        }
-      }
-      case _: {}
-    }
+    discoverLocalsFromStmt(this.ctx, stmt, (e: Expression) => this.discoverLocalsFromExpr(e), (s: Statement) => this.discoverLocalsFromStmt(s));
   }
 
   generate(): void {
@@ -176,10 +67,7 @@ export class FunctionGenerator {
     let body = bodyNode.body;
     match (body) {
       case BlockStatement: {
-        let block = body as BlockStatement;
-        for (let stmt in block.body) {
-          this.discoverLocalsFromStmt(stmt);
-        }
+        this.discoverLocalsFromStmt(body as Statement);
       }
       case _: {}
     }
@@ -196,13 +84,7 @@ export class FunctionGenerator {
     
     match (bodyNode.body) {
       case BlockStatement: {
-        let block = bodyNode.body as BlockStatement;
-        for (let stmt in block.body) {
-          this.generateStatement(stmt);
-          if (!this.ctx.isReachable) {
-            break;
-          }
-        }
+        this.generateStatement(bodyNode.body as Statement);
         if (this.ctx.wasmFunction.signature.returns.length > 0) {
           if (this.ctx.isReachable) {
             throw new Error("Function '" + name + "' misses a return statement");
@@ -222,197 +104,20 @@ export class FunctionGenerator {
     this.ctx.emitter.emitFunctionCodeEnd(this.ctx.wasmFunction);
   }
 
-  generateIfBranch(branch: Node, dropResult: boolean): void {
-    if (branch is BlockStatement) {
-      let block = branch as BlockStatement;
-      if (dropResult) {
-        this.generateStatement(block);
-      } else {
-        // Evaluate all but last statement
-        for (var i = 0; i < block.body.length - 1; i += 1) {
-          this.generateStatement(block.body[i]);
-        }
-        if (block.body.length > 0) {
-          let lastStmt = block.body[block.body.length - 1];
-          if (lastStmt is ExpressionStatement) {
-            let exprStmt = lastStmt as ExpressionStatement;
-            this.generateExpression(exprStmt.expression);
-            // Don't drop it, it's the result
-          } else {
-            this.generateStatement(lastStmt);
-          }
-        }
-      }
-    } else if (branch is Expression) {
-      this.generateExpression(branch as Expression);
-      if (dropResult) {
-        let exprType = this.ctx.wasmFunction.model.getNodeType(branch);
-        if (!(exprType is VoidType)) {
-          this.ctx.emitter.emitDrop();
-        }
-      }
-    } else {
-      throw new Error("Invalid if branch type in codegen");
-    }
-  }
-
   generateStatement(stmt: Statement): void {
     if (!this.ctx.isReachable) {
       return;
     }
     match (stmt) {
-      case BreakStatement {}: {
-        let n = this.ctx.loopStack.length;
-        if (n > 0) {
-          let (bDepth, _) = this.ctx.loopStack[n - 1];
-          this.ctx.emitter.emitBr(bDepth);
-        } else {
-          this.ctx.emitter.emitUnreachable();
-        }
-        this.ctx.isReachable = false;
-      }
-      case ContinueStatement {}: {
-        let n = this.ctx.loopStack.length;
-        if (n > 0) {
-          let (_, cDepth) = this.ctx.loopStack[n - 1];
-          this.ctx.emitter.emitBr(cDepth);
-        } else {
-          this.ctx.emitter.emitUnreachable();
-        }
-        this.ctx.isReachable = false;
-      }
-      case ReturnStatement {argument}: {
-        if (argument != null) {
-          this.generateExpression(argument as Expression);
-        }
-        this.ctx.emitter.emitReturn();
-        this.ctx.isReachable = false;
-        this.ctx.needsUnreachable = false;
-      }
-      case ExpressionStatement {expression}: {
-        this.generateExpression(expression);
-        let exprType = this.ctx.wasmFunction.model.getNodeType(expression);
-        if (!(exprType is VoidType)) {
-          this.ctx.emitter.emitDrop();
-        }
-      }
-      case BlockStatement {body}: {
-        for (let s in body) {
-          this.generateStatement(s);
-          if (!this.ctx.isReachable) {
-            break; // Stop generating unreachable statements
-          }
-        }
-      }
-      case IfStatement {test, consequent, alternate}: {
-        this.generateExpression(test as Expression);
-        this.ctx.emitter.emitIf(ValType.void);
-        this.ctx.enterBlockStructure();
-        
-        let wasReachable = this.ctx.isReachable;
-        
-        this.generateStatement(consequent);
-        let consReachable = this.ctx.isReachable;
-        
-        this.ctx.isReachable = wasReachable; // Reset for alternate definition
-        if (alternate != null) {
-          this.ctx.emitter.emitElse();
-          this.generateStatement(alternate as Statement);
-          let altReachable = this.ctx.isReachable;
-          this.ctx.isReachable = consReachable || altReachable;
-          if (!this.ctx.isReachable) {
-            this.ctx.needsUnreachable = true;
-          }
-        } else {
-          // No alternate, so we just continue
-          this.ctx.isReachable = true;
-        }
-        
-        this.ctx.exitBlockStructure();
-        this.ctx.emitter.emitEnd();
-      }
-      case WhileStatement {test, body}: {
-        this.ctx.emitter.emitBlock(ValType.void);
-        this.ctx.emitter.emitLoop(ValType.void);
-        
-        this.generateExpression(test as Expression);
-        this.ctx.emitter.emitI32Const(0);
-        this.ctx.emitter.emitI32Eq();
-        this.ctx.emitter.emitBrIf(1);
-        
-        let wasReachable = this.ctx.isReachable;
-        this.ctx.enterLoop();
-        this.generateStatement(body);
-        this.ctx.exitLoop();
-        
-        this.ctx.isReachable = wasReachable;
-        this.ctx.emitter.emitBr(0);
-        this.ctx.emitter.emitEnd();
-        this.ctx.emitter.emitEnd();
-        
-        this.ctx.isReachable = wasReachable;
-      }
-      case ForStatement {init, test, update, body}: {
-        if (init != null) {
-          if (init is Statement) {
-            this.generateStatement(init as Statement);
-          } else if (init is Expression) {
-            this.generateExpression(init as Expression);
-            let exprType = this.ctx.wasmFunction.model.getNodeType(init as Node);
-            if (!(exprType is VoidType)) {
-              this.ctx.emitter.emitDrop();
-            }
-          }
-        }
-        
-        this.ctx.emitter.emitBlock(ValType.void);
-        this.ctx.emitter.emitLoop(ValType.void);
-        
-        if (test != null) {
-          this.generateExpression(test as Expression);
-          this.ctx.emitter.emitI32Const(0);
-          this.ctx.emitter.emitI32Eq();
-          this.ctx.emitter.emitBrIf(1);
-        }
-        
-        // Inner block for continue to jump to (skipping body, hitting update)
-        this.ctx.emitter.emitBlock(ValType.void);
-        let wasReachable = this.ctx.isReachable;
-        
-        this.ctx.enterForLoop();
-        this.generateStatement(body);
-        this.ctx.exitLoop();
-        
-        this.ctx.emitter.emitEnd(); // End continue block
-        this.ctx.isReachable = wasReachable;
-        
-        if (update != null) {
-          this.generateExpression(update as Expression);
-          let exprType = this.ctx.wasmFunction.model.getNodeType(update as Node);
-          if (!(exprType is VoidType)) {
-            this.ctx.emitter.emitDrop();
-          }
-        }
-        
-        this.ctx.emitter.emitBr(0);
-        this.ctx.emitter.emitEnd();
-        this.ctx.emitter.emitEnd();
-        
-        this.ctx.isReachable = wasReachable;
-      }
-      case VariableDeclaration: {
-        let decl = stmt as VariableDeclaration;
-        if (decl.init != null) {
-          this.generateExpression(decl.init as Expression);
-          if (decl.pattern is IdentifierPattern) {
-            let ident = decl.pattern as IdentifierPattern;
-            let sym = this.ctx.wasmFunction.model.resolveDeclaration(ident);
-            if (sym != null && this.ctx.localIndices.has(sym.id)) {
-              this.ctx.emitter.emitLocalSet(this.ctx.localIndices[sym.id]);
-            }
-          }
-        }
-      }
+      case BreakStatement: generateBreakStatement(this.ctx, stmt as BreakStatement)
+      case ContinueStatement: generateContinueStatement(this.ctx, stmt as ContinueStatement)
+      case ReturnStatement: generateReturnStatement(this.ctx, stmt as ReturnStatement, (e: Expression) => this.generateExpression(e))
+      case ExpressionStatement: generateExpressionStatement(this.ctx, stmt as ExpressionStatement, (e: Expression) => this.generateExpression(e))
+      case BlockStatement: generateBlockStatement(this.ctx, stmt as BlockStatement, (s: Statement) => this.generateStatement(s))
+      case IfStatement: generateIfStatement(this.ctx, stmt as IfStatement, (e: Expression) => this.generateExpression(e), (s: Statement) => this.generateStatement(s))
+      case WhileStatement: generateWhileStatement(this.ctx, stmt as WhileStatement, (e: Expression) => this.generateExpression(e), (s: Statement) => this.generateStatement(s))
+      case ForStatement: generateForStatement(this.ctx, stmt as ForStatement, (e: Expression) => this.generateExpression(e), (s: Statement) => this.generateStatement(s))
+      case VariableDeclaration: generateVariableDeclaration(this.ctx, stmt as VariableDeclaration, (e: Expression) => this.generateExpression(e))
       case _: {
         throw new Error("Unsupported statement type in codegen");
       }
@@ -429,7 +134,7 @@ export class FunctionGenerator {
       case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
       case BinaryExpression: generateBinaryExpression(this.ctx, expr as BinaryExpression, (e: Expression) => this.generateExpression(e))
       case AssignmentExpression: generateAssignmentExpression(this.ctx, expr as AssignmentExpression, (e: Expression) => this.generateExpression(e))
-      case IfExpression: generateIfExpression(this.ctx, expr as IfExpression, (e: Expression) => this.generateExpression(e), (branch: Node, drop: boolean) => this.generateIfBranch(branch, drop))
+      case IfExpression: generateIfExpression(this.ctx, expr as IfExpression, (e: Expression) => this.generateExpression(e), (s: Statement) => this.generateStatement(s))
       case _: {
         throw new Error("Unsupported expression type in codegen");
       }

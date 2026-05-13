@@ -1,0 +1,102 @@
+import { Error } from 'zena:error';
+import { 
+  Node, BreakStatement, ContinueStatement, WhileStatement, ForStatement, Statement, Expression
+} from '../../ast.zena';
+import { VoidType } from '../../types.zena';
+import { ValType } from "../wasm.zena";
+import { FunctionContext } from '../function-context.zena';
+
+export let generateBreakStatement = (ctx: FunctionContext, stmt: BreakStatement): void => {
+  let n = ctx.loopStack.length;
+  if (n > 0) {
+    let (bDepth, _) = ctx.loopStack[n - 1];
+    ctx.emitter.emitBr(bDepth);
+  } else {
+    ctx.emitter.emitUnreachable();
+  }
+  ctx.isReachable = false;
+};
+
+export let generateContinueStatement = (ctx: FunctionContext, stmt: ContinueStatement): void => {
+  let n = ctx.loopStack.length;
+  if (n > 0) {
+    let (_, cDepth) = ctx.loopStack[n - 1];
+    ctx.emitter.emitBr(cDepth);
+  } else {
+    ctx.emitter.emitUnreachable();
+  }
+  ctx.isReachable = false;
+};
+
+export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement, genExpr: (e: Expression) => void, genStmt: (s: Statement) => void): void => {
+  ctx.emitter.emitBlock(ValType.void);
+  ctx.emitter.emitLoop(ValType.void);
+  
+  genExpr(stmt.test as Expression);
+  ctx.emitter.emitI32Const(0);
+  ctx.emitter.emitI32Eq();
+  ctx.emitter.emitBrIf(1);
+  
+  let wasReachable = ctx.isReachable;
+  ctx.enterLoop();
+  genStmt(stmt.body);
+  ctx.exitLoop();
+  
+  ctx.isReachable = wasReachable;
+  ctx.emitter.emitBr(0);
+  ctx.emitter.emitEnd();
+  ctx.emitter.emitEnd();
+  
+  ctx.isReachable = wasReachable;
+};
+
+export let generateForStatement = (ctx: FunctionContext, stmt: ForStatement, genExpr: (e: Expression) => void, genStmt: (s: Statement) => void): void => {
+  let {init, test, update, body} = stmt;
+  
+  if (init != null) {
+    if (init is Statement) {
+      genStmt(init as Statement);
+    } else if (init is Expression) {
+      genExpr(init as Expression);
+      let exprType = ctx.wasmFunction.model.getNodeType(init as Node);
+      if (!(exprType is VoidType)) {
+        ctx.emitter.emitDrop();
+      }
+    }
+  }
+  
+  ctx.emitter.emitBlock(ValType.void);
+  ctx.emitter.emitLoop(ValType.void);
+  
+  if (test != null) {
+    genExpr(test as Expression);
+    ctx.emitter.emitI32Const(0);
+    ctx.emitter.emitI32Eq();
+    ctx.emitter.emitBrIf(1);
+  }
+  
+  // Inner block for continue to jump to (skipping body, hitting update)
+  ctx.emitter.emitBlock(ValType.void);
+  let wasReachable = ctx.isReachable;
+  
+  ctx.enterForLoop();
+  genStmt(body);
+  ctx.exitLoop();
+  
+  ctx.emitter.emitEnd(); // End continue block
+  ctx.isReachable = wasReachable;
+  
+  if (update != null) {
+    genExpr(update as Expression);
+    let exprType = ctx.wasmFunction.model.getNodeType(update as Node);
+    if (!(exprType is VoidType)) {
+      ctx.emitter.emitDrop();
+    }
+  }
+  
+  ctx.emitter.emitBr(0);
+  ctx.emitter.emitEnd();
+  ctx.emitter.emitEnd();
+  
+  ctx.isReachable = wasReachable;
+};

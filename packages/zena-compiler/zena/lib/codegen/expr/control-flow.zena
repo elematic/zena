@@ -1,4 +1,4 @@
-import { Node, IfExpression, Expression, BlockStatement, Statement } from '../../ast.zena';
+import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement } from '../../ast.zena';
 import { Type, F64Type, F32Type, VoidType } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import { FunctionContext } from '../function-context.zena';
@@ -8,7 +8,7 @@ export let generateIfExpression = (
   ctx: FunctionContext, 
   expr: IfExpression, 
   genExpr: (e: Expression) => void,
-  genIfBranch: (branch: Node, dropResult: boolean) => void
+  genStmt: (s: Statement) => void
 ): void => {
   let nodeType = ctx.wasmFunction.model.getNodeType(expr);
   var resultValType = ValType.void;
@@ -25,13 +25,54 @@ export let generateIfExpression = (
   ctx.enterBlockStructure();
 
   let dropResult = resultValType == ValType.void;
-  genIfBranch(expr.consequent, dropResult);
+  generateIfBranch(ctx, expr.consequent, dropResult, genExpr, genStmt);
   
   if (expr.alternate != null) {
     ctx.emitter.emitElse();
-    genIfBranch(expr.alternate as Node, dropResult);
+    generateIfBranch(ctx, expr.alternate as Node, dropResult, genExpr, genStmt);
   }
   
   ctx.exitBlockStructure();
   ctx.emitter.emitEnd();
+};
+
+
+export let generateIfBranch = (
+  ctx: FunctionContext,
+  branch: Node,
+  dropResult: boolean,
+  genExpr: (e: Expression) => void,
+  genStmt: (s: Statement) => void
+): void => {
+  if (branch is BlockStatement) {
+    let block = branch as BlockStatement;
+    if (dropResult) {
+      genStmt(block);
+    } else {
+      // Evaluate all but last statement
+      for (var i = 0; i < block.body.length - 1; i += 1) {
+        genStmt(block.body[i]);
+      }
+      if (block.body.length > 0) {
+        let lastStmt = block.body[block.body.length - 1];
+        if (lastStmt is ExpressionStatement) {
+          let exprStmt = lastStmt as ExpressionStatement;
+          genExpr(exprStmt.expression);
+          // Don't drop it, it's the result
+        } else {
+          genStmt(lastStmt);
+        }
+      }
+    }
+  } else if (branch is Expression) {
+    genExpr(branch as Expression);
+    if (dropResult) {
+      let exprType = ctx.wasmFunction.model.getNodeType(branch);
+      if (!(exprType is VoidType)) {
+        ctx.emitter.emitDrop();
+      }
+    }
+  } else {
+    throw new Error("Invalid if branch type in codegen");
+  }
 };
