@@ -11,6 +11,8 @@ import { Array } from 'zena:array';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import { String } from 'zena:string';
+import { makeCompiler, MockHost } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
 
 let assertSnapshot = (name: String, content: String): void => {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
@@ -132,5 +134,38 @@ export let tests = suite('WatGenerator', (): void => {
     let result = generator.generate(program);
     
     assertSnapshot('multiple_exported_functions', result);
+  });
+
+  test('parameter default dependency optimization skips locals', (ctx: TestContext): void => {
+    let host = new MockHost();
+    let source = "let testFn = (a: i32 = 1, b: i32 = 2): i32 => a + b;\nexport let foo = (): i32 => testFn();";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = compiler.compile("test.zena");
+    let checkRes = checkCompilation(compResult, null, false);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    assertSnapshot('param_default_opt', result);
   });
 });

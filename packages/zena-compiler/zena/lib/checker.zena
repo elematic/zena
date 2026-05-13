@@ -47,7 +47,9 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
+import { Error } from 'zena:error';
 import { parseI32, i32ToString } from 'zena:string-convert';
+import { walkEnter } from './visitor.zena';
 import {
   Node, Module, SourceLocation,
   // Expressions
@@ -1813,6 +1815,7 @@ let substituteTypeParams = (
       res.typeParameters = ft.typeParameters;
       res.optionalParameters = ft.optionalParameters;
       res.parameterInitializers = ft.parameterInitializers;
+      res.parameterSymbols = ft.parameterSymbols;
       res.overloads = ft.overloads;
       res.isFinal = ft.isFinal;
       res.isAbstract = ft.isAbstract;
@@ -1899,6 +1902,7 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       newFt.typeParameters = ft.typeParameters;
       newFt.optionalParameters = ft.optionalParameters;
       newFt.parameterInitializers = ft.parameterInitializers;
+      newFt.parameterSymbols = ft.parameterSymbols;
       newFt.isFinal = ft.isFinal;
       newFt.isAbstract = ft.isAbstract;
       return newFt;
@@ -8439,7 +8443,31 @@ let checkFunctionExpression = (
   while (pi < params.length) {
     let paramInfo = ctx.model.resolveDeclaration(params[pi].name);
     if (paramInfo != null) {
-      paramSymbols.push((paramInfo as Symbol).id);
+      let symId = (paramInfo as Symbol).id;
+      // Mark as -1 if the parameter is never actually referenced in subsequent default parameters.
+      let isReferenced = new Array<boolean>();
+      isReferenced.push(false);
+      var pi2 = pi + 1;
+      while (pi2 < params.length) {
+        if (params[pi2].defaultValue != null) {
+           walkEnter(params[pi2].defaultValue as Node, (n: Node): void => {
+             if (n is Identifier) {
+               let nSym = ctx.model.resolve(n as Identifier);
+               if (nSym != null) {
+                 if ((nSym as Symbol).id == symId) {
+                   isReferenced[0] = true;
+                 }
+               }
+             }
+           });
+        }
+        pi2 += 1;
+      }
+      if (isReferenced[0]) {
+        paramSymbols.push(symId);
+      } else {
+        paramSymbols.push(-1 as SymbolId);
+      }
     } else {
       paramSymbols.push(-1 as SymbolId);
     }
@@ -8586,7 +8614,12 @@ let checkCallExpressionInner = (
               subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
             let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
-            effectiveFt = new FunctionType(subParams, effectiveFt.parameterNames, subRet);
+            let newFt = new FunctionType(subParams, effectiveFt.parameterNames, subRet);
+            newFt.typeParameters = effectiveFt.typeParameters;
+            newFt.optionalParameters = effectiveFt.optionalParameters;
+            newFt.parameterInitializers = effectiveFt.parameterInitializers;
+            newFt.parameterSymbols = effectiveFt.parameterSymbols;
+            effectiveFt = newFt;
           } else {
             // Infer type arguments from argument types.
             let inferred = new HashMap<String, Type>();
@@ -8611,7 +8644,12 @@ let checkCallExpressionInner = (
               subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
             let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
-            effectiveFt = new FunctionType(subParams, effectiveFt.parameterNames, subRet);
+            let newFt = new FunctionType(subParams, effectiveFt.parameterNames, subRet);
+            newFt.typeParameters = effectiveFt.typeParameters;
+            newFt.optionalParameters = effectiveFt.optionalParameters;
+            newFt.parameterInitializers = effectiveFt.parameterInitializers;
+            newFt.parameterSymbols = effectiveFt.parameterSymbols;
+            effectiveFt = newFt;
           }
         }
       }
