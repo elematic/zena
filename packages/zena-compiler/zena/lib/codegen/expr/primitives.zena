@@ -1,0 +1,56 @@
+import { Node, Identifier, NumberLiteral, BooleanLiteral, StringLiteral, ImportSpecifier } from '../../ast.zena';
+import { Type, F64Type, F32Type } from '../../types.zena';
+import { SymbolId, Symbol } from '../../scope/symbol.zena';
+import { parseI32, parseF64 } from 'zena:string-convert';
+import { FunctionContext } from '../function-context.zena';
+import { Error } from 'zena:error';
+
+// TODO: Consider moving `generateIdentifier` to a dedicated file (e.g.,
+// `bindings.zena` or `variables.zena`). While it is parsed as a primary
+// expression along with literals, its code generation handles scope resolution,
+// locals, and globals, which is semantically distinct from emitting static
+// primitives.
+export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void => {
+  let sym = ctx.wasmFunction.model.resolve(ident);
+  if (sym != null) {
+    if (ctx.localIndices.has(sym.id)) {
+      ctx.emitter.emitLocalGet(ctx.localIndices[sym.id]);
+      return;
+    }
+    if (ctx.wasm.globalMap.has(sym.id)) {
+      ctx.emitter.emitGlobalGet(ctx.wasm.globalMap[sym.id].index);
+      return;
+    }
+    if ((sym as Symbol).declaration is ImportSpecifier) {
+      let spec = (sym as Symbol).declaration as ImportSpecifier;
+      let importedName = spec.imported.name;
+      if (ctx.wasm.exportGlobalMap.has(importedName)) {
+        ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[importedName].index);
+        return;
+      }
+    }
+  }
+  throw new Error("Could not resolve identifier: " + ident.name);
+};
+
+export let generateNumberLiteral = (ctx: FunctionContext, expr: NumberLiteral): void => {
+  let nodeType = ctx.wasmFunction.model.getNodeType(expr as Node);
+  if (nodeType is F64Type || nodeType is F32Type) {
+    let val = parseF64(expr.raw);
+    ctx.emitter.emitF64Const(val);
+  } else {
+    let (ok, val) = parseI32(expr.raw);
+    if (!ok) {
+      throw new Error('Failed to parse i32: ' + expr.raw);
+    }
+    ctx.emitter.emitI32Const(val as i32);
+  }
+};
+
+export let generateBooleanLiteral = (ctx: FunctionContext, expr: BooleanLiteral): void => {
+  ctx.emitter.emitBooleanConst(expr.value);
+};
+
+export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): void => {
+  ctx.emitter.emitStringConst(expr.value);
+};

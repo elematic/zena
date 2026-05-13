@@ -19,6 +19,8 @@ import { HashMap } from 'zena:map';
 import { parseI32, parseF64 } from 'zena:string-convert';
 import { walkEnter } from '../visitor.zena';
 import { FunctionContext } from './function-context.zena';
+import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral } from './expr/primitives.zena';
+import { generateUnaryExpression, generateBinaryExpression } from './expr/operators.zena';
 
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmFunction, WasmModule } from './wasm-module.zena';
@@ -414,29 +416,7 @@ export class FunctionGenerator {
 
   generateExpression(expr: Expression): void {
     match (expr) {
-      case Identifier: {
-        let ident = expr as Identifier;
-        let sym = this.ctx.wasmFunction.model.resolve(ident);
-        if (sym != null) {
-          if (this.ctx.localIndices.has((sym as Symbol).id)) {
-            this.ctx.emitter.emitLocalGet(this.ctx.localIndices[(sym as Symbol).id]);
-            return;
-          }
-          if (this.ctx.wasm.globalMap.has((sym as Symbol).id)) {
-            this.ctx.emitter.emitGlobalGet(this.ctx.wasm.globalMap[(sym as Symbol).id].index);
-            return;
-          }
-          if ((sym as Symbol).declaration is ImportSpecifier) {
-            let spec = (sym as Symbol).declaration as ImportSpecifier;
-            let importedName = spec.imported.name;
-            if (this.ctx.wasm.exportGlobalMap.has(importedName)) {
-              this.ctx.emitter.emitGlobalGet(this.ctx.wasm.exportGlobalMap[importedName].index);
-              return;
-            }
-          }
-        }
-        throw new Error("Could not resolve identifier: " + ident.name);
-      }
+      case Identifier: generateIdentifier(this.ctx, expr as Identifier)
       case CallExpression {callee, args}: {
         let calleeType = this.ctx.wasmFunction.model.getNodeType(callee);
         var ft: FunctionType | null = null;
@@ -497,115 +477,11 @@ export class FunctionGenerator {
           }        
         }
       }
-      case NumberLiteral {raw}: {
-        let nodeType = this.ctx.wasmFunction.model.getNodeType(expr as Node);
-        if (nodeType is F64Type || nodeType is F32Type) {
-          let val = parseF64(raw);
-          this.ctx.emitter.emitF64Const(val);
-        } else {
-          let (ok, val) = parseI32(raw);
-          if (!ok) {
-            throw new Error('Failed to parse i32: ' + raw);
-          }
-          this.ctx.emitter.emitI32Const(val as i32);
-        }
-      }
-      case BooleanLiteral {value}: {
-        this.ctx.emitter.emitBooleanConst(value);
-      }
-      case StringLiteral {value}: {
-        this.ctx.emitter.emitStringConst(value);
-      }
-      case UnaryExpression: {
-        let un = expr as UnaryExpression;
-        if (un.operator == "-") {
-          let nodeType = this.ctx.wasmFunction.model.getNodeType(un);
-          if (nodeType is F64Type || nodeType is F32Type) {
-            this.ctx.emitter.emitF64Const(0.0);
-            this.generateExpression(un.argument);
-            this.ctx.emitter.emitF64Sub();
-          } else {
-            this.ctx.emitter.emitI32Const(0);
-            this.generateExpression(un.argument);
-            this.ctx.emitter.emitI32Sub();
-          }
-        } else {
-          throw new Error("Unsupported unary operator: " + un.operator);
-        }
-      }
-      case BinaryExpression: {
-        let bin = expr as BinaryExpression;
-        // TODO: Support operator overloading and custom classes
-        
-        let model = this.ctx.wasmFunction.model;
-        let leftType = model.getNodeType(bin.left);
-        let rightType = model.getNodeType(bin.right);
-        
-        if (leftType == null || rightType == null) {
-          throw new Error("Missing type info in semantic model for binary expression operands");
-        }
-        
-        var isFloatContext = false;
-        if (leftType is F64Type || rightType is F64Type || leftType is F32Type || rightType is F32Type) {
-            isFloatContext = true;
-        }
-
-        // Implicit F64 upconversion logic
-        if (isFloatContext && !(leftType is F64Type) && !(leftType is F32Type)) {
-          this.generateExpression(bin.left);
-          this.ctx.emitter.emitF64ConvertI32S();
-        } else {
-          this.generateExpression(bin.left);
-        }
-
-        if (isFloatContext && !(rightType is F64Type) && !(rightType is F32Type)) {
-          this.generateExpression(bin.right);
-          this.ctx.emitter.emitF64ConvertI32S();
-        } else {
-          this.generateExpression(bin.right);
-        }
-        
-        if (isFloatContext) {
-          match (bin.operator) {
-            case "+": this.ctx.emitter.emitF64Add()
-            case "-": this.ctx.emitter.emitF64Sub()
-            case "*": this.ctx.emitter.emitF64Mul()
-            case "/": this.ctx.emitter.emitF64Div()
-            case "==": this.ctx.emitter.emitF64Eq()
-            case "!=": this.ctx.emitter.emitF64Ne()
-            case "===": this.ctx.emitter.emitF64Eq()
-            case "!==": this.ctx.emitter.emitF64Ne()
-            case "<": this.ctx.emitter.emitF64Lt()
-            case "<=": this.ctx.emitter.emitF64Le()
-            case ">": this.ctx.emitter.emitF64Gt()
-            case ">=": this.ctx.emitter.emitF64Ge()
-            case _: throw new Error("Unsupported operator for f64: " + bin.operator)
-          }
-        } else {
-          match (bin.operator) {
-            case "+": this.ctx.emitter.emitI32Add()
-            case "-": this.ctx.emitter.emitI32Sub()
-            case "*": this.ctx.emitter.emitI32Mul()
-            case "/": this.ctx.emitter.emitI32DivS()
-            case "%": this.ctx.emitter.emitI32RemS()
-            case "==": this.ctx.emitter.emitI32Eq()
-            case "!=": this.ctx.emitter.emitI32Ne()
-            case "===": this.ctx.emitter.emitI32Eq()
-            case "!==": this.ctx.emitter.emitI32Ne()
-            case "<": this.ctx.emitter.emitI32LtS()
-            case "<=": this.ctx.emitter.emitI32LeS()
-            case ">": this.ctx.emitter.emitI32GtS()
-            case ">=": this.ctx.emitter.emitI32GeS()
-            case "&": this.ctx.emitter.emitI32And()
-            case "|": this.ctx.emitter.emitI32Or()
-            case "^": this.ctx.emitter.emitI32Xor()
-            case "<<": this.ctx.emitter.emitI32Shl()
-            case ">>": this.ctx.emitter.emitI32ShrS()
-            case ">>>": this.ctx.emitter.emitI32ShrU()
-            case _: throw new Error("Unsupported operator for i32: " + bin.operator)
-          }
-        }
-      }
+      case NumberLiteral: generateNumberLiteral(this.ctx, expr as NumberLiteral)
+      case BooleanLiteral: generateBooleanLiteral(this.ctx, expr as BooleanLiteral)
+      case StringLiteral: generateStringLiteral(this.ctx, expr as StringLiteral)
+      case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
+      case BinaryExpression: generateBinaryExpression(this.ctx, expr as BinaryExpression, (e: Expression) => this.generateExpression(e))
       case AssignmentExpression: {
         let assign = expr as AssignmentExpression;
         if (assign.left is Identifier) {
