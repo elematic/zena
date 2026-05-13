@@ -20,7 +20,7 @@ async function run() {
   const runList = [
     'return_42.zena',
     'call_helper.zena',
-    'invoke_test.zena',
+    'invoke.zena',
     'operators',
     'variables',
     'imports',

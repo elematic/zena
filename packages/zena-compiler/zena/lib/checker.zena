@@ -8513,6 +8513,10 @@ let checkCallExpressionInner = (
         }
       }
 
+      // Check argument count.
+      let expectedCount = effectiveFt.parameters.length;
+      let originalActualCount = args.length;
+
       // Fill in missing arguments with default values
       if (effectiveFt.parameterInitializers != null) {
         var a = args.length;
@@ -8547,8 +8551,6 @@ let checkCallExpressionInner = (
         }
       }
 
-      // Check argument count.
-      let expectedCount = effectiveFt.parameters.length;
       let actualCount = args.length;
 
       // Count required parameters (not optional).
@@ -8563,15 +8565,16 @@ let checkCallExpressionInner = (
         }
       }
 
-      if (actualCount < requiredCount || actualCount > expectedCount) {
+      if (originalActualCount < requiredCount || originalActualCount > expectedCount) {
         // Show range for optional parameters, single count otherwise
         let expectedMsg = if (requiredCount == expectedCount) {
           `${expectedCount}`
         } else {
           `${requiredCount}-${expectedCount}`
         };
+        // Revert actual count logic to match JS compiler, use original count
         ctx.error(
-          `Expected ${expectedMsg} arguments, got ${actualCount}.`,
+          `Expected ${expectedMsg} arguments, got ${originalActualCount}`,
           DiagnosticCode.ArgumentCountMismatch,
           loc
         );
@@ -8579,7 +8582,7 @@ let checkCallExpressionInner = (
 
       // Check argument types (re-evaluating to apply generic substitutions and defaults).
       var j = 0;
-      while (j < actualCount && j < expectedCount) {
+      while (j < originalActualCount && j < expectedCount) {
         let expectedParamType = effectiveFt.parameters[j];
         let argType = checkExpression(ctx, args[j], expectedParamType);
         if (!isAssignableTo(ctx, argType, expectedParamType)) {
