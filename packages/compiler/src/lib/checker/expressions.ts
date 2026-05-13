@@ -259,15 +259,15 @@ function checkExpressionInternal(
           if (name === 'f32' || name === 'f64') {
             return expectedType;
           }
-          // Decimal literal with integer context - use default f32
-          return Types.F32;
+          // Decimal literal with integer context - use default f64
+          return Types.F64;
         }
         // Integer literal can use any numeric context type
         return expectedType;
       }
       // No contextual type - use defaults
       if (hasDecimal) {
-        return Types.F32;
+        return Types.F64;
       }
       return Types.I32;
     }
@@ -328,7 +328,7 @@ function checkExpressionInternal(
     case NodeType.AssignmentExpression:
       return checkAssignmentExpression(ctx, expr as AssignmentExpression);
     case NodeType.BinaryExpression:
-      return checkBinaryExpression(ctx, expr as BinaryExpression);
+      return checkBinaryExpression(ctx, expr as BinaryExpression, expectedType);
     case NodeType.FunctionExpression:
       return checkFunctionExpression(
         ctx,
@@ -369,7 +369,7 @@ function checkExpressionInternal(
     case NodeType.IsExpression:
       return checkIsExpression(ctx, expr as IsExpression);
     case NodeType.UnaryExpression:
-      return checkUnaryExpression(ctx, expr as UnaryExpression);
+      return checkUnaryExpression(ctx, expr as UnaryExpression, expectedType);
     case NodeType.ThrowExpression:
       return checkThrowExpression(ctx, expr as ThrowExpression);
     case NodeType.TryExpression:
@@ -1390,8 +1390,9 @@ function createUnionType(types: Type[], ctx?: CheckerContext): Type {
 function checkUnaryExpression(
   ctx: CheckerContext,
   expr: UnaryExpression,
+  expectedType?: Type,
 ): Type {
-  const argType = checkExpression(ctx, expr.argument);
+  const argType = checkExpression(ctx, expr.argument, expectedType);
   if (expr.operator === '!') {
     if (!isBooleanType(argType)) {
       ctx.diagnostics.reportError(
@@ -1678,9 +1679,12 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   // even before we know U.
   let expectedParamTypes: Type[] | undefined;
   if (calleeType.kind === TypeKind.Function) {
-    // Use parameter types for contextual typing - even if the function is generic,
-    // class type parameters (like T in FixedArray<T>) are already substituted
-    expectedParamTypes = (calleeType as FunctionType).parameters;
+    const fType = calleeType as FunctionType;
+    if (!fType.overloads || fType.overloads.length === 0) {
+      // Use parameter types for contextual typing - even if the function is generic,
+      // class type parameters (like T in FixedArray<T>) are already substituted
+      expectedParamTypes = fType.parameters;
+    }
   }
 
   // Check arguments with contextual types where available
@@ -2248,17 +2252,20 @@ function checkCompoundOperator(
     if (op === '/') {
       // Division always produces float, which may not be assignable back to integer target
       let resultType: Type;
-      if (
-        isF64(leftName) ||
-        isF64(rightName) ||
-        isI64(leftName) ||
-        isI64(rightName) ||
-        isU64(leftName) ||
-        isU64(rightName)
-      ) {
-        resultType = Types.F64;
-      } else {
+      if (leftName === rightName && leftName === Types.F32.name) {
         resultType = Types.F32;
+      } else if (
+        isF32(leftName) &&
+        (rightName === Types.I32.name || rightName === Types.U32.name)
+      ) {
+        resultType = Types.F32;
+      } else if (
+        isF32(rightName) &&
+        (leftName === Types.I32.name || leftName === Types.U32.name)
+      ) {
+        resultType = Types.F32;
+      } else {
+        resultType = Types.F64;
       }
       return resultType;
     }
@@ -2326,7 +2333,7 @@ function checkAssignmentExpression(
       );
     }
 
-    const valueType = checkExpression(ctx, expr.value);
+    const valueType = checkExpression(ctx, expr.value, symbol.type);
     const effectiveType = expr.operator
       ? checkCompoundOperator(ctx, expr, symbol.type, valueType)
       : valueType;
@@ -2385,7 +2392,7 @@ function checkAssignmentExpression(
       if (classType.symbolFields?.has(symbolType)) {
         const fieldType = classType.symbolFields.get(symbolType)!;
         const resolvedFieldType = resolveMemberType(classType, fieldType, ctx);
-        const valueType = checkExpression(ctx, expr.value);
+        const valueType = checkExpression(ctx, expr.value, resolvedFieldType);
 
         if (!isAssignableTo(ctx, valueType, resolvedFieldType)) {
           ctx.diagnostics.reportError(
@@ -2411,11 +2418,10 @@ function checkAssignmentExpression(
       const fieldType = classType.fields.get(memberName)!;
       // Annotate the member expression with its read type for compound assignment codegen
       memberExpr.inferredType = fieldType;
-      const valueType = checkExpression(ctx, expr.value);
+      const valueType = checkExpression(ctx, expr.value, fieldType);
       const effectiveType = expr.operator
         ? checkCompoundOperator(ctx, expr, fieldType, valueType)
         : valueType;
-
       if (
         classType.kind === TypeKind.Class &&
         !(classType as ClassType).fieldMutability?.get(memberName)
@@ -2469,7 +2475,7 @@ function checkAssignmentExpression(
       const setter = classType.methods.get(setterName2)!;
       // Annotate with the property type for compound assignment codegen
       memberExpr.inferredType = setter.parameters[0];
-      const valueType = checkExpression(ctx, expr.value);
+      const valueType = checkExpression(ctx, expr.value, setter.parameters[0]);
 
       // Determine if this is static setter access:
       // - Object is an Identifier that resolves to a class binding (e.g., ClassName.field)
@@ -2558,7 +2564,11 @@ function checkAssignmentExpression(
             );
           }
 
-          const valueType = checkExpression(ctx, expr.value);
+          const valueType = checkExpression(
+            ctx,
+            expr.value,
+            resolvedSetter.parameters[1],
+          );
           const effectiveType = expr.operator
             ? checkCompoundOperator(
                 ctx,
@@ -2603,7 +2613,7 @@ function checkAssignmentExpression(
     indexExpr.inferredType = elementType;
 
     // Check if value is assignable to element type
-    const valueType = checkExpression(ctx, expr.value);
+    const valueType = checkExpression(ctx, expr.value, elementType);
     const effectiveType = expr.operator
       ? checkCompoundOperator(ctx, expr, elementType, valueType)
       : valueType;
@@ -2631,6 +2641,7 @@ function checkAssignmentExpression(
 function checkBinaryExpression(
   ctx: CheckerContext,
   expr: BinaryExpression,
+  expectedType?: Type,
 ): Type {
   let left: Type;
   let right: Type;
@@ -2710,13 +2721,23 @@ function checkBinaryExpression(
     }
   } else if (leftIsLiteral && !rightIsLiteral) {
     // Check right first to get context for left (e.g., `0 < x` where x is i64)
-    right = checkExpression(ctx, expr.right);
-    const contextualType = right.kind === TypeKind.Number ? right : undefined;
+    right = checkExpression(ctx, expr.right, expectedType);
+    const contextualType =
+      right.kind === TypeKind.Number
+        ? right
+        : expectedType?.kind === TypeKind.Number
+          ? expectedType
+          : undefined;
     left = checkExpression(ctx, expr.left, contextualType);
   } else {
     // Normal order: check left first, use as context for right
-    left = checkExpression(ctx, expr.left);
-    const contextualType = left.kind === TypeKind.Number ? left : undefined;
+    left = checkExpression(ctx, expr.left, expectedType);
+    const contextualType =
+      left.kind === TypeKind.Number
+        ? left
+        : expectedType?.kind === TypeKind.Number
+          ? expectedType
+          : undefined;
     right = checkExpression(ctx, expr.right, contextualType);
   }
 
@@ -2781,17 +2802,27 @@ function checkBinaryExpression(
 
     // Division always produces float
     if (expr.operator === '/') {
-      if (
-        isF64(leftName) ||
-        isF64(rightName) ||
-        isI64(leftName) ||
-        isI64(rightName) ||
-        isU64(leftName) ||
-        isU64(rightName)
-      ) {
-        commonType = Types.F64;
-      } else {
+      if (leftName === rightName && leftName === Types.F32.name) {
         commonType = Types.F32;
+      } else if (
+        isF32(leftName) &&
+        (rightName === Types.I32.name || rightName === Types.U32.name)
+      ) {
+        commonType = Types.F32;
+      } else if (
+        isF32(rightName) &&
+        (leftName === Types.I32.name || leftName === Types.U32.name)
+      ) {
+        commonType = Types.F32;
+      } else {
+        if (
+          expectedType?.kind === TypeKind.Number &&
+          (expectedType as NumberType).name === Types.F32.name
+        ) {
+          commonType = Types.F32;
+        } else {
+          commonType = Types.F64;
+        }
       }
       // Result of division is the common float type
       resultType = commonType;
@@ -3110,7 +3141,13 @@ function checkFunctionExpression(
       bodyType = expectedReturnType;
     }
   } else {
-    bodyType = checkExpression(ctx, expr.body as Expression);
+    bodyType = checkExpression(
+      ctx,
+      expr.body as Expression,
+      expectedReturnType.kind !== Types.Error.kind
+        ? expectedReturnType
+        : undefined,
+    );
 
     if (expectedReturnType.kind !== Types.Error.kind) {
       if (!isAssignableTo(ctx, bodyType, expectedReturnType)) {
@@ -3306,8 +3343,8 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
     i < Math.min(originalArgCount, constructor.parameters.length);
     i++
   ) {
-    const argType = checkExpression(ctx, expr.arguments[i]);
     const paramType = constructor.parameters[i];
+    const argType = checkExpression(ctx, expr.arguments[i], paramType);
 
     if (!isAssignableTo(ctx, argType, paramType)) {
       ctx.diagnostics.reportError(

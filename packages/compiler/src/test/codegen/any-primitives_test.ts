@@ -13,7 +13,7 @@ suite('any with primitives', () => {
         
         var result = 0;
         if (x is i32) result = result + 1;
-        if (y is f32) result = result + 10;
+        if (y is f64) result = result + 10;
         if (z is boolean) result = result + 100;
         if (s is String) result = result + 1000;
         

@@ -16,7 +16,7 @@ suite('Mixed Arithmetic', () => {
 
     // Check inferred type
     const varDecl = ast.body[0] as any;
-    assert.strictEqual(varDecl.init.inferredType.name, 'f32');
+    assert.strictEqual(varDecl.init.inferredType.name, 'f64');
   });
 
   test('should allow multiplying i32 and f32', () => {
@@ -29,7 +29,7 @@ suite('Mixed Arithmetic', () => {
     assert.strictEqual(errors.length, 0);
 
     const varDecl = ast.body[0] as any;
-    assert.strictEqual(varDecl.init.inferredType.name, 'f32');
+    assert.strictEqual(varDecl.init.inferredType.name, 'f64');
   });
 
   test('should allow multiplying f32 and i32', () => {
@@ -42,7 +42,7 @@ suite('Mixed Arithmetic', () => {
     assert.strictEqual(errors.length, 0);
 
     const varDecl = ast.body[0] as any;
-    assert.strictEqual(varDecl.init.inferredType.name, 'f32');
+    assert.strictEqual(varDecl.init.inferredType.name, 'f64');
   });
 
   test('should allow comparing i32 and f32', () => {

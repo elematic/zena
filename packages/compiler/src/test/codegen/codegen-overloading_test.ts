@@ -8,8 +8,8 @@ suite('CodeGenerator - Overloading', () => {
       @external("env", "print_i32")
       declare function print(val: i32): void;
 
-      @external("env", "print_f32")
-      declare function print(val: f32): void;
+      @external("env", "print_f64")
+      declare function print(val: f64): void;
 
       export let main = (): void => {
         print(42);
@@ -23,16 +23,16 @@ suite('CodeGenerator - Overloading', () => {
         print_i32: (val: number) => {
           logs.push(`i32: ${val}`);
         },
-        print_f32: (val: number) => {
+        print_f64: (val: number) => {
           // Float precision might be tricky, but 3.14 should be close enough
-          logs.push(`f32: ${val.toFixed(2)}`);
+          logs.push(`f64: ${val.toFixed(2)}`);
         },
       },
     };
 
     await compileAndRun(source, {imports});
 
-    assert.deepStrictEqual(logs, ['i32: 42', 'f32: 3.14']);
+    assert.deepStrictEqual(logs, ['i32: 42', 'f64: 3.14']);
   });
 
   test('should resolve overloaded functions with different parameter counts', async () => {

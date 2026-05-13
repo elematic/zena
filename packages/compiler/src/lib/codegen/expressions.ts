@@ -5526,14 +5526,13 @@ function generateBinaryExpression(
     // Determine target type based on promotion rules
     if (expr.operator === '/') {
       if (
-        isF64(leftType) ||
-        isF64(rightType) ||
-        isI64(leftType) ||
-        isI64(rightType)
+        expr.inferredType &&
+        expr.inferredType.kind === 'Number' /* TypeKind.Number */ &&
+        (expr.inferredType as any).name === 'f32'
       ) {
-        targetType = ValType.f64;
-      } else {
         targetType = ValType.f32;
+      } else {
+        targetType = ValType.f64;
       }
     } else {
       if (isF64(leftType) || isF64(rightType)) {

@@ -10,7 +10,7 @@ suite('CodeGenerator - Method Overloading', () => {
           return val * 2;
         }
         
-        print(val: f32): i32 {
+        print(val: f64): i32 {
           return 100;
         }
       }
@@ -89,7 +89,7 @@ suite('CodeGenerator - Method Overloading', () => {
           return val;
         }
         
-        process(val: f32): i32 {
+        process(val: f64): i32 {
           return 100;
         }
       }

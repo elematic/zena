@@ -100,7 +100,7 @@ suite('TypeChecker - Interfaces', () => {
         x: i32;
       }
       class Point2D implements Point {
-        x: f32 = 0.0;
+        x: String = "a";
       }
     `;
     const parser = new Parser(input);
@@ -203,8 +203,8 @@ suite('TypeChecker - Interfaces', () => {
         value: i32 { get; }
       }
       class Box implements Container {
-        value: f32 {
-          get { return 0.0; }
+        value: String {
+          get { return "a"; }
         }
       }
     `;
@@ -226,7 +226,7 @@ suite('TypeChecker - Interfaces', () => {
         value: i32 { set; }
       }
       class Box implements Container {
-        value: f32 {
+        value: String {
           set(v) {}
         }
       }

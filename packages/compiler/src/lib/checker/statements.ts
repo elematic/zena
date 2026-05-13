@@ -2168,7 +2168,7 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
   }
 
   const argType = stmt.argument
-    ? checkExpression(ctx, stmt.argument)
+    ? checkExpression(ctx, stmt.argument, ctx.currentFunctionReturnType)
     : Types.Void;
 
   if (ctx.currentFunctionReturnType.kind !== Types.Error.kind) {
