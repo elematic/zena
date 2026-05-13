@@ -6,7 +6,7 @@ import {
   IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
   ContinueStatement
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
@@ -17,6 +17,7 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 
 import { parseI32, parseF64 } from 'zena:string-convert';
+import { walkEnter } from '../visitor.zena';
 
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmFunction, WasmModule } from './wasm-module.zena';
@@ -95,7 +96,33 @@ export class FunctionGenerator {
         this.discoverLocalsFromExpr(left);
         this.discoverLocalsFromExpr(right);
       }
-      case CallExpression {args}: {
+      case CallExpression {callee, args}: {
+        let calleeType = this.wasmFunction.model.getNodeType(callee);
+        match (calleeType) {
+          case FunctionType as ft: {
+            if (ft.parameterSymbols != null) {
+              let symbols = ft.parameterSymbols as Array<SymbolId>;
+              var i = 0;
+              while (i < symbols.length && i < ft.parameters.length) {
+                let symId = symbols[i];
+                if (symId != (-1 as SymbolId) && !this.localIndices.has(symId)) {
+                  let paramType = ft.parameters[i];
+                  var vType = ValType.i32;
+                  if (paramType is F64Type) {
+                    vType = ValType.f64;
+                  } else if (paramType is F32Type) {
+                    vType = ValType.f32;
+                  }
+                  let index = this.wasmFunction.signature.params.length + this.localTypes.length;
+                  this.localIndices[symId] = index;
+                  this.localTypes.push(vType);
+                }
+                i += 1;
+              }
+            }
+          }
+          case _: {}
+        }
         for (let arg in args) {
           this.discoverLocalsFromExpr(arg);
         }
@@ -450,6 +477,12 @@ export class FunctionGenerator {
         throw new Error("Could not resolve identifier: " + ident.name);
       }
       case CallExpression {callee, args}: {
+        let calleeType = this.wasmFunction.model.getNodeType(callee);
+        var ft: FunctionType | null = null;
+        if (calleeType is FunctionType) {
+          ft = calleeType as FunctionType;
+        }
+
         match (callee) {
           case Identifier: {
             let ident = callee as Identifier;
@@ -461,8 +494,16 @@ export class FunctionGenerator {
             }
             
             if (this.wasm.functionMap.has((sym as Symbol).id)) {
-              for (let arg in args) {
-                this.generateExpression(arg);
+              var i = 0;
+              while (i < args.length) {
+                this.generateExpression(args[i]);
+                if (ft != null && ft.parameterSymbols != null) {
+                  let syms = ft.parameterSymbols as Array<SymbolId>;
+                  if (i < syms.length && syms[i] != (-1 as SymbolId) && this.localIndices.has(syms[i])) {
+                    this.emitter.emitLocalTee(this.localIndices[syms[i]]);
+                  }
+                }
+                i += 1;
               }
               this.emitter.emitCall(this.wasm.functionMap[(sym as Symbol).id]);
               return;
@@ -471,8 +512,16 @@ export class FunctionGenerator {
                 let spec = (sym as Symbol).declaration as ImportSpecifier;
                 let importedName = spec.imported.name;
                 if (this.wasm.exportMap.has(importedName)) {
-                  for (let arg in args) {
-                    this.generateExpression(arg);
+                  var i = 0;
+                  while (i < args.length) {
+                    this.generateExpression(args[i]);
+                    if (ft != null && ft.parameterSymbols != null) {
+                      let syms = ft.parameterSymbols as Array<SymbolId>;
+                      if (i < syms.length && syms[i] != (-1 as SymbolId) && this.localIndices.has(syms[i])) {
+                        this.emitter.emitLocalTee(this.localIndices[syms[i]]);
+                      }
+                    }
+                    i += 1;
                   }
                   this.emitter.emitCall(this.wasm.exportMap[importedName]);
                   return;

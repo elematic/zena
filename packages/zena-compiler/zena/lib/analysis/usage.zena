@@ -1,6 +1,7 @@
 import { Program, CompilationUnit } from '../program.zena';
 import { Module, VariableDeclaration, IdentifierPattern, Identifier,
-  ImportDeclaration, ImportSpecifier, Node, FunctionExpression, Parameter, CallExpression
+  ImportDeclaration, ImportSpecifier, Node, FunctionExpression, Parameter, CallExpression,
+  ClassDeclaration, DeclareFunction
 } from '../ast.zena';
 import { walkEnter } from '../visitor.zena';
 import { HashSet } from 'zena:set';
@@ -34,10 +35,20 @@ export class UsageAnalyzer {
               this.markUsed(varDecl, model, unit.ast);
             }
           }
-          case ImportDeclaration: {}
-          case _: {
-            throw new Error("Unexpected top-level statement type in UsageAnalyzer");
+          case ClassDeclaration: {
+            let classDecl = stmt as ClassDeclaration;
+            if (classDecl.exported) {
+              this.markUsed(classDecl, model, unit.ast);
+            }
           }
+          case DeclareFunction: {
+            let funcDecl = stmt as DeclareFunction;
+            if (funcDecl.exported) {
+              this.markUsed(funcDecl, model, unit.ast);
+            }
+          }
+          case ImportDeclaration: {}
+          case _: {}
         }
       }
     }
@@ -63,28 +74,32 @@ export class UsageAnalyzer {
         if (parent is VariableDeclaration) {
           // TODO: why do we need this cast?
           let varDecl = parent as VariableDeclaration;
-          if (varDecl.init is FunctionExpression) {
-             this.visitFunctionBody(varDecl.init as FunctionExpression, model, mod);
+          if (varDecl.init != null) {
+             this.visitNodeWithReferences(varDecl.init as Node, model, mod);
           }
         }
       }
       case VariableDeclaration: {
         // A top-level VariableDeclaration was marked directly (likely an export)
         let varDecl = decl as VariableDeclaration;
-        if (varDecl.init is FunctionExpression) {
-          this.visitFunctionBody(varDecl.init as FunctionExpression, model, mod);
+        if (varDecl.init != null) {
+          this.visitNodeWithReferences(varDecl.init as Node, model, mod);
         }
       }
       case Parameter: {}
       case ImportSpecifier: {}
-      case _: {
-        throw new Error("Unexpected declaration type in UsageAnalyzer.markUsed");
+      case ClassDeclaration: {
+        this.visitNodeWithReferences(decl as Node, model, mod);
       }
+      case DeclareFunction: {
+        this.visitNodeWithReferences(decl as Node, model, mod);
+      }
+      case _: {}
     }
   }
 
-  visitFunctionBody(init: FunctionExpression, model: SemanticModel, mod: Module): void {
-    walkEnter(init as Node, (node: Node): void => {
+  visitNodeWithReferences(root: Node, model: SemanticModel, mod: Module): void {
+    walkEnter(root, (node: Node): void => {
       match (node) {
         case CallExpression: {
           let call = node as CallExpression;

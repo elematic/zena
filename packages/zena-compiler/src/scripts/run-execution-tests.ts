@@ -21,6 +21,8 @@ async function run() {
     'call_helper.zena',
     'invoke.zena',
     'return_42.zena',
+    'param-default.zena',
+    'param-default-ref.zena',
     // 'functions', TODO: unskip when we support conditionals
     'operators',
     'variables',

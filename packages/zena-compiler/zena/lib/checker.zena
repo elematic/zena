@@ -6062,7 +6062,29 @@ let checkMethodSignature = (
     // Track optional parameters and widen to T | null.
     let isOptional = param.optional || param.defaultValue != null;
     optionals.push(isOptional);
-    if (param.defaultValue != null) { hasInitializers = true; }
+
+    // Bind parameter type early so subsequent default arguments can reference it.
+    let paramInfo = ctx.model.resolveDeclaration(param);
+    if (paramInfo != null) {
+      ctx.declareBinding(paramInfo as Symbol, paramType);
+    }
+    if (param.pattern != null) {
+      bindPattern(ctx, param.pattern as Pattern, paramType);
+    }
+
+    if (param.defaultValue != null) { 
+      hasInitializers = true; 
+      let initExp = param.defaultValue as Expression;
+      let initType = checkExpression(ctx, initExp, paramType);
+      if (!isAssignableTo(ctx, initType, paramType)) {
+        ctx.error(
+          "Type mismatch: default value of type '" + typeToString(initType) +
+          "' is not assignable to parameter type '" + typeToString(paramType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          initExp.loc
+        );
+      }
+    }
     initializers.push(param.defaultValue);
     if (isOptional) {
       hasOptionals = true;
@@ -6110,6 +6132,7 @@ let checkMethodSignature = (
   if (hasInitializers) {
     ft.parameterInitializers = initializers;
   }
+  ctx.exitScope();
   return ft;
 };
 
@@ -8274,7 +8297,29 @@ let checkFunctionExpression = (
     // Optional parameters have their type widened to T | null
     let isOptional = param.optional || param.defaultValue != null;
     optionals.push(isOptional);
-    if (param.defaultValue != null) { hasInitializers = true; }
+
+    // Bind parameter type early so subsequent default arguments can reference it.
+    let paramInfo = ctx.model.resolveDeclaration(param);
+    if (paramInfo != null) {
+      ctx.declareBinding(paramInfo as Symbol, paramType);
+    }
+    if (param.pattern != null) {
+      bindPattern(ctx, param.pattern as Pattern, paramType);
+    }
+
+    if (param.defaultValue != null) { 
+      hasInitializers = true; 
+      let initExp = param.defaultValue as Expression;
+      let initType = checkExpression(ctx, initExp, paramType);
+      if (!isAssignableTo(ctx, initType, paramType)) {
+        ctx.error(
+          "Type mismatch: default value of type '" + typeToString(initType) +
+          "' is not assignable to parameter type '" + typeToString(paramType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          initExp.loc
+        );
+      }
+    }
     initializers.push(param.defaultValue);
     if (isOptional) {
       hasOptionals = true;
@@ -8303,15 +8348,6 @@ let checkFunctionExpression = (
     }
 
     paramTypes.push(paramType);
-    // Store the parameter's type via its Symbol (from the DeclarationMap).
-    let paramInfo = ctx.model.resolveDeclaration(param);
-    if (paramInfo != null) {
-      ctx.declareBinding(paramInfo as Symbol, paramType);
-    }
-    // For destructured params, also bind the pattern fields.
-    if (param.pattern != null) {
-      bindPattern(ctx, param.pattern as Pattern, paramType);
-    }
     i += 1;
   }
 
@@ -8398,7 +8434,20 @@ let checkFunctionExpression = (
   ctx.setInferredReturnTypes(prevInferredReturns);
   ctx.exitScope();
 
+  let paramSymbols = new Array<SymbolId>();
+  var pi = 0;
+  while (pi < params.length) {
+    let paramInfo = ctx.model.resolveDeclaration(params[pi].name);
+    if (paramInfo != null) {
+      paramSymbols.push((paramInfo as Symbol).id);
+    } else {
+      paramSymbols.push(-1 as SymbolId);
+    }
+    pi += 1;
+  }
+
   let fnType = new FunctionType(paramTypes, paramNames, retType);
+  fnType.parameterSymbols = paramSymbols;
   fnType.typeParameters = resolvedTypeParams;
   if (hasOptionals) {
     fnType.optionalParameters = optionals;
