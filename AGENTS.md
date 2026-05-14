@@ -157,10 +157,21 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
 
 ### Running Zena Programs with WASI
 
+To run a Zena program with the bootstrap compiler, which is
+fully featured, use:
+
 ```bash
 zena build main.zena -o main.wasm --target wasi
 wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
 ```
+
+To run a Zena program with the self-hosted compiler, which is currently very limited, use:
+
+```bash
+npm run zena -w @zena-lang/zena-cli -- run main.zena
+```
+
+Self-hosted compiler paths are relative to `packages/zena-cli`.
 
 ### Debugging WASM Crashes
 
@@ -169,7 +180,7 @@ stack traces show anonymous function indices by default. Use the **`-g` flag**
 to emit a WASM name section with readable function names:
 
 ```bash
-zena build main.zena -o main.wasm --target host -g
+npm run zena -- build main.zena -o main.wasm --target host -g
 ```
 
 This produces stack traces like `ScopeBuilder.#processClassBody → Compiler.compile`

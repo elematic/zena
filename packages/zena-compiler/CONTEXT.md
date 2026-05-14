@@ -78,6 +78,6 @@ emission:
   (e.g., `['return_42.zena', ...]`) and only tests in the list are run. If you
   add a new end-to-end Wasmtime test and want the self-hosted compiler to run
   it, you _must_ add it to the `runList` array!
-- Run execution tests locally via: `npm run test:execution -w
-@zena-lang/zena-compiler` explicitly to isolate generated Wasm regressions
+- Run execution tests locally via: `npm run test:execution  -w @zena-lang/zena-compiler -- [filter]` explicitly to isolate generated Wasm regressions
   natively using the `wasmtime --invoke main` interface wrapped by Node.js.
+  For example, to run just the variable tests, use `npm run test:execution -w @zena-lang/zena-compiler -- variables`.
