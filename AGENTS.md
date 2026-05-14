@@ -2,7 +2,7 @@
 
 This document guides AI agents working on the Zena project. For a complete
 language description, see `docs/language-reference.md`. For completed features
-and planned work, see `PLAN.md`.
+and planned work, see `PLAN.md` (and `packages/zena-compiler/CODEGEN_PLAN.md` for self-hosted codegen).
 
 ## Project Overview
 

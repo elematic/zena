@@ -1,5 +1,7 @@
 # Self-Hosted Compiler Design
 
+*For the active WebAssembly code generation implementation roadmap, see [CODEGEN_PLAN.md](../../packages/zena-compiler/CODEGEN_PLAN.md).*
+
 ## Strategy: Informed Port
 
 We're not doing a blind copy of the TypeScript compiler, and we're not starting

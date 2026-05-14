@@ -1,5 +1,8 @@
 # AI Agent Context: Zena Self-Hosted Compiler
 
+For the broader architecture, see [self-hosted-compiler.md](../../docs/design/self-hosted-compiler.md).
+For the current progress and roadmap of codegen, see [CODEGEN_PLAN.md](CODEGEN_PLAN.md).
+
 ## WebAssembly Code Generation
 
 Code generation separates logical AST traversal from target text/binary
