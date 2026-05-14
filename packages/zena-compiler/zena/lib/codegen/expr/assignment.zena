@@ -11,12 +11,14 @@ export let generateAssignmentExpression = (ctx: FunctionContext, assign: Assignm
     if (sym != null) {
       if (ctx.localIndices.has((sym as Symbol).id)) {
         genExpr(assign.value);
-        ctx.emitter.emitLocalSet(ctx.localIndices[(sym as Symbol).id]);
+        ctx.emitter.emitLocalTee(ctx.localIndices[(sym as Symbol).id]);
         return;
       }
       if (ctx.wasm.globalMap.has((sym as Symbol).id)) {
         genExpr(assign.value);
-        ctx.emitter.emitGlobalSet(ctx.wasm.globalMap[(sym as Symbol).id].index);
+        let index = ctx.wasm.globalMap[(sym as Symbol).id].index;
+        ctx.emitter.emitGlobalSet(index);
+        ctx.emitter.emitGlobalGet(index);
         return;
       }
     }
