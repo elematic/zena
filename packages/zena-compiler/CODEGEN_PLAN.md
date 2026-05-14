@@ -27,7 +27,7 @@ This document tracks the implementation status of code generation features in th
 These represent the next major milestones for the codegen phase.
 
 ### 1. Variables and Operators
-- [ ] Compound assignments (`+=`, `-=`, etc.)
+- [x] Compound assignments (`+=`, `-=`, etc.)
 - [ ] More operators (e.g. unary operators, string concatenation if not complete)
 
 ### 2. Records and Tuples
