@@ -28,11 +28,11 @@ export let generateContinueStatement = (ctx: FunctionContext, stmt: ContinueStat
   ctx.isReachable = false;
 };
 
-export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement, genExpr: (e: Expression) => void, genStmt: (s: Statement) => void): void => {
+export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement, genExpr: (e: Expression, discardValue: boolean) => void, genStmt: (s: Statement) => void): void => {
   ctx.emitter.emitBlock(ValType.void);
   ctx.emitter.emitLoop(ValType.void);
   
-  genExpr(stmt.test as Expression);
+  genExpr(stmt.test as Expression, false);
   ctx.emitter.emitI32Const(0);
   ctx.emitter.emitI32Eq();
   ctx.emitter.emitBrIf(1);
@@ -50,18 +50,14 @@ export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement,
   ctx.isReachable = wasReachable;
 };
 
-export let generateForStatement = (ctx: FunctionContext, stmt: ForStatement, genExpr: (e: Expression) => void, genStmt: (s: Statement) => void): void => {
+export let generateForStatement = (ctx: FunctionContext, stmt: ForStatement, genExpr: (e: Expression, discardValue: boolean) => void, genStmt: (s: Statement) => void): void => {
   let {init, test, update, body} = stmt;
   
   if (init != null) {
     if (init is Statement) {
       genStmt(init as Statement);
     } else if (init is Expression) {
-      genExpr(init as Expression);
-      let exprType = ctx.wasmFunction.model.getNodeType(init as Node);
-      if (!(exprType is VoidType)) {
-        ctx.emitter.emitDrop();
-      }
+      genExpr(init as Expression, true);
     }
   }
   
@@ -69,7 +65,7 @@ export let generateForStatement = (ctx: FunctionContext, stmt: ForStatement, gen
   ctx.emitter.emitLoop(ValType.void);
   
   if (test != null) {
-    genExpr(test as Expression);
+    genExpr(test as Expression, false);
     ctx.emitter.emitI32Const(0);
     ctx.emitter.emitI32Eq();
     ctx.emitter.emitBrIf(1);
@@ -87,11 +83,7 @@ export let generateForStatement = (ctx: FunctionContext, stmt: ForStatement, gen
   ctx.isReachable = wasReachable;
   
   if (update != null) {
-    genExpr(update as Expression);
-    let exprType = ctx.wasmFunction.model.getNodeType(update as Node);
-    if (!(exprType is VoidType)) {
-      ctx.emitter.emitDrop();
-    }
+    genExpr(update as Expression, true);
   }
   
   ctx.emitter.emitBr(0);

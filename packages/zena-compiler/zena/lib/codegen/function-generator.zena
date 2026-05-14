@@ -112,11 +112,11 @@ export class FunctionGenerator {
       case BreakStatement: generateBreakStatement(this.ctx, stmt as BreakStatement)
       case ContinueStatement: generateContinueStatement(this.ctx, stmt as ContinueStatement)
       case ReturnStatement: generateReturnStatement(this.ctx, stmt as ReturnStatement, (e: Expression) => this.generateExpression(e))
-      case ExpressionStatement: generateExpressionStatement(this.ctx, stmt as ExpressionStatement, (e: Expression) => this.generateExpression(e))
+      case ExpressionStatement: generateExpressionStatement(this.ctx, stmt as ExpressionStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue))
       case BlockStatement: generateBlockStatement(this.ctx, stmt as BlockStatement, (s: Statement) => this.generateStatement(s))
-      case IfStatement: generateIfStatement(this.ctx, stmt as IfStatement, (e: Expression) => this.generateExpression(e), (s: Statement) => this.generateStatement(s))
-      case WhileStatement: generateWhileStatement(this.ctx, stmt as WhileStatement, (e: Expression) => this.generateExpression(e), (s: Statement) => this.generateStatement(s))
-      case ForStatement: generateForStatement(this.ctx, stmt as ForStatement, (e: Expression) => this.generateExpression(e), (s: Statement) => this.generateStatement(s))
+      case IfStatement: generateIfStatement(this.ctx, stmt as IfStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
+      case WhileStatement: generateWhileStatement(this.ctx, stmt as WhileStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
+      case ForStatement: generateForStatement(this.ctx, stmt as ForStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
       case VariableDeclaration: generateVariableDeclaration(this.ctx, stmt as VariableDeclaration, (e: Expression) => this.generateExpression(e))
       case _: {
         throw new Error("Unsupported statement type in codegen");
@@ -124,7 +124,8 @@ export class FunctionGenerator {
     }
   }
 
-  generateExpression(expr: Expression): void {
+  generateExpression(expr: Expression, discardValue: boolean = false): void {
+    var handlesDiscardNatively: boolean = false;
     match (expr) {
       case Identifier: generateIdentifier(this.ctx, expr as Identifier)
       case CallExpression: generateCallExpression(this.ctx, expr as CallExpression, (e: Expression) => this.generateExpression(e))
@@ -133,10 +134,27 @@ export class FunctionGenerator {
       case StringLiteral: generateStringLiteral(this.ctx, expr as StringLiteral)
       case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
       case BinaryExpression: generateBinaryExpression(this.ctx, expr as BinaryExpression, (e: Expression) => this.generateExpression(e))
-      case AssignmentExpression: generateAssignmentExpression(this.ctx, expr as AssignmentExpression, (e: Expression) => this.generateExpression(e))
-      case IfExpression: generateIfExpression(this.ctx, expr as IfExpression, (e: Expression) => this.generateExpression(e), (s: Statement) => this.generateStatement(s))
+      case AssignmentExpression: {
+        generateAssignmentExpression(
+          this.ctx,
+          expr as AssignmentExpression,
+          discardValue,
+          (e) => this.generateExpression(e));
+        handlesDiscardNatively = true;
+      }
+      case IfExpression: {
+        generateIfExpression(this.ctx, expr as IfExpression, discardValue, (e: Expression, d: boolean = false) => this.generateExpression(e, d), (s: Statement) => this.generateStatement(s));
+        handlesDiscardNatively = true;
+      }
       case _: {
         throw new Error("Unsupported expression type in codegen");
+      }
+    }
+    
+    if (discardValue && !handlesDiscardNatively) {
+      let exprType = this.ctx.wasmFunction.model.getNodeType(expr);
+      if (!(exprType is VoidType)) {
+        this.ctx.emitter.emitDrop();
       }
     }
   }

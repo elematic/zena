@@ -5,7 +5,7 @@ import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 
-export let generateCallExpression = (ctx: FunctionContext, call: CallExpression, genExpr: (e: Expression) => void): void => {
+export let generateCallExpression = (ctx: FunctionContext, call: CallExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   let calleeType = ctx.wasmFunction.model.getNodeType(call.callee);
   var ft: FunctionType | null = null;
   if (calleeType is FunctionType) {
@@ -25,7 +25,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       if (ctx.wasm.functionMap.has((sym as Symbol).id)) {
         var i = 0;
         while (i < call.args.length) {
-          genExpr(call.args[i]);
+          genExpr(call.args[i], false);
           if (ft != null && ft.parameterSymbols != null) {
             let syms = ft.parameterSymbols as Array<SymbolId>;
             if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {
@@ -43,7 +43,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           if (ctx.wasm.exportMap.has(importedName)) {
             var i = 0;
             while (i < call.args.length) {
-              genExpr(call.args[i]);
+              genExpr(call.args[i], false);
               if (ft != null && ft.parameterSymbols != null) {
                 let syms = ft.parameterSymbols as Array<SymbolId>;
                 if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {

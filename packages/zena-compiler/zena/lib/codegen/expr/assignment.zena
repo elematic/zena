@@ -4,21 +4,37 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 
-export let generateAssignmentExpression = (ctx: FunctionContext, assign: AssignmentExpression, genExpr: (e: Expression) => void): void => {
+/**
+ * Generates WASM code for an assignment expression.
+ *
+ * @param discardValue If true, the assigned value is not left on the stack
+ *     (e.g., when used as an ExpressionStatement).
+ */
+export let generateAssignmentExpression = (
+  ctx: FunctionContext,
+  assign: AssignmentExpression,
+  discardValue: boolean,
+  genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (assign.left is Identifier) {
     let ident = assign.left as Identifier;
     let sym = ctx.wasmFunction.model.resolve(ident);
     if (sym != null) {
       if (ctx.localIndices.has((sym as Symbol).id)) {
-        genExpr(assign.value);
-        ctx.emitter.emitLocalTee(ctx.localIndices[(sym as Symbol).id]);
+        genExpr(assign.value, false);
+        if (discardValue) {
+          ctx.emitter.emitLocalSet(ctx.localIndices[(sym as Symbol).id]);
+        } else {
+          ctx.emitter.emitLocalTee(ctx.localIndices[(sym as Symbol).id]);
+        }
         return;
       }
       if (ctx.wasm.globalMap.has((sym as Symbol).id)) {
-        genExpr(assign.value);
+        genExpr(assign.value, false);
         let index = ctx.wasm.globalMap[(sym as Symbol).id].index;
         ctx.emitter.emitGlobalSet(index);
-        ctx.emitter.emitGlobalGet(index);
+        if (!discardValue) {
+          ctx.emitter.emitGlobalGet(index);
+        }
         return;
       }
     }

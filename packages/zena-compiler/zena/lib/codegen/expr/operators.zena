@@ -3,16 +3,16 @@ import { Type, F64Type, F32Type } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 
-export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression, genExpr: (e: Expression) => void): void => {
+export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (un.operator == "-") {
     let nodeType = ctx.wasmFunction.model.getNodeType(un);
     if (nodeType is F64Type || nodeType is F32Type) {
       ctx.emitter.emitF64Const(0.0);
-      genExpr(un.argument);
+      genExpr(un.argument, false);
       ctx.emitter.emitF64Sub();
     } else {
       ctx.emitter.emitI32Const(0);
-      genExpr(un.argument);
+      genExpr(un.argument, false);
       ctx.emitter.emitI32Sub();
     }
   } else {
@@ -20,7 +20,7 @@ export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression,
   }
 };
 
-export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpression, genExpr: (e: Expression) => void): void => {
+export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   let model = ctx.wasmFunction.model;
   let leftType = model.getNodeType(bin.left);
   let rightType = model.getNodeType(bin.right);
@@ -36,17 +36,17 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
 
   // Implicit F64 upconversion logic
   if (isFloatContext && !(leftType is F64Type) && !(leftType is F32Type)) {
-    genExpr(bin.left);
+    genExpr(bin.left, false);
     ctx.emitter.emitF64ConvertI32S();
   } else {
-    genExpr(bin.left);
+    genExpr(bin.left, false);
   }
 
   if (isFloatContext && !(rightType is F64Type) && !(rightType is F32Type)) {
-    genExpr(bin.right);
+    genExpr(bin.right, false);
     ctx.emitter.emitF64ConvertI32S();
   } else {
-    genExpr(bin.right);
+    genExpr(bin.right, false);
   }
   
   if (isFloatContext) {

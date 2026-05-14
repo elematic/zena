@@ -6,25 +6,21 @@ import { VoidType } from '../../types.zena';
 import { ValType } from "../wasm.zena";
 import { FunctionContext } from '../function-context.zena';
 
-export let generateReturnStatement = (ctx: FunctionContext, stmt: ReturnStatement, genExpr: (e: Expression) => void): void => {
+export let generateReturnStatement = (ctx: FunctionContext, stmt: ReturnStatement, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (stmt.argument != null) {
-    genExpr(stmt.argument as Expression);
+    genExpr(stmt.argument as Expression, false);
   }
   ctx.emitter.emitReturn();
   ctx.isReachable = false;
   ctx.needsUnreachable = false;
 };
 
-export let generateExpressionStatement = (ctx: FunctionContext, stmt: ExpressionStatement, genExpr: (e: Expression) => void): void => {
-  genExpr(stmt.expression);
-  let exprType = ctx.wasmFunction.model.getNodeType(stmt.expression);
-  if (!(exprType is VoidType)) {
-    ctx.emitter.emitDrop();
-  }
+export let generateExpressionStatement = (ctx: FunctionContext, stmt: ExpressionStatement, genExpr: (e: Expression, discardValue: boolean) => void): void => {
+  genExpr(stmt.expression, true);
 };
 
-export let generateIfStatement = (ctx: FunctionContext, stmt: IfStatement, genExpr: (e: Expression) => void, genStmt: (s: Statement) => void): void => {
-  genExpr(stmt.test as Expression);
+export let generateIfStatement = (ctx: FunctionContext, stmt: IfStatement, genExpr: (e: Expression, discardValue: boolean) => void, genStmt: (s: Statement) => void): void => {
+  genExpr(stmt.test as Expression, false);
   ctx.emitter.emitIf(ValType.void);
   ctx.enterBlockStructure();
   
