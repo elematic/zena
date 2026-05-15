@@ -1,7 +1,7 @@
 import { ByteBuffer } from 'zena:byte-buffer';
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmType, WasmSignature, WasmFunction, WasmModule, DiscoveryPass } from './wasm-module.zena';
-import { SectionId, ValType, Opcode } from './wasm.zena';
+import { SectionId, ValType, Opcode, GcOpcode } from './wasm.zena';
 
 /**
  * Implements the WasmEmitter interface by writing WebAssembly binary
@@ -62,6 +62,31 @@ export class BinaryEmitter implements WasmEmitter {
   }
   
   emitFunctionTypeEnd(): void {}
+
+  emitStructTypeStart(index: i32, name: String | null): void {
+    if (this.currentSection == null) {
+      return;
+    }
+    // 0x5F is the type form for struct in Wasm GC
+    (this.currentSection as ByteBuffer).writeByte(0x5F);
+  }
+
+  emitStructTypeFieldsStart(count: i32): void {
+    if (this.currentSection == null) {
+      return;
+    }
+    (this.currentSection as ByteBuffer).writeULEB128(count);
+  }
+
+  emitStructTypeField(type: ValType, isMutable: boolean): void {
+    if (this.currentSection == null) {
+      return;
+    }
+    (this.currentSection as ByteBuffer).writeByte(type as i32);
+    (this.currentSection as ByteBuffer).writeByte(if (isMutable) 1 else 0);
+  }
+
+  emitStructTypeEnd(): void {}
   
   emitTypeSectionEnd(): void {
     if (this.currentSection != null) {
@@ -315,6 +340,37 @@ export class BinaryEmitter implements WasmEmitter {
   emitDrop(): void {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.drop as i32);
+  }
+
+  // GC operations
+  emitStructNew(typeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.struct_new as i32);
+    b.writeULEB128(typeIndex);
+  }
+
+  emitStructNewDefault(typeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.struct_new_default as i32);
+    b.writeULEB128(typeIndex);
+  }
+
+  emitStructGet(typeIndex: i32, fieldIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.struct_get as i32);
+    b.writeULEB128(typeIndex);
+    b.writeULEB128(fieldIndex);
+  }
+
+  emitStructSet(typeIndex: i32, fieldIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.struct_set as i32);
+    b.writeULEB128(typeIndex);
+    b.writeULEB128(fieldIndex);
   }
 
   // Variables

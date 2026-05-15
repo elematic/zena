@@ -86,6 +86,9 @@ async function run() {
       );
     } catch (e: any) {
       console.log(`${RED}✗${NC} ${relPath} (Compile Failed)`);
+      if (e.stdout?.toString()) {
+        console.log(e.stdout.toString().trim());
+      }
       console.error(e.stderr?.toString() || e.message);
       failed++;
       compileError = true;

@@ -1,3 +1,5 @@
+import { Error } from 'zena:error';
+import { RecordType, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, BooleanType, ClassType, ArrayType, TypeAliasType, VoidType, NullType, UnknownType, ErrorType, AnyType, EqRefType, AnyRefType, NeverType, HoleType, FunctionType, Type, typeToString } from '../types.zena';
 export enum SectionId {
   Type = 1,
   Import = 2,
@@ -21,6 +23,58 @@ export enum ValType {
   i64 = 0x7E,
   f32 = 0x7D,
   f64 = 0x7C,
+  v128 = 0x7B,
+  funcref = 0x70,
+  externref = 0x6F,
+  anyref = 0x6E,
+  eqref = 0x6D,
+  optref = 0x6C,
+  ref = 0x64,
+  ref_null = 0x63,
+  i8 = 0x78,
+  i16 = 0x77,
+}
+
+export enum HeapType {
+  func = 0x70,
+  extern = 0x6F,
+  any = 0x6E,
+  eq = 0x6D,
+  struct = 0x6B,
+  array = 0x6A,
+  i31 = 0x6C,
+  none = 0x71,
+  noextern = 0x72,
+  nofunc = 0x73,
+}
+
+export enum GcOpcode {
+  struct_new = 0x00,
+  struct_new_default = 0x01,
+  struct_get = 0x02,
+  struct_get_s = 0x03,
+  struct_get_u = 0x04,
+  struct_set = 0x05,
+  array_new = 0x06,
+  array_new_default = 0x07,
+  array_new_fixed = 0x08,
+  array_new_data = 0x09,
+  array_new_elem = 0x0A,
+  array_get = 0x0B,
+  array_get_s = 0x0C,
+  array_get_u = 0x0D,
+  array_set = 0x0E,
+  array_len = 0x0F,
+  array_copy = 0x11,
+  extern_convert_any = 0x1B,
+  any_convert_extern = 0x1A,
+  ref_test = 0x14,
+  ref_test_null = 0x15,
+  ref_cast = 0x16,
+  ref_cast_null = 0x17,
+  ref_i31 = 0x1C,
+  i31_get_s = 0x1D,
+  i31_get_u = 0x1E,
 }
 
 export enum Opcode {
@@ -45,6 +99,11 @@ export enum Opcode {
   i32_store8 = 0x3A,
   memory_size = 0x3F,
   memory_grow = 0x40,
+  drop = 0x1A,
+  gc_prefix = 0xFB,
+  local_tee = 0x22,
+  global_get = 0x23,
+  global_set = 0x24,
   drop = 0x1A,
   i32_const = 0x41,
   i32_eqz = 0x45,
@@ -99,3 +158,32 @@ export enum Opcode {
   f64_div = 0xA3,
   f64_convert_i32_s = 0xB7
 }
+
+export let typeToValType = (t: Type): ValType => match (t) {
+  case TypeAliasType as a: typeToValType(a.target)
+  case F64Type: ValType.f64
+  case F32Type: ValType.f32
+  case I32Type: ValType.i32
+  case U32Type: ValType.i32
+  case I64Type: ValType.i64
+  case U64Type: ValType.i64
+  case BooleanType: ValType.i32
+  case RecordType: ValType.anyref
+  case ClassType: ValType.anyref
+  case ArrayType: ValType.anyref
+  case VoidType: ValType.void
+  case NullType: ValType.anyref
+  case UnknownType: ValType.anyref
+  case ErrorType: ValType.anyref
+  case AnyType: ValType.anyref
+  case AnyRefType: ValType.anyref
+  case EqRefType: ValType.eqref
+  case NeverType: ValType.void
+  case HoleType: ValType.anyref
+  case FunctionType: ValType.funcref
+  
+  // We can add more specific mappings here as we implement them!
+  case _: {
+     throw new Error("typeToValType: unsupported type: " + typeToString(t));
+  }
+};

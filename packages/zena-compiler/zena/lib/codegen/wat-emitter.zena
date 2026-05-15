@@ -46,6 +46,33 @@ export class WatEmitter implements WasmEmitter {
   emitFunctionTypeEnd(): void {
     this.sb.append('))\n');
   }
+
+  emitStructTypeStart(index: i32, name: String | null): void {
+    this.indent();
+    if (name != null) {
+      this.sb.append('(type $').append(name as String).append(' (;').append(i32ToString(index)).append(';) (struct');
+    } else {
+      this.sb.append('(type (;').append(i32ToString(index)).append(';) (struct');
+    }
+  }
+
+  emitStructTypeFieldsStart(count: i32): void {}
+
+  emitStructTypeField(type: ValType, isMutable: boolean): void {
+    this.sb.append(' (field ');
+    if (isMutable) {
+      this.sb.append('(mut ');
+    }
+    this.sb.append(getTypeName(type));
+    if (isMutable) {
+      this.sb.append(')');
+    }
+    this.sb.append(')');
+  }
+
+  emitStructTypeEnd(): void {
+    this.sb.append('))\n');
+  }
   
   emitTypeSectionEnd(): void {}
 
@@ -224,6 +251,27 @@ export class WatEmitter implements WasmEmitter {
   emitCall(target: WasmFunction): void {
     this.indent();
     this.sb.append('call $').append(getFunctionName(target)).append('\n');
+  }
+
+  // GC operations
+  emitStructNew(typeIndex: i32): void {
+    this.indent();
+    this.sb.append('struct.new ').append(i32ToString(typeIndex)).append('\n');
+  }
+
+  emitStructNewDefault(typeIndex: i32): void {
+    this.indent();
+    this.sb.append('struct.new_default ').append(i32ToString(typeIndex)).append('\n');
+  }
+
+  emitStructGet(typeIndex: i32, fieldIndex: i32): void {
+    this.indent();
+    this.sb.append('struct.get ').append(i32ToString(typeIndex)).append(' ').append(i32ToString(fieldIndex)).append('\n');
+  }
+
+  emitStructSet(typeIndex: i32, fieldIndex: i32): void {
+    this.indent();
+    this.sb.append('struct.set ').append(i32ToString(typeIndex)).append(' ').append(i32ToString(fieldIndex)).append('\n');
   }
 
   emitI32Const(value: i32): void {

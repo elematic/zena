@@ -1,5 +1,5 @@
 import { WasmModule, WasmFunction, WasmSignature, WasmType, DiscoveryPass,
-  WasmExport, WasmGlobal
+  WasmExport, WasmGlobal, WasmStruct
 } from './wasm-module.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral } from '../ast.zena';
@@ -49,6 +49,16 @@ export class ModuleGenerator {
         }
         
         this.emitter.emitFunctionTypeEnd();
+      } else if (t is WasmStruct) {
+        let st = t as WasmStruct;
+        this.emitter.emitStructTypeStart(i, st.name);
+        
+        this.emitter.emitStructTypeFieldsStart(st.fields.length);
+        for (let field in st.fields) {
+          this.emitter.emitStructTypeField(field.type, field.isMutable);
+        }
+        
+        this.emitter.emitStructTypeEnd();
       }
       i += 1;
     }

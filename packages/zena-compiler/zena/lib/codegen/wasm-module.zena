@@ -2,8 +2,12 @@ import {
   Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
-  ImportDeclaration, ImportSpecifier, ClassDeclaration, DeclareFunction
+  ImportDeclaration, ImportSpecifier, ClassDeclaration, DeclareFunction,
+  TypeAliasDeclaration, RecordLiteral
 } from '../ast.zena';
+import { walkEnter } from '../visitor.zena';
+import { typeToValType } from './wasm.zena';
+import { RecordType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
@@ -29,6 +33,19 @@ export class WasmExport {
  */
 export class WasmType {
   var index: i32 = -1;
+}
+
+export class WasmField {
+  name: String | null;
+  type: ValType;
+  isMutable: boolean;
+  new(this.name, this.type, this.isMutable);
+}
+
+export class WasmStruct extends WasmType {
+  name: String | null;
+  fields: Array<WasmField>;
+  new(this.name, this.fields) : super();
 }
 
 /**
@@ -140,6 +157,31 @@ export class WasmModule {
     this.types.push(sig);
     return sig;
   }
+
+  getStruct(name: String | null, fields: Array<WasmField>): WasmStruct {
+    for (let t in this.types) {
+      if (t is WasmStruct) {
+        let s = t as WasmStruct;
+        if (s.fields.length == fields.length) {
+          var match = true;
+          for (var i = 0; i < fields.length; i += 1) {
+            // A struct matches if fields have same type and mutability.
+            // Name doesn't matter for structural identity.
+            if (s.fields[i].type != fields[i].type || s.fields[i].isMutable != fields[i].isMutable) {
+              match = false;
+              break;
+            }
+          }
+          if (match) {
+            return s;
+          }
+        }
+      }
+    }
+    let st = new WasmStruct(name, fields);
+    this.types.push(st);
+    return st;
+  }
   
   addFunction(func: WasmFunction): void {
     this.functions.push(func);
@@ -184,6 +226,19 @@ export class DiscoveryPass {
     for (let unit in this.program.units) {
       let mod = unit.ast;
       let moduleModel = unit.model;
+      
+      // First, discover any record types used in record literals and register their Structs
+      walkEnter(mod as Node, (n: Node) => {
+        if (n is RecordLiteral) {
+           let recordType = moduleModel.getNodeType(n) as RecordType;
+           let fields = new Array<WasmField>();
+           for (let pair in recordType.properties) {
+              fields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+           }
+           this.wasm.getStruct(null, fields);
+        }
+      });
+      
       for (let stmt in mod.body) {
         match (stmt) {
           case VariableDeclaration: {
@@ -213,26 +268,12 @@ export class DiscoveryPass {
                 if (funcTypeNode is FunctionType) {
                   let fType = funcTypeNode as FunctionType;
                   for (let p in fType.parameters) {
-                    if (p is F64Type) {
-                      params.push(ValType.f64);
-                    } else if (p is F32Type) {
-                      params.push(ValType.f32);
-                    } else {
-                      params.push(ValType.i32);
-                    }
+                    params.push(typeToValType(p));
                   }
                   let rType = fType.returnType;
-                  if (rType is F64Type) {
-                    returns.push(ValType.f64);
-                  } else if (rType is F32Type) {
-                    returns.push(ValType.f32);
-                  } else if (rType is VoidType) {
-                    // void
-                  } else {
-                    returns.push(ValType.i32);
-                  }
+                  if (!(rType is VoidType)) returns.push(typeToValType(rType));
                 } else {
-                  returns.push(ValType.i32); // Hardcoded fallback i32
+                  returns.push(ValType.i32);
                 }
                 
                 let sig = this.wasm.getSignature(params, returns);
@@ -255,15 +296,10 @@ export class DiscoveryPass {
                 if (varDecl.pattern is IdentifierPattern && varDecl.init != null) {
                   let ident = varDecl.pattern as IdentifierPattern;
                   let expr = varDecl.init as Expression;
-                  let nodeType = moduleModel.getNodeType(varDecl);
+                  let nodeType = moduleModel.getNodeType(ident);
                   var isMutable = varDecl.kind == "var";
                   
-                  var vType = ValType.i32;
-                  if (nodeType is F64Type) {
-                    vType = ValType.f64;
-                  } else if (nodeType is F32Type) {
-                    vType = ValType.f32;
-                  }
+                  var vType = typeToValType(nodeType);
 
                   let sym = moduleModel.resolveDeclaration(ident);
                   if (sym != null) {
@@ -297,6 +333,7 @@ export class DiscoveryPass {
               }
             }
           }
+          case TypeAliasDeclaration: {}
           case _: {
             throw new Error("Unsupported top-level statement type in codegen");
           }
