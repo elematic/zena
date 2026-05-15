@@ -27,6 +27,7 @@ async function run() {
     'variables',
     'imports',
     'compound-assignment',
+    'records',
   ];
 
   let files = await glob(join(testsDir, '**/*.zena'));

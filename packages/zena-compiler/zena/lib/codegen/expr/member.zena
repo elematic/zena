@@ -1,0 +1,49 @@
+import { FunctionContext } from '../function-context.zena';
+import { Expression, MemberExpression } from '../../ast.zena';
+import { Error } from 'zena:error';
+import { RecordType } from '../../types.zena';
+
+import { typeToValType } from '../wasm.zena';
+import { WasmField } from '../wasm-module.zena';
+import { Array } from 'zena:array';
+
+export let generateMemberExpression = (
+  ctx: FunctionContext,
+  expr: MemberExpression,
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  // 1. Generate code for the object
+  genExpr(expr.object, false);
+
+  // 2. Figure out the type of the object
+  let objectType = ctx.wasmFunction.model.getNodeType(expr.object);
+
+  match (objectType) {
+    case RecordType as rt: {
+      let fields = new Array<WasmField>();
+      for (let pair in rt.properties) {
+        fields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+      }
+      let structInfo = ctx.wasm.getStruct(null, fields);
+      
+      var fieldIndex = -1;
+      let propName = expr.property.name;
+      
+      for (var i = 0; i < structInfo.fields.length; i += 1) {
+        if (structInfo.fields[i].name == propName) {
+           fieldIndex = i;
+        }
+      }
+      
+      if (fieldIndex == -1) {
+         throw new Error("Could not find property " + propName + " on record");
+      }
+      
+      ctx.emitter.emitRefCastNull(structInfo.index);
+      ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
+    }
+    case _: {
+       throw new Error("Codegen for MemberExpression on non-record is not yet implemented.");
+    }
+  }
+};
