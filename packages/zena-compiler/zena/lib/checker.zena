@@ -3425,15 +3425,12 @@ case _: {
           var depModel: SemanticModel | null = null;
           let models = ctx.depModels;
           if (models != null) {
-            let modelsMap = models as HashMap<String, SemanticModel>;
-            if (modelsMap.has(specifier)) {
-              depModel = modelsMap[specifier];
+            if (let (true, m) = models.get(specifier)) {
+              depModel = m;
             }
           }
 
-          var impIdx = 0;
-          while (impIdx < imports.length) {
-            let spec = imports[impIdx];
+          for (let spec in imports) {
             let importedName = spec.imported.name;
             let localName = spec.local.name;
 
@@ -3442,48 +3439,44 @@ case _: {
               if (exp.isType()) { exp } else { null }
             } else { null };
             if (typeExport != null) {
-              let si = typeExport as Symbol;
-
               var resolvedType: Type | null = null;
               if (depModel != null) {
                 let dm = depModel as SemanticModel;
                 resolvedType = dm.getExportType(importedName);
                 if (resolvedType == null) {
-                  resolvedType = dm.getBindingType(si);
+                  resolvedType = dm.getBindingType(typeExport);
                 }
               }
 
               if (resolvedType != null) {
                 // Use the actual resolved type from the dependency.
-                let rt = resolvedType as Type;
-                ctx.declareTypeName(localName, rt);
+                ctx.declareTypeName(localName, resolvedType);
                 
                 // Bind directly to the local TYPE symbol for this import.
                 let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
                 if (localTypeInfo != null) {
-                  ctx.registerType(localTypeInfo as Symbol, rt as Type);
+                  ctx.registerType(localTypeInfo, resolvedType);
                 }
               } else {
                 // Fallback: create stub types from the declaration AST node.
                 // For stdlib types, prefer the prelude type which has full
                 // member definitions (fields, methods, constructors).
-                let decl = si.declaration;
+                let decl = typeExport.declaration;
                 if (decl != null) {
                   let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
-                  match (decl as Node) {
+                  match (decl) {
                     case ClassDeclaration {name}: {
                       let preludeType = ctx.resolveTypeName(name.name);
                       if (preludeType != null) {
-                        let pt = preludeType as Type;
-                        ctx.declareTypeName(localName, pt);
+                        ctx.declareTypeName(localName, preludeType);
                         if (localTypeInfo != null) {
-                          ctx.declareBinding(localTypeInfo as Symbol, pt);
+                          ctx.declareBinding(localTypeInfo, preludeType);
                         }
                       } else {
                         let ct = new ClassType(ctx.freshTypeId(), name.name);
                         ctx.declareTypeName(localName, ct);
                         if (localTypeInfo != null) {
-                          ctx.declareBinding(localTypeInfo as Symbol, ct);
+                          ctx.declareBinding(localTypeInfo, ct);
                         }
                       }
                     }
@@ -3491,7 +3484,7 @@ case _: {
                       let it = new InterfaceType(ctx.freshTypeId(), name.name);
                       ctx.declareTypeName(localName, it);
                       if (localTypeInfo != null) {
-                        ctx.declareBinding(localTypeInfo as Symbol, it);
+                        ctx.declareBinding(localTypeInfo, it);
                       }
                     }
                     case SealedVariant {name}: {
@@ -3499,7 +3492,7 @@ case _: {
                       ct.isCaseClass = true;
                       ctx.declareTypeName(localName, ct);
                       if (localTypeInfo != null) {
-                        ctx.declareBinding(localTypeInfo as Symbol, ct);
+                        ctx.declareBinding(localTypeInfo, ct);
                       }
                     }
                     case _: {
@@ -3519,20 +3512,18 @@ case _: {
             if (valueExport != null) {
               let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
               if (localValInfo != null) {
-                var resolvedValType: Type | null = null;
-                if (depModel != null) {
-                  let dm = depModel as SemanticModel;
-                  resolvedValType = dm.getBindingType(valueExport as Symbol);
-                }
+                let resolvedValType = if (depModel != null) {
+                  depModel.getBindingType(valueExport as Symbol)
+                } else {
+                  null
+                };
                 if (resolvedValType != null) {
-                  ctx.declareBinding(localValInfo as Symbol, resolvedValType as Type);
+                  ctx.declareBinding(localValInfo, resolvedValType);
                 } else if (typeExport == null) {
-                  ctx.declareBinding(localValInfo as Symbol, new ErrorType());
+                  ctx.declareBinding(localValInfo, new ErrorType());
                 }
               }
             }
-
-            impIdx = impIdx + 1;
           }
         }
       }
@@ -3593,10 +3584,11 @@ let checkVariableDeclaration = (
   loc: SourceLocation | null
 ): void => {
   // Infer the type of the initializer.
-  var expectedType: Type | null = null;
-  if (typeAnnotation != null) {
-    expectedType = resolveTypeAnnotation(ctx, typeAnnotation as TypeAnnotation);
-  }
+  let expectedType = if (typeAnnotation != null) {
+    resolveTypeAnnotation(ctx, typeAnnotation as TypeAnnotation)
+  } else {
+    null
+  };
 
   let initType = checkExpression(ctx, init, expectedType);
 
@@ -3608,16 +3600,14 @@ let checkVariableDeclaration = (
 
   // If an explicit type annotation is present, validate assignability.
   if (expectedType != null) {
-    let expected = expectedType as Type;
-    if (!isAssignableTo(ctx, initType, expected)) {
+    if (!isAssignableTo(ctx, initType, expectedType)) {
       ctx.error(
-        "Type mismatch: '" + typeToString(initType) +
-        "' is not assignable to '" + typeToString(expected) + "'.",
+        `Type mismatch: '${typeToString(initType)}' is not assignable to '${typeToString(expectedType)}'.`,
         DiagnosticCode.TypeMismatch,
         loc
       );
     }
-    declType = expected;
+    declType = expectedType;
   }
 
   if (isRefutableDeclarationPattern(pattern)) {
@@ -3637,10 +3627,18 @@ let isRefutableDeclarationPattern = (pattern: Pattern): boolean => {
     case BindingPattern as bp: {
       return isRefutableDeclarationPattern(bp.pattern);
     }
-    case IdentifierPattern: { return false; }
-    case ClassPattern: { return true; }
-    case LogicalPattern: { return true; }
-    case LiteralPattern: { return true; }
+    case IdentifierPattern: {
+      return false;
+    }
+    case ClassPattern: {
+      return true;
+    }
+    case LogicalPattern: {
+      return true;
+    }
+    case LiteralPattern: {
+      return true;
+    }
     case AsPattern {pattern as inner}: {
       return if (inner is Pattern) {
         isRefutableDeclarationPattern(inner as Pattern)
@@ -3652,24 +3650,20 @@ let isRefutableDeclarationPattern = (pattern: Pattern): boolean => {
       return isRefutableDeclarationPattern(left as Pattern);
     }
     case RecordPattern {properties}: {
-      var i = 0;
-      while (i < properties.length) {
-        if (isRefutableDeclarationPattern((properties[i].value as Node) as Pattern)) {
+      for (let property in properties) {
+        if (isRefutableDeclarationPattern((property.value) as Pattern)) {
           return true;
         }
-        i += 1;
       }
       return false;
     }
     case TuplePattern {elements}: {
-      var i = 0;
-      while (i < elements.length) {
-        if (elements[i] != null) {
-          if (isRefutableDeclarationPattern((elements[i] as Node) as Pattern)) {
+      for (let element in elements) {
+        if (element != null) {
+          if (isRefutableDeclarationPattern((element) as Pattern)) {
             return true;
           }
         }
-        i += 1;
       }
       return false;
     }
@@ -3896,9 +3890,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       // For record destructuring: { x, y } = record.
       match (t) {
         case RecordT {properties as recordProps, optionalProperties}: {
-          var i = 0;
-          while (i < properties.length) {
-            let prop = properties[i];
+          for (let prop in properties) {
             let propName = prop.name.name;
             if (recordProps.has(propName)) {
               // Check if the property is optional and requires a default value
@@ -3922,15 +3914,12 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
                 prop.loc
               );
             }
-            i += 1;
           }
         }
         case _: {
           // If not a record, just bind the property names as unknown.
-          var i = 0;
-          while (i < properties.length) {
-            bindPattern(ctx, properties[i].value as Pattern, new ErrorType());
-            i += 1;
+          for (let property in properties) {
+            bindPattern(ctx, property.value as Pattern, new ErrorType());
           }
         }
       }
@@ -3977,18 +3966,18 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
         let cp = inner as ClassPattern;
         let cls = ctx.resolveTypeName(cp.name.name);
         if (cls != null) {
-          narrowedType = cls as Type;
+          narrowedType = cls;
         }
       } else if (inner is Identifier) {
         let ident = inner as Identifier;
         let cls = ctx.resolveTypeName(ident.name);
         if (cls != null) {
-          narrowedType = cls as Type;
+          narrowedType = cls;
         }
       }
       let info = ctx.model.resolveDeclaration(name);
       if (info != null) {
-        ctx.declareBinding(info as Symbol, narrowedType);
+        ctx.declareBinding(info, narrowedType);
       }
     }
     case AssignmentPattern {left, right}: {
@@ -3997,8 +3986,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       let defaultType = checkExpression(ctx, right, t);
       if (!isAssignableTo(ctx, defaultType, t)) {
         ctx.error(
-          "Type mismatch: '" + typeToString(defaultType) +
-          "' is not assignable to '" + typeToString(t) + "'.",
+          `Type mismatch: '${typeToString(defaultType)}' is not assignable to '${typeToString(t)}'.`,
           DiagnosticCode.TypeMismatch,
           pattern.loc
         );
@@ -4011,21 +3999,17 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       let classType = ctx.resolveTypeName(clsName);
       if (classType == null) {
         ctx.error(
-          "'" + clsName + "' is not a class.",
+          `'${clsName}' is not a class.`,
           DiagnosticCode.SymbolNotFound,
           cp.loc
         );
         return;
       }
       // Bind property patterns with field types from the class.
-      let props = cp.properties;
-      var pi = 0;
-      while (pi < props.length) {
-        let prop = props[pi];
+      for (let prop in cp.properties) {
         let propName = prop.name.name;
         let propType = resolveClassFieldType(ctx, classType as Type, propName, prop.loc);
         bindPattern(ctx, prop.value as Pattern, propType);
-        pi += 1;
       }
     }
     case LogicalPattern {operator, left, right}: {
@@ -4051,10 +4035,8 @@ let checkIfBranchNode = (ctx: CheckerContext, node: Node, expectedType: Type | n
     let b = node as BlockStatement;
     ctx.enterScope();
     // Check all statements except the last
-    var i = 0;
-    while (i < b.body.length - 1) {
-      checkStatement(ctx, b.body[i]);
-      i += 1;
+    for (let statement in b.body) {
+      checkStatement(ctx, statement);
     }
     // The type of the block is the type of the last expression statement
     var resultType: Type = new VoidType();
@@ -4094,11 +4076,11 @@ let getMatchedLiteralType = (expr: Expression, expected: Type): Type | null => {
       }
     }
     case UnionT {types}: {
-      var i = 0;
-      while (i < types.length) {
-        let matched = getMatchedLiteralType(expr, types[i]);
-        if (matched != null) { return matched; }
-        i += 1;
+      for (let type in types) {
+        let matched = getMatchedLiteralType(expr, type);
+        if (matched != null) {
+          return matched;
+        }
       }
     }
     case _: {}
