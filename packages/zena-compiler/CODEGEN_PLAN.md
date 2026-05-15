@@ -28,7 +28,7 @@ These represent the next major milestones for the codegen phase.
 
 ### 1. Variables and Operators
 - [x] Compound assignments (`+=`, `-=`, etc.)
-- [ ] More operators (e.g. unary operators, string concatenation if not complete)
+- [x] More operators (e.g. unary operators, string concatenation deferred until classes)
 
 ### 2. Records and Tuples
 - [ ] Structural compatibility and canonicalization for Records.

@@ -1,20 +1,27 @@
 import { Node, UnaryExpression, BinaryExpression, Expression } from '../../ast.zena';
-import { Type, F64Type, F32Type } from '../../types.zena';
+import { Type, F64Type, F32Type, I32Type, isFloatType, baseType, typeToString } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 
 export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (un.operator == "-") {
-    let nodeType = ctx.wasmFunction.model.getNodeType(un);
-    if (nodeType is F64Type || nodeType is F32Type) {
+    let rawType = ctx.wasmFunction.model.getNodeType(un);
+    if (rawType == null) throw new Error("Missing type info");
+    let nodeType = baseType(rawType);
+    if (nodeType is F64Type) {
       ctx.emitter.emitF64Const(0.0);
       genExpr(un.argument, false);
       ctx.emitter.emitF64Sub();
-    } else {
+    } else if (nodeType is I32Type) {
       ctx.emitter.emitI32Const(0);
       genExpr(un.argument, false);
       ctx.emitter.emitI32Sub();
+    } else {
+      throw new Error("Unsupported type for unary minus: " + typeToString(nodeType));
     }
+  } else if (un.operator == "!") {
+    genExpr(un.argument, false);
+    ctx.emitter.emitI32Eqz();
   } else {
     throw new Error("Unsupported unary operator: " + un.operator);
   }

@@ -1,5 +1,5 @@
 import { Node, Identifier, NumberLiteral, BooleanLiteral, StringLiteral, ImportSpecifier } from '../../ast.zena';
-import { Type, F64Type, F32Type } from '../../types.zena';
+import { Type, F64Type, F32Type, I32Type, baseType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { parseI32, parseF64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
@@ -35,10 +35,16 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
 
 export let generateNumberLiteral = (ctx: FunctionContext, expr: NumberLiteral): void => {
   let nodeType = ctx.wasmFunction.model.getNodeType(expr as Node);
-  if (nodeType is F64Type || nodeType is F32Type) {
+  let baseT = baseType(nodeType);
+
+  if (baseT is F64Type) {
     let val = parseF64(expr.raw);
     ctx.emitter.emitF64Const(val);
+  } else if (baseT is F32Type) {
+    let val = parseF64(expr.raw);
+    ctx.emitter.emitF32Const(val);
   } else {
+    // Treat all other numeric types (i32, u32, i8, etc) as 32-bit integers in Wasm for now
     let (ok, val) = parseI32(expr.raw);
     if (!ok) {
       throw new Error('Failed to parse i32: ' + expr.raw);

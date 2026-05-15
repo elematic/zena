@@ -4115,8 +4115,10 @@ let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type
 
 let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
   if (expectedType != null) {
-    let matched = getMatchedLiteralType(expr, expectedType as Type);
-    if (matched != null) { return matched as Type; }
+    let matched = getMatchedLiteralType(expr, expectedType);
+    if (matched != null) {
+      return matched;
+    }
   }
   
   return match (expr) {
@@ -4124,35 +4126,26 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
   case NumberLiteral {raw, loc}: {
     // Check if the literal has a decimal point → float.
-    var isFloat = false;
-    var i = 0;
-    while (i < raw.length) {
-      if (raw.getByteAt(i) == 46) {
-        isFloat = true;
+    if (raw.contains('.')) {
+      // Float literal — default to f64; use context to pick f32.
+      if (expectedType is F32Type || expectedType is F64Type) {
+        // TODO: Fix the type narrowing issue that's requiring a cast here
+        expectedType as Type
+      } else {
+        new F64Type()
       }
-      i += 1;
-    }
-
-    if (isFloat) {
-      // Float literal — default to f32; use context to pick f64.
-      if (expectedType != null) {
-        let expected = expectedType as Type;
-        if (expected is F64Type) { return new F64Type(); }
-        if (expected is F32Type) { return new F32Type(); }
-        if (isNumericType(expected)) {
-          if (expected is NumLiteralType) {} else { return new F32Type(); }
-        }
-      }
-      new F32Type()
     } else {
-      // Integer literal — default to i32; use context to pick other int types.
-      if (expectedType != null) {
-        let expected = expectedType as Type;
-        if (isNumericType(expected)) {
-          if (expected is NumLiteralType) {} else { return expected; }
-        }
+      // Integer literal — default to i32; use context to pick other int or
+      // float types.
+      if (expectedType is I32Type || expectedType is I64Type ||
+          expectedType is F32Type || expectedType is F64Type) {
+        expectedType as Type
+      } else if (expectedType is U32Type || expectedType is U64Type) {
+        // TODO: Throwing until we know what to do with -1, etc
+        throw new Error("u32 anad u64 not supported yet");
+      } else {
+        new I32Type()
       }
-      new I32Type()
     }
   }
 
@@ -4226,7 +4219,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   // --- Unary Expressions ---
 
   case UnaryExpression {operator, argument, loc}: {
-    let argType = checkExpression(ctx, argument, null);
+    let argType = checkExpression(ctx, argument, expectedType);
 
     if (operator == "-") {
       if (isNumericType(argType)) {
@@ -7515,7 +7508,20 @@ let checkBinaryExpression = (
   // Equality operators: ==, !=, ===, !==
   if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
     let leftType = checkExpression(ctx, left, null);
-    let rightType = checkExpression(ctx, right, leftType);
+    
+    // For numeric equality, if left side is a float literal (f32 fallback), 
+    // it will be checked with contextualType if expectedType was passed. But ==
+    // returns bool, and hasn't been passing contextualType here correctly.
+    // Instead we'll pass expectedType=null and do numeric resolution later if they mismatch.
+    
+    // Check left with null.
+    // Check right with leftType as contextual type, but only if it's numeric.
+    var rightContext: Type | null = null;
+    if (isNumericType(leftType)) {
+      rightContext = leftType;
+    }
+    
+    let rightType = checkExpression(ctx, right, rightContext);
     // Validate that types are comparable:
     // - Both boolean: always allowed
     // - Both numeric: always allowed
