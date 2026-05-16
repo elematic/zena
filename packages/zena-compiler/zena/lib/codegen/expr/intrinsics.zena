@@ -1,0 +1,72 @@
+import { FunctionContext } from '../function-context.zena';
+import { CallExpression, Expression } from '../../ast.zena';
+import { String } from 'zena:string';
+import { Error } from 'zena:error';
+import { Opcode } from '../wasm.zena';
+
+export let generateGlobalIntrinsic = (
+  ctx: FunctionContext,
+  name: String,
+  call: CallExpression,
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  let args = call.args;
+  
+  if (name == 'memory.size') {
+    ctx.emitter.emitMemorySize();
+    return;
+  }
+  
+  if (name == 'memory.grow') {
+    genExpr(args[0], false);
+    ctx.emitter.emitMemoryGrow();
+    return;
+  }
+
+  if (name == 'i32.load') {
+    genExpr(args[0], false);
+    ctx.emitter.emitI32Load(2, 0); // align=2 (4-byte alignment), offset=0
+    return;
+  }
+  
+  if (name == 'i32.store') {
+    genExpr(args[0], false);
+    genExpr(args[1], false);
+    ctx.emitter.emitI32Store(0, 0); // align=0, offset=0
+    return;
+  }
+  
+  if (name == 'i32.load8_u') {
+    genExpr(args[0], false);
+    ctx.emitter.emitI32Load8U(0, 0); // align=0, offset=0
+    return;
+  }
+
+  if (name == 'i32.store8') {
+    genExpr(args[0], false);
+    genExpr(args[1], false);
+    ctx.emitter.emitI32Store8(0, 0); // align=0, offset=0
+    return;
+  }
+
+  if (name == 'i32.clz') {
+    genExpr(args[0], false);
+    ctx.emitter.emitI32Clz();
+    return;
+  }
+  
+  if (name == 'i32.ctz') {
+    genExpr(args[0], false);
+    ctx.emitter.emitI32Ctz();
+    return;
+  }
+  
+  if (name == 'i32.popcnt') {
+    genExpr(args[0], false);
+    ctx.emitter.emitI32Popcnt();
+    return;
+  }
+
+  // TODO: Handle string matches against general math opcodes like the bootstrap compiler does.
+  throw new Error("Unsupported global intrinsic codegen for: " + name);
+};

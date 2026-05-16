@@ -1705,6 +1705,20 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
 
   ctx.exitScope();
 
+  if (decl.decorators) {
+    for (const decorator of decl.decorators) {
+      if (decorator.name === Decorators.Intrinsic) {
+        if (decorator.args.length !== 1) {
+          ctx.diagnostics.reportError(
+            '@intrinsic requires exactly one argument (the intrinsic name).',
+            DiagnosticCode.ArgumentCountMismatch,
+            ctx.getLocation(decorator.loc),
+          );
+        }
+      }
+    }
+  }
+
   const functionType: FunctionType = {
     kind: TypeKind.Function,
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
@@ -4979,6 +4993,51 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
         } else {
           const name = decorator.args[0].value;
           const validIntrinsics = new Set([
+                        'eq',
+            'hash',
+            'wasi_write_string',
+            'f32.abs',
+            'f32.ceil',
+            'f32.copysign',
+            'f32.floor',
+            'f32.max',
+            'f32.min',
+            'f32.nearest',
+            'f32.neg',
+            'f32.reinterpret_i32',
+            'f32.sqrt',
+            'f32.trunc',
+            'f64.abs',
+            'f64.ceil',
+            'f64.copysign',
+            'f64.floor',
+            'f64.max',
+            'f64.min',
+            'f64.nearest',
+            'f64.neg',
+            'f64.reinterpret_i64',
+            'f64.sqrt',
+            'f64.trunc',
+            'i32.clz',
+            'i32.ctz',
+            'i32.div_s',
+            'i32.div_u',
+            'i32.popcnt',
+            'i32.reinterpret_f32',
+            'i32.trunc_sat_f32_s',
+            'i32.trunc_sat_f32_u',
+            'i32.trunc_sat_f64_s',
+            'i32.trunc_sat_f64_u',
+            'i64.clz',
+            'i64.ctz',
+            'i64.div_s',
+            'i64.div_u',
+            'i64.popcnt',
+            'i64.reinterpret_f64',
+            'i64.trunc_sat_f32_s',
+            'i64.trunc_sat_f32_u',
+            'i64.trunc_sat_f64_s',
+            'i64.trunc_sat_f64_u',
             // Array intrinsics
             'array.len',
             'array.get',

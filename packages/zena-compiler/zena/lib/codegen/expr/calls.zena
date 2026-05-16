@@ -4,6 +4,7 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
+import { generateGlobalIntrinsic } from './intrinsics.zena';
 
 export let generateCallExpression = (ctx: FunctionContext, call: CallExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   let calleeType = ctx.wasmFunction.model.getNodeType(call.callee);
@@ -22,6 +23,11 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         throw new Error("Unresolved identifier in codegen: " + ident.name);
       }
       
+      if (let (true, intrinsic) = ctx.wasm.intrinsics.get((sym as Symbol).id)) {
+        generateGlobalIntrinsic(ctx, intrinsic, call, genExpr);
+        return;
+      }
+
       if (ctx.wasm.functionMap.has((sym as Symbol).id)) {
         var i = 0;
         while (i < call.args.length) {

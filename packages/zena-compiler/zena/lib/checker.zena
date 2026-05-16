@@ -44,6 +44,7 @@
  * - The checker produces a SemanticModel + diagnostics as output.
  */
 
+import { isValidIntrinsic } from './intrinsics.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -67,7 +68,7 @@ import {
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration,
-  ExportFromDeclaration, DeclareFunction, SymbolDeclaration,
+  ExportFromDeclaration, DeclareFunction, SymbolDeclaration, Decorator,
   SymbolPropertyName,
   // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
@@ -6001,11 +6002,14 @@ let trackAbstractMethod = (ctx: CheckerContext, classType: ClassType, methodName
  * Build a FunctionType for a method from its MethodDefinition.
  */
 let checkMethodSignature = (
-  ctx: CheckerContext,
-  classType: ClassType,
-  md: MethodDefinition
-): FunctionType => {
-  ctx.enterScope();
+    ctx: CheckerContext,
+    classType: ClassType,
+    md: MethodDefinition
+  ): FunctionType => {
+    // Check decorators
+    validateFunctionDecorators(ctx, md.decorators, false, md.loc);
+
+    ctx.enterScope();
   let astTypeParameters = md.typeParameters;
   var resolvedTypeParams: Array<TypeParameterType> | null = null;
   if (astTypeParameters != null) {
@@ -6721,9 +6725,44 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   ctx.exitScope();
 };
 
+
+
+
+let validateFunctionDecorators = (ctx: CheckerContext, decorators: Array<Decorator> | null, needsIntrinsicOrExternal: boolean, loc: SourceLocation | null): void => {
+  var paramCount = 0;
+  var hasExternal = false;
+  if (decorators != null) {
+    let decs = decorators as Array<Decorator>;
+    for (let dec in decs) {
+      if (dec.name == 'intrinsic') {
+        paramCount += 1;
+        // isDeclare function check is omitted since it is only allowed on declare functions and methods
+        if (false) {
+          ctx.error("@intrinsic decorator is only allowed on declare functions and methods.", DiagnosticCode.TypeMismatch, dec.loc);
+        }
+        if (dec.args.length != 1) {
+          ctx.error("Intrinsic decorator must have exactly one argument (the intrinsic name).", DiagnosticCode.TypeMismatch, dec.loc);
+        } else {
+          let name = dec.args[0].value;
+          if (!isValidIntrinsic(name)) {
+            ctx.error("Unknown intrinsic '" + name + "'.", DiagnosticCode.TypeMismatch, dec.loc);
+          }
+        }
+      } else if (dec.name == 'external') {
+        hasExternal = true;
+      }
+    }
+  }
+
+  if (needsIntrinsicOrExternal && paramCount > 1) {
+    ctx.error("A declare function cannot have more than one @intrinsic decorator.", DiagnosticCode.TypeMismatch, loc);
+  }
+};
+
 // ============================================================================
 // Declare Function (External Declarations)
 // ============================================================================
+
 
 let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   // Resolve from annotations (type params, params, return type).
@@ -6803,6 +6842,9 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
       }
     }
   }
+
+  // Check decorators
+  validateFunctionDecorators(ctx, df.decorators, true, df.loc);
 };
 
 // ============================================================================

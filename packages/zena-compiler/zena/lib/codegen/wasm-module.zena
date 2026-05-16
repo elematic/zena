@@ -91,6 +91,11 @@ export class WasmModule {
    */
   functionMap = new HashMap<SymbolId, WasmFunction>();
   
+  /**
+   * Maps a Zena symbol ID to its compiler intrinsic name (e.g. `memory.size`).
+   */
+  intrinsics = new HashMap<SymbolId, String>();
+
   globalMap = new HashMap<SymbolId, WasmGlobal>();
 
   exportMap = new HashMap<String, WasmFunction>();
@@ -277,7 +282,21 @@ export class DiscoveryPass {
           }
           case ImportDeclaration: {}
           case ClassDeclaration: {}
-          case DeclareFunction: {}
+          case DeclareFunction: {
+            let decl = stmt as DeclareFunction;
+            let sym = moduleModel.resolveDeclaration(decl);
+            if (sym != null) {
+              for (let dec in decl.decorators) {
+                if (dec.name == 'intrinsic') {
+                  if (dec.args.length == 1) {
+                    this.wasm.intrinsics[sym.id] = dec.args[0].value;
+                  } else {
+                    throw new Error("Intrinsic decorator must have exactly one argument");
+                  }
+                }
+              }
+            }
+          }
           case _: {
             throw new Error("Unsupported top-level statement type in codegen");
           }

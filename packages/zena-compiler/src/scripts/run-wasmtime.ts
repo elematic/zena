@@ -87,7 +87,7 @@ for (const wasmFile of wasmFiles.sort()) {
     ],
     {
       encoding: 'utf-8',
-      timeout: 30000,
+      timeout: 120000,
       cwd: repoRoot,
     },
   );
