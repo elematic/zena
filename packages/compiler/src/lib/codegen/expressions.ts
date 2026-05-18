@@ -4076,11 +4076,11 @@ function generateCallExpression(
       const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
       // params[0] is 'this'
 
-generateCallArguments(
-          ctx,
-          expr,
-          params,
-          1,
+      generateCallArguments(
+        ctx,
+        expr,
+        params,
+        1,
         tempObjForDefaults ?? -1, // -1 won't be used if no defaults with owner
         body,
       );

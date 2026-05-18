@@ -32,11 +32,11 @@ async function run() {
 
   let files = await glob(join(testsDir, '**/*.zena'));
   files = files.filter((f) => runList.some((r) => f.includes(r)));
-  
+
   const skipList = [
     'array-index.zena',
     'class-field.zena',
-    'private-field.zena'
+    'private-field.zena',
   ];
   files = files.filter((f) => !skipList.some((s) => f.includes(s)));
 
