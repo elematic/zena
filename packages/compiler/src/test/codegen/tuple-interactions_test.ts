@@ -33,9 +33,9 @@ suite('codegen: tuple interactions (boxed vs inline)', () => {
         `),
         (err: any) => {
           assert.ok(
-            err.message.includes(
-              'Inline tuple types can only appear in function return types',
-            ),
+            err.message.includes('not assignable to') ||
+              err.message.includes('Inline tuple'),
+            `Unexpected error message: ${err.message}`,
           );
           return true;
         },

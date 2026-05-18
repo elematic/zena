@@ -547,8 +547,23 @@ export function substituteType(
 export function resolveTypeAnnotation(
   ctx: CheckerContext,
   annotation: TypeAnnotation,
+  allowInlineTuple: boolean = false,
 ): Type {
-  const result = resolveTypeAnnotationInternal(ctx, annotation);
+  const result = resolveTypeAnnotationInternal(
+    ctx,
+    annotation,
+    allowInlineTuple,
+  );
+
+  if (!allowInlineTuple && containsInlineTuple(result)) {
+    console.error('DIAGNOSTIC ERROR', annotation.type, result.kind);
+    ctx.diagnostics.reportError(
+      `Inline tuple types can only appear in function return types, not here.`,
+      DiagnosticCode.TypeMismatch,
+      ctx.getLocation(annotation.loc),
+    );
+  }
+
   // Attach the resolved type to the annotation for use in codegen.
   // This enables identity-based lookups without re-resolving names.
   annotation.inferredType = result;
@@ -572,6 +587,7 @@ export function resolveTypeAnnotation(
 function resolveTypeAnnotationInternal(
   ctx: CheckerContext,
   annotation: TypeAnnotation,
+  allowInlineTuple: boolean,
 ): Type {
   if (annotation.type === NodeType.LiteralTypeAnnotation) {
     return {
@@ -594,7 +610,9 @@ function resolveTypeAnnotationInternal(
   }
 
   if (annotation.type === NodeType.UnionTypeAnnotation) {
-    const types = annotation.types.map((t) => resolveTypeAnnotation(ctx, t));
+    const types = annotation.types.map((t) =>
+      resolveTypeAnnotation(ctx, t, allowInlineTuple),
+    );
 
     // Reject void in explicit union types - void means "no value" and cannot
     // be stored in a variable or returned as a union member.
@@ -781,7 +799,7 @@ function resolveTypeAnnotationInternal(
     const parameters = annotation.params.map((p) =>
       resolveTypeAnnotation(ctx, p),
     );
-    const returnType = resolveTypeAnnotation(ctx, annotation.returnType);
+    const returnType = resolveTypeAnnotation(ctx, annotation.returnType, true);
     return {
       kind: TypeKind.Function,
       parameters,
@@ -906,11 +924,6 @@ function resolveTypeAnnotationInternal(
         resolveTypeAnnotation(ctx, arg),
       );
 
-      // Inline tuples cannot appear as type arguments
-      for (const arg of resolvedArgs) {
-        validateNoInlineTuple(arg, ctx, 'type arguments');
-      }
-
       if (type.kind === TypeKind.Class) {
         return instantiateGenericClass(type as ClassType, resolvedArgs, ctx);
       } else if (type.kind === TypeKind.Interface) {
@@ -967,30 +980,24 @@ export function containsInlineTuple(type: Type): boolean {
     case TypeKind.Function:
       // Return type of nested function may contain inline tuple - that's valid
       // But parameters cannot
-      return (type as FunctionType).parameters.some(containsInlineTuple);
+      return (
+        (type as FunctionType).parameters.some(containsInlineTuple) ||
+        ((type as FunctionType).typeArguments || []).some(containsInlineTuple)
+      );
+    case TypeKind.Class:
+      return ((type as ClassType).typeArguments || []).some(
+        containsInlineTuple,
+      );
+    case TypeKind.Interface:
+      return ((type as InterfaceType).typeArguments || []).some(
+        containsInlineTuple,
+      );
+    case TypeKind.Mixin:
+      return ((type as MixinType).typeArguments || []).some(
+        containsInlineTuple,
+      );
     default:
       return false;
-  }
-}
-
-/**
- * Validates that a type does not contain inline tuples.
- * Inline tuples are only allowed in function return types, not in:
- * - Variable types
- * - Field types
- * - Parameter types
- * - Generic type arguments
- */
-export function validateNoInlineTuple(
-  type: Type,
-  ctx: CheckerContext,
-  context: string,
-) {
-  if (containsInlineTuple(type)) {
-    ctx.diagnostics.reportError(
-      `Inline tuple types can only appear in function return types, not in ${context}.`,
-      DiagnosticCode.TypeMismatch,
-    );
   }
 }
 

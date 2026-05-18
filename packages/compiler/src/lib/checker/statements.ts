@@ -84,10 +84,10 @@ import {
   isAssignableTo,
   isNullableType,
   resolveTypeAnnotation,
+  containsInlineTuple,
   substituteType,
   typeToString,
   validateType,
-  validateNoInlineTuple,
   widenLiteralType,
 } from './types.js';
 
@@ -850,7 +850,7 @@ export function predeclareFunction(
       parameterInitializers.push(param.initializer);
     }
 
-    const returnType = resolveTypeAnnotation(ctx, funcExpr.returnType!);
+    const returnType = resolveTypeAnnotation(ctx, funcExpr.returnType!, true);
 
     ctx.exitScope();
 
@@ -1701,7 +1701,7 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
     parameterInitializers.push(param.initializer);
   }
 
-  const returnType = resolveTypeAnnotation(ctx, decl.returnType);
+  const returnType = resolveTypeAnnotation(ctx, decl.returnType, true);
 
   ctx.exitScope();
 
@@ -2287,7 +2287,6 @@ function checkVariableDeclaration(
   let explicitType: Type | undefined;
   if (decl.typeAnnotation) {
     explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
-    validateNoInlineTuple(explicitType, ctx, 'variable types');
   }
 
   let type: Type;
@@ -2309,12 +2308,17 @@ function checkVariableDeclaration(
   // Only check for simple identifier patterns — destructuring patterns like
   // `let (a, b) = inlineFn()` are fine because they extract element types.
   if (!decl.typeAnnotation && decl.pattern.type === NodeType.Identifier) {
-    validateNoInlineTuple(type, ctx, 'variable types');
+    if (containsInlineTuple(type)) {
+      ctx.diagnostics.reportError(
+        `Inline tuple types can only appear in function return types, not in variable types.`,
+        DiagnosticCode.TypeMismatch,
+        ctx.getLocation(decl.loc),
+      );
+    }
   }
 
   if (decl.typeAnnotation) {
     // explicitType was already resolved earlier for contextual typing
-    validateNoInlineTuple(explicitType as Type, ctx, 'variable types');
     // Special handling for literal types
     let compatible = isAssignableTo(ctx, type, explicitType as Type);
     if (!compatible) {
@@ -3700,7 +3704,6 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
 
       // Inline tuples cannot appear in field types
-      validateNoInlineTuple(fieldType, ctx, 'field types');
 
       // Check for duplicate fields (including inherited)
       if (classType.fields.has(fieldName)) {
@@ -3875,7 +3878,6 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       member.inferredType = fieldType;
 
       // Inline tuples cannot appear in field types
-      validateNoInlineTuple(fieldType, ctx, 'field types');
 
       if (memberNameInfo.isSymbol) {
         classType.symbolFields!.set(memberNameInfo.symbolType!, fieldType);
@@ -4070,7 +4072,6 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       member.inferredType = fieldType;
 
       // Inline tuples cannot appear in accessor types
-      validateNoInlineTuple(fieldType, ctx, 'accessor types');
 
       if (memberNameInfo.isSymbol) {
         classType.symbolFields!.set(memberNameInfo.symbolType!, fieldType);
@@ -4170,7 +4171,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       const parameterInitializers = member.params.map((p) => p.initializer);
 
       const returnType = member.returnType
-        ? resolveTypeAnnotation(ctx, member.returnType)
+        ? resolveTypeAnnotation(ctx, member.returnType, true)
         : Types.Void;
 
       ctx.exitScope();
@@ -4840,7 +4841,7 @@ function checkInterfaceDeclaration(
 
       let returnType: Type = Types.Void;
       if (member.returnType) {
-        returnType = resolveTypeAnnotation(ctx, member.returnType);
+        returnType = resolveTypeAnnotation(ctx, member.returnType, true);
       }
 
       ctx.exitScope();
@@ -4883,7 +4884,6 @@ function checkInterfaceDeclaration(
       member.inferredType = type;
 
       // Inline tuples cannot appear in interface field types
-      validateNoInlineTuple(type, ctx, 'field types');
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
@@ -4924,7 +4924,6 @@ function checkInterfaceDeclaration(
       const type = resolveTypeAnnotation(ctx, member.typeAnnotation!);
 
       // Inline tuples cannot appear in accessor types
-      validateNoInlineTuple(type, ctx, 'accessor types');
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
@@ -4993,7 +4992,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
         } else {
           const name = decorator.args[0].value;
           const validIntrinsics = new Set([
-                        'eq',
+            'eq',
             'hash',
             'wasi_write_string',
             'f32.abs',
@@ -5275,7 +5274,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   }
 
   const returnType = method.returnType
-    ? resolveTypeAnnotation(ctx, method.returnType)
+    ? resolveTypeAnnotation(ctx, method.returnType, true)
     : Types.Void;
   const previousReturnType = ctx.currentFunctionReturnType;
   ctx.currentFunctionReturnType = returnType;
@@ -5624,7 +5623,6 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       member.inferredType = fieldType;
 
       // Inline tuples cannot appear in mixin field types
-      validateNoInlineTuple(fieldType, ctx, 'field types');
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
@@ -5694,7 +5692,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
       let returnType: Type = Types.Void;
       if (member.returnType) {
-        returnType = resolveTypeAnnotation(ctx, member.returnType);
+        returnType = resolveTypeAnnotation(ctx, member.returnType, true);
       }
 
       ctx.exitScope();
@@ -5721,7 +5719,6 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation!);
 
       // Inline tuples cannot appear in accessor types
-      validateNoInlineTuple(fieldType, ctx, 'accessor types');
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {

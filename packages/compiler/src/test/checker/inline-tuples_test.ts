@@ -37,8 +37,8 @@ suite('Checker: Inline Tuple Validation', () => {
       const errors = checkSub(source);
       assert.ok(errors.length > 0, 'Expected errors');
       assert.ok(
-        errors.some((e) => /variable types/.test(e.message)),
-        'Expected error about variable types',
+        errors.some((e) => /not here/.test(e.message)),
+        'Expected error about inline tuple location',
       );
     });
 
@@ -52,8 +52,8 @@ suite('Checker: Inline Tuple Validation', () => {
       const errors = checkSub(source);
       assert.ok(errors.length > 0, 'Expected errors');
       assert.ok(
-        errors.some((e) => /parameter types/.test(e.message)),
-        'Expected error about parameter types',
+        errors.some((e) => /not here/.test(e.message)),
+        'Expected error about inline tuple location',
       );
     });
 
@@ -68,8 +68,8 @@ suite('Checker: Inline Tuple Validation', () => {
       const errors = checkSub(source);
       assert.ok(errors.length > 0, 'Expected errors');
       assert.ok(
-        errors.some((e) => /field types/.test(e.message)),
-        'Expected error about field types',
+        errors.some((e) => /not here/.test(e.message)),
+        'Expected error about inline tuple location',
       );
     });
 
@@ -83,8 +83,8 @@ suite('Checker: Inline Tuple Validation', () => {
       const errors = checkSub(source);
       assert.ok(errors.length > 0, 'Expected errors');
       assert.ok(
-        errors.some((e) => /field types/.test(e.message)),
-        'Expected error about field types',
+        errors.some((e) => /not here/.test(e.message)),
+        'Expected error about inline tuple location',
       );
     });
 
@@ -105,8 +105,8 @@ suite('Checker: Inline Tuple Validation', () => {
       const errors = checkSub(source);
       assert.ok(errors.length > 0, 'Expected errors');
       assert.ok(
-        errors.some((e) => /accessor types/.test(e.message)),
-        'Expected error about accessor types',
+        errors.some((e) => /not here/.test(e.message)),
+        'Expected error about inline tuple location',
       );
     });
 
@@ -120,8 +120,8 @@ suite('Checker: Inline Tuple Validation', () => {
       const errors = checkSub(source);
       assert.ok(errors.length > 0, 'Expected errors');
       assert.ok(
-        errors.some((e) => /variable types/.test(e.message)),
-        'Expected error about variable types',
+        errors.some((e) => /not here/.test(e.message)),
+        'Expected error about inline tuple location',
       );
     });
 
@@ -139,8 +139,8 @@ suite('Checker: Inline Tuple Validation', () => {
       const errors = checkSub(source);
       assert.ok(errors.length > 0, 'Expected errors');
       assert.ok(
-        errors.some((e) => /type arguments/.test(e.message)),
-        'Expected error about type arguments',
+        errors.some((e) => /not here/.test(e.message)),
+        'Expected error about inline tuple location',
       );
     });
   });

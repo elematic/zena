@@ -514,7 +514,7 @@ class CheckerContext {
       for (let tp in tps) {
         var constraint: Type | null = null;
         if (tp.constraint != null) {
-          constraint = resolveTypeAnnotation(this, tp.constraint as TypeAnnotation);
+          constraint = resolveTypeAnnotation(this, tp.constraint as TypeAnnotation, false);
         }
         let tpType = new TypeParameterType(tp.name, constraint, null);
         this.declareTypeName(tp.name, tpType);
@@ -529,14 +529,14 @@ class CheckerContext {
     for (let param in params) {
       paramNames.push(param.name.name);
       if (param.typeAnnotation != null) {
-        paramTypes.push(resolveTypeAnnotation(this, param.typeAnnotation as TypeAnnotation));
+        paramTypes.push(resolveTypeAnnotation(this, param.typeAnnotation as TypeAnnotation, false));
       } else {
         paramTypes.push(new ErrorType());
       }
     }
 
     // Resolve return type.
-    let retType = resolveTypeAnnotation(this, returnTypeAnn);
+    let retType = resolveTypeAnnotation(this, returnTypeAnn, true);
 
     this.exitScope();
 
@@ -868,11 +868,11 @@ class CheckerContext {
             let param = declarationParams[i];
             if (param.constraint != null) {
               tempTypeParams[i].constraint =
-                resolveTypeAnnotation(this, param.constraint as TypeAnnotation);
+                resolveTypeAnnotation(this, param.constraint as TypeAnnotation, false);
             }
             if (param.defaultType != null) {
               tempTypeParams[i].defaultType =
-                resolveTypeAnnotation(this, param.defaultType as TypeAnnotation);
+                resolveTypeAnnotation(this, param.defaultType as TypeAnnotation, false);
             }
           }
         }
@@ -880,7 +880,7 @@ class CheckerContext {
         let aliasType = new TypeAliasType(ta.name.name, typeParams, new HoleType(), ta.isDistinct, null);
         this.#materializedTypes[info.id] = aliasType;
         
-        let targetType: Type = resolveTypeAnnotation(this, ta.typeAnnotation);
+        let targetType: Type = resolveTypeAnnotation(this, ta.typeAnnotation, false);
         aliasType.target = targetType;
         this.exitScope();
         
@@ -1309,10 +1309,80 @@ export let checkModule = (
   return new CheckResult(ctx.model, ctx.diagnostics.diagnostics);
 };
 
+let containsInlineTuple = (t: Type): boolean => {
+  if (t is InlineTupleT) { return true; }
+  match (t) {
+    case InlineTupleT as _tut: true
+    case UnionT {types}: {
+      for (let subtype in types) {
+        if (containsInlineTuple(subtype)) return true;
+      }
+      false
+    }
+    case ArrayType {elementType}: containsInlineTuple(elementType)
+    case TupleT {elementTypes}: {
+      for (let subtype in elementTypes) {
+        if (containsInlineTuple(subtype)) return true;
+      }
+      false
+    }
+    case RecordT {properties}: {
+      for (let entry in properties) {
+        if (containsInlineTuple(entry.value)) return true;
+      }
+      false
+    }
+    case FunctionType {parameters, typeArguments}: {
+      for (let param in parameters) {
+        if (containsInlineTuple(param)) return true;
+      }
+      if (typeArguments != null) {
+        let args = typeArguments as Array<Type>;
+        for (let arg in args) {
+          if (containsInlineTuple(arg)) return true;
+        }
+      }
+      false
+    }
+    case ClassType {typeArguments}: {
+      if (typeArguments != null) {
+        let args = typeArguments as Array<Type>;
+        for (let arg in args) {
+          if (containsInlineTuple(arg)) return true;
+        }
+      }
+      false
+    }
+    case InterfaceType {typeArguments}: {
+      if (typeArguments != null) {
+        let args = typeArguments as Array<Type>;
+        for (let arg in args) {
+          if (containsInlineTuple(arg)) return true;
+        }
+      }
+      false
+    }
+    case _: false
+  }
+  // TODO: this is unreachable, shouldn't be neccessary
+  return false;
+};
+
+
 /**
  * Resolve a type annotation AST node to a Type.
  */
-let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => match (ann) {
+let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean = false): Type => {
+  let t = resolveTypeAnnotationInner(ctx, ann, allowInlineTuple);
+  if (!allowInlineTuple) {
+    if (containsInlineTuple(t)) {
+    ctx.error("Inline tuple types can only appear in function return types, not here.", DiagnosticCode.TypeMismatch, ann.loc);
+    }
+  }
+  return t;
+};
+
+let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean): Type => match (ann) {
   case NamedTypeAnnotation {name, typeArguments}: {
     // Resolve through scope analysis so lexical shadowing is honored.
     let resolved = ctx.resolveTypeReference(ann, name);
@@ -1333,7 +1403,8 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
       if (typeArguments.length > 0) {
         hasTypeArgs = true;
         for (let typeArgument in typeArguments) {
-          resolvedArgs.push(resolveTypeAnnotation(ctx, typeArgument));
+          let resolvedArg = resolveTypeAnnotation(ctx, typeArgument, allowInlineTuple);
+                    resolvedArgs.push(resolvedArg);
         }
       }
     }
@@ -1394,7 +1465,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
     let resolved = new Array<Type>();
     var i = 0;
     while (i < types.length) {
-      let t = resolveTypeAnnotation(ctx, types[i]);
+      let t = resolveTypeAnnotation(ctx, types[i], allowInlineTuple);
       resolved.push(t);
       i += 1;
     }
@@ -1451,10 +1522,11 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
     let paramTypes = new Array<Type>();
     var i = 0;
     while (i < params.length) {
-      paramTypes.push(resolveTypeAnnotation(ctx, params[i]));
+      let paramType = resolveTypeAnnotation(ctx, params[i], allowInlineTuple);
+            paramTypes.push(paramType);
       i += 1;
     }
-    let retType = resolveTypeAnnotation(ctx, returnType);
+    let retType = resolveTypeAnnotation(ctx, returnType, true);
     new FunctionType(paramTypes, null, retType)
   }
   case LiteralTypeAnnotation {value}: {
@@ -1474,7 +1546,8 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
     let props = new HashMap<String, Type>();
     var optionals: HashSet<String> | null = null;
     for (let prop in properties) {
-      props[prop.name.name] = resolveTypeAnnotation(ctx, prop.typeAnnotation);
+      let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, allowInlineTuple);
+            props[prop.name.name] = resolved;
       if (prop.optional) {
         optionals ??= new HashSet<String>();
         optionals.add(prop.name.name);
@@ -1486,7 +1559,8 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
     let elTypes = new Array<Type>();
     var i = 0;
     while (i < elementTypes.length) {
-      elTypes.push(resolveTypeAnnotation(ctx, elementTypes[i]));
+      let resolved = resolveTypeAnnotation(ctx, elementTypes[i], allowInlineTuple);
+            elTypes.push(resolved);
       i += 1;
     }
     new TupleT(elTypes)
@@ -1495,7 +1569,7 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
     let elTypes = new Array<Type>();
     var i = 0;
     while (i < elementTypes.length) {
-      elTypes.push(resolveTypeAnnotation(ctx, elementTypes[i]));
+      elTypes.push(resolveTypeAnnotation(ctx, elementTypes[i], allowInlineTuple));
       i += 1;
     }
     new InlineTupleT(elTypes)
@@ -1579,9 +1653,13 @@ let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, lo
   if (ctx != null) {
     var hasPrimitive = false;
     var hasReference = false;
+    var hasInlineTuple = false;
     let primitiveBases = new Array<String>();
 
     for (let t in deduped) {
+      if (t is InlineTupleT) {
+        hasInlineTuple = true;
+      }
       var baseName: String | null = null;
       if (isNumericType(t)) {
         baseName = typeToString(baseType(t));
@@ -1601,14 +1679,16 @@ let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, lo
         if (!found) {
           primitiveBases.push(baseName);
         }
-      } else if (t is VoidType || t is NeverType || t is ErrorType || t is UnknownType || t is HoleType) {
+      } else if (t is VoidType || t is NeverType || t is ErrorType || t is UnknownType || t is HoleType || t is InlineTupleT) {
         // Neither primitive nor reference.
       } else {
         hasReference = true;
       }      
     }
 
-    if (hasPrimitive && hasReference) {
+    if (hasInlineTuple && (hasPrimitive || hasReference)) {
+      ctx.error("cannot mix inline tuple types with other representations", DiagnosticCode.TypeMismatch, loc);
+    } else if (hasPrimitive && hasReference) {
       ctx.error("Union types cannot mix primitive types with reference types", DiagnosticCode.TypeMismatch, loc);
     } else if (primitiveBases.length > 1) {
       ctx.error("Union types cannot mix primitives of different base types", DiagnosticCode.TypeMismatch, loc);
@@ -3592,6 +3672,8 @@ let checkVariableDeclaration = (
   };
 
   let initType = checkExpression(ctx, init, expectedType);
+  if (typeAnnotation == null && pattern is IdentifierPattern) {
+      }
 
   // For `var` bindings, widen literal types.
   var declType = initType;
@@ -5235,7 +5317,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           case _: "<unknown>"
         };
         let fieldType = if (fd.typeAnnotation != null) {
-          resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation)
+          let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
+                    resolved
         } else {
           new ErrorType() as Type
         };
@@ -5409,7 +5492,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           case _: "<unknown>"
         };
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-
+        
         // Getter creates get#accName method.
         if (acc.getter != null) {
           let getterName = "get#" + accName;
@@ -5501,7 +5584,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
           var retType: Type = new VoidType();
           if (ms.returnType != null) {
-            retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation);
+            retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation, true);
           }
           classType.methods[methodName] = new FunctionType(paramTypes, null, retType);
         }
@@ -6011,7 +6094,7 @@ let checkMethodSignature = (
       paramType = classType.fields[paramName].type;
     } else if (param.typeAnnotation != null) {
       paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
-    }
+          }
 
     // Track optional parameters and widen to T | null.
     let isOptional = param.optional || param.defaultValue != null;
@@ -6073,7 +6156,7 @@ let checkMethodSignature = (
 
   var retType: Type = new VoidType();
   if (md.returnType != null) {
-    retType = resolveTypeAnnotation(ctx, md.returnType as TypeAnnotation);
+    retType = resolveTypeAnnotation(ctx, md.returnType as TypeAnnotation, true);
   }
 
   let ft = new FunctionType(paramTypes, paramNames, retType);
@@ -6247,12 +6330,12 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
           var paramType: Type = new ErrorType();
           if (param.typeAnnotation != null) {
             paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
-          }
+                      }
           paramTypes.push(paramType);
         }
         var retType: Type = new VoidType();
         if (ms.returnType != null) {
-          retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation);
+          retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation, true);
         }
         let methodName = match (ms.name) {
           case Identifier {name}: name
@@ -6288,7 +6371,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       }
       case AccessorSignature as as_: {
         let accType = resolveTypeAnnotation(ctx, as_.typeAnnotation);
-        if (as_.hasGetter) {
+                if (as_.hasGetter) {
           ifaceType.methods["get#" + as_.name.name] = new FunctionType(new Array<Type>(), null, accType);
         }
       }
@@ -6532,7 +6615,8 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           case _: "<unknown>"
         };
         let fieldType = if (fd.typeAnnotation != null) {
-          resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation)
+          let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
+                    resolved
         } else {
           new ErrorType() as Type
         };
@@ -6585,7 +6669,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           }
           var retType: Type = new VoidType();
           if (methDef.returnType != null) {
-            retType = resolveTypeAnnotation(ctx, methDef.returnType as TypeAnnotation);
+            retType = resolveTypeAnnotation(ctx, methDef.returnType as TypeAnnotation, true);
           }
           let ft = new FunctionType(paramTypes, paramNames, retType);
           ft.isFinal = methDef.isFinal;
@@ -6595,7 +6679,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       }
       case AccessorDeclaration as acc: {
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-        let accName = match (acc.name) {
+                let accName = match (acc.name) {
           case Identifier {name}: name
           case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
             case Identifier {name}: name
@@ -6771,7 +6855,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   }
 
   // Return type.
-  let retType = resolveTypeAnnotation(ctx, df.returnType);
+  let retType = resolveTypeAnnotation(ctx, df.returnType, true);
 
   ctx.exitScope();
 
@@ -8276,7 +8360,7 @@ let checkFunctionExpression = (
     var paramType: Type = new ErrorType();
     if (param.typeAnnotation != null) {
       paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
-    } else if (contextualFn != null) {
+          } else if (contextualFn != null) {
       let cfn = contextualFn as FunctionType;
       if (i < cfn.parameters.length) {
         paramType = cfn.parameters[i];
@@ -8351,7 +8435,7 @@ let checkFunctionExpression = (
   var retType: Type = new VoidType();
   var needsInference = false;
   if (returnTypeAnn != null) {
-    retType = resolveTypeAnnotation(ctx, returnTypeAnn as TypeAnnotation);
+    retType = resolveTypeAnnotation(ctx, returnTypeAnn as TypeAnnotation, true);
   } else {
     needsInference = true;
   }

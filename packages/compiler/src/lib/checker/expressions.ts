@@ -185,7 +185,6 @@ import {
   isAssignableTo,
   substituteType,
   validateType,
-  validateNoInlineTuple,
   isNullableType,
   getNonNullableType,
   makeNullable,
@@ -726,7 +725,13 @@ export function checkMatchPattern(
     }
     case NodeType.AsPattern: {
       const asPattern = pattern as AsPattern;
-      checkMatchPattern(ctx, asPattern.pattern, discriminantType, kind, bindingType);
+      checkMatchPattern(
+        ctx,
+        asPattern.pattern,
+        discriminantType,
+        kind,
+        bindingType,
+      );
       // Use the narrowed type from the inner pattern if available
       const narrowedType =
         (asPattern.pattern as any).inferredType ??
@@ -3076,8 +3081,6 @@ function checkFunctionExpression(
     let type: Type;
     if (param.typeAnnotation) {
       type = resolveTypeAnnotation(ctx, param.typeAnnotation);
-      // Inline tuples cannot appear in parameter types
-      validateNoInlineTuple(type, ctx, 'parameter types');
     } else if (expectedFuncType && i < expectedFuncType.parameters.length) {
       // Contextual typing: infer parameter type from expected function type
       type = expectedFuncType.parameters[i];
@@ -3135,7 +3138,7 @@ function checkFunctionExpression(
   // Check return type if annotated
   let expectedReturnType: Type = Types.Error;
   if (expr.returnType) {
-    expectedReturnType = resolveTypeAnnotation(ctx, expr.returnType);
+    expectedReturnType = resolveTypeAnnotation(ctx, expr.returnType, true);
   }
 
   const previousReturnType = ctx.currentFunctionReturnType;
