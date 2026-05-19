@@ -96,11 +96,48 @@ export class BinaryEmitter implements WasmEmitter {
   }
 
   emitImportSectionStart(count: i32): void {
-    // TODO: Not yet implemented
+    if (count == 0) return;
+    this.currentSection = new ByteBuffer();
+    (this.currentSection as ByteBuffer).writeULEB128(count);
+  }
+  emitFunctionImport(module: String, name: String, typeIndex: i32): void {
+    let section = this.currentSection;
+    if (section != null) {
+      section.writeULEB128(module.length);
+      for (var j = 0; j < module.length; j += 1) {
+        section.writeByte(module.getByteAt(j));
+      }
+      section.writeULEB128(name.length);
+      for (var j = 0; j < name.length; j += 1) {
+        section.writeByte(name.getByteAt(j));
+      }
+      section.writeByte(0x00); // 0 = function import
+      section.writeULEB128(typeIndex);
+    }
   }
   emitGlobalImport(module: String, name: String, type: ValType, isMutable: boolean): void {
+    let section = this.currentSection;
+    if (section != null) {
+      section.writeULEB128(module.length);
+      for (var j = 0; j < module.length; j += 1) {
+        section.writeByte(module.getByteAt(j));
+      }
+      section.writeULEB128(name.length);
+      for (var j = 0; j < name.length; j += 1) {
+        section.writeByte(name.getByteAt(j));
+      }
+      section.writeByte(0x03); // 3 = global import
+      section.writeByte(type as i32);
+      section.writeByte(if (isMutable) 1 else 0);
+    }
   }
-  emitImportSectionEnd(): void {}
+  emitImportSectionEnd(): void {
+    let section = this.currentSection;
+    if (section != null) {
+      this.writeSection(SectionId.Import as i32, section);
+      this.currentSection = null;
+    }
+  }
 
   emitGlobalSectionStart(count: i32): void {
     if (count == 0) {

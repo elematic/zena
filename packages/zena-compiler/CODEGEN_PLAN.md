@@ -41,7 +41,7 @@ These represent the next major milestones for the codegen phase.
 ### 3. Functions
 
 - [ ] Function Overloads.
-- [ ] External functions.
+- [x] External functions.
 - [x] Various compiler intrinsics.
   - [x] `@intrinsic` decorator discovery.
   - [x] Intrinsic codegen (e.g. `memory.size`, `memory.grow`, `i32.load`, etc.).

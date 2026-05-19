@@ -70,7 +70,10 @@ export class WasmFunction {
   var index: i32 = -1;
   var name: String | null = null;
   signature: WasmSignature;
-  node: FunctionExpression;
+  node: Node;
+  var isImport: boolean = false;
+  var importModule: String | null = null;
+  var importName: String | null = null;
   new(this.signature, this.node, this.model);
 }
 
@@ -93,6 +96,11 @@ export class WasmGlobal {
 export class WasmModule {
   types = new Array<WasmType>();
   
+  /** 
+   * A complete list of all imported functions.
+   */
+  functionImports = new Array<WasmFunction>();
+
   /** 
    * A complete list of all functions in the module, including anonymous
    * functions that do not have a corresponding symbol. Array order dictates
@@ -197,9 +205,16 @@ export class WasmModule {
       let t = this.types[i];
       t.index = i;
     }
+    var functionIndex = 0;
+    for (var i = 0; i < this.functionImports.length; i += 1) {
+      let f = this.functionImports[i];
+      f.index = functionIndex;
+      functionIndex += 1;
+    }
     for (var i = 0; i < this.functions.length; i += 1) {
       let f = this.functions[i];
-      f.index = i;
+      f.index = functionIndex;
+      functionIndex += 1;
     }
     for (var i = 0; i < this.globals.length; i += 1) {
       let g = this.globals[i];
@@ -328,6 +343,29 @@ export class DiscoveryPass {
                     this.wasm.intrinsics[sym.id] = dec.args[0].value;
                   } else {
                     throw new Error("Intrinsic decorator must have exactly one argument");
+                  }
+                } else if (dec.name == 'external') {
+                  if (dec.args.length == 2) {
+                     let moduleName = dec.args[0].value;
+                     let exportName = dec.args[1].value;
+                     let funcType = moduleModel.getNodeType(decl) as FunctionType;
+                     let params = new Array<ValType>();
+                     for (let pt in funcType.parameters) {
+                       params.push(typeToValType(pt));
+                     }
+                     let returns = new Array<ValType>();
+                     if (!(funcType.returnType is VoidType)) {
+                        returns.push(typeToValType(funcType.returnType));
+                     }
+                     let sig = this.wasm.getSignature(params, returns);
+                     let wasmFunc = new WasmFunction(sig, decl, moduleModel);
+                     wasmFunc.isImport = true;
+                     wasmFunc.importModule = moduleName;
+                     wasmFunc.importName = exportName;
+                     this.wasm.functionImports.push(wasmFunc);
+                     this.wasm.functionMap[sym.id] = wasmFunc;
+                  } else {
+                    throw new Error("External decorator must have exactly two arguments");
                   }
                 }
               }

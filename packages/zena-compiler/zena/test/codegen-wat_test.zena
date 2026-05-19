@@ -136,6 +136,42 @@ export let tests = suite('WatGenerator', (): void => {
     assertSnapshot('multiple_exported_functions', result);
   });
 
+  test('external function import and call', (ctx: TestContext): void => {
+    let host = new MockHost();
+    let source = "@external(\"env\", \"consoleLog\")\ndeclare function consoleLog(msg: i32): void;\nexport let main = (): void => { consoleLog(42); };";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = compiler.compile("test.zena");
+    let checkRes = checkCompilation(compResult, null, false);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    // Using simple asserts for the import since snapshots will change based on ast/model
+    // if new logic is added. Just ensuring it generates `(import "env" "consoleLog" ...)` 
+    // and calls it.
+    assertSnapshot('external_function_import', result);
+  });
+
   test('parameter default dependency optimization skips locals', (ctx: TestContext): void => {
     let host = new MockHost();
     let source = "let testFn = (a: i32 = 1, b: i32 = 2): i32 => a + b;\nexport let foo = (): i32 => testFn();";
