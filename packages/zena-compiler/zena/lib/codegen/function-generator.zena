@@ -6,11 +6,11 @@ import {
   IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
   ContinueStatement, RecordLiteral, MemberExpression, NewExpression
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { ValType } from "./wasm.zena";
+import { ValType, typeToValType } from "./wasm.zena";
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
@@ -36,7 +36,7 @@ import { generateBlockStatement } from './stmt/blocks.zena';
 import { generateVariableDeclaration } from './stmt/bindings.zena';
 import { discoverLocalsFromExpr, discoverLocalsFromStmt } from './locals.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { WasmFunction, WasmModule } from './wasm-module.zena';
+import { WasmFunction, WasmModule, WasmField, WasmStruct, sortWasmFields } from './wasm-module.zena';
 
 /**
  * Manages the generic AST traversal and code generation.
@@ -50,6 +50,29 @@ export class FunctionGenerator {
 
 
   discoverLocalsFromExpr(expr: Expression): void {
+    let adaptTarget = this.ctx.wasmFunction.model.getRecordAdaptation(expr);
+    if (adaptTarget != null) {
+      if (this.ctx.recordAdaptScratch == -1) {
+        var paramCount = 0;
+        if (this.ctx.wasmFunction.node != null) {
+          let node = this.ctx.wasmFunction.node as FunctionExpression;
+          paramCount = node.params.length;
+        }
+        this.ctx.recordAdaptScratch = paramCount + this.ctx.localTypes.length;
+        this.ctx.localTypes.push(ValType.anyref);
+      }
+    }
+    if (expr is MemberExpression) {
+      if (this.ctx.vtableAccessScratch == -1) {
+        var paramCount = 0;
+        if (this.ctx.wasmFunction.node != null) {
+          let node = this.ctx.wasmFunction.node as FunctionExpression;
+          paramCount = node.params.length;
+        }
+        this.ctx.vtableAccessScratch = paramCount + this.ctx.localTypes.length;
+        this.ctx.localTypes.push(ValType.anyref);
+      }
+    }
     discoverLocalsFromExpr(this.ctx, expr, (e: Expression) => this.discoverLocalsFromExpr(e), (s: Statement) => this.discoverLocalsFromStmt(s));
   }
 
@@ -58,6 +81,32 @@ export class FunctionGenerator {
   }
 
   generate(): void {
+    if (this.ctx.wasmFunction.node == null) {
+      // Synthetic helper functions have no AST node (e.g., dynamic property
+      // getters for VTables). We generate their Wasm bytecodes directly here
+      // rather than traversing a user-written AST body.
+      this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
+      var name = "func" + i32ToString(this.ctx.wasmFunction.index);
+      if (this.ctx.wasmFunction.name != null) {
+        name = this.ctx.wasmFunction.name as String;
+      }
+      this.ctx.emitter.emitFunctionSignatureStart(name, this.ctx.wasmFunction.signature.index);
+      this.ctx.emitter.emitFunctionLocalsStart(new Array<ValType>());
+      
+      if (this.ctx.wasmFunction.getterStruct != null) {
+        let st = this.ctx.wasmFunction.getterStruct as WasmStruct;
+        this.ctx.emitter.emitLocalGet(0);
+        this.ctx.emitter.emitRefCastNull(st.index);
+        this.ctx.emitter.emitStructGet(st.index, this.ctx.wasmFunction.getterFieldIndex);
+      } else {
+        this.ctx.emitter.emitUnreachable();
+      }
+      
+      this.ctx.emitter.emitFunctionEnd();
+      this.ctx.emitter.emitFunctionCodeEnd(this.ctx.wasmFunction);
+      return;
+    }
+    
     let bodyNode = this.ctx.wasmFunction.node as FunctionExpression;
     for (var i = 0; i < bodyNode.params.length; i += 1) {
       let param = bodyNode.params[i];
@@ -159,6 +208,44 @@ export class FunctionGenerator {
       }
     }
     
+    // EXCEPTION: Implicit Structural Adaptation
+    // If the semantic model determined that this expression produces a record that is
+    // being assigned to a narrower record type, we must perform an implicit adaptation.
+    // This pops the original fat pointer from the stack, extracts the underlying instance,
+    // and pushes a newly allocated fat pointer with a vtable tailored to the expected target.
+    // In the future, this same injection point will likely be used to adapt functions 
+    // and classes being assigned to interface contexts.
+    let adaptTarget = this.ctx.wasmFunction.model.getRecordAdaptation(expr);
+    if (adaptTarget != null && !discardValue) {
+      if (this.ctx.recordAdaptScratch == -1) {
+        throw new Error("Record adapt scratch not allocated!");
+      }
+      this.ctx.emitter.emitLocalSet(this.ctx.recordAdaptScratch);
+      let actRec = this.ctx.wasmFunction.model.getNodeType(expr) as RecordType;
+      
+      let inFields = new Array<WasmField>();
+      for (let pair in actRec.properties) {
+        inFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+      }
+      
+      let inDispatchInfo = this.ctx.wasm.getRecordDispatch(this.ctx.wasmFunction.model, inFields);
+
+      let outFields = new Array<WasmField>();
+      for (let pair in adaptTarget.properties) {
+        outFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+      }
+      
+      let outDispatchInfo = this.ctx.wasm.getAdaptedRecordDispatch(this.ctx.wasmFunction.model, inFields, outFields);
+
+      this.ctx.emitter.emitLocalGet(this.ctx.recordAdaptScratch);
+      this.ctx.emitter.emitRefCastNull(inDispatchInfo.fatPtrType.index);
+      this.ctx.emitter.emitStructGet(inDispatchInfo.fatPtrType.index, 0); // Get Instance
+      
+      this.ctx.emitter.emitGlobalGet(outDispatchInfo.vtableGlobal.index);
+      
+      this.ctx.emitter.emitStructNew(outDispatchInfo.fatPtrType.index);
+    }
+
     if (discardValue && !handlesDiscardNatively) {
       let exprType = this.ctx.wasmFunction.model.getNodeType(expr);
       if (!(exprType is VoidType)) {

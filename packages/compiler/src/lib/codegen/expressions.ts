@@ -5826,43 +5826,59 @@ function generateBinaryExpression(
       t[0] === ValType.funcref);
 
   if (isRefType(leftType) && isRefType(rightType)) {
-    // Unwrap interface fat pointers before reference comparison.
+    // Unwrap interface and record fat pointers before reference comparison.
     // Fat pointers are (instance, vtable) structs — comparing them directly
     // with ref_eq would fail when the same object is boxed with different
-    // vtables (e.g., upcasted to different interfaces). Extract field 0
-    // (the instance) so ref_eq compares the underlying objects.
+    // vtables (e.g., upcasted to different interfaces, or adapted records).
+    // Extract field 0 (the instance) so ref_eq compares the underlying objects.
     const leftIsInterface = expr.left.inferredType?.kind === TypeKind.Interface;
     const rightIsInterface =
       expr.right.inferredType?.kind === TypeKind.Interface;
-    if (leftIsInterface || rightIsInterface) {
-      const leftInterfaceInfo = leftIsInterface
-        ? ctx.getInterfaceInfo(expr.left.inferredType as InterfaceType)
-        : undefined;
-      const rightInterfaceInfo = rightIsInterface
-        ? ctx.getInterfaceInfo(expr.right.inferredType as InterfaceType)
-        : undefined;
+    const leftIsRecord = expr.left.inferredType?.kind === TypeKind.Record;
+    const rightIsRecord = expr.right.inferredType?.kind === TypeKind.Record;
+
+    if (leftIsInterface || rightIsInterface || leftIsRecord || rightIsRecord) {
+      let leftStructIndex = -1;
+      if (leftIsInterface) {
+        leftStructIndex =
+          ctx.getInterfaceInfo(expr.left.inferredType as InterfaceType)
+            ?.structTypeIndex ?? -1;
+      } else if (leftIsRecord) {
+        leftStructIndex = ensureRecordDispatchType(
+          ctx,
+          expr.left.inferredType as import('../types.js').RecordType,
+        ).fatPtrTypeIndex;
+      }
+
+      let rightStructIndex = -1;
+      if (rightIsInterface) {
+        rightStructIndex =
+          ctx.getInterfaceInfo(expr.right.inferredType as InterfaceType)
+            ?.structTypeIndex ?? -1;
+      } else if (rightIsRecord) {
+        rightStructIndex = ensureRecordDispatchType(
+          ctx,
+          expr.right.inferredType as import('../types.js').RecordType,
+        ).fatPtrTypeIndex;
+      }
 
       // Stack: [left, right]. Save right to temp, unwrap left, reload & unwrap right.
-      const tempRight = ctx.declareLocal('$$eq_iface_right', rightType);
+      const tempRight = ctx.declareLocal('$$eq_fatptr_right', rightType);
       body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempRight));
 
-      if (leftInterfaceInfo) {
+      if (leftStructIndex !== -1) {
         // Extract instance (field 0) from fat pointer and cast anyref -> eqref
         body.push(0xfb, GcOpcode.struct_get);
-        body.push(
-          ...WasmModule.encodeSignedLEB128(leftInterfaceInfo.structTypeIndex),
-        );
+        body.push(...WasmModule.encodeSignedLEB128(leftStructIndex));
         body.push(...WasmModule.encodeSignedLEB128(0));
         body.push(0xfb, GcOpcode.ref_cast_null, 0x6d); // ref.cast null eq
       }
 
       body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempRight));
-      if (rightInterfaceInfo) {
+      if (rightStructIndex !== -1) {
         // Extract instance (field 0) from fat pointer and cast anyref -> eqref
         body.push(0xfb, GcOpcode.struct_get);
-        body.push(
-          ...WasmModule.encodeSignedLEB128(rightInterfaceInfo.structTypeIndex),
-        );
+        body.push(...WasmModule.encodeSignedLEB128(rightStructIndex));
         body.push(...WasmModule.encodeSignedLEB128(0));
         body.push(0xfb, GcOpcode.ref_cast_null, 0x6d); // ref.cast null eq
       }
@@ -11199,7 +11215,10 @@ export function generateAdaptedArgument(
         generateExpression(ctx, arg, body);
 
         // Store in temp local
-        const actualFatPtrType = inferType(ctx, arg);
+        const actualFatPtrType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(actualRecordInfo.fatPtrTypeIndex),
+        ];
         const tempLocal = ctx.declareLocal(`$$record_adapt`, actualFatPtrType);
         body.push(Opcode.local_set);
         body.push(...WasmModule.encodeSignedLEB128(tempLocal));

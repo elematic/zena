@@ -4,7 +4,8 @@ import {
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
   IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
-  ContinueStatement
+  ContinueStatement, RecordLiteral, ArrayLiteral, TupleLiteral, MemberExpression,
+  AsExpression, IsExpression, PipelineExpression, IndexExpression, PropertyAssignment
 } from '../ast.zena';
 import { Type, F64Type, F32Type, FunctionType } from '../types.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
@@ -61,12 +62,51 @@ export let discoverLocalsFromExpr = (ctx: FunctionContext, expr: Expression, dis
         discExpr(arg);
       }
     }
+    case MemberExpression {object}: {
+      discExpr(object);
+    }
+    case AsExpression {expression}: {
+      discExpr(expression);
+    }
+    case IsExpression {expression}: {
+      discExpr(expression);
+    }
+    case PipelineExpression {left, right}: {
+      discExpr(left);
+      discExpr(right);
+    }
+    case IndexExpression {object, index}: {
+      discExpr(object);
+      discExpr(index);
+    }
+    case RecordLiteral {properties}: {
+      for (let prop in properties) {
+        if (prop is PropertyAssignment) {
+          discExpr((prop as PropertyAssignment).value);
+        }
+      }
+    }
+    case ArrayLiteral {elements}: {
+      for (let el in elements) {
+        discExpr(el);
+      }
+    }
+    case TupleLiteral {elements}: {
+      for (let el in elements) {
+        discExpr(el);
+      }
+    }
     case _: {}
   }
 };
 
 export let discoverLocalsFromStmt = (ctx: FunctionContext, stmt: Statement, discExpr: (e: Expression) => void, discStmt: (s: Statement) => void): void => {
   match (stmt) {
+    case ReturnStatement {argument}: {
+      if (argument != null) {
+        discExpr(argument as Expression);
+      }
+    }
     case BlockStatement {body}: {
       for (let s in body) {
         discStmt(s);

@@ -1172,6 +1172,18 @@ export function generateLocalVariableDeclaration(
     }
   }
 
+  // Check for Record Adaptation
+  if (
+    !adapted &&
+    declaredType?.kind === TypeKind.Record &&
+    decl.init.inferredType?.kind === TypeKind.Record
+  ) {
+    const expectedWasmType = mapCheckerTypeToWasmType(ctx, declaredType);
+    generateAdaptedArgument(ctx, decl.init, expectedWasmType, body);
+    adapted = true;
+    exprType = expectedWasmType;
+  }
+
   if (!adapted) {
     generateExpression(ctx, decl.init, body);
     exprType = inferType(ctx, decl.init);

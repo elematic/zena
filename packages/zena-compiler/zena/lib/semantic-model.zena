@@ -37,7 +37,7 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeParameterType
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
 import { Node, NodeId, SourceLocation } from './ast.zena';
@@ -51,6 +51,22 @@ export class SemanticModel {
    * Used for both expression types and declaration/binding types.
    */
   #nodeTypes = new NodeMap<Type>();
+
+  /**
+   * Map from node.id → target RecordType for implicit fat pointer adaptation.
+   */
+  #recordAdaptations = new NodeMap<RecordType>();
+
+  setRecordAdaptation(node: Node, targetType: RecordType): void {
+    this.#recordAdaptations[node] = targetType;
+  }
+
+  getRecordAdaptation(node: Node): RecordType | null {
+    if (let (true, t) = this.#recordAdaptations.get(node)) {
+      return t;
+    }
+    return null;
+  }
 
   /**
    * Map from Symbol.id → Type for named bindings.

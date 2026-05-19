@@ -1716,7 +1716,7 @@ export class Parser {
         let t = this.#tokens[this.#current + i];
         if (t.kind == TokenType.EOF) { return false; }
         if (t.kind == TokenType.Arrow) { return true; }
-        if (t.kind == TokenType.LBrace || t.kind == TokenType.Semi) { return false; }
+        if (t.kind == TokenType.Semi) { return false; }
         // Handle nested < > for generic types
         if (t.kind == TokenType.Less) {
           var depth2 = 1;
@@ -1728,6 +1728,17 @@ export class Parser {
             else if (t2.kind == TokenType.Greater) { depth2 = depth2 - 1; }
             else if (t2.kind == TokenType.GreaterGreater) { depth2 = depth2 - 2; }
             else if (t2.kind == TokenType.GreaterGreaterGreater) { depth2 = depth2 - 3; }
+            i += 1;
+          }
+        // Handle nested { } for record types
+        } else if (t.kind == TokenType.LBrace) {
+          var depth2 = 1;
+          i += 1;
+          while (depth2 > 0) {
+            let t2 = this.#tokens[this.#current + i];
+            if (t2.kind == TokenType.EOF) { return false; }
+            if (t2.kind == TokenType.LBrace) { depth2 = depth2 + 1; }
+            else if (t2.kind == TokenType.RBrace) { depth2 = depth2 - 1; }
             i += 1;
           }
         } else {

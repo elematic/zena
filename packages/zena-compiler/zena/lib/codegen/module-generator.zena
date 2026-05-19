@@ -1,5 +1,5 @@
 import { WasmModule, WasmFunction, WasmSignature, WasmType, DiscoveryPass,
-  WasmExport, WasmGlobal, WasmStruct
+  WasmExport, WasmGlobal, WasmStruct, VTableInit
 } from './wasm-module.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral } from '../ast.zena';
@@ -83,29 +83,37 @@ export class ModuleGenerator {
       this.emitter.emitGlobal(g.type, g.isMutable);
       
       // Need a clean way to emit global initializer
-      match (g.init) {
-        case NumberLiteral {raw}: {
-           let type = g.type;
-           if (type == ValType.i32) {
-              if (let (true, val) = parseI32(raw)) {
-                this.emitter.emitI32Const(val);
-              } else {
-                this.emitter.emitI32Const(0);
-              }
-           } else if (type == ValType.f64) {
-              this.emitter.emitF64Const(parseF64(raw));
-           } else if (type == ValType.f32) {
-              this.emitter.emitF32Const(parseF64(raw)); // f32 requires casting
-           } else {
-             this.emitter.emitI32Const(0);
-           }
+      if (g.initExpr != null) {
+        match (g.initExpr as Expression) {
+          case NumberLiteral {raw}: {
+             let type = g.type;
+             if (type == ValType.i32) {
+                if (let (true, val) = parseI32(raw)) {
+                  this.emitter.emitI32Const(val);
+                } else {
+                  this.emitter.emitI32Const(0);
+                }
+             } else if (type == ValType.f64) {
+                this.emitter.emitF64Const(parseF64(raw));
+             } else if (type == ValType.f32) {
+                this.emitter.emitF32Const(parseF64(raw)); // f32 requires casting
+             } else {
+               this.emitter.emitI32Const(0);
+             }
+          }
+          case BooleanLiteral {value}: {
+            this.emitter.emitBooleanConst(value);
+          }
+          case _: {
+             // Wait!
+          }
         }
-        case BooleanLiteral {value}: {
-          this.emitter.emitBooleanConst(value);
+      } else if (g.initVTable != null) {
+        let vtableInit = g.initVTable as VTableInit;
+        for (let func in vtableInit.funcs) {
+          this.emitter.emitRefFunc(func.index);
         }
-        case _: {
-           // Wait!
-        }
+        this.emitter.emitStructNew(vtableInit.structType.index);
       }
       this.emitter.emitGlobalEnd();
     }

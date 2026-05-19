@@ -1,7 +1,12 @@
 import { Node, UnaryExpression, BinaryExpression, Expression } from '../../ast.zena';
-import { Type, F64Type, F32Type, I32Type, isFloatType, baseType, typeToString } from '../../types.zena';
+import { Type, F64Type, F32Type, I32Type, RecordType, ClassType, ArrayType,
+  AnyType, isFloatType, baseType, typeToString
+} from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
+import { typeToValType, ValType } from '../wasm.zena';
+import { Array } from 'zena:array';
+import { WasmField } from '../wasm-module.zena';
 
 export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (un.operator == "-") {
@@ -41,22 +46,63 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
       isFloatContext = true;
   }
 
-  // Implicit F64 upconversion logic
-  if (isFloatContext && !(leftType is F64Type) && !(leftType is F32Type)) {
-    genExpr(bin.left, false);
-    ctx.emitter.emitF64ConvertI32S();
-  } else {
-    genExpr(bin.left, false);
-  }
+    // Implicit F64 upconversion logic
+    if (isFloatContext && !(leftType is F64Type) && !(leftType is F32Type)) {
+      genExpr(bin.left, false);
+      ctx.emitter.emitF64ConvertI32S();
+    } else {
+      genExpr(bin.left, false);
+      if (leftType is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+        let leftRT = leftType as RecordType;
+        let leftFields = new Array<WasmField>();
+        for (let pair in leftRT.properties) {
+          leftFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+        }
+        let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, leftFields);
+        ctx.emitter.emitRefCastNull(dispatchInfo.fatPtrType.index);
+        ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
+        ctx.emitter.emitRefCastNullEq();
+      }
+    }
 
-  if (isFloatContext && !(rightType is F64Type) && !(rightType is F32Type)) {
-    genExpr(bin.right, false);
-    ctx.emitter.emitF64ConvertI32S();
-  } else {
-    genExpr(bin.right, false);
-  }
-  
-  if (isFloatContext) {
+    if (isFloatContext && !(rightType is F64Type) && !(rightType is F32Type)) {
+      genExpr(bin.right, false);
+      ctx.emitter.emitF64ConvertI32S();
+    } else {
+      genExpr(bin.right, false);
+      if (rightType is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+        let rightRT = rightType as RecordType;
+        let rightFields = new Array<WasmField>();
+        for (let pair in rightRT.properties) {
+          rightFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+        }
+        let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, rightFields);
+        ctx.emitter.emitRefCastNull(dispatchInfo.fatPtrType.index);
+        ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
+        ctx.emitter.emitRefCastNullEq();
+      }
+    }
+    
+    var isRefContext = false;
+    if (leftType is RecordType || leftType is ClassType || leftType is ArrayType || leftType is AnyType || rightType is RecordType || rightType is ClassType || rightType is ArrayType || rightType is AnyType) {
+      isRefContext = true;
+    }
+    
+    if (isRefContext) {
+      match (bin.operator) {
+        case "==": ctx.emitter.emitRefEq()
+        case "!=": {
+           ctx.emitter.emitRefEq();
+           ctx.emitter.emitI32Eqz();
+        }
+        case "===": ctx.emitter.emitRefEq()
+        case "!==": {
+           ctx.emitter.emitRefEq();
+           ctx.emitter.emitI32Eqz();
+        }
+        case _: throw new Error("Unsupported operator for references: " + bin.operator)
+      }
+    } else if (isFloatContext) {
     match (bin.operator) {
       case "+": ctx.emitter.emitF64Add()
       case "-": ctx.emitter.emitF64Sub()

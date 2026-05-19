@@ -2,7 +2,7 @@ import { FunctionContext } from '../function-context.zena';
 import { RecordLiteral, PropertyAssignment, Expression, Node } from '../../ast.zena';
 import { RecordType, F64Type, F32Type, Type } from '../../types.zena';
 import { ValType, typeToValType } from '../wasm.zena';
-import { WasmField } from '../wasm-module.zena';
+import { WasmField, sortWasmFields } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
 
@@ -17,9 +17,11 @@ export let generateRecordLiteral = (
   for (let {key as name, value as type} in recordType.properties) {
      fields.push(new WasmField(name, typeToValType(type), false));
   }
+  sortWasmFields(fields);
   
   // Dedup struct type.
-  let structType = ctx.wasm.getStruct(null, fields);
+  let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields);
+  let structType = dispatchInfo.concreteType;
   
   // Generate properties in sorted order, or the order matching the struct definition
   // Wasm GC struct.new expects fields in the exact order of the struct definition.
@@ -36,4 +38,7 @@ export let generateRecordLiteral = (
   }
 
   ctx.emitter.emitStructNew(structType.index);
+  
+  ctx.emitter.emitGlobalGet(dispatchInfo.vtableGlobal.index);
+  ctx.emitter.emitStructNew(dispatchInfo.fatPtrType.index);
 };

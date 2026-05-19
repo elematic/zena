@@ -26,6 +26,52 @@ export class WasmExport {
   new(this.name, this.func);
 }
 
+// TODO: Add string comparison to the stdlib and use that instead.
+let compareStrings = (a: String, b: String): i32 => {
+  let lenA = a.length;
+  let lenB = b.length;
+  var minLen = lenA;
+  if (lenB < lenA) {
+    minLen = lenB;
+  }
+  
+  for (var i = 0; i < minLen; i += 1) {
+    let byteA = a.getByteAt(i);
+    let byteB = b.getByteAt(i);
+    if (byteA < byteB) return -1;
+    if (byteA > byteB) return 1;
+  }
+  
+  if (lenA < lenB) return -1;
+  if (lenA > lenB) return 1;
+  return 0;
+};
+
+export let sortWasmFields = (fields: Array<WasmField>): void => {
+  // Use insertion sort which has very low overhead for the
+  // small length of arrays expected here.
+  // TODO: Add sorting to the stdlib and use that instead.
+  let len = fields.length;
+  for (var i = 1; i < len; i += 1) {
+    let key = fields[i];
+    var j = i - 1;
+    while (j >= 0) {
+      let a = fields[j].name;
+      let b = key.name;
+      if (a != null && b != null) {
+        if (compareStrings(a as String, b as String) > 0) {
+          fields[j + 1] = fields[j];
+          j -= 1;
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+    fields[j + 1] = key;
+  }
+};
 
 /**
  * Represents a reference to an entity that has a WebAssembly type index.
@@ -74,7 +120,16 @@ export class WasmFunction {
   var isImport: boolean = false;
   var importModule: String | null = null;
   var importName: String | null = null;
+  var getterStruct: WasmStruct | null = null;
+  var getterFieldIndex: i32 = -1;
+
   new(this.signature, this.node, this.model);
+}
+
+export class VTableInit {
+  structType: WasmStruct;
+  funcs: Array<WasmFunction>;
+  new(this.structType, this.funcs);
 }
 
 export class WasmGlobal {
@@ -83,9 +138,10 @@ export class WasmGlobal {
   zenaName: String;
   type: ValType;
   isMutable: boolean;
-  init: Expression;
+  initExpr: Expression | null;
+  initVTable: VTableInit | null;
   model: SemanticModel;
-  new(this.name, this.zenaName, this.type, this.isMutable, this.init, this.model);
+  new(this.name, this.zenaName, this.type, this.isMutable, this.initExpr, this.initVTable, this.model);
 }
 
 /**
@@ -93,6 +149,17 @@ export class WasmGlobal {
  * Acts as the registry for all WebAssembly entities (types, functions).
  * The DiscoveryPass populates this during AST traversal.
  */
+export class RecordDispatchInfo {
+  fatPtrType: WasmStruct;
+  vtableType: WasmStruct;
+  concreteType: WasmStruct;
+  vtableGlobal: WasmGlobal;
+  fields: Array<WasmField>;
+  getterTypes: Array<WasmSignature>;
+  
+  new(this.fatPtrType, this.vtableType, this.concreteType, this.vtableGlobal, this.fields, this.getterTypes);
+}
+
 export class WasmModule {
   types = new Array<WasmType>();
   
@@ -125,6 +192,8 @@ export class WasmModule {
 
   exportMap = new HashMap<String, WasmFunction>();
   exportGlobalMap = new HashMap<String, WasmGlobal>();
+  
+  recordDispatchMap = new HashMap<String, RecordDispatchInfo>();
   
   /**
    * Gets an existing WasmSignature if one matches the given parameters and
@@ -191,6 +260,155 @@ export class WasmModule {
     return st;
   }
   
+  getRecordDispatch(model: SemanticModel, fields: Array<WasmField>): RecordDispatchInfo {
+    sortWasmFields(fields);
+    
+    var keyStr = "";
+    for (let f in fields) {
+      if (f.name != null) {
+        keyStr = keyStr + (f.name as String);
+      }
+      keyStr = keyStr + ":";
+      keyStr = keyStr + i32ToString(f.type as i32);
+      keyStr = keyStr + ",";
+    }
+    
+    if (this.recordDispatchMap.has(keyStr)) {
+      return this.recordDispatchMap[keyStr];
+    }
+    
+    let concreteType = this.getStruct(null, fields);
+    
+    let vtableFields = new Array<WasmField>();
+    let getterTypes = new Array<WasmSignature>();
+    let getters = new Array<WasmFunction>();
+    
+    for (var i = 0; i < fields.length; i += 1) {
+      let fieldValType = fields[i].type;
+      
+      let params = new Array<ValType>();
+      params.push(ValType.anyref);
+      
+      let returns = new Array<ValType>();
+      if (fieldValType != ValType.void) {
+        returns.push(fieldValType);
+      }
+      
+      let getterType = this.getSignature(params, returns);
+      getterTypes.push(getterType);
+      
+      let getterFunc = new WasmFunction(getterType, null, model);
+      getterFunc.getterStruct = concreteType;
+      getterFunc.getterFieldIndex = i;
+      this.addFunction(getterFunc);
+      getters.push(getterFunc);
+      
+      vtableFields.push(new WasmField(
+        fields[i].name,
+        ValType.funcref,
+        false
+      ));
+    }
+    
+    let vtableType = this.getStruct(null, vtableFields);
+    
+    let fatPtrFields = new Array<WasmField>();
+    fatPtrFields.push(new WasmField(null, ValType.anyref, false));
+    fatPtrFields.push(new WasmField(null, ValType.anyref, false));
+    
+    let fatPtrType = this.getStruct(null, fatPtrFields);
+    
+    let vtableInit = new VTableInit(vtableType, getters);
+    let vtableGlobal = new WasmGlobal("vtable_" + keyStr, "vtable_" + keyStr, ValType.anyref, false, null, vtableInit, model);
+    this.globals.push(vtableGlobal);
+    
+    let info = new RecordDispatchInfo(fatPtrType, vtableType, concreteType, vtableGlobal, fields, getterTypes);
+    this.recordDispatchMap[keyStr] = info;
+    
+    return info;
+  }
+  
+  getAdaptedRecordDispatch(model: SemanticModel, inFields: Array<WasmField>, outFields: Array<WasmField>): RecordDispatchInfo {
+    sortWasmFields(inFields);
+    sortWasmFields(outFields);
+    // Generate a unique key for the adaptation
+    var keyStr = "adapt:";
+    for (let f in inFields) {
+      if (f.name != null) keyStr = keyStr + (f.name as String);
+      keyStr = keyStr + i32ToString(f.type as i32) + ",";
+    }
+    keyStr = keyStr + "->";
+    for (let f in outFields) {
+      if (f.name != null) keyStr = keyStr + (f.name as String);
+      keyStr = keyStr + i32ToString(f.type as i32) + ",";
+    }
+    
+    if (this.recordDispatchMap.has(keyStr)) {
+      return this.recordDispatchMap[keyStr];
+    }
+    
+    let inStructType = this.getStruct(null, inFields);
+    
+    let vtableFields = new Array<WasmField>();
+    let getterTypes = new Array<WasmSignature>();
+    let getters = new Array<WasmFunction>();
+    
+    for (var i = 0; i < outFields.length; i += 1) {
+      let fieldValType = outFields[i].type;
+      
+      let params = new Array<ValType>();
+      params.push(ValType.anyref);
+      
+      let returns = new Array<ValType>();
+      if (fieldValType != ValType.void) {
+        returns.push(fieldValType);
+      }
+      
+      let getterType = this.getSignature(params, returns);
+      getterTypes.push(getterType);
+      
+      let getterFunc = new WasmFunction(getterType, null, model);
+      getterFunc.getterStruct = inStructType;
+      
+      // Find the corresponding field in the inFields by name
+      var inIndex = -1;
+      for (var j = 0; j < inFields.length; j += 1) {
+        if (inFields[j].name == outFields[i].name) {
+          inIndex = j;
+          break;
+        }
+      }
+      
+      getterFunc.getterFieldIndex = inIndex;
+      this.addFunction(getterFunc);
+      getters.push(getterFunc);
+      
+      vtableFields.push(new WasmField(
+        outFields[i].name,
+        ValType.funcref,
+        false
+      ));
+    }
+    
+    let vtableType = this.getStruct(null, vtableFields);
+    
+    let fatPtrFields = new Array<WasmField>();
+    fatPtrFields.push(new WasmField(null, ValType.anyref, false));
+    fatPtrFields.push(new WasmField(null, ValType.anyref, false));
+    
+    let fatPtrType = this.getStruct(null, fatPtrFields);
+    
+    let vtableInit = new VTableInit(vtableType, getters);
+    let vtableGlobal = new WasmGlobal("vtable_" + keyStr, "vtable_" + keyStr, ValType.anyref, false, null, vtableInit, model);
+    this.globals.push(vtableGlobal);
+    
+    // We return information about the TARGET shape (outFields), but with a vtable matching our adapted getters
+    let info = new RecordDispatchInfo(fatPtrType, vtableType, inStructType, vtableGlobal, outFields, getterTypes);
+    this.recordDispatchMap[keyStr] = info;
+    
+    return info;
+  }
+
   addFunction(func: WasmFunction): void {
     this.functions.push(func);
   }
@@ -242,15 +460,33 @@ export class DiscoveryPass {
       let mod = unit.ast;
       let moduleModel = unit.model;
       
-      // First, discover any record types used in record literals and register their Structs
+      // First, discover any record types used in any node and register their Structs
       walkEnter(mod as Node, (n: Node) => {
-        if (n is RecordLiteral) {
-           let recordType = moduleModel.getNodeType(n) as RecordType;
+        let nodeType = moduleModel.getNodeType(n);
+        if (nodeType is RecordType) {
+           let recordType = nodeType as RecordType;
            let fields = new Array<WasmField>();
            for (let pair in recordType.properties) {
               fields.push(new WasmField(pair.key, typeToValType(pair.value), false));
            }
-           this.wasm.getStruct(null, fields);
+           this.wasm.getRecordDispatch(moduleModel, fields);
+        }
+        
+        if (n is Expression) {
+           let expr = n as Expression;
+           let adaptTarget = moduleModel.getRecordAdaptation(expr);
+           if (adaptTarget != null) {
+              let actRec = moduleModel.getNodeType(expr) as RecordType;
+              let inFields = new Array<WasmField>();
+              for (let pair in actRec.properties) {
+                 inFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+              }
+              let outFields = new Array<WasmField>();
+              for (let pair in adaptTarget.properties) {
+                 outFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+              }
+              this.wasm.getAdaptedRecordDispatch(moduleModel, inFields, outFields);
+           }
         }
       });
       
@@ -319,7 +555,7 @@ export class DiscoveryPass {
                   let sym = moduleModel.resolveDeclaration(ident);
                   if (sym != null) {
                     let name = ident.name + "_" + i32ToString(sym.id as i32);
-                    let wasmGlobal = new WasmGlobal(name, ident.name, vType, isMutable, expr, moduleModel);
+                    let wasmGlobal = new WasmGlobal(name, ident.name, vType, isMutable, expr, null, moduleModel);
                     this.wasm.globals.push(wasmGlobal);
                     this.wasm.globalMap[sym.id] = wasmGlobal;
                     

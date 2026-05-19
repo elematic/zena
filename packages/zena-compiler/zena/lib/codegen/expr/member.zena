@@ -66,13 +66,13 @@ export let generateMemberExpression = (
       for (let pair in rt.properties) {
         fields.push(new WasmField(pair.key, typeToValType(pair.value), false));
       }
-      let structInfo = ctx.wasm.getStruct(null, fields);
+      let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields);
       
       var fieldIndex = -1;
       let propName = expr.property.name;
       
-      for (var i = 0; i < structInfo.fields.length; i += 1) {
-        if (structInfo.fields[i].name == propName) {
+      for (var i = 0; i < dispatchInfo.concreteType.fields.length; i += 1) {
+        if (dispatchInfo.concreteType.fields[i].name == propName) {
            fieldIndex = i;
         }
       }
@@ -81,8 +81,27 @@ export let generateMemberExpression = (
          throw new Error("Could not find property " + propName + " on record");
       }
       
-      ctx.emitter.emitRefCastNull(structInfo.index);
-      ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
+      if (ctx.vtableAccessScratch == -1) {
+         throw new Error("VTable access scratch local not allocated.");
+      }
+      
+      ctx.emitter.emitLocalSet(ctx.vtableAccessScratch);
+      
+      // Push the instance (argument 1)
+      ctx.emitter.emitLocalGet(ctx.vtableAccessScratch);
+      ctx.emitter.emitRefCastNull(dispatchInfo.fatPtrType.index);
+      ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance
+      
+      // Push the function reference
+      ctx.emitter.emitLocalGet(ctx.vtableAccessScratch);
+      ctx.emitter.emitRefCastNull(dispatchInfo.fatPtrType.index);
+      ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 1); // Get VTable
+      ctx.emitter.emitRefCastNull(dispatchInfo.vtableType.index);
+      ctx.emitter.emitStructGet(dispatchInfo.vtableType.index, fieldIndex); // Get Func
+      ctx.emitter.emitRefCastNull(dispatchInfo.getterTypes[fieldIndex].index); // Cast funcref to specific signature
+      
+      // Call the function reference
+      ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
     }
     case _: {
        // We still need to evaluate the expression object for other types before failing

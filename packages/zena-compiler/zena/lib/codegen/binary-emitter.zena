@@ -1,7 +1,7 @@
 import { ByteBuffer } from 'zena:byte-buffer';
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmType, WasmSignature, WasmFunction, WasmModule, DiscoveryPass } from './wasm-module.zena';
-import { SectionId, ValType, Opcode, GcOpcode } from './wasm.zena';
+import { SectionId, ValType, Opcode, GcOpcode, HeapType } from './wasm.zena';
 
 /**
  * Implements the WasmEmitter interface by writing WebAssembly binary
@@ -410,6 +410,13 @@ export class BinaryEmitter implements WasmEmitter {
     b.writeULEB128(fieldIndex);
   }
 
+  emitRefCastNullEq(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.ref_cast_null as i32);
+    b.writeByte(0x6D); // HeapType.eq encoded as a single byte
+  }
+
   emitRefCastNull(typeIndex: i32): void {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.gc_prefix as i32);
@@ -440,6 +447,23 @@ export class BinaryEmitter implements WasmEmitter {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.global_get as i32);
     b.writeULEB128(index);
+  }
+
+  emitCallRef(typeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.call_ref as i32);
+    b.writeULEB128(typeIndex);
+  }
+
+  emitRefFunc(index: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.ref_func as i32);
+    b.writeULEB128(index);
+  }
+
+  emitRefEq(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.ref_eq as i32);
   }
 
   emitGlobalSet(index: i32): void {
