@@ -1,7 +1,9 @@
 import { FunctionContext } from '../function-context.zena';
-import { Expression, MemberExpression } from '../../ast.zena';
+import { Expression, MemberExpression, EnumDeclaration, NumberLiteral, StringLiteral } from '../../ast.zena';
 import { Error } from 'zena:error';
 import { RecordType } from '../../types.zena';
+import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
+import { parseI32 } from 'zena:string-convert';
 
 import { typeToValType } from '../wasm.zena';
 import { WasmField } from '../wasm-module.zena';
@@ -12,14 +14,54 @@ export let generateMemberExpression = (
   expr: MemberExpression,
   genExpr: (e: Expression, discardValue: boolean) => void
 ): void => {
-  // 1. Generate code for the object
-  genExpr(expr.object, false);
-
-  // 2. Figure out the type of the object
+  // 1. Figure out the type of the object
   let objectType = ctx.wasmFunction.model.getNodeType(expr.object);
 
   match (objectType) {
     case RecordType as rt: {
+      if (rt.enumDeclaration != null) {
+        let ed = rt.enumDeclaration as EnumDeclaration;
+        let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
+        let propName = expr.property.name;
+        var nextValue: i32 = 0;
+        
+        for (let member in ed.members) {
+          if (isStringEnum) {
+            if (member.name.name == propName) {
+              if (member.initializer is StringLiteral) {
+                generateStringLiteral(ctx, member.initializer as StringLiteral);
+                return;
+              } else {
+                throw new Error("Codegen: String enum member initializer is not a literal.");
+              }
+            }
+          } else {
+            var currentValue: i32 = nextValue;
+            if (member.initializer != null) {
+              if (member.initializer is NumberLiteral) {
+                let numLit = member.initializer as NumberLiteral;
+                let (ok, val) = parseI32(numLit.raw);
+                if (ok) {
+                  currentValue = val as i32;
+                }
+              } else {
+                throw new Error("Codegen: Enum member initializer is not a literal.");
+              }
+            }
+            
+            if (member.name.name == propName) {
+              ctx.emitter.emitI32Const(currentValue);
+              return;
+            }
+            nextValue = currentValue + 1;
+          }
+        }
+        throw new Error("Codegen: Enum member " + propName + " not found in declaration.");
+      }
+
+      // Generate code for the object (since it's a real struct)
+      genExpr(expr.object, false);
+
       let fields = new Array<WasmField>();
       for (let pair in rt.properties) {
         fields.push(new WasmField(pair.key, typeToValType(pair.value), false));
@@ -43,6 +85,8 @@ export let generateMemberExpression = (
       ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
     }
     case _: {
+       // We still need to evaluate the expression object for other types before failing
+       genExpr(expr.object, false);
        throw new Error("Codegen for MemberExpression on non-record is not yet implemented.");
     }
   }

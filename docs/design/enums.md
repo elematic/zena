@@ -114,6 +114,13 @@ let z: i32 = c as i32;
   - _Optimization_: Future optimization could constant-fold `Color.Red` to `0`
     directly if the field is known to be constant.
 
+> **Note (Implementation Divergence)**: The self-hosted compiler currently
+> diverges from this design. It only implements the constant-fold optimization
+> and completely skips emitting the `const` Record. As a result, enum namespaces
+> (e.g. `Color`) cannot be passed as runtime values. We must either implement
+> the struct emission to match the design, or formally change the design to
+> totally erase enum namespaces at runtime.
+
 ## Performance Considerations
 
 ### Type Checking

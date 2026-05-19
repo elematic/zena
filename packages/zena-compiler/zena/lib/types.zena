@@ -17,7 +17,7 @@ import { OrderedMap } from 'zena:ordered-map';
 import { HashSet } from 'zena:set';
 import { StringBuilder } from 'zena:string-builder';
 
-import { Expression } from './ast.zena';
+import { Expression, Statement } from './ast.zena';
 import { SymbolId } from './scope/symbol.zena';
 
 export sealed class Type {
@@ -74,7 +74,14 @@ export class FieldInfo {
 export class RecordType(
   properties: HashMap<String, Type>,
   optionalProperties: HashSet<String> | null
-) extends Type
+) extends Type {
+  // If this RecordType represents the constant namespace for an enum (e.g.
+  // `Color`), this points back to the original AST node (`EnumDeclaration`). 
+  // This allows the code generator to bridge the gap between structural Record
+  // properties and static enum literal generation, bypassing physical struct
+  // allocation at runtime.
+  var enumDeclaration: Statement | null = null;
+}
 
 export class FunctionType extends Type {
   parameters: Array<Type>;
