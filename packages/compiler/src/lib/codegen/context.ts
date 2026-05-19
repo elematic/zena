@@ -224,6 +224,7 @@ export class CodegenContext {
   public stringLiterals = new Map<string, number>(); // content -> dataIndex
 
   // Deferred generation
+  public pendingFunctionRegistrations: (() => void)[] = [];
   public pendingHelperFunctions: (() => void)[] = [];
   public stringEqFunctionIndex = -1; // Cached index for String.operator==
   public stringFromPartsFunctionIndex = -1; // Cached index for String.fromParts

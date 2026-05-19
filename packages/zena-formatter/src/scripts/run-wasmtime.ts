@@ -53,22 +53,10 @@ for (const wasmFile of wasmFiles.sort()) {
   process.stdout.write(`  ${paddedName} `);
 
   // Run from repo root with access to tests/language/ directory
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
   const result = spawnSync(
-    'wasmtime',
-    [
-      'run',
-      '-W',
-      'gc=y',
-      '-W',
-      'function-references=y',
-      '-W',
-      'exceptions=y',
-      '--dir',
-      repoRoot,
-      '--invoke',
-      'main',
-      wasmFile,
-    ],
+    zenaCli,
+    ['run', '--dir', repoRoot, '--invoke', 'main', wasmFile],
     {
       stdio: 'pipe',
       cwd: repoRoot,

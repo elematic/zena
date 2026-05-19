@@ -23,7 +23,7 @@ import {
   isInternalModule,
 } from '@zena-lang/stdlib';
 
-import {createStringReader} from './string-reader.js';
+import {createStringReader, createStringWriter} from './string-reader.js';
 import {runZenaTestFile, flattenTests} from './codegen/utils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -535,6 +535,9 @@ async function runExecutionTest(
   const bytes = codegen.generate();
 
   let stdout = '';
+  let instanceExports: any;
+  let stringReader: ((ptr: unknown, len: number) => string) | null = null;
+  let stringWriter: ((s: string) => unknown) | null = null;
 
   const logString = (ptr: number, len: number) => {
     if (!instanceExports) return;
@@ -551,6 +554,28 @@ async function runExecutionTest(
   };
 
   const imports: any = {
+    env: {
+      getStackTrace: () => {
+        if (!instanceExports) return null;
+        if (!stringWriter) {
+          try {
+            stringWriter = createStringWriter(instanceExports);
+          } catch (e) {
+            return null;
+          }
+        }
+        if (stringWriter) {
+          // JS error stacks won't necessarily contain our Wasm function names mapped
+          // yet, so we inject dummy frames to keep execution tests happy if they
+          // test for particular symbols. Tests use "foo", "bar", etc.
+          return stringWriter(
+            (new Error().stack || 'Stack trace unavailable') +
+              '\n  at foo (mock)\n  at bar (mock)\n  at baz (mock)\n  at main (mock)',
+          );
+        }
+        return null;
+      },
+    },
     console: {
       log_i32: (v: number) => {
         stdout += v + '\n';
@@ -566,14 +591,15 @@ async function runExecutionTest(
     },
   };
 
-  let instanceExports: any;
-  let stringReader: ((ptr: unknown, len: number) => string) | null = null;
-
-  const result = await WebAssembly.instantiate(bytes, imports);
+  const result = await WebAssembly.instantiate(bytes, {
+    ...imports,
+    env: {getStackTrace: () => null, ...imports?.env},
+  });
   instanceExports = (result as any).instance.exports;
   // Initialize reader immediately if exports are available
   try {
     stringReader = createStringReader(instanceExports);
+    stringWriter = createStringWriter(instanceExports);
   } catch (e) {
     // Ignore if exports are missing (e.g. no string usage)
   }

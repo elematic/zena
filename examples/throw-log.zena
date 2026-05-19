@@ -1,0 +1,40 @@
+import { Error } from 'zena:error';
+import { console } from 'zena:console';
+import { String } from 'zena:string';
+
+class MyError extends Error {
+  var stackAtThrow: String | null;
+  new(message: String) : stackAtThrow = null, super(message) {
+    this.stackAtThrow = this.getStackTrace();
+  }
+}
+
+let baz = () => {
+    throw new MyError("Something went very wrong here!");
+};
+
+let bar = () => {
+    baz();
+};
+
+let foo = () => {
+    bar();
+};
+
+export let main = () => {
+  try {
+    foo();
+  } catch (e) {
+    if (e is MyError) {
+      let stack = (e as MyError).stackAtThrow;
+      if (stack != null) {
+        console.log("WebAssembly Stack trace:");
+        console.log(stack as String);
+      } else {
+        console.log("No stack trace available.");
+      }
+    } else {
+      console.log("Caught unknown error.");
+    }
+  }
+};

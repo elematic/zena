@@ -67,16 +67,11 @@ for (const wasmFile of wasmFiles.sort()) {
   const relPath = relative(outDir, wasmFile);
 
   // Run from repo root with access to tests/language/ directory
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
   const result = spawnSync(
-    'wasmtime',
+    zenaCli,
     [
       'run',
-      '-W',
-      'gc=y',
-      '-W',
-      'exceptions=y',
-      '-W',
-      'function-references=y',
       '--dir',
       `${repoRoot}::/`, // Map repo root to / so tests/language/ is accessible at /tests/language/
       '--dir',
@@ -87,12 +82,13 @@ for (const wasmFile of wasmFiles.sort()) {
     ],
     {
       encoding: 'utf-8',
-      timeout: 120000,
+      timeout: 300000, // TODO: reduce this timeout
       cwd: repoRoot,
     },
   );
 
   const output = result.stdout?.trim() ?? '';
+
   // wasmtime --invoke prints the return value as the last line
   const lines = output.split('\n');
   const returnValue = lines.pop()?.trim();

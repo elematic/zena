@@ -111,6 +111,7 @@ export class ZenaCompilerService {
     };
 
     const result = await WebAssembly.instantiate(wasmBuffer, {
+      env: {getStackTrace: () => null},
       console: consoleImports,
       compiler: compilerImports,
     });

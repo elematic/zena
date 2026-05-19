@@ -513,35 +513,56 @@ export function registerDeclaredFunction(
       );
 
       // Build a wrapper function with the real GC result type.
-      // The wrapper calls the import, then does any_convert_extern + ref_cast.
       const wrapperTypeIndex = ctx.module.addType(params, results);
-      funcIndex = ctx.module.addFunction(wrapperTypeIndex);
-
-      // Extract the target type index from the result encoding.
-      // results[0] is [ValType.ref_null, ...LEB128(typeIdx)]
       const targetTypeIdx = decodeTypeIndex(results[0]);
 
-      ctx.pendingHelperFunctions.push(() => {
-        const locals: number[][] = [];
-        const body: number[] = [];
+      ctx.pendingFunctionRegistrations.push(() => {
+        funcIndex = ctx.module.addFunction(wrapperTypeIndex);
 
-        // Forward all params to the import.
-        for (let i = 0; i < params.length; i++) {
-          body.push(Opcode.local_get, ...WasmModule.encodeUnsignedLEB128(i));
+        ctx.pendingHelperFunctions.push(() => {
+          const locals: number[][] = [];
+          const body: number[] = [];
+
+          for (let i = 0; i < params.length; i++) {
+            body.push(Opcode.local_get, ...WasmModule.encodeUnsignedLEB128(i));
+          }
+
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(importFuncIndex));
+
+          body.push(0xfb, GcOpcode.any_convert_extern);
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(...WasmModule.encodeSignedLEB128(targetTypeIdx));
+
+          body.push(Opcode.end);
+          ctx.module.addCode(funcIndex, locals, body);
+        });
+
+        if (shouldExport) {
+          const exportName = (decl as any).exportName || decl.name.name;
+          ctx.module.addExport(exportName, ExportDesc.Func, funcIndex);
         }
 
-        // Call the import (returns externref).
-        body.push(Opcode.call);
-        body.push(...WasmModule.encodeSignedLEB128(importFuncIndex));
+        if (!ctx.functions.has(decl.name.name)) {
+          ctx.functions.set(decl.name.name, funcIndex);
+          ctx.functionReturnTypes.set(decl.name.name, returnType);
+        }
 
-        // Internalize: externref -> anyref -> (ref null $TargetType)
-        body.push(0xfb, GcOpcode.any_convert_extern);
-        body.push(0xfb, GcOpcode.ref_cast_null);
-        body.push(...WasmModule.encodeSignedLEB128(targetTypeIdx));
+        if (funcIndex >= 0) {
+          ctx.registerFunctionByDecl(decl, funcIndex);
+        }
 
-        body.push(Opcode.end);
-        ctx.module.addCode(funcIndex, locals, body);
+        if (!ctx.functionOverloads.has(decl.name.name)) {
+          ctx.functionOverloads.set(decl.name.name, []);
+        }
+        ctx.functionOverloads.get(decl.name.name)!.push({
+          index: funcIndex,
+          params: params,
+          intrinsic: intrinsicName,
+          type: decl.inferredType as FunctionType,
+        });
       });
+      return; // Stop here, since the rest is handled in the deferred block
     } else {
       const typeIndex = ctx.module.addType(
         params,

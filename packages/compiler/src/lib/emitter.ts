@@ -15,6 +15,7 @@ export class WasmModule {
   #declaredFunctions: Set<number> = new Set();
 
   // Debug info: function names for the name section
+  #moduleName?: string;
   #functionNames = new Map<number, string>();
 
   #importedFunctionCount = 0;
@@ -282,6 +283,10 @@ export class WasmModule {
 
   public declareFunction(index: number) {
     this.#declaredFunctions.add(index);
+  }
+
+  setModuleName(name: string): void {
+    this.#moduleName = name;
   }
 
   /**
@@ -578,32 +583,44 @@ export class WasmModule {
     }
 
     // Name Section (custom section with name "name")
-    // Only emitted if function names have been set
-    if (this.#functionNames.size > 0) {
+    // Only emitted if function names or module name have been set
+    if (this.#functionNames.size > 0 || this.#moduleName) {
       const sectionBuffer: number[] = [];
 
       // Custom section name: "name"
       this.#writeString(sectionBuffer, 'name');
 
-      // Subsection 1: Function names
-      const funcNamesBuffer: number[] = [];
+      if (this.#moduleName) {
+        // Subsection 0: Module name
+        const modNameBuffer: number[] = [];
+        this.#writeString(modNameBuffer, this.#moduleName);
 
-      // Sort function names by index (required by spec)
-      const sortedNames = Array.from(this.#functionNames.entries()).sort(
-        (a, b) => a[0] - b[0],
-      );
-
-      // Name map: vec(nameassoc)
-      this.#writeUnsignedLEB128(funcNamesBuffer, sortedNames.length);
-      for (const [funcIndex, name] of sortedNames) {
-        this.#writeUnsignedLEB128(funcNamesBuffer, funcIndex);
-        this.#writeString(funcNamesBuffer, name);
+        sectionBuffer.push(0); // subsection id for module name
+        this.#writeUnsignedLEB128(sectionBuffer, modNameBuffer.length);
+        sectionBuffer.push(...modNameBuffer);
       }
 
-      // Write subsection: id (1 byte) + size (u32) + content
-      sectionBuffer.push(1); // subsection id for function names
-      this.#writeUnsignedLEB128(sectionBuffer, funcNamesBuffer.length);
-      sectionBuffer.push(...funcNamesBuffer);
+      if (this.#functionNames.size > 0) {
+        // Subsection 1: Function names
+        const funcNamesBuffer: number[] = [];
+
+        // Sort function names by index (required by spec)
+        const sortedNames = Array.from(this.#functionNames.entries()).sort(
+          (a, b) => a[0] - b[0],
+        );
+
+        // Name map: vec(nameassoc)
+        this.#writeUnsignedLEB128(funcNamesBuffer, sortedNames.length);
+        for (const [funcIndex, name] of sortedNames) {
+          this.#writeUnsignedLEB128(funcNamesBuffer, funcIndex);
+          this.#writeString(funcNamesBuffer, name);
+        }
+
+        // Write subsection: id (1 byte) + size (u32) + content
+        sectionBuffer.push(1); // subsection id for function names
+        this.#writeUnsignedLEB128(sectionBuffer, funcNamesBuffer.length);
+        sectionBuffer.push(...funcNamesBuffer);
+      }
 
       this.#writeSectionToByteBuffer(buffer, SectionId.Custom, sectionBuffer);
     }

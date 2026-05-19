@@ -3,6 +3,9 @@ import {suite, test} from 'node:test';
 import {compileToWasm} from './utils.js';
 
 const defaultImports = {
+  env: {
+    getStackTrace: () => null,
+  },
   console: {
     log_i32: () => {},
     log_f32: () => {},

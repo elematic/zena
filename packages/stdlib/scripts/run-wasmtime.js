@@ -11,6 +11,7 @@ import {glob} from 'glob';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
+const repoRoot = join(pkgDir, '..', '..');
 const outDir = join(pkgDir, 'tests', 'out');
 
 // Colors
@@ -53,16 +54,11 @@ for (const wasmFile of wasmFiles.sort()) {
 
   process.stdout.write(`  ${paddedName} `);
 
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
   const result = spawnSync(
-    'wasmtime',
+    zenaCli,
     [
       'run',
-      '-W',
-      'gc=y',
-      '-W',
-      'exceptions=y',
-      '-W',
-      'function-references=y',
       '--dir',
       `${testDir}::/`,
       '--dir',

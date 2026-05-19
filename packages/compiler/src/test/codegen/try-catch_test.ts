@@ -32,6 +32,61 @@ suite('Codegen: Try/Catch', () => {
     assert.strictEqual(result, 100);
   });
 
+  test('getStackTrace is accessible in catch block', async () => {
+    let capturedExports: any;
+    const imports = {
+      env: {
+        getStackTrace: () => {
+          if (capturedExports && capturedExports.$stringCreate) {
+            const str = 'Fake stack trace from JS mock!';
+            const ptr = capturedExports.$stringCreate(str.length);
+            for (let i = 0; i < str.length; i++) {
+              capturedExports.$stringSetByte(ptr, i, str.charCodeAt(i));
+            }
+            return ptr;
+          }
+          return null;
+        },
+      },
+    };
+
+    // compileAndInstantiate handles injecting standard libraries and linking our imports.
+    // Since our mock getStackTrace overrides the default one in utils.ts, it will be called.
+    const exports = await compileAndInstantiate(
+      `
+      export let main = (): i32 => {
+        let result = try {
+          throw new Error("fail");
+          0
+        } catch (e) {
+          if (e is Error) {
+             let stOpt = e.getStackTrace();
+             
+             // Check if it's our mocked string
+             if (stOpt != null) {
+               let st = stOpt as String;
+               if (st.length == 30) {
+                 if (true) { // Can't easily index String right now, so we just check length
+                    42
+                 } else { 99 }
+               } else { 99 }
+             } else { 99 }
+          } else {
+             -1
+          }
+        };
+        return result;
+      };
+    `,
+      {imports},
+    );
+
+    capturedExports = exports;
+    const mainFn = (exports as any).main as () => number;
+    const result = mainFn();
+    assert.strictEqual(result, 42);
+  });
+
   test('try/catch with computation in try block', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {

@@ -39,6 +39,14 @@ enum Commands {
         /// The function to invoke
         #[arg(long, default_value = "main")]
         invoke: String,
+
+        /// Directories to pre-open
+        #[arg(long = "dir")]
+        dirs: Vec<String>,
+
+        /// Arguments to pass to the Wasm program
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -50,11 +58,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Build { file, output } => build_file(&file, &output, cli.verbose),
-        Commands::Run { file, invoke } => {
+        Commands::Run { file, invoke, dirs, args } => {
             if file.ends_with(".wasm") {
-                run_wasm(&file, &invoke, cli.verbose)
+                run_wasm(&file, &invoke, cli.verbose, &dirs, &args)
             } else {
-                compile_and_run(&file, &invoke, cli.verbose)
+                compile_and_run(&file, &invoke, cli.verbose, &dirs, &args)
             }
         }
     }
@@ -66,9 +74,9 @@ fn build_file(file: &str, output: &str, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn compile_and_run(file: &str, invoke: &str, verbose: bool) -> Result<()> {
+fn compile_and_run(file: &str, invoke: &str, verbose: bool, dirs: &[String], args: &[String]) -> Result<()> {
     let cached_wasm_path = compile_to_cache(file, verbose)?;
-    run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose)
+    run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args)
 }
 
 fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) -> Result<Module> {
@@ -118,6 +126,44 @@ fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
 
     let mut linker: Linker<MyState> = Linker::new(&engine);
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
+    let get_stack_trace_ty = compiler_module.imports().find(|i| i.module() == "env" && i.name() == "getStackTrace").and_then(|i| i.ty().func().cloned()).unwrap_or_else(|| wasmtime::FuncType::new(&engine, [], [wasmtime::ValType::EXTERNREF]));
+    linker.func_new("env", "getStackTrace", get_stack_trace_ty,
+        |mut caller: wasmtime::Caller<'_, MyState>, _params, results| {
+            let bt = wasmtime::WasmBacktrace::capture(&caller);
+            let str_bt = format!("{}", bt);
+            if str_bt.is_empty() {
+                results[0] = wasmtime::Val::ExternRef(None);
+                return Ok(());
+            }
+
+            let create = caller.get_export("$stringCreate").and_then(|e| e.into_func());
+            let set_byte = caller.get_export("$stringSetByte").and_then(|e| e.into_func());
+
+            if let (Some(create), Some(set_byte)) = (create, set_byte) {
+                let bytes = str_bt.as_bytes();
+                let mut cr_res = vec![wasmtime::Val::I32(0)];
+                create.call(&mut caller, &[wasmtime::Val::I32(bytes.len() as i32)], &mut cr_res)?;
+
+                let str_ref = cr_res[0].clone();
+                for (i, &byte) in bytes.iter().enumerate() {
+                    set_byte.call(
+                        &mut caller,
+                        &[
+                            str_ref.clone(),
+                            wasmtime::Val::I32(i as i32),
+                            wasmtime::Val::I32(byte as i32),
+                        ],
+                        &mut [],
+                    )?;
+                }
+
+                results[0] = str_ref;
+            } else {
+                results[0] = wasmtime::Val::ExternRef(None);
+            }
+            Ok(())
+        },
+    )?;
 
     let stdlib_dir = repo_root.join("packages/stdlib/zena");
 
@@ -172,7 +218,6 @@ fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
     if verbose {
         println!("Compiling {}...", file);
     }
-
     if let Err(e) = compiler_main.call(&mut store, &[], &mut compiler_results) {
         eprintln!("Compiler failed with error: {:?}", e);
         anyhow::bail!("Compilation failed");
@@ -188,7 +233,7 @@ fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
     Ok(cached_wasm_path)
 }
 
-fn run_wasm(file: &str, invoke: &str, _verbose: bool) -> Result<()> {
+fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[String]) -> Result<()> {
     let mut config = Config::new();
     config.wasm_gc(true);
     config.wasm_function_references(true);
@@ -202,16 +247,79 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool) -> Result<()> {
 
     let mut linker: Linker<MyState> = Linker::new(&engine);
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
+    let get_stack_trace_ty = module.imports().find(|i| i.module() == "env" && i.name() == "getStackTrace").and_then(|i| i.ty().func().cloned()).unwrap_or_else(|| wasmtime::FuncType::new(&engine, [], [wasmtime::ValType::EXTERNREF]));
+    linker.func_new("env", "getStackTrace", get_stack_trace_ty,
+        |mut caller: wasmtime::Caller<'_, MyState>, _params, results| {
+            let bt = wasmtime::WasmBacktrace::capture(&caller);
+            let str_bt = format!("{}", bt);
+            if str_bt.is_empty() {
+                results[0] = wasmtime::Val::ExternRef(None);
+                return Ok(());
+            }
 
-    let wasi = WasiCtxBuilder::new()
-        .inherit_stdio()
-        .inherit_env()
-        .inherit_args()
-        .build_p1();
+            let create = caller.get_export("$stringCreate").and_then(|e| e.into_func());
+            let set_byte = caller.get_export("$stringSetByte").and_then(|e| e.into_func());
+
+            if let (Some(create), Some(set_byte)) = (create, set_byte) {
+                let bytes = str_bt.as_bytes();
+                let mut cr_res = vec![wasmtime::Val::I32(0)];
+                create.call(&mut caller, &[wasmtime::Val::I32(bytes.len() as i32)], &mut cr_res)?;
+
+                let str_ref = cr_res[0].clone();
+                for (i, &byte) in bytes.iter().enumerate() {
+                    set_byte.call(
+                        &mut caller,
+                        &[
+                            str_ref.clone(),
+                            wasmtime::Val::I32(i as i32),
+                            wasmtime::Val::I32(byte as i32),
+                        ],
+                        &mut [],
+                    )?;
+                }
+
+                results[0] = str_ref;
+            } else {
+                results[0] = wasmtime::Val::ExternRef(None);
+            }
+            Ok(())
+        },
+    )?;
+
+    let mut wasi_builder = WasiCtxBuilder::new();
+    wasi_builder.inherit_stdio().inherit_env();
+
+    // The arguments vector expects the first argument to be the program name (e.g., standard convention)
+    let mut guest_args = vec![file.to_string()];
+    guest_args.extend_from_slice(args);
+    wasi_builder.args(&guest_args);
+
+    for dir in dirs {
+        // Handle format `HOST_DIR::GUEST_DIR` standard in wasmtime CLI
+        let parts: Vec<&str> = dir.split("::").collect();
+        let (host_dir, guest_dir) = if parts.len() == 2 {
+            (parts[0], parts[1])
+        } else {
+            (dir.as_str(), dir.as_str())
+        };
+
+        wasi_builder.preopened_dir(host_dir, guest_dir, DirPerms::all(), FilePerms::all())?;
+    }
+
+    let wasi = wasi_builder.build_p1();
 
     let mut store = Store::new(&engine, MyState { wasi });
 
-    let instance = linker.instantiate(&mut store, &module)?;
+    let instance = match linker.instantiate(&mut store, &module) {
+        Ok(inst) => inst,
+        Err(e) => {
+            eprintln!("Instantiation failed!");
+            if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
+                eprintln!("Wasm Backtrace:\n{}", bt);
+            }
+            return Err(e.into());
+        }
+    };
 
     let main_export = instance
         .get_func(&mut store, invoke)
@@ -219,14 +327,19 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool) -> Result<()> {
     let results_count = main_export.ty(&store).results().len();
     let mut results = vec![Val::I32(0); results_count];
 
-    main_export.call(&mut store, &[], &mut results)?;
+    if let Err(e) = main_export.call(&mut store, &[], &mut results) {
+        if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
+            eprintln!("Wasm Backtrace:\n{}", bt);
+        }
+        return Err(e.into());
+    }
 
     if let Some(res) = results.first() {
         match res {
             Val::I32(i) => println!("{}", i),
             Val::I64(i) => println!("{}", i),
-            Val::F32(f) => println!("{}", f),
-            Val::F64(f) => println!("{}", f),
+            Val::F32(f) => println!("{}", f32::from_bits(*f)),
+            Val::F64(f) => println!("{}", f64::from_bits(*f)),
             _ => println!("{:?}", res),
         }
     }

@@ -293,6 +293,12 @@ export class CodeGenerator {
       }
     }
 
+    // 5.5 Flush pending function registrations from Pass 5 (e.g. wrappers for external functions)
+    // We do this here to ensure all imports (Pass 5) are added to WasmModule before any functions are added.
+    for (const register of this.#ctx.pendingFunctionRegistrations) {
+      register();
+    }
+
     // 6. Register Class Methods (Sixth pass)
     // Execute pending method registrations (e.g. from mixins created in Pass 2)
     let pendingIndex = 0;
@@ -568,6 +574,12 @@ export class CodeGenerator {
       throw new Error(
         `Code generation failed with errors:\n${this.#ctx.diagnostics.diagnostics.map((d) => d.message).join('\n')}`,
       );
+    }
+
+    if (this.#options.debug && this.#ctx.entryPointModule.path) {
+      const basename =
+        this.#ctx.entryPointModule.path.split(/[\\/]/).pop() || 'zena_module';
+      this.#ctx.module.setModuleName(basename);
     }
 
     return this.#ctx.module.toBytes();

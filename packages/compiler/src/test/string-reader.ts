@@ -38,6 +38,36 @@ export function createStringReader(exports: WebAssembly.Exports) {
 }
 
 /**
+ * Create a string writer that uses exported create/set functions.
+ */
+export function createStringWriter(exports: WebAssembly.Exports) {
+  const create = exports.$stringCreate as
+    | ((len: number) => unknown)
+    | undefined;
+  const setByte = exports.$stringSetByte as
+    | ((str: unknown, index: number, value: number) => void)
+    | undefined;
+
+  const encoder = new TextEncoder();
+
+  return (jsString: string): unknown => {
+    if (!create || !setByte) {
+      throw new Error(
+        '$stringCreate or $stringSetByte export not found. ' +
+          'Make sure the WASM module exports the string creation functions.',
+      );
+    }
+
+    const bytes = encoder.encode(jsString);
+    const strRef = create(bytes.length);
+    for (let i = 0; i < bytes.length; i++) {
+      setByte(strRef, i, bytes[i]);
+    }
+    return strRef;
+  };
+}
+
+/**
  * Create default console imports that handle Zena types.
  *
  * String logging uses the V8-recommended pattern:

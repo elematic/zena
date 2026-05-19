@@ -104,24 +104,14 @@ async function run() {
       // Ignore wasm-tools failure if not installed
     }
 
-    // Run using wasmtime
+    // Run using zena-cli
     try {
-      const runParams = [
-        'run',
-        '-W',
-        'gc=y',
-        '-W',
-        'exceptions=y',
-        '-W',
-        'function-references=y',
-        '--invoke',
-        invokeTarget,
-        wasmOut,
-      ];
+      const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+      const runParams = ['run', '--invoke', invokeTarget, wasmOut];
 
-      const result = spawnSync('wasmtime', runParams, {
+      const result = spawnSync(zenaCli, runParams, {
         encoding: 'utf-8',
-        timeout: 5000,
+        timeout: 60000,
       });
 
       if (result.status !== 0) {

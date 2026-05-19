@@ -215,10 +215,28 @@ export async function instantiate(
   // Deferred exports reference - will be set after instantiation
   let instanceExports: WebAssembly.Exports | undefined;
 
-  const defaultImports = {
-    env: {
-      // Default env imports if any
+  let writeString: ((s: string) => unknown) | null = null;
+  const envImports = {
+    getStackTrace: () => {
+      if (!writeString && instanceExports) {
+        try {
+          writeString = createStringWriter(instanceExports);
+        } catch (e) {
+          // If we can't write strings (e.g. exports missing), return null
+          return null;
+        }
+      }
+      if (!writeString) {
+        return null;
+      }
+
+      const stack = new Error().stack || 'Stack trace unavailable';
+      return writeString(stack);
     },
+  };
+
+  const defaultImports = {
+    env: envImports,
     console: createConsoleImports(() => instanceExports),
   };
 

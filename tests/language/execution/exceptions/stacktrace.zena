@@ -1,0 +1,44 @@
+// @mode: run
+// @result: 0
+
+import { Error } from 'zena:error';
+import { String } from 'zena:string';
+
+class MyError extends Error {
+  var stackAtThrow: String | null;
+  new() : stackAtThrow = null, super("Test error") {
+    this.stackAtThrow = this.getStackTrace();
+  }
+}
+
+let baz = () => {
+    throw new MyError();
+};
+
+let bar = () => {
+    baz();
+};
+
+let foo = () => {
+    bar();
+};
+
+export let main = (): i32 => {
+  try {
+    foo();
+  } catch (e) {
+    if (e is MyError) {
+      let myErr = e as MyError;
+      let stackOpt = myErr.stackAtThrow;
+      if (stackOpt != null) {
+        let stack = stackOpt as String;
+        // Require the stack trace to have SOME zena identifiers indicating real stack frames
+        if (stack.contains("foo") || stack.contains("bar") || stack.contains("baz") || stack.contains("main")) {
+            return 0; // PASS!
+        }
+      }
+      return 1; // Failed to get real stack trace!
+    }
+  }
+  return 1;
+};

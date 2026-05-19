@@ -191,6 +191,7 @@ suite('Binary Size', () => {
       const result = await WebAssembly.instantiate(
         bytes.buffer as ArrayBuffer,
         {
+          env: {getStackTrace: () => null},
           console: {
             log_i32: () => {},
             log_f32: () => {},

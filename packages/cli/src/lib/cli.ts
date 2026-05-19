@@ -224,6 +224,7 @@ const runCommand = async (
   files: string[],
   target: Target = 'host',
   emitLocations: boolean = false,
+  debug: boolean = false,
 ): Promise<number> => {
   if (files.length === 0) {
     console.error('Error: No input files specified');
@@ -265,7 +266,7 @@ const runCommand = async (
       entryPoint,
       compiler.semanticContext,
       compiler.checkerContext,
-      {target},
+      {target, debug},
     );
     const bytes = codegen.generate();
 
@@ -343,7 +344,7 @@ export const main = async (args: string[]): Promise<number> => {
     case 'check':
       return checkCommand(files);
     case 'run':
-      return runCommand(files, target, values['emit-locations']);
+      return runCommand(files, target, values['emit-locations'], values.debug);
     case 'test':
       return testCommand(files, {
         verbose: values.verbose,

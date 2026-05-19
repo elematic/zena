@@ -153,6 +153,9 @@ export async function compileAndInstantiate(
 
   let capturedExports: any = null;
 
+  imports.env = imports.env || {};
+  imports.env.getStackTrace = imports.env.getStackTrace || (() => null);
+
   // Add default console mock if not present
   if (!imports.console) {
     const logString = (s: any, len: number) => {
@@ -202,7 +205,10 @@ export async function compileAndInstantiate(
   const bytes = codegen.generate();
 
   try {
-    const result = await WebAssembly.instantiate(bytes, imports);
+    const result = await WebAssembly.instantiate(bytes, {
+      ...imports,
+      env: {getStackTrace: () => null, ...(imports as any).env},
+    });
     const instance = (result as any).instance || result;
     capturedExports = instance.exports;
     return instance.exports;
@@ -251,6 +257,9 @@ export async function compileWithDetails(
 
   let capturedExports: any = null;
 
+  imports.env = imports.env || {};
+  imports.env.getStackTrace = imports.env.getStackTrace || (() => null);
+
   // Add default console mock if not present
   if (!imports.console) {
     const logString = (s: any, len: number) => {
@@ -296,7 +305,10 @@ export async function compileWithDetails(
   );
   const bytes = codegen.generate();
 
-  const result = await WebAssembly.instantiate(bytes, imports);
+  const result = await WebAssembly.instantiate(bytes, {
+    ...imports,
+    env: {getStackTrace: () => null, ...(imports as any).env},
+  });
   const instance = (result as any).instance || result;
   capturedExports = instance.exports;
 
@@ -610,6 +622,7 @@ export let getNestedTestError = (index: i32): String | null => nested().tests[in
   // Instantiate with console mocks
   let capturedExports: WebAssembly.Exports | null = null;
   const imports = {
+    env: { getStackTrace: () => null },
     console: {
       log_i32: (v: number) => console.log(v),
       log_f32: (v: number) => console.log(v),
@@ -621,7 +634,10 @@ export let getNestedTestError = (index: i32): String | null => nested().tests[in
     },
   };
 
-  const result = await WebAssembly.instantiate(bytes, imports);
+  const result = await WebAssembly.instantiate(bytes, {
+    ...imports,
+    env: {getStackTrace: () => null, ...(imports as any).env},
+  });
   const instance =
     result instanceof WebAssembly.Instance
       ? result
