@@ -161,7 +161,7 @@ suite('lsp.wasm integration', () => {
   });
 
   test('reports no diagnostics for valid code', () => {
-    const diags = checkSource(lsp, 'let x = 42;');
+    const diags = checkSource(lsp, 'let _x = 42;');
     assert.strictEqual(
       diags.length,
       0,

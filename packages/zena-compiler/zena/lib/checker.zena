@@ -1231,6 +1231,19 @@ export let checkModule = (
     ctx.error("Type '" + dup.name + "' is already declared in this scope.", DiagnosticCode.DuplicateDeclaration, loc);
   }
 
+  // Emit warnings for unused and never-mutated variables.
+  for (let unused in scopeResult.unusedVariables) {
+    if (unused.name.startsWith("_")) { continue; }
+    let loc = if (unused.declaration != null) unused.declaration.loc else null;
+    ctx.diagnostics.reportWarning("Variable '" + unused.name + "' is never read.", DiagnosticCode.UnusedVariable, loc);
+  }
+  
+  for (let neverMut in scopeResult.neverMutatedVariables) {
+    if (neverMut.name.startsWith("_")) { continue; }
+    let loc = if (neverMut.declaration != null) neverMut.declaration.loc else null;
+    ctx.diagnostics.reportWarning("Variable '" + neverMut.name + "' is declared as mutable but never written to. Use 'let' instead.", DiagnosticCode.NeverMutatedVariable, loc);
+  }
+
   // === Phase 1: Register all declaration signatures ===
   // Process imports and register type declarations (classes, interfaces,
   // enums, mixins, type aliases, declared functions, symbols) so that ALL

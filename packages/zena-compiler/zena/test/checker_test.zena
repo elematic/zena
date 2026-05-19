@@ -194,9 +194,9 @@ export let tests = suite('Checker API', (): void => {
   suite('checkModule returns a CheckResult', (): void => {
 
     test('valid source produces CheckResult with no errors', (ctx: TestContext): void => {
-      let result = checkOk("let x = 42;");
+      let result = checkOk("let _x = 42;");
       // CheckResult has a model and diagnostics
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
     test('invalid source produces diagnostics', (ctx: TestContext): void => {
@@ -209,7 +209,7 @@ export let tests = suite('Checker API', (): void => {
       let result = checkOk(
         "let x = 1;\nlet y = 2;\nlet z = x;"
       );
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
   });
 
@@ -220,7 +220,7 @@ export let tests = suite('Checker API', (): void => {
   suite('SemanticModel records node types', (): void => {
 
     test('integer literal has i32 type', (ctx: TestContext): void => {
-      let source = "let x = 42;";
+      let source = "let _x = 42;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
@@ -234,7 +234,7 @@ export let tests = suite('Checker API', (): void => {
     });
 
     test('string literal has String type', (ctx: TestContext): void => {
-      let source = "let x = 'hello';";
+      let source = "let _x = 'hello';";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
@@ -247,7 +247,7 @@ export let tests = suite('Checker API', (): void => {
     });
 
     test('boolean literal has literal type', (ctx: TestContext): void => {
-      let source = "let x = true;";
+      let source = "let _x = true;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
@@ -260,7 +260,7 @@ export let tests = suite('Checker API', (): void => {
     });
 
     test('binary expression has inferred type', (ctx: TestContext): void => {
-      let source = "let x = 1 + 2;";
+      let source = "let _x = 1 + 2;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
@@ -295,14 +295,14 @@ export let tests = suite('Checker API', (): void => {
   suite('SemanticModel records binding types', (): void => {
 
     test('let binding has correct type via scope lookup', (ctx: TestContext): void => {
-      let source = "let x = 42;";
+      let source = "let _x = 42;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
       let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
       // Look up x in scope, then get its binding type
-      let info = scopeResult.rootScope.resolve("x");
+      let info = scopeResult.rootScope.resolve("_x");
       isTrue(info != null);
       let bindingType = result.model.getBindingType(info as Symbol);
       isTrue(bindingType != null);
@@ -310,13 +310,13 @@ export let tests = suite('Checker API', (): void => {
     });
 
     test('annotated binding has annotation type', (ctx: TestContext): void => {
-      let source = "let x: i32 = 42;";
+      let source = "let _x: i32 = 42;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
       let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
-      let info = scopeResult.rootScope.resolve("x");
+      let info = scopeResult.rootScope.resolve("_x");
       isTrue(info != null);
       let bindingType = result.model.getBindingType(info as Symbol);
       isTrue(bindingType != null);
@@ -324,13 +324,13 @@ export let tests = suite('Checker API', (): void => {
     });
 
     test('var binding widens literal type', (ctx: TestContext): void => {
-      let source = "var x = true;";
+      let source = "var _x = true;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
       let scopeResult = scopeBuilder.build(ast);
       let result = checkModule(ast, scopeResult, null, null, false, createTestSharedState());
 
-      let info = scopeResult.rootScope.resolve("x");
+      let info = scopeResult.rootScope.resolve("_x");
       isTrue(info != null);
       let bindingType = result.model.getBindingType(info as Symbol);
       isTrue(bindingType != null);
@@ -398,21 +398,21 @@ export let tests = suite('Checker API', (): void => {
       let result = checkOk(
         "class Point {\n  x: i32;\n  y: i32;\n  new(this.x, this.y);\n}\nlet p = new Point(1, 2);"
       );
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
     test('sealed class with variants', (ctx: TestContext): void => {
       let result = checkOk(
         "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(width: f64, height: f64)\n}"
       );
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
     test('case class creates type', (ctx: TestContext): void => {
       let result = checkOk(
         "class Pair(first: i32, second: String)"
       );
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
   });
 
@@ -424,21 +424,21 @@ export let tests = suite('Checker API', (): void => {
 
     test('identifier resolves through scope', (ctx: TestContext): void => {
       let result = checkOk("let x = 1;\nlet y = x;");
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
     test('function parameter types resolve', (ctx: TestContext): void => {
       let result = checkOk(
         "let add = (a: i32, b: i32): i32 => a + b;\nlet r = add(1, 2);"
       );
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
     test('class members resolve from scope', (ctx: TestContext): void => {
       let result = checkOk(
         "class Foo {\n  value: i32;\n  new(this.value);\n  getValue(): i32 { return this.value; }\n}\nlet f = new Foo(42);\nlet v = f.getValue();"
       );
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
     test('block scope isolates variables', (ctx: TestContext): void => {
@@ -446,7 +446,7 @@ export let tests = suite('Checker API', (): void => {
       let result = checkOk(
         "let x = 1;\n{\n  let x = 2;\n}"
       );
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
     test('block type alias shadows outer materialized type', (ctx: TestContext): void => {
@@ -455,7 +455,7 @@ export let tests = suite('Checker API', (): void => {
       let result = checkOk(
         "class Point {\n  x: i32;\n  new(this.x);\n}\nlet p: Point = new Point(1);\nlet f = (): i32 => {\n  type Point = i32;\n  let x: Point = 1;\n  return x;\n};\nlet y = f();"
       );
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
   });
 
@@ -469,7 +469,7 @@ export let tests = suite('Checker API', (): void => {
       let result = checkOk(
         "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet describe = (s: Shape): String => match (s) {\n  case Circle {}: 'circle'\n  case Rect {}: 'rect'\n};"
       );
-      isTrue(result.diagnostics.length == 0);
+      isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
     test('non-exhaustive match produces error', (ctx: TestContext): void => {

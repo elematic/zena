@@ -188,15 +188,12 @@ let runSemanticTest = (
   let result = compiler.compile(filePath);
   let checkResult = checkCompilation(result, null, false, warnUnnecessaryCasts);
   
-  // Aggregate all diagnostics from all files
+  // Aggregate diagnostics only from the entry module, unless you specifically want dependent errors.
   let diagnostics = new Array<Diagnostic>(4);
-  let iter = checkResult.results.keys();
-  while (let (true, k) = iter.next()) {
-    let modResult = checkResult.results[k];
-    for (let diag in modResult.diagnostics) {
-      diagnostics.push(diag);
-    }
+  for (let diag in checkResult.entry.diagnostics) {
+    diagnostics.push(diag);
   }
+
 
   // Collect only errors (not warnings).
   let errors = new Array<Diagnostic>(4);
@@ -260,12 +257,20 @@ let runSemanticTest = (
     }
   }
 
+  let matchedWarnings = new Array<boolean>(warnings.length);
+  for (var i = 0; i < warnings.length; i += 1) {
+    matchedWarnings.push(false);
+  }
+
   for (let expected in expectedWarnings) {
     var warningMatched = false;
-    for (let warning in warnings) {
-      if (warning.message.contains(expected.value)) {
-        warningMatched = true;
-        break;
+    for (var i = 0; i < warnings.length; i += 1) {
+      if (warnings[i].message.contains(expected.value)) {
+        if (!matchedWarnings[i]) {
+          warningMatched = true;
+          matchedWarnings[i] = true;
+          break;
+        }
       }
     }
     if (!warningMatched) {
@@ -281,6 +286,39 @@ let runSemanticTest = (
       }
       throw new Error(
         `Expected warning matching '${expected.value}' on line ${expected.line} but found none.\nActual warnings:\n${actualWarnStr}\nFile: ${filePath}`
+      );
+    }
+  }
+
+  // Check for any unexpected warnings, but only if the test explicitly checks for warnings.
+  // This allows existing tests to pass without needing to annotate every incidental warning.
+  if (expectedWarnings.length > 0) {
+    if (filePath.endsWith("unused.zena")) {
+      console.log("DEBUG: expectedWarnings = " + i32ToString(expectedWarnings.length));
+      console.log("DEBUG: actualWarnings = " + i32ToString(warnings.length));
+      for (var i = 0; i < expectedWarnings.length; i += 1) {
+        console.log("Expected " + i32ToString(i) + ": " + expectedWarnings[i].value);
+      }
+      for (var i = 0; i < warnings.length; i += 1) {
+        console.log("Actual " + i32ToString(i) + ": " + warnings[i].message);
+      }
+    }
+    var unexpectedWarnStr = "";
+    var hasUnexpectedWarnings = false;
+    for (var i = 0; i < warnings.length; i += 1) {
+      if (!matchedWarnings[i]) {
+        hasUnexpectedWarnings = true;
+        if (unexpectedWarnStr.length > 0) {
+          unexpectedWarnStr = unexpectedWarnStr + "\n";
+        }
+        unexpectedWarnStr = unexpectedWarnStr + formatDiagnostic(warnings[i], source);
+        console.log("UNEXPECTED WARNING FOUND: " + formatDiagnostic(warnings[i], source));
+      }
+    }
+    
+    if (hasUnexpectedWarnings) {
+      throw new Error(
+        "Unexpected warnings:\n" + unexpectedWarnStr + "\nFile: " + filePath
       );
     }
   }

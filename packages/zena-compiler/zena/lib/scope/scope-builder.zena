@@ -35,7 +35,7 @@ import {
   AccessorSignature, CatchClause
 } from '../ast.zena';
 import { walkChildren } from '../visitor.zena';
-import {Symbol} from './symbol.zena';
+import {Symbol, SymbolId} from './symbol.zena';
 import {Scope, ScopeKind} from './scope.zena';
 
 
@@ -133,11 +133,17 @@ export final class ScopeResult(
    */
   symbols: SymbolMap,
 
+  isRead: HashMap<SymbolId, boolean>,
+  isWritten: HashMap<SymbolId, boolean>,
+
   /**
    * Names that were declared twice in the same scope.
    * Each entry is an error: same-scope redeclaration.
    */
   duplicateDeclarations: Array<UnresolvedName>,
+
+  unusedVariables: Array<Symbol>,
+  neverMutatedVariables: Array<Symbol>,
 
   /**
    * Parent pointer map from node → parent node.
@@ -177,14 +183,37 @@ export final class ScopeBuilder {
   #symbols = new SymbolMap();
   #duplicateDeclarations = new Array<UnresolvedName>();
   #parents = new NodeMap<Node>();
+  #isRead = new HashMap<SymbolId, boolean>();
+  #isWritten = new HashMap<SymbolId, boolean>();
+  #allVariables = new Array<Symbol>();
 
   new(modulePath: String, preludeScope: Scope | null = null)
     : #modulePath = modulePath,
       #current = new Scope(ScopeKind.Module, preludeScope);
 
+  #isUnusedButAllowed(sym: Symbol): boolean {
+    if (sym.name == "_") return true;
+    if (this.#exports.has(sym.name)) {
+      if (let (true, exp) = this.#exports.get(sym.name)) {
+        if (exp.declaration == sym.declaration) return true;
+      }
+    }
+    if (sym.declaration != null && sym.declaration is Parameter) {
+      let param = sym.declaration as Parameter;
+      if (let (true, parent) = this.#parents.get(param)) {
+        match (parent) {
+          case MethodDefinition {body}: { return body == null; }
+          case DeclareFunction: { return true; }
+          case MethodSignature: { return true; }
+          case _: {}
+        }
+      }
+    }
+    return false;
+  }
+
   /**
    * Build scopes for a module AST.
-   * Returns the result containing the root scope, exports, and unresolved names.
    */
   build(ast: Node): ScopeResult {
     populateParents(ast, this.#parents);
@@ -195,12 +224,28 @@ export final class ScopeBuilder {
       }
       case _: {}
     }
+
+    let unused = new Array<Symbol>();
+    let neverMutated = new Array<Symbol>();
+
+    for (let sym in this.#allVariables) {
+      if (!this.#isRead.has(sym.id) && !this.#isUnusedButAllowed(sym)) {
+        unused.push(sym);
+      } else if (sym.isMutable && !this.#isWritten.has(sym.id) && sym.name != "_") {
+        neverMutated.push(sym);
+      }
+    }
+
     return new ScopeResult(
       this.#current,
       this.#exports,
       this.#unresolvedNames,
       this.#symbols,
+      this.#isRead,
+      this.#isWritten,
       this.#duplicateDeclarations,
+      unused,
+      neverMutated,
       this.#parents
     );
   }
@@ -258,7 +303,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath);
           this.#exports[name.name] = info;
         }
         // Export sealed variant names so they can be imported individually.
@@ -268,7 +313,7 @@ export final class ScopeBuilder {
             this.#current.declare(variantName, false, variant, this.#modulePath);
             this.#symbols.record(variant, this.#current.getLocal(variantName) as Symbol);
             if (exported) {
-              let svInfo = new Symbol(variant, this.#modulePath);
+              let svInfo = new Symbol(variantName, variant, this.#modulePath);
               this.#exports[variantName] = svInfo;
             }
           }
@@ -278,7 +323,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath);
           this.#exports[name.name] = info;
         }
       }
@@ -286,7 +331,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath);
           this.#exports[name.name] = info;
         }
       }
@@ -294,7 +339,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath);
           this.#exports[name.name] = info;
         }
       }
@@ -305,7 +350,7 @@ export final class ScopeBuilder {
         }
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath);
           this.#exports[name.name] = info;
         }
       }
@@ -318,7 +363,7 @@ export final class ScopeBuilder {
                 this.#current.declare(name, kind == "var", pat, this.#modulePath);
                 this.#symbols.record(pat, this.#current.getLocal(name) as Symbol);
                 if (exported) {
-                  this.#exports[name] = new Symbol(pat, this.#modulePath, kind == "var");
+                  this.#exports[name] = new Symbol(name, pat, this.#modulePath, kind == "var");
                 }
               }
               case _: {}
@@ -331,7 +376,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          this.#exports[name.name] = new Symbol(stmt, this.#modulePath);
+          this.#exports[name.name] = new Symbol(name.name, stmt, this.#modulePath);
         }
       }
       case SymbolDeclaration {name, exported}: {
@@ -341,7 +386,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          this.#exports[name.name] = new Symbol(stmt, this.#modulePath);
+          this.#exports[name.name] = new Symbol(name.name, stmt, this.#modulePath);
         }
       }
       case _: {}
@@ -367,11 +412,16 @@ export final class ScopeBuilder {
             // May already be declared by predeclare (annotated functions).
             if (!this.#current.has(name)) {
               this.#current.declare(name, kind == "var", pat, this.#modulePath);
-              this.#symbols.record(pat, this.#current.getLocal(name) as Symbol);
+              let sym = this.#current.getLocal(name) as Symbol;
+              this.#symbols.record(pat, sym);
+              this.#allVariables.push(sym);
               if (exported) {
-                let info = new Symbol(pat, this.#modulePath, kind == "var");
+                let info = new Symbol(name, pat, this.#modulePath, kind == "var");
                 this.#exports[name] = info;
               }
+            } else {
+              let sym = this.#current.getLocal(name) as Symbol;
+              this.#allVariables.push(sym);
             }
           }
           case _: {
@@ -576,6 +626,7 @@ export final class ScopeBuilder {
           this.#unresolvedNames.push(new UnresolvedName(name, expr));
         } else {
           this.#symbols.record(expr, info);
+          this.#isRead[info.id] = true;
         }
       }
       case FunctionExpression {typeParameters, params, returnType, body}: {
@@ -606,8 +657,24 @@ export final class ScopeBuilder {
       case UnaryExpression {argument}: {
         this.#processExpression(argument);
       }
-      case AssignmentExpression {left, value}: {
-        this.#processExpression(left);
+      case AssignmentExpression {left, value, operator}: {
+        match (left) {
+          case Identifier as leftIdent: {
+            let info = this.#current.resolve(leftIdent.name);
+            if (info == null) {
+              this.#unresolvedNames.push(new UnresolvedName(leftIdent.name, leftIdent));
+            } else {
+              this.#symbols.record(leftIdent, info);
+              this.#isWritten[info.id] = true;
+              if (operator != null && operator != "=") {
+                this.#isRead[info.id] = true;
+              }
+            }
+          }
+          case _: {
+            this.#processExpression(left);
+          }
+        }
         this.#processExpression(value);
       }
       case CallExpression {callee, args, typeArguments}: {
@@ -913,7 +980,9 @@ export final class ScopeBuilder {
         // statement). Each binding gets a unique declaration node, which
         // the checker uses as the key for storing per-binding types.
         this.#current.declare(name, kind == "var", ip, this.#modulePath);
-        this.#symbols.record(ip, this.#current.getLocal(name) as Symbol);
+        let sym = this.#current.getLocal(name) as Symbol;
+        this.#symbols.record(ip, sym);
+        this.#allVariables.push(sym);
       }
       case RecordPattern {properties}: {
         for (let prop in properties) {
@@ -957,31 +1026,38 @@ export final class ScopeBuilder {
       case Identifier as ident: {
         if (ident.name != "_") {
           this.#current.declare(ident.name, false, ident, this.#modulePath);
-          this.#symbols.record(ident, this.#current.getLocal(ident.name) as Symbol);
+            let sym = this.#current.getLocal(ident.name) as Symbol;
+            this.#symbols.record(ident, sym);
+            this.#allVariables.push(sym);
+          }
         }
+        case _: {}
       }
-      case _: {}
     }
-  }
 
-  #declarePatternNode(node: Node, kind: String, declaration: Node): void {
-    match (node) {
-      case Pattern: { this.#declarePattern(node as Pattern, kind, declaration); }
-      case Identifier as ident: {
-        if (ident.name != "_") {
-          this.#current.declare(ident.name, false, ident, this.#modulePath);
-          this.#symbols.record(ident, this.#current.getLocal(ident.name) as Symbol);
+    #declarePatternNode(node: Node, kind: String, declaration: Node): void {
+      match (node) {
+        case Pattern: { this.#declarePattern(node as Pattern, kind, declaration); }
+        case Identifier as ident: {
+          if (ident.name != "_") {
+            // Note: ident bindings in declarePatternNode should theoretically propagate kind, 
+            // but the original code had "false". Leaving it as kind=="var" for correctness if used.
+            this.#current.declare(ident.name, kind == "var", ident, this.#modulePath);
+            let sym = this.#current.getLocal(ident.name) as Symbol;
+            this.#symbols.record(ident, sym);
+            this.#allVariables.push(sym);
+          }
         }
+        case _: {}
       }
-      case _: {}
     }
-  }
 
   #declareParameter(param: Parameter): void {
     this.#current.declare(param.name.name, false, param, this.#modulePath);
     let sym = this.#current.getLocal(param.name.name) as Symbol;
     this.#symbols.record(param, sym);
     this.#symbols.record(param.name, sym); // Bind Identifier as well for LSP Hover
+    this.#allVariables.push(sym);
     // For destructured params, also declare the pattern bindings (x, y, etc.).
     if (param.pattern != null) {
       this.#declarePattern(param.pattern as Pattern, "let", param);

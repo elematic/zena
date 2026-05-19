@@ -318,6 +318,11 @@ async function runCheckTest(
   expectedWarnings: ExpectedError[],
   relPath: string,
 ) {
+  // Bootstrap compiler does not have unused variable checking, skip those expectations.
+  expectedWarnings = expectedWarnings.filter(
+    (e) => !e.regex.test('never read') && !e.regex.test('never written to'),
+  );
+
   // Check if the test has imports - if so, use the full compiler
   const hasImports = content.includes('import ');
 
