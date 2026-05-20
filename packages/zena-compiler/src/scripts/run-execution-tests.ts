@@ -22,7 +22,7 @@ async function run() {
     'return_42.zena',
     'param-default.zena',
     'param-default-ref.zena',
-    // 'functions', TODO: unskip when we support conditionals
+    'functions',
     'operators',
     'variables',
     'imports',
@@ -38,6 +38,7 @@ async function run() {
     'array-index.zena',
     'class-field.zena',
     'private-field.zena',
+    'param-default-fresh.zena',
   ];
   files = files.filter((f) => !skipList.some((s) => f.includes(s)));
 
