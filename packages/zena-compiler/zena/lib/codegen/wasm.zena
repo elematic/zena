@@ -1,5 +1,5 @@
 import { Error } from 'zena:error';
-import { RecordType, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, BooleanType, ClassType, ArrayType, TypeAliasType, VoidType, NullType, UnknownType, ErrorType, AnyType, EqRefType, AnyRefType, NeverType, HoleType, FunctionType, Type, typeToString } from '../types.zena';
+import { RecordType, TupleType, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, BooleanType, ClassType, ArrayType, TypeAliasType, VoidType, NullType, UnknownType, ErrorType, AnyType, EqRefType, AnyRefType, NeverType, HoleType, FunctionType, Type, typeToString } from '../types.zena';
 export enum SectionId {
   Type = 1,
   Import = 2,
@@ -163,6 +163,12 @@ export enum Opcode {
   call_ref = 0x14
 }
 
+// TODO: Return typed references instead of anyref for references. To do this
+// we need to change ValType from a simple enum to a sealed class with
+// parameters for references types, so we can have something like
+// ValType.Ref(structTypeIndex) or ValType.Array(elementTypeIndex).
+// typeToValType() will need to take a WasmModule to get the type indices for
+// record and tuple types.
 export let typeToValType = (t: Type): ValType => match (t) {
   case TypeAliasType as a: typeToValType(a.target)
   case F64Type: ValType.f64
@@ -173,6 +179,7 @@ export let typeToValType = (t: Type): ValType => match (t) {
   case U64Type: ValType.i64
   case BooleanType: ValType.i32
   case RecordType: ValType.anyref
+  case TupleType: ValType.anyref
   case ClassType: ValType.anyref
   case ArrayType: ValType.anyref
   case VoidType: ValType.void

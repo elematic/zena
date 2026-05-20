@@ -1,11 +1,32 @@
 import { FunctionContext } from '../function-context.zena';
-import { RecordLiteral, PropertyAssignment, Expression, Node } from '../../ast.zena';
-import { RecordType, F64Type, F32Type, Type } from '../../types.zena';
+import { RecordLiteral, TupleLiteral, PropertyAssignment, Expression, Node } from '../../ast.zena';
+import { RecordType, TupleType, F64Type, F32Type, Type } from '../../types.zena';
 import { ValType, typeToValType } from '../wasm.zena';
 import { WasmField, sortWasmFields } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
+import { i32ToString } from 'zena:string-convert';
 
+export let generateTupleLiteral = (
+    ctx: FunctionContext,
+    expr: TupleLiteral,
+    genExpr: (e: Expression, discardValue: boolean) => void): void => {
+  let tupleType = ctx.wasmFunction.model.getNodeType(expr) as TupleType;
+  
+  let fields = new Array<WasmField>();
+  for (var i = 0; i < tupleType.elementTypes.length; i += 1) {
+    let type = tupleType.elementTypes[i];
+    fields.push(new WasmField(i32ToString(i), typeToValType(type), false));
+  }
+  
+  let structType = ctx.wasm.getStruct(null, fields);
+  
+  for (let el in expr.elements) {
+    genExpr(el, false);
+  }
+
+  ctx.emitter.emitStructNew(structType.index);
+};
 
 export let generateRecordLiteral = (
     ctx: FunctionContext,

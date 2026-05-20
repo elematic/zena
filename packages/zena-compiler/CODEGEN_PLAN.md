@@ -51,9 +51,9 @@ This plan tracks all features required for the code generation phase to achieve 
   - [ ] **Record Devirtualization Optimizations:**
     - [ ] Devirtualize member access for exact type matches (skipping fat-pointer and vtable).
     - [ ] Devirtualize member access for prefix matches.
-- [ ] **Tuples:**
-  - [ ] Fixed-length WASM GC struct/array layout representing the tuple.
-  - [ ] Compile-time known index access (`t[idx]`) mapping to structural field access.
+- [x] **Tuples:**
+  - [x] Fixed-length WASM GC struct/array layout representing the tuple.
+  - [x] Compile-time known index access (`t[idx]`) mapping to structural field access.
 - [ ] **Destructuring:**
   - [ ] Destructuring patterns for records (`let {x, y} = p`) and tuples (`let (a, b) = t`) in variable declarations.
 - [ ] **Multi-Value Returns:**

@@ -1,9 +1,9 @@
 import { FunctionContext } from '../function-context.zena';
-import { Expression, MemberExpression, EnumDeclaration, NumberLiteral, StringLiteral } from '../../ast.zena';
+import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral } from '../../ast.zena';
 import { Error } from 'zena:error';
-import { RecordType } from '../../types.zena';
+import { RecordType, TupleType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
-import { parseI32 } from 'zena:string-convert';
+import { parseI32, i32ToString } from 'zena:string-convert';
 
 import { typeToValType } from '../wasm.zena';
 import { WasmField } from '../wasm-module.zena';
@@ -107,6 +107,46 @@ export let generateMemberExpression = (
        // We still need to evaluate the expression object for other types before failing
        genExpr(expr.object, false);
        throw new Error("Codegen for MemberExpression on non-record is not yet implemented.");
+    }
+  }
+};
+
+export let generateIndexExpression = (
+  ctx: FunctionContext,
+  expr: IndexExpression,
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  let objectType = ctx.wasmFunction.model.getNodeType(expr.object);
+
+  match (objectType) {
+    case TupleType as tt: {
+      if (expr.index is NumberLiteral) {
+        let numLit = expr.index as NumberLiteral;
+        let (ok, indexVal) = parseI32(numLit.raw);
+        if (!ok) {
+          throw new Error("Codegen: Tuple index is not a valid number.");
+        }
+        let index = indexVal as i32;
+
+        let fields = new Array<WasmField>();
+        for (var i = 0; i < tt.elementTypes.length; i += 1) {
+          let type = tt.elementTypes[i];
+          fields.push(new WasmField(i32ToString(i), typeToValType(type), false));
+        }
+        
+        let structType = ctx.wasm.getStruct(null, fields);
+        
+        genExpr(expr.object, false);
+        ctx.emitter.emitRefCastNull(structType.index);
+        ctx.emitter.emitStructGet(structType.index, index);
+      } else {
+        throw new Error("Codegen: Tuple index must be a constant number.");
+      }
+    }
+    case _: {
+      genExpr(expr.object, false);
+      genExpr(expr.index, false);
+      throw new Error("Codegen for IndexExpression on non-tuple is not yet implemented.");
     }
   }
 };

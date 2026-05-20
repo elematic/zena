@@ -7,7 +7,7 @@ import {
 } from '../ast.zena';
 import { walkEnter } from '../visitor.zena';
 import { typeToValType } from './wasm.zena';
-import { RecordType } from '../types.zena';
+import { RecordType, TupleType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
@@ -462,8 +462,15 @@ export class DiscoveryPass {
       
       // First, discover any record types used in any node and register their Structs
       walkEnter(mod as Node, (n: Node) => {
-        let nodeType = moduleModel.getNodeType(n);
-        if (nodeType is RecordType) {
+        let nodeType = moduleModel.getNodeType(n);          if (nodeType is TupleType) {
+             let tupleType = nodeType as TupleType;
+             let fields = new Array<WasmField>();
+             for (var i = 0; i < tupleType.elementTypes.length; i += 1) {
+                let type = tupleType.elementTypes[i];
+                fields.push(new WasmField(i32ToString(i), typeToValType(type), false));
+             }
+             this.wasm.getStruct(null, fields);
+          }        if (nodeType is RecordType) {
            let recordType = nodeType as RecordType;
            let fields = new Array<WasmField>();
            for (let pair in recordType.properties) {

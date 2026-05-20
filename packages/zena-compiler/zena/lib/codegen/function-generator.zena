@@ -4,7 +4,7 @@ import {
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
   IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
-  ContinueStatement, RecordLiteral, MemberExpression, NewExpression
+  ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression, IndexExpression, NewExpression
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -28,8 +28,8 @@ import { generateCallExpression } from './expr/calls.zena';
 import { generateAssignmentExpression } from './expr/assignment.zena';
 import { generateIfExpression } from './expr/control-flow.zena';
 import { generateNewExpression } from './expr/classes.zena';
-import { generateMemberExpression } from './expr/member.zena';
-import { generateRecordLiteral } from './expr/literals.zena';
+import { generateMemberExpression, generateIndexExpression } from './expr/member.zena';
+import { generateRecordLiteral, generateTupleLiteral } from './expr/literals.zena';
 import { generateReturnStatement, generateExpressionStatement, generateIfStatement } from './stmt/control-flow.zena';
 import { generateBreakStatement, generateContinueStatement, generateWhileStatement, generateForStatement } from './stmt/loops.zena';
 import { generateBlockStatement } from './stmt/blocks.zena';
@@ -181,11 +181,13 @@ export class FunctionGenerator {
     match (expr) {
       case Identifier: generateIdentifier(this.ctx, expr as Identifier)
       case MemberExpression: generateMemberExpression(this.ctx, expr as MemberExpression, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue))
+      case IndexExpression: generateIndexExpression(this.ctx, expr as IndexExpression, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue))
       case CallExpression: generateCallExpression(this.ctx, expr as CallExpression, (e: Expression) => this.generateExpression(e))
       case NumberLiteral: generateNumberLiteral(this.ctx, expr as NumberLiteral)
       case BooleanLiteral: generateBooleanLiteral(this.ctx, expr as BooleanLiteral)
       case StringLiteral: generateStringLiteral(this.ctx, expr as StringLiteral)
       case RecordLiteral: generateRecordLiteral(this.ctx, expr as RecordLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
+      case TupleLiteral: generateTupleLiteral(this.ctx, expr as TupleLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
       case BinaryExpression: generateBinaryExpression(this.ctx, expr as BinaryExpression, (e: Expression) => this.generateExpression(e))
       case AssignmentExpression: {
