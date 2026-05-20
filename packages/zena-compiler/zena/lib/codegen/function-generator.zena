@@ -4,7 +4,8 @@ import {
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
   IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
-  ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression, IndexExpression, NewExpression
+  ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
+  IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -107,21 +108,46 @@ export class FunctionGenerator {
       return;
     }
     
-    let bodyNode = this.ctx.wasmFunction.node as FunctionExpression;
-    for (var i = 0; i < bodyNode.params.length; i += 1) {
-      let param = bodyNode.params[i];
-      let sym = this.ctx.wasmFunction.model.resolveDeclaration(param.name);
-      if (sym != null) {
-        this.ctx.localIndices[sym.id] = i;
+    let bodyNode = this.ctx.wasmFunction.node;
+    var params: Array<Parameter> | null = null;
+    var body: Node | null = null;
+
+    match (bodyNode) {
+      case FunctionExpression as fExpr: {
+        params = fExpr.params;
+        body = fExpr.body as Node;
+      }
+      case MethodDefinition as mDef: {
+        params = mDef.params;
+        body = mDef.body;
+      }
+      case _: {}
+    }
+
+    if (params != null) {
+      var offset = 0;
+      if (bodyNode is MethodDefinition) {
+         offset = 1;
+      }
+      for (var i = 0; i < params.length; i += 1) {
+        let param = params[i];
+        let sym = this.ctx.wasmFunction.model.resolveDeclaration(param.name);
+        if (sym != null) {
+          this.ctx.localIndices[sym.id] = i + offset;
+        }
       }
     }
     
-    let body = bodyNode.body;
-    match (body) {
-      case BlockStatement: {
-        this.discoverLocalsFromStmt(body as Statement);
+    if (body != null) {
+      match (body as Node) {
+        case BlockStatement as blk: {
+          this.discoverLocalsFromStmt(blk as Statement);
+        }
+        case Expression as expr: {
+          this.discoverLocalsFromExpr(expr);
+        }
+        case _: {}
       }
-      case _: {}
     }
 
     this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
@@ -134,21 +160,59 @@ export class FunctionGenerator {
     
     this.ctx.emitter.emitFunctionLocalsStart(this.ctx.localTypes);
     
-    match (bodyNode.body) {
-      case BlockStatement: {
-        this.generateStatement(bodyNode.body as Statement);
-        if (this.ctx.wasmFunction.signature.returns.length > 0) {
-          if (this.ctx.isReachable) {
-            throw new Error("Function '" + name + "' misses a return statement");
-          } else if (this.ctx.needsUnreachable) {
-            this.ctx.emitter.emitUnreachable();
-          }
+    if (bodyNode is MethodDefinition) {
+      let mDef = bodyNode as MethodDefinition;
+      let methName = match(mDef.name) {
+        case Identifier {name}: name
+        case _: "<unknown>"
+      };
+      if (methName == "<constructor>") {
+        let structType = this.ctx.wasmFunction.structType;
+        if (structType != null && mDef.initializerList != null) {
+            let inits = mDef.initializerList as Array<Node>;
+            for (var initIdx = 0; initIdx < inits.length; initIdx += 1) {
+              let init = inits[initIdx];
+              if (init is FieldInitializer) {
+                let fi = init as FieldInitializer;
+                if (fi.field is Identifier) {
+                  let fieldName = (fi.field as Identifier).name;
+                  var fieldIndex = -1;
+                  for (var i = 0; i < structType.fields.length; i += 1) {
+                    if (structType.fields[i].name == fieldName) {
+                        fieldIndex = i;
+                    }
+                  }
+                  if (fieldIndex >= 0) {
+                            this.ctx.emitter.emitLocalGet(0);
+                            this.ctx.emitter.emitRefCastNull(structType.index);
+                            this.generateExpression(fi.value);
+                            this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
+                  }
+                }
+              }
+            }
         }
       }
-      case Expression: {
-        this.generateExpression(bodyNode.body as Expression);
-        this.ctx.emitter.emitReturn();
-        this.ctx.isReachable = false;
+    }
+
+    if (body != null) {
+      match (body as Node) {
+        case BlockStatement as blk: {
+          this.generateStatement(blk as Statement);
+          if (this.ctx.wasmFunction.signature.returns.length > 0) {
+            if (this.ctx.isReachable) {
+              throw new Error("Function '" + name + "' misses a return statement");
+            } else if (this.ctx.needsUnreachable) {
+              this.ctx.emitter.emitUnreachable();
+            }
+          }
+        }
+        case Expression as expr: {
+          this.generateExpression(expr);
+          this.ctx.emitter.emitReturn();
+          this.ctx.isReachable = false;
+        }
+        case _: {}
       }
     }
     

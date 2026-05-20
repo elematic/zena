@@ -1,13 +1,14 @@
 import { Program, CompilationUnit } from '../program.zena';
 import { Module, VariableDeclaration, IdentifierPattern, Identifier,
   ImportDeclaration, ImportSpecifier, Node, FunctionExpression, Parameter, CallExpression,
-  ClassDeclaration, DeclareFunction
+  ClassDeclaration, DeclareFunction, NewExpression
 } from '../ast.zena';
 import { walkEnter } from '../visitor.zena';
 import { HashSet } from 'zena:set';
 import { HashMap } from 'zena:map';
 import { Symbol } from '../scope/symbol.zena';
 import { SemanticModel } from '../semantic-model.zena';
+import { ClassType } from '../types.zena';
 
 export class UsageAnalysisResult {
   usedDeclarations = new HashSet<Node>();
@@ -103,6 +104,15 @@ export class UsageAnalyzer {
       match (node) {
         case CallExpression: {
           let call = node as CallExpression;
+          if (call.callee is Identifier) {
+            let sym = model.resolve(call.callee as Identifier);
+            if (sym != null && sym.declaration != null) {
+              this.markUsed(sym.declaration as Node, model, mod);
+            }
+          }
+        }
+        case NewExpression: {
+          let call = node as NewExpression;
           if (call.callee is Identifier) {
             let sym = model.resolve(call.callee as Identifier);
             if (sym != null && sym.declaration != null) {

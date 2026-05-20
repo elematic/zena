@@ -1,10 +1,9 @@
 import { FunctionContext } from '../function-context.zena';
 import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral } from '../../ast.zena';
 import { Error } from 'zena:error';
-import { RecordType, TupleType } from '../../types.zena';
+import { RecordType, TupleType, ClassType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
-
 import { typeToValType } from '../wasm.zena';
 import { WasmField } from '../wasm-module.zena';
 import { Array } from 'zena:array';
@@ -102,6 +101,31 @@ export let generateMemberExpression = (
       
       // Call the function reference
       ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
+    }
+    case ClassType as ct: {
+      let fields = new Array<WasmField>();
+      for (let pair in ct.fields) {
+        fields.push(new WasmField(pair.key, typeToValType(pair.value.type), pair.value.isMutable));
+      }
+      let structInfo = ctx.wasm.getStruct(ct.name, fields);
+      
+      var fieldIndex = -1;
+      let propName = expr.property.name;
+      
+      for (var i = 0; i < structInfo.fields.length; i += 1) {
+        if (structInfo.fields[i].name == propName) {
+           fieldIndex = i;
+        }
+      }
+      
+      if (fieldIndex == -1) {
+         throw new Error("Could not find property " + propName + " on class " + ct.name);
+      }
+      
+      genExpr(expr.object, false);
+      
+      ctx.emitter.emitRefCastNull(structInfo.index);
+      ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
     }
     case _: {
        // We still need to evaluate the expression object for other types before failing

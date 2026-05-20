@@ -29,6 +29,7 @@ async function run() {
     'compound-assignment',
     'records',
     'tuples',
+    'classes/basic_class.zena',
   ];
 
   let files = await glob(join(testsDir, '**/*.zena'));

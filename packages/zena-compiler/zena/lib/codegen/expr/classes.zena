@@ -2,16 +2,47 @@ import { NewExpression, Expression } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { ClassType } from '../../types.zena';
+import { WasmField } from '../wasm-module.zena';
+import { Array } from 'zena:array';
+import { typeToValType, ValType } from '../wasm.zena';
+import { WasmFunction } from '../wasm-module.zena';
 
 export let generateNewExpression = (
   ctx: FunctionContext,
   expr: NewExpression,
-  genExpr: (e: Expression) => void
+  genExpr: (e: Expression, discardValue: boolean) => void
 ): void => {
   let nodeType = ctx.wasmFunction.model.getNodeType(expr);
   if (nodeType is ClassType) {
     let classType = nodeType as ClassType;
-    throw new Error("generateNewExpression: Struct generation not fully implemented yet for " + classType.name);
+    // Get the struct type that was registered during DiscoveryPass
+    let fields = new Array<WasmField>();
+    for (let pair in classType.fields) {
+       fields.push(new WasmField(pair.key, typeToValType(pair.value.type), pair.value.isMutable));
+    }
+    let structType = ctx.wasm.getStruct(classType.name, fields);
+    
+    ctx.emitter.emitStructNewDefault(structType.index);
+    
+    // Check if the class has a constructor
+    var targetName = classType.name + ".<constructor>";
+    var ctorFunc: WasmFunction | null = null;
+    
+    for (let f in ctx.wasm.functions) {
+      if (f.name == targetName) {
+        ctorFunc = f;
+      }
+    }
+    
+    if (ctorFunc != null) {
+      let tempLocal = ctx.allocLocal(ValType.anyref);
+      ctx.emitter.emitLocalTee(tempLocal);
+      for (let arg in expr.args) {
+        genExpr(arg, false);
+      }
+      ctx.emitter.emitCall(ctorFunc as WasmFunction);
+      ctx.emitter.emitLocalGet(tempLocal);
+    }
   } else {
     throw new Error("generateNewExpression: nodeType is not a ClassType");
   }

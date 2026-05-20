@@ -3,7 +3,7 @@ import {
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportDeclaration, ImportSpecifier, ClassDeclaration, DeclareFunction,
-  TypeAliasDeclaration, RecordLiteral
+  TypeAliasDeclaration, RecordLiteral, MethodDefinition
 } from '../ast.zena';
 import { walkEnter } from '../visitor.zena';
 import { typeToValType } from './wasm.zena';
@@ -16,7 +16,7 @@ import { ValType } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
-import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType } from '../types.zena';
+import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType } from '../types.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 
@@ -115,6 +115,7 @@ export class WasmFunction {
   model: SemanticModel;
   var index: i32 = -1;
   var name: String | null = null;
+  var structType: WasmStruct | null = null;
   signature: WasmSignature;
   node: Node;
   var isImport: boolean = false;
@@ -494,6 +495,17 @@ export class DiscoveryPass {
               }
               this.wasm.getAdaptedRecordDispatch(moduleModel, inFields, outFields);
            }
+        } else if (n is ClassDeclaration) {
+           let classDecl = n as ClassDeclaration;
+           let classType = moduleModel.getNodeType(classDecl);
+           if (classType is ClassType) {
+              let cType = classType as ClassType;
+              let fields = new Array<WasmField>();
+              for (let pair in cType.fields) {
+                 fields.push(new WasmField(pair.key, typeToValType(pair.value.type), pair.value.isMutable));
+              }
+              this.wasm.getStruct(cType.name, fields);
+           }
         }
       });
       
@@ -575,7 +587,69 @@ export class DiscoveryPass {
             }
           }
           case ImportDeclaration: {}
-          case ClassDeclaration: {}
+          case ClassDeclaration: {
+            let classDecl = stmt as ClassDeclaration;
+            let classType = moduleModel.getNodeType(classDecl) as ClassType;
+
+            for (let member in classDecl.body) {
+              if (member is MethodDefinition) {
+                let method = member as MethodDefinition;
+                
+                let methName = match(method.name) {
+                  case Identifier {name}: name
+                  case _: "<unknown>"
+                };
+
+                var methodTypeNode: Type | null = null;
+                if (classType != null) {
+                  if (methName == "<constructor>") {
+                    methodTypeNode = classType.constructorType;
+                  } else {
+                    if (classType.methods.has(methName)) {
+                      methodTypeNode = classType.methods[methName];
+                    }
+                  }
+                }
+
+                let params = new Array<ValType>();
+                let returns = new Array<ValType>();
+
+                params.push(ValType.anyref);
+                if (methodTypeNode is FunctionType) {
+                  let fType = methodTypeNode as FunctionType;
+                  for (let p in fType.parameters) {
+                    params.push(typeToValType(p));
+                  }
+                  if (methName != "<constructor>") {
+                    let rType = fType.returnType;
+                    if (!(rType is VoidType)) returns.push(typeToValType(rType));
+                  }
+                } else {
+                  if (methName != "<constructor>") {
+                    returns.push(ValType.i32);
+                  }
+                }
+                
+                let sig = this.wasm.getSignature(params, returns);
+                let wasmFunc = new WasmFunction(sig, method as Node, moduleModel);
+                this.wasm.addFunction(wasmFunc);
+                wasmFunc.name = classDecl.name.name + "." + methName;
+                
+                let ctNode = moduleModel.getNodeType(classDecl);
+                if (ctNode is ClassType) {
+                  let ct = ctNode as ClassType;
+                  for (let t in this.wasm.types) {
+                    if (t is WasmStruct) {
+                      let ws = t as WasmStruct;
+                      if (ws.name == ct.name) {
+                        wasmFunc.structType = ws;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
           case DeclareFunction: {
             let decl = stmt as DeclareFunction;
             let sym = moduleModel.resolveDeclaration(decl);
