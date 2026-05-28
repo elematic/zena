@@ -4517,11 +4517,16 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
       case _: {}
     }
-    let rightType = checkExpression(ctx, value, leftType);
+    var effectiveType = checkExpression(ctx, value, leftType);
+    if (operator != null) {
+      // We know op is set and not "??". Act like a binary expression: left + right.
+      effectiveType = checkBinaryExpression(ctx, leftType, operator, left, value, loc);
+      ctx.model.setNodeType(value, effectiveType);
+    }
 
-    if (!isAssignableTo(ctx, rightType, leftType)) {
+    if (!isAssignableTo(ctx, effectiveType, leftType)) {
       ctx.error(
-        "Type mismatch: '" + typeToString(rightType) +
+        "Type mismatch in assignment: '" + typeToString(effectiveType) +
         "' is not assignable to '" + typeToString(leftType) + "'.",
         DiagnosticCode.TypeMismatch,
         loc

@@ -1,8 +1,9 @@
-import { Node, AssignmentExpression, Identifier, Expression } from '../../ast.zena';
+import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression } from '../../ast.zena';
 import { Type, F64Type, F32Type } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
+import { generateBinaryExpression } from './operators.zena';
 
 /**
  * Generates WASM code for an assignment expression.
@@ -21,62 +22,10 @@ export let generateAssignmentExpression = (
       let ident = assign.left as Identifier;
       let sym = ctx.wasmFunction.model.resolve(ident);
       if (sym != null) {
-        let leftType = ctx.wasmFunction.model.getNodeType(assign.left);
-        let rightType = ctx.wasmFunction.model.getNodeType(assign.value);
-
-        if (leftType == null || rightType == null) {
-          throw new Error("Missing type info in semantic model for binary expression operands");
-        }
-
-        var isFloatContext = false;
-        if (leftType is F64Type || rightType is F64Type || leftType is F32Type || rightType is F32Type) {
-          isFloatContext = true;
-        }
-  
-        // Emit LHS (get value)
-        if (ctx.localIndices.has((sym as Symbol).id)) {
-          ctx.emitter.emitLocalGet(ctx.localIndices[(sym as Symbol).id]);
-        } else if (ctx.wasm.globalMap.has((sym as Symbol).id)) {
-          let index = ctx.wasm.globalMap[(sym as Symbol).id].index;
-          ctx.emitter.emitGlobalGet(index);
-        } else {
-          throw new Error("Could not resolve assignment target for compound assignment: " + ident.name);
-        }
-  
-        // Implicit F64 upconversion logic
-        if (isFloatContext && !(leftType is F64Type) && !(leftType is F32Type)) {
-          ctx.emitter.emitF64ConvertI32S();
-        }
-  
-        // Emit RHS
-        if (isFloatContext && !(rightType is F64Type) && !(rightType is F32Type)) {
-          genExpr(assign.value, false);
-          ctx.emitter.emitF64ConvertI32S();
-        } else {
-          genExpr(assign.value, false);
-        }
-  
         let binOp = assign.operator as String;
-              
-        if (isFloatContext) {
-          match (binOp) {
-            case "+": ctx.emitter.emitF64Add()
-            case "-": ctx.emitter.emitF64Sub()
-            case "*": ctx.emitter.emitF64Mul()
-            case "/": ctx.emitter.emitF64Div()
-            case _: throw new Error("Unsupported compound operator for f64: " + binOp)
-          }
-        } else {
-          match (binOp) {
-            case "+": ctx.emitter.emitI32Add()
-            case "-": ctx.emitter.emitI32Sub()
-            case "*": ctx.emitter.emitI32Mul()
-            case "/": ctx.emitter.emitI32DivS()
-            case "%": ctx.emitter.emitI32RemS()
-            case _: throw new Error("Unsupported compound operator for i32: " + binOp)
-          }
-        }
-              
+        let binExpr = new BinaryExpression(binOp, assign.left, assign.value, assign.loc);
+        generateBinaryExpression(ctx, binExpr, genExpr);
+
         // Store back
         if (ctx.localIndices.has((sym as Symbol).id)) {
           if (discardValue) {

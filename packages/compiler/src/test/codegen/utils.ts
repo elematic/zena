@@ -622,7 +622,7 @@ export let getNestedTestError = (index: i32): String | null => nested().tests[in
   // Instantiate with console mocks
   let capturedExports: WebAssembly.Exports | null = null;
   const imports = {
-    env: { getStackTrace: () => null },
+    env: {getStackTrace: () => null},
     console: {
       log_i32: (v: number) => console.log(v),
       log_f32: (v: number) => console.log(v),

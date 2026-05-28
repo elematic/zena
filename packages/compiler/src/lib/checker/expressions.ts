@@ -2360,6 +2360,10 @@ function checkAssignmentExpression(
       );
     }
 
+    // Set the inferred type on the identifier for codegen (used for overloaded
+    // compound assignment)
+    expr.left.inferredType = symbol.type;
+
     const valueType = checkExpression(ctx, expr.value, symbol.type);
     const effectiveType = expr.operator
       ? checkCompoundOperator(ctx, expr, symbol.type, valueType)

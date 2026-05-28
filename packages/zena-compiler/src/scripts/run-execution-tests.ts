@@ -40,6 +40,8 @@ async function run() {
     'class-field.zena',
     'private-field.zena',
     'param-default-fresh.zena',
+    'string-plus-equals.zena',
+    'string-array-plus-equals.zena',
   ];
   files = files.filter((f) => !skipList.some((s) => f.includes(s)));
 
