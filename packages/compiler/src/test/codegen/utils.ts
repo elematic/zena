@@ -134,6 +134,17 @@ export const compileToWasm = (
   const host = createHost(input, path);
   const compiler = new Compiler(host, {emitLocations: true});
   const modules = compiler.compile(path);
+
+  const allDiagnostics = modules.flatMap((m) => m.diagnostics ?? []);
+  const errors = allDiagnostics.filter(
+    (d) => d.severity === DiagnosticSeverity.Error,
+  );
+  if (errors.length > 0) {
+    throw new Error(
+      `Compilation failed: ${errors.map((d) => d.message).join(', ')}`,
+    );
+  }
+
   const generator = new CodeGenerator(
     modules,
     path,

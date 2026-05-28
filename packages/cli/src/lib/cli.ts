@@ -139,6 +139,7 @@ const buildCommand = async (
   // For now, assume first file is entry point
   const entryPoint = resolve(process.cwd(), files[0]);
 
+  let codegen: CodeGenerator | undefined;
   try {
     const modules = compiler.compile(entryPoint);
 
@@ -159,7 +160,7 @@ const buildCommand = async (
 
     // Generate code (pass modules directly, no bundling needed)
     // Pass semantic context for resolved bindings
-    const codegen = new CodeGenerator(
+    codegen = new CodeGenerator(
       modules,
       entryPoint,
       compiler.semanticContext,
@@ -176,10 +177,15 @@ const buildCommand = async (
     console.log(`Built ${outputPath}`);
     return 0;
   } catch (e: any) {
+    if (codegen && codegen.diagnostics.diagnostics.length > 0) {
+      printErrors(
+        codegen.diagnostics
+          .diagnostics as import('@zena-lang/compiler').Diagnostic[],
+        '',
+      );
+    }
     console.error(`Compilation failed: ${e.message}`);
     if (e.stack && !e.message.includes(':')) {
-      // If the message doesn't already have a file:line prefix,
-      // show which file was being compiled.
       console.error(`  while compiling: ${entryPoint}`);
     }
     return 1;

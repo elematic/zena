@@ -2336,7 +2336,7 @@ function checkAssignmentExpression(
 
     if (!symbol) {
       ctx.diagnostics.reportError(
-        `Variable '${varName}' is not defined.`,
+        `Variable '${varName}' not found.`,
         DiagnosticCode.SymbolNotFound,
         ctx.getLocation(expr.loc),
       );

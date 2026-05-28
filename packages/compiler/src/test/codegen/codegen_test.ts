@@ -147,7 +147,7 @@ suite('CodeGenerator', () => {
 
   test('should compile and run recursive function calls', async () => {
     const input = `
-      export let fib = (n: i32) => {
+      export let fib = (n: i32): i32 => {
         if (n < 2) {
           return n;
         }

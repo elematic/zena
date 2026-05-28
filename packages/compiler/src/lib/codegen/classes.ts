@@ -4166,7 +4166,11 @@ export function generateClassMethods(
               // Skip if already initialized in initializerList
               if (initializedFields.has(memberName)) continue;
               const fieldName = manglePrivateName(decl.name.name, memberName);
-              const fieldInfo = classInfo.fields.get(fieldName)!;
+              const fieldInfo = classInfo.fields.get(fieldName);
+              // Skip if field was eliminated by DCE
+              if (!fieldInfo) {
+                continue;
+              }
               body.push(Opcode.local_get, 0);
               generateExpression(ctx, (m as any).value, body);
               body.push(0xfb, GcOpcode.struct_set);

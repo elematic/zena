@@ -128,7 +128,7 @@ suite('Binary Size', () => {
     test('unused class is eliminated with DCE', async () => {
       const withUnused = `
         class Unused {
-          var x: i32;
+          var x: i32 = 0;
           new() { this.x = 0; }
         }
         export let main = () => 42;
@@ -236,7 +236,7 @@ suite('Binary Size', () => {
     test('unused method is eliminated with DCE', async () => {
       const withUnusedMethod = `
         class Counter {
-          var #value: i32;
+          var #value: i32 = 0;
           new() { this.#value = 0; }
           increment(): i32 { return this.#value = this.#value + 1; }
           decrement(): i32 { return this.#value = this.#value - 1; }
@@ -250,7 +250,7 @@ suite('Binary Size', () => {
       `;
       const withoutUnusedMethod = `
         class Counter {
-          var #value: i32;
+          var #value: i32 = 0;
           new() { this.#value = 0; }
           increment(): i32 { return this.#value = this.#value + 1; }
           getValue(): i32 { return this.#value; }
@@ -283,8 +283,8 @@ suite('Binary Size', () => {
     test('unused getter is eliminated with DCE', async () => {
       const withUnusedGetter = `
         class Point {
-          var #x: i32;
-          var #y: i32;
+          var #x: i32 = 0;
+          var #y: i32 = 0;
           new(x: i32, y: i32) { this.#x = x; this.#y = y; }
           x: i32 { get { return this.#x; } }
           y: i32 { get { return this.#y; } }
@@ -296,8 +296,8 @@ suite('Binary Size', () => {
       `;
       const withoutUnusedGetter = `
         class Point {
-          var #x: i32;
-          var #y: i32;
+          var #x: i32 = 0;
+          var #y: i32 = 0;
           new(x: i32, y: i32) { this.#x = x; this.#y = y; }
           x: i32 { get { return this.#x; } }
         }
@@ -331,8 +331,8 @@ suite('Binary Size', () => {
       // reads only one
       const usesAllGetters = `
         class Person {
-          var name: i32;
-          var age: i32;
+          var name: i32 = 0;
+          var age: i32 = 0;
           new(n: i32, a: i32) { this.name = n; this.age = a; }
         }
         export let main = () => {
@@ -342,8 +342,8 @@ suite('Binary Size', () => {
       `;
       const usesOneGetter = `
         class Person {
-          var name: i32;
-          var age: i32;
+          var name: i32 = 0;
+          var age: i32 = 0;
           new(n: i32, a: i32) { this.name = n; this.age = a; }
         }
         export let main = () => {
@@ -397,7 +397,7 @@ suite('Binary Size', () => {
     test('multiple unused methods are all eliminated', async () => {
       const manyUnusedMethods = `
         class BigClass {
-          var #value: i32;
+          var #value: i32 = 0;
           new() { this.#value = 0; }
           method1(): i32 { return 1; }
           method2(): i32 { return 2; }
@@ -413,7 +413,7 @@ suite('Binary Size', () => {
       `;
       const minimalMethods = `
         class BigClass {
-          var #value: i32;
+          var #value: i32 = 0;
           new() { this.#value = 0; }
           getValue(): i32 { return this.#value; }
         }
