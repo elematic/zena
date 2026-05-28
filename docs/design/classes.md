@@ -750,3 +750,41 @@ While pre-super initialization closes the main soundness hole, it introduces res
 3.  **All Fields Must Be Initializable**
     - Every non-nullable field must have a value from inline initializer or initializer list
     - Cannot rely on constructor body to initialize fields (runs after super)
+
+## 11. Classes as Values and Static Interfaces (Future)
+
+Zena will allow classes to be passed as values, provided they are typed against an interface that defines static methods. Because Zena lacks runtime reflection or a dynamic prototype chain, classes will not be passable as untyped objects.
+
+### 11.1. Static Methods on Interfaces
+
+Interfaces will be able to define static methods (in addition to static symbols) to enforce that implementing classes provide specific factory methods or utilities.
+
+```zena
+interface ArrayBuilder<T> {
+  static create(capacity: i32): Sequence<T>;
+}
+```
+
+When a class implements this interface, it will need to provide the corresponding static methods.
+
+### 11.2. Classes as Values
+
+You will be able to assign a class to a variable or pass it to a function if the type resolves to an interface describing its static side.
+
+```zena
+class GrowableArray<T> implements ArrayBuilder<T> {
+  static create(capacity: i32): Sequence<T> {
+    return new GrowableArray<T>(capacity);
+  }
+}
+
+// Passing the class as a value
+let factory: ArrayBuilder<i32> = GrowableArray;
+let arr = factory.create(10);
+```
+
+### 11.3. WebAssembly Representation (Static VTables)
+
+Since classes aren't real objects at runtime in WASM GC, assigning a class as a value will instruct the compiler to generate a **Static VTable**. This will be a global singleton struct that contains function pointers to the class's static methods.
+
+When you assign `GrowableArray` to `factory`, the variable won't hold a class metadata object; it will hold a Wasm reference to `GrowableArray`'s generated Static VTable singleton. This will enable zero-cost static abstractions that map flawlessly to WASM GC structs.

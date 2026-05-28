@@ -262,7 +262,8 @@ Key implementation details:
 - Uses `SemanticContext.getResolvedBinding()` for accurate identifier resolution
 - Maps `FunctionExpression` back to parent `VariableDeclaration` for correct
   function declaration tracking
-- Pre-marks all indexed declarations as unused, then marks used ones via worklist
+- Pre-marks all indexed declarations as unused, then marks used ones via
+  worklist
 - Supports stdlib implicit dependencies via `ImplicitStdlibTypes` handling
 
 ### Phase 3: Codegen Integration ✅
@@ -287,14 +288,41 @@ The `#isUsed()` method returns `true` if:
 - DCE is disabled (`options.dce === false`)
 - The declaration is marked as used by the usage analysis
 
-### Phase 4: Method-Level DCE (Future)
+### Class Usage Analysis & Static VTables (Future)
 
-More aggressive optimization that eliminates individual methods:
+The usage analyzer will categorize how a class is referenced to ensure we emit
+zero overhead for advanced features like "Classes as Values", categorizing them
+into three tiers:
 
-1. Build a call graph of method invocations
-2. Mark methods as used only if called (transitively from roots)
-3. Generate vtables with only used methods
-4. Requires careful handling of interface dispatch
+1. **Tier 1: Used as a Type**
+   - _Usage_: `let x: Array<i32>;`
+   - _Effect_: No runtime code emitted. The class is purely used for static type
+     checking.
+2. **Tier 2: Used as a Namespace (Direct Static Call)**
+   - _Usage_: `Array.create(10)`
+   - _Effect_: Marks only `Array.create` as a used function. Call sites
+     statically dispatch to it. **No Static VTable is emitted.**
+3. **Tier 3: Used as a Value**
+   - _Usage_: `let factory: ArrayBuilder = Array;`
+   - _Effect_: The class is used in an expression position. The compiler will
+     evaluate required interfaces and emit a **Static VTable** (a global Wasm
+     struct containing function references for its static methods).
+
+### Phase 4: Method-Level DCE & Global VTable Pruning (Future)
+
+More aggressive optimization that eliminates individual methods and prunes
+VTables system-wide:
+
+1. **Precise Call Graph Tracking**: Build a call graph tracking exact virtual
+   and static interface method invocations (e.g., tracking
+   `InterfaceMethodCall(ArrayBuilder::create)`).
+2. **Global VTable Pruning**: Generate VTables (both instance VTables and Static
+   VTables) containing _only_ the methods actually invoked in the program.
+3. **Eliminates Dead Abstractions**: If a class implements an interface with 10
+   static methods, but the entire program only ever invokes `create()` via
+   interface dispatch, the compiler will shrink the `ArrayBuilder` interface
+   definition and the resulting Wasm Static VTable struct to contain just
+   `create()`. The uncalled static methods will be completely omitted.
 
 ## Escape Analysis Considerations
 
@@ -346,8 +374,10 @@ These can be reported during type checking once usage analysis is integrated.
 
 **Test files**:
 
-- `packages/compiler/src/test/analysis/usage_test.ts` - 13 unit tests for usage analysis
-- `packages/compiler/src/test/codegen/binary-size_test.ts` - 8 integration tests for DCE
+- `packages/compiler/src/test/analysis/usage_test.ts` - 13 unit tests for usage
+  analysis
+- `packages/compiler/src/test/codegen/binary-size_test.ts` - 8 integration tests
+  for DCE
 
 1. **Unit tests for visitor**: Ensure all node types are visited correctly
 2. **Unit tests for usage analysis**: Test marking logic for various patterns
