@@ -6,17 +6,16 @@ import {
   TypeAliasDeclaration, RecordLiteral, MethodDefinition
 } from '../ast.zena';
 import { walkEnter } from '../visitor.zena';
-import { typeToValType } from './wasm.zena';
 import { RecordType, TupleType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { ValType } from './wasm.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode, WasmType, valTypeEquals } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
-import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType } from '../types.zena';
+import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, TypeAliasType, U32Type, I64Type, U64Type, ArrayType, NullType, UnknownType, ErrorType, AnyType, AnyRefType, EqRefType, NeverType, HoleType, typeToString} from '../types.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 
@@ -77,10 +76,6 @@ export let sortWasmFields = (fields: Array<WasmField>): void => {
  * Represents a reference to an entity that has a WebAssembly type index.
  * Before layout runs, the index is -1.
  */
-export class WasmType {
-  var index: i32 = -1;
-}
-
 export class WasmField {
   name: String | null;
   type: ValType;
@@ -163,6 +158,7 @@ export class RecordDispatchInfo {
 
 export class WasmModule {
   types = new Array<WasmType>();
+  var isLayoutLocked: boolean = false;
   
   /** 
    * A complete list of all imported functions.
@@ -245,7 +241,7 @@ export class WasmModule {
           for (var i = 0; i < fields.length; i += 1) {
             // A struct matches if fields have same type and mutability.
             // Name doesn't matter for structural identity.
-            if (s.fields[i].type != fields[i].type || s.fields[i].isMutable != fields[i].isMutable) {
+            if (!valTypeEquals(s.fields[i].type, fields[i].type) || s.fields[i].isMutable != fields[i].isMutable) {
               match = false;
               break;
             }
@@ -270,16 +266,16 @@ export class WasmModule {
         keyStr = keyStr + (f.name as String);
       }
       keyStr = keyStr + ":";
-      keyStr = keyStr + i32ToString(f.type as i32);
-      keyStr = keyStr + ",";
+            keyStr = keyStr + i32ToString(valTypeToOpcode(f.type));
     }
     
-    if (this.recordDispatchMap.has(keyStr)) {
-      return this.recordDispatchMap[keyStr];
-    }
-    
+if (this.recordDispatchMap.has(keyStr)) {
+        return this.recordDispatchMap[keyStr];
+      }
+      if (this.isLayoutLocked) {
+        throw new Error("Struct allocated after layout: " + keyStr);
+      }
     let concreteType = this.getStruct(null, fields);
-    
     let vtableFields = new Array<WasmField>();
     let getterTypes = new Array<WasmSignature>();
     let getters = new Array<WasmFunction>();
@@ -288,10 +284,10 @@ export class WasmModule {
       let fieldValType = fields[i].type;
       
       let params = new Array<ValType>();
-      params.push(ValType.anyref);
+      params.push(new ValTypeAnyRef());
       
       let returns = new Array<ValType>();
-      if (fieldValType != ValType.void) {
+      if (fieldValType != new ValTypeVoid()) {
         returns.push(fieldValType);
       }
       
@@ -306,7 +302,7 @@ export class WasmModule {
       
       vtableFields.push(new WasmField(
         fields[i].name,
-        ValType.funcref,
+        new ValTypeFuncRef(),
         false
       ));
     }
@@ -314,13 +310,13 @@ export class WasmModule {
     let vtableType = this.getStruct(null, vtableFields);
     
     let fatPtrFields = new Array<WasmField>();
-    fatPtrFields.push(new WasmField(null, ValType.anyref, false));
-    fatPtrFields.push(new WasmField(null, ValType.anyref, false));
+    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
+    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
     
     let fatPtrType = this.getStruct(null, fatPtrFields);
     
     let vtableInit = new VTableInit(vtableType, getters);
-    let vtableGlobal = new WasmGlobal("vtable_" + keyStr, "vtable_" + keyStr, ValType.anyref, false, null, vtableInit, model);
+    let vtableGlobal = new WasmGlobal("vtable_" + keyStr, "vtable_" + keyStr, new ValTypeAnyRef(), false, null, vtableInit, model);
     this.globals.push(vtableGlobal);
     
     let info = new RecordDispatchInfo(fatPtrType, vtableType, concreteType, vtableGlobal, fields, getterTypes);
@@ -336,19 +332,22 @@ export class WasmModule {
     var keyStr = "adapt:";
     for (let f in inFields) {
       if (f.name != null) keyStr = keyStr + (f.name as String);
-      keyStr = keyStr + i32ToString(f.type as i32) + ",";
-    }
-    keyStr = keyStr + "->";
-    for (let f in outFields) {
-      if (f.name != null) keyStr = keyStr + (f.name as String);
-      keyStr = keyStr + i32ToString(f.type as i32) + ",";
-    }
-    
-    if (this.recordDispatchMap.has(keyStr)) {
-      return this.recordDispatchMap[keyStr];
-    }
-    
-    let inStructType = this.getStruct(null, inFields);
+        keyStr = keyStr + i32ToString(valTypeToOpcode(f.type)) + ",";
+      }
+      keyStr = keyStr + "->";
+      for (let f in outFields) {
+        if (f.name != null) keyStr = keyStr + (f.name as String);
+        keyStr = keyStr + i32ToString(valTypeToOpcode(f.type)) + ",";
+      }
+      
+      if (this.recordDispatchMap.has(keyStr)) {
+        return this.recordDispatchMap[keyStr];
+      }
+      if (this.isLayoutLocked) {
+        throw new Error("Struct allocated after layout: " + keyStr);
+      }
+      
+      let inStructType = this.getStruct(null, inFields);
     
     let vtableFields = new Array<WasmField>();
     let getterTypes = new Array<WasmSignature>();
@@ -358,10 +357,10 @@ export class WasmModule {
       let fieldValType = outFields[i].type;
       
       let params = new Array<ValType>();
-      params.push(ValType.anyref);
+      params.push(new ValTypeAnyRef());
       
       let returns = new Array<ValType>();
-      if (fieldValType != ValType.void) {
+      if (fieldValType != new ValTypeVoid()) {
         returns.push(fieldValType);
       }
       
@@ -386,7 +385,7 @@ export class WasmModule {
       
       vtableFields.push(new WasmField(
         outFields[i].name,
-        ValType.funcref,
+        new ValTypeFuncRef(),
         false
       ));
     }
@@ -394,13 +393,13 @@ export class WasmModule {
     let vtableType = this.getStruct(null, vtableFields);
     
     let fatPtrFields = new Array<WasmField>();
-    fatPtrFields.push(new WasmField(null, ValType.anyref, false));
-    fatPtrFields.push(new WasmField(null, ValType.anyref, false));
+    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
+    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
     
     let fatPtrType = this.getStruct(null, fatPtrFields);
     
     let vtableInit = new VTableInit(vtableType, getters);
-    let vtableGlobal = new WasmGlobal("vtable_" + keyStr, "vtable_" + keyStr, ValType.anyref, false, null, vtableInit, model);
+    let vtableGlobal = new WasmGlobal("vtable_" + keyStr, "vtable_" + keyStr, new ValTypeAnyRef(), false, null, vtableInit, model);
     this.globals.push(vtableGlobal);
     
     // We return information about the TARGET shape (outFields), but with a vtable matching our adapted getters
@@ -420,6 +419,7 @@ export class WasmModule {
    * discoveries are made, but before the emission passes begin.
    */
   layout(): void {
+    this.isLayoutLocked = true;
     for (var i = 0; i < this.types.length; i += 1) {
       let t = this.types[i];
       t.index = i;
@@ -468,14 +468,14 @@ export class DiscoveryPass {
              let fields = new Array<WasmField>();
              for (var i = 0; i < tupleType.elementTypes.length; i += 1) {
                 let type = tupleType.elementTypes[i];
-                fields.push(new WasmField(i32ToString(i), typeToValType(type), false));
+                fields.push(new WasmField(i32ToString(i), typeToValType(this.wasm, type), false));
              }
              this.wasm.getStruct(null, fields);
           }        if (nodeType is RecordType) {
            let recordType = nodeType as RecordType;
            let fields = new Array<WasmField>();
            for (let pair in recordType.properties) {
-              fields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+              fields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
            }
            this.wasm.getRecordDispatch(moduleModel, fields);
         }
@@ -487,11 +487,11 @@ export class DiscoveryPass {
               let actRec = moduleModel.getNodeType(expr) as RecordType;
               let inFields = new Array<WasmField>();
               for (let pair in actRec.properties) {
-                 inFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+                 inFields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
               }
               let outFields = new Array<WasmField>();
               for (let pair in adaptTarget.properties) {
-                 outFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+                 outFields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
               }
               this.wasm.getAdaptedRecordDispatch(moduleModel, inFields, outFields);
            }
@@ -502,7 +502,7 @@ export class DiscoveryPass {
               let cType = classType as ClassType;
               let fields = new Array<WasmField>();
               for (let pair in cType.fields) {
-                 fields.push(new WasmField(pair.key, typeToValType(pair.value.type), pair.value.isMutable));
+                 fields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value.type), pair.value.isMutable));
               }
               this.wasm.getStruct(cType.name, fields);
            }
@@ -538,12 +538,12 @@ export class DiscoveryPass {
                 if (funcTypeNode is FunctionType) {
                   let fType = funcTypeNode as FunctionType;
                   for (let p in fType.parameters) {
-                    params.push(typeToValType(p));
+                    params.push(typeToValType(this.wasm, p));
                   }
                   let rType = fType.returnType;
-                  if (!(rType is VoidType)) returns.push(typeToValType(rType));
+                  if (!(rType is VoidType)) returns.push(typeToValType(this.wasm, rType));
                 } else {
-                  returns.push(ValType.i32);
+                  returns.push(new ValTypeI32());
                 }
                 
                 let sig = this.wasm.getSignature(params, returns);
@@ -569,7 +569,7 @@ export class DiscoveryPass {
                   let nodeType = moduleModel.getNodeType(ident);
                   var isMutable = varDecl.kind == "var";
                   
-                  var vType = typeToValType(nodeType);
+                  var vType = typeToValType(this.wasm, nodeType);
 
                   let sym = moduleModel.resolveDeclaration(ident);
                   if (sym != null) {
@@ -614,19 +614,19 @@ export class DiscoveryPass {
                 let params = new Array<ValType>();
                 let returns = new Array<ValType>();
 
-                params.push(ValType.anyref);
+                params.push(new ValTypeAnyRef());
                 if (methodTypeNode is FunctionType) {
                   let fType = methodTypeNode as FunctionType;
                   for (let p in fType.parameters) {
-                    params.push(typeToValType(p));
+                    params.push(typeToValType(this.wasm, p));
                   }
                   if (methName != "<constructor>") {
                     let rType = fType.returnType;
-                    if (!(rType is VoidType)) returns.push(typeToValType(rType));
+                    if (!(rType is VoidType)) returns.push(typeToValType(this.wasm, rType));
                   }
                 } else {
                   if (methName != "<constructor>") {
-                    returns.push(ValType.i32);
+                    returns.push(new ValTypeI32());
                   }
                 }
                 
@@ -668,11 +668,11 @@ export class DiscoveryPass {
                      let funcType = moduleModel.getNodeType(decl) as FunctionType;
                      let params = new Array<ValType>();
                      for (let pt in funcType.parameters) {
-                       params.push(typeToValType(pt));
+                       params.push(typeToValType(this.wasm, pt));
                      }
                      let returns = new Array<ValType>();
                      if (!(funcType.returnType is VoidType)) {
-                        returns.push(typeToValType(funcType.returnType));
+                        returns.push(typeToValType(this.wasm, funcType.returnType));
                      }
                      let sig = this.wasm.getSignature(params, returns);
                      let wasmFunc = new WasmFunction(sig, decl, moduleModel);
@@ -700,3 +700,60 @@ export class DiscoveryPass {
     }
   }
 }
+
+
+export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
+  case TypeAliasType as a: typeToValType(wasm, a.target)
+  case F64Type: new ValTypeF64()
+  case F32Type: new ValTypeF32()
+  case I32Type: new ValTypeI32()
+  case U32Type: new ValTypeI32()
+  case I64Type: new ValTypeI64()
+  case U64Type: new ValTypeI64()
+  case BooleanType: new ValTypeI32()
+  case RecordType as rec: {
+    let fatPtrFields = new Array<WasmField>();
+    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
+    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
+    let structDef = wasm.getStruct(null, fatPtrFields);
+    new ValTypeRef(structDef);
+  }
+  case TupleType as tup: {
+    let fields = new Array<WasmField>();
+    for (var i = 0; i < tup.elementTypes.length; i += 1) {
+      let t_i = tup.elementTypes[i];
+      fields.push(new WasmField(i32ToString(i), typeToValType(wasm, t_i), false));
+    }
+    let structDef = wasm.getStruct(null, fields);
+    new ValTypeRef(structDef);
+  }
+  case ClassType as ct: new ValTypeAnyRef() // TODO: use actual struct type for class instances
+  case ArrayType: {
+    throw new Error("Codegen not implemented for type: " + typeToString(t));
+  }
+  case VoidType: new ValTypeVoid()
+  case NullType: new ValTypeAnyRef()
+  case UnknownType: {
+    throw new Error("Codegen should never see type: " + typeToString(t));
+  }
+  case ErrorType: {
+    throw new Error("Codegen should never see type: " + typeToString(t));
+  }
+  case AnyType: {
+    throw new Error("Codegen not implemented (requires auto-boxing) for type: " + typeToString(t));
+  }
+  case AnyRefType: new ValTypeAnyRef()
+  case EqRefType: new ValTypeEqRef()
+  case NeverType: {
+    throw new Error("Codegen should never see type: " + typeToString(t));
+  }
+  case HoleType: {
+    throw new Error("Codegen should never see type: " + typeToString(t));
+  }
+  case FunctionType: {
+    throw new Error("Codegen not implemented for type: " + typeToString(t));
+  }
+  case _: {
+    throw new Error("typeToValType: unsupported type: " + typeToString(t));
+  }
+};

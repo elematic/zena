@@ -4,7 +4,8 @@ import { Type, F64Type, F32Type, I32Type, RecordType, ClassType, ArrayType,
 } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
-import { typeToValType, ValType } from '../wasm.zena';
+import { ValType } from '../wasm.zena';
+import { typeToValType } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 import { WasmField } from '../wasm-module.zena';
 
@@ -56,7 +57,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
         let leftRT = leftType as RecordType;
         let leftFields = new Array<WasmField>();
         for (let pair in leftRT.properties) {
-          leftFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+          leftFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
         }
         let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, leftFields);
         ctx.emitter.emitRefCastNull(dispatchInfo.fatPtrType.index);
@@ -74,7 +75,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
         let rightRT = rightType as RecordType;
         let rightFields = new Array<WasmField>();
         for (let pair in rightRT.properties) {
-          rightFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+          rightFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
         }
         let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, rightFields);
         ctx.emitter.emitRefCastNull(dispatchInfo.fatPtrType.index);

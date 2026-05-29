@@ -1,10 +1,13 @@
+import { ValTypeAnyRef } from '../wasm.zena';
+import { typeToValType } from '../wasm-module.zena';
 import { NewExpression, Expression } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { ClassType } from '../../types.zena';
 import { WasmField } from '../wasm-module.zena';
 import { Array } from 'zena:array';
-import { typeToValType, ValType } from '../wasm.zena';
+import { ValType } from '../wasm.zena';
+import { typeToValType } from '../wasm-module.zena';
 import { WasmFunction } from '../wasm-module.zena';
 
 export let generateNewExpression = (
@@ -18,7 +21,7 @@ export let generateNewExpression = (
     // Get the struct type that was registered during DiscoveryPass
     let fields = new Array<WasmField>();
     for (let pair in classType.fields) {
-       fields.push(new WasmField(pair.key, typeToValType(pair.value.type), pair.value.isMutable));
+       fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value.type), pair.value.isMutable));
     }
     let structType = ctx.wasm.getStruct(classType.name, fields);
     
@@ -35,7 +38,7 @@ export let generateNewExpression = (
     }
     
     if (ctorFunc != null) {
-      let tempLocal = ctx.allocLocal(ValType.anyref);
+      let tempLocal = ctx.allocLocal(new ValTypeAnyRef());
       ctx.emitter.emitLocalTee(tempLocal);
       for (let arg in expr.args) {
         genExpr(arg, false);

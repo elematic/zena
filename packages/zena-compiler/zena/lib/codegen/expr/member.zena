@@ -4,7 +4,7 @@ import { Error } from 'zena:error';
 import { RecordType, TupleType, ClassType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
-import { typeToValType } from '../wasm.zena';
+import { typeToValType } from '../wasm-module.zena';
 import { WasmField } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 
@@ -63,7 +63,7 @@ export let generateMemberExpression = (
 
       let fields = new Array<WasmField>();
       for (let pair in rt.properties) {
-        fields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+        fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
       }
       let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields);
       
@@ -105,7 +105,7 @@ export let generateMemberExpression = (
     case ClassType as ct: {
       let fields = new Array<WasmField>();
       for (let pair in ct.fields) {
-        fields.push(new WasmField(pair.key, typeToValType(pair.value.type), pair.value.isMutable));
+        fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value.type), pair.value.isMutable));
       }
       let structInfo = ctx.wasm.getStruct(ct.name, fields);
       
@@ -155,7 +155,7 @@ export let generateIndexExpression = (
         let fields = new Array<WasmField>();
         for (var i = 0; i < tt.elementTypes.length; i += 1) {
           let type = tt.elementTypes[i];
-          fields.push(new WasmField(i32ToString(i), typeToValType(type), false));
+          fields.push(new WasmField(i32ToString(i), typeToValType(ctx.wasm, type), false));
         }
         
         let structType = ctx.wasm.getStruct(null, fields);

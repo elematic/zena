@@ -16,24 +16,64 @@ export enum SectionId {
   Tag = 13
 }
 
-export enum ValType {
-  void = 0x40,
-  func = 0x60,
-  i32 = 0x7F,
-  i64 = 0x7E,
-  f32 = 0x7D,
-  f64 = 0x7C,
-  v128 = 0x7B,
-  funcref = 0x70,
-  externref = 0x6F,
-  anyref = 0x6E,
-  eqref = 0x6D,
-  optref = 0x6C,
-  ref = 0x64,
-  ref_null = 0x63,
-  i8 = 0x78,
-  i16 = 0x77,
+export class WasmType {
+  var index: i32 = -1;
 }
+
+export sealed class ValType {
+  case ValTypeVoid
+  case ValTypeFunc
+  case ValTypeI32
+  case ValTypeI64
+  case ValTypeF32
+  case ValTypeF64
+  case ValTypeV128
+  case ValTypeFuncRef
+  case ValTypeExternRef
+  case ValTypeAnyRef
+  case ValTypeEqRef
+  case ValTypeOptRef
+  case ValTypeRef(target: WasmType)
+  case ValTypeRefNull(target: WasmType)
+  case ValTypeI8
+  case ValTypeI16
+}
+
+export let valTypeToOpcode = (type: ValType): i32 => match (type) {
+  case ValTypeVoid: 0x40
+  case ValTypeFunc: 0x60
+  case ValTypeI32: 0x7F
+  case ValTypeI64: 0x7E
+  case ValTypeF32: 0x7D
+  case ValTypeF64: 0x7C
+  case ValTypeV128: 0x7B
+  case ValTypeFuncRef: 0x70
+  case ValTypeExternRef: 0x6F
+  case ValTypeAnyRef: 0x6E
+  case ValTypeEqRef: 0x6D
+  case ValTypeOptRef: 0x6C
+  case ValTypeRef: 0x64
+  case ValTypeRefNull: 0x63
+  case ValTypeI8: 0x78
+  case ValTypeI16: 0x77
+};
+
+export let valTypeEquals = (a: ValType, b: ValType): boolean => {
+  if (valTypeToOpcode(a) != valTypeToOpcode(b)) {
+    return false;
+  }
+  return match (a) {
+    case ValTypeRef as ta: match (b) {
+       case ValTypeRef as tb : ta.target == tb.target
+       case _: false
+    }
+    case ValTypeRefNull as ta: match (b) {
+       case ValTypeRefNull as tb : ta.target == tb.target
+       case _: false
+    }
+    case _: true
+  };
+};
 
 export enum HeapType {
   func = 0x70,
@@ -167,34 +207,5 @@ export enum Opcode {
 // we need to change ValType from a simple enum to a sealed class with
 // parameters for references types, so we can have something like
 // ValType.Ref(structTypeIndex) or ValType.Array(elementTypeIndex).
-// typeToValType() will need to take a WasmModule to get the type indices for
-// record and tuple types.
-export let typeToValType = (t: Type): ValType => match (t) {
-  case TypeAliasType as a: typeToValType(a.target)
-  case F64Type: ValType.f64
-  case F32Type: ValType.f32
-  case I32Type: ValType.i32
-  case U32Type: ValType.i32
-  case I64Type: ValType.i64
-  case U64Type: ValType.i64
-  case BooleanType: ValType.i32
-  case RecordType: ValType.anyref
-  case TupleType: ValType.anyref
-  case ClassType: ValType.anyref
-  case ArrayType: ValType.anyref
-  case VoidType: ValType.void
-  case NullType: ValType.anyref
-  case UnknownType: ValType.anyref
-  case ErrorType: ValType.anyref
-  case AnyType: ValType.anyref
-  case AnyRefType: ValType.anyref
-  case EqRefType: ValType.eqref
-  case NeverType: ValType.void
-  case HoleType: ValType.anyref
-  case FunctionType: ValType.funcref
+
   
-  // We can add more specific mappings here as we implement them!
-  case _: {
-     throw new Error("typeToValType: unsupported type: " + typeToString(t));
-  }
-};

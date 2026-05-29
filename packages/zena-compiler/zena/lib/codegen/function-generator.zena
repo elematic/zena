@@ -1,3 +1,5 @@
+import { ValTypeAnyRef } from './wasm.zena';
+import { typeToValType } from './wasm-module.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
@@ -11,7 +13,8 @@ import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType } f
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { ValType, typeToValType } from "./wasm.zena";
+import { ValType } from './wasm.zena';
+import { typeToValType } from './wasm-module.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
@@ -60,7 +63,7 @@ export class FunctionGenerator {
           paramCount = node.params.length;
         }
         this.ctx.recordAdaptScratch = paramCount + this.ctx.localTypes.length;
-        this.ctx.localTypes.push(ValType.anyref);
+        this.ctx.localTypes.push(new ValTypeAnyRef());
       }
     }
     if (expr is MemberExpression) {
@@ -71,7 +74,7 @@ export class FunctionGenerator {
           paramCount = node.params.length;
         }
         this.ctx.vtableAccessScratch = paramCount + this.ctx.localTypes.length;
-        this.ctx.localTypes.push(ValType.anyref);
+        this.ctx.localTypes.push(new ValTypeAnyRef());
       }
     }
     discoverLocalsFromExpr(this.ctx, expr, (e: Expression) => this.discoverLocalsFromExpr(e), (s: Statement) => this.discoverLocalsFromStmt(s));
@@ -291,14 +294,14 @@ export class FunctionGenerator {
       
       let inFields = new Array<WasmField>();
       for (let pair in actRec.properties) {
-        inFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+        inFields.push(new WasmField(pair.key, typeToValType(this.ctx.wasm, pair.value), false));
       }
       
       let inDispatchInfo = this.ctx.wasm.getRecordDispatch(this.ctx.wasmFunction.model, inFields);
 
       let outFields = new Array<WasmField>();
       for (let pair in adaptTarget.properties) {
-        outFields.push(new WasmField(pair.key, typeToValType(pair.value), false));
+        outFields.push(new WasmField(pair.key, typeToValType(this.ctx.wasm, pair.value), false));
       }
       
       let outDispatchInfo = this.ctx.wasm.getAdaptedRecordDispatch(this.ctx.wasmFunction.model, inFields, outFields);
@@ -307,6 +310,9 @@ export class FunctionGenerator {
       this.ctx.emitter.emitRefCastNull(inDispatchInfo.fatPtrType.index);
       this.ctx.emitter.emitStructGet(inDispatchInfo.fatPtrType.index, 0); // Get Instance
       
+      if (outDispatchInfo.vtableGlobal.index < 0) {
+        throw new Error("vtableGlobal.index < 0 in generate! Key: " + outDispatchInfo.vtableGlobal.name);
+      }
       this.ctx.emitter.emitGlobalGet(outDispatchInfo.vtableGlobal.index);
       
       this.ctx.emitter.emitStructNew(outDispatchInfo.fatPtrType.index);

@@ -1,3 +1,5 @@
+import { ValTypeI32 } from './wasm.zena';
+import { typeToValType } from './wasm-module.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
@@ -9,7 +11,8 @@ import {
 } from '../ast.zena';
 import { Type, F64Type, F32Type, FunctionType } from '../types.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
-import { ValType, typeToValType } from "./wasm.zena";
+import { ValType } from './wasm.zena';
+import { typeToValType } from './wasm-module.zena';
 import { Array } from 'zena:array';
 import { FunctionContext } from './function-context.zena';
 
@@ -47,7 +50,7 @@ export let discoverLocalsFromExpr = (ctx: FunctionContext, expr: Expression, dis
               let symId = symbols[i];
               if (symId != (-1 as SymbolId) && !ctx.localIndices.has(symId)) {
                 let paramType = ft.parameters[i];
-                var vType = typeToValType(paramType);
+                var vType = typeToValType(ctx.wasm, paramType);
                 let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
                 ctx.localIndices[symId] = index;
                 ctx.localTypes.push(vType);
@@ -151,9 +154,9 @@ export let discoverLocalsFromStmt = (ctx: FunctionContext, stmt: Statement, disc
         let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
         if (sym != null) {
           let varType = ctx.wasmFunction.model.getNodeType(ident);
-          var vType = ValType.i32;
+          var vType: ValType = new ValTypeI32();
           if (varType != null) {
-            vType = typeToValType(varType);
+            vType = typeToValType(ctx.wasm, varType);
           }
           let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
           ctx.localIndices[sym.id] = index;

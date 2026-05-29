@@ -1,7 +1,30 @@
+import { ValTypeFunc, ValTypeRef, ValTypeRefNull } from './wasm.zena';
 import { ByteBuffer } from 'zena:byte-buffer';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { WasmType, WasmSignature, WasmFunction, WasmModule, DiscoveryPass } from './wasm-module.zena';
-import { SectionId, ValType, Opcode, GcOpcode, HeapType } from './wasm.zena';
+import { WasmSignature, WasmFunction, WasmModule, DiscoveryPass } from './wasm-module.zena';
+import { SectionId, ValType, WasmType, Opcode, GcOpcode, HeapType, valTypeToOpcode } from './wasm.zena';
+
+export let emitValType = (buffer: ByteBuffer, type: ValType) => {
+  let ignored = match (type) {
+    case ValTypeRef as ref: {
+      if (ref.target.index < 0) {
+         throw new Error("Invalid WasmType index < 0 for ValTypeRef");
+      }
+      buffer.writeByte(0x64);
+      buffer.writeSLEB128(ref.target.index);
+    }
+    case ValTypeRefNull as ref: {
+      if (ref.target.index < 0) {
+         throw new Error("Invalid WasmType index < 0 for ValTypeRefNull");
+      }
+      buffer.writeByte(0x63);
+      buffer.writeSLEB128(ref.target.index);
+    }
+    case _: {
+      buffer.writeByte(valTypeToOpcode(type));
+    }
+  };
+};
 
 /**
  * Implements the WasmEmitter interface by writing WebAssembly binary
@@ -38,9 +61,9 @@ export class BinaryEmitter implements WasmEmitter {
   
   emitFunctionTypeStart(index: i32): void {
     if (this.currentSection == null) return;
-    (this.currentSection as ByteBuffer).writeByte(ValType.func as i32);
-  }
-  
+      (this.currentSection as ByteBuffer).writeByte(0x60);
+    }
+
   emitFunctionTypeParamsStart(count: i32): void {
     if (this.currentSection == null) return;
     (this.currentSection as ByteBuffer).writeULEB128(count);
@@ -48,7 +71,7 @@ export class BinaryEmitter implements WasmEmitter {
   
   emitFunctionTypeParam(type: ValType): void {
     if (this.currentSection == null) return;
-    (this.currentSection as ByteBuffer).writeByte(type as i32);
+    emitValType(this.currentSection as ByteBuffer, type);
   }
   
   emitFunctionTypeResultsStart(count: i32): void {
@@ -58,7 +81,7 @@ export class BinaryEmitter implements WasmEmitter {
   
   emitFunctionTypeResult(type: ValType): void {
     if (this.currentSection == null) return;
-    (this.currentSection as ByteBuffer).writeByte(type as i32);
+    emitValType(this.currentSection as ByteBuffer, type);
   }
   
   emitFunctionTypeEnd(): void {}
@@ -82,7 +105,7 @@ export class BinaryEmitter implements WasmEmitter {
     if (this.currentSection == null) {
       return;
     }
-    (this.currentSection as ByteBuffer).writeByte(type as i32);
+    emitValType(this.currentSection as ByteBuffer, type);
     (this.currentSection as ByteBuffer).writeByte(if (isMutable) 1 else 0);
   }
 
@@ -127,7 +150,7 @@ export class BinaryEmitter implements WasmEmitter {
         section.writeByte(name.getByteAt(j));
       }
       section.writeByte(0x03); // 3 = global import
-      section.writeByte(type as i32);
+      emitValType(section, type);
       section.writeByte(if (isMutable) 1 else 0);
     }
   }
@@ -151,7 +174,7 @@ export class BinaryEmitter implements WasmEmitter {
   emitGlobal(type: ValType, isMutable: boolean): void {
     let section = this.currentSection;
     if (section != null) {
-      section.writeByte(type as i32);
+      emitValType(section, type);
       section.writeByte(if (isMutable) 1 else 0);
     }
   }
@@ -255,7 +278,7 @@ export class BinaryEmitter implements WasmEmitter {
       funcBody.writeULEB128(lArray.length);
       for (let l in lArray) {
         funcBody.writeULEB128(1); // count 1
-        funcBody.writeByte(l as i32); 
+        emitValType(funcBody, l); 
       }
     } else {
       funcBody.writeULEB128(0); // local count 0
@@ -299,19 +322,19 @@ export class BinaryEmitter implements WasmEmitter {
   emitBlock(resultType: ValType): void {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.block as i32);
-    b.writeByte(resultType as i32);
+    emitValType(b, resultType);
   }
 
   emitLoop(resultType: ValType): void {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.loop as i32);
-    b.writeByte(resultType as i32);
+    emitValType(b, resultType);
   }
 
   emitIf(resultType: ValType): void {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.if_ as i32);
-    b.writeByte(resultType as i32);
+    emitValType(b, resultType);
   }
 
   emitElse(): void {
@@ -444,6 +467,9 @@ export class BinaryEmitter implements WasmEmitter {
   }
 
   emitGlobalGet(index: i32): void {
+    if (index < 0) {
+      throw new Error("Invalid global index < 0 for emitGlobalGet");
+    }
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.global_get as i32);
     b.writeULEB128(index);

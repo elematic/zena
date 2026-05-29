@@ -1,7 +1,8 @@
 import { FunctionContext } from '../function-context.zena';
 import { RecordLiteral, TupleLiteral, PropertyAssignment, Expression, Node } from '../../ast.zena';
 import { RecordType, TupleType, F64Type, F32Type, Type } from '../../types.zena';
-import { ValType, typeToValType } from '../wasm.zena';
+import { ValType } from '../wasm.zena';
+import { typeToValType } from '../wasm-module.zena';
 import { WasmField, sortWasmFields } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
@@ -16,7 +17,7 @@ export let generateTupleLiteral = (
   let fields = new Array<WasmField>();
   for (var i = 0; i < tupleType.elementTypes.length; i += 1) {
     let type = tupleType.elementTypes[i];
-    fields.push(new WasmField(i32ToString(i), typeToValType(type), false));
+    fields.push(new WasmField(i32ToString(i), typeToValType(ctx.wasm, type), false));
   }
   
   let structType = ctx.wasm.getStruct(null, fields);
@@ -36,7 +37,7 @@ export let generateRecordLiteral = (
   
   let fields = new Array<WasmField>();
   for (let {key as name, value as type} in recordType.properties) {
-     fields.push(new WasmField(name, typeToValType(type), false));
+     fields.push(new WasmField(name, typeToValType(ctx.wasm, type), false));
   }
   sortWasmFields(fields);
   
@@ -60,6 +61,9 @@ export let generateRecordLiteral = (
 
   ctx.emitter.emitStructNew(structType.index);
   
+  if (dispatchInfo.vtableGlobal.index < 0) {
+     throw new Error("vtableGlobal.index < 0 in generateRecordLiteral! Key: " + dispatchInfo.vtableGlobal.name);
+  }
   ctx.emitter.emitGlobalGet(dispatchInfo.vtableGlobal.index);
   ctx.emitter.emitStructNew(dispatchInfo.fatPtrType.index);
 };
