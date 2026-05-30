@@ -1,5 +1,4 @@
 import { ValTypeAnyRef } from './wasm.zena';
-import { typeToValType } from './wasm-module.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
@@ -67,14 +66,19 @@ export class FunctionGenerator {
       }
     }
     if (expr is MemberExpression) {
-      if (this.ctx.vtableAccessScratch == -1) {
-        var paramCount = 0;
-        if (this.ctx.wasmFunction.node != null) {
-          let node = this.ctx.wasmFunction.node as FunctionExpression;
-          paramCount = node.params.length;
+      let objectType = this.ctx.wasmFunction.model.getNodeType((expr as MemberExpression).object);
+      match (objectType) {
+        case RecordType as rt: {
+          if (rt.enumDeclaration == null) {
+            let fields = new Array<WasmField>();
+            for (let pair in rt.properties) {
+              fields.push(new WasmField(pair.key, typeToValType(this.ctx.wasm, pair.value), false));
+            }
+            let dispatchInfo = this.ctx.wasm.getRecordDispatch(this.ctx.wasmFunction.model, fields);
+            this.ctx.getStructScratchLocal(dispatchInfo.fatPtrType);
+          }
         }
-        this.ctx.vtableAccessScratch = paramCount + this.ctx.localTypes.length;
-        this.ctx.localTypes.push(new ValTypeAnyRef());
+        case _: {}
       }
     }
     discoverLocalsFromExpr(this.ctx, expr, (e: Expression) => this.discoverLocalsFromExpr(e), (s: Statement) => this.discoverLocalsFromStmt(s));

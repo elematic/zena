@@ -5,7 +5,7 @@ import {
   ImportDeclaration, ImportSpecifier, ClassDeclaration, DeclareFunction,
   TypeAliasDeclaration, RecordLiteral, MethodDefinition
 } from '../ast.zena';
-import { walkEnter } from '../visitor.zena';
+import { walk } from '../visitor.zena';
 import { RecordType, TupleType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -190,7 +190,53 @@ export class WasmModule {
   exportMap = new HashMap<String, WasmFunction>();
   exportGlobalMap = new HashMap<String, WasmGlobal>();
   
-  recordDispatchMap = new HashMap<String, RecordDispatchInfo>();
+  recordDispatchInfos = new Array<RecordDispatchInfo>();
+  adaptedDispatchInfos = new Array<RecordDispatchInfo>();
+  
+  findRecordDispatch(fields: Array<WasmField>): RecordDispatchInfo | null {
+    for (var k = 0; k < this.recordDispatchInfos.length; k += 1) {
+      let info = this.recordDispatchInfos[k];
+      if (info.fields.length == fields.length) {
+        var match = true;
+        for (var i = 0; i < fields.length; i += 1) {
+          if (info.fields[i].name != fields[i].name || !valTypeEquals(info.fields[i].type, fields[i].type)) {
+            match = false;
+            break;
+          }
+        }
+        if (match) return info;
+      }
+    }
+    return null;
+  }
+  
+  findAdaptedDispatch(inFields: Array<WasmField>, outFields: Array<WasmField>): RecordDispatchInfo | null {
+    for (var k = 0; k < this.adaptedDispatchInfos.length; k += 1) {
+      let info = this.adaptedDispatchInfos[k];
+      let s = info.concreteType;
+      var inMatch = false;
+      if (s.fields.length == inFields.length) {
+        inMatch = true;
+        for (var i = 0; i < inFields.length; i += 1) {
+           if (s.fields[i].name != inFields[i].name || !valTypeEquals(s.fields[i].type, inFields[i].type)) {
+              inMatch = false;
+              break;
+           }
+        }
+      }
+      if (inMatch && info.fields.length == outFields.length) {
+        var outMatch = true;
+        for (var i = 0; i < outFields.length; i += 1) {
+           if (info.fields[i].name != outFields[i].name || !valTypeEquals(info.fields[i].type, outFields[i].type)) {
+              outMatch = false;
+              break;
+           }
+        }
+        if (outMatch) return info;
+      }
+    }
+    return null;
+  }
   
   /**
    * Gets an existing WasmSignature if one matches the given parameters and
@@ -260,21 +306,14 @@ export class WasmModule {
   getRecordDispatch(model: SemanticModel, fields: Array<WasmField>): RecordDispatchInfo {
     sortWasmFields(fields);
     
-    var keyStr = "";
-    for (let f in fields) {
-      if (f.name != null) {
-        keyStr = keyStr + (f.name as String);
-      }
-      keyStr = keyStr + ":";
-            keyStr = keyStr + i32ToString(valTypeToOpcode(f.type));
+    let existing = this.findRecordDispatch(fields);
+    if (existing != null) {
+      return existing;
+    }
+    if (this.isLayoutLocked) {
+      throw new Error("Struct allocated after layout");
     }
     
-if (this.recordDispatchMap.has(keyStr)) {
-        return this.recordDispatchMap[keyStr];
-      }
-      if (this.isLayoutLocked) {
-        throw new Error("Struct allocated after layout: " + keyStr);
-      }
     let concreteType = this.getStruct(null, fields);
     let vtableFields = new Array<WasmField>();
     let getterTypes = new Array<WasmSignature>();
@@ -302,7 +341,7 @@ if (this.recordDispatchMap.has(keyStr)) {
       
       vtableFields.push(new WasmField(
         fields[i].name,
-        new ValTypeFuncRef(),
+        new ValTypeRef(getterType),
         false
       ));
     }
@@ -311,16 +350,16 @@ if (this.recordDispatchMap.has(keyStr)) {
     
     let fatPtrFields = new Array<WasmField>();
     fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
-    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
+    fatPtrFields.push(new WasmField(null, new ValTypeRef(vtableType), false));
     
     let fatPtrType = this.getStruct(null, fatPtrFields);
     
     let vtableInit = new VTableInit(vtableType, getters);
-    let vtableGlobal = new WasmGlobal("vtable_" + keyStr, "vtable_" + keyStr, new ValTypeAnyRef(), false, null, vtableInit, model);
+    let vtableGlobal = new WasmGlobal("vtable_record", "vtable_record", new ValTypeRef(vtableType), false, null, vtableInit, model);
     this.globals.push(vtableGlobal);
     
     let info = new RecordDispatchInfo(fatPtrType, vtableType, concreteType, vtableGlobal, fields, getterTypes);
-    this.recordDispatchMap[keyStr] = info;
+    this.recordDispatchInfos.push(info);
     
     return info;
   }
@@ -328,26 +367,16 @@ if (this.recordDispatchMap.has(keyStr)) {
   getAdaptedRecordDispatch(model: SemanticModel, inFields: Array<WasmField>, outFields: Array<WasmField>): RecordDispatchInfo {
     sortWasmFields(inFields);
     sortWasmFields(outFields);
-    // Generate a unique key for the adaptation
-    var keyStr = "adapt:";
-    for (let f in inFields) {
-      if (f.name != null) keyStr = keyStr + (f.name as String);
-        keyStr = keyStr + i32ToString(valTypeToOpcode(f.type)) + ",";
-      }
-      keyStr = keyStr + "->";
-      for (let f in outFields) {
-        if (f.name != null) keyStr = keyStr + (f.name as String);
-        keyStr = keyStr + i32ToString(valTypeToOpcode(f.type)) + ",";
-      }
+    
+    let existing = this.findAdaptedDispatch(inFields, outFields);
+    if (existing != null) {
+      return existing;
+    }
+    if (this.isLayoutLocked) {
+      throw new Error("Struct allocated after layout");
+    }
       
-      if (this.recordDispatchMap.has(keyStr)) {
-        return this.recordDispatchMap[keyStr];
-      }
-      if (this.isLayoutLocked) {
-        throw new Error("Struct allocated after layout: " + keyStr);
-      }
-      
-      let inStructType = this.getStruct(null, inFields);
+    let inStructType = this.getStruct(null, inFields);
     
     let vtableFields = new Array<WasmField>();
     let getterTypes = new Array<WasmSignature>();
@@ -385,7 +414,7 @@ if (this.recordDispatchMap.has(keyStr)) {
       
       vtableFields.push(new WasmField(
         outFields[i].name,
-        new ValTypeFuncRef(),
+        new ValTypeRef(getterType),
         false
       ));
     }
@@ -394,17 +423,18 @@ if (this.recordDispatchMap.has(keyStr)) {
     
     let fatPtrFields = new Array<WasmField>();
     fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
-    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
+    fatPtrFields.push(new WasmField(null, new ValTypeRef(vtableType), false));
     
     let fatPtrType = this.getStruct(null, fatPtrFields);
     
     let vtableInit = new VTableInit(vtableType, getters);
-    let vtableGlobal = new WasmGlobal("vtable_" + keyStr, "vtable_" + keyStr, new ValTypeAnyRef(), false, null, vtableInit, model);
+    // TODO: better naming since keyStr is gone
+    let vtableGlobal = new WasmGlobal("vtable_adapt", "vtable_adapt", new ValTypeRef(vtableType), false, null, vtableInit, model);
     this.globals.push(vtableGlobal);
     
     // We return information about the TARGET shape (outFields), but with a vtable matching our adapted getters
     let info = new RecordDispatchInfo(fatPtrType, vtableType, inStructType, vtableGlobal, outFields, getterTypes);
-    this.recordDispatchMap[keyStr] = info;
+    this.adaptedDispatchInfos.push(info);
     
     return info;
   }
@@ -453,6 +483,42 @@ export class DiscoveryPass {
   usage: UsageAnalysisResult;
   new(this.program, this.wasm, this.usage);
   
+  discoverType(t: Type, model: SemanticModel): void {
+     if (t is RecordType) {
+        let rec = t as RecordType;
+        for (let pair in rec.properties) {
+           this.discoverType(pair.value, model);
+        }
+        let fields = new Array<WasmField>();
+        for (let pair in rec.properties) {
+           fields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
+        }
+        this.wasm.getRecordDispatch(model, fields);
+     } else if (t is TupleType) {
+        let tup = t as TupleType;
+        for (var i = 0; i < tup.elementTypes.length; i += 1) {
+           this.discoverType(tup.elementTypes[i], model);
+        }
+        let fields = new Array<WasmField>();
+        for (var i = 0; i < tup.elementTypes.length; i += 1) {
+           let type = tup.elementTypes[i];
+           fields.push(new WasmField(i32ToString(i), typeToValType(this.wasm, type), false));
+        }
+        this.wasm.getStruct(null, fields);
+     } else if (t is FunctionType) {
+        let ft = t as FunctionType;
+        for (let paramType in ft.parameters) {
+           this.discoverType(paramType, model);
+        }
+        this.discoverType(ft.returnType, model);
+     } else if (t is ClassType) {
+        let ct = t as ClassType;
+        for (let pair in ct.fields) {
+           this.discoverType(pair.value.type, model);
+        }
+     }
+  }
+
   /**
    * Run the discovery pass on the program, populating the given WasmModule.
    */
@@ -462,28 +528,16 @@ export class DiscoveryPass {
       let moduleModel = unit.model;
       
       // First, discover any record types used in any node and register their Structs
-      walkEnter(mod as Node, (n: Node) => {
-        let nodeType = moduleModel.getNodeType(n);          if (nodeType is TupleType) {
-             let tupleType = nodeType as TupleType;
-             let fields = new Array<WasmField>();
-             for (var i = 0; i < tupleType.elementTypes.length; i += 1) {
-                let type = tupleType.elementTypes[i];
-                fields.push(new WasmField(i32ToString(i), typeToValType(this.wasm, type), false));
-             }
-             this.wasm.getStruct(null, fields);
-          }        if (nodeType is RecordType) {
-           let recordType = nodeType as RecordType;
-           let fields = new Array<WasmField>();
-           for (let pair in recordType.properties) {
-              fields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
-           }
-           this.wasm.getRecordDispatch(moduleModel, fields);
-        }
+      walk(mod as Node, (n: Node) => true, (n: Node) => {
+        let nodeType = moduleModel.getNodeType(n);
+        this.discoverType(nodeType, moduleModel);
         
         if (n is Expression) {
            let expr = n as Expression;
            let adaptTarget = moduleModel.getRecordAdaptation(expr);
            if (adaptTarget != null) {
+              this.discoverType(adaptTarget, moduleModel);
+              
               let actRec = moduleModel.getNodeType(expr) as RecordType;
               let inFields = new Array<WasmField>();
               for (let pair in actRec.properties) {
@@ -712,11 +766,22 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
   case U64Type: new ValTypeI64()
   case BooleanType: new ValTypeI32()
   case RecordType as rec: {
-    let fatPtrFields = new Array<WasmField>();
-    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
-    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
-    let structDef = wasm.getStruct(null, fatPtrFields);
-    new ValTypeRef(structDef);
+    let fields = new Array<WasmField>();
+    for (let pair in rec.properties) {
+       fields.push(new WasmField(pair.key, typeToValType(wasm, pair.value), false));
+    }
+    sortWasmFields(fields);
+    let info_opt = wasm.findRecordDispatch(fields);
+    match (info_opt) {
+      case RecordDispatchInfo as info: new ValTypeRef(info.fatPtrType)
+      case null: {
+        var errStr = "";
+        for (let f in fields) {
+           if (f.name != null) errStr = errStr + (f.name as String) + ", ";
+        }
+        throw new Error("Record fat ptr type not generated during discovery pass! Fields: " + errStr);
+      }
+    }
   }
   case TupleType as tup: {
     let fields = new Array<WasmField>();

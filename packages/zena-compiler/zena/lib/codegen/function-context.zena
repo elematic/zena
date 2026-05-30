@@ -1,5 +1,5 @@
 import { SymbolId } from '../scope/symbol.zena';
-import { ValType } from './wasm.zena';
+import { ValType, ValTypeRefNull, WasmType } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { WasmEmitter } from './wasm-emitter.zena';
@@ -16,6 +16,7 @@ export class FunctionContext {
   
   var recordAdaptScratch: i32 = -1;
   var vtableAccessScratch: i32 = -1;
+  structScratchLocals = new HashMap<i32, i32>();
 
   /// Stack of active loops for break/continue targets.
   /// Tuple holds: (breakDepth: i32, continueDepth: i32)
@@ -26,6 +27,16 @@ export class FunctionContext {
   allocLocal(type: ValType): i32 {
     let index = this.wasmFunction.signature.params.length + this.localTypes.length;
     this.localTypes.push(type);
+    return index;
+  }
+
+  getStructScratchLocal(target: WasmType): i32 {
+    let structIndex = target.index;
+    if (this.structScratchLocals.has(structIndex)) {
+      return this.structScratchLocals[structIndex];
+    }
+    let index = this.allocLocal(new ValTypeRefNull(target));
+    this.structScratchLocals[structIndex] = index;
     return index;
   }
 

@@ -80,24 +80,17 @@ export let generateMemberExpression = (
          throw new Error("Could not find property " + propName + " on record");
       }
       
-      if (ctx.vtableAccessScratch == -1) {
-         throw new Error("VTable access scratch local not allocated.");
-      }
-      
-      ctx.emitter.emitLocalSet(ctx.vtableAccessScratch);
+      let scratchLocal = ctx.getStructScratchLocal(dispatchInfo.fatPtrType);
+      ctx.emitter.emitLocalSet(scratchLocal);
       
       // Push the instance (argument 1)
-      ctx.emitter.emitLocalGet(ctx.vtableAccessScratch);
-      ctx.emitter.emitRefCastNull(dispatchInfo.fatPtrType.index);
+      ctx.emitter.emitLocalGet(scratchLocal);
       ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance
       
       // Push the function reference
-      ctx.emitter.emitLocalGet(ctx.vtableAccessScratch);
-      ctx.emitter.emitRefCastNull(dispatchInfo.fatPtrType.index);
+      ctx.emitter.emitLocalGet(scratchLocal);
       ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 1); // Get VTable
-      ctx.emitter.emitRefCastNull(dispatchInfo.vtableType.index);
       ctx.emitter.emitStructGet(dispatchInfo.vtableType.index, fieldIndex); // Get Func
-      ctx.emitter.emitRefCastNull(dispatchInfo.getterTypes[fieldIndex].index); // Cast funcref to specific signature
       
       // Call the function reference
       ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
