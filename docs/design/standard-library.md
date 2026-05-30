@@ -15,9 +15,10 @@ applications.
 1.  **Self-Hosting**: Implement core types (`Map`, `Array`, `String`, etc.) in Zena.
 2.  **Zero-Overhead Inclusion**: The compiler must perform **Dead Code Elimination (DCE)**. Code from the stdlib (especially the implicitly imported classes) should only be emitted into the final WASM binary if it is actually used. This allows us to hang many utility methods on `String` or `Array` without bloating the binary size of simple programs.
 3.  **Implicit Availability**: Core stdlib types (`String`, `Array`, `Map`) must be available in the global scope without explicit `import` statements, as they back language literals.
-4.  **Compiler Intrinsics**: Some methods on core classes (e.g., `Array.length`, `String.concat`) cannot be implemented purely in Zena or require direct mapping to WASM instructions. We need a mechanism to mark these methods as intrinsics.
-5.  **Dart-Inspired Design**: Dart has a well-designed standard library. We take inspiration from its clear separation of interfaces and implementations.
-6.  **Simplicity First**: Start with simple APIs that can be expanded later. Avoid over-engineering.
+4.  **Module Registration**: All standard library modules must be registered in `packages/stdlib/stdlib-manifest.json`. The compiler uses this manifest to resolve `zena:*` imports.
+5.  **Compiler Intrinsics**: Some methods on core classes (e.g., `Array.length`, `String.concat`) cannot be implemented purely in Zena or require direct mapping to WASM instructions. We need a mechanism to mark these methods as intrinsics.
+6.  **Dart-Inspired Design**: Dart has a well-designed standard library. We take inspiration from its clear separation of interfaces and implementations.
+7.  **Simplicity First**: Start with simple APIs that can be expanded later. Avoid over-engineering.
 
 ---
 

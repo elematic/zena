@@ -2858,9 +2858,9 @@ export class Parser {
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
-    let on: Identifier | undefined;
+    let on: TypeAnnotation | undefined;
     if (this.#match(TokenType.On)) {
-      on = this.#parseIdentifier();
+      on = this.#parseTypeAnnotation();
     }
 
     const mixins: TypeAnnotation[] = [];

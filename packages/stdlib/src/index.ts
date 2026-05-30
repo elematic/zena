@@ -17,6 +17,14 @@ export const immutableArrayModule = fs.readFileSync(
   path.join(stdlibDir, 'immutable-array.zena'),
   'utf-8',
 );
+export const iterableUtilsModule = fs.readFileSync(
+  path.join(stdlibDir, 'iterable-utils.zena'),
+  'utf-8',
+);
+export const stringBuilderModule = fs.readFileSync(
+  path.join(stdlibDir, 'string-builder.zena'),
+  'utf-8',
+);
 export const fixedArrayModule = fs.readFileSync(
   path.join(stdlibDir, 'fixed-array.zena'),
   'utf-8',

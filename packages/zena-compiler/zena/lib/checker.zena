@@ -5192,6 +5192,20 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
     }
   }
 
+  // Resolve and populate implementsList.
+  if (cd.implementsList != null) {
+    let implList = cd.implementsList as Array<TypeAnnotation>;
+    for (let ifaceAnn in implList) {
+      let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
+      match (ifaceType) {
+        case InterfaceType as iface: {
+          classType.implementsList.push(iface);
+        }
+        case _: {}
+      }
+    }
+  }
+
   // Apply mixins
   if (cd.mixins != null) {
     let mixinAnns = cd.mixins as Array<TypeAnnotation>;
@@ -5204,26 +5218,33 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         case MixinType as mt: {
           // Check 'on' constraint
           if (mt.onType != null) {
+            let mtOnType = mt.onType as Type;
+            var satisfied = false;
             var st: Type | null = null;
             if (cd.superClass != null && classType.superType != null) {
               st = classType.superType as Type;
             }
-            if (st == null) {
+            if (st != null && isAssignableTo(ctx, st, mtOnType)) {
+              satisfied = true;
+            }
+
+            if (!satisfied && cd.implementsList != null && classType.implementsList != null) {
+              var i = 0;
+              while (i < classType.implementsList.length) {
+                if (isAssignableTo(ctx, classType.implementsList[i] as Type, mtOnType)) {
+                  satisfied = true;
+                }
+                i += 1;
+              }
+            }
+            
+            if (!satisfied) {
               ctx.error(
-                "Mixin '" + mt.name + "' requires superclass to extend '" + 
-                (mt.onType as ClassType).name + "', but no superclass is defined.",
+                "Mixin '" + mt.name + "' requires target to extend or implement '" + 
+                typeToString(mt.onType as Type) + "'.",
                 DiagnosticCode.TypeMismatch,
                 mixinAnn.loc
               );
-            } else {
-              if (!isAssignableTo(ctx, st, mt.onType as Type)) {
-                ctx.error(
-                  "Mixin '" + mt.name + "' requires superclass to extend '" + 
-                  (mt.onType as ClassType).name + "'.",
-                  DiagnosticCode.TypeMismatch,
-                  mixinAnn.loc
-                );
-              }
             }
           }
           
@@ -6012,7 +6033,6 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
       match (ifaceType) {
         case InterfaceType as iface: {
-          classType.implementsList.push(iface);
           // Check all interface methods are implemented.
           for (let methodName in iface.methods.keys()) {
             if (let (true, ifaceMethod) = iface.methods.get(methodName)) {
@@ -6613,16 +6633,19 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
 
   // Resolve 'on' type.
   if (md.on != null) {
-    let onId = md.on as Identifier;
-    let onResolved = ctx.resolveTypeName(onId.name);
+    let onTypeId = md.on as TypeAnnotation;
+    let onResolved = resolveTypeAnnotation(ctx, onTypeId);
     if (onResolved != null) {
       match (onResolved as Type) {
         case ClassType as onClass: {
           mixinType.onType = onClass;
         }
+        case InterfaceType as onIface: {
+          mixinType.onType = onIface;
+        }
         case _: {
           ctx.error(
-            "Mixin 'on' type must be a class, got '" + typeToString(onResolved as Type) + "'.",
+            "Mixin 'on' type must be a class or interface, got '" + typeToString(onResolved as Type) + "'.",
             DiagnosticCode.TypeMismatch,
             md.loc
           );
@@ -6630,7 +6653,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       }
     } else {
       ctx.error(
-        "Type '" + onId.name + "' not found in 'on' clause.",
+        "Type not found in 'on' clause.",
         DiagnosticCode.SymbolNotFound,
         md.loc
       );
@@ -6669,9 +6692,67 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
     }
   }
 
+  // 1. Create a synthetic ClassType for "this" inside the mixin early
+  let thisType = new ClassType(ctx.freshTypeId(), mixinName + "_This");
+  
+  let onType = mixinType.onType;
+  if (onType != null) {
+    match (baseType(onType)) {
+      case ClassType {fields, methods}: {
+        thisType.superType = onType as ClassType;
+        for (let k in fields.keys()) {
+          if (!k.startsWith("#") && !thisType.fields.has(k)) {
+            if (let (true, fdType) = fields.get(k)) {
+              thisType.fields[k] = fdType;
+            }
+          }
+        }
+        for (let k in methods.keys()) {
+          if (!thisType.methods.has(k)) {
+            if (let (true, mdType) = methods.get(k)) {
+              thisType.methods[k] = mdType;
+            }
+          }
+        }
+      }
+      case InterfaceType {fields, methods}: {
+        thisType.implementsList.push(onType as InterfaceType);
+        for (let k in fields.keys()) {
+          if (!k.startsWith("#") && !thisType.fields.has(k)) {
+            if (let (true, fdType) = fields.get(k)) {
+              thisType.fields[k] = fdType;
+            }
+          }
+        }
+        for (let k in methods.keys()) {
+          if (!thisType.methods.has(k)) {
+            if (let (true, mdType) = methods.get(k)) {
+              thisType.methods[k] = mdType;
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+  }
+
+  // Populate composed mixin members onto `thisType` as well
+  for (let k in mixinType.fields.keys()) {
+    if (let (true, fdType) = mixinType.fields.get(k)) {
+      thisType.fields[k] = fdType;
+    }
+  }
+  for (let k in mixinType.methods.keys()) {
+    if (let (true, mdType) = mixinType.methods.get(k)) {
+      thisType.methods[k] = mdType;
+    }
+  }
+
   // Process body members.
   ctx.enterInterface();
-  for (let member in md.body) {
+  var b_idx = 0;
+  while (b_idx < md.body.length) {
+    let member = md.body[b_idx];
     match (member) {
       case FieldDefinition as fd: {
         let fieldName = match (fd.name) {
@@ -6684,13 +6765,14 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           case _: "<unknown>"
         };
         let fieldType = if (fd.typeAnnotation != null) {
-          let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
-                    resolved
+          resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation)
         } else {
           new ErrorType() as Type
         };
         let isMutable = fd.mutability != null && fd.mutability == "var";
-        mixinType.fields[fieldName] = new FieldInfo(fieldType, isMutable, fd.isAbstract);
+        let fdInfo = new FieldInfo(fieldType, isMutable, fd.isAbstract);
+        mixinType.fields[fieldName] = fdInfo;
+        thisType.fields[fieldName] = fdInfo;
 
         // Check initializer if present.
         if (fd.value != null) {
@@ -6725,30 +6807,14 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             methDef.loc
           );
         } else {
-          // Build FunctionType from annotations.
-          let paramTypes = new Array<Type>();
-          let paramNames = new Array<String>();
-          for (let param in methDef.params) {
-            var paramType: Type = new ErrorType();
-            if (param.typeAnnotation != null) {
-              paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
-            }
-            paramTypes.push(paramType);
-            paramNames.push(param.name.name);
-          }
-          var retType: Type = new VoidType();
-          if (methDef.returnType != null) {
-            retType = resolveTypeAnnotation(ctx, methDef.returnType as TypeAnnotation, true);
-          }
-          let ft = new FunctionType(paramTypes, paramNames, retType);
-          ft.isFinal = methDef.isFinal;
-          ft.isAbstract = methDef.isAbstract;
+          let ft = checkMethodSignature(ctx, thisType, methDef);
           mixinType.methods[methodName] = ft;
+          thisType.methods[methodName] = ft;
         }
       }
       case AccessorDeclaration as acc: {
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-                let accName = match (acc.name) {
+        let accName = match (acc.name) {
           case Identifier {name}: name
           case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
             case Identifier {name}: name
@@ -6757,51 +6823,22 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           }
           case _: "<unknown>"
         };
-        mixinType.fields[accName] = new FieldInfo(accType, false, false);
+        let fdInfo = new FieldInfo(accType, false, false);
+        mixinType.fields[accName] = fdInfo;
+        thisType.fields[accName] = fdInfo;
         if (acc.getter != null) {
-          mixinType.methods[accName] = new FunctionType(new Array<Type>(), null, accType);
+          let getterFt = new FunctionType(new Array<Type>(), null, accType);
+          mixinType.methods[accName] = getterFt;
+          thisType.methods[accName] = getterFt;
         }
       }
       case _: {}
     }
+    b_idx += 1;
   }
   ctx.exitInterface();
 
   // 2. Check bodies
-  // Create a synthetic ClassType for "this" inside the mixin
-  let thisType = new ClassType(ctx.freshTypeId(), mixinName + "_This");
-  
-  if (mixinType.onType != null) {
-    thisType.superType = mixinType.onType;
-    let onClass = mixinType.onType as ClassType;
-    for (let k in onClass.fields.keys()) {
-      if (!k.startsWith("#") && !thisType.fields.has(k)) {
-        if (let (true, fdType) = onClass.fields.get(k)) {
-          thisType.fields[k] = fdType;
-        }
-      }
-    }
-    for (let k in onClass.methods.keys()) {
-      if (!thisType.methods.has(k)) {
-        if (let (true, mdType) = onClass.methods.get(k)) {
-          thisType.methods[k] = mdType;
-        }
-      }
-    }
-  }
-
-  // Add mixin own members
-  for (let k in mixinType.fields.keys()) {
-    if (let (true, fdType) = mixinType.fields.get(k)) {
-      thisType.fields[k] = fdType;
-    }
-  }
-  for (let k in mixinType.methods.keys()) {
-    if (let (true, mdType) = mixinType.methods.get(k)) {
-      thisType.methods[k] = mdType;
-    }
-  }
-
   ctx.enterClass(thisType);
 
   var bmi = 0;
@@ -6817,11 +6854,12 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             case _: "<symbol>"
           }
           case _: "<unknown>"
-        };
-        if (methodName != "<constructor>" && methDef.body != null && mixinType.methods.has(methodName)) {
-           let methodType = checkMethodSignature(ctx, thisType, methDef);
-           checkMethodBody(ctx, thisType, methodType, methDef);
-        }
+         };
+         if (methodName != "<constructor>" && methDef.body != null && mixinType.methods.has(methodName)) {
+           if (let (true, methodType) = mixinType.methods.get(methodName)) {
+             checkMethodBody(ctx, thisType, methodType, methDef);
+           }
+         }
       }
       case _: {}
     }

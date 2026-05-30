@@ -60,7 +60,7 @@ describe('Compiler', () => {
     const modules = compiler.compile('main.zena');
 
     // 2 user modules + 18 stdlib modules (15 prelude-imported + zena:iterator, zena:array-iterator, zena:growable-array-iterator)
-    assert.strictEqual(modules.length, 20);
+    assert.strictEqual(modules.length, 21);
 
     const main = modules.find((m) => m.path === 'main.zena');
     const math = modules.find((m) => m.path === 'math.zena');
@@ -150,7 +150,7 @@ describe('Compiler', () => {
     // 2 user modules + 18 stdlib modules (15 prelude-imported + zena:iterator, zena:array-iterator, zena:growable-array-iterator)
     // Prelude imports: string, error, option, sequence, range, immutable-array, fixed-array,
     // growable-array, console, hashable, map, box, math, string-convert + console-host
-    assert.strictEqual(modules.length, 20);
+    assert.strictEqual(modules.length, 21);
   });
 
   it('handles export * re-exports', () => {

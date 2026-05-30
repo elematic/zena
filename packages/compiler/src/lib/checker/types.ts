@@ -19,6 +19,7 @@ import {
   type TypeParameterType,
   type InlineTupleType,
   type UnionType,
+  type SymbolType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 
@@ -414,6 +415,23 @@ export function substituteType(
         newMethods.set(name, substituteType(fn, typeMap, ctx) as FunctionType);
       }
 
+      const newSymbolMethods = new Map<SymbolType, FunctionType>();
+      if (it.symbolMethods) {
+        for (const [sym, fn] of it.symbolMethods) {
+          newSymbolMethods.set(
+            sym,
+            substituteType(fn, typeMap, ctx) as FunctionType,
+          );
+        }
+      }
+
+      const newSymbolFields = new Map<SymbolType, Type>();
+      if (it.symbolFields) {
+        for (const [sym, type] of it.symbolFields) {
+          newSymbolFields.set(sym, substituteType(type, typeMap, ctx));
+        }
+      }
+
       const newExtends = it.extends
         ? it.extends.map(
             (ext) => substituteType(ext, typeMap, ctx) as InterfaceType,
@@ -425,6 +443,8 @@ export function substituteType(
         typeArguments: newTypeArguments,
         fields: newFields,
         methods: newMethods,
+        symbolMethods: newSymbolMethods.size > 0 ? newSymbolMethods : undefined,
+        symbolFields: newSymbolFields.size > 0 ? newSymbolFields : undefined,
         extends: newExtends,
       } as InterfaceType;
     }
@@ -446,6 +466,23 @@ export function substituteType(
         newMethods.set(name, substituteType(fn, typeMap, ctx) as FunctionType);
       }
 
+      const newSymbolMethods = new Map<SymbolType, FunctionType>();
+      if (mt.symbolMethods) {
+        for (const [sym, fn] of mt.symbolMethods) {
+          newSymbolMethods.set(
+            sym,
+            substituteType(fn, typeMap, ctx) as FunctionType,
+          );
+        }
+      }
+
+      const newSymbolFields = new Map<SymbolType, Type>();
+      if (mt.symbolFields) {
+        for (const [sym, type] of mt.symbolFields) {
+          newSymbolFields.set(sym, substituteType(type, typeMap, ctx));
+        }
+      }
+
       const newOnType = mt.onType
         ? (substituteType(mt.onType, typeMap, ctx) as ClassType)
         : undefined;
@@ -455,6 +492,8 @@ export function substituteType(
         typeArguments: newTypeArguments,
         fields: newFields,
         methods: newMethods,
+        symbolMethods: newSymbolMethods.size > 0 ? newSymbolMethods : undefined,
+        symbolFields: newSymbolFields.size > 0 ? newSymbolFields : undefined,
         onType: newOnType,
       } as MixinType;
     }
@@ -556,7 +595,6 @@ export function resolveTypeAnnotation(
   );
 
   if (!allowInlineTuple && containsInlineTuple(result)) {
-    console.error('DIAGNOSTIC ERROR', annotation.type, result.kind);
     ctx.diagnostics.reportError(
       `Inline tuple types can only appear in function return types, not here.`,
       DiagnosticCode.TypeMismatch,
@@ -821,7 +859,11 @@ function resolveTypeAnnotationInternal(
       name === 'string'
         ? `Type 'string' not found. Did you mean 'String'?`
         : `Type '${name}' not found.`;
-    ctx.diagnostics.reportError(message, DiagnosticCode.SymbolNotFound);
+    ctx.diagnostics.reportError(
+      message,
+      DiagnosticCode.SymbolNotFound,
+      ctx.getLocation(annotation.loc),
+    );
     return Types.Error;
   }
 
@@ -1417,6 +1459,20 @@ export function instantiateGenericMixin(
     newMethods.set(name, substituteFunctionType(fn, typeMap, ctx));
   }
 
+  const newSymbolMethods = new Map<SymbolType, FunctionType>();
+  if (genericMixin.symbolMethods) {
+    for (const [sym, fn] of genericMixin.symbolMethods) {
+      newSymbolMethods.set(sym, substituteFunctionType(fn, typeMap, ctx));
+    }
+  }
+
+  const newSymbolFields = new Map<SymbolType, Type>();
+  if (genericMixin.symbolFields) {
+    for (const [sym, type] of genericMixin.symbolFields) {
+      newSymbolFields.set(sym, substitute(type));
+    }
+  }
+
   const newOnType = genericMixin.onType
     ? (substitute(genericMixin.onType) as ClassType)
     : undefined;
@@ -1426,6 +1482,8 @@ export function instantiateGenericMixin(
     typeArguments,
     fields: newFields,
     methods: newMethods,
+    symbolMethods: newSymbolMethods.size > 0 ? newSymbolMethods : undefined,
+    symbolFields: newSymbolFields.size > 0 ? newSymbolFields : undefined,
     onType: newOnType,
     genericSource: genericMixin,
   };
@@ -1561,11 +1619,18 @@ export function typesEqual(a: Type, b: Type): boolean {
 
       // Same base type - compare type arguments
       if (!ia.typeArguments && !ib.typeArguments) return true;
-      if (!ia.typeArguments || !ib.typeArguments) return false;
-      if (ia.typeArguments.length !== ib.typeArguments.length) return false;
-      return ia.typeArguments.every((arg, i) =>
-        typesEqual(arg, ib.typeArguments![i]),
-      );
+      if (!ia.typeArguments || !ib.typeArguments) {
+        return false;
+      }
+      if (ia.typeArguments.length !== ib.typeArguments.length) {
+        return false;
+      }
+      return ia.typeArguments.every((arg, i) => {
+        const eq = typesEqual(arg, ib.typeArguments![i]);
+        if (!eq) {
+        }
+        return eq;
+      });
     }
     case TypeKind.Array: {
       const aa = a as ArrayType;

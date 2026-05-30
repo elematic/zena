@@ -890,6 +890,9 @@ function visitMixinDeclarationChildren<T>(
   for (const tp of node.typeParameters ?? []) {
     visit(tp, visitor, context);
   }
+  if (node.on) {
+    visitTypeAnnotation(node.on, visitor, context);
+  }
   for (const mixin of node.mixins ?? []) {
     visitTypeAnnotation(mixin, visitor, context);
   }

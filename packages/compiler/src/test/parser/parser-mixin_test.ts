@@ -36,7 +36,8 @@ suite('Parser - Mixins', () => {
 
     assert.strictEqual(mixinDecl.type, NodeType.MixinDeclaration);
     if (mixinDecl.type === NodeType.MixinDeclaration) {
-      assert.strictEqual(mixinDecl.on?.name, 'Entity');
+      assert.strictEqual(mixinDecl.on?.type, NodeType.TypeAnnotation);
+      assert.strictEqual((mixinDecl.on as any).name, 'Entity');
     }
   });
 

@@ -1,0 +1,75 @@
+import { Iterable } from 'zena:iterator';
+import { equals } from 'zena:hashable';
+
+/**
+ * Common iteration utilities for any collection that implements Iterable<T>.
+ */
+export mixin IterableUtils<T> on Iterable<T> {
+  /**
+   * Checks if the collection contains the specified value using equality.
+   */
+  contains(value: T): boolean {
+    let iter = this.:Iterable.iterator();
+    while (let (true, item) = iter.next()) {
+      if (equals(item, value)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns true if all elements match the given predicate.
+   * Returns true if the collection is empty.
+   */
+  all(predicate: (item: T) => boolean): boolean {
+    let iter = this.:Iterable.iterator();
+    while (let (true, item) = iter.next()) {
+      if (!predicate(item)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Returns true if at least one element matches the given predicate.
+   * Returns false if the collection is empty.
+   */
+  some(predicate: (item: T) => boolean): boolean {
+    let iter = this.:Iterable.iterator();
+    while (let (true, item) = iter.next()) {
+      if (predicate(item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Reduces the collection to a single value by accumulating state.
+   */
+  fold<R>(initial: R, combine: (acc: R, item: T) => R): R {
+    var acc = initial;
+    let iter = this.:Iterable.iterator();
+    while (let (true, item) = iter.next()) {
+      acc = combine(acc, item);
+    }
+    return acc;
+  }
+
+  /**
+   * Finds the first element that matches the predicate.
+   * Returns an inline tuple (true, item) if found, or (false, _) if not.
+   */
+  find(predicate: (item: T) => boolean): inline (true, T) | inline (false, _) {
+    let iter = this.:Iterable.iterator();
+    while (let (true, item) = iter.next()) {
+      if (predicate(item)) {
+        return (true, item);
+      }
+    }
+    return (false, _);
+  }
+}
+

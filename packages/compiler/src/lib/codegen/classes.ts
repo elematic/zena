@@ -5372,6 +5372,40 @@ function instantiateClassImpl(
     }
   }
 
+  // If the class uses mixins, pre-register the intermediate mixin classes first
+  if (decl.mixins && decl.mixins.length > 0 && checkerType) {
+    const mixinIntermediateTypes = collectMixinIntermediateTypes(checkerType);
+
+    let baseSuperType: ClassType | undefined;
+    if (mixinIntermediateTypes.length > 0) {
+      baseSuperType = mixinIntermediateTypes[0].superType;
+    } else if (
+      checkerType.superType &&
+      !checkerType.superType.isMixinIntermediate
+    ) {
+      baseSuperType = checkerType.superType;
+    }
+
+    let currentSuperClassInfo: ClassInfo | undefined;
+    if (baseSuperType) {
+      currentSuperClassInfo = ctx.getClassInfo(baseSuperType);
+    }
+
+    for (let i = 0; i < decl.mixins.length; i++) {
+      const mixinAnnotation = decl.mixins[i];
+      const mixinType = mixinAnnotation.inferredType;
+      if (!mixinType || mixinType.kind !== TypeKind.Mixin) continue;
+      const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
+      if (!mixinDecl) continue;
+      currentSuperClassInfo = preRegisterMixin(
+        ctx,
+        currentSuperClassInfo,
+        mixinDecl,
+        mixinIntermediateTypes[i],
+      );
+    }
+  }
+
   const fields = new Map<
     string,
     {index: number; type: number[]; mutable?: boolean}
@@ -5394,6 +5428,36 @@ function instantiateClassImpl(
   } else if (partialClassInfo) {
     // Update existing partialClassInfo with resolved superclass
     partialClassInfo.superClass = superClassName;
+  }
+
+  // Now that our structTypeIndex is reserved (resolving potential recursive references),
+  // fully define the mixin intermediate classes so we can inherit their fields.
+  if (decl.mixins && decl.mixins.length > 0 && checkerType) {
+    const mixinIntermediateTypes = collectMixinIntermediateTypes(checkerType);
+
+    let baseSuperType =
+      mixinIntermediateTypes.length > 0
+        ? mixinIntermediateTypes[0].superType
+        : checkerType.superType && !checkerType.superType.isMixinIntermediate
+          ? checkerType.superType
+          : undefined;
+
+    let currentSuperClassInfo = baseSuperType
+      ? ctx.getClassInfo(baseSuperType)
+      : undefined;
+
+    for (let i = 0; i < decl.mixins.length; i++) {
+      const mixinType = decl.mixins[i].inferredType;
+      if (!mixinType || mixinType.kind !== TypeKind.Mixin) continue;
+      const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
+      if (!mixinDecl) continue;
+      currentSuperClassInfo = applyMixin(
+        ctx,
+        currentSuperClassInfo,
+        mixinDecl,
+        mixinIntermediateTypes[i],
+      );
+    }
   }
 
   if (decl.isExtension && decl.onType) {

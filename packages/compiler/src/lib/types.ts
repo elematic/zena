@@ -161,7 +161,7 @@ export interface MixinType extends Type {
   name: string;
   typeParameters?: TypeParameterType[];
   typeArguments?: Type[];
-  onType?: ClassType;
+  onType?: ClassType | InterfaceType;
   fields: Map<string, Type>;
   /** Tracks field mutability. true = mutable (declared with `var`), false = immutable (bare or `let`). */
   fieldMutability?: Map<string, boolean>;

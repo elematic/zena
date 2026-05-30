@@ -663,7 +663,7 @@ export interface MixinDeclaration extends Node {
   type: typeof NodeType.MixinDeclaration;
   name: Identifier;
   typeParameters?: TypeParameter[];
-  on?: Identifier;
+  on?: TypeAnnotation;
   mixins?: TypeAnnotation[];
   body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
   exported: boolean;

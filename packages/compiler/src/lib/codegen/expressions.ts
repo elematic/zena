@@ -7074,11 +7074,16 @@ function generateGetterDynamicDispatch(
     throw new Error(`Class ${classInfo.name} has no vtable`);
   }
 
+  const vtableField = classInfo.fields.get('__vtable');
+  if (!vtableField) {
+    throw new Error(
+      `Class ${classInfo.name} has no __vtable field in generateGetterDynamicDispatch for method ${methodName}`,
+    );
+  }
+
   body.push(0xfb, GcOpcode.struct_get);
   body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
-  body.push(
-    ...WasmModule.encodeSignedLEB128(classInfo.fields.get('__vtable')!.index),
-  );
+  body.push(...WasmModule.encodeSignedLEB128(vtableField.index));
 
   // Cast VTable to correct type
   body.push(0xfb, GcOpcode.ref_cast_null);

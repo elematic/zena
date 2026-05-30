@@ -1077,7 +1077,8 @@ const predeclareMixin = (ctx: CheckerContext, decl: MixinDeclaration) => {
   const mixinName = decl.name.name;
 
   // Skip if already declared
-  if (ctx.resolveType(mixinName)) {
+  const existing = ctx.resolveTypeLocal(mixinName);
+  if (existing) {
     return;
   }
 
@@ -2961,14 +2962,16 @@ function checkClassBodies(ctx: CheckerContext, decl: ClassDeclaration) {
   const classType = decl.inferredType as ClassType;
   if (!classType) return;
 
-  const superType = classType.superType;
   const typeParameters = classType.typeParameters ?? [];
+  const superType = classType.superType;
 
   // Re-enter class context and scope with type parameters.
-  ctx.enterClass(classType);
   ctx.enterScope();
-  for (const tp of typeParameters) {
-    ctx.declare(tp.name, tp, 'type');
+  ctx.enterClass(classType);
+  if (typeParameters.length > 0) {
+    for (const tp of typeParameters) {
+      ctx.declare(tp.name, tp, 'type');
+    }
   }
 
   // Check bodies: method bodies, field initializers, accessor bodies.
@@ -3388,19 +3391,31 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
       // Check 'on' constraint
       if (mixin.onType) {
-        // If there is no superType, we assume it's Object (or empty struct), which likely fails unless onType is empty.
-        // For now, if no superType, we can't satisfy a specific class constraint.
-        if (!superType) {
-          // TODO: Check if onType is compatible with empty object?
-          // For now, error if onType is present but no super class.
+        let satisfied = false;
+        if (superType && isAssignableTo(ctx, superType, mixin.onType)) {
+          satisfied = true;
+        }
+
+        if (!satisfied && decl.onType) {
+          const extensionOn = resolveTypeAnnotation(ctx, decl.onType);
+          if (isAssignableTo(ctx, extensionOn, mixin.onType)) {
+            satisfied = true;
+          }
+        }
+
+        if (!satisfied && decl.implements) {
+          for (const impl of decl.implements) {
+            const ifaceType = resolveTypeAnnotation(ctx, impl);
+            if (isAssignableTo(ctx, ifaceType, mixin.onType)) {
+              satisfied = true;
+              break;
+            }
+          }
+        }
+
+        if (!satisfied) {
           ctx.diagnostics.reportError(
-            `Mixin '${mixin.name}' requires superclass to extend '${mixin.onType.name}', but no superclass is defined.`,
-            DiagnosticCode.TypeMismatch,
-            ctx.getLocation(mixinAnnotation.loc),
-          );
-        } else if (!isAssignableTo(ctx, superType, mixin.onType)) {
-          ctx.diagnostics.reportError(
-            `Mixin '${mixin.name}' requires superclass to extend '${mixin.onType.name}'.`,
+            `Mixin '${mixin.name}' requires target to extend or implement '${mixin.onType.name}'.`,
             DiagnosticCode.TypeMismatch,
             ctx.getLocation(mixinAnnotation.loc),
           );
@@ -5468,23 +5483,28 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     }
   }
 
-  let onType: ClassType | undefined;
+  ctx.enterScope();
+  if (typeParameters.length > 0) {
+    for (const tp of typeParameters) {
+      ctx.declare(tp.name, tp, 'type');
+    }
+  }
+
+  let onType: ClassType | InterfaceType | undefined;
   if (decl.on) {
-    const type = ctx.resolveType(decl.on.name);
-    if (!type) {
+    const type = resolveTypeAnnotation(ctx, decl.on, false);
+    if (
+      type.kind !== TypeKind.Class &&
+      type.kind !== TypeKind.Interface &&
+      type !== Types.Error
+    ) {
       ctx.diagnostics.reportError(
-        `Type '${decl.on.name}' not found in 'on' clause.`,
-        DiagnosticCode.SymbolNotFound,
-        undefined /* TODO fix location */,
-      );
-    } else if (type.kind !== TypeKind.Class) {
-      ctx.diagnostics.reportError(
-        `Mixin 'on' type must be a class.`,
+        `Mixin 'on' type must be a class or interface.`,
         DiagnosticCode.TypeMismatch,
-        undefined /* TODO fix location */,
+        ctx.getLocation(decl.on.loc),
       );
-    } else {
-      onType = type as ClassType;
+    } else if (type !== Types.Error) {
+      onType = type as ClassType | InterfaceType;
     }
   }
 
@@ -5509,11 +5529,6 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       mixinType.typeParameters = typeParameters;
     }
     mixinType.onType = onType;
-  }
-
-  ctx.enterScope();
-  for (const tp of typeParameters) {
-    ctx.declare(tp.name, tp, 'type');
   }
 
   // Resolve constraints and defaults (after all type params are in scope)
@@ -5791,8 +5806,10 @@ function checkMixinBodies(ctx: CheckerContext, decl: MixinDeclaration) {
   const thisType: ClassType = {
     kind: TypeKind.Class,
     name: `${mixinName}_This`,
-    superType: onType,
-    implements: [],
+    superType:
+      onType?.kind === TypeKind.Class ? (onType as ClassType) : undefined,
+    implements:
+      onType?.kind === TypeKind.Interface ? [onType as InterfaceType] : [],
     fields: new Map(mixinType.fields),
     fieldMutability: mixinType.fieldMutability
       ? new Map(mixinType.fieldMutability)
@@ -5801,7 +5818,8 @@ function checkMixinBodies(ctx: CheckerContext, decl: MixinDeclaration) {
     statics: new Map(),
     symbolFields: new Map(mixinType.symbolFields),
     symbolMethods: new Map(mixinType.symbolMethods),
-    vtable: onType ? [...onType.vtable] : [],
+    vtable:
+      onType?.kind === TypeKind.Class ? [...(onType as ClassType).vtable] : [],
     isFinal: false,
     isSyntheticMixinThis: true,
   };
@@ -5812,8 +5830,11 @@ function checkMixinBodies(ctx: CheckerContext, decl: MixinDeclaration) {
         thisType.fields.set(name, type);
       }
     }
-    if (onType.fieldMutability) {
-      for (const [name, isMutable] of onType.fieldMutability) {
+    if (
+      onType.kind === TypeKind.Class &&
+      (onType as ClassType).fieldMutability
+    ) {
+      for (const [name, isMutable] of (onType as ClassType).fieldMutability!) {
         if (!name.startsWith('#') && !thisType.fieldMutability!.has(name)) {
           thisType.fieldMutability!.set(name, isMutable);
         }
@@ -5822,6 +5843,20 @@ function checkMixinBodies(ctx: CheckerContext, decl: MixinDeclaration) {
     for (const [name, type] of onType.methods) {
       if (!thisType.methods.has(name)) {
         thisType.methods.set(name, type);
+      }
+    }
+    if (onType.symbolMethods) {
+      for (const [sym, type] of onType.symbolMethods) {
+        if (!thisType.symbolMethods!.has(sym)) {
+          thisType.symbolMethods!.set(sym, type);
+        }
+      }
+    }
+    if (onType.symbolFields) {
+      for (const [sym, type] of onType.symbolFields) {
+        if (!thisType.symbolFields!.has(sym)) {
+          thisType.symbolFields!.set(sym, type);
+        }
       }
     }
   }
@@ -5847,6 +5882,15 @@ function checkMixinBodies(ctx: CheckerContext, decl: MixinDeclaration) {
       const previousReturnType = ctx.currentFunctionReturnType;
       ctx.currentFunctionReturnType = methodType.returnType;
       ctx.enterScope();
+      if (member.typeParameters) {
+        for (const param of member.typeParameters) {
+          const tp: TypeParameterType = {
+            kind: TypeKind.TypeParameter,
+            name: param.name,
+          };
+          ctx.declare(param.name, tp, 'type');
+        }
+      }
       member.params.forEach((param, index) => {
         const type = methodType!.parameters[index];
         if (param.pattern) {
