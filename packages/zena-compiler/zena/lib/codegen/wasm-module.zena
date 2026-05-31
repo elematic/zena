@@ -11,7 +11,7 @@ import { SemanticModel } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode, WasmType, valTypeEquals } from './wasm.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode, WasmType, valTypeEquals } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
@@ -320,14 +320,14 @@ export class WasmModule {
     let getters = new Array<WasmFunction>();
     
     for (var i = 0; i < fields.length; i += 1) {
-      let fieldValType = fields[i].type;
+      let getterValType = fields[i].type;
       
       let params = new Array<ValType>();
-      params.push(new ValTypeAnyRef());
+      params.push(new ValTypeStructRef());
       
       let returns = new Array<ValType>();
-      if (fieldValType != new ValTypeVoid()) {
-        returns.push(fieldValType);
+      if (getterValType != new ValTypeVoid()) {
+        returns.push(getterValType);
       }
       
       let getterType = this.getSignature(params, returns);
@@ -349,7 +349,7 @@ export class WasmModule {
     let vtableType = this.getStruct(null, vtableFields);
     
     let fatPtrFields = new Array<WasmField>();
-    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
+    fatPtrFields.push(new WasmField(null, new ValTypeStructRef(), false));
     fatPtrFields.push(new WasmField(null, new ValTypeRef(vtableType), false));
     
     let fatPtrType = this.getStruct(null, fatPtrFields);
@@ -386,7 +386,7 @@ export class WasmModule {
       let fieldValType = outFields[i].type;
       
       let params = new Array<ValType>();
-      params.push(new ValTypeAnyRef());
+      params.push(new ValTypeStructRef());
       
       let returns = new Array<ValType>();
       if (fieldValType != new ValTypeVoid()) {
@@ -422,7 +422,7 @@ export class WasmModule {
     let vtableType = this.getStruct(null, vtableFields);
     
     let fatPtrFields = new Array<WasmField>();
-    fatPtrFields.push(new WasmField(null, new ValTypeAnyRef(), false));
+    fatPtrFields.push(new WasmField(null, new ValTypeStructRef(), false));
     fatPtrFields.push(new WasmField(null, new ValTypeRef(vtableType), false));
     
     let fatPtrType = this.getStruct(null, fatPtrFields);
@@ -668,7 +668,7 @@ export class DiscoveryPass {
                 let params = new Array<ValType>();
                 let returns = new Array<ValType>();
 
-                params.push(new ValTypeAnyRef());
+                params.push(new ValTypeStructRef());
                 if (methodTypeNode is FunctionType) {
                   let fType = methodTypeNode as FunctionType;
                   for (let p in fType.parameters) {
@@ -792,12 +792,12 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     let structDef = wasm.getStruct(null, fields);
     new ValTypeRef(structDef);
   }
-  case ClassType as ct: new ValTypeAnyRef() // TODO: use actual struct type for class instances
+  case ClassType as ct: new ValTypeStructRef() // TODO: use actual struct type for class instances
   case ArrayType: {
     throw new Error("Codegen not implemented for type: " + typeToString(t));
   }
   case VoidType: new ValTypeVoid()
-  case NullType: new ValTypeAnyRef()
+  case NullType: new ValTypeStructRef()
   case UnknownType: {
     throw new Error("Codegen should never see type: " + typeToString(t));
   }
