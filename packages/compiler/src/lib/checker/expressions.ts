@@ -410,7 +410,7 @@ function checkMatchExpression(
       ctx.diagnostics.reportError(
         `Unreachable case. The match is already exhaustive.`,
         DiagnosticCode.UnreachableCode,
-        ctx.getLocation(expr.loc),
+        ctx.getLocation(c.loc),
       );
     }
 
