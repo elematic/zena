@@ -1,4 +1,4 @@
-import { ValTypeStructRef } from '../wasm.zena';
+import { ValTypeStructRef, ValTypeRefNull } from '../wasm.zena';
 import { typeToValType } from '../wasm-module.zena';
 import { NewExpression, Expression } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
@@ -18,12 +18,10 @@ export let generateNewExpression = (
   let nodeType = ctx.wasmFunction.model.getNodeType(expr);
   if (nodeType is ClassType) {
     let classType = nodeType as ClassType;
-    // Get the struct type that was registered during DiscoveryPass
-    let fields = new Array<WasmField>();
-    for (let pair in classType.fields) {
-       fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value.type), pair.value.isMutable));
+    if (!ctx.wasm.classStructs.has(classType.name)) {
+      throw new Error("Class struct not found: " + classType.name);
     }
-    let structType = ctx.wasm.getStruct(classType.name, fields);
+    let structType = ctx.wasm.classStructs[classType.name];
     
     ctx.emitter.emitStructNewDefault(structType.index);
     
@@ -38,7 +36,7 @@ export let generateNewExpression = (
     }
     
     if (ctorFunc != null) {
-      let tempLocal = ctx.allocLocal(new ValTypeStructRef());
+      let tempLocal = ctx.allocLocal(new ValTypeRefNull(structType));
       ctx.emitter.emitLocalTee(tempLocal);
       for (let arg in expr.args) {
         genExpr(arg, false);

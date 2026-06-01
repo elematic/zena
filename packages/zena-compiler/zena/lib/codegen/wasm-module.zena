@@ -189,6 +189,7 @@ export class WasmModule {
 
   exportMap = new HashMap<String, WasmFunction>();
   exportGlobalMap = new HashMap<String, WasmGlobal>();
+  classStructs = new HashMap<String, WasmStruct>();
   
   recordDispatchInfos = new Array<RecordDispatchInfo>();
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
@@ -527,6 +528,20 @@ export class DiscoveryPass {
       let mod = unit.ast;
       let moduleModel = unit.model;
       
+      // Pass 0: Pre-register empty WasmStructs for all nominal classes to break cyclic dependencies
+      walk(mod as Node, (n: Node) => true, (n: Node) => {
+        if (n is ClassDeclaration) {
+           let classDecl = n as ClassDeclaration;
+           let classType = moduleModel.getNodeType(classDecl);
+           if (classType is ClassType) {
+              let cType = classType as ClassType;
+              let emptyStruct = new WasmStruct(cType.name, new Array<WasmField>());
+              this.wasm.types.push(emptyStruct);
+              this.wasm.classStructs[cType.name] = emptyStruct;
+           }
+        }
+      });
+      
       // First, discover any record types used in any node and register their Structs
       walk(mod as Node, (n: Node) => true, (n: Node) => {
         let nodeType = moduleModel.getNodeType(n);
@@ -557,7 +572,14 @@ export class DiscoveryPass {
               for (let pair in cType.fields) {
                  fields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value.type), pair.value.isMutable));
               }
-              this.wasm.getStruct(cType.name, fields);
+              if (this.wasm.classStructs.has(cType.name)) {
+                 let st = this.wasm.classStructs[cType.name];
+                 for (let f in fields) {
+                    st.fields.push(f);
+                 }
+              } else {
+                 throw new Error("Class struct not pre-registered: " + cType.name);
+              }
            }
         }
       });
@@ -667,7 +689,11 @@ export class DiscoveryPass {
                 let params = new Array<ValType>();
                 let returns = new Array<ValType>();
 
-                params.push(new ValTypeStructRef());
+                if (this.wasm.classStructs.has(classType.name)) {
+                  params.push(new ValTypeRefNull(this.wasm.classStructs[classType.name]));
+                } else {
+                  params.push(new ValTypeStructRef());
+                }
                 if (methodTypeNode is FunctionType) {
                   let fType = methodTypeNode as FunctionType;
                   for (let p in fType.parameters) {
@@ -691,13 +717,8 @@ export class DiscoveryPass {
                 let ctNode = moduleModel.getNodeType(classDecl);
                 if (ctNode is ClassType) {
                   let ct = ctNode as ClassType;
-                  for (let t in this.wasm.types) {
-                    if (t is WasmStruct) {
-                      let ws = t as WasmStruct;
-                      if (ws.name == ct.name) {
-                        wasmFunc.structType = ws;
-                      }
-                    }
+                  if (this.wasm.classStructs.has(ct.name)) {
+                     wasmFunc.structType = this.wasm.classStructs[ct.name];
                   }
                 }
               }
@@ -791,7 +812,13 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     let structDef = wasm.getStruct(null, fields);
     new ValTypeRef(structDef);
   }
-  case ClassType as ct: new ValTypeStructRef() // TODO: use actual struct type for class instances
+  case ClassType as ct: {
+    if (wasm.classStructs.has(ct.name)) {
+      new ValTypeRefNull(wasm.classStructs[ct.name])
+    } else {
+      throw new Error("Class struct not found for: " + ct.name);
+    }
+  }
   case ArrayType: {
     throw new Error("Codegen not implemented for type: " + typeToString(t));
   }
