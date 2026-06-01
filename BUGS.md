@@ -72,3 +72,9 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Found**: 2026-02-11
 - **Fixed**: 2026-02-11
 - **Fix**: Widen record/tuple literals to match function return types, not just variable declarations
+
+### Wasm compiler fails to emit `ref.cast` when reading a local that was narrowed by an `is` check
+- **Found**: 2026-05-31
+- **Severity**: high
+- **Workaround**: Explicitly assign to a new local instead of overriding: `let classType = unnarrowedType as ClassType;`
+- **Details**: When a variable is narrowed by `if (x is ClassType)`, the Zena type system treats it as narrowed logic-wise, but the underlying Wasm local remains its original generic uncasted type (e.g. `(ref null $Type)`). The bootstrap compiler does not inject dynamic `ref.cast` when later reading this variable to evaluate a property access. Wasm compilation fails with: `type mismatch: expected (ref null $ClassType), found (ref null $Type)`. Assigning it explicitly circumvents the flaw.
