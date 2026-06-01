@@ -534,17 +534,16 @@ export class DiscoveryPass {
         
         if (n is Expression) {
            let expr = n as Expression;
-           let adaptTarget = moduleModel.getRecordAdaptation(expr);
-           if (adaptTarget != null) {
-              this.discoverType(adaptTarget, moduleModel);
-              
-              let actRec = moduleModel.getNodeType(expr) as RecordType;
-              let inFields = new Array<WasmField>();
-              for (let pair in actRec.properties) {
-                 inFields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
-              }
-              let outFields = new Array<WasmField>();
-              for (let pair in adaptTarget.properties) {
+            let adaptation = moduleModel.getRecordAdaptation(expr);
+            if (adaptation != null) {
+               this.discoverType(adaptation.target, moduleModel);
+               
+               let inFields = new Array<WasmField>();
+               for (let pair in adaptation.source.properties) {
+                  inFields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
+               }
+               let outFields = new Array<WasmField>();
+               for (let pair in adaptation.target.properties) {
                  outFields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
               }
               this.wasm.getAdaptedRecordDispatch(moduleModel, inFields, outFields);

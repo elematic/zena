@@ -45,6 +45,13 @@ import { Symbol, SymbolId } from './scope/symbol.zena';
 import { SymbolMap } from './scope/scope-builder.zena';
 import { NodeMap } from './node-map.zena';
 
+export class RecordAdaptation {
+  source: RecordType;
+  target: RecordType;
+  
+  new(this.source, this.target);
+}
+
 export class SemanticModel {
   /**
    * Map from node.id → inferred Type.
@@ -53,15 +60,15 @@ export class SemanticModel {
   #nodeTypes = new NodeMap<Type>();
 
   /**
-   * Map from node.id → target RecordType for implicit fat pointer adaptation.
+   * Map from node.id → RecordAdaptation for implicit fat pointer adaptation.
    */
-  #recordAdaptations = new NodeMap<RecordType>();
+  #recordAdaptations = new NodeMap<RecordAdaptation>();
 
-  setRecordAdaptation(node: Node, targetType: RecordType): void {
-    this.#recordAdaptations[node] = targetType;
+  setRecordAdaptation(node: Node, source: RecordType, target: RecordType): void {
+    this.#recordAdaptations[node] = new RecordAdaptation(source, target);
   }
 
-  getRecordAdaptation(node: Node): RecordType | null {
+  getRecordAdaptation(node: Node): RecordAdaptation | null {
     if (let (true, t) = this.#recordAdaptations.get(node)) {
       return t;
     }

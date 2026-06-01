@@ -48,22 +48,18 @@ import { WasmFunction, WasmModule, WasmField, WasmStruct, sortWasmFields } from 
 export class FunctionGenerator {
   ctx: FunctionContext;
 
-  new(wasm: WasmModule, emitter: WasmEmitter, wasmFunction: WasmFunction) : ctx = new FunctionContext(wasm, emitter, wasmFunction) {}
-
-
-
+  new(wasm: WasmModule, emitter: WasmEmitter, wasmFunction: WasmFunction)
+    : ctx = new FunctionContext(wasm, emitter, wasmFunction);
+    
   discoverLocalsFromExpr(expr: Expression): void {
-    let adaptTarget = this.ctx.wasmFunction.model.getRecordAdaptation(expr);
-    if (adaptTarget != null) {
-      if (this.ctx.recordAdaptScratch == -1) {
-        var paramCount = 0;
-        if (this.ctx.wasmFunction.node != null) {
-          let node = this.ctx.wasmFunction.node as FunctionExpression;
-          paramCount = node.params.length;
-        }
-        this.ctx.recordAdaptScratch = paramCount + this.ctx.localTypes.length;
-        this.ctx.localTypes.push(new ValTypeStructRef());
+    let adaptation = this.ctx.wasmFunction.model.getRecordAdaptation(expr);
+    if (adaptation != null) {
+      let inFields = new Array<WasmField>();
+      for (let pair in adaptation.source.properties) {
+        inFields.push(new WasmField(pair.key, typeToValType(this.ctx.wasm, pair.value), false));
       }
+      let inDispatchInfo = this.ctx.wasm.getRecordDispatch(this.ctx.wasmFunction.model, inFields);
+      this.ctx.getStructScratchLocal(inDispatchInfo.fatPtrType);
     }
     if (expr is MemberExpression) {
       let objectType = this.ctx.wasmFunction.model.getNodeType((expr as MemberExpression).object);
@@ -288,30 +284,30 @@ export class FunctionGenerator {
     // and pushes a newly allocated fat pointer with a vtable tailored to the expected target.
     // In the future, this same injection point will likely be used to adapt functions 
     // and classes being assigned to interface contexts.
-    let adaptTarget = this.ctx.wasmFunction.model.getRecordAdaptation(expr);
-    if (adaptTarget != null && !discardValue) {
-      if (this.ctx.recordAdaptScratch == -1) {
-        throw new Error("Record adapt scratch not allocated!");
-      }
-      this.ctx.emitter.emitLocalSet(this.ctx.recordAdaptScratch);
-      let actRec = this.ctx.wasmFunction.model.getNodeType(expr) as RecordType;
-      
+    let adaptation = this.ctx.wasmFunction.model.getRecordAdaptation(expr);
+    if (adaptation != null && !discardValue) {
       let inFields = new Array<WasmField>();
-      for (let pair in actRec.properties) {
+      for (let pair in adaptation.source.properties) {
         inFields.push(new WasmField(pair.key, typeToValType(this.ctx.wasm, pair.value), false));
       }
       
       let inDispatchInfo = this.ctx.wasm.getRecordDispatch(this.ctx.wasmFunction.model, inFields);
 
+      let scratchLocal = this.ctx.getStructScratchLocal(inDispatchInfo.fatPtrType);
+      
+      // Ensure the top-of-stack is cast exactly to the fatPtrType before storing
+      // in the strongly-typed local. This avoids validation errors.
+      this.ctx.emitter.emitRefCast(inDispatchInfo.fatPtrType.index);
+      this.ctx.emitter.emitLocalSet(scratchLocal);
+
       let outFields = new Array<WasmField>();
-      for (let pair in adaptTarget.properties) {
+      for (let pair in adaptation.target.properties) {
         outFields.push(new WasmField(pair.key, typeToValType(this.ctx.wasm, pair.value), false));
       }
       
       let outDispatchInfo = this.ctx.wasm.getAdaptedRecordDispatch(this.ctx.wasmFunction.model, inFields, outFields);
 
-      this.ctx.emitter.emitLocalGet(this.ctx.recordAdaptScratch);
-      this.ctx.emitter.emitRefCast(inDispatchInfo.fatPtrType.index);
+      this.ctx.emitter.emitLocalGet(scratchLocal);
       this.ctx.emitter.emitStructGet(inDispatchInfo.fatPtrType.index, 0); // Get Instance
       
       if (outDispatchInfo.vtableGlobal.index < 0) {
