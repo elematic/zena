@@ -1,14 +1,11 @@
 import { ValTypeStructRef, ValTypeRefNull } from '../wasm.zena';
-import { typeToValType } from '../wasm-module.zena';
 import { NewExpression, Expression } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { ClassType } from '../../types.zena';
-import { WasmField } from '../wasm-module.zena';
+import { WasmField, typeToValType, getClassKey, WasmFunction } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 import { ValType } from '../wasm.zena';
-import { typeToValType } from '../wasm-module.zena';
-import { WasmFunction } from '../wasm-module.zena';
 
 export let generateNewExpression = (
   ctx: FunctionContext,
@@ -18,31 +15,40 @@ export let generateNewExpression = (
   let nodeType = ctx.wasmFunction.model.getNodeType(expr);
   if (nodeType is ClassType) {
     let classType = nodeType as ClassType;
-    if (!ctx.wasm.classStructs.has(classType.name)) {
+    if (!ctx.wasm.classStructs.has(getClassKey(classType))) {
       throw new Error("Class struct not found: " + classType.name);
     }
-    let structType = ctx.wasm.classStructs[classType.name];
+    let structType = ctx.wasm.classStructs[getClassKey(classType)];
+    let emptyLocal = ctx.allocLocal(new ValTypeRefNull(structType));
     
     ctx.emitter.emitStructNewDefault(structType.index);
+    ctx.emitter.emitLocalSet(emptyLocal);
+    
+    let hasVTable = ctx.wasm.classVTableGlobals.has(getClassKey(classType));
+    if (hasVTable) {
+        let vtableGlobal = ctx.wasm.classVTableGlobals[getClassKey(classType)];
+        ctx.emitter.emitLocalGet(emptyLocal);
+        ctx.emitter.emitGlobalGet(vtableGlobal.index);
+        ctx.emitter.emitStructSet(structType.index, 0);
+    }
+    
+    ctx.emitter.emitLocalGet(emptyLocal);
     
     // Check if the class has a constructor
-    var targetName = classType.name + ".<constructor>";
     var ctorFunc: WasmFunction | null = null;
     
     for (let f in ctx.wasm.functions) {
-      if (f.name == targetName) {
+      if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName == "<constructor>") {
         ctorFunc = f;
       }
     }
     
     if (ctorFunc != null) {
-      let tempLocal = ctx.allocLocal(new ValTypeRefNull(structType));
-      ctx.emitter.emitLocalTee(tempLocal);
       for (let arg in expr.args) {
         genExpr(arg, false);
       }
       ctx.emitter.emitCall(ctorFunc as WasmFunction);
-      ctx.emitter.emitLocalGet(tempLocal);
+      ctx.emitter.emitLocalGet(emptyLocal);
     }
   } else {
     throw new Error("generateNewExpression: nodeType is not a ClassType");

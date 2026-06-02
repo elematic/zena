@@ -6,9 +6,10 @@ import {
   ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
   IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
-  IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter
+  IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
+  ThisExpression, SuperInitializer, SuperExpression
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
@@ -172,27 +173,55 @@ export class FunctionGenerator {
       if (methName == "<constructor>") {
         let structType = this.ctx.wasmFunction.structType;
         if (structType != null && mDef.initializerList != null) {
-            let inits = mDef.initializerList as Array<Node>;
-            for (var initIdx = 0; initIdx < inits.length; initIdx += 1) {
-              let init = inits[initIdx];
-              if (init is FieldInitializer) {
-                let fi = init as FieldInitializer;
-                if (fi.field is Identifier) {
-                  let fieldName = (fi.field as Identifier).name;
-                  var fieldIndex = -1;
-                  for (var i = 0; i < structType.fields.length; i += 1) {
-                    if (structType.fields[i].name == fieldName) {
-                        fieldIndex = i;
-                    }
+          let inits = mDef.initializerList as Array<Node>;
+          for (let init in inits) {
+            if (init is FieldInitializer) {
+              let fi = init as FieldInitializer;
+              if (fi.field is Identifier) {
+                let fieldName = (fi.field as Identifier).name;
+                var fieldIndex = -1;
+                for (var i = 0; i < structType.fields.length; i += 1) {
+                  if (structType.fields[i].name == fieldName) {
+                    fieldIndex = i;
                   }
-                  if (fieldIndex >= 0) {
-                            this.ctx.emitter.emitLocalGet(0);
-                            this.generateExpression(fi.value);
-                            this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
-                  }
+                }
+                if (fieldIndex >= 0) {
+                  this.ctx.emitter.emitLocalGet(0);
+                  this.generateExpression(fi.value);
+                  this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
                 }
               }
             }
+          }
+        }
+
+        if (mDef.superInitializer != null) {
+          let si = mDef.superInitializer as SuperInitializer;
+          let cType = this.ctx.wasmFunction.classType;
+          
+          if (cType != null && cType.superType != null) {
+            let st = cType.superType as ClassType;
+            var targetName = st.name + ".<constructor>";
+            var ctorFunc: WasmFunction | null = null;
+            
+            for (let f in this.ctx.wasm.functions) {
+              if (f.name == targetName) {
+                ctorFunc = f;
+              }
+            }
+
+            if (ctorFunc != null) {
+              this.ctx.emitter.emitLocalGet(0);
+              var argStart = 0;
+              while (argStart < si.args.length) {
+                  this.generateExpression(si.args[argStart]);
+                  argStart += 1;
+              }
+              this.ctx.emitter.emitCall(ctorFunc);
+            } else {
+                throw new Error("Super constructor not emitted!");
+            }
+          }
         }
       }
     }
@@ -255,6 +284,9 @@ export class FunctionGenerator {
       case RecordLiteral: generateRecordLiteral(this.ctx, expr as RecordLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case TupleLiteral: generateTupleLiteral(this.ctx, expr as TupleLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
+      case ThisExpression: {
+        this.ctx.emitter.emitLocalGet(0);
+      }
       case BinaryExpression: generateBinaryExpression(this.ctx, expr as BinaryExpression, (e: Expression) => this.generateExpression(e))
       case AssignmentExpression: {
         generateAssignmentExpression(
@@ -270,6 +302,10 @@ export class FunctionGenerator {
       case IfExpression: {
         generateIfExpression(this.ctx, expr as IfExpression, discardValue, (e: Expression, d: boolean = false) => this.generateExpression(e, d), (s: Statement) => this.generateStatement(s));
         handlesDiscardNatively = true;
+      }
+      case SuperExpression: {
+        // Evaluate to `this` instance
+        this.ctx.emitter.emitLocalGet(0);
       }
       case _: {
         throw new Error("Unsupported expression type in codegen");

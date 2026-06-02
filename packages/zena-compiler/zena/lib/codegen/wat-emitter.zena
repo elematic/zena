@@ -11,6 +11,8 @@ import { Array } from 'zena:array';
 export class WatEmitter implements WasmEmitter {
   sb: StringBuilder;
   var indentDepth: i32 = 1;
+  var currentSuperTypeIndex: i32 = -1;
+  var emittedRecGroup: boolean = false;
   
   new(this.sb);
 
@@ -25,8 +27,15 @@ export class WatEmitter implements WasmEmitter {
     this.sb.append('(module\n');
   }
   
-  emitTypeSectionStart(count: i32): void {}
-  
+  emitTypeSectionStart(count: i32): void {
+    if (count > 0) {
+      this.indent();
+      this.sb.append('(rec\n');
+      this.indentDepth += 1;
+      this.emittedRecGroup = true;
+    }
+  }
+
   emitFunctionTypeStart(index: i32): void {
     this.indent();
     this.sb.append('(type (;').append(i32ToString(index)).append(';) (func');
@@ -48,13 +57,19 @@ export class WatEmitter implements WasmEmitter {
     this.sb.append('))\n');
   }
 
-  emitStructTypeStart(index: i32, name: String | null): void {
+  emitStructTypeStart(index: i32, name: String | null, superTypeIndex: i32): void {
+    this.currentSuperTypeIndex = superTypeIndex;
     this.indent();
     if (name != null) {
-      this.sb.append('(type $').append(name as String).append(' (;').append(i32ToString(index)).append(';) (struct');
+      this.sb.append('(type $').append(name as String).append(' (;').append(i32ToString(index)).append(';) ');
     } else {
-      this.sb.append('(type (;').append(i32ToString(index)).append(';) (struct');
+      this.sb.append('(type (;').append(i32ToString(index)).append(';) ');
     }
+    
+    if (superTypeIndex >= 0) {
+      this.sb.append('(sub ').append(i32ToString(superTypeIndex)).append(' ');
+    }
+    this.sb.append('(struct');
   }
 
   emitStructTypeFieldsStart(count: i32): void {}
@@ -72,10 +87,21 @@ export class WatEmitter implements WasmEmitter {
   }
 
   emitStructTypeEnd(): void {
-    this.sb.append('))\n');
+    if (this.currentSuperTypeIndex >= 0) {
+      this.sb.append(')))\n');
+    } else {
+      this.sb.append('))\n');
+    }
+    this.currentSuperTypeIndex = -1;
   }
   
-  emitTypeSectionEnd(): void {}
+  emitTypeSectionEnd(): void {
+    if (this.emittedRecGroup) {
+       this.indentDepth -= 1;
+       this.indent();
+       this.sb.append(')\n');
+    }
+  }
 
   emitFunctionSectionStart(count: i32): void {}
   emitFunctionDefinition(typeIndex: i32): void {}

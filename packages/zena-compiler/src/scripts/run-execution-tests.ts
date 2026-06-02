@@ -30,6 +30,9 @@ async function run() {
     'records',
     'tuples',
     'classes/basic_class.zena',
+    'classes/inheritance.zena',
+    'classes/virtual-methods.zena',
+    'classes/class-collision.zena',
   ];
 
   let files = await glob(join(testsDir, '**/*.zena'));

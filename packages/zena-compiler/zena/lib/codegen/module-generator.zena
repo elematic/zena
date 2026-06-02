@@ -32,6 +32,7 @@ export class ModuleGenerator {
     wasm.layout();
 
     this.emitter.emitModuleStart();
+    // TODO: Compute more optimal rec groups before emitting
     this.emitter.emitTypeSectionStart(wasm.types.length);
     var i = 0;
     for (let t in wasm.types) {
@@ -52,7 +53,10 @@ export class ModuleGenerator {
         this.emitter.emitFunctionTypeEnd();
       } else if (t is WasmStruct) {
         let st = t as WasmStruct;
-        this.emitter.emitStructTypeStart(i, st.name);
+        let superIdx =
+          if (st.superStruct != null) (st.superStruct as WasmStruct).index 
+          else -1;
+        this.emitter.emitStructTypeStart(i, st.name, superIdx);
         
         this.emitter.emitStructTypeFieldsStart(st.fields.length);
         for (let field in st.fields) {

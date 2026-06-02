@@ -56,7 +56,10 @@ export class BinaryEmitter implements WasmEmitter {
   emitTypeSectionStart(count: i32): void {
     if (count == 0) return;
     this.currentSection = new ByteBuffer();
-    (this.currentSection as ByteBuffer).writeULEB128(count);
+    // Wrap ALL types in a single recursive group so we don't have to sort them topologically
+    (this.currentSection as ByteBuffer).writeULEB128(1); // 1 type group
+    (this.currentSection as ByteBuffer).writeByte(0x4E); // 0x4E = rec form
+    (this.currentSection as ByteBuffer).writeULEB128(count); // number of types in the rec group
   }
   
   emitFunctionTypeStart(index: i32): void {
@@ -86,9 +89,16 @@ export class BinaryEmitter implements WasmEmitter {
   
   emitFunctionTypeEnd(): void {}
 
-  emitStructTypeStart(index: i32, name: String | null): void {
+  emitStructTypeStart(index: i32, name: String | null, superTypeIndex: i32): void {
     if (this.currentSection == null) {
       return;
+    }
+    (this.currentSection as ByteBuffer).writeByte(0x50); // sub form
+    if (superTypeIndex >= 0) {
+      (this.currentSection as ByteBuffer).writeULEB128(1); // 1 supertype
+      (this.currentSection as ByteBuffer).writeULEB128(superTypeIndex); // index of supertype
+    } else {
+      (this.currentSection as ByteBuffer).writeULEB128(0); // 0 supertypes
     }
     // 0x5F is the type form for struct in Wasm GC
     (this.currentSection as ByteBuffer).writeByte(0x5F);

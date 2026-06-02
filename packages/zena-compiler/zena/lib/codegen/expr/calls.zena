@@ -1,7 +1,9 @@
-import { Node, CallExpression, Identifier, Expression, ImportSpecifier } from '../../ast.zena';
-import { Type, FunctionType } from '../../types.zena';
+import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression } from '../../ast.zena';
+import { Type, FunctionType, ClassType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
+import { WasmType, ValTypeRef, ValTypeRefNull } from '../wasm.zena';
+import { WasmFunction, getClassKey } from '../wasm-module.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { generateGlobalIntrinsic } from './intrinsics.zena';
@@ -65,6 +67,73 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         }
         throw new Error("Could not resolve function call target: " + ident.name);
       }
+    }
+    case MemberExpression: {
+      let member = call.callee as MemberExpression;
+      let objType = ctx.wasmFunction.model.getNodeType(member.object);
+      
+      if (objType is ClassType) {
+        let ct = objType as ClassType;
+        let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+        let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+        
+        let targetName = member.property.name;
+        
+        // Find method index in vtable
+        var methodIndex = -1;
+        for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+          if (vtableStruct.fields[i].name == targetName) {
+            methodIndex = i;
+          }
+        }
+        
+        if (methodIndex == -1) {
+          throw new Error("Method not found in vtable: " + targetName);
+        }
+        
+        // 1. Emit arguments: `this` first, then args
+        genExpr(member.object, false);
+        // Cast to our struct type to grab vtable
+        var scratchLocal = ctx.getStructScratchLocal(structInfo);
+        ctx.emitter.emitLocalTee(scratchLocal);
+        
+        var argIdx = 0;
+        while (argIdx < call.args.length) {
+          genExpr(call.args[argIdx], false);
+          argIdx += 1;
+        }
+        
+        // 2. Load the vtable map and extract function ref
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitRefCast(structInfo.index);
+        ctx.emitter.emitStructGet(structInfo.index, 0); // VTable is always field 0
+        ctx.emitter.emitRefCast(vtableStruct.index);
+        ctx.emitter.emitStructGet(vtableStruct.index, methodIndex); // Function ref
+        
+        // Look up the specific WasmFunction for this call to get its accurate signature type
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = ct;
+        while (currClass != null && foundFunc == null) {
+          for (let f in ctx.wasm.functions) {
+            if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == targetName) {
+              foundFunc = f;
+            }
+          }
+          currClass = (currClass as ClassType).superType;
+        }
+
+        if (foundFunc == null) {
+          throw new Error("Could not find function for method call: " + targetName);
+        }
+
+        // Cast the generic funcref from the vtable to the specific implementation signature type
+        ctx.emitter.emitRefCast((foundFunc as WasmFunction).signature.index);
+
+        // 3. Call reference
+        ctx.emitter.emitCallRef((foundFunc as WasmFunction).signature.index);
+        return;
+      }
+      throw new Error("Unsupported method call on type: " + typeToString(objType));
     }
     case _: {
       throw new Error("Unsupported call expression");

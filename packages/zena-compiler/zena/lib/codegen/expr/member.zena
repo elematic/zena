@@ -4,8 +4,7 @@ import { Error } from 'zena:error';
 import { RecordType, TupleType, ClassType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
-import { typeToValType } from '../wasm-module.zena';
-import { WasmField } from '../wasm-module.zena';
+import { typeToValType, WasmField, getClassKey } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 
 export let generateMemberExpression = (
@@ -96,11 +95,10 @@ export let generateMemberExpression = (
       ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
     }
     case ClassType as ct: {
-      let fields = new Array<WasmField>();
-      for (let pair in ct.fields) {
-        fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value.type), pair.value.isMutable));
+      if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
+        throw new Error("Class struct not found: " + ct.name);
       }
-      let structInfo = ctx.wasm.getStruct(ct.name, fields);
+      let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
       
       var fieldIndex = -1;
       let propName = expr.property.name;

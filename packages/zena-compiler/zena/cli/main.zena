@@ -1,11 +1,12 @@
 import { getArguments, exit, ExitCode } from 'zena:cli';
 import { console } from 'zena:console';
-import { readFile, writeFileBytes } from 'zena:fs';
+import { readFile, writeFileBytes, writeFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { HashMap } from 'zena:map';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { Module, Statement, VariableDeclaration } from '../lib/ast.zena';
@@ -98,6 +99,10 @@ export let main = (): i32 => {
     let generator = new BinaryGenerator();
     let wasmBytes = generator.generate(program).toByteArray();
     writeFileBytes(outPath, wasmBytes);
+    
+    let watGenerator = new WatGenerator();
+    let watString = watGenerator.generate(program);
+    writeFile(outPath + ".wat", watString);
     
     console.log("Success: wrote " + outPath);
   } catch (e) {
