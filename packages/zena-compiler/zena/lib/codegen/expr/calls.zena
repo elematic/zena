@@ -1,4 +1,4 @@
-import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression } from '../../ast.zena';
+import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression } from '../../ast.zena';
 import { Type, FunctionType, ClassType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
@@ -70,6 +70,49 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
     }
     case MemberExpression: {
       let member = call.callee as MemberExpression;
+      
+      if (member.object is SuperExpression) {
+        if (ctx.wasmFunction.classType == null) {
+          throw new Error("Super call outside of class");
+        }
+        let currentClass = ctx.wasmFunction.classType as ClassType;
+        if (currentClass.superType == null) {
+          throw new Error("Super call in class without superType: " + currentClass.name);
+        }
+        let superType = currentClass.superType as ClassType;
+        let targetName = member.property.name;
+        
+        // Find the specific WasmFunction for this static class method call starting from superType
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = superType;
+        while (currClass != null && foundFunc == null) {
+          for (let f in ctx.wasm.functions) {
+            if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == targetName) {
+              foundFunc = f;
+            }
+          }
+          currClass = (currClass as ClassType).superType;
+        }
+
+        if (foundFunc == null) {
+          throw new Error("Could not find super method for call: " + targetName);
+        }
+
+        // 1. Emit arguments: `this` first, then args.
+        // `member.object` is SuperExpression which evaluates to `this` (param 0).
+        genExpr(member.object, false);
+        
+        var argIdx = 0;
+        while (argIdx < call.args.length) {
+          genExpr(call.args[argIdx], false);
+          argIdx += 1;
+        }
+
+        // 2. Direct static call
+        ctx.emitter.emitCall(foundFunc as WasmFunction);
+        return;
+      }
+      
       let objType = ctx.wasmFunction.model.getNodeType(member.object);
       
       if (objType is ClassType) {

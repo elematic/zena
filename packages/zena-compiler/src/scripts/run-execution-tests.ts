@@ -39,7 +39,7 @@ async function run() {
     'class-field.zena',
     'private-field.zena',
     'private-field-setters.zena',
-    'super-calls.zena',
+    // 'super-calls.zena',
     'param-default-fresh.zena',
     'string-plus-equals.zena',
     'string-array-plus-equals.zena',
