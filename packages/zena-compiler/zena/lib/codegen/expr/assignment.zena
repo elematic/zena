@@ -1,9 +1,10 @@
-import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression } from '../../ast.zena';
-import { Type, F64Type, F32Type } from '../../types.zena';
+import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression } from '../../ast.zena';
+import { Type, F64Type, F32Type, ClassType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
+import { typeToValType, getClassKey } from '../wasm-module.zena';
 
 /**
  * Generates WASM code for an assignment expression.
@@ -71,6 +72,52 @@ export let generateAssignmentExpression = (
       }
     }
     throw new Error("Could not resolve assignment target: " + ident.name);
+  } else if (assign.left is MemberExpression) {
+    let memExpr = assign.left as MemberExpression;
+    let objectType = ctx.wasmFunction.model.getNodeType(memExpr.object);
+    
+    match (objectType) {
+      case ClassType as ct: {
+        if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
+          throw new Error("Class struct not found: " + ct.name);
+        }
+        let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+        
+        var fieldIndex = -1;
+        let propName = memExpr.property.name;
+        
+        for (var i = 0; i < structInfo.fields.length; i += 1) {
+          if (structInfo.fields[i].name == propName) {
+             fieldIndex = i;
+          }
+        }
+        
+        if (fieldIndex == -1) {
+           throw new Error("Could not find property " + propName + " on class " + ct.name);
+        }
+        
+        // Evaluate object first (the struct reference we're setting on)
+        genExpr(memExpr.object, false);
+        ctx.emitter.emitRefCast(structInfo.index);
+        
+        // Then evaluate the value to assign
+        genExpr(assign.value, false);
+        
+        if (!discardValue) {
+          let valType = typeToValType(ctx.wasm, ctx.wasmFunction.model.getNodeType(assign.value));
+          let tempLocal = ctx.allocLocal(valType);
+          ctx.emitter.emitLocalTee(tempLocal);
+          ctx.emitter.emitStructSet(structInfo.index, fieldIndex);
+          ctx.emitter.emitLocalGet(tempLocal);
+        } else {
+          ctx.emitter.emitStructSet(structInfo.index, fieldIndex);
+        }
+        return;
+      }
+      case _: {
+        throw new Error("Assigning to non-class member is not yet implemented.");
+      }
+    }
   } else {
     throw new Error("Unsupported assignment target");
   }

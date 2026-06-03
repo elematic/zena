@@ -7,7 +7,7 @@ import {
   IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
   IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
-  ThisExpression, SuperInitializer, SuperExpression
+  ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -172,6 +172,36 @@ export class FunctionGenerator {
       };
       if (methName == "<constructor>") {
         let structType = this.ctx.wasmFunction.structType;
+        if (structType != null) {
+          let classDecl = this.ctx.wasmFunction.classDecl;
+          if (classDecl != null) {
+            let cd = classDecl as ClassDeclaration;
+            for (let member in cd.body) {
+              if (member is FieldDefinition) {
+                let fd = member as FieldDefinition;
+                if (fd.value != null && !fd.isStatic) {
+                  let fieldName = match (fd.name) {
+                    case Identifier {name}: name
+                    case _: ""
+                  };
+                  if (fieldName != "") {
+                    var fieldIndex = -1;
+                    for (var i = 0; i < structType.fields.length; i += 1) {
+                      if (structType.fields[i].name == fieldName) {
+                        fieldIndex = i;
+                      }
+                    }
+                    if (fieldIndex >= 0) {
+                      this.ctx.emitter.emitLocalGet(0);
+                      this.generateExpression(fd.value as Expression);
+                      this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
         if (structType != null && mDef.initializerList != null) {
           let inits = mDef.initializerList as Array<Node>;
           for (let init in inits) {

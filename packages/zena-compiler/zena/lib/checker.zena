@@ -5840,19 +5840,32 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
           case _: "<unknown>"
           };
 
-          // Temporarily hide fields declared after this one so that
-          // forward references in initializers (e.g. this.y when y comes
-          // later) are caught as "property does not exist" errors.
+          // Temporarily hide fields declared after this one or inherited from superclasses,
+          // so that they cannot be accessed within the field's default initializer.
           let hiddenFields = new HashMap<String, FieldInfo>();
-          var hi = fieldIndex + 1;
-          while (hi < fieldOrder.length) {
-            let laterName = fieldOrder[hi];
-            // Don't hide the current field (handles duplicate field names).
-            if (laterName != fieldName && classType.fields.has(laterName)) {
-              hiddenFields[laterName] = classType.fields[laterName];
-              classType.fields.delete(laterName);
+          let keysToHide = new Array<String>();
+          
+          let allFieldKeys = classType.fields.keys();
+          while (let (true, k) = allFieldKeys.next()) {
+            var isPriorLocal = false;
+            var fi = 0;
+            while (fi <= fieldIndex) {
+              if (fieldOrder[fi] == k) {
+                isPriorLocal = true;
+              }
+              fi = fi + 1;
             }
-            hi = hi + 1;
+            if (!isPriorLocal) {
+              keysToHide.push(k);
+            }
+          }
+          
+          var kh = 0;
+          while (kh < keysToHide.length) {
+            let k = keysToHide[kh];
+            hiddenFields[k] = classType.fields[k];
+            classType.fields.delete(k);
+            kh = kh + 1;
           }
 
           let fieldInfo = classType.fields[fieldName];

@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {dirname, join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
+import {sep} from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
@@ -29,24 +30,29 @@ async function run() {
     'compound-assignment',
     'records',
     'tuples',
-    'classes/basic_class.zena',
-    'classes/inheritance.zena',
-    'classes/virtual-methods.zena',
-    'classes/class-collision.zena',
+    'this-params',
+    'classes',
   ];
-
-  let files = await glob(join(testsDir, '**/*.zena'));
-  files = files.filter((f) => runList.some((r) => f.includes(r)));
 
   const skipList = [
     'array-index.zena',
     'class-field.zena',
     'private-field.zena',
+    'private-field-setters.zena',
+    'super-calls.zena',
     'param-default-fresh.zena',
     'string-plus-equals.zena',
     'string-array-plus-equals.zena',
   ];
-  files = files.filter((f) => !skipList.some((s) => f.includes(s)));
+
+  let files = await glob(join(testsDir, '**/*.zena'));
+  files = files.filter((f) => {
+    const segments = f.split(sep);
+    return (
+      runList.some((r) => segments.includes(r)) &&
+      !skipList.some((s) => segments.includes(s))
+    );
+  });
 
   const filter = process.argv[2];
   if (filter) {
