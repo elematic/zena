@@ -117,6 +117,39 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       
       if (objType is ClassType) {
         let ct = objType as ClassType;
+        if (ct.isExtension) {
+          let targetName = member.property.name;
+          
+          // Look up the specific WasmFunction for this call
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = ct;
+          while (currClass != null && foundFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == targetName) {
+                foundFunc = f;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (foundFunc == null) {
+            throw new Error("Could not find extension function for method call: " + targetName);
+          }
+
+          // 1. Emit arguments: `this` first, then args.
+          genExpr(member.object, false);
+          
+          var argIdx = 0;
+          while (argIdx < call.args.length) {
+            genExpr(call.args[argIdx], false);
+            argIdx += 1;
+          }
+
+          // 2. Direct static call
+          ctx.emitter.emitCall(foundFunc as WasmFunction);
+          return;
+        }
+
         let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
         let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
         

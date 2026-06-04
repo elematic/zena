@@ -1,4 +1,4 @@
-import { ValTypeStructRef } from './wasm.zena';
+import { ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeAnyRef, ValTypeEqRef, ValTypeF64, ValTypeI32, valTypeEquals } from './wasm.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
@@ -8,9 +8,9 @@ import {
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
   IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
   ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition,
-  AccessorDeclaration, SetterInfo
+  AccessorDeclaration, SetterInfo, AsExpression
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
@@ -348,6 +348,84 @@ export class FunctionGenerator {
       case SuperExpression: {
         // Evaluate to `this` instance
         this.ctx.emitter.emitLocalGet(0);
+      }
+      case AsExpression: {
+        let asExpr = expr as AsExpression;
+        this.generateExpression(asExpr.expression);
+        
+        let sourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
+        let targetType = this.ctx.wasmFunction.model.getNodeType(asExpr);
+        
+        let sourceWasmType = typeToValType(this.ctx.wasm, sourceType);
+        let targetWasmType = typeToValType(this.ctx.wasm, targetType);
+        
+        if (valTypeEquals(sourceWasmType, targetWasmType)) {
+          // No-op identity cast
+        } else {
+          match (targetWasmType) {
+            case ValTypeRefNull as targetRefNull: {
+              let targetIdx = targetRefNull.target.index;
+              match (sourceWasmType) {
+                case ValTypeRefNull as sourceRefNull: {
+                  if (sourceRefNull.target.index != targetIdx) {
+                    this.ctx.emitter.emitRefCast(targetIdx);
+                  }
+                }
+                case ValTypeRef as sourceRef: {
+                  if (sourceRef.target.index != targetIdx) {
+                    this.ctx.emitter.emitRefCast(targetIdx);
+                  }
+                }
+                case ValTypeAnyRef: {
+                  this.ctx.emitter.emitRefCast(targetIdx);
+                }
+                case ValTypeEqRef: {
+                  this.ctx.emitter.emitRefCast(targetIdx);
+                }
+                case _: {
+                  throw new Error("Unsupported ref_null cast in self-hosted compiler: " + typeToString(sourceType) + " to " + typeToString(targetType));
+                }
+              }
+            }
+            case ValTypeRef as targetRef: {
+              let targetIdx = targetRef.target.index;
+              match (sourceWasmType) {
+                case ValTypeRef as sourceRef: {
+                  if (sourceRef.target.index != targetIdx) {
+                    this.ctx.emitter.emitRefCast(targetIdx);
+                  }
+                }
+                case ValTypeRefNull as sourceRefNull: {
+                  if (sourceRefNull.target.index != targetIdx) {
+                    this.ctx.emitter.emitRefCast(targetIdx);
+                  }
+                }
+                case ValTypeAnyRef: {
+                  this.ctx.emitter.emitRefCast(targetIdx);
+                }
+                case ValTypeEqRef: {
+                  this.ctx.emitter.emitRefCast(targetIdx);
+                }
+                case _: {
+                  throw new Error("Unsupported ref cast in self-hosted compiler: " + typeToString(sourceType) + " to " + typeToString(targetType));
+                }
+              }
+            }
+            case ValTypeF64: {
+              match (sourceWasmType) {
+                case ValTypeI32: {
+                  this.ctx.emitter.emitF64ConvertI32S();
+                }
+                case _: {
+                  throw new Error("Unsupported primitive conversion to f64 from: " + typeToString(sourceType));
+                }
+              }
+            }
+            case _: {
+              throw new Error("Unsupported cast in self-hosted compiler: " + typeToString(sourceType) + " to " + typeToString(targetType));
+            }
+          }
+        }
       }
       case _: {
         throw new Error("Unsupported expression type in codegen");

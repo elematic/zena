@@ -95,6 +95,32 @@ export let generateMemberExpression = (
       ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
     }
     case ClassType as ct: {
+      if (ct.isExtension) {
+        let propName = expr.property.name;
+        let getterName = "get#" + propName;
+        // Find the specific WasmFunction for this getter
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = ct;
+        while (currClass != null && foundFunc == null) {
+          for (let f in ctx.wasm.functions) {
+            if (f.classType != null && 
+                (f.classType as ClassType).id == (currClass as ClassType).id && 
+                f.methodName == getterName) {
+              foundFunc = f;
+            }
+          }
+          currClass = (currClass as ClassType).superType;
+        }
+
+        if (foundFunc == null) {
+          throw new Error("Could not find extension getter: " + getterName);
+        }
+
+        genExpr(expr.object, false);
+        ctx.emitter.emitCall(foundFunc as WasmFunction);
+        return;
+      }
+
       if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
         throw new Error("Class struct not found: " + ct.name);
       }

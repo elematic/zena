@@ -231,21 +231,23 @@ export class WasmModule {
       if (s.fields.length == inFields.length) {
         inMatch = true;
         for (var i = 0; i < inFields.length; i += 1) {
-           if (s.fields[i].name != inFields[i].name || !valTypeEquals(s.fields[i].type, inFields[i].type)) {
-              inMatch = false;
-              break;
-           }
+          if (s.fields[i].name != inFields[i].name || !valTypeEquals(s.fields[i].type, inFields[i].type)) {
+            inMatch = false;
+            break;
+          }
         }
       }
       if (inMatch && info.fields.length == outFields.length) {
         var outMatch = true;
         for (var i = 0; i < outFields.length; i += 1) {
-           if (info.fields[i].name != outFields[i].name || !valTypeEquals(info.fields[i].type, outFields[i].type)) {
-              outMatch = false;
-              break;
-           }
+          if (info.fields[i].name != outFields[i].name || !valTypeEquals(info.fields[i].type, outFields[i].type)) {
+            outMatch = false;
+            break;
+          }
         }
-        if (outMatch) return info;
+        if (outMatch) {
+          return info;
+        }
       }
     }
     return null;
@@ -547,6 +549,7 @@ export class DiscoveryPass {
           let classType = moduleModel.getNodeType(classDecl);
           if (classType is ClassType) {
             let cType = classType as ClassType;
+            if (cType.isExtension) { return; }
             let emptyStruct = new WasmStruct(cType.name, new Array<WasmField>());
             emptyStruct.classType = cType;
             this.wasm.types.push(emptyStruct);
@@ -566,6 +569,7 @@ export class DiscoveryPass {
           let classType = moduleModel.getNodeType(classDecl);
           if (classType is ClassType) {
             let cType = classType as ClassType;
+            if (cType.isExtension) { return; }
             if (cType.superType != null) {
               let st = this.wasm.classStructs[getClassKey(cType)];
               st.superStruct = this.wasm.classStructs[getClassKey(cType.superType as ClassType)];
@@ -671,6 +675,7 @@ export class DiscoveryPass {
            let classType = moduleModel.getNodeType(classDecl);
            if (classType is ClassType) {
             let cType = classType as ClassType;
+            if (cType.isExtension) { return; }
             
             let vst = this.wasm.classVTableStructs[getClassKey(cType)];
             for (let methName in cType.vtable) {
@@ -814,10 +819,14 @@ export class DiscoveryPass {
                 }
               }
 
-              if (this.wasm.classStructs.has(getClassKey(rootClass))) {
-                params.push(new ValTypeRefNull(this.wasm.classStructs[getClassKey(rootClass)]));
+              if (classType.isExtension && classType.onType != null) {
+                params.push(typeToValType(this.wasm, classType.onType as Type));
               } else {
-                params.push(new ValTypeStructRef());
+                if (this.wasm.classStructs.has(getClassKey(rootClass))) {
+                  params.push(new ValTypeRefNull(this.wasm.classStructs[getClassKey(rootClass)]));
+                } else {
+                  params.push(new ValTypeStructRef());
+                }
               }
               if (methodTypeNode is FunctionType) {
                 let fType = methodTypeNode as FunctionType;
@@ -1038,6 +1047,9 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     new ValTypeRef(structDef);
   }
   case ClassType as ct: {
+    if (ct.isExtension && ct.onType != null) {
+      return typeToValType(wasm, ct.onType as Type);
+    }
     if (wasm.classStructs.has(getClassKey(ct))) {
       new ValTypeRefNull(wasm.classStructs[getClassKey(ct)])
     } else {

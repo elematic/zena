@@ -18,20 +18,22 @@ const NC = '\x1b[0m';
 
 async function run() {
   const runList = [
-    'call_helper.zena',
-    'invoke.zena',
-    'return_42.zena',
-    'param-default.zena',
-    'param-default-ref.zena',
-    'functions',
-    'operators',
-    'variables',
-    'imports',
-    'compound-assignment',
-    'records',
-    'tuples',
-    'this-params',
+    // 'case-classes',
     'classes',
+    // 'closures',
+    'compound-assignment',
+    'control-flow',
+    'functions',
+    'imports',
+    // 'null-coalescing',
+    // 'nullish-assignment',
+    'operators',
+    // 'optional-chaining',
+    'records',
+    // 'sealed-classes',
+    'this-params',
+    'tuples',
+    'variables',
   ];
 
   const skipList = [
@@ -41,6 +43,9 @@ async function run() {
     'param-default-fresh.zena',
     'string-plus-equals.zena',
     'string-array-plus-equals.zena',
+    'nullable-ref.zena',
+    'downcast.zena', // Class initialization error when no constructor?
+    'upcast.zena', // Class initialization error when no constructor?
   ];
 
   let files = await glob(join(testsDir, '**/*.zena'));

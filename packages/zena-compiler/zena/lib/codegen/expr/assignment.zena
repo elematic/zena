@@ -78,6 +78,49 @@ export let generateAssignmentExpression = (
     
     match (objectType) {
       case ClassType as ct: {
+        if (ct.isExtension) {
+          let propName = memExpr.property.name;
+          let setterName = "set#" + propName;
+          
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = ct;
+          while (currClass != null && foundFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == setterName) {
+                foundFunc = f;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (foundFunc == null) {
+            throw new Error("Could not find implementation for extension setter: " + setterName);
+          }
+
+          let valType = typeToValType(ctx.wasm, ctx.wasmFunction.model.getNodeType(assign.value));
+          var tempLocal = -1;
+          if (!discardValue) {
+            tempLocal = ctx.allocLocal(valType);
+          }
+
+          // Evaluate the object first
+          genExpr(memExpr.object, false);
+          
+          // Evaluate the value being assigned
+          genExpr(assign.value, false);
+          if (!discardValue) {
+            ctx.emitter.emitLocalTee(tempLocal);
+          }
+
+          // Emit direct call
+          ctx.emitter.emitCall(foundFunc as WasmFunction);
+
+          if (!discardValue) {
+            ctx.emitter.emitLocalGet(tempLocal);
+          }
+          return;
+        }
+
         if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
           throw new Error("Class struct not found: " + ct.name);
         }
