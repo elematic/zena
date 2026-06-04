@@ -1,10 +1,10 @@
 import { FunctionContext } from '../function-context.zena';
-import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral } from '../../ast.zena';
+import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral, SuperExpression } from '../../ast.zena';
 import { Error } from 'zena:error';
 import { RecordType, TupleType, ClassType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
-import { typeToValType, WasmField, getClassKey } from '../wasm-module.zena';
+import { typeToValType, WasmField, getClassKey, WasmFunction } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 
 export let generateMemberExpression = (
@@ -108,9 +108,70 @@ export let generateMemberExpression = (
            fieldIndex = i;
         }
       }
+
+      let getterName = "get#" + propName;
+      let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+      var vtableIndex = -1;
+      for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+        if (vtableStruct.fields[i].name == getterName) {
+          vtableIndex = i;
+        }
+      }
+      
+      if (vtableIndex != -1) {
+        if (expr.object is SuperExpression) {
+          var superFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = ct; // ct is already the superclass (the type of SuperExpression)
+          while (currClass != null && superFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == getterName) {
+                superFunc = f;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (superFunc == null) {
+            throw new Error("Could not find superclass getter implementation for " + getterName);
+          }
+
+          ctx.emitter.emitLocalGet(0);
+          ctx.emitter.emitCall(superFunc as WasmFunction);
+          return;
+        } else {
+          genExpr(expr.object, false);
+          var scratchLocal = ctx.getStructScratchLocal(structInfo);
+          ctx.emitter.emitLocalTee(scratchLocal);
+
+          ctx.emitter.emitLocalGet(scratchLocal);
+          ctx.emitter.emitRefCast(structInfo.index);
+          ctx.emitter.emitStructGet(structInfo.index, 0); // VTable is at index 0
+          ctx.emitter.emitRefCast(vtableStruct.index);
+          ctx.emitter.emitStructGet(vtableStruct.index, vtableIndex);
+
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = ct;
+          while (currClass != null && foundFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == getterName) {
+                foundFunc = f;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (foundFunc == null) {
+            throw new Error("Could not find implementation for getter: " + getterName);
+          }
+
+          ctx.emitter.emitRefCast((foundFunc as WasmFunction).signature.index);
+          ctx.emitter.emitCallRef((foundFunc as WasmFunction).signature.index);
+          return;
+        }
+      }
       
       if (fieldIndex == -1) {
-         throw new Error("Could not find property " + propName + " on class " + ct.name);
+        throw new Error("Could not find property " + propName + " or virtual getter " + getterName + " on class " + ct.name);
       }
       
       genExpr(expr.object, false);

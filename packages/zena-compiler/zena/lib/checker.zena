@@ -5407,18 +5407,28 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             }
           }
 
-          if (ownFieldNames.has(fieldName)) {
+          var actualFieldName = fieldName;
+          var hasPrivateSetter = false;
+          if (fd.setterName != null) {
+            hasPrivateSetter = true;
+            actualFieldName = match (fd.setterName) {
+              case Identifier {name}: name
+              case _: fieldName
+            };
+          }
+
+          if (ownFieldNames.has(actualFieldName)) {
             ctx.error(
-              "Duplicate field '" + fieldName + "' in class '" + className + "'.",
+              "Duplicate field '" + actualFieldName + "' in class '" + className + "'.",
               DiagnosticCode.DuplicateField,
               fd.loc
             );
-          } else if (classType.fields.has(fieldName)) {
+          } else if (classType.fields.has(actualFieldName)) {
             // Field was inherited from superclass — check type compatibility.
-            let inheritedField = classType.fields[fieldName];
+            let inheritedField = classType.fields[actualFieldName];
             if (!isAssignableTo(ctx, fieldType, inheritedField.type)) {
               ctx.error(
-                "Field '" + fieldName + "' in subclass '" + className +
+                "Field '" + actualFieldName + "' in subclass '" + className +
                 "' must be compatible with inherited field of type '" +
                 typeToString(inheritedField.type) + "'.",
                 DiagnosticCode.IncompatibleTypes,
@@ -5426,10 +5436,17 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               );
             }
           }
-          ownFieldNames.add(fieldName);
+          ownFieldNames.add(actualFieldName);
 
-          let isMutable = fd.mutability != null && fd.mutability == "var";
-          classType.fields[fieldName] = new FieldInfo(fieldType, isMutable, false);
+          let isMutable = (fd.mutability != null && fd.mutability == "var") || hasPrivateSetter;
+          classType.fields[actualFieldName] = new FieldInfo(fieldType, isMutable, false);
+
+          if (hasPrivateSetter) {
+            let getterName = "get#" + fieldName;
+            if (!classType.methods.has(getterName)) {
+              classType.methods[getterName] = new FunctionType(new Array<Type>(), null, fieldType);
+            }
+          }
         }      }
       case MethodDefinition as md: {
         let methodName = match (md.name) {

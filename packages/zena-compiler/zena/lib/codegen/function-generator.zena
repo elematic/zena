@@ -7,7 +7,8 @@ import {
   IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
   IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
-  ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition
+  ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition,
+  AccessorDeclaration, SetterInfo
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -125,12 +126,23 @@ export class FunctionGenerator {
         params = mDef.params;
         body = mDef.body;
       }
+      case AccessorDeclaration as acc: {
+        params = new Array<Parameter>();
+        body = acc.getter;
+      }
+      case SetterInfo as si: {
+        let p = new Parameter(si.param, null, null, false, null, false, si.param.loc);
+        let tempParams = new Array<Parameter>();
+        tempParams.push(p);
+        params = tempParams;
+        body = si.body;
+      }
       case _: {}
     }
 
     if (params != null) {
       var offset = 0;
-      if (bodyNode is MethodDefinition) {
+      if (bodyNode is MethodDefinition || bodyNode is AccessorDeclaration || bodyNode is SetterInfo) {
          offset = 1;
       }
       for (var i = 0; i < params.length; i += 1) {

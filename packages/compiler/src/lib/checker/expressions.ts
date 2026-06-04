@@ -2493,7 +2493,8 @@ function checkAssignmentExpression(
         kind: 'setter',
         classType: classType as ClassType | InterfaceType,
         methodName: setterName,
-        isStaticDispatch: isFinalClass,
+        isStaticDispatch:
+          isFinalClass || memberExpr.object.type === NodeType.SuperExpression,
         isStatic: isStaticAccess,
       });
 
@@ -2524,7 +2525,8 @@ function checkAssignmentExpression(
         kind: 'setter',
         classType: classType as ClassType | InterfaceType,
         methodName: setterName2,
-        isStaticDispatch: isFinalClass,
+        isStaticDispatch:
+          isFinalClass || memberExpr.object.type === NodeType.SuperExpression,
         isStatic: isStaticAccess,
       });
 
@@ -3875,7 +3877,9 @@ function checkMemberExpression(
       classType,
       methodName: memberName,
       isStaticDispatch:
-        canUseStaticDispatch(classType) || methodType.isFinal === true,
+        canUseStaticDispatch(classType) ||
+        methodType.isFinal === true ||
+        expr.object.type === NodeType.SuperExpression,
       type: resolvedType,
     };
     ctx.semanticContext.setResolvedBinding(expr, binding);
@@ -3906,7 +3910,9 @@ function checkMemberExpression(
       classType,
       methodName: getterName,
       isStaticDispatch:
-        canUseStaticDispatch(classType) || getterType.isFinal === true,
+        canUseStaticDispatch(classType) ||
+        getterType.isFinal === true ||
+        expr.object.type === NodeType.SuperExpression,
       type: resolvedGetter.returnType,
       isStatic: isStaticAccess,
     };

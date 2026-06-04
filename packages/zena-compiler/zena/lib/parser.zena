@@ -2556,12 +2556,36 @@ export class Parser {
     // Exception: `let :sym: Type` or `var :sym: Type` is a symbol field with mutability
     // Pattern: Keyword, Colon, Ident, (Colon|Dot) → symbol field after keyword
     var mutability: String | null = null;
+    var setterName: Node | null = null;
     if (this.#check(TokenType.Let) && (this.#peek2().kind != TokenType.Colon || this.#isSymbolFieldAfterKeyword()) && this.#peek2().kind != TokenType.LParen) {
       this.#advance();
       mutability = 'let';
-    } else if (this.#check(TokenType.Var) && (this.#peek2().kind != TokenType.Colon || this.#isSymbolFieldAfterKeyword()) && this.#peek2().kind != TokenType.LParen) {
+    } else if (this.#check(TokenType.Var) && (this.#peek2().kind != TokenType.Colon || this.#isSymbolFieldAfterKeyword())) {
       this.#advance();
       mutability = 'var';
+      if (this.#match(TokenType.LParen)) {
+        // Parse setterName: var(#x) or var(set: #x)
+        if (this.#check(TokenType.Identifier) && this.#peek().value == "set" && this.#peek2().kind == TokenType.Colon) {
+          this.#advance(); // consume 'set'
+          this.#advance(); // consume ':'
+        }
+        if (this.#match(TokenType.Hash)) {
+          let hashToken = this.#previous();
+          let id = this.#parseIdentifier();
+          setterName = new Identifier("#" + id.name, this.#makeLocation(hashToken));
+        } else if (this.#match(TokenType.Colon)) {
+          let colStart = this.#previous();
+          var symbolExpr: Expression = this.#parseIdentifier();
+          while (this.#match(TokenType.Dot)) {
+            let prop = this.#parseIdentifier();
+            symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, this.#makeLocation(colStart));
+          }
+          setterName = new SymbolPropertyName(symbolExpr, this.#makeLocation(colStart));
+        } else {
+          setterName = this.#parseIdentifier();
+        }
+        this.#consume(TokenType.RParen, "Expected ')' after setter name in var(...)");
+      }
     }
     
     // Constructor: new(...)
@@ -2621,7 +2645,7 @@ export class Parser {
         throw this.#error("Private field must have a type annotation or initializer");
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isOptional, false, false, mutability, decorators, this.#makeLocation(startToken));
+      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isOptional, false, false, mutability, decorators, null, this.#makeLocation(startToken));
     }
     
     // Static symbol declaration: static symbol name;
@@ -2630,7 +2654,7 @@ export class Parser {
       this.#advance(); // consume 'symbol'
       let symName = this.#parseIdentifier();
       this.#consume(TokenType.Semi, "Expected ';' after symbol declaration");
-      return new FieldDefinition(symName, new NamedTypeAnnotation('symbol', null, symName.loc), null, true, false, false, true, false, null, decorators, this.#makeLocation(startToken));
+      return new FieldDefinition(symName, new NamedTypeAnnotation('symbol', null, symName.loc), null, true, false, false, true, false, null, decorators, null, this.#makeLocation(startToken));
     }
     
     // Symbol-keyed member: :symbolName
@@ -2663,7 +2687,7 @@ export class Parser {
         symFieldValue = this.#parseExpression();
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-      return new FieldDefinition(symPropName, symTypeAnnotation, symFieldValue, isFinal, false, false, false, false, mutability, decorators, this.#makeLocation(startToken));
+      return new FieldDefinition(symPropName, symTypeAnnotation, symFieldValue, isFinal, false, false, false, false, mutability, decorators, null, this.#makeLocation(startToken));
     }
     
     let name = this.#parseIdentifier();
@@ -2686,7 +2710,7 @@ export class Parser {
       this.#consume(TokenType.Colon, "Expected ':' after abstract field name.");
       let typeAnnotation = this.#parseTypeAnnotation();
       this.#consume(TokenType.Semi, "Expected ';' after abstract field declaration.");
-      return new FieldDefinition(name, typeAnnotation, null, false, true, isOptional, false, false, mutability, decorators, this.#makeLocation(startToken));
+      return new FieldDefinition(name, typeAnnotation, null, false, true, isOptional, false, false, mutability, decorators, null, this.#makeLocation(startToken));
     }
     
     // Declare field: declare name: Type;
@@ -2695,7 +2719,7 @@ export class Parser {
       this.#consume(TokenType.Colon, "Expected ':' after declared field name.");
       let typeAnnotation = this.#parseTypeAnnotation();
       this.#consume(TokenType.Semi, "Expected ';' after declared field.");
-      return new FieldDefinition(name, typeAnnotation, null, false, false, isOptional, false, true, mutability, decorators, this.#makeLocation(startToken));
+      return new FieldDefinition(name, typeAnnotation, null, false, false, isOptional, false, true, mutability, decorators, null, this.#makeLocation(startToken));
     }
     
     // Field: name: Type; or name?: Type; or name: Type = value; or name = value;
@@ -2721,7 +2745,7 @@ export class Parser {
     }
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, false, isOptional, isStatic, false, mutability, decorators, this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, false, isOptional, isStatic, false, mutability, decorators, setterName, this.#makeLocation(startToken));
   }
   
   // Check if < starts a generic method (vs a comparison expression)
@@ -3170,7 +3194,7 @@ export class Parser {
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
     
-    return new FieldDefinition(name, typeAnnotation, null, false, false, isOptional, false, false, if (mutableField) { "var" } else { null }, new Array<Decorator>(0), this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, null, false, false, isOptional, false, false, if (mutableField) { "var" } else { null }, new Array<Decorator>(0), null, this.#makeLocation(startToken));
   }
   
   // ==========================================================================

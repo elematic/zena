@@ -93,7 +93,7 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Parameter properties (`this.field` constructor parameters).
   - [ ] Private fields
   - [ ] Mutable fields with private setters (`var(#foo) foo: i32;`)
-  - [ ] Accessors (`get` / `set` computed properties) wrapping property accesses.
+  - [x] Accessors (`get` / `set` computed properties) wrapping property accesses.
 - [ ] **Inheritance & Polymorphism:**
   - [x] Single inheritance structural extension layouts in WASM GC.
   - [x] Virtual method dispatch tables (vtables) matching subclass overrides.

@@ -1,10 +1,10 @@
-import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression } from '../../ast.zena';
+import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression } from '../../ast.zena';
 import { Type, F64Type, F32Type, ClassType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
-import { typeToValType, getClassKey } from '../wasm-module.zena';
+import { typeToValType, getClassKey, WasmFunction } from '../wasm-module.zena';
 
 /**
  * Generates WASM code for an assignment expression.
@@ -91,9 +91,93 @@ export let generateAssignmentExpression = (
              fieldIndex = i;
           }
         }
+
+        let setterName = "set#" + propName;
+        let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+        var vtableIndex = -1;
+        for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+          if (vtableStruct.fields[i].name == setterName) {
+            vtableIndex = i;
+          }
+        }
+        
+        if (vtableIndex != -1) {
+          let valType = typeToValType(ctx.wasm, ctx.wasmFunction.model.getNodeType(assign.value));
+          var tempLocal = -1;
+          if (!discardValue) {
+            tempLocal = ctx.allocLocal(valType);
+          }
+
+          if (memExpr.object is SuperExpression) {
+            var superFunc: WasmFunction | null = null;
+            var currClass: ClassType | null = ct; // ct is already the superclass (the type of SuperExpression)
+            while (currClass != null && superFunc == null) {
+              for (let f in ctx.wasm.functions) {
+                if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == setterName) {
+                  superFunc = f;
+                }
+              }
+              currClass = (currClass as ClassType).superType;
+            }
+
+            if (superFunc == null) {
+              throw new Error("Could not find superclass setter implementation for " + setterName);
+            }
+
+            ctx.emitter.emitLocalGet(0);
+            genExpr(assign.value, false);
+            if (!discardValue) {
+              ctx.emitter.emitLocalTee(tempLocal);
+            }
+            
+            ctx.emitter.emitCall(superFunc as WasmFunction);
+            if (!discardValue) {
+              ctx.emitter.emitLocalGet(tempLocal);
+            }
+            return;
+          } else {
+            var foundFunc: WasmFunction | null = null;
+            var currClass: ClassType | null = ct;
+            while (currClass != null && foundFunc == null) {
+              for (let f in ctx.wasm.functions) {
+                if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == setterName) {
+                  foundFunc = f;
+                }
+              }
+              currClass = (currClass as ClassType).superType;
+            }
+
+            if (foundFunc == null) {
+              throw new Error("Could not find implementation for setter: " + setterName);
+            }
+
+            genExpr(memExpr.object, false);
+            var scratchLocal = ctx.getStructScratchLocal(structInfo);
+            ctx.emitter.emitLocalTee(scratchLocal);
+
+            genExpr(assign.value, false);
+            if (!discardValue) {
+              ctx.emitter.emitLocalTee(tempLocal);
+            }
+
+            ctx.emitter.emitLocalGet(scratchLocal);
+            ctx.emitter.emitRefCast(structInfo.index);
+            ctx.emitter.emitStructGet(structInfo.index, 0); // VTable is at index 0
+            ctx.emitter.emitRefCast(vtableStruct.index);
+            ctx.emitter.emitStructGet(vtableStruct.index, vtableIndex);
+
+            ctx.emitter.emitRefCast((foundFunc as WasmFunction).signature.index);
+            ctx.emitter.emitCallRef((foundFunc as WasmFunction).signature.index);
+
+            if (!discardValue) {
+              ctx.emitter.emitLocalGet(tempLocal);
+            }
+            return;
+          }
+        }
         
         if (fieldIndex == -1) {
-           throw new Error("Could not find property " + propName + " on class " + ct.name);
+          throw new Error("Could not find property " + propName + " or virtual setter " + setterName + " on class " + ct.name);
         }
         
         // Evaluate object first (the struct reference we're setting on)

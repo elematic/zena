@@ -5001,9 +5001,12 @@ function generateAssignmentExpressionInner(
       const setterName = getSetterName(fieldName);
       const methodInfo = foundClass.methods.get(setterName);
       if (methodInfo) {
-        // Check if we can use static dispatch (final class, final method, or extension)
+        // Check if we can use static dispatch (final class, final method, or extension, or super)
         const useStaticDispatch =
-          foundClass.isFinal || methodInfo.isFinal || foundClass.isExtension;
+          foundClass.isFinal ||
+          methodInfo.isFinal ||
+          foundClass.isExtension ||
+          memberExpr.object.type === NodeType.SuperExpression;
 
         if (useStaticDispatch) {
           // Static dispatch - direct call
@@ -6631,9 +6634,12 @@ function generateFieldFromBinding(
     const methodInfo = classInfo.methods.get(getterName);
     if (methodInfo) {
       // Use getter with appropriate dispatch
-      // Determine static vs dynamic dispatch: final class, final method (field), or extension
+      // Determine static vs dynamic dispatch: final class, final method (field), or extension, or super
       const useStaticDispatch =
-        classInfo.isFinal || methodInfo.isFinal || classInfo.isExtension;
+        classInfo.isFinal ||
+        methodInfo.isFinal ||
+        classInfo.isExtension ||
+        objectExpr.type === NodeType.SuperExpression;
 
       if (methodInfo.intrinsic) {
         generateIntrinsic(ctx, methodInfo.intrinsic, objectExpr, [], body);
