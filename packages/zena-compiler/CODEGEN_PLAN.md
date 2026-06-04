@@ -100,7 +100,7 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Cross-module class name collision and registry deduplication.
   - [ ] Static fields and class-level helper method execution.
   - [ ] Extension classes (`extension class A on B`) adding static/instance dispatch wrappers.
-  - [ ] Super calls in methods
+  - [x] Super calls in methods
 
 
 ### 6. Interfaces, Mixins, & Case/Sealed Classes
