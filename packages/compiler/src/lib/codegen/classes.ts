@@ -2548,20 +2548,43 @@ export function registerClassMethods(
       } as MethodDefinition & {_caseClassCtor?: boolean});
     } else {
       const bodyStmts: any[] = [];
+      const synthParams: any[] = [];
+      const superInitArgs: any[] = [];
+
+      if (classType.superType && classType.superType.constructorType) {
+        const superCtor = classType.superType.constructorType;
+        for (let i = 0; i < superCtor.parameters.length; i++) {
+          const pName = superCtor.parameterNames?.[i] ?? `p${i}`;
+          const pType = superCtor.parameters[i];
+          synthParams.push({
+            type: NodeType.Parameter,
+            name: {type: NodeType.Identifier, name: pName},
+            typeAnnotation: null,
+            optional: superCtor.optionalParameters?.[i] ?? false,
+            inferredType: pType,
+          });
+          superInitArgs.push({
+            type: NodeType.Identifier,
+            name: pName,
+            inferredType: pType,
+          });
+        }
+      }
+
       if (currentSuperClassInfo && !hasImmutableFields(classInfo)) {
         bodyStmts.push({
           type: NodeType.ExpressionStatement,
           expression: {
             type: NodeType.CallExpression,
             callee: {type: NodeType.SuperExpression},
-            arguments: [],
+            arguments: superInitArgs,
           },
         });
       }
       members.push({
         type: NodeType.MethodDefinition,
         name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
-        params: [],
+        params: synthParams,
         body: {type: NodeType.BlockStatement, body: bodyStmts},
         isFinal: false,
         isAbstract: false,
@@ -3654,20 +3677,43 @@ export function generateClassMethods(
       } as MethodDefinition & {_caseClassCtor?: boolean});
     } else {
       const bodyStmts: any[] = [];
+      const synthParams: any[] = [];
+      const superInitArgs: any[] = [];
+
+      if (lookupType.superType && lookupType.superType.constructorType) {
+        const superCtor = lookupType.superType.constructorType;
+        for (let i = 0; i < superCtor.parameters.length; i++) {
+          const pName = superCtor.parameterNames?.[i] ?? `p${i}`;
+          const pType = superCtor.parameters[i];
+          synthParams.push({
+            type: NodeType.Parameter,
+            name: {type: NodeType.Identifier, name: pName},
+            typeAnnotation: null,
+            optional: superCtor.optionalParameters?.[i] ?? false,
+            inferredType: pType,
+          });
+          superInitArgs.push({
+            type: NodeType.Identifier,
+            name: pName,
+            inferredType: pType,
+          });
+        }
+      }
+
       if (decl.superClass && !hasImmutableFields(classInfo)) {
         bodyStmts.push({
           type: NodeType.ExpressionStatement,
           expression: {
             type: NodeType.CallExpression,
             callee: {type: NodeType.SuperExpression},
-            arguments: [],
+            arguments: superInitArgs,
           },
         });
       }
       members.push({
         type: NodeType.MethodDefinition,
         name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
-        params: [],
+        params: synthParams,
         body: {type: NodeType.BlockStatement, body: bodyStmts},
         isFinal: false,
         isAbstract: false,

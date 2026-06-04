@@ -99,9 +99,9 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Virtual method dispatch tables (vtables) matching subclass overrides.
   - [x] Cross-module class name collision and registry deduplication.
   - [ ] Static fields and class-level helper method execution.
-  - [ ] Extension classes (`extension class A on B`) adding static/instance dispatch wrappers.
+  - [x] Extension classes (`extension class A on B`) adding static/instance dispatch wrappers.
   - [x] Super calls in methods
-
+  - [x] Implicit constructors
 
 ### 6. Interfaces, Mixins, & Case/Sealed Classes
 

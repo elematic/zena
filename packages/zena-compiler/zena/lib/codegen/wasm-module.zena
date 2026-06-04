@@ -4,7 +4,8 @@ import {
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportDeclaration, ImportSpecifier, ClassDeclaration, DeclareFunction,
   TypeAliasDeclaration, RecordLiteral, MethodDefinition, FieldDefinition,
-  AccessorDeclaration, SetterInfo
+  AccessorDeclaration, SetterInfo, SuperInitializer, TypeParameter,
+  Parameter, TypeAnnotation, Decorator, Pattern
 } from '../ast.zena';
 import { walk } from '../visitor.zena';
 import { RecordType, TupleType } from '../types.zena';
@@ -689,10 +690,28 @@ export class DiscoveryPass {
             }
 
             let fields = new Array<WasmField>();
-            fields.push(new WasmField("<vtable>", new ValTypeRefNull(rootVst), true));
+            if (cType.superType != null) {
+              let superSt = this.wasm.classStructs[getClassKey(cType.superType as ClassType)];
+              for (let f in superSt.fields) {
+                fields.push(f);
+              }
+            } else {
+              fields.push(new WasmField("<vtable>", new ValTypeRefNull(rootVst), true));
+            }
             
             for (let pair in cType.fields) {
-              fields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value.type), true));
+              var isInherited = false;
+              if (cType.superType != null) {
+                let superSt = this.wasm.classStructs[getClassKey(cType.superType as ClassType)];
+                for (let sf in superSt.fields) {
+                  if (sf.name == pair.key) {
+                    isInherited = true;
+                  }
+                }
+              }
+              if (!isInherited) {
+                fields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value.type), true));
+              }
             }
             if (this.wasm.classStructs.has(getClassKey(cType))) {
               let st = this.wasm.classStructs[getClassKey(cType)];
@@ -905,6 +924,94 @@ export class DiscoveryPass {
                   registerClassMethod("get#" + fieldName, null, true, backingName);
                 }
               }
+            }
+
+            var hasConstructor = false;
+            for (let member in classDecl.body) {
+              if (member is MethodDefinition) {
+                let method = member as MethodDefinition;
+                let methName = match(method.name) {
+                  case Identifier {name}: name
+                  case _: "<unknown>"
+                };
+                if (methName == "<constructor>") {
+                  hasConstructor = true;
+                }
+              }
+            }
+
+            if (!hasConstructor && classType != null && !(classType as ClassType).isExtension && classDecl.caseParams == null) {
+              let cType = classType as ClassType;
+              let synthParams = new Array<Parameter>();
+              let superInitArgs = new Array<Expression>();
+              
+              if (cType.superType != null) {
+                let st = cType.superType as ClassType;
+                if (st.constructorType != null) {
+                  let superCtor = st.constructorType as FunctionType;
+                  var pi = 0;
+                  while (pi < superCtor.parameters.length) {
+                    var pName = "p" + i32ToString(pi);
+                    if (superCtor.parameterNames != null) {
+                      let pNames = superCtor.parameterNames as Array<String>;
+                      if (pNames.length > pi) {
+                        pName = pNames[pi];
+                      }
+                    }
+                    
+                    let paramIdent = new Identifier(pName, classDecl.name.loc);
+                    var pPattern: Pattern | null = null;
+                    var pTypeAnno: TypeAnnotation | null = null;
+                    var pDefValue: Expression | null = null;
+                    let synthParam = new Parameter(
+                      paramIdent,
+                      pPattern,
+                      pTypeAnno,
+                      false,
+                      pDefValue,
+                      false,
+                      classDecl.name.loc
+                    );
+                    synthParams.push(synthParam);
+                    
+                    let argExpr = new Identifier(pName, classDecl.name.loc) as Expression;
+                    superInitArgs.push(argExpr);
+                    
+                    pi = pi + 1;
+                  }
+                }
+              }
+              
+              var superInit: SuperInitializer | null = null;
+              if (cType.superType != null) {
+                superInit = new SuperInitializer(superInitArgs, classDecl.name.loc);
+              }
+              
+              var typeParams: Array<TypeParameter> | null = null;
+              var returnType: TypeAnnotation | null = null;
+              var initList: Array<Node> | null = null;
+              
+              let syntheticDecorator = new Decorator("synthetic_constructor", new Array<StringLiteral>(), classDecl.name.loc);
+              let synthDecorators = new Array<Decorator>();
+              synthDecorators.push(syntheticDecorator);
+              
+              let synthCtor = new MethodDefinition(
+                new Identifier("<constructor>", classDecl.name.loc),
+                typeParams,
+                synthParams,
+                returnType,
+                new BlockStatement(new Array<Statement>(), classDecl.name.loc),
+                initList,
+                superInit,
+                false, // isFinal
+                false, // isAbstract
+                false, // isStatic
+                false, // isDeclare
+                synthDecorators,
+                classDecl.name.loc
+              );
+              
+              registerClassMethod("<constructor>", synthCtor as Node, false, null);
             }
           }
           case DeclareFunction: {

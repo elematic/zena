@@ -3593,6 +3593,14 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   classType.vtable = superType ? [...superType.vtable] : [];
 
   if (superType) {
+    const hasExplicitCtor = decl.body.some(
+      (m) =>
+        m.type === NodeType.MethodDefinition &&
+        resolveMemberName(ctx, m.name).name === CONSTRUCTOR_NAME,
+    );
+    if (!hasExplicitCtor && superType.constructorType) {
+      classType.constructorType = superType.constructorType;
+    }
     // Inherit fields
     for (const [name, type] of superType.fields) {
       if (!name.startsWith('#')) {

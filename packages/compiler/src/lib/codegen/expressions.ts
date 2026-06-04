@@ -6161,6 +6161,14 @@ function generateIdentifier(
     }
   }
 
+  // Fallback for synthesized identifiers (e.g. from synthesized default constructor)
+  const local = ctx.getLocal(expr.name);
+  if (local !== undefined) {
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(local.index));
+    return;
+  }
+
   // No binding found - this is an error
   const message = `Unknown identifier: ${expr.name}`;
   ctx.reportError(message, DiagnosticCode.UnknownVariable, expr);

@@ -254,9 +254,19 @@ export class FunctionGenerator {
 
             if (ctorFunc != null) {
               this.ctx.emitter.emitLocalGet(0);
+              var isSynthetic = false;
+              for (let dec in mDef.decorators) {
+                if (dec.name == "synthetic_constructor") {
+                  isSynthetic = true;
+                }
+              }
               var argStart = 0;
               while (argStart < si.args.length) {
-                  this.generateExpression(si.args[argStart]);
+                  if (isSynthetic) {
+                      this.ctx.emitter.emitLocalGet(argStart + 1);
+                  } else {
+                      this.generateExpression(si.args[argStart]);
+                  }
                   argStart += 1;
               }
               this.ctx.emitter.emitCall(ctorFunc);
