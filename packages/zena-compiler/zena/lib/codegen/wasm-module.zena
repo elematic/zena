@@ -710,7 +710,12 @@ export class DiscoveryPass {
                 }
               }
               if (!isInherited) {
-                fields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value.type), true));
+                let fName = if (pair.key.length > 0 && pair.key.sliceBytes(0, 1) == "#") {
+                  getClassKey(cType) + "::" + pair.key
+                } else {
+                  pair.key
+                };
+                fields.push(new WasmField(fName, typeToValType(this.wasm, pair.value.type), true));
               }
             }
             if (this.wasm.classStructs.has(getClassKey(cType))) {
@@ -882,8 +887,14 @@ export class DiscoveryPass {
                 let st = wasmFunc.structType;
                 if (st != null) {
                   var idx = -1;
+                  let backingName = backingFieldName as String;
+                  let lookupBackingName = if (backingName.length > 0 && backingName.sliceBytes(0, 1) == "#") {
+                    getClassKey(classType as ClassType) + "::" + backingName
+                  } else {
+                    backingName
+                  };
                   for (var fi = 0; fi < (st as WasmStruct).fields.length; fi += 1) {
-                    if ((st as WasmStruct).fields[fi].name == backingFieldName) {
+                    if ((st as WasmStruct).fields[fi].name == lookupBackingName) {
                       idx = fi;
                     }
                   }

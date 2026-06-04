@@ -5158,16 +5158,20 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         // Skip abstract fields - they need to be implemented, not inherited.
         let fieldKeys = st.fields.keys();
         while (let (true, key) = fieldKeys.next()) {
-          let superField = st.fields[key];
-          classType.fields[key] = new FieldInfo(
-            substituteTypeParams(st.typeParameters, st.typeArguments, superField.type),
-            superField.isMutable,
-            superField.isAbstract
-          );
+          if (key.length == 0 || key.sliceBytes(0, 1) != "#") {
+            let superField = st.fields[key];
+            classType.fields[key] = new FieldInfo(
+              substituteTypeParams(st.typeParameters, st.typeArguments, superField.type),
+              superField.isMutable,
+              superField.isAbstract
+            );
+          }
         }
         let methodKeys = st.methods.keys();
         while (let (true, key) = methodKeys.next()) {
-          classType.methods[key] = substituteTypeParams(st.typeParameters, st.typeArguments, st.methods[key]) as FunctionType;
+          if (key.length == 0 || key.sliceBytes(0, 1) != "#") {
+            classType.methods[key] = substituteTypeParams(st.typeParameters, st.typeArguments, st.methods[key]) as FunctionType;
+          }
         }
         // Inherit abstract methods from superclass.
         if (st.abstractMethods != null) {

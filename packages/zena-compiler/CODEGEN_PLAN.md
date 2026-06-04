@@ -91,7 +91,7 @@ This plan tracks all features required for the code generation phase to achieve 
         in WASM structs.
   - [x] Constructor initialization lists (`: field = expr, super(...)`).
   - [x] Parameter properties (`this.field` constructor parameters).
-  - [ ] Private fields
+  - [x] Private fields
   - [ ] Mutable fields with private setters (`var(#foo) foo: i32;`)
   - [x] Accessors (`get` / `set` computed properties) wrapping property accesses.
 - [ ] **Inheritance & Polymorphism:**

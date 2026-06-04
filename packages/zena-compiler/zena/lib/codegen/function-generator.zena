@@ -41,7 +41,7 @@ import { generateBlockStatement } from './stmt/blocks.zena';
 import { generateVariableDeclaration } from './stmt/bindings.zena';
 import { discoverLocalsFromExpr, discoverLocalsFromStmt } from './locals.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { WasmFunction, WasmModule, WasmField, WasmStruct, sortWasmFields } from './wasm-module.zena';
+import { WasmFunction, WasmModule, WasmField, WasmStruct, sortWasmFields, getClassKey } from './wasm-module.zena';
 
 /**
  * Manages the generic AST traversal and code generation.
@@ -198,8 +198,17 @@ export class FunctionGenerator {
                   };
                   if (fieldName != "") {
                     var fieldIndex = -1;
+                    let lookupName = if (fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#") {
+                      if (this.ctx.wasmFunction.classType != null) {
+                        getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + fieldName
+                      } else {
+                        fieldName
+                      }
+                    } else {
+                      fieldName
+                    };
                     for (var i = 0; i < structType.fields.length; i += 1) {
-                      if (structType.fields[i].name == fieldName) {
+                      if (structType.fields[i].name == lookupName) {
                         fieldIndex = i;
                       }
                     }
@@ -222,8 +231,17 @@ export class FunctionGenerator {
               if (fi.field is Identifier) {
                 let fieldName = (fi.field as Identifier).name;
                 var fieldIndex = -1;
+                let lookupName = if (fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#") {
+                  if (this.ctx.wasmFunction.classType != null) {
+                    getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + fieldName
+                  } else {
+                    fieldName
+                  }
+                } else {
+                  fieldName
+                };
                 for (var i = 0; i < structType.fields.length; i += 1) {
-                  if (structType.fields[i].name == fieldName) {
+                  if (structType.fields[i].name == lookupName) {
                     fieldIndex = i;
                   }
                 }
@@ -243,11 +261,10 @@ export class FunctionGenerator {
           
           if (cType != null && cType.superType != null) {
             let st = cType.superType as ClassType;
-            var targetName = st.name + ".<constructor>";
             var ctorFunc: WasmFunction | null = null;
             
             for (let f in this.ctx.wasm.functions) {
-              if (f.name == targetName) {
+              if (f.classType != null && (f.classType as ClassType).id == st.id && f.methodName == "<constructor>") {
                 ctorFunc = f;
               }
             }

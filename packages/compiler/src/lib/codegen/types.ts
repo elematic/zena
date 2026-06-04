@@ -3,6 +3,7 @@ import type {ClassType, InterfaceType, Type} from '../types.js';
 
 export interface ClassInfo {
   name: string;
+  classType?: ClassType;
   originalName?: string;
   /**
    * Type parameter map for checker-based type resolution.

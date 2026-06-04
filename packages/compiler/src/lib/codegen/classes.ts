@@ -1961,6 +1961,7 @@ export function preRegisterClassStruct(
 
     const classInfo: ClassInfo = {
       name: decl.name.name,
+      classType,
       structTypeIndex,
       fields: new Map(),
       methods: new Map(),
@@ -2109,6 +2110,7 @@ export function preRegisterClassStruct(
   // Add minimal info to class registry so self-references work
   const classInfo: ClassInfo = {
     name: decl.name.name,
+    classType,
     structTypeIndex,
     brandTypeIndex,
     fields: new Map(),
@@ -2122,7 +2124,6 @@ export function preRegisterClassStruct(
 
   // Register type → struct index for identity-based lookups
   if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
-    const classType = decl.inferredType as ClassType;
     ctx.setClassStructIndex(classType, structTypeIndex);
     // Register ClassInfo for O(1) lookup
     ctx.registerClassInfo(classType, classInfo);
@@ -2362,7 +2363,10 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       }
 
       const wasmType = mapCheckerTypeToWasmType(ctx, member.inferredType);
-      const fieldName = manglePrivateName(decl.name.name, memberName);
+      const fieldName = manglePrivateName(
+        decl.inferredType as ClassType,
+        memberName,
+      );
 
       if (!fields.has(fieldName)) {
         let intrinsic: string | undefined;
@@ -3985,7 +3989,8 @@ export function generateClassMethods(
               if (m.type === NodeType.FieldDefinition && !m.isStatic) {
                 const memberName = getMemberName(m.name);
                 const fieldName = manglePrivateName(
-                  currentDecl.name.name,
+                  (currentDecl.inferredType as ClassType) ||
+                    currentDecl.name.name,
                   memberName,
                 );
                 const fieldInfo = classInfo.fields.get(fieldName);
@@ -4023,6 +4028,10 @@ export function generateClassMethods(
                 );
                 if (!mixinDecl) continue;
                 const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+                const intermediateType = findClassTypeByNameChain(
+                  decl.inferredType as ClassType,
+                  intermediateName,
+                );
                 for (const m of mixinDecl.body) {
                   if (
                     m.type === NodeType.FieldDefinition &&
@@ -4031,7 +4040,7 @@ export function generateClassMethods(
                   ) {
                     const memberName = getMemberName(m.name);
                     const fieldName = manglePrivateName(
-                      intermediateName,
+                      intermediateType || intermediateName,
                       memberName,
                     );
                     const fieldInfo = classInfo.fields.get(fieldName);
@@ -4062,7 +4071,10 @@ export function generateClassMethods(
           if (member.initializerList) {
             for (const init of member.initializerList) {
               const memberName = init.field.name;
-              const fieldName = manglePrivateName(decl.name.name, memberName);
+              const fieldName = manglePrivateName(
+                (decl.inferredType as ClassType) || decl.name.name,
+                memberName,
+              );
               const fieldInfo = classInfo.fields.get(fieldName);
               if (fieldInfo) {
                 fieldValues.set(fieldInfo.index, {
@@ -4079,7 +4091,10 @@ export function generateClassMethods(
           if ((member as any)._caseClassCtor && decl.caseParams) {
             for (let i = 0; i < decl.caseParams.length; i++) {
               const paramName = decl.caseParams[i].name.name;
-              const fieldName = manglePrivateName(decl.name.name, paramName);
+              const fieldName = manglePrivateName(
+                (decl.inferredType as ClassType) || decl.name.name,
+                paramName,
+              );
               caseParamLocals.set(fieldName, i);
             }
           }
@@ -4168,7 +4183,10 @@ export function generateClassMethods(
           if (member.initializerList) {
             for (const init of member.initializerList) {
               const memberName = init.field.name;
-              const fieldName = manglePrivateName(decl.name.name, memberName);
+              const fieldName = manglePrivateName(
+                (decl.inferredType as ClassType) || decl.name.name,
+                memberName,
+              );
               const fieldInfo = classInfo.fields.get(fieldName);
               if (fieldInfo) {
                 body.push(Opcode.local_get, 0); // this
@@ -4186,7 +4204,10 @@ export function generateClassMethods(
           if ((member as any)._caseClassCtor && decl.caseParams) {
             for (let i = 0; i < decl.caseParams.length; i++) {
               const paramName = decl.caseParams[i].name.name;
-              const fieldName = manglePrivateName(decl.name.name, paramName);
+              const fieldName = manglePrivateName(
+                (decl.inferredType as ClassType) || decl.name.name,
+                paramName,
+              );
               const fieldInfo = classInfo.fields.get(fieldName);
               if (fieldInfo) {
                 body.push(Opcode.local_get, 0); // this
@@ -4211,7 +4232,10 @@ export function generateClassMethods(
               const memberName = getMemberName(m.name);
               // Skip if already initialized in initializerList
               if (initializedFields.has(memberName)) continue;
-              const fieldName = manglePrivateName(decl.name.name, memberName);
+              const fieldName = manglePrivateName(
+                (decl.inferredType as ClassType) || decl.name.name,
+                memberName,
+              );
               const fieldInfo = classInfo.fields.get(fieldName);
               // Skip if field was eliminated by DCE
               if (!fieldInfo) {
@@ -4249,7 +4273,10 @@ export function generateClassMethods(
             if (member.initializerList) {
               for (const init of member.initializerList) {
                 const memberName = init.field.name;
-                const fieldName = manglePrivateName(decl.name.name, memberName);
+                const fieldName = manglePrivateName(
+                  (decl.inferredType as ClassType) || decl.name.name,
+                  memberName,
+                );
                 const fieldInfo = classInfo.fields.get(fieldName);
                 if (fieldInfo) {
                   body.push(Opcode.local_get, 0); // this
@@ -4276,7 +4303,10 @@ export function generateClassMethods(
                 const memberName = getMemberName(m.name);
                 // Skip if already initialized in initializerList
                 if (initializedFields.has(memberName)) continue;
-                const fieldName = manglePrivateName(decl.name.name, memberName);
+                const fieldName = manglePrivateName(
+                  (decl.inferredType as ClassType) || decl.name.name,
+                  memberName,
+                );
                 const fieldInfo = classInfo.fields.get(fieldName)!;
                 body.push(Opcode.local_get, 0);
                 generateExpression(ctx, (m as any).value, body);
@@ -4325,7 +4355,7 @@ export function generateClassMethods(
                 for (const init of member.initializerList) {
                   const memberName = init.field.name;
                   const fieldName = manglePrivateName(
-                    decl.name.name,
+                    (decl.inferredType as ClassType) || decl.name.name,
                     memberName,
                   );
                   const fieldInfo = classInfo.fields.get(fieldName);
@@ -4352,7 +4382,7 @@ export function generateClassMethods(
                   const memberName = getMemberName(m.name);
                   if (initializedFields.has(memberName)) continue;
                   const fieldName = manglePrivateName(
-                    decl.name.name,
+                    (decl.inferredType as ClassType) || decl.name.name,
                     memberName,
                   );
                   const fieldInfo = classInfo.fields.get(fieldName)!;
@@ -4393,7 +4423,7 @@ export function generateClassMethods(
                     if (m.type === NodeType.FieldDefinition && m.value) {
                       if (m.isStatic) continue;
                       const fieldName = manglePrivateName(
-                        decl.name.name,
+                        (decl.inferredType as ClassType) || decl.name.name,
                         getMemberName(m.name),
                       );
                       const fieldInfo = classInfo.fields.get(fieldName)!;
@@ -4424,7 +4454,7 @@ export function generateClassMethods(
                     for (let i = 0; i < decl.caseParams.length; i++) {
                       const paramName = decl.caseParams[i].name.name;
                       const fieldName = manglePrivateName(
-                        decl.name.name,
+                        (decl.inferredType as ClassType) || decl.name.name,
                         paramName,
                       );
                       const fieldInfo = classInfo.fields.get(fieldName);
@@ -4458,7 +4488,10 @@ export function generateClassMethods(
                 if (m.isStatic) continue;
                 const memberName = getMemberName(m.name);
                 if (initializedFields.has(memberName)) continue;
-                const fieldName = manglePrivateName(decl.name.name, memberName);
+                const fieldName = manglePrivateName(
+                  (decl.inferredType as ClassType) || decl.name.name,
+                  memberName,
+                );
                 const fieldInfo = classInfo.fields.get(fieldName)!;
                 body.push(Opcode.local_get, 0);
                 generateExpression(ctx, (m as any).value, body);
@@ -4678,7 +4711,7 @@ export function generateClassMethods(
           continue;
         }
 
-        const fieldName = manglePrivateName(classInfo.name, propName);
+        const fieldName = manglePrivateName(classInfo, propName);
         const fieldInfo = classInfo.fields.get(fieldName);
         if (!fieldInfo) {
           throw new Error(
@@ -5186,6 +5219,7 @@ export function instantiateClass(
   if (!decl.isExtension && !existingInfo) {
     partialClassInfo = {
       name: specializedName,
+      classType: checkerType,
       originalName: decl.name.name,
       structTypeIndex: -1, // Will be set after superclass instantiation
       fields: new Map(),
@@ -5429,7 +5463,10 @@ function instantiateClassImpl(
         const wasmType = member.typeAnnotation
           ? resolveType(member.typeAnnotation)
           : resolveCheckerType(member.inferredType!);
-        const fieldName = manglePrivateName(specializedName, memberName);
+        const fieldName = manglePrivateName(
+          checkerType || specializedName,
+          memberName,
+        );
         // Check if field is immutable (let modifier)
         const isMutable = member.mutability !== 'let';
         fields.set(fieldName, {
@@ -5524,6 +5561,7 @@ function instantiateClassImpl(
   } else {
     classInfo = {
       name: specializedName,
+      classType: checkerType,
       originalName: decl.name.name,
       typeArguments,
       structTypeIndex,
@@ -6433,6 +6471,10 @@ function generateMixinFieldInitializers(
     if (!mixinDecl) continue;
 
     const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+    const intermediateType = findClassTypeByNameChain(
+      decl.inferredType as ClassType,
+      intermediateName,
+    );
 
     // Generate initializers for this mixin's fields
     for (const m of mixinDecl.body) {
@@ -6444,7 +6486,10 @@ function generateMixinFieldInitializers(
       if (initializedFields.has(memberName)) continue;
 
       // Mixin fields use the intermediate class name for mangling
-      const fieldName = manglePrivateName(intermediateName, memberName);
+      const fieldName = manglePrivateName(
+        intermediateType || intermediateName,
+        memberName,
+      );
       const fieldInfo = classInfo.fields.get(fieldName);
       if (!fieldInfo) continue;
 
@@ -6621,11 +6666,69 @@ function generateCaseClassHashBody(
   }
 }
 
-function manglePrivateName(className: string, memberName: string): string {
+export const classKeys = new WeakMap<ClassType, string>();
+let classKeyCounter = 0;
+
+export function getCanonicalClassType(classType: ClassType): ClassType {
+  let current = classType;
+  while (current.genericSource) {
+    current = current.genericSource;
+  }
+  return current;
+}
+
+export function getClassKey(classType: ClassType): string {
+  const canonical = getCanonicalClassType(classType);
+  let key = classKeys.get(canonical);
+  if (!key) {
+    classKeyCounter++;
+    key = `${canonical.name}_${classKeyCounter}`;
+    classKeys.set(canonical, key);
+  }
+  return key;
+}
+
+export function manglePrivateName(
+  classNameOrType: string | ClassType | ClassInfo,
+  memberName: string,
+): string {
   if (memberName.startsWith('#')) {
-    return `${className}::${memberName}`;
+    let key = '';
+    if (typeof classNameOrType === 'string') {
+      key = classNameOrType;
+    } else if (
+      classNameOrType &&
+      typeof classNameOrType === 'object' &&
+      'kind' in classNameOrType &&
+      classNameOrType.kind === TypeKind.Class
+    ) {
+      key = getClassKey(classNameOrType);
+    } else if (
+      classNameOrType &&
+      typeof classNameOrType === 'object' &&
+      'structTypeIndex' in classNameOrType
+    ) {
+      key = classNameOrType.classType
+        ? getClassKey(classNameOrType.classType)
+        : classNameOrType.name;
+    }
+    return `${key}::${memberName}`;
   }
   return memberName;
+}
+
+export function findClassTypeByNameChain(
+  baseType: ClassType | undefined,
+  name: string,
+): ClassType | undefined {
+  let current = baseType;
+  while (current) {
+    if (current.name === name) {
+      return current;
+    }
+    current = current.superType;
+  }
+  return undefined;
 }
 
 /**
@@ -6678,6 +6781,7 @@ function preRegisterMixin(
   // Create minimal ClassInfo so it can be referenced
   const classInfo: ClassInfo = {
     name: intermediateName,
+    classType: checkerIntermediateType,
     structTypeIndex,
     superClass: baseClassInfo?.name,
     superClassType: checkerIntermediateType?.superType,
@@ -6723,6 +6827,7 @@ function applyMixin(
   // Get or create the ClassInfo (might already be pre-registered)
   const classInfo = preRegistered || {
     name: intermediateName,
+    classType: checkerIntermediateType,
     structTypeIndex: ctx.module.reserveType(),
     superClass: baseClassInfo?.name,
     superClassType: checkerIntermediateType?.superType,
@@ -6798,7 +6903,7 @@ function applyMixin(
         member.inferredType ?? member.typeAnnotation!.inferredType!,
       );
       const fieldName = manglePrivateName(
-        intermediateName,
+        classInfo,
         getMemberName(member.name),
       );
 

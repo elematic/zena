@@ -89,6 +89,7 @@ import {
   instantiateClass,
   isErasedRefType,
   mapCheckerTypeToWasmType,
+  manglePrivateName,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -3044,10 +3045,11 @@ function generateMemberExpression(
         return;
       }
       // If getter didn't work, try a direct field binding
-      // For private fields (starting with #), use the mangled name format: ClassName::#fieldName
-      const mangledFieldName = fieldName.startsWith('#')
-        ? `${setterBinding.classType.name}::${fieldName}`
-        : fieldName;
+      // For private fields (starting with #), use the mangled name format containing the class key
+      const mangledFieldName = manglePrivateName(
+        setterBinding.classType as ClassType,
+        fieldName,
+      );
       const fieldBinding: FieldBinding = {
         kind: 'field',
         classType: setterBinding.classType,
@@ -4993,7 +4995,7 @@ function generateAssignmentExpressionInner(
       if (!ctx.currentClass) {
         throw new Error('Private field assignment outside class');
       }
-      lookupName = `${ctx.currentClass.name}::${fieldName}`;
+      lookupName = manglePrivateName(ctx.currentClass, fieldName);
     }
 
     // Check for virtual property assignment (public fields or accessors)
@@ -6486,15 +6488,16 @@ function generateFieldFromBinding(
 
     // Try with mangled private field name - strip mixin prefix and use concrete class name
     if (!fieldInfo && fieldName.includes('::#')) {
-      // fieldName is like 'M_This::#val', extract '::#val' and prepend concrete class name
+      // fieldName is like 'M_This::#val', extract '::#val' and prepend concrete class key mangling
       const privatePart = fieldName.slice(fieldName.indexOf('::#'));
-      actualFieldName = `${ctx.currentClass.name}${privatePart}`;
+      const memberName = privatePart.substring(2); // "#val"
+      actualFieldName = manglePrivateName(ctx.currentClass, memberName);
       fieldInfo = ctx.currentClass.fields.get(actualFieldName);
     }
 
     // Also try the simple private field case (just '#val')
     if (!fieldInfo && fieldName.startsWith('#')) {
-      actualFieldName = `${ctx.currentClass.name}::${fieldName}`;
+      actualFieldName = manglePrivateName(ctx.currentClass, fieldName);
       fieldInfo = ctx.currentClass.fields.get(actualFieldName);
     }
 
@@ -6527,9 +6530,9 @@ function generateFieldFromBinding(
   // The binding stores the checker's class name, but codegen uses bundled names.
   if (fieldName.includes('::#') && ctx.currentClass) {
     const classInfo = ctx.currentClass;
-    // Extract the private part (e.g., "::#length") and rebuild with bundled name
+    // Extract the private part (e.g., "::#length") and rebuild with unique mangled name
     const privatePart = fieldName.slice(fieldName.indexOf('::#'));
-    const lookupName = `${classInfo.name}${privatePart}`;
+    const lookupName = manglePrivateName(classInfo, privatePart.substring(2));
 
     const fieldInfo = classInfo.fields.get(lookupName);
     if (!fieldInfo) {
