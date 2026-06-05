@@ -1,5 +1,6 @@
 import { FunctionContext } from '../function-context.zena';
-import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral, SuperExpression } from '../../ast.zena';
+import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral, SuperExpression, Identifier, ClassDeclaration, ImportSpecifier } from '../../ast.zena';
+import { Symbol } from '../../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { RecordType, TupleType, ClassType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
@@ -95,6 +96,61 @@ export let generateMemberExpression = (
       ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
     }
     case ClassType as ct: {
+      var isStaticAccess = false;
+      if (expr.object is Identifier) {
+        let ident = expr.object as Identifier;
+        let sym = ctx.wasmFunction.model.resolve(ident);
+        if (sym != null) {
+          let s = sym as Symbol;
+          if (s.declaration is ClassDeclaration || s.declaration is ImportSpecifier) {
+            isStaticAccess = true;
+          }
+        }
+      }
+
+      if (isStaticAccess) {
+        let propName = expr.property.name;
+        let getterName = "get#" + propName;
+
+        // 1. Check for static getter/method in class hierarchy
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = ct;
+        while (currClass != null && foundFunc == null) {
+          for (let f in ctx.wasm.functions) {
+            if (f.classType != null && f.isStatic &&
+                (f.classType as ClassType).id == (currClass as ClassType).id && 
+                f.methodName == getterName) {
+              foundFunc = f;
+            }
+          }
+          currClass = (currClass as ClassType).superType;
+        }
+
+        if (foundFunc != null) {
+          ctx.emitter.emitCall(foundFunc as WasmFunction);
+          return;
+        }
+
+        // 2. Check for static field (global) in class hierarchy
+        var foundGlobalIndex = -1;
+        currClass = ct;
+        while (currClass != null && foundGlobalIndex == -1) {
+          for (let g in ctx.wasm.globals) {
+            if (g.name == (currClass as ClassType).name + "_" + propName) {
+              foundGlobalIndex = g.index;
+            }
+          }
+          currClass = (currClass as ClassType).superType;
+        }
+
+        if (foundGlobalIndex != -1) {
+          ctx.emitter.emitGlobalGet(foundGlobalIndex);
+          return;
+        }
+
+        throw new Error("Could not find static member " + propName + " on class " + ct.name);
+      }
+
       if (ct.isExtension) {
         let propName = expr.property.name;
         let getterName = "get#" + propName;

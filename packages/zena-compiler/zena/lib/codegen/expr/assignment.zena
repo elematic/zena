@@ -1,4 +1,4 @@
-import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression } from '../../ast.zena';
+import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression, ClassDeclaration, ImportSpecifier } from '../../ast.zena';
 import { Type, F64Type, F32Type, ClassType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
@@ -78,6 +78,78 @@ export let generateAssignmentExpression = (
     
     match (objectType) {
       case ClassType as ct: {
+        var isStaticAccess = false;
+        if (memExpr.object is Identifier) {
+          let ident = memExpr.object as Identifier;
+          let sym = ctx.wasmFunction.model.resolve(ident);
+          if (sym != null) {
+            let s = sym as Symbol;
+            if (s.declaration is ClassDeclaration || s.declaration is ImportSpecifier) {
+              isStaticAccess = true;
+            }
+          }
+        }
+
+        if (isStaticAccess) {
+          let propName = memExpr.property.name;
+          let setterName = "set#" + propName;
+
+          // 1. Look up static setter
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = ct;
+          while (currClass != null && foundFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && f.isStatic && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == setterName) {
+                foundFunc = f;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (foundFunc != null) {
+            let valType = typeToValType(ctx.wasm, ctx.wasmFunction.model.getNodeType(assign.value));
+            var tempLocal = -1;
+            if (!discardValue) {
+              tempLocal = ctx.allocLocal(valType);
+            }
+
+            genExpr(assign.value, false);
+            if (!discardValue) {
+              ctx.emitter.emitLocalTee(tempLocal);
+            }
+
+            ctx.emitter.emitCall(foundFunc as WasmFunction);
+
+            if (!discardValue) {
+              ctx.emitter.emitLocalGet(tempLocal);
+            }
+            return;
+          }
+
+          // 2. Look up static field (global)
+          var foundGlobalIndex = -1;
+          currClass = ct;
+          while (currClass != null && foundGlobalIndex == -1) {
+            for (let g in ctx.wasm.globals) {
+              if (g.name == (currClass as ClassType).name + "_" + propName) {
+                foundGlobalIndex = g.index;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (foundGlobalIndex != -1) {
+            genExpr(assign.value, false);
+            ctx.emitter.emitGlobalSet(foundGlobalIndex);
+            if (!discardValue) {
+              ctx.emitter.emitGlobalGet(foundGlobalIndex);
+            }
+            return;
+          }
+
+          throw new Error("Could not find static member " + propName + " on class " + ct.name);
+        }
+
         if (ct.isExtension) {
           let propName = memExpr.property.name;
           let setterName = "set#" + propName;

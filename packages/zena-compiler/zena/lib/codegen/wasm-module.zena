@@ -125,6 +125,7 @@ export class WasmFunction {
   signature: WasmSignature;
   node: Node;
   var isImport: boolean = false;
+  var isStatic: boolean = false;
   var importModule: String | null = null;
   var importName: String | null = null;
   var getterStruct: WasmStruct | null = null;
@@ -587,6 +588,7 @@ export class DiscoveryPass {
             for (let ms in classDecl.body) {
               if (ms is MethodDefinition) {
                 let mDef = ms as MethodDefinition;
+                if (mDef.isStatic) { continue; }
                 if (mDef.name is Identifier) {
                   let methName = (mDef.name as Identifier).name;
                   var found = false;
@@ -599,6 +601,7 @@ export class DiscoveryPass {
                 }
               } else if (ms is AccessorDeclaration) {
                 let acc = ms as AccessorDeclaration;
+                if (acc.isStatic) { continue; }
                 if (acc.name is Identifier) {
                   let accName = (acc.name as Identifier).name;
                   if (acc.getter != null) {
@@ -630,6 +633,7 @@ export class DiscoveryPass {
                 }
               } else if (ms is FieldDefinition) {
                 let fd = ms as FieldDefinition;
+                if (fd.isStatic) { continue; }
                 if (fd.setterName != null && fd.name is Identifier) {
                   let fieldName = (fd.name as Identifier).name;
                   let getterName = "get#" + fieldName;
@@ -699,7 +703,24 @@ export class DiscoveryPass {
               fields.push(new WasmField("<vtable>", new ValTypeRefNull(rootVst), true));
             }
             
+            let isStaticField = (name: String): boolean => {
+              for (let ms in classDecl.body) {
+                if (ms is FieldDefinition) {
+                  let fd = ms as FieldDefinition;
+                  if (fd.name is Identifier) {
+                    if ((fd.name as Identifier).name == name) {
+                      return fd.isStatic;
+                    }
+                  }
+                }
+              }
+              return false;
+            };
+
             for (let pair in cType.fields) {
+              if (isStaticField(pair.key)) {
+                continue;
+              }
               var isInherited = false;
               if (cType.superType != null) {
                 let superSt = this.wasm.classStructs[getClassKey(cType.superType as ClassType)];
@@ -812,6 +833,26 @@ export class DiscoveryPass {
             let classDecl = stmt as ClassDeclaration;
             let classType = moduleModel.getNodeType(classDecl) as ClassType;
 
+            // Register static fields as globals
+            for (let member in classDecl.body) {
+              if (member is FieldDefinition) {
+                let fd = member as FieldDefinition;
+                if (fd.isStatic && fd.name is Identifier) {
+                  let fieldName = (fd.name as Identifier).name;
+                  let fType = if (classType != null && (classType as ClassType).fields.has(fieldName)) {
+                    (classType as ClassType).fields[fieldName].type
+                  } else {
+                    moduleModel.getNodeType(fd)
+                  };
+                  let vType = typeToValType(this.wasm, fType);
+                  let name = classDecl.name.name + "_" + fieldName;
+                  let initExp = if (fd.value != null) { fd.value as Expression } else { null as Expression };
+                  let wasmGlobal = new WasmGlobal(name, fieldName, vType, true, initExp, null, moduleModel);
+                  this.wasm.globals.push(wasmGlobal);
+                }
+              }
+            }
+
             let registerClassMethod = (
                 methName: String,
                 methodNode: Node | null,
@@ -843,13 +884,27 @@ export class DiscoveryPass {
                 }
               }
 
-              if (classType.isExtension && classType.onType != null) {
-                params.push(typeToValType(this.wasm, classType.onType as Type));
-              } else {
-                if (this.wasm.classStructs.has(getClassKey(rootClass))) {
-                  params.push(new ValTypeRefNull(this.wasm.classStructs[getClassKey(rootClass)]));
+              var isStatic = false;
+              if (methodNode != null) {
+                let nodeVal = methodNode as Node;
+                if (nodeVal is MethodDefinition) {
+                  isStatic = (nodeVal as MethodDefinition).isStatic;
+                } else if (nodeVal is AccessorDeclaration) {
+                  isStatic = (nodeVal as AccessorDeclaration).isStatic;
+                } else if (nodeVal is FieldDefinition) {
+                  isStatic = (nodeVal as FieldDefinition).isStatic;
+                }
+              }
+
+              if (!isStatic) {
+                if (classType.isExtension && classType.onType != null) {
+                  params.push(typeToValType(this.wasm, classType.onType as Type));
                 } else {
-                  params.push(new ValTypeStructRef());
+                  if (this.wasm.classStructs.has(getClassKey(rootClass))) {
+                    params.push(new ValTypeRefNull(this.wasm.classStructs[getClassKey(rootClass)]));
+                  } else {
+                    params.push(new ValTypeStructRef());
+                  }
                 }
               }
               if (methodTypeNode is FunctionType) {
@@ -869,6 +924,7 @@ export class DiscoveryPass {
               
               let sig = this.wasm.getSignature(params, returns);
               let wasmFunc = new WasmFunction(sig, methodNode, moduleModel);
+              wasmFunc.isStatic = isStatic;
               this.wasm.addFunction(wasmFunc);
               wasmFunc.name = classDecl.name.name + "." + methName;
               wasmFunc.methodName = methName;

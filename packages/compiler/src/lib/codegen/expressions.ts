@@ -4724,15 +4724,24 @@ function generateAssignmentExpressionInner(
     // Handle static setter assignment (public static fields use implicit setters)
     if (leftBinding?.kind === 'setter' && leftBinding.isStatic) {
       const binding = leftBinding as SetterBinding;
-      const className = binding.classType.name;
       // Extract actual field name from setter name (e.g., "set#value" -> "value")
       const actualFieldName = binding.methodName.replace('set#', '');
 
       // Static fields are stored as globals with mangled name: ClassName_fieldName
-      const mangledName = `${className}_${actualFieldName}`;
-      const global = ctx.getGlobal(mangledName);
+      let currClass: ClassType | undefined = binding.classType as ClassType;
+      let global = null;
+      while (currClass) {
+        const mangledName = `${currClass.name}_${actualFieldName}`;
+        global = ctx.getGlobal(mangledName);
+        if (global) {
+          break;
+        }
+        currClass = currClass.superType;
+      }
       if (!global) {
-        throw new Error(`Static field global not found: ${mangledName}`);
+        throw new Error(
+          `Static field global not found: ${actualFieldName} on class hierarchy of ${binding.classType.name}`,
+        );
       }
 
       // Generate the value
@@ -6410,7 +6419,7 @@ function generateFieldFromBinding(
     // Extract the class name from the mangled field name if present
     // For private fields: "ClassName::#fieldName" -> className="ClassName", fieldName="#fieldName"
     // For public fields: just the field name
-    let className: string;
+    let className: string | undefined;
     let actualFieldName: string;
 
     if (fieldName.includes('::')) {
@@ -6418,13 +6427,25 @@ function generateFieldFromBinding(
       className = parts[0];
       actualFieldName = parts[1];
     } else {
-      className = classType.name;
       actualFieldName = fieldName;
     }
 
-    // Static fields are stored as globals with mangled name: ClassName_fieldName
-    const mangledName = `${className}_${actualFieldName}`;
-    const global = ctx.getGlobal(mangledName);
+    let global = null;
+    if (className) {
+      const mangledName = `${className}_${actualFieldName}`;
+      global = ctx.getGlobal(mangledName);
+    } else {
+      let currClass: ClassType | undefined = classType as ClassType;
+      while (currClass) {
+        const mangledName = `${currClass.name}_${actualFieldName}`;
+        global = ctx.getGlobal(mangledName);
+        if (global) {
+          break;
+        }
+        currClass = currClass.superType;
+      }
+    }
+
     if (global) {
       body.push(Opcode.global_get);
       body.push(...WasmModule.encodeSignedLEB128(global.index));
@@ -7134,13 +7155,21 @@ function generateGetterFromBinding(
   // Handle static getter access (e.g., ClassName.value for static fields)
   // Static fields are stored as WASM globals, accessed via implicit getters.
   if (binding.isStatic) {
-    const className = classType.name;
     // Extract actual field name from getter name (e.g., "get#value" -> "value")
     const actualFieldName = methodName.replace('get#', '');
 
     // Static fields are stored as globals with mangled name: ClassName_fieldName
-    const mangledName = `${className}_${actualFieldName}`;
-    const global = ctx.getGlobal(mangledName);
+    let currClass: ClassType | undefined = classType as ClassType;
+    let global = null;
+    while (currClass) {
+      const mangledName = `${currClass.name}_${actualFieldName}`;
+      global = ctx.getGlobal(mangledName);
+      if (global) {
+        break;
+      }
+      currClass = currClass.superType;
+    }
+
     if (global) {
       body.push(Opcode.global_get);
       body.push(...WasmModule.encodeSignedLEB128(global.index));
