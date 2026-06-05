@@ -4680,8 +4680,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
   // --- TODO: Other expression types ---
 
-  case MemberExpression {object, property, optional, isSymbolAccess, loc}: {
-    checkMemberExpression(ctx, object, property, optional, isSymbolAccess, loc)
+  case MemberExpression as memExpr: {
+    checkMemberExpression(ctx, memExpr, memExpr.object, memExpr.property, memExpr.optional, memExpr.isSymbolAccess, memExpr.loc)
   }
   case IndexExpression {object, index, optional, loc}: {
     checkIndexExpression(ctx, object, index, optional, loc)
@@ -7189,6 +7189,7 @@ let checkNewExpression = (
 
 let checkMemberExpression = (
   ctx: CheckerContext,
+  expr: MemberExpression,
   object: Expression,
   property: Identifier,
   optional: boolean,
@@ -7202,6 +7203,19 @@ let checkMemberExpression = (
       objectType = ctx.currentClass as Type;
     }
   }
+
+  var isStatic = false;
+  if (object is Identifier) {
+    let ident = object as Identifier;
+    let sym = ctx.model.resolve(ident);
+    if (sym != null) {
+      let s = sym as Symbol;
+      if (s.declaration is ClassDeclaration || s.declaration is ImportSpecifier) {
+        isStatic = true;
+      }
+    }
+  }
+  ctx.model.setStaticAccess(expr, isStatic);
 
   let propName = if (isSymbolAccess) ":" + property.name else property.name;
   let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
