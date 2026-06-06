@@ -5214,14 +5214,6 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             };
           }
         }
-        // Inherit abstract methods from superclass.
-        if (st.abstractMethods != null) {
-          let stAbstractMethods = st.abstractMethods as HashSet<String>;
-          let targetAbsMethods = classType.abstractMethods ??= new HashSet<String>();
-          for (let absMethodKey in stAbstractMethods) {
-            targetAbsMethods.add(absMethodKey);
-          }
-        }
       }
       case _: {
         ctx.error(
@@ -5650,9 +5642,6 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             );
             ownMethodNames.add(methodName);
           }
-
-          // Track abstract methods for checking in subclasses.
-          trackAbstractMethod(ctx, classType, methodName, md.isAbstract);
         }
       }
       case AccessorDeclaration as acc: {
@@ -6253,37 +6242,40 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       }
     }
     // Check for unimplemented abstract methods in non-abstract classes.
-    if (classType.abstractMethods != null) {
-      let absMethods = classType.abstractMethods as HashSet<String>;
-      for (let absMethodName in absMethods) {
-        ctx.error(
-          "Non-abstract class '" + className + "' does not implement abstract method '" + absMethodName + "'.",
-          DiagnosticCode.AbstractMethodNotImplemented,
-          cd.loc
-        );
+    for (let name in classType.members.keys()) {
+      let memberInfo = classType.members[name];
+      if (memberInfo is MethodInfo && memberInfo.isAbstract) {
+        var isSatisfiedByField = false;
+        if (name.startsWith("get#")) {
+          let fieldName = name.sliceBytes(4, name.length);
+          if (classType.members.has(fieldName)) {
+            let fieldInfo = classType.members[fieldName];
+            if (fieldInfo is FieldInfo && !fieldInfo.isAbstract) {
+              isSatisfiedByField = true;
+            }
+          }
+        } else if (name.startsWith("set#")) {
+          let fieldName = name.sliceBytes(4, name.length);
+          if (classType.members.has(fieldName)) {
+            let fieldInfo = classType.members[fieldName];
+            if (fieldInfo is FieldInfo && !fieldInfo.isAbstract) {
+              isSatisfiedByField = true;
+            }
+          }
+        }
+        if (!isSatisfiedByField) {
+          ctx.error(
+            "Non-abstract class '" + className + "' does not implement abstract method '" + name + "'.",
+            DiagnosticCode.AbstractMethodNotImplemented,
+            cd.loc
+          );
+        }
       }
     }
   }
 
   ctx.exitClass();
   ctx.exitScope();
-};
-
-/**
- * Track an abstract method on a class type, or remove it if it's been implemented.
- */
-let trackAbstractMethod = (ctx: CheckerContext, classType: ClassType, methodName: String, isAbstract: boolean) => {
-  if (isAbstract) {
-    let absMethods = classType.abstractMethods ??= new HashSet<String>();
-    absMethods.add(methodName);
-  } else {
-    if (classType.abstractMethods != null) {
-      let absMethods = classType.abstractMethods as HashSet<String>;
-      if (absMethods.has(methodName)) {
-        absMethods.delete(methodName);
-      }
-    }
-  }
 };
 
 /**
