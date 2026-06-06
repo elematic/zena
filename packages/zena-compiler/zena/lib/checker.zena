@@ -92,7 +92,7 @@ import {
   BoolLiteralType, StringLiteralType, NumLiteralType,
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
   UnionType as UnionT, RecordType as RecordT,
-  FunctionType, ClassType, InterfaceType, MixinType, FieldInfo,
+  FunctionType, ClassType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
   instantiateClassType, instantiateInterfaceType, instantiateMixinType,
   instantiateTypeAliasType, GenericNamedType,
@@ -1845,6 +1845,10 @@ let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | 
  * typeParams: the type parameter names/types from the generic class
  * typeArgs: the actual type arguments
  * t: the type to substitute within
+ *
+ * TODO: Consider making this generic over the Type t so that it returns the
+ * same type it's given. The only problem is that we don't really want it
+ * monomorphized.
  */
 let substituteTypeParams = (
   typeParams: Array<TypeParameterType> | null,
@@ -2944,22 +2948,28 @@ let isImmutableFieldAccess = (objectType: Type, propName: String): boolean => {
 
   match (base as Type) {
     case ClassType as ct: {
-      if (!ct.fields.has(propName)) {
+      if (!ct.members.has(propName)) {
         return false;
       }
-      if (ct.fields.has(propName) && ct.fields[propName].isMutable) {
-        return false;
+      let m = ct.members[propName];
+      match (m) {
+        case FieldInfo as fi: {
+          return !fi.isMutable;
+        }
+        case _: { return false; }
       }
-      return true;
     }
     case InterfaceType as it: {
-      if (!it.fields.has(propName)) {
+      if (!it.members.has(propName)) {
         return false;
       }
-      if (it.fields.has(propName) && it.fields[propName].isMutable) {
-        return false;
+      let m = it.members[propName];
+      match (m) {
+        case FieldInfo as fi: {
+          return !fi.isMutable;
+        }
+        case _: { return false; }
       }
-      return true;
     }
     case RecordT {properties}: {
       return properties.has(propName);
@@ -4363,9 +4373,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         match (objectType) {
           case ClassType as ct: {
             // Check for setter []=
-            if (!ct.methods.has("[]=")) {
+            if (!ct.members.has("[]=")) {
               // Check if there's a getter only (read-only indexer)
-              if (ct.methods.has("[]")) {
+              if (ct.members.has("[]")) {
                 ctx.error(
                   "Cannot assign to read-only indexer.",
                   DiagnosticCode.InvalidAssignment,
@@ -4376,8 +4386,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             }
           }
           case InterfaceType as it: {
-            if (!it.methods.has("[]=")) {
-              if (it.methods.has("[]")) {
+            if (!it.members.has("[]=")) {
+              if (it.members.has("[]")) {
                 ctx.error(
                   "Cannot assign to read-only indexer.",
                   DiagnosticCode.InvalidAssignment,
@@ -4408,23 +4418,43 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         match (objectType) {
           case ClassType as ct: {
             // Check if it's a field
-            if (ct.fields.has(propName)) {
-              // Check if field is mutable
-              if (!ct.fields.has(propName) || !ct.fields[propName].isMutable) {
-                ctx.error(
-                  "Cannot assign to read-only property '" + propName + "'.",
-                  DiagnosticCode.InvalidAssignment,
-                  loc
-                );
-                return new ErrorType();
+            if (ct.members.has(propName)) {
+              let m = ct.members[propName];
+              match (m) {
+                case FieldInfo as fi: {
+                  if (!fi.isMutable) {
+                    ctx.error(
+                      "Cannot assign to read-only property '" + propName + "'.",
+                      DiagnosticCode.InvalidAssignment,
+                      loc
+                    );
+                    return new ErrorType();
+                  }
+                }
+                case _: {
+                  // Check for setter method (set#propName)
+                  let setterName = "set#" + propName;
+                  if (!ct.members.has(setterName)) {
+                    // Check if there's a getter only (read-only property)
+                    let getterName = "get#" + propName;
+                    if (ct.members.has(getterName)) {
+                      ctx.error(
+                        "Cannot assign to read-only property '" + propName + "'.",
+                        DiagnosticCode.InvalidAssignment,
+                        loc
+                      );
+                      return new ErrorType();
+                    }
+                  }
+                }
               }
             } else {
               // Check for setter method (set#propName)
               let setterName = "set#" + propName;
-              if (!ct.methods.has(setterName)) {
+              if (!ct.members.has(setterName)) {
                 // Check if there's a getter only (read-only property)
                 let getterName = "get#" + propName;
-                if (ct.methods.has(getterName)) {
+                if (ct.members.has(getterName)) {
                   ctx.error(
                     "Cannot assign to read-only property '" + propName + "'.",
                     DiagnosticCode.InvalidAssignment,
@@ -5154,23 +5184,34 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
         }
         classType.superType = st;
-        // Inherit fields and methods from superclass.
-        // Skip abstract fields - they need to be implemented, not inherited.
-        let fieldKeys = st.fields.keys();
-        while (let (true, key) = fieldKeys.next()) {
+        // Inherit members from superclass.
+        let memberKeys = st.members.keys();
+        while (let (true, key) = memberKeys.next()) {
           if (key.length == 0 || key.sliceBytes(0, 1) != "#") {
-            let superField = st.fields[key];
-            classType.fields[key] = new FieldInfo(
-              substituteTypeParams(st.typeParameters, st.typeArguments, superField.type),
-              superField.isMutable,
-              superField.isAbstract
-            );
-          }
-        }
-        let methodKeys = st.methods.keys();
-        while (let (true, key) = methodKeys.next()) {
-          if (key.length == 0 || key.sliceBytes(0, 1) != "#") {
-            classType.methods[key] = substituteTypeParams(st.typeParameters, st.typeArguments, st.methods[key]) as FunctionType;
+            let parentMember = st.members[key];
+            let subType = substituteTypeParams(st.typeParameters, st.typeArguments, parentMember.type);
+            classType.members[key] = match (parentMember) {
+              case FieldInfo as fi: {
+                new FieldInfo(
+                  subType,
+                  fi.isMutable,
+                  fi.isAbstract,
+                  fi.isStatic,
+                  fi.isPrivate,
+                  fi.hasInitializer
+                ) as MemberInfo
+              }
+              case MethodInfo as mi: {
+                new MethodInfo(
+                  subType,
+                  mi.isAbstract,
+                  mi.isStatic,
+                  mi.isPrivate,
+                  mi.isFinal
+                ) as MemberInfo
+              }
+              case _: parentMember
+            };
           }
         }
         // Inherit abstract methods from superclass.
@@ -5248,32 +5289,45 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             }
           }
           
-          // Copy fields
-          let fieldKeys = mt.fields.keys();
-          while (let (true, key) = fieldKeys.next()) {
-            let mtField = mt.fields[key];
-            classType.fields[key] = new FieldInfo(
-              substituteTypeParams(mt.typeParameters, mt.typeArguments, mtField.type),
-              mtField.isMutable,
-              mtField.isAbstract
-            );
-          }
-          
-          // Copy methods
-          let methodKeys = mt.methods.keys();
-          while (let (true, key) = methodKeys.next()) {
-            let mMethod = mt.methods[key];
-            if (classType.methods.has(key)) {
-              let existingMethod = classType.methods[key];
-              if (!isAssignableTo(ctx, mMethod, existingMethod)) {
-                ctx.error(
-                  "Type mismatch in overridden method '" + key + "' is not compatible.",
-                  DiagnosticCode.TypeMismatch,
-                  mixinAnn.loc
-                );
+          // Copy members
+          let memberKeys = mt.members.keys();
+          while (let (true, key) = memberKeys.next()) {
+            let mtMember = mt.members[key];
+            if (mtMember is MethodInfo) {
+              if (classType.members.has(key)) {
+                let existingMember = classType.members[key];
+                if (!isAssignableTo(ctx, mtMember.type, existingMember.type)) {
+                  ctx.error(
+                    "Type mismatch in overridden method '" + key + "' is not compatible.",
+                    DiagnosticCode.TypeMismatch,
+                    mixinAnn.loc
+                  );
+                }
               }
             }
-            classType.methods[key] = substituteTypeParams(mt.typeParameters, mt.typeArguments, mMethod) as FunctionType;
+            let subType = substituteTypeParams(mt.typeParameters, mt.typeArguments, mtMember.type);
+            classType.members[key] = match (mtMember) {
+              case FieldInfo as fi: {
+                new FieldInfo(
+                  subType,
+                  fi.isMutable,
+                  fi.isAbstract,
+                  fi.isStatic,
+                  fi.isPrivate,
+                  fi.hasInitializer
+                ) as MemberInfo
+              }
+              case MethodInfo as mi: {
+                new MethodInfo(
+                  subType,
+                  mi.isAbstract,
+                  mi.isStatic,
+                  mi.isPrivate,
+                  mi.isFinal
+                ) as MemberInfo
+              }
+              case _: mtMember
+            };
           }
         }
         case _: {
@@ -5313,11 +5367,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
       // Check for duplicate fields (but allow implementing abstract fields).
       var isImplementingAbstract = false;
-      if (classType.fields.has(fieldName) && classType.fields[fieldName].isAbstract) {
+      if (classType.members.has(fieldName) && classType.members[fieldName].isAbstract) {
         isImplementingAbstract = true;
       }
 
-      if (classType.fields.has(fieldName) && !isImplementingAbstract) {
+      if (classType.members.has(fieldName) && !isImplementingAbstract) {
         ctx.error(
           "Duplicate field '" + fieldName + "' in class '" + className + "'.",
           DiagnosticCode.DuplicateField,
@@ -5326,7 +5380,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       }
 
       let isMutable = cp.mutability != null && cp.mutability == "var";
-      classType.fields[fieldName] = new FieldInfo(fieldType, isMutable, false);
+      classType.members[fieldName] = new FieldInfo(fieldType, isMutable, false, false, false, false);
 
       ctorParamTypes.push(fieldType);
       ctorParamNames.push(fieldName);
@@ -5357,6 +5411,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   // a private method defined later in the class body).
   // Track fields declared directly in this class body (not inherited).
   let ownFieldNames = new HashSet<String>();
+  let ownMethodNames = new HashSet<String>();
   for (let member in cd.body) {
     match (member) {
       case FieldDefinition as fd: {
@@ -5396,26 +5451,47 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
           // Track abstract field.
           let isMutable = fd.mutability != null && fd.mutability == "var";
-          classType.fields[fieldName] = new FieldInfo(fieldType, isMutable, true);
+          classType.members[fieldName] = new FieldInfo(
+            fieldType,
+            isMutable,
+            true, // isAbstract
+            fd.isStatic,
+            fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#", // isPrivate
+            fd.value != null // hasInitializer
+          );
 
-          // An abstract field reserves a getter in the methods table.
+          // An abstract field reserves a getter in the members table.
           let getterName = "get#" + fieldName;
-          if (!classType.methods.has(getterName)) {
-            classType.methods[getterName] = new FunctionType(new Array<Type>(), null, fieldType);
+          if (!classType.members.has(getterName)) {
+            let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
+            classType.members[getterName] = new MethodInfo(
+              new FunctionType(new Array<Type>(), null, fieldType),
+              true, // isAbstract
+              fd.isStatic,
+              isPrivate,
+              false // isFinal
+            );
           }
 
           // If mutable, it also requires a setter.
           if (fd.mutability != null && fd.mutability == "var") {
             let setterName = "set#" + fieldName;
-            if (!classType.methods.has(setterName)) {
+            if (!classType.members.has(setterName)) {
               let setterParams = new Array<Type>();
               setterParams.push(fieldType);
-              classType.methods[setterName] = new FunctionType(setterParams, null, new VoidType());
+              let isPrivate = setterName.length > 0 && setterName.sliceBytes(0, 1) == "#";
+              classType.members[setterName] = new MethodInfo(
+                new FunctionType(setterParams, null, new VoidType()),
+                true, // isAbstract
+                fd.isStatic,
+                isPrivate,
+                false // isFinal
+              );
             }
           }
         } else {
           // Concrete field may satisfy an inherited abstract field.
-          if (classType.fields.has(fieldName) && classType.fields[fieldName].isAbstract) {
+          if (classType.members.has(fieldName) && classType.members[fieldName].isAbstract) {
             // It replaces the abstract field.
           }
 
@@ -5448,9 +5524,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               DiagnosticCode.DuplicateField,
               fd.loc
             );
-          } else if (classType.fields.has(actualFieldName)) {
+          } else if (classType.members.has(actualFieldName)) {
             // Field was inherited from superclass — check type compatibility.
-            let inheritedField = classType.fields[actualFieldName];
+            let inheritedField = classType.members[actualFieldName];
             if (!isAssignableTo(ctx, fieldType, inheritedField.type)) {
               ctx.error(
                 "Field '" + actualFieldName + "' in subclass '" + className +
@@ -5464,12 +5540,26 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           ownFieldNames.add(actualFieldName);
 
           let isMutable = (fd.mutability != null && fd.mutability == "var") || hasPrivateSetter;
-          classType.fields[actualFieldName] = new FieldInfo(fieldType, isMutable, false);
+          classType.members[actualFieldName] = new FieldInfo(
+            fieldType,
+            isMutable,
+            false, // isAbstract
+            fd.isStatic,
+            actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#", // isPrivate
+            fd.value != null // hasInitializer
+          );
 
           if (hasPrivateSetter) {
             let getterName = "get#" + fieldName;
-            if (!classType.methods.has(getterName)) {
-              classType.methods[getterName] = new FunctionType(new Array<Type>(), null, fieldType);
+            if (!classType.members.has(getterName)) {
+              let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
+              classType.members[getterName] = new MethodInfo(
+                new FunctionType(new Array<Type>(), null, fieldType),
+                false, // isAbstract
+                fd.isStatic,
+                isPrivate,
+                false // isFinal
+              );
             }
           }
         }      }
@@ -5521,21 +5611,27 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           // Check final method override.
           if (classType.superType != null) {
             let superCt = classType.superType as ClassType;
-            if (superCt.methods.has(methodName)) {
-              let inheritedMethod = superCt.methods[methodName];
-              if (inheritedMethod.isFinal) {
-                ctx.error(
-                  "Cannot override final method '" + methodName + "'.",
-                  DiagnosticCode.IncompatibleTypes,
-                  md.loc
-                );
+            if (superCt.members.has(methodName)) {
+              let inheritedMethod = superCt.members[methodName];
+              match (inheritedMethod) {
+                case MethodInfo as mi: {
+                  if (mi.isFinal) {
+                    ctx.error(
+                      "Cannot override final method '" + methodName + "'.",
+                      DiagnosticCode.IncompatibleTypes,
+                      md.loc
+                    );
+                  }
+                }
+                case _: {}
               }
             }
           }
 
           let methodType = checkMethodSignature(ctx, classType, md);
-          if (classType.methods.has(methodName)) {
-            let existing = classType.methods[methodName];
+          if (ownMethodNames.has(methodName)) {
+            let existingInfo = classType.members[methodName];
+            let existing = existingInfo.type as FunctionType;
             if (existing.overloads == null) {
               let ovArray = new Array<FunctionType>();
               ovArray.push(existing);
@@ -5544,7 +5640,15 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             let ovs = existing.overloads as Array<FunctionType>;
             ovs.push(methodType);
           } else {
-            classType.methods[methodName] = methodType;
+            let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
+            classType.members[methodName] = new MethodInfo(
+              methodType,
+              md.isAbstract, // isAbstract
+              md.isStatic,
+              isPrivate,
+              md.isFinal
+            );
+            ownMethodNames.add(methodName);
           }
 
           // Track abstract methods for checking in subclasses.
@@ -5569,20 +5673,32 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           // Check for final override.
           if (classType.superType != null) {
             let superCt = classType.superType as ClassType;
-            if (superCt.methods.has(getterName)) {
-              let superMethod = superCt.methods[getterName];
-              if (superMethod.isFinal) {
-                ctx.error(
-                  "Cannot override final method '" + getterName + "'.",
-                  DiagnosticCode.IncompatibleTypes,
-                  acc.loc
-                );
+            if (superCt.members.has(getterName)) {
+              let superMethod = superCt.members[getterName];
+              match (superMethod) {
+                case MethodInfo as mi: {
+                  if (mi.isFinal) {
+                    ctx.error(
+                      "Cannot override final method '" + getterName + "'.",
+                      DiagnosticCode.IncompatibleTypes,
+                      acc.loc
+                    );
+                  }
+                }
+                case _: {}
               }
             }
           }
           let getterType = new FunctionType(new Array<Type>(), null, accType);
           getterType.isFinal = acc.isFinal;
-          classType.methods[getterName] = getterType;
+          let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
+          classType.members[getterName] = new MethodInfo(
+            getterType,
+            false, // isAbstract
+            acc.isStatic,
+            isPrivate,
+            acc.isFinal
+          );
         }
 
         // Setter creates a method set#accName with param type = accType.
@@ -5591,14 +5707,19 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           // Check for final override.
           if (classType.superType != null) {
             let superCt = classType.superType as ClassType;
-            if (superCt.methods.has(setterName)) {
-              let superMethod = superCt.methods[setterName];
-              if (superMethod.isFinal) {
-                ctx.error(
-                  "Cannot override final method '" + setterName + "'.",
-                  DiagnosticCode.IncompatibleTypes,
-                  acc.loc
-                );
+            if (superCt.members.has(setterName)) {
+              let superMethod = superCt.members[setterName];
+              match (superMethod) {
+                case MethodInfo as mi: {
+                  if (mi.isFinal) {
+                    ctx.error(
+                      "Cannot override final method '" + setterName + "'.",
+                      DiagnosticCode.IncompatibleTypes,
+                      acc.loc
+                    );
+                  }
+                }
+                case _: {}
               }
             }
           }
@@ -5606,7 +5727,14 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           setterParams.push(accType);
           let setterType = new FunctionType(setterParams, null, new VoidType());
           setterType.isFinal = acc.isFinal;
-          classType.methods[setterName] = setterType;
+          let isPrivate = setterName.length > 0 && setterName.sliceBytes(0, 1) == "#";
+          classType.members[setterName] = new MethodInfo(
+            setterType,
+            false, // isAbstract
+            acc.isStatic,
+            isPrivate,
+            acc.isFinal
+          );
         }
       }
       case MethodSignature as ms: {
@@ -5628,8 +5756,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               let param = ms.params[pi];
               let paramName = param.name.name;
               var paramType: Type = new ErrorType();
-              if (param.isThisParam && classType.fields.has(paramName)) {
-                paramType = classType.fields[paramName].type;
+              if (param.isThisParam && classType.members.has(paramName)) {
+                paramType = classType.members[paramName].type;
               } else if (param.typeAnnotation != null) {
                 paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
               }
@@ -5656,7 +5784,14 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           if (ms.returnType != null) {
             retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation, true);
           }
-          classType.methods[methodName] = new FunctionType(paramTypes, null, retType);
+          let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
+          classType.members[methodName] = new MethodInfo(
+            new FunctionType(paramTypes, null, retType),
+            false, // isAbstract
+            false, // isStatic
+            isPrivate,
+            false // isFinal
+          );
         }
       }
       case _: {}
@@ -5704,10 +5839,10 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         variantType.isCaseClass = true;
         variantType.isFinal = true;
 
-        // Inherit fields from parent.
-        let parentFieldKeys = classType.fields.keys();
-        while (let (true, key) = parentFieldKeys.next()) {
-          variantType.fields[key] = classType.fields[key];
+        // Inherit members from parent.
+        let parentMemberKeys = classType.members.keys();
+        while (let (true, key) = parentMemberKeys.next()) {
+          variantType.members[key] = classType.members[key];
         }
 
         // Process variant parameters as fields + constructor.
@@ -5728,7 +5863,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
 
           let isMut = vp.mutability != null && vp.mutability == "var";
-          variantType.fields[vp.name.name] = new FieldInfo(vpType, isMut, false);
+          variantType.members[vp.name.name] = new FieldInfo(vpType, isMut, false, false, false, false);
           vCtorParams.push(vpType);
           vCtorNames.push(vp.name.name);
           vCtorOptionalParams.push(vp.optional);
@@ -5772,10 +5907,10 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               if (!isForwardVariant2) {
                 ct.isCaseClass = true;
                 ct.isFinal = true;
-                // Inherit fields from parent.
-                let pfKeys = classType.fields.keys();
-                while (let (true, pfk) = pfKeys.next()) {
-                  ct.fields[pfk] = classType.fields[pfk];
+                // Inherit members from parent.
+                let pmKeys = classType.members.keys();
+                while (let (true, pmk) = pmKeys.next()) {
+                  ct.members[pmk] = classType.members[pmk];
                 }
                 if (ct.constructorType == null) {
                   ct.constructorType = new FunctionType(
@@ -5793,10 +5928,10 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             unitType.isCaseClass = true;
             unitType.isFinal = true;
 
-            // Inherit fields from parent.
-            let parentFieldKeys2 = classType.fields.keys();
-            while (let (true, key2) = parentFieldKeys2.next()) {
-              unitType.fields[key2] = classType.fields[key2];
+            // Inherit members from parent.
+            let parentMemberKeys2 = classType.members.keys();
+            while (let (true, key2) = parentMemberKeys2.next()) {
+              unitType.members[key2] = classType.members[key2];
             }
             // Unit variant: zero-arg constructor.
             unitType.constructorType = new FunctionType(
@@ -5891,40 +6026,42 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
 
           // Temporarily hide fields declared after this one or inherited from superclasses,
           // so that they cannot be accessed within the field's default initializer.
-          let hiddenFields = new HashMap<String, FieldInfo>();
+          let hiddenFields = new HashMap<String, MemberInfo>();
           let keysToHide = new Array<String>();
           
-          let allFieldKeys = classType.fields.keys();
+          let allFieldKeys = classType.members.keys();
           while (let (true, k) = allFieldKeys.next()) {
-            var isPriorLocal = false;
-            var fi = 0;
-            while (fi <= fieldIndex) {
-              if (fieldOrder[fi] == k) {
-                isPriorLocal = true;
+            if (classType.members[k] is FieldInfo) {
+              var isPriorLocal = false;
+              var fi = 0;
+              while (fi <= fieldIndex) {
+                if (fieldOrder[fi] == k) {
+                  isPriorLocal = true;
+                }
+                fi = fi + 1;
               }
-              fi = fi + 1;
-            }
-            if (!isPriorLocal) {
-              keysToHide.push(k);
+              if (!isPriorLocal) {
+                keysToHide.push(k);
+              }
             }
           }
           
           var kh = 0;
           while (kh < keysToHide.length) {
             let k = keysToHide[kh];
-            hiddenFields[k] = classType.fields[k];
-            classType.fields.delete(k);
+            hiddenFields[k] = classType.members[k];
+            classType.members.delete(k);
             kh = kh + 1;
           }
 
-          let fieldInfo = classType.fields[fieldName];
+          let fieldInfo = classType.members[fieldName];
           let fieldType = fieldInfo.type;
           let initType = checkExpression(ctx, fd.value as Expression, fieldType);
 
           // Restore hidden fields.
           let restoreKeys = hiddenFields.keys();
           while (let (true, key) = restoreKeys.next()) {
-            classType.fields[key] = hiddenFields[key];
+            classType.members[key] = hiddenFields[key];
           }
 
           // Infer field type from initializer when no explicit annotation.
@@ -5970,7 +6107,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               );
             }
           } else {
-            if (classType.methods.has(methodName)) {
+            if (classType.members.has(methodName)) {
               let methodType = checkMethodSignature(ctx, classType, md);
               checkMethodBody(ctx, classType, methodType, md);
             }
@@ -6034,9 +6171,13 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       match (ifaceType) {
         case InterfaceType as iface: {
           // Check all interface methods are implemented.
-          for (let methodName in iface.methods.keys()) {
-            if (let (true, ifaceMethod) = iface.methods.get(methodName)) {
-              if (let (true, classMethod) = classType.methods.get(methodName)) {
+          for (let methodName in iface.members.keys()) {
+            let ifaceMethodInfo = iface.members[methodName];
+            if (ifaceMethodInfo is MethodInfo) {
+              let ifaceMethod = ifaceMethodInfo.type;
+              if (classType.members.has(methodName) && classType.members[methodName] is MethodInfo) {
+                let classMethodInfo = classType.members[methodName];
+                let classMethod = classMethodInfo.type;
                 // Check signature compatibility.
                 let expectedMethodType0 = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
                 
@@ -6060,9 +6201,9 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
                     cd.loc
                   );
                 }
-              } else if (methodName.startsWith("get#") && classType.fields.has(methodName.sliceBytes(4, methodName.length))) {
+              } else if (methodName.startsWith("get#") && classType.members.has(methodName.sliceBytes(4, methodName.length)) && classType.members[methodName.sliceBytes(4, methodName.length)] is FieldInfo) {
                 // A field can satisfy a getter interface method.
-              } else if (methodName.startsWith("set#") && classType.fields.has(methodName.sliceBytes(4, methodName.length))) {
+              } else if (methodName.startsWith("set#") && classType.members.has(methodName.sliceBytes(4, methodName.length)) && classType.members[methodName.sliceBytes(4, methodName.length)] is FieldInfo) {
                 // A field can satisfy a setter interface method.
               } else {
                 ctx.error(
@@ -6075,18 +6216,21 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
             }
           }
           // Check all interface fields are implemented.
-          for (let fieldName in iface.fields.keys()) {
-            // Interface field requires at least a getter.
-            let getterName = "get#" + fieldName;
-            let hasField = classType.fields.has(fieldName);
-            let hasGetter = classType.methods.has(getterName);
-            if (!hasField && !hasGetter) {
-              ctx.error(
-                "Class '" + className + "' incorrectly implements interface '" + iface.name +
-                "': Getter for '" + fieldName + "' is missing.",
-                DiagnosticCode.IncompatibleTypes,
-                cd.loc
-              );
+          for (let fieldName in iface.members.keys()) {
+            let ifaceFieldInfo = iface.members[fieldName];
+            if (ifaceFieldInfo is FieldInfo) {
+              // Interface field requires at least a getter.
+              let getterName = "get#" + fieldName;
+              let hasField = classType.members.has(fieldName) && classType.members[fieldName] is FieldInfo;
+              let hasGetter = classType.members.has(getterName) && classType.members[getterName] is MethodInfo;
+              if (!hasField && !hasGetter) {
+                ctx.error(
+                  "Class '" + className + "' incorrectly implements interface '" + iface.name +
+                  "': Getter for '" + fieldName + "' is missing.",
+                  DiagnosticCode.IncompatibleTypes,
+                  cd.loc
+                );
+              }
             }
           }
         }
@@ -6097,9 +6241,10 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
 
   // Check for unimplemented abstract fields in non-abstract classes.
   if (!cd.isAbstract && !cd.isSealed) {
-    let fieldKeys = classType.fields.keys();
+    let fieldKeys = classType.members.keys();
     while (let (true, absName) = fieldKeys.next()) {
-      if (classType.fields[absName].isAbstract) {
+      let memberInfo = classType.members[absName];
+      if (memberInfo is FieldInfo && memberInfo.isAbstract) {
         ctx.error(
           "Non-abstract class '" + className + "' does not implement abstract field '" + absName + "'.",
           DiagnosticCode.AbstractMethodNotImplemented,
@@ -6178,9 +6323,9 @@ let checkMethodSignature = (
     let param = md.params[i];
     let paramName = param.name.name;
     var paramType: Type = new ErrorType();
-    if (param.isThisParam && classType.fields.has(paramName)) {
+    if (param.isThisParam && classType.members.has(paramName)) {
       // this.-style param inherits type from the class field.
-      paramType = classType.fields[paramName].type;
+      paramType = classType.members[paramName].type;
     } else if (param.typeAnnotation != null) {
       paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
           }
@@ -6371,19 +6516,32 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       match (parentType) {
         case InterfaceType as pt: {
           ifaceType.extendsList.push(pt);
-          // Inherit methods and fields.
-          for (let key in pt.methods.keys()) {
-            if (let (true, methodType) = pt.methods.get(key)) {
-              ifaceType.methods[key] = substituteTypeParams(pt.typeParameters, pt.typeArguments, methodType) as FunctionType;
-            }
-          }
-          for (let key in pt.fields.keys()) {
-            if (let (true, fieldType) = pt.fields.get(key)) {
-              ifaceType.fields[key] = new FieldInfo(
-                substituteTypeParams(pt.typeParameters, pt.typeArguments, fieldType.type),
-                fieldType.isMutable,
-                fieldType.isAbstract
-              );
+          // Inherit members.
+          for (let key in pt.members.keys()) {
+            if (let (true, parentMember) = pt.members.get(key)) {
+              let subType = substituteTypeParams(pt.typeParameters, pt.typeArguments, parentMember.type);
+              ifaceType.members[key] = match (parentMember) {
+                case FieldInfo as fi: {
+                  new FieldInfo(
+                    subType,
+                    fi.isMutable,
+                    fi.isAbstract,
+                    fi.isStatic,
+                    fi.isPrivate,
+                    fi.hasInitializer
+                  ) as MemberInfo
+                }
+                case MethodInfo as mi: {
+                  new MethodInfo(
+                    subType,
+                    mi.isAbstract,
+                    mi.isStatic,
+                    mi.isPrivate,
+                    mi.isFinal
+                  ) as MemberInfo
+                }
+                case _: parentMember
+              };
             }
           }
         }
@@ -6437,12 +6595,27 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         };
         let ft = new FunctionType(paramTypes, null, retType);
         ft.typeParameters = typeParams;
-        ifaceType.methods[methodName] = ft;
+        let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
+        ifaceType.members[methodName] = new MethodInfo(
+          ft,
+          true, // isAbstract
+          false, // isStatic
+          isPrivate,
+          false // isFinal
+        );
         ctx.exitScope();
       }
       case PropertySignature as ps: {
         let propType = resolveTypeAnnotation(ctx, ps.typeAnnotation);
-        ifaceType.fields[ps.name.name] = new FieldInfo(propType, false, true);
+        let isPrivate = ps.name.name.length > 0 && ps.name.name.sliceBytes(0, 1) == "#";
+        ifaceType.members[ps.name.name] = new FieldInfo(
+          propType,
+          false, // isMutable
+          true, // isAbstract
+          false, // isStatic
+          isPrivate,
+          false // hasInitializer
+        );
       }
       case FieldDefinition as fd: {
         let fieldName = match (fd.name) {
@@ -6453,15 +6626,31 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
             case _: "<symbol>"
           }
           case _: "<unknown>"
-        };
+         };
         let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
         let isMutable = fd.mutability != null && fd.mutability == "var";
-        ifaceType.fields[fieldName] = new FieldInfo(fieldType, isMutable, true);
+        let isPrivate = fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#";
+        ifaceType.members[fieldName] = new FieldInfo(
+          fieldType,
+          isMutable,
+          true, // isAbstract
+          fd.isStatic,
+          isPrivate,
+          false // hasInitializer
+        );
       }
       case AccessorSignature as as_: {
         let accType = resolveTypeAnnotation(ctx, as_.typeAnnotation);
-                if (as_.hasGetter) {
-          ifaceType.methods["get#" + as_.name.name] = new FunctionType(new Array<Type>(), null, accType);
+        if (as_.hasGetter) {
+          let getterFt = new FunctionType(new Array<Type>(), null, accType);
+          let isPrivate = as_.name.name.length > 0 && as_.name.name.sliceBytes(0, 1) == "#";
+          ifaceType.members["get#" + as_.name.name] = new MethodInfo(
+            getterFt,
+            true, // isAbstract
+            false, // isStatic
+            isPrivate,
+            false // isFinal
+          );
         }
       }
       case _: {}
@@ -6667,15 +6856,10 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       let composedType = resolveTypeAnnotation(ctx, ma);
       match (composedType) {
         case MixinType as composedMixin: {
-          // Copy fields and methods from composed mixin.
-          for (let key in composedMixin.fields.keys()) {
-            if (let (true, fType) = composedMixin.fields.get(key)) {
-              mixinType.fields[key] = fType;
-            }
-          }
-          for (let key in composedMixin.methods.keys()) {
-            if (let (true, mType) = composedMixin.methods.get(key)) {
-              mixinType.methods[key] = mType;
+          // Copy members from composed mixin.
+          for (let key in composedMixin.members.keys()) {
+            if (let (true, mInfo) = composedMixin.members.get(key)) {
+              mixinType.members[key] = mInfo;
             }
           }
         }
@@ -6698,36 +6882,22 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   let onType = mixinType.onType;
   if (onType != null) {
     match (baseType(onType)) {
-      case ClassType {fields, methods}: {
+      case ClassType as ct: {
         thisType.superType = onType as ClassType;
-        for (let k in fields.keys()) {
-          if (!k.startsWith("#") && !thisType.fields.has(k)) {
-            if (let (true, fdType) = fields.get(k)) {
-              thisType.fields[k] = fdType;
-            }
-          }
-        }
-        for (let k in methods.keys()) {
-          if (!thisType.methods.has(k)) {
-            if (let (true, mdType) = methods.get(k)) {
-              thisType.methods[k] = mdType;
+        for (let k in ct.members.keys()) {
+          if (!k.startsWith("#") && !thisType.members.has(k)) {
+            if (let (true, mInfo) = ct.members.get(k)) {
+              thisType.members[k] = mInfo;
             }
           }
         }
       }
-      case InterfaceType {fields, methods}: {
+      case InterfaceType as it: {
         thisType.implementsList.push(onType as InterfaceType);
-        for (let k in fields.keys()) {
-          if (!k.startsWith("#") && !thisType.fields.has(k)) {
-            if (let (true, fdType) = fields.get(k)) {
-              thisType.fields[k] = fdType;
-            }
-          }
-        }
-        for (let k in methods.keys()) {
-          if (!thisType.methods.has(k)) {
-            if (let (true, mdType) = methods.get(k)) {
-              thisType.methods[k] = mdType;
+        for (let k in it.members.keys()) {
+          if (!k.startsWith("#") && !thisType.members.has(k)) {
+            if (let (true, mInfo) = it.members.get(k)) {
+              thisType.members[k] = mInfo;
             }
           }
         }
@@ -6737,14 +6907,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
 
   // Populate composed mixin members onto `thisType` as well
-  for (let k in mixinType.fields.keys()) {
-    if (let (true, fdType) = mixinType.fields.get(k)) {
-      thisType.fields[k] = fdType;
-    }
-  }
-  for (let k in mixinType.methods.keys()) {
-    if (let (true, mdType) = mixinType.methods.get(k)) {
-      thisType.methods[k] = mdType;
+  for (let k in mixinType.members.keys()) {
+    if (let (true, mInfo) = mixinType.members.get(k)) {
+      thisType.members[k] = mInfo;
     }
   }
 
@@ -6770,9 +6935,17 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           new ErrorType() as Type
         };
         let isMutable = fd.mutability != null && fd.mutability == "var";
-        let fdInfo = new FieldInfo(fieldType, isMutable, fd.isAbstract);
-        mixinType.fields[fieldName] = fdInfo;
-        thisType.fields[fieldName] = fdInfo;
+        let isPrivate = fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#";
+        let fdInfo = new FieldInfo(
+          fieldType,
+          isMutable,
+          fd.isAbstract,
+          fd.isStatic,
+          isPrivate,
+          fd.value != null // hasInitializer
+        );
+        mixinType.members[fieldName] = fdInfo;
+        thisType.members[fieldName] = fdInfo;
 
         // Check initializer if present.
         if (fd.value != null) {
@@ -6808,8 +6981,16 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           );
         } else {
           let ft = checkMethodSignature(ctx, thisType, methDef);
-          mixinType.methods[methodName] = ft;
-          thisType.methods[methodName] = ft;
+          let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
+          let mi = new MethodInfo(
+            ft,
+            methDef.isAbstract,
+            methDef.isStatic,
+            isPrivate,
+            methDef.isFinal
+          );
+          mixinType.members[methodName] = mi;
+          thisType.members[methodName] = mi;
         }
       }
       case AccessorDeclaration as acc: {
@@ -6822,14 +7003,29 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             case _: "<symbol>"
           }
           case _: "<unknown>"
-        };
-        let fdInfo = new FieldInfo(accType, false, false);
-        mixinType.fields[accName] = fdInfo;
-        thisType.fields[accName] = fdInfo;
+         };
+        let isPrivate = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
+        let fdInfo = new FieldInfo(
+          accType,
+          false, // isMutable
+          false, // isAbstract
+          acc.isStatic,
+          isPrivate,
+          false // hasInitializer
+        );
+        mixinType.members[accName] = fdInfo;
+        thisType.members[accName] = fdInfo;
         if (acc.getter != null) {
           let getterFt = new FunctionType(new Array<Type>(), null, accType);
-          mixinType.methods[accName] = getterFt;
-          thisType.methods[accName] = getterFt;
+          let mi = new MethodInfo(
+            getterFt,
+            false, // isAbstract
+            acc.isStatic,
+            isPrivate,
+            acc.isFinal
+          );
+          mixinType.members[accName] = mi;
+          thisType.members[accName] = mi;
         }
       }
       case _: {}
@@ -6855,9 +7051,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           }
           case _: "<unknown>"
          };
-         if (methodName != "<constructor>" && methDef.body != null && mixinType.methods.has(methodName)) {
-           if (let (true, methodType) = mixinType.methods.get(methodName)) {
-             checkMethodBody(ctx, thisType, methodType, methDef);
+         if (methodName != "<constructor>" && methDef.body != null && mixinType.members.has(methodName)) {
+           if (let (true, methodTypeInfo) = mixinType.members.get(methodName)) {
+             checkMethodBody(ctx, thisType, methodTypeInfo.type as FunctionType, methDef);
            }
          }
       }
@@ -7302,24 +7498,24 @@ let resolveMemberType = (
   match (objectType) {
     case ClassType as ct: {
       // Check fields first.
-      if (ct.fields.has(propName)) {
-        let fieldType = ct.fields[propName].type;
+      if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
+        let fieldType = ct.members[propName].type;
         // Substitute type parameters if this is an instantiated generic class.
         let subField = substituteTypeParams(ct.typeParameters, ct.typeArguments, fieldType);
         return substituteThisType(ct as Type, subField);
       }
       // Check methods.
-      if (ct.methods.has(propName)) {
-        let methodType = ct.methods[propName];
-        let subMethod = substituteTypeParams(ct.typeParameters, ct.typeArguments, methodType);
+      if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
+        let methodInfo = ct.members[propName];
+        let subMethod = substituteTypeParams(ct.typeParameters, ct.typeArguments, methodInfo.type);
         return substituteThisType(ct as Type, subMethod);
       }
       // Check for getter method (get#propName)
       let getterName = "get#" + propName;
-      if (ct.methods.has(getterName)) {
-        let getterType = ct.methods[getterName];
+      if (ct.members.has(getterName)) {
+        let getterInfo = ct.members[getterName];
         // Return the return type of the getter
-        let subGetter = substituteTypeParams(ct.typeParameters, ct.typeArguments, getterType.returnType);
+        let subGetter = substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterInfo.type as FunctionType).returnType);
         return substituteThisType(ct as Type, subGetter);
       }
       ctx.error(
@@ -7330,21 +7526,21 @@ let resolveMemberType = (
       return new ErrorType();
     }
     case InterfaceType as it: {
-      if (it.fields.has(propName)) {
-        let fieldType = it.fields[propName].type;
+      if (it.members.has(propName) && it.members[propName] is FieldInfo) {
+        let fieldType = it.members[propName].type;
         let subField = substituteTypeParams(it.typeParameters, it.typeArguments, fieldType);
         return substituteThisType(it as Type, subField);
       }
-      if (it.methods.has(propName)) {
-        let methodType = it.methods[propName];
-        let subMethod = substituteTypeParams(it.typeParameters, it.typeArguments, methodType);
+      if (it.members.has(propName) && it.members[propName] is MethodInfo) {
+        let methodInfo = it.members[propName];
+        let subMethod = substituteTypeParams(it.typeParameters, it.typeArguments, methodInfo.type);
         return substituteThisType(it as Type, subMethod);
       }
       // Check for getter method
       let getterName = "get#" + propName;
-      if (it.methods.has(getterName)) {
-        let getterType = it.methods[getterName];
-        let subGetter = substituteTypeParams(it.typeParameters, it.typeArguments, getterType.returnType);
+      if (it.members.has(getterName)) {
+        let getterInfo = it.members[getterName];
+        let subGetter = substituteTypeParams(it.typeParameters, it.typeArguments, (getterInfo.type as FunctionType).returnType);
         return substituteThisType(it as Type, subGetter);
       }
       ctx.error(
@@ -7377,17 +7573,13 @@ let resolveMemberType = (
             typeArgs.push(elementType);
             // Check getter first.
             let getterName = "get#" + propName;
-            if (faCt.methods.has(getterName)) {
-              let getterType = faCt.methods[getterName];
-              return substituteTypeParams(faCt.typeParameters, typeArgs, getterType.returnType);
+            if (faCt.members.has(getterName)) {
+              let getterInfo = faCt.members[getterName];
+              return substituteTypeParams(faCt.typeParameters, typeArgs, (getterInfo.type as FunctionType).returnType);
             }
-            if (faCt.methods.has(propName)) {
-              let methodType = faCt.methods[propName];
-              return substituteTypeParams(faCt.typeParameters, typeArgs, methodType);
-            }
-            if (faCt.fields.has(propName)) {
-              let fieldType = faCt.fields[propName].type;
-              return substituteTypeParams(faCt.typeParameters, typeArgs, fieldType);
+            if (faCt.members.has(propName)) {
+              let memberInfo = faCt.members[propName];
+              return substituteTypeParams(faCt.typeParameters, typeArgs, memberInfo.type);
             }
           }
           case _: {}
@@ -7521,10 +7713,10 @@ let resolveIndexType = (
     }
     case ClassType as ct: {
       // Check for operator [] method.
-      if (ct.methods.has("[]")) {
-        let opMethod = ct.methods["[]"];
+      if (ct.members.has("[]")) {
+        let opMethodInfo = ct.members["[]"];
         // The return type is the element type.
-        return substituteTypeParams(ct.typeParameters, ct.typeArguments, opMethod.returnType);
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, (opMethodInfo.type as FunctionType).returnType);
       }
       ctx.error(
         "Type '" + ct.name + "' does not support indexing (no 'operator []' method).",
@@ -7534,9 +7726,9 @@ let resolveIndexType = (
       return new ErrorType();
     }
     case InterfaceType as it: {
-      if (it.methods.has("[]")) {
-        let opMethod = it.methods["[]"];
-        return substituteTypeParams(it.typeParameters, it.typeArguments, opMethod.returnType);
+      if (it.members.has("[]")) {
+        let opMethodInfo = it.members["[]"];
+        return substituteTypeParams(it.typeParameters, it.typeArguments, (opMethodInfo.type as FunctionType).returnType);
       }
       ctx.error(
         "Interface '" + it.name + "' does not support indexing (no 'operator []' method).",
@@ -7620,8 +7812,9 @@ let checkBinaryExpression = (
       // Check for operator overloading on class types (e.g., String.+).
       match (leftType) {
         case ClassType as ct: {
-          if (ct.methods.has(operator)) {
-            let method = ct.methods[operator];
+          if (ct.members.has(operator)) {
+            let methodInfo = ct.members[operator];
+            let method = methodInfo.type as FunctionType;
             if (method.parameters.length != 1) {
               ctx.error(
                 "Operator '" + operator + "' must take exactly one argument.",
@@ -8049,14 +8242,14 @@ let resolveClassFieldType = (
 ): Type => {
   match (classType) {
     case ClassType as ct: {
-      if (ct.fields.has(propName)) {
-        return substituteTypeParams(ct.typeParameters, ct.typeArguments, ct.fields[propName].type);
+      if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, ct.members[propName].type);
       }
       // Check for getter.
       let getterName = "get#" + propName;
-      if (ct.methods.has(getterName)) {
-        let getter = ct.methods[getterName];
-        return substituteTypeParams(ct.typeParameters, ct.typeArguments, getter.returnType);
+      if (ct.members.has(getterName)) {
+        let getterInfo = ct.members[getterName];
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterInfo.type as FunctionType).returnType);
       }
       // Walk superclass.
       if (ct.superType != null) {

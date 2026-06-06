@@ -17,7 +17,7 @@ import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, V
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
-import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, TypeAliasType, U32Type, I64Type, U64Type, ArrayType, NullType, UnknownType, ErrorType, AnyType, AnyRefType, EqRefType, NeverType, HoleType, typeToString} from '../types.zena';
+import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, TypeAliasType, U32Type, I64Type, U64Type, ArrayType, NullType, UnknownType, ErrorType, AnyType, AnyRefType, EqRefType, NeverType, HoleType, FieldInfo, MethodInfo, typeToString} from '../types.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 
@@ -530,8 +530,10 @@ export class DiscoveryPass {
         this.discoverType(ft.returnType, model);
      } else if (t is ClassType) {
         let ct = t as ClassType;
-        for (let pair in ct.fields) {
-           this.discoverType(pair.value.type, model);
+        for (let pair in ct.members) {
+           if (pair.value is FieldInfo) {
+              this.discoverType(pair.value.type, model);
+           }
         }
      }
   }
@@ -717,7 +719,10 @@ export class DiscoveryPass {
               return false;
             };
 
-            for (let pair in cType.fields) {
+            for (let pair in cType.members) {
+              if (pair.value is MethodInfo) {
+                continue;
+              }
               if (isStaticField(pair.key)) {
                 continue;
               }
@@ -839,8 +844,8 @@ export class DiscoveryPass {
                 let fd = member as FieldDefinition;
                 if (fd.isStatic && fd.name is Identifier) {
                   let fieldName = (fd.name as Identifier).name;
-                  let fType = if (classType != null && (classType as ClassType).fields.has(fieldName)) {
-                    (classType as ClassType).fields[fieldName].type
+                  let fType = if (classType != null && (classType as ClassType).members.has(fieldName)) {
+                    (classType as ClassType).members[fieldName].type
                   } else {
                     moduleModel.getNodeType(fd)
                   };
@@ -863,8 +868,8 @@ export class DiscoveryPass {
                 if (methName == "<constructor>") {
                   methodTypeNode = classType.constructorType;
                 } else {
-                  if (classType.methods.has(methName)) {
-                    methodTypeNode = classType.methods[methName];
+                  if (classType.members.has(methName)) {
+                    methodTypeNode = classType.members[methName].type;
                   }
                 }
               }
@@ -877,7 +882,7 @@ export class DiscoveryPass {
                 var currClass = classType.superType;
                 while (currClass != null) {
                   let cType = currClass as ClassType;
-                  if (cType.methods.has(methName)) {
+                  if (cType.members.has(methName)) {
                     rootClass = cType;
                   }
                   currClass = cType.superType;

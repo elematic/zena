@@ -23,7 +23,7 @@ import { SemanticModel } from '../lib/semantic-model.zena';
 import { Diagnostic, DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
 import {
   Type, I32Type, F64Type, BooleanType, VoidType, NullType, NeverType,
-  TypeParameterType, FieldInfo,
+  TypeParameterType, MemberInfo, FieldInfo, MethodInfo,
   BoolLiteralType, ClassType, FunctionType, UnionType, TupleType,
   typeToString
 } from '../lib/types.zena';
@@ -42,7 +42,7 @@ import {
 let createTestSharedState = (): SharedCheckerState => {
   let sharedState = new SharedCheckerState();
   let stringClass = new ClassType(9000, "String");
-  stringClass.fields["length"] = new FieldInfo(new I32Type() as Type, false, false);
+  stringClass.members["length"] = new FieldInfo(new I32Type() as Type, false, false, false, false, false);
   sharedState.preludeTypes["String"] = stringClass as Type;
   
   let fixedArrayClass = new ClassType(9001, "FixedArray");
@@ -50,10 +50,10 @@ let createTestSharedState = (): SharedCheckerState => {
   let faTArr = new Array<TypeParameterType>();
   faTArr.push(faT);
   fixedArrayClass.typeParameters = faTArr;
-  fixedArrayClass.fields["length"] = new FieldInfo(new I32Type() as Type, false, false);
+  fixedArrayClass.members["length"] = new FieldInfo(new I32Type() as Type, false, false, false, false, false);
   let faPushParams = new Array<Type>();
   faPushParams.push(faT as Type);
-  fixedArrayClass.methods["push"] = new FunctionType(faPushParams, null, new VoidType() as Type);
+  fixedArrayClass.members["push"] = new MethodInfo(new FunctionType(faPushParams, null, new VoidType() as Type), false, false, false, false);
   sharedState.preludeTypes["FixedArray"] = fixedArrayClass as Type;
 
   let arrayClass = new ClassType(9003, "Array");
@@ -61,10 +61,10 @@ let createTestSharedState = (): SharedCheckerState => {
   let arrTArr = new Array<TypeParameterType>();
   arrTArr.push(arrT);
   arrayClass.typeParameters = arrTArr;
-  arrayClass.fields["length"] = new FieldInfo(new I32Type() as Type, false, false);
+  arrayClass.members["length"] = new FieldInfo(new I32Type() as Type, false, false, false, false, false);
   let arrPushParams = new Array<Type>();
   arrPushParams.push(arrT as Type);
-  arrayClass.methods["push"] = new FunctionType(arrPushParams, null, new VoidType() as Type);
+  arrayClass.members["push"] = new MethodInfo(new FunctionType(arrPushParams, null, new VoidType() as Type), false, false, false, false);
   sharedState.preludeTypes["Array"] = arrayClass as Type;
 
   let mapClass = new ClassType(9005, "HashMap");
@@ -76,17 +76,17 @@ let createTestSharedState = (): SharedCheckerState => {
   mapClass.typeParameters = mapTArr;
   let getParams = new Array<Type>();
   getParams.push(mapK as Type);
-  mapClass.methods["get"] = new FunctionType(getParams, null, mapV as Type);
+  mapClass.members["get"] = new MethodInfo(new FunctionType(getParams, null, mapV as Type), false, false, false, false);
   let hasParams = new Array<Type>();
   hasParams.push(mapK as Type);
-  mapClass.methods["has"] = new FunctionType(hasParams, null, new BooleanType() as Type);
+  mapClass.members["has"] = new MethodInfo(new FunctionType(hasParams, null, new BooleanType() as Type), false, false, false, false);
   let setParams = new Array<Type>();
   setParams.push(mapK as Type);
   setParams.push(mapV as Type);
-  mapClass.methods["[]="] = new FunctionType(setParams, null, new VoidType() as Type);
+  mapClass.members["[]="] = new MethodInfo(new FunctionType(setParams, null, new VoidType() as Type), false, false, false, false);
   let idxParams = new Array<Type>();
   idxParams.push(mapK as Type);
-  mapClass.methods["[]"] = new FunctionType(idxParams, null, mapV as Type);
+  mapClass.members["[]"] = new MethodInfo(new FunctionType(idxParams, null, mapV as Type), false, false, false, false);
   sharedState.preludeTypes["HashMap"] = mapClass as Type;
   
   return sharedState;

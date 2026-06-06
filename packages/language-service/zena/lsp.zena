@@ -28,7 +28,7 @@ import {
   CompilationResult, typeToString, SemanticModel, SourceFile, CheckResult
 } from 'zena-compiler:compiler';
 import { parse as parseSource } from 'zena-compiler:parser';
-import { Type, ClassType, InterfaceType, FunctionType } from 'zena-compiler:types';
+import { Type, ClassType, InterfaceType, FunctionType, MemberInfo, FieldInfo, MethodInfo } from 'zena-compiler:types';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import { getStandardPrelude } from 'zena-compiler:prelude';
 import {
@@ -1232,8 +1232,8 @@ let findEnclosingClassType = (ast: Module, thisExpr: Expression, model: Semantic
 /**
  * Resolve hover info for a class member at its definition site.
  *
- * The checker stores field/method types in ClassType.fields and
- * ClassType.methods rather than on the AST nodes themselves. This
+ * The checker stores field/method types in ClassType.members
+ * rather than on the AST nodes themselves. This
  * function bridges that gap by finding the enclosing ClassDeclaration,
  * getting its ClassType, and looking up the member by name.
  */
@@ -1269,10 +1269,13 @@ let resolveClassMemberHover = (ast: Module, offset: i32, model: SemanticModel): 
                     let nLoc = fd.name.loc as SourceLocation;
                     if (offset >= nLoc.start && offset < nLoc.end) {
                       let fieldName = getNodeName(fd.name);
-                      if (fieldName.length > 0 && ct.fields.has(fieldName)) {
-                        let fieldInfo = ct.fields[fieldName];
+                      if (fieldName.length > 0 && ct.members.has(fieldName) && ct.members[fieldName] is FieldInfo) {
+                        let fieldInfo = ct.members[fieldName];
                         let typeStr = typeToString(fieldInfo.type);
-                        let isMut = fieldInfo.isMutable;
+                        let isMut = match (fieldInfo) {
+                          case FieldInfo as fi: fi.isMutable
+                          case _: false
+                        };
                         let prefix = if (isMut) { "(property) var " } else { "(property) " };
                         return new HoverResult(typeStr, prefix + fieldName + ": " + typeStr, "");
                       }
@@ -1289,9 +1292,9 @@ let resolveClassMemberHover = (ast: Module, offset: i32, model: SemanticModel): 
                           let typeStr = typeToString(ct.constructorType as Type);
                           return new HoverResult(typeStr, "(constructor) new" + typeStr, "");
                         }
-                      } else if (methodName.length > 0 && ct.methods.has(methodName)) {
-                        let methodType = ct.methods[methodName];
-                        let typeStr = typeToString(methodType as Type);
+                      } else if (methodName.length > 0 && ct.members.has(methodName) && ct.members[methodName] is MethodInfo) {
+                        let methodInfo = ct.members[methodName];
+                        let typeStr = typeToString(methodInfo.type as Type);
                         return new HoverResult(typeStr, "(method) " + methodName + typeStr, "");
                       }
                     }

@@ -49,7 +49,8 @@ import { walk } from './visitor.zena';
 import { Diagnostic, SourceSpan } from './diagnostics.zena';
 import { SemanticModel } from './semantic-model.zena';
 import {
-  Type, ClassType, FunctionType, InterfaceType, MixinType, FieldInfo,
+  Type, ClassType, FunctionType, InterfaceType, MixinType, MemberInfo,
+  FieldInfo, MethodInfo,
   RecordType, TypeParameterType, TypeAliasType, SymbolType,
   ArrayType, TupleType, InlineTupleType, UnionType,
   BoolLiteralType, StringLiteralType, NumLiteralType,
@@ -823,10 +824,10 @@ let typeMapEquals = (
 };
 
 /**
- * Compare two Maps of name → FieldInfo.
+ * Compare two Maps of name → MemberInfo.
  */
-let fieldMapEquals = (
-  a: Map<String, FieldInfo>, b: Map<String, FieldInfo>, visited: HashSet<String>
+let membersMapEquals = (
+  a: Map<String, MemberInfo>, b: Map<String, MemberInfo>, visited: HashSet<String>
 ): boolean => {
   if (a.size != b.size) {
     return false;
@@ -835,37 +836,44 @@ let fieldMapEquals = (
     if (!b.has(key)) {
       return false;
     }
-    let aField = a[key];
-    let bField = b[key];
-    if (aField.isMutable != bField.isMutable) {
+    let aMem = a[key];
+    let bMem = b[key];
+    if (aMem.isAbstract != bMem.isAbstract) {
       return false;
     }
-    if (aField.isAbstract != bField.isAbstract) {
+    if (aMem.isStatic != bMem.isStatic) {
       return false;
     }
-    if (!signatureTypeEqualsRec(aField.type, bField.type, visited)) {
+    if (aMem.isPrivate != bMem.isPrivate) {
       return false;
     }
-  }
-  return true;
-};
-
-/**
- * Compare two HashMaps of name → FunctionType.
- */
-let methodMapEquals = (
-  a: HashMap<String, FunctionType>,
-  b: HashMap<String, FunctionType>,
-  visited: HashSet<String>
-): boolean => {
-  if (a.size != b.size) {
-    return false;
-  }
-  for (let key in a.keys()) {
-    if (!b.has(key)) {
-      return false;
+    match (aMem) {
+      case FieldInfo as aFi: {
+        match (bMem) {
+          case FieldInfo as bFi: {
+            if (aFi.isMutable != bFi.isMutable) {
+              return false;
+            }
+            if (aFi.hasInitializer != bFi.hasInitializer) {
+              return false;
+            }
+          }
+          case _: { return false; }
+        }
+      }
+      case MethodInfo as aMi: {
+        match (bMem) {
+          case MethodInfo as bMi: {
+            if (aMi.isFinal != bMi.isFinal) {
+              return false;
+            }
+          }
+          case _: { return false; }
+        }
+      }
+      case _: { return false; }
     }
-    if (!functionTypeEquals(a[key], b[key], visited)) {
+    if (!signatureTypeEqualsRec(aMem.type, bMem.type, visited)) {
       return false;
     }
   }
@@ -983,9 +991,8 @@ let classTypeEquals = (
     }
   }
 
-  // Fields, methods, statics.
-  if (!fieldMapEquals(ca.fields, cb.fields, visited)) { return false; }
-  if (!methodMapEquals(ca.methods, cb.methods, visited)) { return false; }
+  // Members, statics.
+  if (!membersMapEquals(ca.members, cb.members, visited)) { return false; }
   if (!typeMapEquals(ca.statics, cb.statics, visited)) { return false; }
 
   // Constructor.
@@ -1031,8 +1038,7 @@ let interfaceTypeEquals = (
 
   if (!typeParamsEqual(ia.typeParameters, ib.typeParameters, visited)) { return false; }
   if (!typeArgsEqual(ia.typeArguments, ib.typeArguments, visited)) { return false; }
-  if (!fieldMapEquals(ia.fields, ib.fields, visited)) { return false; }
-  if (!methodMapEquals(ia.methods, ib.methods, visited)) { return false; }
+  if (!membersMapEquals(ia.members, ib.members, visited)) { return false; }
 
   // extendsList
   if (ia.extendsList.length != ib.extendsList.length) { return false; }
@@ -1058,8 +1064,7 @@ let mixinTypeEquals = (
 
   if (!typeParamsEqual(ma.typeParameters, mb.typeParameters, visited)) { return false; }
   if (!typeArgsEqual(ma.typeArguments, mb.typeArguments, visited)) { return false; }
-  if (!fieldMapEquals(ma.fields, mb.fields, visited)) { return false; }
-  if (!methodMapEquals(ma.methods, mb.methods, visited)) { return false; }
+  if (!membersMapEquals(ma.members, mb.members, visited)) { return false; }
 
   // onType
   if (ma.onType == null && mb.onType != null) { return false; }

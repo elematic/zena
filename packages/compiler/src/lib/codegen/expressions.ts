@@ -6689,11 +6689,23 @@ function generateFieldFromBinding(
         const objectType = inferType(ctx, objectExpr);
         generateExpression(ctx, objectExpr, body);
 
-        // Cast if object is erased ref
-        const isAnyRef =
+        // Cast if object is erased ref or a supertype
+        let needsCast =
           objectType.length === 1 &&
           (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
-        if (isAnyRef) {
+
+        if (
+          !needsCast &&
+          objectType.length > 1 &&
+          (objectType[0] === ValType.ref_null || objectType[0] === ValType.ref)
+        ) {
+          const srcIndex = decodeTypeIndex(objectType);
+          if (srcIndex !== classInfo.structTypeIndex) {
+            needsCast = true;
+          }
+        }
+
+        if (needsCast) {
           body.push(0xfb, GcOpcode.ref_cast_null);
           body.push(
             ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
@@ -6701,7 +6713,7 @@ function generateFieldFromBinding(
         }
 
         // Use the struct type for the temp local
-        const tempThisType = isAnyRef
+        const tempThisType = needsCast
           ? [
               ValType.ref_null,
               ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
@@ -7071,17 +7083,29 @@ function generateGetterDynamicDispatch(
   const objectType = inferType(ctx, objectExpr);
   generateExpression(ctx, objectExpr, body);
 
-  // Cast if object is erased ref
-  const isAnyRef =
+  // Cast if object is erased ref or a supertype
+  let needsCast =
     objectType.length === 1 &&
     (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
-  if (isAnyRef) {
+
+  if (
+    !needsCast &&
+    objectType.length > 1 &&
+    (objectType[0] === ValType.ref_null || objectType[0] === ValType.ref)
+  ) {
+    const srcIndex = decodeTypeIndex(objectType);
+    if (srcIndex !== classInfo.structTypeIndex) {
+      needsCast = true;
+    }
+  }
+
+  if (needsCast) {
     body.push(0xfb, GcOpcode.ref_cast_null);
     body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
   }
 
   // Use the struct type for the temp local
-  const tempThisType = isAnyRef
+  const tempThisType = needsCast
     ? [
         ValType.ref_null,
         ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
