@@ -1,39 +1,27 @@
 /**
- * Portable tests — auto-discovers .zena files under tests/language/
- *   syntax/    → parsed AST JSON compared against .ast.json snapshots
+ * Portable semantics tests — auto-discovers .zena files under tests/language/semantics/
  *   semantics/ → parsed, scope-analysed, type-checked; @error directives validated
  *
- * Requires WASI (run with wasmtime via npm run test:wasmtime)
+ * Requires WASI (run with wasmtime via npm run test:semantics)
  */
 
+import { Suite, runAndReport } from 'zena:test';
+import { console } from 'zena:console';
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
-import { jsonEqual } from 'zena:assert';
 import { readFile, listDir, exists, DirEntry, FileType } from 'zena:fs';
-import { parseJson, JsonValue, JsonOptions } from 'zena:json';
 import { Array } from 'zena:array';
 import { StringReader } from 'zena:string-reader';
-import { parse } from '../lib/parser.zena';
-import { nodeToJson } from '../lib/ast-json.zena';
-import { ExpressionStatement } from '../lib/ast.zena';
 import { ScopeBuilder } from '../lib/scope/scope-builder.zena';
 import { checkModule, CheckResult } from '../lib/checker.zena';
 import { Diagnostic, DiagnosticSeverity, formatDiagnostic } from '../lib/diagnostics.zena';
-import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
+import { createCompiler, CompilerOptions, checkCompilation, Compiler, ProgramCheckResult } from '../lib/compiler.zena';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
-
-// ============================================================================
-// Skip list — tests that the self-hosted parser cannot yet match
-// ============================================================================
 
 type SkipEntry = { path: String, reason: String };
 
 let skippedTests = [
-  // execution skipped entirely, rely on run-execution-tests.js node runner
-  { path: "execution/", reason: "Run via Node test runner" },
-  // syntax skips
-  { path: "syntax/classes/case-classes/exported.zena", reason: "snapshot is full Module (no @target: statement directive)" },
   // semantics skips
   { path: "semantics/modules/reexport_cycle", reason: "Cyclic exports not yet supported" },
   { path: "semantics/classes/fields/field-init-required.zena", reason: "field init check not implemented" },
@@ -125,29 +113,17 @@ let parseDirectives = (source: String): Array<Directive> => {
   return results;
 };
 
-// Determine target from directives
-let getTarget = (directives: Array<Directive>): String => {
-  for (let directive in directives) {
-    if (directive.name == "target") {
-      return directive.value;
-    }
-  }
-  return "module";
-};
-
 class FsHost implements CompilerHost {
   #stdlibRoot: String;
-  #fileSourceOverride: String;
-  #filePathOverride: String;
+  var filePathOverride: String = "";
+  var fileSourceOverride: String = "";
 
-  new(stdlibRoot: String, filePathOverride: String, fileSourceOverride: String)
-    : #stdlibRoot = stdlibRoot,
-      #filePathOverride = filePathOverride,
-      #fileSourceOverride = fileSourceOverride;
+  new(stdlibRoot: String)
+    : #stdlibRoot = stdlibRoot;
 
   readFile(path: String): String {
-    if (path == this.#filePathOverride) {
-      return this.#fileSourceOverride;
+    if (path == this.filePathOverride) {
+      return this.fileSourceOverride;
     }
     if (path.startsWith("zena:")) {
       let moduleName = path.sliceBytes(5, path.length);
@@ -157,6 +133,14 @@ class FsHost implements CompilerHost {
     return readFile(path);
   }
 }
+
+// Global/top-level compiler instance and state for incremental type-checking
+let stdlibRoot = "packages/stdlib/zena";
+let host = new FsHost(stdlibRoot);
+let packages = loadPackageMap(host, "zena-packages.json");
+let options = new CompilerOptions("host", stdlibRoot, packages);
+let compiler = createCompiler(host, options);
+var prevCheckResult: ProgramCheckResult | null = null;
 
 /**
  * Run a semantic test: parse → scope → check, then match diagnostics.
@@ -179,21 +163,26 @@ let runSemanticTest = (
     }
   }
 
-  let stdlibRoot = "packages/stdlib/zena";
-  let host = new FsHost(stdlibRoot, filePath, source);
-  let packages = loadPackageMap(host, "zena-packages.json");
-  let options = new CompilerOptions("host", stdlibRoot, packages);
+  // Set the override on the shared host.
+  host.filePathOverride = filePath;
+  host.fileSourceOverride = source;
+
+  // Invalidate the loader cache for this test file path so it is read fresh.
+  compiler.invalidate(filePath);
+
   options.warnUnnecessaryCasts = warnUnnecessaryCasts;
-  let compiler = createCompiler(host, options);
+
   let result = compiler.compile(filePath);
-  let checkResult = checkCompilation(result, null, false, warnUnnecessaryCasts);
+  let checkResult = checkCompilation(result, prevCheckResult, false, warnUnnecessaryCasts);
+  
+  // Store the check result for subsequent tests to use incrementally.
+  prevCheckResult = checkResult;
   
   // Aggregate diagnostics only from the entry module, unless you specifically want dependent errors.
   let diagnostics = new Array<Diagnostic>(4);
   for (let diag in checkResult.entry.diagnostics) {
     diagnostics.push(diag);
   }
-
 
   // Collect only errors (not warnings).
   let errors = new Array<Diagnostic>(4);
@@ -291,7 +280,6 @@ let runSemanticTest = (
   }
 
   // Check for any unexpected warnings, but only if the test explicitly checks for warnings.
-  // This allows existing tests to pass without needing to annotate every incidental warning.
   if (expectedWarnings.length > 0) {
     var unexpectedWarnStr = "";
     var hasUnexpectedWarnings = false;
@@ -313,50 +301,8 @@ let runSemanticTest = (
   }
 };
 
-let runSyntaxTest = (
-    source: String,
-    filePath: String,
-    directives: Array<Directive>,
-    isErrorTest: boolean,
-    snapshotPath: String,
-    fileName: String): void => {
-  if (isErrorTest) {
-    // Error test: parser should throw
-    let threw = try {
-      parse(source, fileName);
-      false
-    } catch (e) {
-      true
-    };
-    if (!threw) {
-      throw new Error("Expected parse error (has @error directive) but parsing succeeded: " + filePath);
-    }
-  } else {
-    // Positive test: compare AST against snapshot
-    let expectedSnapshot = readFile(snapshotPath);
-    let expected = parseJson(expectedSnapshot, { allowComments: false, trackLocations: true });
-    let mod = parse(source, fileName);
-    
-    let actual = match (getTarget(directives)) {
-      case "statement": {
-        nodeToJson(mod.body[0]);
-      }
-      case "expression": {
-        let stmt = mod.body[0] as ExpressionStatement;
-        nodeToJson(stmt.expression);
-      }
-      case _: {
-        nodeToJson(mod)
-      }
-    };
-  
-    jsonEqual(actual, expected, filePath);
-  }
-};
-
 let isSkipped = (relPath: String): String | null => {
   for (let skip in skippedTests) {
-    // Match exact path OR prefix (for directory patterns like "optional-chaining/")
     if (relPath.startsWith(skip.path)) {
       return skip.reason;
     }
@@ -365,18 +311,14 @@ let isSkipped = (relPath: String): String | null => {
 };
 
 // Discovers and registers tests for all .zena files in a directory (recursively).
-// dirPath: filesystem path (e.g., "tests/language/syntax")
-// relPrefix: relative path from the syntax root for skip list matching (e.g., "")
 let runTests = (dirPath: String, relPrefix: String): void => {
   let entries = listDir(dirPath);
   
-  // Collect subdirectories and files separately for ordered processing
   let subdirs = new Array<DirEntry>(4);
   let files = new Array<DirEntry>(8);
   
   for (let entry in entries) {
     if (entry.fileType == FileType.Directory) {
-      // Skip . and .. to prevent infinite recursion
       if (entry.name != "." && entry.name != "..") {
         subdirs.push(entry);
       }
@@ -387,48 +329,27 @@ let runTests = (dirPath: String, relPrefix: String): void => {
     }
   }
   
-  // Register tests for .zena files that have a corresponding .ast.json
   for (let file in files) {
     let fileName = file.name;
     let filePath = dirPath + "/" + fileName;
     
-    // Build relative path for skip list matching
     let relPath = if (relPrefix.length > 0) {
       relPrefix + "/" + fileName
     } else {
       fileName
     };
     
-    // Build snapshot path: replace .zena with .ast.json
-    let snapshotPath = filePath.sliceBytes(0, filePath.length - 5) + ".ast.json";
-    
-    // Read source to check for @error directives
     let source = readFile(filePath);
     let directives = parseDirectives(source);
-    let isErrorTest = hasErrorDirective(directives);
 
-    let isSyntax = relPath.startsWith("syntax/");
-    let isSemantic = relPath.startsWith("semantics/");
-
-    // Test if snapshot exists (positive test) or @error directive present (error test)
-    if (isSemantic || exists(snapshotPath) || isErrorTest) {
-      let reason = isSkipped(relPath);
-      if (reason != null) {
-        // Skip — test is in skip list
-        // (zena:test doesn't have test.skip yet, so we just don't register it)
-      } else {
-        test(fileName, (ctx: TestContext): void => {
-          if (isSyntax) {
-            runSyntaxTest(source, filePath, directives, isErrorTest, snapshotPath, fileName);
-          } else {
-            runSemanticTest(source, filePath, directives);
-          }
-        });
-      }
+    let reason = isSkipped(relPath);
+    if (reason == null) {
+      test(fileName, (ctx: TestContext): void => {
+        runSemanticTest(source, filePath, directives);
+      });
     }
   }
   
-  // Recurse into subdirectories, each wrapped in a suite
   for (let subdir in subdirs) {
     let subName = subdir.name;
     let subPath = dirPath + "/" + subName;
@@ -444,6 +365,9 @@ let runTests = (dirPath: String, relPrefix: String): void => {
   }
 };
 
-export let tests = suite('Portable Tests', (): void => {
-  runTests("tests/language", "");
-});
+export let main = (): i32 => {
+  let root = suite('Portable Semantics Tests', (): void => {
+    runTests("tests/language/semantics", "semantics");
+  });
+  return runAndReport(root, (s: String): void => { console.log(s); });
+};

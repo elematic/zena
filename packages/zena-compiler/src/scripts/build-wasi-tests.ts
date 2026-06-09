@@ -82,6 +82,40 @@ try {
   failed = true;
 }
 
+const syntaxSrc = join(zenaDir, 'test', 'portable_syntax.zena');
+const syntaxWasm = join(outDir, 'test', 'portable_syntax.wasm');
+try {
+  console.log('Building portable syntax tests...');
+  execSync(
+    `node --stack-size=4096 "${cliPath}" build "${syntaxSrc}" --target wasi -g -l -o "${syntaxWasm}"`,
+    {
+      stdio: 'inherit',
+      cwd: repoRoot,
+    },
+  );
+  console.log(`  ✓ Portable syntax tests built successfully`);
+} catch (e: unknown) {
+  console.error(`  ✗ Portable syntax tests failed to build`);
+  failed = true;
+}
+
+const semanticsSrc = join(zenaDir, 'test', 'portable_semantics.zena');
+const semanticsWasm = join(outDir, 'test', 'portable_semantics.wasm');
+try {
+  console.log('Building portable semantics tests...');
+  execSync(
+    `node --stack-size=4096 "${cliPath}" build "${semanticsSrc}" --target wasi -g -l -o "${semanticsWasm}"`,
+    {
+      stdio: 'inherit',
+      cwd: repoRoot,
+    },
+  );
+  console.log(`  ✓ Portable semantics tests built successfully`);
+} catch (e: unknown) {
+  console.error(`  ✗ Portable semantics tests failed to build`);
+  failed = true;
+}
+
 if (failed) {
   process.exit(1);
 }

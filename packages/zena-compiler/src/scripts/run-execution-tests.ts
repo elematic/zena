@@ -1,6 +1,5 @@
-#!/usr/bin/env node
 import {execSync, spawnSync} from 'node:child_process';
-import {readFileSync} from 'node:fs';
+import {existsSync, readFileSync, statSync} from 'node:fs';
 import {dirname, join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
@@ -92,34 +91,54 @@ async function run() {
 
     const wasmOut = join(pkgDir, 'zena', 'out', 'execution', `${relPath}.wasm`);
     const watOut = join(pkgDir, 'zena', 'out', 'execution', `${relPath}.wat`);
+    const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 
-    execSync(`mkdir -p "$(dirname "${wasmOut}")"`);
+    let shouldCompile = true;
+    if (existsSync(wasmOut) && existsSync(zenaCli)) {
+      const wasmStat = statSync(wasmOut);
+      const fileStat = statSync(file);
+      const cliStat = statSync(zenaCli);
+      if (
+        wasmStat.mtimeMs > fileStat.mtimeMs &&
+        wasmStat.mtimeMs > cliStat.mtimeMs
+      ) {
+        shouldCompile = false;
+      }
+    }
 
     let compileError = false;
-    // Compile using self-hosted Zena CLI to generate WASM
-    try {
-      execSync(
-        `"${join(repoRoot, 'target', 'release', 'zena-cli')}" build "${file}" -o "${wasmOut}"`,
-        {stdio: 'pipe', cwd: repoRoot},
-      );
-    } catch (e: any) {
-      console.log(`${RED}✗${NC} ${relPath} (Compile Failed)`);
-      if (e.stdout?.toString()) {
-        console.log(e.stdout.toString().trim());
+    if (shouldCompile) {
+      execSync(`mkdir -p "$(dirname "${wasmOut}")"`);
+
+      // Compile using self-hosted Zena CLI to generate WASM
+      try {
+        execSync(`"${zenaCli}" build "${file}" -o "${wasmOut}"`, {
+          stdio: 'pipe',
+          cwd: repoRoot,
+        });
+      } catch (e: any) {
+        console.log(`${RED}✗${NC} ${relPath} (Compile Failed)`);
+        if (e.stdout?.toString()) {
+          console.log(e.stdout.toString().trim());
+        }
+        console.error(e.stderr?.toString() || e.message);
+        failed++;
+        compileError = true;
       }
-      console.error(e.stderr?.toString() || e.message);
-      failed++;
-      compileError = true;
+
+      if (!compileError) {
+        // Output WAT as well for debugging purposes
+        try {
+          execSync(`wasm-tools print "${wasmOut}" > "${watOut}"`, {
+            stdio: 'pipe',
+          });
+        } catch (e) {
+          // Ignore wasm-tools failure if not installed
+        }
+      }
     }
 
     if (compileError) continue;
-
-    // Output WAT as well for debugging purposes
-    try {
-      execSync(`wasm-tools print "${wasmOut}" > "${watOut}"`, {stdio: 'pipe'});
-    } catch (e) {
-      // Ignore wasm-tools failure if not installed
-    }
 
     // Run using zena-cli
     try {

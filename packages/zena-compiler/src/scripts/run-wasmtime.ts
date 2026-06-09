@@ -7,7 +7,7 @@
  */
 
 import {execSync, spawnSync} from 'node:child_process';
-import {dirname, join, relative} from 'node:path';
+import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
 
@@ -40,9 +40,17 @@ try {
 // Find all .wasm files
 const pattern = join(outDir, '**/*.wasm');
 const allWasmFiles = await glob(pattern);
-const wasmFiles = allWasmFiles.filter(
-  (f) => !f.endsWith('cli.wasm') && !f.includes('/execution/'),
+let wasmFiles = allWasmFiles.filter(
+  (f) =>
+    !f.endsWith('cli.wasm') &&
+    !f.includes('/execution/') &&
+    !f.endsWith('portable_syntax.wasm') &&
+    !f.endsWith('portable_semantics.wasm'),
 );
+
+if (process.argv[2]) {
+  wasmFiles = [resolve(process.argv[2])];
+}
 
 if (wasmFiles.length === 0) {
   console.error(`${YELLOW}No .wasm files found${NC}`);
