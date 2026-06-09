@@ -166,6 +166,8 @@ export async function compileAndInstantiate(
 
   imports.env = imports.env || {};
   imports.env.getStackTrace = imports.env.getStackTrace || (() => null);
+  imports.env.captureStackTrace = imports.env.captureStackTrace || (() => null);
+  imports.env.formatStackTrace = imports.env.formatStackTrace || (() => null);
 
   // Add default console mock if not present
   if (!imports.console) {
@@ -218,7 +220,12 @@ export async function compileAndInstantiate(
   try {
     const result = await WebAssembly.instantiate(bytes, {
       ...imports,
-      env: {getStackTrace: () => null, ...(imports as any).env},
+      env: {
+        getStackTrace: () => null,
+        captureStackTrace: () => null,
+        formatStackTrace: () => null,
+        ...(imports as any).env,
+      },
     });
     const instance = (result as any).instance || result;
     capturedExports = instance.exports;
@@ -318,7 +325,12 @@ export async function compileWithDetails(
 
   const result = await WebAssembly.instantiate(bytes, {
     ...imports,
-    env: {getStackTrace: () => null, ...(imports as any).env},
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+      ...(imports as any).env,
+    },
   });
   const instance = (result as any).instance || result;
   capturedExports = instance.exports;
@@ -633,7 +645,11 @@ export let getNestedTestError = (index: i32): String | null => nested().tests[in
   // Instantiate with console mocks
   let capturedExports: WebAssembly.Exports | null = null;
   const imports = {
-    env: {getStackTrace: () => null},
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+    },
     console: {
       log_i32: (v: number) => console.log(v),
       log_f32: (v: number) => console.log(v),
@@ -647,7 +663,12 @@ export let getNestedTestError = (index: i32): String | null => nested().tests[in
 
   const result = await WebAssembly.instantiate(bytes, {
     ...imports,
-    env: {getStackTrace: () => null, ...(imports as any).env},
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+      ...(imports as any).env,
+    },
   });
   const instance =
     result instanceof WebAssembly.Instance

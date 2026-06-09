@@ -36,7 +36,10 @@ suite('Codegen: Try/Catch', () => {
     let capturedExports: any;
     const imports = {
       env: {
-        getStackTrace: () => {
+        captureStackTrace: () => {
+          return {}; // dummy non-null object
+        },
+        formatStackTrace: (stack: any) => {
           if (capturedExports && capturedExports.$stringCreate) {
             const str = 'Fake stack trace from JS mock!';
             const ptr = capturedExports.$stringCreate(str.length);

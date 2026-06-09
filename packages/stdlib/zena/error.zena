@@ -1,15 +1,22 @@
 import { String } from 'zena:string';
 
-@external("env", "getStackTrace")
-declare function __getStackTrace(): String | null;
+@external("env", "captureStackTrace")
+declare function __captureStackTrace(): any;
+
+@external("env", "formatStackTrace")
+declare function __formatStackTrace(stack: any): String | null;
 
 export class Error {
   message: String;
+  #stackTrace: any;
 
-  new(message: String) : message = message {}
+  new(message: String) : message = message, #stackTrace = __captureStackTrace() {}
 
   getStackTrace(): String | null {
-    return __getStackTrace();
+    if (this.#stackTrace == null) {
+      return null;
+    }
+    return __formatStackTrace(this.#stackTrace);
   }
 }
 

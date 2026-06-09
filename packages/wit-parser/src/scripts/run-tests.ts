@@ -186,7 +186,11 @@ const runParser = async (
   const inputBytes = new TextEncoder().encode(inputString);
 
   const imports = {
-    env: {getStackTrace: () => null},
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+    },
     input: {
       getLength: () => inputBytes.length,
       getByte: (index: number) => inputBytes[index] ?? 0,

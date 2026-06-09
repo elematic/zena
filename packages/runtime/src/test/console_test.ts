@@ -62,7 +62,11 @@ async function compileAndRun(source: string) {
 
   const result = await WebAssembly.instantiate(wasm, {
     console: testConsole.imports,
-    env: {getStackTrace: () => null},
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+    },
   });
 
   // WebAssembly.instantiate returns WebAssemblyInstantiatedSource when given a buffer

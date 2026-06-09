@@ -233,6 +233,29 @@ export async function instantiate(
       const stack = new Error().stack || 'Stack trace unavailable';
       return writeString(stack);
     },
+    captureStackTrace: () => {
+      return new Error();
+    },
+    formatStackTrace: (err: unknown) => {
+      if (err == null) {
+        return null;
+      }
+      if (!(err instanceof Error)) {
+        throw new Error(
+          `formatStackTrace: expected Error instance, got ${typeof err}`,
+        );
+      }
+      if (!writeString && instanceExports) {
+        writeString = createStringWriter(instanceExports);
+      }
+      if (!writeString) {
+        throw new Error(
+          'formatStackTrace: writeString is not available (missing $stringCreate / $stringSetByte)',
+        );
+      }
+      const stack = err.stack || 'Stack trace unavailable';
+      return writeString(stack);
+    },
   };
 
   const defaultImports = {

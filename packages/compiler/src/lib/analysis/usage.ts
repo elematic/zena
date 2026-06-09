@@ -553,6 +553,9 @@ class UsageAnalyzer {
         const funcDecl = decl as DeclareFunction;
         for (const param of funcDecl.params) {
           visit(param.typeAnnotation, visitor, null);
+          if (param.initializer) {
+            visit(param.initializer, visitor, null);
+          }
         }
         visit(funcDecl.returnType, visitor, null);
         break;
@@ -566,6 +569,9 @@ class UsageAnalyzer {
         const funcExpr = decl as FunctionExpression;
         for (const param of funcExpr.params) {
           visit(param.typeAnnotation, visitor, null);
+          if (param.initializer) {
+            visit(param.initializer, visitor, null);
+          }
         }
         visit(funcExpr.returnType, visitor, null);
         visit(funcExpr.body, visitor, null);
@@ -1237,6 +1243,14 @@ class UsageAnalyzer {
     }
     visitedSet.add(methodName);
 
+    // If this is a constructor, propagate constructor usage to the superclass constructor
+    if (methodName === CONSTRUCTOR_NAME && visitKey.kind === TypeKind.Class) {
+      const classType = visitKey as ClassType;
+      if (classType.superType) {
+        this.#markMethodUsed(classType.superType, CONSTRUCTOR_NAME, false);
+      }
+    }
+
     // Find the class declaration
     const sourceType =
       classType.kind === TypeKind.Class
@@ -1257,11 +1271,24 @@ class UsageAnalyzer {
         const memberName = this.#getMemberName(method.name);
         if (memberName === methodName && method.body) {
           visit(method.body, visitor, null);
-          // Also visit parameter types
+          // Also visit parameters (types and default initializers)
           for (const param of method.params) {
             visit(param.typeAnnotation, visitor, null);
+            if (param.initializer) {
+              visit(param.initializer, visitor, null);
+            }
           }
           visit(method.returnType, visitor, null);
+          if (method.initializerList) {
+            for (const init of method.initializerList) {
+              visit(init.value, visitor, null);
+            }
+          }
+          if (method.superInitializer) {
+            for (const arg of method.superInitializer.arguments) {
+              visit(arg, visitor, null);
+            }
+          }
           return;
         }
       } else if (member.type === NodeType.AccessorDeclaration) {

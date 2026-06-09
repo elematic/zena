@@ -167,7 +167,11 @@ suite('name section', () => {
 
     // Instantiate and call main, catching the trap
     const imports = {
-      env: {getStackTrace: () => null},
+      env: {
+        getStackTrace: () => null,
+        captureStackTrace: () => null,
+        formatStackTrace: () => null,
+      },
       console: {
         log_i32: () => {},
         log_f32: () => {},
@@ -229,7 +233,11 @@ suite('name section', () => {
     const releaseBytes = compileWithOptions(source, {debug: false});
 
     const imports = {
-      env: {getStackTrace: () => null},
+      env: {
+        getStackTrace: () => null,
+        captureStackTrace: () => null,
+        formatStackTrace: () => null,
+      },
       console: {
         log_i32: () => {},
         log_f32: () => {},

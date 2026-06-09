@@ -5,6 +5,8 @@ import {compileToWasm} from './utils.js';
 const defaultImports = {
   env: {
     getStackTrace: () => null,
+    captureStackTrace: () => null,
+    formatStackTrace: () => null,
   },
   console: {
     log_i32: () => {},

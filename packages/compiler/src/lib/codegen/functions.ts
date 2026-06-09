@@ -498,8 +498,10 @@ export function registerDeclaredFunction(
     // that internalizes the externref back to the expected GC struct ref.
     const hasRefResult =
       results.length === 1 &&
-      results[0].length >= 2 &&
-      (results[0][0] === ValType.ref_null || results[0][0] === ValType.ref);
+      (results[0][0] === ValType.anyref ||
+        (results[0].length >= 2 &&
+          (results[0][0] === ValType.ref_null ||
+            results[0][0] === ValType.ref)));
 
     if (hasRefResult && !isWasi) {
       // Build the import with externref result type.
@@ -531,8 +533,10 @@ export function registerDeclaredFunction(
           body.push(...WasmModule.encodeSignedLEB128(importFuncIndex));
 
           body.push(0xfb, GcOpcode.any_convert_extern);
-          body.push(0xfb, GcOpcode.ref_cast_null);
-          body.push(...WasmModule.encodeSignedLEB128(targetTypeIdx));
+          if (results[0][0] !== ValType.anyref) {
+            body.push(0xfb, GcOpcode.ref_cast_null);
+            body.push(...WasmModule.encodeSignedLEB128(targetTypeIdx));
+          }
 
           body.push(Opcode.end);
           ctx.module.addCode(funcIndex, locals, body);

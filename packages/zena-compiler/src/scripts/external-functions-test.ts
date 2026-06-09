@@ -27,6 +27,8 @@ test('external function import and call from Node.js', async () => {
   const importObject = {
     env: {
       getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
       getAnswer: (n: number) => {
         callCount++;
         return n * 2;

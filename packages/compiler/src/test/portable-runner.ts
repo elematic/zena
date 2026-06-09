@@ -580,6 +580,27 @@ async function runExecutionTest(
         }
         return null;
       },
+      captureStackTrace: () => {
+        if (!instanceExports) return null;
+        return new Error();
+      },
+      formatStackTrace: (err: any) => {
+        if (!instanceExports) return null;
+        if (!stringWriter) {
+          try {
+            stringWriter = createStringWriter(instanceExports);
+          } catch (e) {
+            return null;
+          }
+        }
+        if (stringWriter && err instanceof Error) {
+          return stringWriter(
+            (err.stack || 'Stack trace unavailable') +
+              '\n  at foo (mock)\n  at bar (mock)\n  at baz (mock)\n  at main (mock)',
+          );
+        }
+        return null;
+      },
     },
     console: {
       log_i32: (v: number) => {
@@ -598,7 +619,12 @@ async function runExecutionTest(
 
   const result = await WebAssembly.instantiate(bytes, {
     ...imports,
-    env: {getStackTrace: () => null, ...imports?.env},
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+      ...imports?.env,
+    },
   });
   instanceExports = (result as any).instance.exports;
   // Initialize reader immediately if exports are available

@@ -15,7 +15,11 @@ suite('WasmEmitter', () => {
     );
 
     const result = await WebAssembly.instantiate(bytes, {
-      env: {getStackTrace: () => null},
+      env: {
+        getStackTrace: () => null,
+        captureStackTrace: () => null,
+        formatStackTrace: () => null,
+      },
     });
     // @ts-ignore
     assert.ok(result.instance);
@@ -46,7 +50,11 @@ suite('WasmEmitter', () => {
 
     const bytes = module.toBytes();
     const result = await WebAssembly.instantiate(bytes, {
-      env: {getStackTrace: () => null},
+      env: {
+        getStackTrace: () => null,
+        captureStackTrace: () => null,
+        formatStackTrace: () => null,
+      },
     });
 
     // @ts-ignore

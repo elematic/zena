@@ -22,7 +22,11 @@ async function instantiateWithStringExports() {
   const consoleImports = createConsoleImports(() => instanceExports);
   const result = await WebAssembly.instantiate(wasm, {
     console: consoleImports,
-    env: {getStackTrace: () => null},
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+    },
   });
   const instance = (result as any).instance || result;
   instanceExports = instance.exports;

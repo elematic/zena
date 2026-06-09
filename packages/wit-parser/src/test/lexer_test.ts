@@ -157,7 +157,11 @@ const instantiateLexerHarness = async (
   const inputBytes = new TextEncoder().encode(inputString);
 
   const imports = {
-    env: {getStackTrace: () => null},
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+    },
     input: {
       getLength: () => inputBytes.length,
       getByte: (index: number) => inputBytes[index] ?? 0,
@@ -358,7 +362,11 @@ suite('WIT Lexer - wasm-tools test files', async () => {
       const inputBytes = new TextEncoder().encode(source);
 
       const imports = {
-        env: {getStackTrace: () => null},
+        env: {
+          getStackTrace: () => null,
+          captureStackTrace: () => null,
+          formatStackTrace: () => null,
+        },
         input: {
           getLength: () => inputBytes.length,
           getByte: (index: number) => inputBytes[index] ?? 0,

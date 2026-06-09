@@ -95,7 +95,11 @@ async function loadLsp(): Promise<LspHandle> {
   };
 
   const result = await WebAssembly.instantiate(wasmBuffer, {
-    env: {getStackTrace: () => null},
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+    },
     console: consoleImports,
     compiler: compilerImports,
   });
