@@ -199,15 +199,25 @@ export class FunctionGenerator {
                     case _: ""
                   };
                   if (fieldName != "") {
+                    var actualFieldName = fieldName;
+                    if (this.ctx.wasmFunction.classType != null) {
+                      let ct = this.ctx.wasmFunction.classType as ClassType;
+                      if (ct.fieldSetterNames != null) {
+                        let m = ct.fieldSetterNames as HashMap<String, String>;
+                        if (m.has(fieldName)) {
+                          actualFieldName = m[fieldName];
+                        }
+                      }
+                    }
                     var fieldIndex = -1;
-                    let lookupName = if (fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#") {
+                    let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
                       if (this.ctx.wasmFunction.classType != null) {
-                        getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + fieldName
+                        getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + actualFieldName
                       } else {
-                        fieldName
+                        actualFieldName
                       }
                     } else {
-                      fieldName
+                      actualFieldName
                     };
                     for (var i = 0; i < structType.fields.length; i += 1) {
                       if (structType.fields[i].name == lookupName) {
@@ -232,15 +242,25 @@ export class FunctionGenerator {
               let fi = init as FieldInitializer;
               if (fi.field is Identifier) {
                 let fieldName = (fi.field as Identifier).name;
+                var actualFieldName = fieldName;
+                if (this.ctx.wasmFunction.classType != null) {
+                  let ct = this.ctx.wasmFunction.classType as ClassType;
+                  if (ct.fieldSetterNames != null) {
+                    let m = ct.fieldSetterNames as HashMap<String, String>;
+                    if (m.has(fieldName)) {
+                      actualFieldName = m[fieldName];
+                    }
+                  }
+                }
                 var fieldIndex = -1;
-                let lookupName = if (fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#") {
+                let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
                   if (this.ctx.wasmFunction.classType != null) {
-                    getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + fieldName
+                    getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + actualFieldName
                   } else {
-                    fieldName
+                    actualFieldName
                   }
                 } else {
-                  fieldName
+                  actualFieldName
                 };
                 for (var i = 0; i < structType.fields.length; i += 1) {
                   if (structType.fields[i].name == lookupName) {

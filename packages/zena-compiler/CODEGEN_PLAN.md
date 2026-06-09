@@ -86,19 +86,19 @@ This plan tracks all features required for the code generation phase to achieve 
 
 ### 5. Classes & Objects
 
-- [ ] **Fields & Getters/Setters:**
+- [x] **Fields & Getters/Setters:**
   - [x] Object field storage layouts for public, final, and private (`#`) fields
         in WASM structs.
   - [x] Constructor initialization lists (`: field = expr, super(...)`).
   - [x] Parameter properties (`this.field` constructor parameters).
   - [x] Private fields
-  - [ ] Mutable fields with private setters (`var(#foo) foo: i32;`)
+  - [x] Mutable fields with private setters (`var(#foo) foo: i32;`)
   - [x] Accessors (`get` / `set` computed properties) wrapping property accesses.
-- [ ] **Inheritance & Polymorphism:**
+- [x] **Inheritance & Polymorphism:**
   - [x] Single inheritance structural extension layouts in WASM GC.
   - [x] Virtual method dispatch tables (vtables) matching subclass overrides.
   - [x] Cross-module class name collision and registry deduplication.
-  - [ ] Static fields and class-level helper method execution.
+  - [x] Static fields and class-level helper method execution.
   - [x] Extension classes (`extension class A on B`) adding static/instance dispatch wrappers.
   - [x] Super calls in methods
   - [x] Implicit constructors

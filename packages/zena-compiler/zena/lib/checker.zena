@@ -5508,6 +5508,13 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               case Identifier {name}: name
               case _: fieldName
             };
+            if (fd.setterName is Identifier) {
+              if (classType.fieldSetterNames == null) {
+                classType.fieldSetterNames = new HashMap<String, String>();
+              }
+              let m = classType.fieldSetterNames as HashMap<String, String>;
+              m[fieldName] = (fd.setterName as Identifier).name;
+            }
           }
 
           if (ownFieldNames.has(actualFieldName)) {
@@ -5745,8 +5752,15 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               let param = ms.params[pi];
               let paramName = param.name.name;
               var paramType: Type = new ErrorType();
-              if (param.isThisParam && classType.members.has(paramName)) {
-                paramType = classType.members[paramName].type;
+              var lookupName = paramName;
+              if (classType.fieldSetterNames != null) {
+                let m = classType.fieldSetterNames as HashMap<String, String>;
+                if (m.has(paramName)) {
+                  lookupName = m[paramName];
+                }
+              }
+              if (param.isThisParam && classType.members.has(lookupName)) {
+                paramType = classType.members[lookupName].type;
               } else if (param.typeAnnotation != null) {
                 paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
               }
@@ -6315,9 +6329,16 @@ let checkMethodSignature = (
     let param = md.params[i];
     let paramName = param.name.name;
     var paramType: Type = new ErrorType();
-    if (param.isThisParam && classType.members.has(paramName)) {
+    var lookupName = paramName;
+    if (classType != null && classType.fieldSetterNames != null) {
+      let m = classType.fieldSetterNames as HashMap<String, String>;
+      if (m.has(paramName)) {
+        lookupName = m[paramName];
+      }
+    }
+    if (param.isThisParam && classType != null && classType.members.has(lookupName)) {
       // this.-style param inherits type from the class field.
-      paramType = classType.members[paramName].type;
+      paramType = classType.members[lookupName].type;
     } else if (param.typeAnnotation != null) {
       paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
           }
