@@ -5,7 +5,7 @@ import {
   ImportDeclaration, ImportSpecifier, ClassDeclaration, InterfaceDeclaration, DeclareFunction,
   TypeAliasDeclaration, RecordLiteral, MethodDefinition, FieldDefinition,
   AccessorDeclaration, SetterInfo, SuperInitializer, TypeParameter,
-  Parameter, TypeAnnotation, Decorator, Pattern
+  Parameter, TypeAnnotation, Decorator, Pattern, MemberExpression, AssignmentExpression
 } from '../ast.zena';
 import { walk } from '../visitor.zena';
 import { RecordType, TupleType } from '../types.zena';
@@ -220,6 +220,7 @@ export class WasmModule {
   interfaceVTableStructs = new HashMap<String, WasmStruct>();
   classInterfaceVTables = new HashMap<String, WasmGlobal>();
   usedInterfaceAdaptations = new HashMap<String, boolean>();
+  usedInterfaceMembers = new HashMap<String, boolean>();
   
   recordDispatchInfos = new Array<RecordDispatchInfo>();
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
@@ -558,6 +559,51 @@ export class DiscoveryPass {
    * Run the discovery pass on the program, populating the given WasmModule.
    */
   run(): void {
+    // Preliminary Pass: Discover all referenced interface members across all compilation units
+    for (let unit in this.program.units) {
+      let mod = unit.ast;
+      let moduleModel = unit.model;
+      walk(mod as Node, (n: Node) => true, (n: Node) => {
+        if (n is MemberExpression) {
+          let mem = n as MemberExpression;
+          let objType = moduleModel.getNodeType(mem.object);
+          if (objType is InterfaceType) {
+            let it = objType as InterfaceType;
+            let iName = getInterfaceKey(it);
+            let propName = mem.property.name;
+            if (it.members.has(propName)) {
+              let member = it.members[propName];
+              if (member is MethodInfo) {
+                this.wasm.usedInterfaceMembers[iName + "::" + propName] = true;
+              } else if (member is FieldInfo) {
+                this.wasm.usedInterfaceMembers[iName + "::get#" + propName] = true;
+              }
+            }
+          }
+        } else if (n is AssignmentExpression) {
+          let assign = n as AssignmentExpression;
+          if (assign.left is MemberExpression) {
+            let mem = assign.left as MemberExpression;
+            let objType = moduleModel.getNodeType(mem.object);
+            if (objType is InterfaceType) {
+              let it = objType as InterfaceType;
+              let iName = getInterfaceKey(it);
+              let propName = mem.property.name;
+              if (it.members.has(propName)) {
+                let member = it.members[propName];
+                if (member is FieldInfo) {
+                  let fi = member as FieldInfo;
+                  if (fi.isMutable) {
+                    this.wasm.usedInterfaceMembers[iName + "::set#" + propName] = true;
+                  }
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+
     for (let unit in this.program.units) {
       let mod = unit.ast;
       let moduleModel = unit.model;
@@ -798,19 +844,32 @@ export class DiscoveryPass {
           let ifaceType = moduleModel.getNodeType(ifaceDecl);
           if (ifaceType is InterfaceType) {
             let it = ifaceType as InterfaceType;
-            let vst = this.wasm.interfaceVTableStructs[getInterfaceKey(it)];
+            let iName = getInterfaceKey(it);
+            let vst = this.wasm.interfaceVTableStructs[iName];
             let keys = it.members.keys();
             while (let (true, key) = keys.next()) {
               let member = it.members[key];
               match (member) {
                 case FieldInfo as fi: {
-                  vst.fields.push(new WasmField("get#" + key, new ValTypeFuncRef(), false));
+                  let getterKey = iName + "::get#" + key;
+                  if (this.wasm.usedInterfaceMembers.has(getterKey)) {
+                    let sig = getInterfaceMemberSignature(this.wasm, it, "get#" + key);
+                    vst.fields.push(new WasmField("get#" + key, new ValTypeRef(sig), false));
+                  }
                   if (fi.isMutable) {
-                    vst.fields.push(new WasmField("set#" + key, new ValTypeFuncRef(), false));
+                    let setterKey = iName + "::set#" + key;
+                    if (this.wasm.usedInterfaceMembers.has(setterKey)) {
+                      let sig = getInterfaceMemberSignature(this.wasm, it, "set#" + key);
+                      vst.fields.push(new WasmField("set#" + key, new ValTypeRef(sig), false));
+                    }
                   }
                 }
                 case MethodInfo as mi: {
-                  vst.fields.push(new WasmField(key, new ValTypeFuncRef(), false));
+                  let methodKey = iName + "::" + key;
+                  if (this.wasm.usedInterfaceMembers.has(methodKey)) {
+                    let sig = getInterfaceMemberSignature(this.wasm, it, key);
+                    vst.fields.push(new WasmField(key, new ValTypeRef(sig), false));
+                  }
                 }
                 case _: {}
               }
@@ -1105,26 +1164,30 @@ export class DiscoveryPass {
                   if (member is FieldInfo) {
                     let fi = member as FieldInfo;
                     let getterName = "get#" + key;
-                    var hasGetter = false;
-                    for (let f in this.wasm.functions) {
-                      if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName == getterName) {
-                        hasGetter = true;
+                    if (this.wasm.usedInterfaceMembers.has(iName + "::" + getterName)) {
+                      var hasGetter = false;
+                      for (let f in this.wasm.functions) {
+                        if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName == getterName) {
+                          hasGetter = true;
+                        }
                       }
-                    }
-                    if (!hasGetter) {
-                      registerClassMethod(getterName, null, true, false, key);
+                      if (!hasGetter) {
+                        registerClassMethod(getterName, null, true, false, key);
+                      }
                     }
                     
                     if (fi.isMutable) {
                       let setterName = "set#" + key;
-                      var hasSetter = false;
-                      for (let f in this.wasm.functions) {
-                        if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName == setterName) {
-                          hasSetter = true;
+                      if (this.wasm.usedInterfaceMembers.has(iName + "::" + setterName)) {
+                        var hasSetter = false;
+                        for (let f in this.wasm.functions) {
+                          if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName == setterName) {
+                            hasSetter = true;
+                          }
                         }
-                      }
-                      if (!hasSetter) {
-                        registerClassMethod(setterName, null, false, true, key);
+                        if (!hasSetter) {
+                          registerClassMethod(setterName, null, false, true, key);
+                        }
                       }
                     }
                   }
@@ -1290,10 +1353,10 @@ export class DiscoveryPass {
              }
              currClass = (currClass as ClassType).superType;
           }
-          if (foundFunc != null) {
-              newFields.push(new WasmField(field.name, new ValTypeFuncRef(), false));
-              methods.push(foundFunc);
-          } else {
+           if (foundFunc != null) {
+               newFields.push(new WasmField(field.name, new ValTypeRef((foundFunc as WasmFunction).signature), false));
+               methods.push(foundFunc);
+           } else {
              // push dummy? or fail?
              newFields.push(field);
              methods.push(this.wasm.functions[0]);

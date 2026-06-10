@@ -236,9 +236,6 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           throw new Error("Could not find function for method call: " + targetName);
         }
 
-        // Cast the generic funcref from the vtable to the specific implementation signature type
-        ctx.emitter.emitRefCast((foundFunc as WasmFunction).signature.index);
-
         // 3. Call reference
         ctx.emitter.emitCallRef((foundFunc as WasmFunction).signature.index);
         return;
@@ -276,11 +273,9 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         
         ctx.emitter.emitLocalGet(scratchLocal);
         ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
-        ctx.emitter.emitRefCast(vst.index);
         ctx.emitter.emitStructGet(vst.index, methodIndex); // Get Function reference
         
         let sig = getInterfaceMemberSignature(ctx.wasm, it, targetName);
-        ctx.emitter.emitRefCast(sig.index);
         ctx.emitter.emitCallRef(sig.index);
         return;
       }
