@@ -5073,6 +5073,16 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
  * and sealed variant types. Does NOT check method bodies, field
  * initializers, or accessor bodies — that happens in checkClassBodies.
  */
+let synthesizeCaseClassMembers = (ct: ClassType): void => {
+  let hashType = new FunctionType(new Array<Type>(), null, new I32Type());
+  ct.members["hashCode"] = new MethodInfo(hashType, false, false, false, false);
+
+  let eqParams = new Array<Type>();
+  eqParams.push(new AnyType());
+  let eqType = new FunctionType(eqParams, null, new BooleanType());
+  ct.members["=="] = new MethodInfo(eqType, false, false, false, false);
+};
+
 let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   // Access Identifier.name directly. In Zena AST, ClassDeclaration.name is an Identifier
   // which has a .name: String field. Use cd.name.name directly.
@@ -5141,6 +5151,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   if (cd.caseParams != null && !cd.isSealed) {
     classType.isFinal = true;
     classType.isCaseClass = true;
+    synthesizeCaseClassMembers(classType);
   }
 
   // Sealed classes: register forward variant names.
@@ -5892,6 +5903,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         );
         vCtorType.optionalParameters = vCtorOptionalParams;
         variantType.constructorType = vCtorType;
+        synthesizeCaseClassMembers(variantType);
 
         (classType.sealedVariants as Array<ClassType>).push(variantType);
 
@@ -5935,6 +5947,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                     new Array<Type>(), new Array<String>(), ct
                   );
                 }
+                synthesizeCaseClassMembers(ct);
               }
             }
             let sealedVars = classType.sealedVariants as Array<ClassType>;
@@ -5955,6 +5968,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             unitType.constructorType = new FunctionType(
               new Array<Type>(), new Array<String>(), unitType
             );
+            synthesizeCaseClassMembers(unitType);
 
             (classType.sealedVariants as Array<ClassType>).push(unitType);
             ctx.declareModuleTypeName(variantName, unitType);
@@ -8542,6 +8556,8 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         );
         return;
       }
+      ctx.model.setNodeType(cp.name, classType as Type);
+      ctx.model.setNodeType(cp, classType as Type);
       // Resolve field types from the class.
       let props = cp.properties;
       var pi = 0;
@@ -8629,6 +8645,9 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         // Check if this identifier refers to a sealed variant (unit variant pattern).
         // If so, skip binding — it's a type match, not a variable binding.
         let resolvedType = ctx.resolveTypeName(ident.name);
+        if (resolvedType != null) {
+          ctx.model.setNodeType(ident, resolvedType as Type);
+        }
         var isVariant = false;
         if (resolvedType != null) {
           match (resolvedType as Type) {

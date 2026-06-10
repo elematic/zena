@@ -1,7 +1,8 @@
 import { ValTypeI32, ValTypeF32, ValTypeF64 } from './wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature, DiscoveryPass,
-  WasmExport, WasmGlobal, WasmStruct, VTableInit
+  WasmExport, WasmGlobal, WasmStruct, VTableInit, getClassKey
 } from './wasm-module.zena';
+import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral } from '../ast.zena';
 import { String } from 'zena:string';
@@ -119,6 +120,13 @@ export class ModuleGenerator {
           this.emitter.emitRefFunc(func.index);
         }
         this.emitter.emitStructNew(vtableInit.structType.index);
+      } else if (g.initSingletonStruct != null) {
+        let cType = g.initSingletonStruct as ClassType;
+        let cKey = getClassKey(cType);
+        let structType = wasm.classStructs[cKey];
+        let vtableGlobal = wasm.classVTableGlobals[cKey];
+        this.emitter.emitGlobalGet(vtableGlobal.index);
+        this.emitter.emitStructNew(structType.index);
       }
       this.emitter.emitGlobalEnd();
     }

@@ -4,7 +4,7 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
-import { typeToValType, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature } from '../wasm-module.zena';
+import { typeToValType, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature, getClassMemberSignature } from '../wasm-module.zena';
 
 /**
  * Generates WASM code for an assignment expression.
@@ -255,21 +255,6 @@ export let generateAssignmentExpression = (
             }
             return;
           } else {
-            var foundFunc: WasmFunction | null = null;
-            var currClass: ClassType | null = ct;
-            while (currClass != null && foundFunc == null) {
-              for (let f in ctx.wasm.functions) {
-                if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == setterName) {
-                  foundFunc = f;
-                }
-              }
-              currClass = (currClass as ClassType).superType;
-            }
-
-            if (foundFunc == null) {
-              throw new Error("Could not find implementation for setter: " + setterName);
-            }
-
             genExpr(memExpr.object, false);
             var scratchLocal = ctx.getStructScratchLocal(structInfo);
             ctx.emitter.emitLocalTee(scratchLocal);
@@ -285,7 +270,9 @@ export let generateAssignmentExpression = (
             ctx.emitter.emitRefCast(vtableStruct.index);
             ctx.emitter.emitStructGet(vtableStruct.index, vtableIndex);
 
-            ctx.emitter.emitCallRef((foundFunc as WasmFunction).signature.index);
+            let sig = getClassMemberSignature(ctx.wasm, ct, setterName);
+            ctx.emitter.emitRefCast(sig.index);
+            ctx.emitter.emitCallRef(sig.index);
 
             if (!discardValue) {
               ctx.emitter.emitLocalGet(tempLocal);

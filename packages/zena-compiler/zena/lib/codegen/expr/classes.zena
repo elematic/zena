@@ -15,10 +15,16 @@ export let generateNewExpression = (
   let nodeType = ctx.wasmFunction.model.getNodeType(expr);
   if (nodeType is ClassType) {
     let classType = nodeType as ClassType;
-    if (!ctx.wasm.classStructs.has(getClassKey(classType))) {
+    let cKey = getClassKey(classType);
+    if (ctx.wasm.classSingletonGlobals.has(cKey)) {
+      let singletonGlobal = ctx.wasm.classSingletonGlobals[cKey];
+      ctx.emitter.emitGlobalGet(singletonGlobal.index);
+      return;
+    }
+    if (!ctx.wasm.classStructs.has(cKey)) {
       throw new Error("Class struct not found: " + classType.name);
     }
-    let structType = ctx.wasm.classStructs[getClassKey(classType)];
+    let structType = ctx.wasm.classStructs[cKey];
     let emptyLocal = ctx.allocLocal(new ValTypeRefNull(structType));
     
     ctx.emitter.emitStructNewDefault(structType.index);

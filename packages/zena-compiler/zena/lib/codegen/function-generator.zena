@@ -1,14 +1,14 @@
-import { ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeAnyRef, ValTypeEqRef, ValTypeF64, ValTypeI32, valTypeEquals } from './wasm.zena';
+import { ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeAnyRef, ValTypeEqRef, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeVoid, valTypeEquals } from './wasm.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
-  Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
+  Identifier, NumberLiteral, BooleanLiteral, StringLiteral, NullLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
   IfStatement, IfExpression, WhileStatement, ForStatement, BreakStatement,
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
   IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
   ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition,
-  AccessorDeclaration, SetterInfo, AsExpression
+  AccessorDeclaration, SetterInfo, AsExpression, MatchExpression
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
@@ -33,6 +33,7 @@ import { generateCallExpression } from './expr/calls.zena';
 import { generateAssignmentExpression } from './expr/assignment.zena';
 import { generateIfExpression } from './expr/control-flow.zena';
 import { generateNewExpression } from './expr/classes.zena';
+import { generateMatchExpression } from './expr/match.zena';
 import { generateMemberExpression, generateIndexExpression } from './expr/member.zena';
 import { generateRecordLiteral, generateTupleLiteral } from './expr/literals.zena';
 import { generateReturnStatement, generateExpressionStatement, generateIfStatement } from './stmt/control-flow.zena';
@@ -99,7 +100,13 @@ export class FunctionGenerator {
       this.ctx.emitter.emitFunctionSignatureStart(name, this.ctx.wasmFunction.signature.index);
       this.ctx.emitter.emitFunctionLocalsStart(new Array<ValType>());
       
-      if (this.ctx.wasmFunction.getterStruct != null) {
+      if (this.ctx.wasmFunction.isCaseClassEq) {
+        this.generateCaseClassEqBody();
+      } else if (this.ctx.wasmFunction.isCaseClassHash) {
+        this.generateCaseClassHashBody();
+      } else if (this.ctx.wasmFunction.methodName != null && (this.ctx.wasmFunction.methodName as String) == "<constructor>" && this.ctx.wasmFunction.classType != null && (this.ctx.wasmFunction.classType as ClassType).isCaseClass) {
+        this.generateCaseClassConstructorBody();
+      } else if (this.ctx.wasmFunction.getterStruct != null) {
         let st = this.ctx.wasmFunction.getterStruct as WasmStruct;
         this.ctx.emitter.emitLocalGet(0);
         this.ctx.emitter.emitRefCast(st.index);
@@ -414,6 +421,9 @@ export class FunctionGenerator {
       case NumberLiteral: generateNumberLiteral(this.ctx, expr as NumberLiteral)
       case BooleanLiteral: generateBooleanLiteral(this.ctx, expr as BooleanLiteral)
       case StringLiteral: generateStringLiteral(this.ctx, expr as StringLiteral)
+      case NullLiteral: {
+        this.ctx.emitter.emitRefNull(-15); // HeapType.none
+      }
       case RecordLiteral: generateRecordLiteral(this.ctx, expr as RecordLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case TupleLiteral: generateTupleLiteral(this.ctx, expr as TupleLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
@@ -434,6 +444,16 @@ export class FunctionGenerator {
       }
       case IfExpression: {
         generateIfExpression(this.ctx, expr as IfExpression, discardValue, (e: Expression, d: boolean = false) => this.generateExpression(e, d), (s: Statement) => this.generateStatement(s));
+        handlesDiscardNatively = true;
+      }
+      case MatchExpression: {
+        generateMatchExpression(
+          this.ctx,
+          expr as MatchExpression,
+          discardValue,
+          (e, d) => this.generateExpression(e, d),
+          (s) => this.generateStatement(s)
+        );
         handlesDiscardNatively = true;
       }
       case SuperExpression: {
@@ -588,5 +608,192 @@ export class FunctionGenerator {
         this.ctx.emitter.emitDrop();
       }
     }
+  }
+
+  generateCaseClassEqBody(): void {
+    let cType = this.ctx.wasmFunction.classType as ClassType;
+    let structType = this.ctx.wasmFunction.structType as WasmStruct;
+
+    if (structType.fields.length <= 1) {
+      this.ctx.emitter.emitLocalGet(1);
+      this.ctx.emitter.emitRefTest(structType.index);
+    } else {
+      this.ctx.emitter.emitLocalGet(1);
+      this.ctx.emitter.emitRefTest(structType.index);
+      this.ctx.emitter.emitI32Eqz();
+      this.ctx.emitter.emitIf(new ValTypeI32());
+      this.ctx.emitter.emitI32Const(0);
+      this.ctx.emitter.emitElse();
+
+      var firstField = true;
+      for (var fi = 0; fi < structType.fields.length; fi += 1) {
+        let f = structType.fields[fi];
+        if (f.name == "<vtable>") { continue; }
+
+        this.ctx.emitter.emitLocalGet(0);
+        this.ctx.emitter.emitStructGet(structType.index, fi);
+
+        this.ctx.emitter.emitLocalGet(1);
+        this.ctx.emitter.emitRefCast(structType.index);
+        this.ctx.emitter.emitStructGet(structType.index, fi);
+
+        let ft = f.type;
+        match (ft) {
+          case ValTypeI32: this.ctx.emitter.emitI32Eq()
+          case ValTypeF64: this.ctx.emitter.emitF64Eq()
+          case ValTypeF32: this.ctx.emitter.emitF32Eq()
+          case _: this.ctx.emitter.emitRefEq()
+        }
+
+        if (!firstField) {
+          this.ctx.emitter.emitI32And();
+        }
+        firstField = false;
+      }
+      this.ctx.emitter.emitEnd();
+    }
+
+    this.ctx.emitter.emitReturn();
+  }
+
+  generateCaseClassHashBody(): void {
+    let cType = this.ctx.wasmFunction.classType as ClassType;
+    let structType = this.ctx.wasmFunction.structType as WasmStruct;
+
+    if (structType.fields.length <= 1) {
+      this.ctx.emitter.emitI32Const(0);
+    } else {
+      var firstField = true;
+      for (var fi = 0; fi < structType.fields.length; fi += 1) {
+        let f = structType.fields[fi];
+        if (f.name == "<vtable>") { continue; }
+
+        if (!firstField) {
+          this.ctx.emitter.emitI32Const(31);
+          this.ctx.emitter.emitI32Mul();
+        }
+
+        this.ctx.emitter.emitLocalGet(0);
+        this.ctx.emitter.emitStructGet(structType.index, fi);
+
+        let ft = f.type;
+        match (ft) {
+          case ValTypeI32: {}
+          case _: {
+             this.ctx.emitter.emitDrop();
+             this.ctx.emitter.emitI32Const(0);
+          }
+        }
+
+        if (!firstField) {
+          this.ctx.emitter.emitI32Add();
+        }
+        firstField = false;
+      }
+    }
+
+    this.ctx.emitter.emitReturn();
+  }
+
+  generateCaseClassConstructorBody(): void {
+    let cType = this.ctx.wasmFunction.classType as ClassType;
+    let structType = this.ctx.wasmFunction.structType as WasmStruct;
+
+    if (cType.superType != null) {
+      let st = cType.superType as ClassType;
+      var ctorFunc: WasmFunction | null = null;
+      for (let f in this.ctx.wasm.functions) {
+        if (f.classType != null && (f.classType as ClassType).id == st.id && f.methodName == "<constructor>") {
+          ctorFunc = f;
+          break;
+        }
+      }
+      if (ctorFunc != null) {
+        this.ctx.emitter.emitLocalGet(0);
+        this.ctx.emitter.emitCall(ctorFunc as WasmFunction);
+      }
+    }
+    
+    if (cType.constructorType != null) {
+      let ctorType = cType.constructorType as FunctionType;
+      if (ctorType.parameterNames != null) {
+        let parameterNames = ctorType.parameterNames as Array<String>;
+        var pi = 0;
+        while (pi < ctorType.parameters.length) {
+          let pName = parameterNames[pi];
+          let lookupName = if (pName.length > 0 && pName.sliceBytes(0, 1) == "#") {
+            getClassKey(cType) + "::" + pName
+          } else {
+            pName
+          };
+          var fieldIdx = -1;
+          for (var fi = 0; fi < structType.fields.length; fi += 1) {
+            if (structType.fields[fi].name == lookupName) {
+              fieldIdx = fi;
+            }
+          }
+          if (fieldIdx >= 0) {
+            this.ctx.emitter.emitLocalGet(0);
+            this.ctx.emitter.emitLocalGet(pi + 1);
+            this.ctx.emitter.emitStructSet(structType.index, fieldIdx);
+          }
+          pi += 1;
+        }
+      }
+    }
+    
+    let classDecl = this.ctx.wasmFunction.classDecl;
+    if (classDecl != null) {
+      let cd = classDecl as ClassDeclaration;
+      let mixinFields = new Array<FieldDefinition>();
+      let seenMixins = new HashMap<String, boolean>();
+      collectMixinFields(this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
+
+      let allFields = new Array<FieldDefinition>();
+      for (let member in cd.body) {
+        if (member is FieldDefinition) {
+          allFields.push(member as FieldDefinition);
+        }
+      }
+      for (let fd in mixinFields) {
+        allFields.push(fd);
+      }
+
+      for (let fd in allFields) {
+        if (fd.value != null && !fd.isStatic) {
+          let fieldName = match (fd.name) {
+            case Identifier {name}: name
+            case _: ""
+          };
+          if (fieldName != "") {
+            var actualFieldName = fieldName;
+            if (cType.fieldSetterNames != null) {
+              let m = cType.fieldSetterNames as HashMap<String, String>;
+              if (m.has(fieldName)) {
+                actualFieldName = m[fieldName];
+              }
+            }
+            var fieldIndex = -1;
+            let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
+              getClassKey(cType) + "::" + actualFieldName
+            } else {
+              actualFieldName
+            };
+            for (var i = 0; i < structType.fields.length; i += 1) {
+              if (structType.fields[i].name == lookupName) {
+                fieldIndex = i;
+              }
+            }
+            if (fieldIndex >= 0) {
+              this.ctx.emitter.emitLocalGet(0);
+              this.generateExpression(fd.value as Expression);
+              this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
+            }
+          }
+        }
+      }
+    }
+
+    this.ctx.emitter.emitReturn();
   }
 }

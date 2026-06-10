@@ -4,10 +4,9 @@ import { Type, F64Type, F32Type, I32Type, RecordType, ClassType, ArrayType,
 } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
-import { ValType } from '../wasm.zena';
-import { typeToValType } from '../wasm-module.zena';
+import { ValType, ValTypeI32 } from '../wasm.zena';
+import { typeToValType, WasmField, WasmFunction, getClassKey } from '../wasm-module.zena';
 import { Array } from 'zena:array';
-import { WasmField } from '../wasm-module.zena';
 
 export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (un.operator == "-") {
@@ -40,6 +39,25 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
   
   if (leftType == null || rightType == null) {
     throw new Error("Missing type info in semantic model for binary expression operands");
+  }
+  
+  if (bin.operator == "&&") {
+    genExpr(bin.left, false);
+    ctx.emitter.emitIf(new ValTypeI32());
+    genExpr(bin.right, false);
+    ctx.emitter.emitElse();
+    ctx.emitter.emitI32Const(0);
+    ctx.emitter.emitEnd();
+    return;
+  }
+  if (bin.operator == "||") {
+    genExpr(bin.left, false);
+    ctx.emitter.emitIf(new ValTypeI32());
+    ctx.emitter.emitI32Const(1);
+    ctx.emitter.emitElse();
+    genExpr(bin.right, false);
+    ctx.emitter.emitEnd();
+    return;
   }
   
   var isFloatContext = false;
@@ -91,10 +109,40 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     
     if (isRefContext) {
       match (bin.operator) {
-        case "==": ctx.emitter.emitRefEq()
+        case "==": {
+          var eqFunc: WasmFunction | null = null;
+          if (leftType is ClassType) {
+            let ct = leftType as ClassType;
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && (f.classType as ClassType).id == ct.id && f.methodName == "==") {
+                eqFunc = f;
+                break;
+              }
+            }
+          }
+          if (eqFunc != null) {
+            ctx.emitter.emitCall(eqFunc as WasmFunction);
+          } else {
+            ctx.emitter.emitRefEq();
+          }
+        }
         case "!=": {
-           ctx.emitter.emitRefEq();
-           ctx.emitter.emitI32Eqz();
+          var eqFunc: WasmFunction | null = null;
+          if (leftType is ClassType) {
+            let ct = leftType as ClassType;
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && (f.classType as ClassType).id == ct.id && f.methodName == "==") {
+                eqFunc = f;
+                break;
+              }
+            }
+          }
+          if (eqFunc != null) {
+            ctx.emitter.emitCall(eqFunc as WasmFunction);
+          } else {
+            ctx.emitter.emitRefEq();
+          }
+          ctx.emitter.emitI32Eqz();
         }
         case "===": ctx.emitter.emitRefEq()
         case "!==": {

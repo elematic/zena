@@ -110,9 +110,9 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Multi-interface implementation handling and vtable pointer selection.
 - [x] **Mixins:**
   - [x] Field and method composition from `mixin` definitions into target class structures.
-- [ ] **Case & Sealed Classes:**
-  - [ ] Auto-generation of constructor, structural `==`, `hashCode`, and field properties for case classes.
-  - [ ] Sealed class variant type discriminators (tagging variant classes).
+- [x] **Case & Sealed Classes:**
+  - [x] Auto-generation of constructor, structural `==`, `hashCode`, and field properties for case classes.
+  - [x] Sealed class variant type discriminators (tagging variant classes).
   - [x] Enums (constant-folded during member access to bypass runtime struct allocation).
 
 ### 7. Control Flow, Pattern Matching, & Iteration

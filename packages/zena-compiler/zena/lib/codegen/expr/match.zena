@@ -1,0 +1,297 @@
+import { FunctionContext } from '../function-context.zena';
+import { 
+  MatchExpression, MatchCase, Expression, BlockStatement, Statement, ExpressionStatement, Node,
+  IdentifierPattern, Identifier, AsPattern, ClassPattern, RecordPattern, TuplePattern, LogicalPattern,
+  BindingPattern, NullLiteral, NumberLiteral, BooleanLiteral, StringLiteral
+} from '../../ast.zena';
+import { Type, F64Type, F32Type, VoidType, ClassType, typeToString } from '../../types.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull } from '../wasm.zena';
+import { typeToValType, getClassKey } from '../wasm-module.zena';
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+
+export let generateMatchExpression = (
+  ctx: FunctionContext,
+  expr: MatchExpression,
+  discardValue: boolean,
+  genExpr: (e: Expression, discardValue: boolean) => void,
+  genStmt: (s: Statement) => void
+): void => {
+  // 1. Evaluate discriminant and store in temp local
+  let discType = ctx.wasmFunction.model.getNodeType(expr.discriminant) as Type;
+  let discWasmType = typeToValType(ctx.wasm, discType);
+  genExpr(expr.discriminant, false);
+  let tempDiscriminant = ctx.allocLocal(discWasmType);
+  ctx.emitter.emitLocalSet(tempDiscriminant);
+
+  // 2. Determine match block result type
+  let nodeType = ctx.wasmFunction.model.getNodeType(expr);
+  var resultValType: ValType = new ValTypeVoid();
+  if (!discardValue) {
+    if (nodeType is F64Type) {
+      resultValType = new ValTypeF64();
+    } else if (nodeType is F32Type) {
+      resultValType = new ValTypeF32();
+    } else if (nodeType != null && !(nodeType is VoidType)) {
+      resultValType = typeToValType(ctx.wasm, nodeType as Type);
+    }
+  }
+
+  // 3. Emit outer block
+  ctx.emitter.emitBlock(resultValType);
+  ctx.enterBlockStructure();
+
+  // 4. Emit cases
+  var i = 0;
+  while (i < expr.cases.length) {
+    let mc = expr.cases[i];
+    
+    // Case block
+    ctx.emitter.emitBlock(new ValTypeVoid());
+    ctx.enterBlockStructure();
+
+    // Pattern check
+    generateMatchPatternCheck(ctx, mc.pattern, tempDiscriminant, discWasmType);
+    ctx.emitter.emitI32Eqz();
+    ctx.emitter.emitBrIf(0); // br to end of case block if check fails
+
+    // Bind variables
+    generateMatchPatternBindings(ctx, mc.pattern, tempDiscriminant, discWasmType);
+
+    // Guard (if exists)
+    if (mc.guard != null) {
+      genExpr(mc.guard as Expression, false);
+      ctx.emitter.emitI32Eqz();
+      ctx.emitter.emitBrIf(0);
+    }
+
+    // Body
+    let dropResult = discardValue || resultValType is ValTypeVoid;
+    if (mc.body is BlockStatement) {
+      let block = mc.body as BlockStatement;
+      if (dropResult) {
+        genStmt(block);
+      } else {
+        for (var bi = 0; bi < block.body.length - 1; bi += 1) {
+          genStmt(block.body[bi]);
+        }
+        if (block.body.length > 0) {
+          let lastStmt = block.body[block.body.length - 1];
+          if (lastStmt is ExpressionStatement) {
+            genExpr((lastStmt as ExpressionStatement).expression, false);
+          } else {
+            genStmt(lastStmt);
+          }
+        }
+      }
+    } else if (mc.body is Expression) {
+      genExpr(mc.body as Expression, dropResult);
+    }
+
+    // Break to outer match block
+    ctx.emitter.emitBr(1);
+
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd(); // end case block
+
+    i += 1;
+  }
+
+  // If no cases match at runtime
+  ctx.emitter.emitUnreachable();
+
+  ctx.exitBlockStructure();
+  ctx.emitter.emitEnd(); // end match block
+};
+
+let generateMatchPatternCheck = (
+  ctx: FunctionContext,
+  pattern: Node,
+  discriminantLocal: i32,
+  discriminantType: ValType
+): void => {
+  match (pattern) {
+    case IdentifierPattern as pat: {
+      ctx.emitter.emitI32Const(1);
+    }
+    case Identifier as ident: {
+      if (ident.name == "_") {
+        ctx.emitter.emitI32Const(1);
+      } else {
+        let patType = ctx.wasmFunction.model.getNodeType(pattern);
+        if (patType != null && patType is ClassType) {
+          let ct = patType as ClassType;
+          let st = ctx.wasm.classStructs[getClassKey(ct)];
+          ctx.emitter.emitLocalGet(discriminantLocal);
+          ctx.emitter.emitRefTest(st.index);
+        } else {
+          ctx.emitter.emitI32Const(1);
+        }
+      }
+    }
+    case AsPattern as ap: {
+      generateMatchPatternCheck(ctx, ap.pattern, discriminantLocal, discriminantType);
+    }
+    case ClassPattern as cp: {
+      let ct = ctx.wasmFunction.model.getNodeType(cp.name) as ClassType;
+      let st = ctx.wasm.classStructs[getClassKey(ct)];
+      
+      // 1. Check type
+      ctx.emitter.emitLocalGet(discriminantLocal);
+      ctx.emitter.emitRefTest(st.index);
+
+      // 2. Check properties
+      if (cp.properties.length > 0) {
+        ctx.emitter.emitIf(new ValTypeI32());
+        
+        ctx.emitter.emitLocalGet(discriminantLocal);
+        ctx.emitter.emitRefCast(st.index);
+        let tempCasted = ctx.allocLocal(new ValTypeRefNull(st));
+        ctx.emitter.emitLocalSet(tempCasted);
+
+        ctx.emitter.emitI32Const(1); // accumulator
+
+        for (let prop in cp.properties) {
+          if (!(prop.value is IdentifierPattern && (prop.value as IdentifierPattern).name == "_") &&
+              !(prop.value is Identifier && (prop.value as Identifier).name == "_")) {
+            
+            let propName = prop.name.name;
+            var fieldIdx = -1;
+            var fieldWasmType: ValType = new ValTypeI32();
+            for (var fi = 0; fi < st.fields.length; fi += 1) {
+              if (st.fields[fi].name == propName) {
+                fieldIdx = fi;
+                fieldWasmType = st.fields[fi].type;
+              }
+            }
+            if (fieldIdx >= 0) {
+              ctx.emitter.emitLocalGet(tempCasted);
+              ctx.emitter.emitStructGet(st.index, fieldIdx);
+              let tempField = ctx.allocLocal(fieldWasmType);
+              ctx.emitter.emitLocalSet(tempField);
+
+              generateMatchPatternCheck(ctx, prop.value, tempField, fieldWasmType);
+              ctx.emitter.emitI32And();
+            }
+          }
+        }
+
+        ctx.emitter.emitElse();
+        ctx.emitter.emitI32Const(0);
+        ctx.emitter.emitEnd();
+      }
+    }
+    case LogicalPattern as lp: {
+      if (lp.operator == "||") {
+        generateMatchPatternCheck(ctx, lp.left, discriminantLocal, discriminantType);
+        ctx.emitter.emitIf(new ValTypeI32());
+        ctx.emitter.emitI32Const(1);
+        ctx.emitter.emitElse();
+        generateMatchPatternCheck(ctx, lp.right, discriminantLocal, discriminantType);
+        ctx.emitter.emitEnd();
+      } else {
+        generateMatchPatternCheck(ctx, lp.left, discriminantLocal, discriminantType);
+        ctx.emitter.emitIf(new ValTypeI32());
+        generateMatchPatternCheck(ctx, lp.right, discriminantLocal, discriminantType);
+        ctx.emitter.emitElse();
+        ctx.emitter.emitI32Const(0);
+        ctx.emitter.emitEnd();
+      }
+    }
+    case BindingPattern as bp: {
+      generateMatchPatternCheck(ctx, bp.pattern, discriminantLocal, discriminantType);
+    }
+    case NullLiteral: {
+      ctx.emitter.emitLocalGet(discriminantLocal);
+      ctx.emitter.emitRefIsNull();
+    }
+    case _: {
+      ctx.emitter.emitI32Const(1);
+    }
+  }
+};
+
+let generateMatchPatternBindings = (
+  ctx: FunctionContext,
+  pattern: Node,
+  discriminantLocal: i32,
+  discriminantType: ValType
+): void => {
+  match (pattern) {
+    case IdentifierPattern as pat: {
+      if (pat.name != "_") {
+        let sym = ctx.wasmFunction.model.resolveDeclaration(pat);
+        if (sym != null && ctx.localIndices.has(sym.id)) {
+          let idx = ctx.localIndices[sym.id];
+          ctx.emitter.emitLocalGet(discriminantLocal);
+          ctx.emitter.emitLocalSet(idx);
+        }
+      }
+    }
+    case Identifier as ident: {
+      if (ident.name != "_") {
+        let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
+        if (sym != null && ctx.localIndices.has(sym.id)) {
+          let idx = ctx.localIndices[sym.id];
+          ctx.emitter.emitLocalGet(discriminantLocal);
+          ctx.emitter.emitLocalSet(idx);
+        }
+      }
+    }
+    case AsPattern as ap: {
+      let sym = ctx.wasmFunction.model.resolveDeclaration(ap.name);
+      if (sym != null && ctx.localIndices.has(sym.id)) {
+        let idx = ctx.localIndices[sym.id];
+        ctx.emitter.emitLocalGet(discriminantLocal);
+        ctx.emitter.emitLocalSet(idx);
+      }
+      generateMatchPatternBindings(ctx, ap.pattern, discriminantLocal, discriminantType);
+    }
+    case ClassPattern as cp: {
+      let ct = ctx.wasmFunction.model.getNodeType(cp.name) as ClassType;
+      let st = ctx.wasm.classStructs[getClassKey(ct)];
+
+      ctx.emitter.emitLocalGet(discriminantLocal);
+      ctx.emitter.emitRefCast(st.index);
+      let tempCasted = ctx.allocLocal(new ValTypeRefNull(st));
+      ctx.emitter.emitLocalSet(tempCasted);
+
+      for (let prop in cp.properties) {
+        let propName = prop.name.name;
+        var fieldIdx = -1;
+        var fieldWasmType: ValType = new ValTypeI32();
+        for (var fi = 0; fi < st.fields.length; fi += 1) {
+          if (st.fields[fi].name == propName) {
+            fieldIdx = fi;
+            fieldWasmType = st.fields[fi].type;
+          }
+        }
+        if (fieldIdx >= 0) {
+          ctx.emitter.emitLocalGet(tempCasted);
+          ctx.emitter.emitStructGet(st.index, fieldIdx);
+          let tempField = ctx.allocLocal(fieldWasmType);
+          ctx.emitter.emitLocalSet(tempField);
+
+          generateMatchPatternBindings(ctx, prop.value, tempField, fieldWasmType);
+        }
+      }
+    }
+    case LogicalPattern as lp: {
+      if (lp.operator == "||") {
+        generateMatchPatternCheck(ctx, lp.left, discriminantLocal, discriminantType);
+        ctx.emitter.emitIf(new ValTypeVoid());
+        generateMatchPatternBindings(ctx, lp.left, discriminantLocal, discriminantType);
+        ctx.emitter.emitElse();
+        generateMatchPatternBindings(ctx, lp.right, discriminantLocal, discriminantType);
+        ctx.emitter.emitEnd();
+      } else {
+        generateMatchPatternBindings(ctx, lp.left, discriminantLocal, discriminantType);
+        generateMatchPatternBindings(ctx, lp.right, discriminantLocal, discriminantType);
+      }
+    }
+    case BindingPattern as bp: {
+      generateMatchPatternBindings(ctx, bp.pattern, discriminantLocal, discriminantType);
+    }
+    case _: {}
+  }
+};

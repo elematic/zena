@@ -17,7 +17,7 @@ const NC = '\x1b[0m';
 
 async function run() {
   const runList = [
-    // 'case-classes',
+    'case-classes',
     'classes',
     // 'closures',
     'compound-assignment',
@@ -31,22 +31,24 @@ async function run() {
     'operators',
     // 'optional-chaining',
     'records',
-    // 'sealed-classes',
+    'sealed-classes',
     'this-params',
     'tuples',
     'variables',
   ];
 
   const skipList = [
-    'array-index.zena',
-    'class-field.zena',
-    'private-field.zena',
-    'param-default-fresh.zena',
-    'string-plus-equals.zena',
-    'string-array-plus-equals.zena',
-    'nullable-ref.zena',
+    'array-index.zena', // Array operator [] indexing not yet supported in codegen
+    'class-field.zena', // Class field default initializers/access limitations
+    'private-field.zena', // Private field access boundaries not fully enforced in codegen
+    'param-default-fresh.zena', // Parameter default expression evaluation scoping
+    'string-plus-equals.zena', // String concatenation / plus-equals operator support
+    'string-array-plus-equals.zena', // String array concatenation operator support
+    'nullable-ref.zena', // Nullable reference wrapping/unwrapping
     'downcast.zena', // Class initialization error when no constructor?
     'upcast.zena', // Class initialization error when no constructor?
+    'generic.zena', // Generics codegen not yet implemented
+    'generic_equality.zena', // Generics codegen not yet implemented
   ];
 
   let files = await glob(join(testsDir, '**/*.zena'));

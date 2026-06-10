@@ -1,7 +1,7 @@
 import { Program, CompilationUnit } from '../program.zena';
 import { Module, VariableDeclaration, IdentifierPattern, Identifier,
   ImportDeclaration, ImportSpecifier, Node, FunctionExpression, Parameter, CallExpression,
-  ClassDeclaration, DeclareFunction, NewExpression
+  ClassDeclaration, DeclareFunction, NewExpression, SealedVariant
 } from '../ast.zena';
 import { walkEnter } from '../visitor.zena';
 import { HashSet } from 'zena:set';
@@ -91,6 +91,12 @@ export class UsageAnalyzer {
       case ImportSpecifier: {}
       case ClassDeclaration: {
         this.visitNodeWithReferences(decl as Node, model, mod);
+      }
+      case SealedVariant as sv: {
+        let parent = model.getParent(sv as Node);
+        if (parent != null && parent is ClassDeclaration) {
+          this.markUsed(parent as Node, model, mod);
+        }
       }
       case DeclareFunction: {
         this.visitNodeWithReferences(decl as Node, model, mod);

@@ -1,9 +1,9 @@
 import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration } from '../../ast.zena';
-import { Type, FunctionType, ClassType, InterfaceType, typeToString } from '../../types.zena';
+import { Type, FunctionType, ClassType, InterfaceType, VoidType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType } from '../wasm.zena';
-import { WasmFunction, getClassKey, getInterfaceKey, typeToValType, getInterfaceMemberSignature } from '../wasm-module.zena';
+import { WasmFunction, getClassKey, getInterfaceKey, typeToValType, getInterfaceMemberSignature, getClassMemberSignature } from '../wasm-module.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { generateGlobalIntrinsic } from './intrinsics.zena';
@@ -44,27 +44,44 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         }
         ctx.emitter.emitCall(ctx.wasm.functionMap[(sym as Symbol).id]);
         return;
-      } else {
-        if ((sym as Symbol).declaration is ImportSpecifier) {
-          let spec = (sym as Symbol).declaration as ImportSpecifier;
-          let importedName = spec.imported.name;
-          if (ctx.wasm.exportMap.has(importedName)) {
-            var i = 0;
-            while (i < call.args.length) {
-              genExpr(call.args[i], false);
-              if (ft != null && ft.parameterSymbols != null) {
-                let syms = ft.parameterSymbols as Array<SymbolId>;
-                if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {
-                  ctx.emitter.emitLocalTee(ctx.localIndices[syms[i]]);
-                }
+      } else if ((sym as Symbol).declaration is ImportSpecifier) {
+        let spec = (sym as Symbol).declaration as ImportSpecifier;
+        let importedName = spec.imported.name;
+        if (ctx.wasm.exportMap.has(importedName)) {
+          var i = 0;
+          while (i < call.args.length) {
+            genExpr(call.args[i], false);
+            if (ft != null && ft.parameterSymbols != null) {
+              let syms = ft.parameterSymbols as Array<SymbolId>;
+              if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {
+                ctx.emitter.emitLocalTee(ctx.localIndices[syms[i]]);
               }
-              i += 1;
             }
-            ctx.emitter.emitCall(ctx.wasm.exportMap[importedName]);
-            return;
+            i += 1;
           }
-          throw new Error("Export map missing: " + importedName);
+          ctx.emitter.emitCall(ctx.wasm.exportMap[importedName]);
+          return;
         }
+        throw new Error("Export map missing: " + importedName);
+      } else if (ft != null) {
+        var i = 0;
+        while (i < call.args.length) {
+          genExpr(call.args[i], false);
+          i += 1;
+        }
+        genExpr(call.callee, false);
+        let params = new Array<ValType>();
+        for (let p in (ft as FunctionType).parameters) {
+          params.push(typeToValType(ctx.wasm, p));
+        }
+        let returns = new Array<ValType>();
+        if (!((ft as FunctionType).returnType is VoidType)) {
+          returns.push(typeToValType(ctx.wasm, (ft as FunctionType).returnType));
+        }
+        let sig = ctx.wasm.getSignature(params, returns);
+        ctx.emitter.emitCallRef(sig.index);
+        return;
+      } else {
         throw new Error("Could not resolve function call target: " + ident.name);
       }
     }
@@ -226,6 +243,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         ctx.emitter.emitStructGet(vtableStruct.index, methodIndex); // Function ref
         
         // Look up the specific WasmFunction for this call to get its accurate signature type
+        var sigIndex = -1;
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
@@ -237,12 +255,19 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           currClass = (currClass as ClassType).superType;
         }
 
-        if (foundFunc == null) {
-          throw new Error("Could not find function for method call: " + targetName);
+        if (foundFunc != null) {
+          sigIndex = (foundFunc as WasmFunction).signature.index;
+        } else {
+          if (ct.members.has(targetName)) {
+            let sig = getClassMemberSignature(ctx.wasm, ct, targetName);
+            sigIndex = sig.index;
+          } else {
+            throw new Error("Could not find implementation or abstract declaration for method call: " + targetName);
+          }
         }
 
-        // 3. Call reference
-        ctx.emitter.emitCallRef((foundFunc as WasmFunction).signature.index);
+        ctx.emitter.emitRefCast(sigIndex);
+        ctx.emitter.emitCallRef(sigIndex);
         return;
       }
       

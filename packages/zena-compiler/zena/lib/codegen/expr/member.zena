@@ -5,7 +5,7 @@ import { Error } from 'zena:error';
 import { RecordType, TupleType, ClassType, InterfaceType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
-import { typeToValType, WasmField, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature } from '../wasm-module.zena';
+import { typeToValType, WasmField, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature, getClassMemberSignature } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 
 export let generateMemberExpression = (
@@ -235,22 +235,9 @@ export let generateMemberExpression = (
           ctx.emitter.emitRefCast(vtableStruct.index);
           ctx.emitter.emitStructGet(vtableStruct.index, vtableIndex);
 
-          var foundFunc: WasmFunction | null = null;
-          var currClass: ClassType | null = ct;
-          while (currClass != null && foundFunc == null) {
-            for (let f in ctx.wasm.functions) {
-              if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == getterName) {
-                foundFunc = f;
-              }
-            }
-            currClass = (currClass as ClassType).superType;
-          }
-
-          if (foundFunc == null) {
-            throw new Error("Could not find implementation for getter: " + getterName);
-          }
-
-          ctx.emitter.emitCallRef((foundFunc as WasmFunction).signature.index);
+          let sig = getClassMemberSignature(ctx.wasm, ct, getterName);
+          ctx.emitter.emitRefCast(sig.index);
+          ctx.emitter.emitCallRef(sig.index);
           return;
         }
       }
