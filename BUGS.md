@@ -74,6 +74,7 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Fix**: Widen record/tuple literals to match function return types, not just variable declarations
 
 ### Wasm compiler fails to emit `ref.cast` when reading a local that was narrowed by an `is` check
+
 - **Found**: 2026-05-31
 - **Severity**: high
 - **Workaround**: Explicitly assign to a new local instead of overriding: `let classType = unnarrowedType as ClassType;`
