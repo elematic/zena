@@ -36,8 +36,9 @@ export interface ClassInfo {
       paramTypes: number[][];
       isFinal?: boolean;
       intrinsic?: string;
+      classType?: ClassType;
     }
-  >; // name -> {funcIndex, returnType, typeIndex, paramTypes, isFinal, intrinsic}
+  >; // name -> {funcIndex, returnType, typeIndex, paramTypes, isFinal, intrinsic, classType}
   /**
    * Symbol-keyed methods, using the symbol's mangled name (e.g., "[symbol#0]") as key.
    */

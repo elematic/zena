@@ -2814,6 +2814,13 @@ export function registerClassMethods(
         mangledMethodName = methodName + getSignatureKey(funcTypeForSig);
       }
 
+      if (member.isAbstract) {
+        const existing = methods.get(mangledMethodName);
+        if (existing && existing.index !== -1) {
+          continue;
+        }
+      }
+
       let thisType: number[];
       if (classInfo.isExtension && classInfo.onType) {
         thisType = classInfo.onType;
@@ -2920,6 +2927,7 @@ export function registerClassMethods(
         paramTypes: params,
         isFinal: member.isFinal,
         intrinsic,
+        classType,
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
@@ -2998,6 +3006,7 @@ export function registerClassMethods(
           typeIndex: typeIndex!,
           paramTypes: params,
           isFinal: member.isFinal,
+          classType,
         });
       }
 
@@ -3065,6 +3074,7 @@ export function registerClassMethods(
           typeIndex: typeIndex!,
           paramTypes: params,
           isFinal: member.isFinal,
+          classType,
         });
       }
     } else if (member.type === NodeType.FieldDefinition) {
@@ -3115,6 +3125,7 @@ export function registerClassMethods(
               typeIndex,
               paramTypes: params,
               isFinal: false,
+              classType,
             });
           }
 
@@ -3161,6 +3172,7 @@ export function registerClassMethods(
                 typeIndex: setterTypeIndex,
                 paramTypes: setterParams,
                 isFinal: false,
+                classType,
               });
             }
           }
@@ -3273,6 +3285,7 @@ export function registerClassMethods(
             : params,
           isFinal: member.isFinal,
           intrinsic,
+          classType,
         });
 
         // Setter (if mutable - skip for `let` fields which are immutable)
@@ -3336,6 +3349,7 @@ export function registerClassMethods(
               : setterParams,
             isFinal: member.isFinal,
             intrinsic,
+            classType,
           });
         }
       }
@@ -3408,6 +3422,7 @@ export function registerClassMethods(
           ? currentSuperClassInfo!.methods.get(getterName)!.paramTypes
           : getterParams,
         isFinal: false,
+        classType,
       });
 
       // Setter (only for var fields)
@@ -3453,6 +3468,7 @@ export function registerClassMethods(
             ? currentSuperClassInfo!.methods.get(setterName)!.paramTypes
             : setterParams,
           isFinal: false,
+          classType,
         });
       }
     }
@@ -3833,6 +3849,10 @@ export function generateClassMethods(
         throw new Error(`Method ${baseName} not found in ${classInfo.name}`);
       }
 
+      if (methodInfo.classType && methodInfo.classType !== lookupType) {
+        continue;
+      }
+
       // Method-level DCE: Skip body generation for unused methods.
       // If methodInfo.index === -1, the function was not allocated during defineClassMethods
       // (DCE determined it wasn't needed), so we skip body generation.
@@ -4032,7 +4052,9 @@ export function generateClassMethods(
                   decl.inferredType as ClassType,
                   intermediateName,
                 );
-                for (const m of mixinDecl.body) {
+                const allMembers: any[] = [];
+                collectMixinMembers(ctx, [mixinAnnotation], allMembers);
+                for (const m of allMembers) {
                   if (
                     m.type === NodeType.FieldDefinition &&
                     !m.isStatic &&
@@ -4575,6 +4597,11 @@ export function generateClassMethods(
         // Method-level DCE: Skip body generation if not allocated or @pure write-only
         if (methodInfo.index === -1 || isWriteOnly) {
           // Not registered or write-only, skip entirely
+        } else if (
+          methodInfo.classType &&
+          methodInfo.classType !== lookupType
+        ) {
+          // Inherited implementation, skip
         } else {
           const body: number[] = [];
 
@@ -4621,6 +4648,11 @@ export function generateClassMethods(
         // Method-level DCE: Skip body generation if not allocated or @pure write-only
         if (methodInfo.index === -1 || isWriteOnly) {
           // Not registered or write-only, skip entirely
+        } else if (
+          methodInfo.classType &&
+          methodInfo.classType !== lookupType
+        ) {
+          // Inherited implementation, skip
         } else {
           const body: number[] = [];
 
@@ -4673,7 +4705,11 @@ export function generateClassMethods(
         if (!propName.startsWith('#')) {
           const getterName = getGetterName(propName);
           const getterInfo = classInfo.methods.get(getterName);
-          if (getterInfo && getterInfo.index !== -1) {
+          if (
+            getterInfo &&
+            getterInfo.index !== -1 &&
+            (!getterInfo.classType || getterInfo.classType === lookupType)
+          ) {
             ctx.module.addCode(
               getterInfo.index,
               [],
@@ -4685,7 +4721,11 @@ export function generateClassMethods(
           if (member.mutability === 'var') {
             const setterName = getSetterName(propName);
             const setterInfo = classInfo.methods.get(setterName);
-            if (setterInfo && setterInfo.index !== -1) {
+            if (
+              setterInfo &&
+              setterInfo.index !== -1 &&
+              (!setterInfo.classType || setterInfo.classType === lookupType)
+            ) {
               ctx.module.addCode(
                 setterInfo.index,
                 [],
@@ -4725,7 +4765,10 @@ export function generateClassMethods(
 
         // Method-level DCE for implicit field getters (not registered if unused)
         // Only check if function was allocated - don't re-check DCE (see comment in method body generation)
-        if (getterInfo.index !== -1) {
+        if (
+          getterInfo.index !== -1 &&
+          (!getterInfo.classType || getterInfo.classType === lookupType)
+        ) {
           const getterBody: number[] = [];
           const extraLocals: number[][] = [];
 
@@ -4771,7 +4814,11 @@ export function generateClassMethods(
 
           // Method-level DCE for implicit field setters (not registered if unused)
           // Only check if function was allocated - don't re-check DCE (see comment in method body generation)
-          if (setterInfo && setterInfo.index !== -1) {
+          if (
+            setterInfo &&
+            setterInfo.index !== -1 &&
+            (!setterInfo.classType || setterInfo.classType === lookupType)
+          ) {
             const setterBody: number[] = [];
             const setterExtraLocals: number[][] = [];
 
@@ -5577,6 +5624,7 @@ function instantiateClassImpl(
       paramTypes: number[][];
       isFinal?: boolean;
       intrinsic?: string;
+      classType?: ClassType;
     }
   >();
   const vtable: string[] = [];
@@ -6027,6 +6075,7 @@ function instantiateClassImpl(
           paramTypes: params,
           isFinal: member.isFinal,
           intrinsic,
+          classType: checkerType,
         });
       } else if (member.type === NodeType.AccessorDeclaration) {
         const propName = getMemberName(member.name);
@@ -6080,6 +6129,7 @@ function instantiateClassImpl(
             typeIndex: typeIndex!,
             paramTypes: params,
             isFinal: member.isFinal,
+            classType: checkerType,
           });
         }
 
@@ -6131,6 +6181,7 @@ function instantiateClassImpl(
             typeIndex: typeIndex!,
             paramTypes: params,
             isFinal: member.isFinal,
+            classType: checkerType,
           });
         }
       } else if (member.type === NodeType.FieldDefinition) {
@@ -6204,6 +6255,7 @@ function instantiateClassImpl(
             paramTypes: params,
             isFinal: member.isFinal,
             intrinsic,
+            classType: checkerType,
           });
 
           // Register Setter (if mutable)
@@ -6246,6 +6298,7 @@ function instantiateClassImpl(
               paramTypes: setterParams,
               isFinal: member.isFinal,
               intrinsic,
+              classType: checkerType,
             });
           }
         }
@@ -6303,6 +6356,7 @@ function instantiateClassImpl(
           typeIndex: getterTypeIndex!,
           paramTypes: getterParams,
           isFinal: false,
+          classType: checkerType,
         });
 
         // Setter (only for var fields)
@@ -6338,6 +6392,7 @@ function instantiateClassImpl(
             typeIndex: setterTypeIndex!,
             paramTypes: setterParams,
             isFinal: false,
+            classType: checkerType,
           });
         }
       }
@@ -6541,7 +6596,9 @@ function generateMixinFieldInitializers(
     );
 
     // Generate initializers for this mixin's fields
-    for (const m of mixinDecl.body) {
+    const allMembers: any[] = [];
+    collectMixinMembers(ctx, [mixinAnnotation], allMembers);
+    for (const m of allMembers) {
       if (m.type !== NodeType.FieldDefinition || !m.value || m.isStatic)
         continue;
 
@@ -6818,6 +6875,31 @@ function collectMixinIntermediateTypes(
 }
 
 /**
+ * Recursively collects all members (methods, accessors, fields) from a list of mixin annotations.
+ */
+function collectMixinMembers(
+  ctx: CodegenContext,
+  mixinAnns: TypeAnnotation[] | undefined,
+  members: any[],
+  seen: Set<string> = new Set(),
+) {
+  if (!mixinAnns) return;
+  for (const ann of mixinAnns) {
+    const mixinType = ann.inferredType;
+    if (mixinType && mixinType.kind === TypeKind.Mixin) {
+      const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
+      if (mixinDecl && !seen.has(mixinDecl.name.name)) {
+        seen.add(mixinDecl.name.name);
+        collectMixinMembers(ctx, mixinDecl.mixins, members, seen);
+        for (const member of mixinDecl.body) {
+          members.push(member);
+        }
+      }
+    }
+  }
+}
+
+/**
  * Pre-registers a mixin intermediate class. This reserves the type index so that
  * classes using this mixin can have it as their supertype.
  * If checkerIntermediateType is provided, also registers for identity-based lookup.
@@ -6958,8 +7040,13 @@ function applyMixin(
     fieldTypes.push({type: [ValType.eqref], mutable: true});
   }
 
+  // Collect all members from the mixin and its composed mixins recursively
+  const allMembers: any[] = [];
+  collectMixinMembers(ctx, mixinDecl.mixins, allMembers);
+  allMembers.push(...mixinDecl.body);
+
   // Add mixin fields
-  for (const member of mixinDecl.body) {
+  for (const member of allMembers) {
     if (member.type === NodeType.FieldDefinition) {
       // Use checker's inferredType for identity-based resolution
       const wasmType = mapCheckerTypeToWasmType(
@@ -7000,6 +7087,7 @@ function applyMixin(
       ? {type: NodeType.Identifier, name: baseClassInfo.name}
       : undefined,
     isAbstract: false,
+    body: allMembers,
     // Set inferredType so identity-based lookups work for synthetic classes
     inferredType: checkerIntermediateType,
   } as unknown as ClassDeclaration;

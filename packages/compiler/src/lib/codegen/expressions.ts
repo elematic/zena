@@ -3696,39 +3696,43 @@ function generateCallExpression(
       memberExpr.object.inferredType.kind === TypeKind.Class
     ) {
       let classType = memberExpr.object.inferredType as ClassType;
-      // When inside a generic context (e.g., generating Array<SuiteResult>.from),
-      // the AST's inferredType may still be the unsubstituted Array<T>.
-      // Substitute type parameters to get the concrete type (Array<SuiteResult>).
-      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
-        classType = ctx.checkerContext.substituteTypeParams(
-          classType,
-          ctx.currentTypeArguments,
-        ) as ClassType;
-      }
-      // Ensure we use the interned version for identity-based lookup
-      if (
-        classType.genericSource &&
-        classType.typeArguments &&
-        classType.typeArguments.length > 0
-      ) {
-        const interned = ctx.checkerContext.getInternedClass(
-          classType.genericSource,
-          classType.typeArguments,
-        );
-        if (interned) {
-          classType = interned;
+      if (classType.isSyntheticMixinThis) {
+        foundClass = ctx.currentClass || undefined;
+      } else {
+        // When inside a generic context (e.g., generating Array<SuiteResult>.from),
+        // the AST's inferredType may still be the unsubstituted Array<T>.
+        // Substitute type parameters to get the concrete type (Array<SuiteResult>).
+        if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+          classType = ctx.checkerContext.substituteTypeParams(
+            classType,
+            ctx.currentTypeArguments,
+          ) as ClassType;
         }
-      }
-      foundClass = ctx.getClassInfo(classType);
-
-      // If identity lookup failed, instantiate via mapCheckerTypeToWasmType and retry
-      if (
-        !foundClass &&
-        classType.typeArguments &&
-        classType.typeArguments.length > 0
-      ) {
-        mapCheckerTypeToWasmType(ctx, classType);
+        // Ensure we use the interned version for identity-based lookup
+        if (
+          classType.genericSource &&
+          classType.typeArguments &&
+          classType.typeArguments.length > 0
+        ) {
+          const interned = ctx.checkerContext.getInternedClass(
+            classType.genericSource,
+            classType.typeArguments,
+          );
+          if (interned) {
+            classType = interned;
+          }
+        }
         foundClass = ctx.getClassInfo(classType);
+
+        // If identity lookup failed, instantiate via mapCheckerTypeToWasmType and retry
+        if (
+          !foundClass &&
+          classType.typeArguments &&
+          classType.typeArguments.length > 0
+        ) {
+          mapCheckerTypeToWasmType(ctx, classType);
+          foundClass = ctx.getClassInfo(classType);
+        }
       }
     }
 

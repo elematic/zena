@@ -15,7 +15,7 @@ import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType } from './wasm.zena';
-import { typeToValType, WasmField, WasmStruct, sortWasmFields, getClassKey, getInterfaceKey } from './wasm-module.zena';
+import { typeToValType, WasmField, WasmStruct, sortWasmFields, getClassKey, getInterfaceKey, collectMixinFields } from './wasm-module.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
@@ -221,45 +221,56 @@ export class FunctionGenerator {
           let classDecl = this.ctx.wasmFunction.classDecl;
           if (classDecl != null) {
             let cd = classDecl as ClassDeclaration;
+            let mixinFields = new Array<FieldDefinition>();
+            let seenMixins = new HashMap<String, boolean>();
+            collectMixinFields(this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
+
+            let allFields = new Array<FieldDefinition>();
             for (let member in cd.body) {
               if (member is FieldDefinition) {
-                let fd = member as FieldDefinition;
-                if (fd.value != null && !fd.isStatic) {
-                  let fieldName = match (fd.name) {
-                    case Identifier {name}: name
-                    case _: ""
-                  };
-                  if (fieldName != "") {
-                    var actualFieldName = fieldName;
-                    if (this.ctx.wasmFunction.classType != null) {
-                      let ct = this.ctx.wasmFunction.classType as ClassType;
-                      if (ct.fieldSetterNames != null) {
-                        let m = ct.fieldSetterNames as HashMap<String, String>;
-                        if (m.has(fieldName)) {
-                          actualFieldName = m[fieldName];
-                        }
+                allFields.push(member as FieldDefinition);
+              }
+            }
+            for (let fd in mixinFields) {
+              allFields.push(fd);
+            }
+
+            for (let fd in allFields) {
+              if (fd.value != null && !fd.isStatic) {
+                let fieldName = match (fd.name) {
+                  case Identifier {name}: name
+                  case _: ""
+                };
+                if (fieldName != "") {
+                  var actualFieldName = fieldName;
+                  if (this.ctx.wasmFunction.classType != null) {
+                    let ct = this.ctx.wasmFunction.classType as ClassType;
+                    if (ct.fieldSetterNames != null) {
+                      let m = ct.fieldSetterNames as HashMap<String, String>;
+                      if (m.has(fieldName)) {
+                        actualFieldName = m[fieldName];
                       }
                     }
-                    var fieldIndex = -1;
-                    let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
-                      if (this.ctx.wasmFunction.classType != null) {
-                        getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + actualFieldName
-                      } else {
-                        actualFieldName
-                      }
+                  }
+                  var fieldIndex = -1;
+                  let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
+                    if (this.ctx.wasmFunction.classType != null) {
+                      getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + actualFieldName
                     } else {
                       actualFieldName
-                    };
-                    for (var i = 0; i < structType.fields.length; i += 1) {
-                      if (structType.fields[i].name == lookupName) {
-                        fieldIndex = i;
-                      }
                     }
-                    if (fieldIndex >= 0) {
-                      this.ctx.emitter.emitLocalGet(0);
-                      this.generateExpression(fd.value as Expression);
-                      this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
+                  } else {
+                    actualFieldName
+                  };
+                  for (var i = 0; i < structType.fields.length; i += 1) {
+                    if (structType.fields[i].name == lookupName) {
+                      fieldIndex = i;
                     }
+                  }
+                  if (fieldIndex >= 0) {
+                    this.ctx.emitter.emitLocalGet(0);
+                    this.generateExpression(fd.value as Expression);
+                    this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
                   }
                 }
               }

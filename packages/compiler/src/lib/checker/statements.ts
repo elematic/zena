@@ -3533,7 +3533,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         } else {
           intermediateType.vtable.push(name);
         }
-        intermediateType.methods.set(name, type);
+        const existing = intermediateType.methods.get(name);
+        if (!(type.isAbstract && existing && !existing.isAbstract)) {
+          intermediateType.methods.set(name, type);
+        }
       }
 
       // Update superType to point to this new intermediate type

@@ -25,6 +25,7 @@ async function run() {
     'functions',
     'imports',
     'interfaces',
+    'mixins',
     // 'null-coalescing',
     // 'nullish-assignment',
     'operators',
@@ -101,7 +102,9 @@ async function run() {
       const wasmStat = statSync(wasmOut);
       const fileStat = statSync(file);
       const cliStat = statSync(zenaCli);
-      const compilerStat = existsSync(compilerWasm) ? statSync(compilerWasm) : null;
+      const compilerStat = existsSync(compilerWasm)
+        ? statSync(compilerWasm)
+        : null;
       if (
         wasmStat.mtimeMs > fileStat.mtimeMs &&
         wasmStat.mtimeMs > cliStat.mtimeMs &&

@@ -4,7 +4,7 @@ import {
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportDeclaration, ImportSpecifier, ClassDeclaration, InterfaceDeclaration, DeclareFunction,
   TypeAliasDeclaration, RecordLiteral, MethodDefinition, FieldDefinition,
-  AccessorDeclaration, SetterInfo, SuperInitializer, TypeParameter,
+  AccessorDeclaration, SetterInfo, SuperInitializer, TypeParameter, MixinDeclaration,
   Parameter, TypeAnnotation, Decorator, Pattern, MemberExpression, AssignmentExpression
 } from '../ast.zena';
 import { walk } from '../visitor.zena';
@@ -665,7 +665,19 @@ export class DiscoveryPass {
               }
             }
             // Add new methods to vtable slots
+            let mixinMembers = new Array<Node>();
+            let seenMixins = new HashMap<String, boolean>();
+            collectMixinMembers(moduleModel, classDecl.mixins, mixinMembers, seenMixins);
+
+            let allMembers = new Array<Node>();
             for (let ms in classDecl.body) {
+              allMembers.push(ms);
+            }
+            for (let ms in mixinMembers) {
+              allMembers.push(ms);
+            }
+
+            for (let ms in allMembers) {
               if (ms is MethodDefinition) {
                 let mDef = ms as MethodDefinition;
                 if (mDef.isStatic) { continue; }
@@ -1120,9 +1132,22 @@ export class DiscoveryPass {
               }
             };
 
-            for (let member in classDecl.body) {
+            let mixinMembers = new Array<Node>();
+            let seenMixins = new HashMap<String, boolean>();
+            collectMixinMembers(moduleModel, classDecl.mixins, mixinMembers, seenMixins);
+
+            let allMembers = new Array<Node>();
+            for (let ms in classDecl.body) {
+              allMembers.push(ms);
+            }
+            for (let ms in mixinMembers) {
+              allMembers.push(ms);
+            }
+
+            for (let member in allMembers) {
               if (member is MethodDefinition) {
                 let method = member as MethodDefinition;
+                if (method.isAbstract) { continue; }
                 let methName = match(method.name) {
                   case Identifier {name}: name
                   case _: "<unknown>"
@@ -1557,5 +1582,57 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
   }
   case _: {
     throw new Error("typeToValType: unsupported type: " + typeToString(t));
+  }
+};
+
+
+export let collectMixinMembers = (
+  model: SemanticModel,
+  mixinAnns: Array<TypeAnnotation> | null,
+  methods: Array<Node>,
+  seen: HashMap<String, boolean>
+): void => {
+  if (mixinAnns == null) { return; }
+  for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
+    let sym = model.resolve(ann);
+    if (sym != null && (sym as Symbol).declaration is MixinDeclaration) {
+      let md = (sym as Symbol).declaration as MixinDeclaration;
+      let mixinKey = md.name.name;
+      if (!seen.has(mixinKey)) {
+        seen[mixinKey] = true;
+        collectMixinMembers(model, md.mixins, methods, seen);
+        for (let member in md.body) {
+          if (member is MethodDefinition || member is AccessorDeclaration || member is FieldDefinition) {
+            methods.push(member);
+          }
+        }
+      }
+    }
+  }
+};
+
+
+export let collectMixinFields = (
+  model: SemanticModel,
+  mixinAnns: Array<TypeAnnotation> | null,
+  fields: Array<FieldDefinition>,
+  seen: HashMap<String, boolean>
+): void => {
+  if (mixinAnns == null) { return; }
+  for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
+    let sym = model.resolve(ann);
+    if (sym != null && (sym as Symbol).declaration is MixinDeclaration) {
+      let md = (sym as Symbol).declaration as MixinDeclaration;
+      let mixinKey = md.name.name;
+      if (!seen.has(mixinKey)) {
+        seen[mixinKey] = true;
+        collectMixinFields(model, md.mixins, fields, seen);
+        for (let member in md.body) {
+          if (member is FieldDefinition) {
+            fields.push(member as FieldDefinition);
+          }
+        }
+      }
+    }
   }
 };

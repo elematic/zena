@@ -307,15 +307,57 @@ export class CodeGenerator {
       generator();
     }
 
-    // Register methods for synthetic classes (mixins)
+    const typeToDecl = new Map<ClassType, ClassDeclaration>();
+    for (const stmt of statements) {
+      if (stmt.type === NodeType.ClassDeclaration) {
+        const classDecl = stmt as ClassDeclaration;
+        if (classDecl.inferredType) {
+          typeToDecl.set(classDecl.inferredType as ClassType, classDecl);
+        }
+      }
+    }
     for (const decl of this.#ctx.syntheticClasses) {
-      registerClassMethods(this.#ctx, decl);
+      if (decl.inferredType) {
+        typeToDecl.set(decl.inferredType as ClassType, decl);
+      }
+    }
+
+    const findDeclForType = (
+      classType: ClassType,
+    ): ClassDeclaration | undefined => {
+      if (typeToDecl.has(classType)) {
+        return typeToDecl.get(classType);
+      }
+      return this.#ctx.getGenericDeclaration(classType);
+    };
+
+    const ensureMethodsRegistered = (classType: ClassType) => {
+      const classInfo = this.#ctx.getClassInfo(classType);
+      if (!classInfo || (classInfo as any).methodsRegistered) return;
+      if (classType.superType) {
+        ensureMethodsRegistered(classType.superType);
+      }
+      const decl = findDeclForType(classType);
+      if (decl) {
+        registerClassMethods(this.#ctx, decl);
+        (classInfo as any).methodsRegistered = true;
+      }
+    };
+
+    // Register methods for synthetic classes (mixins) and user classes in inheritance order
+    for (const decl of this.#ctx.syntheticClasses) {
+      if (decl.inferredType) {
+        ensureMethodsRegistered(decl.inferredType as ClassType);
+      }
     }
 
     for (const statement of statements) {
       if (statement.type === NodeType.ClassDeclaration) {
         if (!this.#isUsed(statement as ClassDeclaration)) continue;
-        registerClassMethods(this.#ctx, statement as ClassDeclaration);
+        const classDecl = statement as ClassDeclaration;
+        if (classDecl.inferredType) {
+          ensureMethodsRegistered(classDecl.inferredType as ClassType);
+        }
       }
     }
 
