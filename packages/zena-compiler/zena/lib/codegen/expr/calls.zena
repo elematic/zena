@@ -1,9 +1,9 @@
 import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration } from '../../ast.zena';
-import { Type, FunctionType, ClassType, typeToString } from '../../types.zena';
+import { Type, FunctionType, ClassType, InterfaceType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
-import { WasmType, ValTypeRef, ValTypeRefNull } from '../wasm.zena';
-import { WasmFunction, getClassKey } from '../wasm-module.zena';
+import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType } from '../wasm.zena';
+import { WasmFunction, getClassKey, getInterfaceKey, typeToValType, getInterfaceMemberSignature } from '../wasm-module.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { generateGlobalIntrinsic } from './intrinsics.zena';
@@ -241,6 +241,47 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
 
         // 3. Call reference
         ctx.emitter.emitCallRef((foundFunc as WasmFunction).signature.index);
+        return;
+      }
+      
+      if (objType is InterfaceType) {
+        let it = objType as InterfaceType;
+        let iName = getInterfaceKey(it);
+        let vst = ctx.wasm.interfaceVTableStructs[iName];
+        let fatPtr = ctx.wasm.interfaceStructs[iName];
+        
+        let targetName = member.property.name;
+        
+        var methodIndex = -1;
+        for (var i = 0; i < vst.fields.length; i += 1) {
+          if (vst.fields[i].name == targetName) {
+            methodIndex = i;
+          }
+        }
+        
+        if (methodIndex == -1) {
+          throw new Error("Method not found in interface vtable: " + targetName);
+        }
+        
+        genExpr(member.object, false);
+        var scratchLocal = ctx.getStructScratchLocal(fatPtr);
+        ctx.emitter.emitLocalTee(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
+        
+        var argIdx = 0;
+        while (argIdx < call.args.length) {
+          genExpr(call.args[argIdx], false);
+          argIdx += 1;
+        }
+        
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
+        ctx.emitter.emitRefCast(vst.index);
+        ctx.emitter.emitStructGet(vst.index, methodIndex); // Get Function reference
+        
+        let sig = getInterfaceMemberSignature(ctx.wasm, it, targetName);
+        ctx.emitter.emitRefCast(sig.index);
+        ctx.emitter.emitCallRef(sig.index);
         return;
       }
       throw new Error("Unsupported method call on type: " + typeToString(objType));

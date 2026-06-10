@@ -24,6 +24,7 @@ async function run() {
     'control-flow',
     'functions',
     'imports',
+    'interfaces',
     // 'null-coalescing',
     // 'nullish-assignment',
     'operators',
@@ -93,14 +94,18 @@ async function run() {
     const watOut = join(pkgDir, 'zena', 'out', 'execution', `${relPath}.wat`);
     const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 
+    const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
+
     let shouldCompile = true;
     if (existsSync(wasmOut) && existsSync(zenaCli)) {
       const wasmStat = statSync(wasmOut);
       const fileStat = statSync(file);
       const cliStat = statSync(zenaCli);
+      const compilerStat = existsSync(compilerWasm) ? statSync(compilerWasm) : null;
       if (
         wasmStat.mtimeMs > fileStat.mtimeMs &&
-        wasmStat.mtimeMs > cliStat.mtimeMs
+        wasmStat.mtimeMs > cliStat.mtimeMs &&
+        (compilerStat === null || wasmStat.mtimeMs > compilerStat.mtimeMs)
       ) {
         shouldCompile = false;
       }

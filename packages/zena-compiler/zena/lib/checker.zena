@@ -100,7 +100,7 @@ import {
   numericTypeName, isBooleanLike, baseType,
   promoteNumeric, typeToString
 } from './types.zena';
-import { SemanticModel } from './semantic-model.zena';
+import { SemanticModel, InterfaceAdaptation } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
@@ -2250,6 +2250,12 @@ let widenType = (ctx: CheckerContext, t: Type): Type => match (t) {
   case _: t
 };
 
+let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void => {
+  if (sourceType is ClassType && targetType is InterfaceType) {
+    ctx.model.setInterfaceAdaptation(node, sourceType as ClassType, targetType as InterfaceType);
+  }
+};
+
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
   // Automatically unwrap non-distinct type aliases
   match (source) {
@@ -3348,6 +3354,8 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
               DiagnosticCode.TypeMismatch,
               loc
             );
+          } else {
+            checkAndRegisterInterfaceAdaptation(ctx, argExpr, argType, expected);
           }
         } else {
           // No expected return type at all (shouldn't happen in a function, but collect anyway)
@@ -3722,6 +3730,7 @@ let checkVariableDeclaration = (
           ctx.model.setRecordAdaptation(init, itR, expR);
         }
       }
+      checkAndRegisterInterfaceAdaptation(ctx, init, initType, expectedType);
     }
     declType = expectedType;
   }
@@ -4561,6 +4570,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         DiagnosticCode.TypeMismatch,
         loc
       );
+    } else {
+      checkAndRegisterInterfaceAdaptation(ctx, value, effectiveType, leftType);
     }
 
     leftType
@@ -4756,6 +4767,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (ctx.warnUnnecessaryCasts && typesEqual(sourceType, targetType)) {
       ctx.warning("Unnecessary cast: expression is already of type '" + typeToString(targetType) + "'.", DiagnosticCode.UnnecessaryCast, loc);
     }
+    checkAndRegisterInterfaceAdaptation(ctx, expr, sourceType, targetType);
     targetType
   }
   case IsExpression {expression, typeAnnotation, loc}: {
@@ -7375,6 +7387,8 @@ let checkNewExpression = (
             DiagnosticCode.TypeMismatch,
             loc
           );
+        } else {
+          checkAndRegisterInterfaceAdaptation(ctx, args[ai], argType, expectedParamType);
         }
         ai = ai + 1;
       }
@@ -9144,6 +9158,8 @@ let checkCallExpressionInner = (
             DiagnosticCode.TypeMismatch,
             loc
           );
+        } else {
+          checkAndRegisterInterfaceAdaptation(ctx, args[j], argType, expectedParamType);
         }
         j = j + 1;
       }

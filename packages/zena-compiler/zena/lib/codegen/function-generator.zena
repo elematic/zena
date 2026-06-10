@@ -11,11 +11,11 @@ import {
   AccessorDeclaration, SetterInfo, AsExpression
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString } from '../types.zena';
-import { SemanticModel } from '../semantic-model.zena';
+import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType } from './wasm.zena';
-import { typeToValType } from './wasm-module.zena';
+import { typeToValType, WasmField, WasmStruct, sortWasmFields, getClassKey, getInterfaceKey } from './wasm-module.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
@@ -41,7 +41,7 @@ import { generateBlockStatement } from './stmt/blocks.zena';
 import { generateVariableDeclaration } from './stmt/bindings.zena';
 import { discoverLocalsFromExpr, discoverLocalsFromStmt } from './locals.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { WasmFunction, WasmModule, WasmField, WasmStruct, sortWasmFields, getClassKey } from './wasm-module.zena';
+import { WasmFunction, WasmModule } from './wasm-module.zena';
 
 /**
  * Manages the generic AST traversal and code generation.
@@ -104,6 +104,37 @@ export class FunctionGenerator {
         this.ctx.emitter.emitLocalGet(0);
         this.ctx.emitter.emitRefCast(st.index);
         this.ctx.emitter.emitStructGet(st.index, this.ctx.wasmFunction.getterFieldIndex);
+      } else if (this.ctx.wasmFunction.setterStruct != null) {
+        let st = this.ctx.wasmFunction.setterStruct as WasmStruct;
+        this.ctx.emitter.emitLocalGet(0);
+        this.ctx.emitter.emitRefCast(st.index);
+        this.ctx.emitter.emitLocalGet(1);
+        this.ctx.emitter.emitStructSet(st.index, this.ctx.wasmFunction.setterFieldIndex);
+      } else if (this.ctx.wasmFunction.interfaceTrampolineTarget != null) {
+        let target = this.ctx.wasmFunction.interfaceTrampolineTarget as WasmFunction;
+        this.ctx.emitter.emitLocalGet(0);
+        let ct = target.classType as ClassType;
+        let classStruct = this.ctx.wasm.classStructs[getClassKey(ct)];
+        this.ctx.emitter.emitRefCast(classStruct.index);
+        var i = 1;
+        while (i < this.ctx.wasmFunction.signature.params.length) {
+          this.ctx.emitter.emitLocalGet(i);
+          let paramWasmType = this.ctx.wasmFunction.signature.params[i];
+          let targetWasmType = target.signature.params[i];
+          if (!valTypeEquals(paramWasmType, targetWasmType)) {
+            match (targetWasmType) {
+              case ValTypeRefNull as targetRefNull: {
+                this.ctx.emitter.emitRefCast(targetRefNull.target.index);
+              }
+              case ValTypeRef as targetRef: {
+                this.ctx.emitter.emitRefCast(targetRef.target.index);
+              }
+              case _: {}
+            }
+          }
+          i += 1;
+        }
+        this.ctx.emitter.emitCall(target);
       } else {
         this.ctx.emitter.emitUnreachable();
       }
@@ -520,6 +551,24 @@ export class FunctionGenerator {
       this.ctx.emitter.emitGlobalGet(outDispatchInfo.vtableGlobal.index);
       
       this.ctx.emitter.emitStructNew(outDispatchInfo.fatPtrType.index);
+    }
+
+    let interfaceAdaptation = this.ctx.wasmFunction.model.getInterfaceAdaptation(expr);
+    if (interfaceAdaptation != null && !discardValue) {
+      let ia = interfaceAdaptation as InterfaceAdaptation;
+      let cName = getClassKey(ia.source);
+      let iName = getInterfaceKey(ia.target);
+      
+      let key = cName + "::" + iName;
+      if (!this.ctx.wasm.classInterfaceVTables.has(key)) {
+        throw new Error("Interface vtable global not found for " + key);
+      }
+      let vtableGlobal = this.ctx.wasm.classInterfaceVTables[key];
+      
+      this.ctx.emitter.emitGlobalGet(vtableGlobal.index);
+      
+      let fatPtrStruct = this.ctx.wasm.interfaceStructs[iName];
+      this.ctx.emitter.emitStructNew(fatPtrStruct.index);
     }
 
     if (discardValue && !handlesDiscardNatively) {

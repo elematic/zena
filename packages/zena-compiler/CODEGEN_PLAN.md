@@ -105,9 +105,9 @@ This plan tracks all features required for the code generation phase to achieve 
 
 ### 6. Interfaces, Mixins, & Case/Sealed Classes
 
-- [ ] **Interfaces:**
-  - [ ] Dynamic fat-pointer representation containing the object reference and a pointer to the specific interface's vtable.
-  - [ ] Multi-interface implementation handling and vtable pointer selection.
+- [x] **Interfaces:**
+  - [x] Dynamic fat-pointer representation containing the object reference and a pointer to the specific interface's vtable.
+  - [x] Multi-interface implementation handling and vtable pointer selection.
 - [ ] **Mixins:**
   - [ ] Field and method composition from `mixin` definitions into target class structures.
 - [ ] **Case & Sealed Classes:**

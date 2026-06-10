@@ -1,10 +1,10 @@
 import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression, ClassDeclaration, ImportSpecifier } from '../../ast.zena';
-import { Type, F64Type, F32Type, ClassType } from '../../types.zena';
+import { Type, F64Type, F32Type, ClassType, InterfaceType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
-import { typeToValType, getClassKey, WasmFunction } from '../wasm-module.zena';
+import { typeToValType, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature } from '../wasm-module.zena';
 
 /**
  * Generates WASM code for an assignment expression.
@@ -309,6 +309,57 @@ export let generateAssignmentExpression = (
           ctx.emitter.emitLocalGet(tempLocal);
         } else {
           ctx.emitter.emitStructSet(structInfo.index, fieldIndex);
+        }
+        return;
+      }
+      case InterfaceType as it: {
+        let iName = getInterfaceKey(it);
+        let vst = ctx.wasm.interfaceVTableStructs[iName];
+        let fatPtr = ctx.wasm.interfaceStructs[iName];
+        
+        let propName = memExpr.property.name;
+        let setterName = "set#" + propName;
+        
+        var vtableIndex = -1;
+        for (var i = 0; i < vst.fields.length; i += 1) {
+          if (vst.fields[i].name == setterName) {
+            vtableIndex = i;
+          }
+        }
+        
+        if (vtableIndex == -1) {
+          throw new Error("Property setter not found in interface vtable: " + setterName);
+        }
+        
+        let valType = typeToValType(ctx.wasm, ctx.wasmFunction.model.getNodeType(assign.value));
+        var tempLocal = -1;
+        if (!discardValue) {
+          tempLocal = ctx.allocLocal(valType);
+        }
+        
+        genExpr(memExpr.object, false);
+        var scratchLocal = ctx.getStructScratchLocal(fatPtr);
+        ctx.emitter.emitLocalSet(scratchLocal);
+        
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
+        
+        genExpr(assign.value, false);
+        if (!discardValue) {
+          ctx.emitter.emitLocalTee(tempLocal);
+        }
+        
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
+        ctx.emitter.emitRefCast(vst.index);
+        ctx.emitter.emitStructGet(vst.index, vtableIndex);
+        
+        let sig = getInterfaceMemberSignature(ctx.wasm, it, setterName);
+        ctx.emitter.emitRefCast(sig.index);
+        ctx.emitter.emitCallRef(sig.index);
+        
+        if (!discardValue) {
+          ctx.emitter.emitLocalGet(tempLocal);
         }
         return;
       }

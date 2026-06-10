@@ -2,10 +2,10 @@ import { FunctionContext } from '../function-context.zena';
 import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral, SuperExpression, Identifier, ClassDeclaration, ImportSpecifier } from '../../ast.zena';
 import { Symbol } from '../../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { RecordType, TupleType, ClassType } from '../../types.zena';
+import { RecordType, TupleType, ClassType, InterfaceType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
-import { typeToValType, WasmField, getClassKey, WasmFunction } from '../wasm-module.zena';
+import { typeToValType, WasmField, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 
 export let generateMemberExpression = (
@@ -259,6 +259,41 @@ export let generateMemberExpression = (
       
       ctx.emitter.emitRefCast(structInfo.index);
       ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
+    }
+    case InterfaceType as it: {
+      let iName = getInterfaceKey(it);
+      let vst = ctx.wasm.interfaceVTableStructs[iName];
+      let fatPtr = ctx.wasm.interfaceStructs[iName];
+      
+      let propName = expr.property.name;
+      let getterName = "get#" + propName;
+      
+      var vtableIndex = -1;
+      for (var i = 0; i < vst.fields.length; i += 1) {
+        if (vst.fields[i].name == getterName) {
+          vtableIndex = i;
+        }
+      }
+      
+      if (vtableIndex == -1) {
+        throw new Error("Property getter not found in interface vtable: " + getterName);
+      }
+      
+      genExpr(expr.object, false);
+      var scratchLocal = ctx.getStructScratchLocal(fatPtr);
+      ctx.emitter.emitLocalSet(scratchLocal);
+      
+      ctx.emitter.emitLocalGet(scratchLocal);
+      ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
+      
+      ctx.emitter.emitLocalGet(scratchLocal);
+      ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
+      ctx.emitter.emitRefCast(vst.index);
+      ctx.emitter.emitStructGet(vst.index, vtableIndex);
+      
+      let sig = getInterfaceMemberSignature(ctx.wasm, it, getterName);
+      ctx.emitter.emitRefCast(sig.index);
+      ctx.emitter.emitCallRef(sig.index);
     }
     case _: {
        // We still need to evaluate the expression object for other types before failing
