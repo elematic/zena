@@ -7450,8 +7450,26 @@ let checkMemberExpression = (
     let sym = ctx.model.resolve(ident);
     if (sym != null) {
       let s = sym as Symbol;
-      if (s.declaration is ClassDeclaration || s.declaration is ImportSpecifier) {
+      if (s.declaration is ClassDeclaration) {
         isStatic = true;
+      } else if (s.declaration is ImportSpecifier) {
+        let spec = s.declaration as ImportSpecifier;
+        let importedName = spec.imported.name;
+        let deps = ctx.depExports;
+        if (deps != null) {
+          let depsMap = deps as HashMap<String, ModuleExports>;
+          var foundType = false;
+          for (let specifier in depsMap.keys()) {
+            if (let (true, depMod) = depsMap.get(specifier)) {
+              if (let (true, exp) = depMod.get(importedName)) {
+                if (exp.isType()) {
+                  foundType = true;
+                }
+              }
+            }
+          }
+          isStatic = foundType;
+        }
       }
     }
   }

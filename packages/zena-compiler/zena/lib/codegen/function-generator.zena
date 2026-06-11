@@ -89,6 +89,33 @@ export class FunctionGenerator {
 
   generate(): void {
     if (this.ctx.wasmFunction.node == null) {
+      if (this.ctx.wasmFunction.name != null && (this.ctx.wasmFunction.name as String) == "__start") {
+        this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
+        this.ctx.emitter.emitFunctionSignatureStart("__start", this.ctx.wasmFunction.signature.index);
+        this.ctx.emitter.emitFunctionLocalsStart(this.ctx.localTypes);
+        
+        for (let g in this.ctx.wasm.globals) {
+          if (g.initExpr != null) {
+            let isLiteral = match (g.initExpr as Expression) {
+              case NumberLiteral: true
+              case BooleanLiteral: true
+              case _: false
+            };
+            if (!isLiteral) {
+              let originalModel = this.ctx.wasmFunction.model;
+              this.ctx.wasmFunction.model = g.model;
+              this.generateExpression(g.initExpr as Expression, false);
+              this.ctx.wasmFunction.model = originalModel;
+              this.ctx.emitter.emitGlobalSet(g.index);
+            }
+          }
+        }
+        
+        this.ctx.emitter.emitFunctionEnd();
+        this.ctx.emitter.emitFunctionCodeEnd(this.ctx.wasmFunction);
+        return;
+      }
+
       // Synthetic helper functions have no AST node (e.g., dynamic property
       // getters for VTables). We generate their Wasm bytecodes directly here
       // rather than traversing a user-written AST body.
@@ -142,6 +169,8 @@ export class FunctionGenerator {
           i += 1;
         }
         this.ctx.emitter.emitCall(target);
+      } else if (name == "wasi_write_string_helper") {
+        this.generateWasiWriteStringHelper();
       } else {
         this.ctx.emitter.emitUnreachable();
       }
@@ -323,7 +352,7 @@ export class FunctionGenerator {
                     actualFieldName
                   };
                   for (var i = 0; i < structType.fields.length; i += 1) {
-                    if (structType.fields[i].name == lookupName) {
+                    if (structType.fields[i].name != null && (structType.fields[i].name as String) == lookupName) {
                       fieldIndex = i;
                     }
                   }
@@ -365,7 +394,7 @@ export class FunctionGenerator {
                   actualFieldName
                 };
                 for (var i = 0; i < structType.fields.length; i += 1) {
-                  if (structType.fields[i].name == lookupName) {
+                  if (structType.fields[i].name != null && (structType.fields[i].name as String) == lookupName) {
                     fieldIndex = i;
                   }
                 }
@@ -901,5 +930,158 @@ export class FunctionGenerator {
     } else {
       throw new Error("Closure function not registered for FunctionExpression: " + i32ToString(fExpr.id as i32));
     }
+  }
+  
+  generateWasiWriteStringHelper(): void {
+    var stringStruct: WasmStruct | null = null;
+    for (let key in this.ctx.wasm.classStructs.keys()) {
+      if (key.startsWith("String_")) {
+        stringStruct = this.ctx.wasm.classStructs[key];
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("wasi_write_string_helper generation: String class struct not found!");
+    }
+    let stringStructIndex = (stringStruct as WasmStruct).index;
+    let byteArrayType = this.ctx.wasm.getByteArrayType();
+    let byteArrayTypeIndex = byteArrayType.index;
+
+    let locals = new Array<ValType>();
+    locals.push(new ValTypeI32()); // 2: i
+    locals.push(new ValTypeI32()); // 3: len
+    locals.push(new ValTypeRefNull(byteArrayType)); // 4: data
+    locals.push(new ValTypeI32()); // 5: start
+    
+    this.ctx.emitter.emitFunctionLocalsStart(locals);
+
+    let fdParam = 0;
+    let strParam = 1;
+    let iLocal = 2;
+    let lenLocal = 3;
+    let dataLocal = 4;
+    let startLocal = 5;
+
+    // Check for null string - if null, just return
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitRefIsNull();
+    this.ctx.emitter.emitIf(new ValTypeVoid());
+    this.ctx.emitter.emitReturn();
+    this.ctx.emitter.emitEnd();
+
+    var dataFieldIdx = -1;
+    var startFieldIdx = -1;
+    var endFieldIdx = -1;
+    for (var f = 0; f < (stringStruct as WasmStruct).fields.length; f += 1) {
+      let fieldName = (stringStruct as WasmStruct).fields[f].name;
+      if (fieldName != null) {
+        let nameStr = fieldName as String;
+        if (nameStr.endsWith("::#data")) {
+          dataFieldIdx = f;
+        } else if (nameStr.endsWith("::#start")) {
+          startFieldIdx = f;
+        } else if (nameStr.endsWith("::#end")) {
+          endFieldIdx = f;
+        }
+      }
+    }
+
+    if (dataFieldIdx == -1 || startFieldIdx == -1 || endFieldIdx == -1) {
+      throw new Error("String layout fields not found in structure!");
+    }
+
+    // Get #data field
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitStructGet(stringStructIndex, dataFieldIdx);
+    this.ctx.emitter.emitLocalSet(dataLocal);
+
+    // Get string length: #end - #start
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitStructGet(stringStructIndex, endFieldIdx);
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitStructGet(stringStructIndex, startFieldIdx);
+    this.ctx.emitter.emitI32Sub();
+    this.ctx.emitter.emitLocalSet(lenLocal);
+
+    // Get #start offset and store
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitStructGet(stringStructIndex, startFieldIdx);
+    this.ctx.emitter.emitLocalSet(startLocal);
+
+    // if (len == 0) return
+    this.ctx.emitter.emitLocalGet(lenLocal);
+    this.ctx.emitter.emitI32Eqz();
+    this.ctx.emitter.emitIf(new ValTypeVoid());
+    this.ctx.emitter.emitReturn();
+    this.ctx.emitter.emitEnd();
+
+    // i = 0
+    this.ctx.emitter.emitI32Const(0);
+    this.ctx.emitter.emitLocalSet(iLocal);
+
+    // Loop: copy bytes to linear memory
+    this.ctx.emitter.emitBlock(new ValTypeVoid()); // $break
+    this.ctx.emitter.emitLoop(new ValTypeVoid()); // $continue
+
+    // if (i >= len) br $break
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitLocalGet(lenLocal);
+    this.ctx.emitter.emitI32GeS();
+    this.ctx.emitter.emitBrIf(1); // br $break
+
+    // memory.store8(WASI_STRING_BUF + i, array.get_u(data, start + i))
+    this.ctx.emitter.emitI32Const(64); // WASI_STRING_BUF
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitI32Add();
+
+    this.ctx.emitter.emitLocalGet(dataLocal);
+    this.ctx.emitter.emitLocalGet(startLocal);
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitI32Add();
+    this.ctx.emitter.emitArrayGetU(byteArrayTypeIndex);
+
+    this.ctx.emitter.emitI32Store8(0, 0); // align=0, offset=0
+
+    // i = i + 1
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitI32Const(1);
+    this.ctx.emitter.emitI32Add();
+    this.ctx.emitter.emitLocalSet(iLocal);
+
+    // br $continue
+    this.ctx.emitter.emitBr(0);
+
+    this.ctx.emitter.emitEnd(); // end loop
+    this.ctx.emitter.emitEnd(); // end block
+
+    // Set up iovec: {buf: WASI_STRING_BUF, len: len}
+    this.ctx.emitter.emitI32Const(0); // WASI_IOVEC_BUF
+    this.ctx.emitter.emitI32Const(64); // WASI_STRING_BUF
+    this.ctx.emitter.emitI32Store(2, 0); // align=2, offset=0
+
+    this.ctx.emitter.emitI32Const(4); // WASI_IOVEC_LEN
+    this.ctx.emitter.emitLocalGet(lenLocal);
+    this.ctx.emitter.emitI32Store(2, 0); // align=2, offset=0
+
+    // Call fd_write(fd, iovs=0, iovs_len=1, nwritten=WASI_NWRITTEN)
+    this.ctx.emitter.emitLocalGet(fdParam);
+    this.ctx.emitter.emitI32Const(0); // WASI_IOVEC_BUF
+    this.ctx.emitter.emitI32Const(1); // iovs_len
+    this.ctx.emitter.emitI32Const(8); // WASI_NWRITTEN
+    
+    var fdWriteImport: WasmFunction | null = null;
+    for (let f in this.ctx.wasm.functionImports) {
+      if (f.importName == "fd_write") {
+        fdWriteImport = f;
+      }
+    }
+    if (fdWriteImport == null) {
+      throw new Error("fd_write import function not found!");
+    }
+    this.ctx.emitter.emitCall(fdWriteImport as WasmFunction);
+    this.ctx.emitter.emitDrop(); // Ignore return value (errno)
   }
 }

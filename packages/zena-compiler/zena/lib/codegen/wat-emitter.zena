@@ -7,6 +7,7 @@ import { WasmExport } from './wasm-module.zena';
 import { String } from 'zena:string';
 import { i32ToString, f64ToString } from 'zena:string-convert';
 import { Array } from 'zena:array';
+import { ByteBuffer } from 'zena:byte-buffer';
 
 export class WatEmitter implements WasmEmitter {
   sb: StringBuilder;
@@ -27,12 +28,25 @@ export class WatEmitter implements WasmEmitter {
     this.sb.append('(module\n');
   }
   
-  emitTypeSectionStart(count: i32): void {
-    if (count > 0) {
+  emitTypeSectionStart(count: i32): void {}
+
+  emitRecGroupStart(count: i32): void {
+    if (count > 1) {
       this.indent();
       this.sb.append('(rec\n');
       this.indentDepth += 1;
       this.emittedRecGroup = true;
+    } else {
+      this.emittedRecGroup = false;
+    }
+  }
+
+  emitRecGroupEnd(): void {
+    if (this.emittedRecGroup) {
+      this.indentDepth -= 1;
+      this.indent();
+      this.sb.append(')\n');
+      this.emittedRecGroup = false;
     }
   }
 
@@ -95,13 +109,7 @@ export class WatEmitter implements WasmEmitter {
     this.currentSuperTypeIndex = -1;
   }
   
-  emitTypeSectionEnd(): void {
-    if (this.emittedRecGroup) {
-       this.indentDepth -= 1;
-       this.indent();
-       this.sb.append(')\n');
-    }
-  }
+  emitTypeSectionEnd(): void {}
 
   emitFunctionSectionStart(count: i32): void {}
   emitFunctionDefinition(typeIndex: i32): void {}
@@ -177,6 +185,11 @@ export class WatEmitter implements WasmEmitter {
       this.sb.append(' ').append(i32ToString(idx));
     }
     this.sb.append(')\n');
+  }
+  
+  emitStartSection(funcIndex: i32): void {
+    this.indent();
+    this.sb.append('(start ').append(i32ToString(funcIndex)).append(')\n');
   }
   
   emitCodeSectionStart(count: i32): void {}
@@ -306,6 +319,22 @@ export class WatEmitter implements WasmEmitter {
     this.sb.append('ref.func ').append(i32ToString(index)).append('\n');
   }
 
+  emitRefNull(typeIndex: i32): void {
+    this.indent();
+    let typeStr = if (typeIndex == 0x71 || typeIndex == -15) {
+      "none"
+    } else if (typeIndex == 0x6d || typeIndex == -19) {
+      "eq"
+    } else if (typeIndex == 0x6e || typeIndex == -18) {
+      "any"
+    } else if (typeIndex == -16) {
+      "struct"
+    } else {
+      i32ToString(typeIndex)
+    };
+    this.sb.append('ref.null ').append(typeStr).append('\n');
+  }
+
   // GC operations
   emitStructNew(typeIndex: i32): void {
     this.indent();
@@ -345,20 +374,6 @@ export class WatEmitter implements WasmEmitter {
   emitRefTestNull(typeIndex: i32): void {
     this.indent();
     this.sb.append('ref.test_null ').append(i32ToString(typeIndex)).append('\n');
-  }
-
-  emitRefNull(heapType: i32): void {
-    this.indent();
-    let typeStr = if (heapType == 0x71 || heapType == -15) {
-      "none"
-    } else if (heapType == 0x6d || heapType == -19) {
-      "eq"
-    } else if (heapType == 0x6e || heapType == -18) {
-      "any"
-    } else {
-      i32ToString(heapType)
-    };
-    this.sb.append('ref.null ').append(typeStr).append('\n');
   }
 
   emitI32Const(value: i32): void {
@@ -474,7 +489,101 @@ export class WatEmitter implements WasmEmitter {
   emitI32Store(align: i32, offset: i32): void { this.indent(); this.sb.append(`i32.store align=${i32ToString(align)} offset=${i32ToString(offset)}\n`); }
   emitI32Load8U(align: i32, offset: i32): void { this.indent(); this.sb.append(`i32.load8_u align=${i32ToString(align)} offset=${i32ToString(offset)}\n`); }
   emitI32Store8(align: i32, offset: i32): void { this.indent(); this.sb.append(`i32.store8 align=${i32ToString(align)} offset=${i32ToString(offset)}\n`); }
+
+  emitArrayType(index: i32, elementType: ValType, isMutable: boolean): void {
+    this.indent();
+    this.sb.append('(type (;').append(i32ToString(index)).append(';) (array ');
+    if (isMutable) {
+      this.sb.append('(mut ');
+    }
+    this.sb.append(getTypeName(elementType));
+    if (isMutable) {
+      this.sb.append(')');
+    }
+    this.sb.append('))\n');
+  }
+
+  emitMemorySection(minPages: i32): void {
+    this.indent();
+    this.sb.append('(memory (;0;) ').append(i32ToString(minPages)).append(')\n');
+  }
+
+  emitExportMemory(name: String, memIndex: i32): void {
+    this.indent();
+    this.sb.append('(export "').append(name).append('" (memory ').append(i32ToString(memIndex)).append('))\n');
+  }
+
+  emitDataCountSection(count: i32): void {}
+
+  emitDataSection(datas: Array<ByteBuffer>, rawDatas: Array<ByteBuffer>): void {
+    var i = 0;
+    for (let data in rawDatas) {
+      this.indent();
+      this.sb.append('(data (;').append(i32ToString(i)).append(';) "').append(escapeBytesForWat(data)).append('")\n');
+      i += 1;
+    }
+  }
+
+  emitArrayNew(typeIndex: i32): void {
+    this.indent();
+    this.sb.append('array.new ').append(i32ToString(typeIndex)).append('\n');
+  }
+
+  emitArrayNewDefault(typeIndex: i32): void {
+    this.indent();
+    this.sb.append('array.new_default ').append(i32ToString(typeIndex)).append('\n');
+  }
+
+  emitArrayNewFixed(typeIndex: i32, count: i32): void {
+    this.indent();
+    this.sb.append('array.new_fixed ').append(i32ToString(typeIndex)).append(' ').append(i32ToString(count)).append('\n');
+  }
+
+  emitArrayNewData(typeIndex: i32, dataIndex: i32): void {
+    this.indent();
+    this.sb.append('array.new_data ').append(i32ToString(typeIndex)).append(' ').append(i32ToString(dataIndex)).append('\n');
+  }
+
+  emitArrayGet(typeIndex: i32): void {
+    this.indent();
+    this.sb.append('array.get ').append(i32ToString(typeIndex)).append('\n');
+  }
+
+  emitArrayGetU(typeIndex: i32): void {
+    this.indent();
+    this.sb.append('array.get_u ').append(i32ToString(typeIndex)).append('\n');
+  }
+
+  emitArraySet(typeIndex: i32): void {
+    this.indent();
+    this.sb.append('array.set ').append(i32ToString(typeIndex)).append('\n');
+  }
+
+  emitArrayLen(): void {
+    this.indent();
+    this.sb.append('array.len\n');
+  }
+
+  emitArrayCopy(destTypeIndex: i32, srcTypeIndex: i32): void {
+    this.indent();
+    this.sb.append('array.copy ').append(i32ToString(destTypeIndex)).append(' ').append(i32ToString(srcTypeIndex)).append('\n');
+  }
 }
+
+let escapeBytesForWat = (bytes: ByteBuffer): String => {
+  let sb = new StringBuilder();
+  let len = bytes.length;
+  for (var i = 0; i < len; i += 1) {
+    let b = bytes.getByte(i);
+    sb.append('\\');
+    let hexChars = "0123456789abcdef";
+    let high = (b >> 4) & 0x0F;
+    let low = b & 0x0F;
+    sb.append(hexChars.sliceBytes(high, high + 1));
+    sb.append(hexChars.sliceBytes(low, low + 1));
+  }
+  return sb.toString();
+};
 
 let getFunctionName = (func: WasmFunction): String => {
   return func.name ?? `func${func.index}`;

@@ -1,6 +1,6 @@
-import { ValTypeI32, ValTypeF32, ValTypeF64 } from './wasm.zena';
+import { ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeStructRef } from './wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature, DiscoveryPass,
-  WasmExport, WasmGlobal, WasmStruct, VTableInit, getClassKey
+  WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, getClassKey
 } from './wasm-module.zena';
 import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -30,16 +30,56 @@ export class ModuleGenerator {
     let usage = usageAnalyzer.analyze();
     let pass = new DiscoveryPass(this.program, wasm, usage);
     pass.run();
+    
+    var needsStartFunction = false;
+    for (let g in wasm.globals) {
+      if (g.initExpr != null) {
+        let isLiteral = match (g.initExpr as Expression) {
+          case NumberLiteral: true
+          case BooleanLiteral: true
+          case _: false
+        };
+        if (!isLiteral) {
+          needsStartFunction = true;
+        }
+      }
+    }
+    
+    if (needsStartFunction) {
+      let startSig = wasm.getSignature(new Array<ValType>(), new Array<ValType>());
+      let firstModel = this.program.units[0].model;
+      let startFunc = new WasmFunction(startSig, null, firstModel);
+      startFunc.name = "__start";
+      wasm.addFunction(startFunc);
+      wasm.startFunction = startFunc;
+    }
+
     wasm.layout();
 
     this.emitter.emitModuleStart();
-    // TODO: Compute more optimal rec groups before emitting
-    this.emitter.emitTypeSectionStart(wasm.types.length);
-    var i = 0;
-    for (let t in wasm.types) {
+    var recBlockStart = -1;
+    for (var j = 0; j < wasm.types.length; j += 1) {
+      let t = wasm.types[j];
+      if (t is WasmStruct || t is WasmArray) {
+        recBlockStart = j;
+        break;
+      }
+    }
+
+    let recBlockEnd = wasm.types.length - 1;
+
+    let beforeCount = if (recBlockStart >= 0) recBlockStart else wasm.types.length;
+    let afterCount = if (recBlockStart >= 0) (wasm.types.length - 1 - recBlockEnd) else 0;
+    let recBlockSize = if (recBlockStart >= 0) (recBlockEnd - recBlockStart + 1) else 0;
+    let totalGroups = beforeCount + (if (recBlockSize > 0) 1 else 0) + afterCount;
+
+    this.emitter.emitTypeSectionStart(totalGroups);
+
+    let emitTypeAtIndex = (idx: i32): void => {
+      let t = wasm.types[idx];
       if (t is WasmSignature) {
         let sig = t as WasmSignature;
-        this.emitter.emitFunctionTypeStart(i);
+        this.emitter.emitFunctionTypeStart(idx);
         
         this.emitter.emitFunctionTypeParamsStart(sig.params.length);
         for (let param in sig.params) {
@@ -57,7 +97,7 @@ export class ModuleGenerator {
         let superIdx =
           if (st.superStruct != null) (st.superStruct as WasmStruct).index 
           else -1;
-        this.emitter.emitStructTypeStart(i, st.name, superIdx);
+        this.emitter.emitStructTypeStart(idx, st.name, superIdx);
         
         this.emitter.emitStructTypeFieldsStart(st.fields.length);
         for (let field in st.fields) {
@@ -65,9 +105,38 @@ export class ModuleGenerator {
         }
         
         this.emitter.emitStructTypeEnd();
+      } else if (t is WasmArray) {
+        let arr = t as WasmArray;
+        this.emitter.emitArrayType(idx, arr.elementType, arr.isMutable);
       }
-      i += 1;
+    };
+
+    if (recBlockStart == -1) {
+      for (var idx = 0; idx < wasm.types.length; idx += 1) {
+        this.emitter.emitRecGroupStart(1);
+        emitTypeAtIndex(idx);
+        this.emitter.emitRecGroupEnd();
+      }
+    } else {
+      for (var idx = 0; idx < recBlockStart; idx += 1) {
+        this.emitter.emitRecGroupStart(1);
+        emitTypeAtIndex(idx);
+        this.emitter.emitRecGroupEnd();
+      }
+
+      this.emitter.emitRecGroupStart(recBlockSize);
+      for (var idx = recBlockStart; idx <= recBlockEnd; idx += 1) {
+        emitTypeAtIndex(idx);
+      }
+      this.emitter.emitRecGroupEnd();
+
+      for (var idx = recBlockEnd + 1; idx < wasm.types.length; idx += 1) {
+        this.emitter.emitRecGroupStart(1);
+        emitTypeAtIndex(idx);
+        this.emitter.emitRecGroupEnd();
+      }
     }
+
     this.emitter.emitTypeSectionEnd();
 
     this.emitter.emitImportSectionStart(wasm.functionImports.length);
@@ -84,11 +153,15 @@ export class ModuleGenerator {
     }
     this.emitter.emitFunctionSectionEnd();
 
+    if (wasm.hasMemory) {
+      this.emitter.emitMemorySection(1);
+    }
+
     this.emitter.emitGlobalSectionStart(wasm.globals.length);
     for (let g in wasm.globals) {
       this.emitter.emitGlobal(g.type, g.isMutable);
       
-      // Need a clean way to emit global initializer
+      var emitted = false;
       if (g.initExpr != null) {
         match (g.initExpr as Expression) {
           case NumberLiteral {raw}: {
@@ -106,13 +179,13 @@ export class ModuleGenerator {
              } else {
                this.emitter.emitI32Const(0);
              }
+             emitted = true;
           }
           case BooleanLiteral {value}: {
             this.emitter.emitBooleanConst(value);
+            emitted = true;
           }
-          case _: {
-             // Wait!
-          }
+          case _: {}
         }
       } else if (g.initVTable != null) {
         let vtableInit = g.initVTable as VTableInit;
@@ -120,6 +193,7 @@ export class ModuleGenerator {
           this.emitter.emitRefFunc(func.index);
         }
         this.emitter.emitStructNew(vtableInit.structType.index);
+        emitted = true;
       } else if (g.initSingletonStruct != null) {
         let cType = g.initSingletonStruct as ClassType;
         let cKey = getClassKey(cType);
@@ -127,7 +201,32 @@ export class ModuleGenerator {
         let vtableGlobal = wasm.classVTableGlobals[cKey];
         this.emitter.emitGlobalGet(vtableGlobal.index);
         this.emitter.emitStructNew(structType.index);
+        emitted = true;
       }
+      
+      if (!emitted) {
+        let type = g.type;
+        if (type is ValTypeI32) {
+          this.emitter.emitI32Const(0);
+        } else if (type is ValTypeF64) {
+          this.emitter.emitF64Const(0.0);
+        } else if (type is ValTypeF32) {
+          this.emitter.emitF32Const(0.0);
+        } else {
+          match (type) {
+            case ValTypeRefNull as refNullType: {
+              this.emitter.emitRefNull(refNullType.target.index);
+            }
+            case ValTypeStructRef: {
+              this.emitter.emitRefNull(-16);
+            }
+            case _: {
+              this.emitter.emitI32Const(0);
+            }
+          }
+        }
+      }
+      
       this.emitter.emitGlobalEnd();
     }
     this.emitter.emitGlobalSectionEnd();
@@ -161,6 +260,9 @@ export class ModuleGenerator {
       globalExports.push(wasm.exportGlobalMap[gName]);
     }
     totalExports += globalExports.length;
+    if (wasm.hasMemory) {
+      totalExports += 1;
+    }
 
     this.emitter.emitExportSectionStart(totalExports);
     for (let exp in exports) {
@@ -169,7 +271,15 @@ export class ModuleGenerator {
     for (let g in globalExports) {
       this.emitter.emitExportGlobal(g.zenaName, g.index);
     }
+    if (wasm.hasMemory) {
+      this.emitter.emitExportMemory("memory", 0);
+    }
     this.emitter.emitExportSectionEnd();
+
+    if (wasm.startFunction != null) {
+      let sf = wasm.startFunction as WasmFunction;
+      this.emitter.emitStartSection(sf.index);
+    }
 
     let elemIndices = new Array<i32>();
     for (let f in wasm.functions) {
@@ -181,12 +291,20 @@ export class ModuleGenerator {
       this.emitter.emitElementSection(elemIndices);
     }
     
+    if (wasm.datas.length > 0) {
+      this.emitter.emitDataCountSection(wasm.datas.length);
+    }
+    
     this.emitter.emitCodeSectionStart(wasm.functions.length);
     for (let wasmFunc in wasm.functions) {
        let funcCompiler = new FunctionGenerator(wasm, this.emitter, wasmFunc);
        funcCompiler.generate();
     }
     this.emitter.emitCodeSectionEnd();
+
+    if (wasm.datas.length > 0) {
+      this.emitter.emitDataSection(wasm.datas, wasm.rawDatas);
+    }
     
     this.emitter.emitModuleEnd();
   }

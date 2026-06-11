@@ -5020,6 +5020,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
           const validIntrinsics = new Set([
             'eq',
             'hash',
+            'unreachable',
             'wasi_write_string',
             'f32.abs',
             'f32.ceil',

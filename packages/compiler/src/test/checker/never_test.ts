@@ -6,6 +6,9 @@ import {TypeChecker} from '../../lib/checker/index.js';
 suite('Checker: Never Type', () => {
   test('can use never as return type', () => {
     const input = `
+      @intrinsic("unreachable")
+      declare function unreachable(): never;
+
       let fail = (): never => {
         unreachable();
       };
@@ -20,6 +23,9 @@ suite('Checker: Never Type', () => {
 
   test('never is assignable to anything', () => {
     const input = `
+      @intrinsic("unreachable")
+      declare function unreachable(): never;
+
       let fail = (): never => {
         unreachable();
       };
@@ -54,6 +60,9 @@ suite('Checker: Never Type', () => {
 
   test('unreachable returns never', () => {
     const input = `
+      @intrinsic("unreachable")
+      declare function unreachable(): never;
+
       let test = () => {
         let x: never = unreachable();
       };

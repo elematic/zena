@@ -3,6 +3,8 @@ import { CallExpression, Expression } from '../../ast.zena';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import { Opcode } from '../wasm.zena';
+import { typeToValType, WasmFunction } from '../wasm-module.zena';
+import { ValTypeRefNull, ValTypeRef, ValTypeVoid } from '../wasm.zena';
 
 export let generateGlobalIntrinsic = (
   ctx: FunctionContext,
@@ -20,6 +22,22 @@ export let generateGlobalIntrinsic = (
   if (name == 'memory.grow') {
     genExpr(args[0], false);
     ctx.emitter.emitMemoryGrow();
+    return;
+  }
+  
+  if (name == 'wasi_write_string') {
+    genExpr(args[0], false); // fd
+    genExpr(args[1], false); // string
+    var foundFunc: WasmFunction | null = null;
+    for (let f in ctx.wasm.functions) {
+      if (f.name != null && (f.name as String) == "wasi_write_string_helper") {
+        foundFunc = f;
+      }
+    }
+    if (foundFunc == null) {
+      throw new Error("wasi_write_string_helper not found in functions!");
+    }
+    ctx.emitter.emitCall(foundFunc as WasmFunction);
     return;
   }
 
@@ -67,6 +85,137 @@ export let generateGlobalIntrinsic = (
     return;
   }
 
+  if (name == 'unreachable') {
+    ctx.emitter.emitUnreachable();
+    return;
+  }
+
   // TODO: Handle string matches against general math opcodes like the bootstrap compiler does.
   throw new Error("Unsupported global intrinsic codegen for: " + name);
 };
+
+export let isArrayIntrinsic = (name: String): boolean => {
+  return name == "__array_len" || name == "__byte_array_length" ||
+         name == "__array_get" || name == "__byte_array_get" ||
+         name == "__array_set" || name == "__byte_array_set" ||
+         name == "__array_new" || name == "__array_new_empty" ||
+         name == "__byte_array_new" || name == "__byte_array_copy";
+};
+
+export let generateArrayIntrinsic = (
+  ctx: FunctionContext,
+  name: String,
+  call: CallExpression,
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  let args = call.args;
+  
+  if (name == "__array_len" || name == "__byte_array_length") {
+    genExpr(args[0], false);
+    ctx.emitter.emitArrayLen();
+    return;
+  }
+  
+  if (name == "__array_get" || name == "__byte_array_get") {
+    let arrayType = ctx.wasmFunction.model.getNodeType(args[0]);
+    let valType = typeToValType(ctx.wasm, arrayType);
+    var typeIndex = -1;
+    match (valType) {
+      case ValTypeRefNull {target}: { typeIndex = target.index; }
+      case ValTypeRef {target}: { typeIndex = target.index; }
+      case _: { throw new Error("Expected reference type for array"); }
+    }
+    
+    genExpr(args[0], false);
+    genExpr(args[1], false);
+    
+    if (name == "__byte_array_get") {
+      ctx.emitter.emitArrayGetU(typeIndex);
+    } else {
+      ctx.emitter.emitArrayGet(typeIndex);
+    }
+    return;
+  }
+  
+  if (name == "__array_set" || name == "__byte_array_set") {
+    let arrayType = ctx.wasmFunction.model.getNodeType(args[0]);
+    let valType = typeToValType(ctx.wasm, arrayType);
+    var typeIndex = -1;
+    match (valType) {
+      case ValTypeRefNull {target}: { typeIndex = target.index; }
+      case ValTypeRef {target}: { typeIndex = target.index; }
+      case _: { throw new Error("Expected reference type for array"); }
+    }
+    
+    genExpr(args[0], false);
+    genExpr(args[1], false);
+    genExpr(args[2], false);
+    
+    ctx.emitter.emitArraySet(typeIndex);
+    return;
+  }
+  
+  if (name == "__array_new") {
+    let arrayType = ctx.wasmFunction.model.getNodeType(call);
+    let valType = typeToValType(ctx.wasm, arrayType);
+    var typeIndex = -1;
+    match (valType) {
+      case ValTypeRefNull {target}: { typeIndex = target.index; }
+      case ValTypeRef {target}: { typeIndex = target.index; }
+      case _: { throw new Error("Expected reference type for array"); }
+    }
+    
+    genExpr(args[1], false); // value first
+    genExpr(args[0], false); // size second
+    
+    ctx.emitter.emitArrayNew(typeIndex);
+    return;
+  }
+  
+  if (name == "__array_new_empty" || name == "__byte_array_new") {
+    let arrayType = ctx.wasmFunction.model.getNodeType(call);
+    let valType = typeToValType(ctx.wasm, arrayType);
+    var typeIndex = -1;
+    match (valType) {
+      case ValTypeRefNull {target}: { typeIndex = target.index; }
+      case ValTypeRef {target}: { typeIndex = target.index; }
+      case _: { throw new Error("Expected reference type for array"); }
+    }
+    
+    genExpr(args[0], false);
+    ctx.emitter.emitArrayNewDefault(typeIndex);
+    return;
+  }
+  
+  if (name == "__byte_array_copy") {
+    let destType = ctx.wasmFunction.model.getNodeType(args[0]);
+    let srcType = ctx.wasmFunction.model.getNodeType(args[2]);
+    let destValType = typeToValType(ctx.wasm, destType);
+    let srcValType = typeToValType(ctx.wasm, srcType);
+    
+    var destTypeIndex = -1;
+    var srcTypeIndex = -1;
+    match (destValType) {
+      case ValTypeRefNull {target}: { destTypeIndex = target.index; }
+      case ValTypeRef {target}: { destTypeIndex = target.index; }
+      case _: {}
+    }
+    match (srcValType) {
+      case ValTypeRefNull {target}: { srcTypeIndex = target.index; }
+      case ValTypeRef {target}: { srcTypeIndex = target.index; }
+      case _: {}
+    }
+    
+    genExpr(args[0], false);
+    genExpr(args[1], false);
+    genExpr(args[2], false);
+    genExpr(args[3], false);
+    genExpr(args[4], false);
+    
+    ctx.emitter.emitArrayCopy(destTypeIndex, srcTypeIndex);
+    return;
+  }
+  
+  throw new Error("Unsupported array intrinsic: " + name);
+};
+

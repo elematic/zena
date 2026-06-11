@@ -13,16 +13,18 @@ import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode, WasmType, valTypeEquals } from './wasm.zena';
+import { ByteBuffer } from 'zena:byte-buffer';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode, WasmType, valTypeEquals, ValTypeI8 } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { analyzeCaptures } from '../analysis/capture.zena';
 import { NodeMap } from '../node-map.zena';
 import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
-import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, InterfaceType, TypeAliasType, U32Type, I64Type, U64Type, ArrayType, NullType, UnknownType, ErrorType, AnyType, AnyRefType, EqRefType, NeverType, HoleType, UnionType, FieldInfo, MethodInfo, TypeParameterType, typeToString} from '../types.zena';
+import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, InterfaceType, TypeAliasType, U32Type, I64Type, U64Type, ArrayType, NullType, UnknownType, ErrorType, AnyType, AnyRefType, EqRefType, NeverType, HoleType, UnionType, FieldInfo, MethodInfo, TypeParameterType, typeToString, ByteArrayType, ThisType} from '../types.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
+import { console } from 'zena:console';
 
 export class WasmExport {
   name: String;
@@ -118,6 +120,12 @@ export class WasmStruct extends WasmType {
   new(this.name, this.fields) : super();
 }
 
+export class WasmArray extends WasmType {
+  elementType: ValType;
+  isMutable: boolean;
+  new(this.elementType, this.isMutable) : super();
+}
+
 export let getClassKey = (ct: ClassType): String => {
   return ct.name + "_" + i32ToString(ct.id as i32);
 };
@@ -144,7 +152,7 @@ export class WasmSignature extends WasmType {
  */
 export class WasmFunction {
   /** The semantic model of the module that declares this function. */
-  model: SemanticModel;
+  var model: SemanticModel;
   var index: i32 = -1;
   var name: String | null = null;
   var methodName: String | null = null;
@@ -220,8 +228,9 @@ export class RecordDispatchInfo {
 }
 
 export class WasmModule {
-  types = new Array<WasmType>();
+  var types = new Array<WasmType>();
   var isLayoutLocked: boolean = false;
+  var startFunction: WasmFunction | null = null;
   
   /** 
    * A complete list of all imported functions.
@@ -261,6 +270,13 @@ export class WasmModule {
   classInterfaceVTables = new HashMap<String, WasmGlobal>();
   usedInterfaceAdaptations = new HashMap<String, boolean>();
   usedInterfaceMembers = new HashMap<String, boolean>();
+  
+  datas = new Array<ByteBuffer>();
+  rawDatas = new Array<ByteBuffer>();
+  stringLiterals = new HashMap<String, i32>();
+  var hasMemory: boolean = false;
+  var wasiFdWriteIndex: i32 = -1;
+  var wasiWriteStringIndex: i32 = -1;
   
   recordDispatchInfos = new Array<RecordDispatchInfo>();
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
@@ -521,6 +537,52 @@ export class WasmModule {
   addFunction(func: WasmFunction): void {
     this.functions.push(func);
   }
+
+  getArray(elementType: ValType, isMutable: boolean): WasmArray {
+    for (let t in this.types) {
+      if (t is WasmArray) {
+        let a = t as WasmArray;
+        if (valTypeEquals(a.elementType, elementType) && a.isMutable == isMutable) {
+          return a;
+        }
+      }
+    }
+    let arr = new WasmArray(elementType, isMutable);
+    this.types.push(arr);
+    return arr;
+  }
+
+  getByteArrayType(): WasmArray {
+    return this.getArray(new ValTypeI8(), true);
+  }
+
+  addData(bytes: ByteBuffer): i32 {
+    let segment = new ByteBuffer();
+    segment.writeByte(1); // passive flag
+    segment.writeULEB128(bytes.length);
+    segment.writeBuffer(bytes);
+    this.datas.push(segment);
+    this.rawDatas.push(bytes);
+    return this.datas.length - 1;
+  }
+
+  getStringLiteralDataIndex(value: String): i32 {
+    if (this.stringLiterals.has(value)) {
+      return this.stringLiterals[value];
+    }
+    let buf = new ByteBuffer();
+    let len = value.length;
+    for (var i = 0; i < len; i += 1) {
+      buf.writeByte(value.getByteAt(i));
+    }
+    let dataIdx = this.addData(buf);
+    this.stringLiterals[value] = dataIdx;
+    return dataIdx;
+  }
+
+  ensureMemory(): void {
+    this.hasMemory = true;
+  }
   
   /**
    * Locks in the module layout, assigning final WebAssembly indices (i32)
@@ -529,6 +591,63 @@ export class WasmModule {
    */
   layout(): void {
     this.isLayoutLocked = true;
+    
+    let zone1 = new Array<WasmType>();
+    let zone2 = new Array<WasmType>();
+    
+    let referencesNominal = (t: WasmType): boolean => {
+      if (t is WasmStruct || t is WasmArray) {
+        return true;
+      }
+      if (t is WasmSignature) {
+        let sig = t as WasmSignature;
+        for (let param in sig.params) {
+          match (param) {
+            case ValTypeRef {target}: {
+              if (referencesNominal(target)) { return true; }
+            }
+            case ValTypeRefNull {target}: {
+              if (referencesNominal(target)) { return true; }
+            }
+            case _: {}
+          }
+        }
+        for (let ret in sig.returns) {
+          match (ret) {
+            case ValTypeRef {target}: {
+              if (referencesNominal(target)) { return true; }
+            }
+            case ValTypeRefNull {target}: {
+              if (referencesNominal(target)) { return true; }
+            }
+            case _: {}
+          }
+        }
+      }
+      return false;
+    };
+    
+    for (let t in this.types) {
+      if (t is WasmSignature) {
+        if (!referencesNominal(t)) {
+          zone1.push(t);
+        } else {
+          zone2.push(t);
+        }
+      } else {
+        zone2.push(t);
+      }
+    }
+    
+    let newTypes = new Array<WasmType>();
+    for (let t in zone1) {
+      newTypes.push(t);
+    }
+    for (let t in zone2) {
+      newTypes.push(t);
+    }
+    this.types = newTypes;
+
     for (var i = 0; i < this.types.length; i += 1) {
       let t = this.types[i];
       t.index = i;
@@ -614,7 +733,62 @@ export class DiscoveryPass {
               this.discoverType(pair.value.type, model);
            }
         }
+     } else if (t is ArrayType) {
+        let at = t as ArrayType;
+        this.discoverType(at.elementType, model);
+        let elemValType = typeToValType(this.wasm, at.elementType);
+        this.wasm.getArray(elemValType, true);
+     } else if (t is ByteArrayType) {
+        this.wasm.getByteArrayType();
      }
+  }
+
+  registerWasiInfra(model: SemanticModel): void {
+    if (this.wasm.wasiFdWriteIndex >= 0) return;
+    
+    // 1. Enable memory
+    this.wasm.ensureMemory();
+    
+    // 2. Add signature: (i32, i32, i32, i32) -> i32 for fd_write
+    let fdWriteParams = new Array<ValType>();
+    fdWriteParams.push(new ValTypeI32());
+    fdWriteParams.push(new ValTypeI32());
+    fdWriteParams.push(new ValTypeI32());
+    fdWriteParams.push(new ValTypeI32());
+    let fdWriteReturns = new Array<ValType>();
+    fdWriteReturns.push(new ValTypeI32());
+    let fdWriteSig = this.wasm.getSignature(fdWriteParams, fdWriteReturns);
+    
+    // 3. Create WasmFunction for fd_write import
+    let fdWriteFunc = new WasmFunction(fdWriteSig, null, model);
+    fdWriteFunc.isImport = true;
+    fdWriteFunc.importModule = "wasi_snapshot_preview1";
+    fdWriteFunc.importName = "fd_write";
+    this.wasm.functionImports.push(fdWriteFunc);
+    this.wasm.wasiFdWriteIndex = 1; // dummy placeholder
+    
+    // 4. Register signature: (i32, ref null $String) -> void for wasi_write_string_helper
+    var stringStruct: WasmStruct | null = null;
+    for (let key in this.wasm.classStructs.keys()) {
+      if (key.startsWith("String_")) {
+        stringStruct = this.wasm.classStructs[key];
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("wasi_write_string_helper discovery: String class struct not found!");
+    }
+    
+    let helperParams = new Array<ValType>();
+    helperParams.push(new ValTypeI32());
+    helperParams.push(new ValTypeRefNull(stringStruct));
+    let helperReturns = new Array<ValType>();
+    let helperSig = this.wasm.getSignature(helperParams, helperReturns);
+    
+    // 5. Create WasmFunction for helper (synthetic, node is null)
+    let helperFunc = new WasmFunction(helperSig, null, model);
+    helperFunc.name = "wasi_write_string_helper";
+    this.wasm.functions.push(helperFunc);
+    this.wasm.wasiWriteStringIndex = 1; // dummy placeholder
   }
 
   registerClassMethod(
@@ -1032,6 +1206,11 @@ export class DiscoveryPass {
         let nodeType = moduleModel.getNodeType(n);
         this.discoverType(nodeType, moduleModel);
         
+        if (n is StringLiteral) {
+          let strLit = n as StringLiteral;
+          this.wasm.getStringLiteralDataIndex(strLit.value);
+        }
+        
         if (n is Expression) {
           let expr = n as Expression;
           let adaptation = moduleModel.getRecordAdaptation(expr);
@@ -1057,7 +1236,81 @@ export class DiscoveryPass {
             this.wasm.usedInterfaceAdaptations[cName + "::" + iName] = true;
           }
         } else if (n is ClassDeclaration) {
-          // Defer populating to Pass 1 statement loop
+           let classDecl = n as ClassDeclaration;
+           let classType = moduleModel.getNodeType(classDecl);
+           if (classType is ClassType) {
+            let cType = classType as ClassType;
+            if (cType.isExtension) { return; }
+            
+            let vst = this.wasm.classVTableStructs[getClassKey(cType)];
+            for (let methName in cType.vtable) {
+              // Eventually this will be the specific WasmFunction signature
+              vst.fields.push(new WasmField(methName, new ValTypeFuncRef(), false));
+            }
+
+            var rootVst = vst;
+            while (rootVst.superStruct != null) {
+              rootVst = rootVst.superStruct as WasmStruct;
+            }
+
+            let fields = new Array<WasmField>();
+            if (cType.superType != null) {
+              let superSt = this.wasm.classStructs[getClassKey(cType.superType as ClassType)];
+              for (let f in superSt.fields) {
+                fields.push(f);
+              }
+            } else {
+              fields.push(new WasmField("<vtable>", new ValTypeRefNull(rootVst), true));
+            }
+            
+            let isStaticField = (name: String): boolean => {
+              for (let ms in classDecl.body) {
+                if (ms is FieldDefinition) {
+                  let fd = ms as FieldDefinition;
+                  if (fd.name is Identifier) {
+                    if ((fd.name as Identifier).name == name) {
+                      return fd.isStatic;
+                    }
+                  }
+                }
+              }
+              return false;
+            };
+
+            for (let pair in cType.members) {
+              if (pair.value is MethodInfo) {
+                continue;
+              }
+              if (isStaticField(pair.key)) {
+                continue;
+              }
+              var isInherited = false;
+              if (cType.superType != null) {
+                let superSt = this.wasm.classStructs[getClassKey(cType.superType as ClassType)];
+                for (let sf in superSt.fields) {
+                  if (sf.name != null && (sf.name as String) == pair.key) {
+                    isInherited = true;
+                  }
+                }
+              }
+              if (!isInherited) {
+                let fName = if (pair.key.length > 0 && pair.key.sliceBytes(0, 1) == "#") {
+                  getClassKey(cType) + "::" + pair.key
+                } else {
+                  pair.key
+                };
+                fields.push(new WasmField(fName, typeToValType(this.wasm, pair.value.type), true));
+              }
+            }
+            if (this.wasm.classStructs.has(getClassKey(cType))) {
+              let st = this.wasm.classStructs[getClassKey(cType)];
+              for (let f in fields) {
+                st.fields.push(f);
+              }
+            } else {
+              throw new Error("Class struct not pre-registered: " + cType.name);
+            }
+          }
         } else if (n is InterfaceDeclaration) {
           let ifaceDecl = n as InterfaceDeclaration;
           let ifaceType = moduleModel.getNodeType(ifaceDecl);
@@ -1158,7 +1411,7 @@ export class DiscoveryPass {
                   let ident = varDecl.pattern as IdentifierPattern;
                   let expr = varDecl.init as Expression;
                   let nodeType = moduleModel.getNodeType(ident);
-                  var isMutable = varDecl.kind == "var";
+                  var isMutable = true;
                   
                   var vType = typeToValType(this.wasm, nodeType);
 
@@ -1549,13 +1802,34 @@ export class DiscoveryPass {
             let sym = moduleModel.resolveDeclaration(decl);
             if (sym != null) {
               for (let dec in decl.decorators) {
-                if (dec.name == 'intrinsic') {
+                if (dec == null) {
+                  console.log("Found null dec!");
+                  throw new Error("dec is null!");
+                }
+                let decName = dec.name;
+                if (decName == null) {
+                  console.log("Found decName is null!");
+                  throw new Error("decName is null!");
+                }
+                console.log("Found decorator: " + decName);
+                if (decName == 'intrinsic') {
                   if (dec.args.length == 1) {
-                    this.wasm.intrinsics[sym.id] = dec.args[0].value;
+                    let arg0 = dec.args[0];
+                    if (arg0 == null) {
+                      throw new Error("decorator arg0 is null!");
+                    }
+                    let intrinsicName = arg0.value;
+                    if (intrinsicName == null) {
+                      throw new Error("intrinsicName value is null!");
+                    }
+                    this.wasm.intrinsics[sym.id] = intrinsicName;
+                    if (intrinsicName == "wasi_write_string") {
+                      this.registerWasiInfra(moduleModel);
+                    }
                   } else {
                     throw new Error("Intrinsic decorator must have exactly one argument");
                   }
-                } else if (dec.name == 'external') {
+                } else if (decName == 'external') {
                   if (dec.args.length == 2) {
                      let moduleName = dec.args[0].value;
                      let exportName = dec.args[1].value;
@@ -1685,7 +1959,7 @@ export class DiscoveryPass {
           var currClass: ClassType | null = cType;
           while (currClass != null && foundFunc == null) {
              for (let f in this.wasm.functions) {
-                if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == field.name) {
+                if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName != null && (f.methodName as String) == field.name) {
                    foundFunc = f;
                    break;
                 }
@@ -1766,7 +2040,7 @@ export class DiscoveryPass {
                   var currClass: ClassType | null = cType;
                   while (currClass != null && foundFunc == null) {
                      for (let f in this.wasm.functions) {
-                        if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == field.name) {
+                        if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName != null && (f.methodName as String) == field.name) {
                            foundFunc = f;
                            break;
                         }
@@ -2140,9 +2414,6 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     if (ct.isExtension && ct.onType != null) {
       return typeToValType(wasm, ct.onType as Type);
     }
-    if (ct.name == "String") {
-      return new ValTypeI32();
-    }
     if (wasm.classStructs.has(getClassKey(ct))) {
       new ValTypeRefNull(wasm.classStructs[getClassKey(ct)])
     } else {
@@ -2157,8 +2428,12 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
       throw new Error("Interface fat pointer type not generated during discovery pass! Name: " + it.name);
     }
   }
-  case ArrayType: {
-    throw new Error("Codegen not implemented for type: " + typeToString(t));
+  case ArrayType as at: {
+    let elemValType = typeToValType(wasm, at.elementType);
+    new ValTypeRefNull(wasm.getArray(elemValType, true))
+  }
+  case ByteArrayType: {
+    new ValTypeRefNull(wasm.getByteArrayType())
   }
   case VoidType: new ValTypeVoid()
   case NullType: new ValTypeStructRef()
@@ -2172,6 +2447,8 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
   case TypeParameterType: new ValTypeAnyRef()
   case AnyRefType: new ValTypeAnyRef()
   case EqRefType: new ValTypeEqRef()
+  case TypeParameterType: new ValTypeAnyRef()
+  case ThisType: new ValTypeAnyRef()
   case NeverType: {
     throw new Error("Codegen should never see type: " + typeToString(t));
   }

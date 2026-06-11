@@ -5,6 +5,9 @@ import {compileAndRun} from './utils.js';
 suite('Codegen - Unreachable', () => {
   test('unreachable() should trap', async () => {
     const input = `
+      @intrinsic("unreachable")
+      declare function unreachable(): never;
+
       export let main = (): i32 => {
         unreachable();
       };
@@ -23,6 +26,9 @@ suite('Codegen - Unreachable', () => {
 
   test('unreachable() in control flow', async () => {
     const input = `
+      @intrinsic("unreachable")
+      declare function unreachable(): never;
+
       export let main = (): i32 => {
         if (true) {
           unreachable();

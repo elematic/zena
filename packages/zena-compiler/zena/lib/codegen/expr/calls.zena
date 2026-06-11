@@ -6,7 +6,7 @@ import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTyp
 import { WasmFunction, getClassKey, getInterfaceKey, typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct } from '../wasm-module.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
-import { generateGlobalIntrinsic } from './intrinsics.zena';
+import { generateGlobalIntrinsic, generateArrayIntrinsic, isArrayIntrinsic } from './intrinsics.zena';
 
 let generateClosureCall = (
   ctx: FunctionContext,
@@ -64,11 +64,16 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       let ident = call.callee as Identifier;
       let model = ctx.wasmFunction.model;
       let sym = model.resolve(ident);
-      
+
       if (sym == null) {
+        let name = ident.name;
+        if (isArrayIntrinsic(name)) {
+          generateArrayIntrinsic(ctx, name, call, genExpr);
+          return;
+        }
         throw new Error("Unresolved identifier in codegen: " + ident.name);
       }
-      
+
       if (let (true, intrinsic) = ctx.wasm.intrinsics.get((sym as Symbol).id)) {
         generateGlobalIntrinsic(ctx, intrinsic, call, genExpr);
         return;
@@ -243,7 +248,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         // Find method index in vtable
         var methodIndex = -1;
         for (var i = 0; i < vtableStruct.fields.length; i += 1) {
-          if (vtableStruct.fields[i].name == targetName) {
+          if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == targetName) {
             methodIndex = i;
           }
         }
@@ -314,7 +319,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         
         var methodIndex = -1;
         for (var i = 0; i < vst.fields.length; i += 1) {
-          if (vst.fields[i].name == targetName) {
+          if (vst.fields[i].name != null && (vst.fields[i].name as String) == targetName) {
             methodIndex = i;
           }
         }

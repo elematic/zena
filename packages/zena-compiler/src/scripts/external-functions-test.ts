@@ -34,6 +34,14 @@ test('external function import and call from Node.js', async () => {
         return n * 2;
       },
     },
+    wasi_snapshot_preview1: {
+      fd_write: (
+        fd: number,
+        iovs: number,
+        iovs_len: number,
+        nwritten: number,
+      ) => 0,
+    },
   };
 
   const wasmModule = await WebAssembly.instantiate(wasmBits, importObject);

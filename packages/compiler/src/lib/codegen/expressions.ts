@@ -5409,6 +5409,31 @@ function generateBinaryExpression(
     return;
   }
 
+  // Optimization for null checks
+  if (
+    expr.operator === '==' ||
+    expr.operator === '!=' ||
+    expr.operator === '===' ||
+    expr.operator === '!=='
+  ) {
+    if (expr.right.type === NodeType.NullLiteral) {
+      generateExpression(ctx, expr.left, body);
+      body.push(Opcode.ref_is_null);
+      if (expr.operator === '!=' || expr.operator === '!==') {
+        body.push(Opcode.i32_eqz);
+      }
+      return;
+    }
+    if (expr.left.type === NodeType.NullLiteral) {
+      generateExpression(ctx, expr.right, body);
+      body.push(Opcode.ref_is_null);
+      if (expr.operator === '!=' || expr.operator === '!==') {
+        body.push(Opcode.i32_eqz);
+      }
+      return;
+    }
+  }
+
   // Handle operator overloading (e.g., operator +)
   if (expr.resolvedOperatorMethod && expr.left.inferredType) {
     const classType = expr.left.inferredType as ClassType;
@@ -5499,31 +5524,6 @@ function generateBinaryExpression(
 
         return;
       }
-    }
-  }
-
-  // Optimization for null checks
-  if (
-    expr.operator === '==' ||
-    expr.operator === '!=' ||
-    expr.operator === '===' ||
-    expr.operator === '!=='
-  ) {
-    if (expr.right.type === NodeType.NullLiteral) {
-      generateExpression(ctx, expr.left, body);
-      body.push(Opcode.ref_is_null);
-      if (expr.operator === '!=' || expr.operator === '!==') {
-        body.push(Opcode.i32_eqz);
-      }
-      return;
-    }
-    if (expr.left.type === NodeType.NullLiteral) {
-      generateExpression(ctx, expr.right, body);
-      body.push(Opcode.ref_is_null);
-      if (expr.operator === '!=' || expr.operator === '!==') {
-        body.push(Opcode.i32_eqz);
-      }
-      return;
     }
   }
 

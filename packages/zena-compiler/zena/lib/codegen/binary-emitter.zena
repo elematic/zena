@@ -56,11 +56,18 @@ export class BinaryEmitter implements WasmEmitter {
   emitTypeSectionStart(count: i32): void {
     if (count == 0) return;
     this.currentSection = new ByteBuffer();
-    // Wrap ALL types in a single recursive group so we don't have to sort them topologically
-    (this.currentSection as ByteBuffer).writeULEB128(1); // 1 type group
-    (this.currentSection as ByteBuffer).writeByte(0x4E); // 0x4E = rec form
-    (this.currentSection as ByteBuffer).writeULEB128(count); // number of types in the rec group
+    (this.currentSection as ByteBuffer).writeULEB128(count);
   }
+
+  emitRecGroupStart(count: i32): void {
+    if (this.currentSection == null) return;
+    if (count > 1) {
+      (this.currentSection as ByteBuffer).writeByte(0x4E); // 0x4E = rec form
+      (this.currentSection as ByteBuffer).writeULEB128(count);
+    }
+  }
+
+  emitRecGroupEnd(): void {}
   
   emitFunctionTypeStart(index: i32): void {
     if (this.currentSection == null) return;
@@ -268,7 +275,7 @@ export class BinaryEmitter implements WasmEmitter {
       this.currentSection = null;
     }
   }
-
+  
   emitElementSection(indices: Array<i32>): void {
     if (indices.length == 0) return;
     let section = new ByteBuffer();
@@ -280,6 +287,12 @@ export class BinaryEmitter implements WasmEmitter {
       section.writeULEB128(idx);
     }
     this.writeSection(SectionId.Element as i32, section);
+  }
+  
+  emitStartSection(funcIndex: i32): void {
+    let payload = new ByteBuffer();
+    payload.writeULEB128(funcIndex);
+    this.writeSection(SectionId.Start as i32, payload);
   }
 
   emitCodeSectionStart(count: i32): void {
@@ -619,5 +632,121 @@ export class BinaryEmitter implements WasmEmitter {
     (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_store8 as i32);
     (this.currentBuffer as ByteBuffer).writeULEB128(align);
     (this.currentBuffer as ByteBuffer).writeULEB128(offset);
+  }
+
+  emitArrayType(index: i32, elementType: ValType, isMutable: boolean): void {
+    if (this.currentSection == null) {
+      return;
+    }
+    let b = this.currentSection as ByteBuffer;
+    b.writeByte(0x4F); // sub final form
+    b.writeULEB128(0); // 0 supertypes
+    b.writeByte(0x5E); // array form
+    emitValType(b, elementType);
+    b.writeByte(if (isMutable) 1 else 0);
+  }
+
+  emitMemorySection(minPages: i32): void {
+    let payload = new ByteBuffer();
+    payload.writeULEB128(1); // 1 memory
+    payload.writeByte(0); // limits: min only
+    payload.writeULEB128(minPages);
+    this.writeSection(SectionId.Memory as i32, payload);
+  }
+
+  emitExportMemory(name: String, memIndex: i32): void {
+    let section = this.currentSection;
+    if (section == null) {
+      return;
+    }
+    let nameLen = name.length;
+    section.writeULEB128(nameLen);
+    for (var j = 0; j < nameLen; j += 1) {
+      section.writeByte(name.getByteAt(j));
+    }
+    section.writeByte(2); // memory export kind
+    section.writeULEB128(memIndex);
+  }
+
+  emitDataCountSection(count: i32): void {
+    if (count == 0) return;
+    let payload = new ByteBuffer();
+    payload.writeULEB128(count);
+    this.writeSection(SectionId.DataCount as i32, payload);
+  }
+
+  emitDataSection(datas: Array<ByteBuffer>, rawDatas: Array<ByteBuffer>): void {
+    if (datas.length == 0) return;
+    let payload = new ByteBuffer();
+    payload.writeULEB128(datas.length);
+    for (let data in datas) {
+      payload.writeBuffer(data);
+    }
+    this.writeSection(SectionId.Data as i32, payload);
+  }
+
+  emitArrayNew(typeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.array_new as i32);
+    b.writeULEB128(typeIndex);
+  }
+
+  emitArrayNewDefault(typeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.array_new_default as i32);
+    b.writeULEB128(typeIndex);
+  }
+
+  emitArrayNewFixed(typeIndex: i32, count: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.array_new_fixed as i32);
+    b.writeULEB128(typeIndex);
+    b.writeULEB128(count);
+  }
+
+  emitArrayNewData(typeIndex: i32, dataIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.array_new_data as i32);
+    b.writeULEB128(typeIndex);
+    b.writeULEB128(dataIndex);
+  }
+
+  emitArrayGet(typeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.array_get as i32);
+    b.writeULEB128(typeIndex);
+  }
+
+  emitArrayGetU(typeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.array_get_u as i32);
+    b.writeULEB128(typeIndex);
+  }
+
+  emitArraySet(typeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.array_set as i32);
+    b.writeULEB128(typeIndex);
+  }
+
+  emitArrayLen(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.array_len as i32);
+  }
+
+  emitArrayCopy(destTypeIndex: i32, srcTypeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.array_copy as i32);
+    b.writeULEB128(destTypeIndex);
+    b.writeULEB128(srcTypeIndex);
   }
 }
