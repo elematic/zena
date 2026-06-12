@@ -72,10 +72,10 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] `@intrinsic` decorator discovery.
   - [x] Low-level WASM instructions (e.g. `memory.size`, `memory.grow`, `i32.load`, etc.).
   - [ ] Standard library array/byte array intrinsics (`__array_*`, `__byte_array_*`) mapping to WASM GC array operations.
-- [ ] **Closure Environments:**
-  - [ ] Capture analysis to identify non-local variables.
-  - [ ] Heap-allocated context struct creation to store captured lexical state.
-  - [ ] Rewriting variable references inside inner functions to access the context struct.
+- [x] **Closure Environments:**
+  - [x] Capture analysis to identify non-local variables.
+  - [x] Heap-allocated context struct creation to store captured lexical state.
+  - [x] Rewriting variable references inside inner functions to access the context struct.
 - [ ] **Argument Adaptation:**
   - [ ] Automatic generation of adapter wrappers when passing functions with fewer arguments than expected by the call site.
 - [ ] **Overloaded Functions:**

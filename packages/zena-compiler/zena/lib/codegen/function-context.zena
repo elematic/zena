@@ -13,6 +13,7 @@ export class FunctionContext {
   localTypes = new Array<ValType>();
   var isReachable: boolean = true;
   var needsUnreachable: boolean = false;
+  var thisLocalIndex: i32 = -1;
   
   structScratchLocals = new HashMap<i32, i32>();
 
@@ -21,6 +22,15 @@ export class FunctionContext {
   loopStack = new Array<(i32, i32)>();
 
   new(this.wasm, this.emitter, this.wasmFunction);
+
+  isCelled(symId: SymbolId): boolean {
+    for (let f in this.wasm.functions) {
+      if (f.isClosure && f.mutableCaptures.has(symId)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   allocLocal(type: ValType): i32 {
     let index = this.wasmFunction.signature.params.length + this.localTypes.length;

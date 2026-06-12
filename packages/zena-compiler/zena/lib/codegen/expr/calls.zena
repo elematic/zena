@@ -2,11 +2,55 @@ import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberEx
 import { Type, FunctionType, ClassType, InterfaceType, VoidType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
-import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType } from '../wasm.zena';
-import { WasmFunction, getClassKey, getInterfaceKey, typeToValType, getInterfaceMemberSignature, getClassMemberSignature } from '../wasm-module.zena';
+import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef } from '../wasm.zena';
+import { WasmFunction, getClassKey, getInterfaceKey, typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct } from '../wasm-module.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { generateGlobalIntrinsic } from './intrinsics.zena';
+
+let generateClosureCall = (
+  ctx: FunctionContext,
+  callee: Expression,
+  args: Array<Expression>,
+  ftVal: FunctionType,
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  let closureStruct = getClosureStruct(ctx.wasm, ftVal);
+  
+  // 1. Evaluate callee (closure struct)
+  genExpr(callee, false);
+  let closureLocal = ctx.allocLocal(new ValTypeRefNull(closureStruct));
+  ctx.emitter.emitLocalSet(closureLocal);
+  
+  // 2. Push context pointer onto stack (param 0)
+  ctx.emitter.emitLocalGet(closureLocal);
+  ctx.emitter.emitStructGet(closureStruct.index, 1);
+  
+  // 3. Push arguments (params 1..N)
+  var i = 0;
+  while (i < args.length) {
+    genExpr(args[i], false);
+    i += 1;
+  }
+  
+  // 4. Push function reference onto stack
+  ctx.emitter.emitLocalGet(closureLocal);
+  ctx.emitter.emitStructGet(closureStruct.index, 0);
+  
+  // 5. Get implementation signature and call_ref
+  let params = new Array<ValType>();
+  params.push(new ValTypeEqRef()); // ctx
+  for (let p in ftVal.parameters) {
+    params.push(typeToValType(ctx.wasm, p));
+  }
+  let returns = new Array<ValType>();
+  if (!(ftVal.returnType is VoidType)) {
+    returns.push(typeToValType(ctx.wasm, ftVal.returnType));
+  }
+  let implSig = ctx.wasm.getSignature(params, returns);
+  
+  ctx.emitter.emitCallRef(implSig.index);
+};
 
 export let generateCallExpression = (ctx: FunctionContext, call: CallExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   let calleeType = ctx.wasmFunction.model.getNodeType(call.callee);
@@ -64,22 +108,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         }
         throw new Error("Export map missing: " + importedName);
       } else if (ft != null) {
-        var i = 0;
-        while (i < call.args.length) {
-          genExpr(call.args[i], false);
-          i += 1;
-        }
-        genExpr(call.callee, false);
-        let params = new Array<ValType>();
-        for (let p in (ft as FunctionType).parameters) {
-          params.push(typeToValType(ctx.wasm, p));
-        }
-        let returns = new Array<ValType>();
-        if (!((ft as FunctionType).returnType is VoidType)) {
-          returns.push(typeToValType(ctx.wasm, (ft as FunctionType).returnType));
-        }
-        let sig = ctx.wasm.getSignature(params, returns);
-        ctx.emitter.emitCallRef(sig.index);
+        generateClosureCall(ctx, call.callee, call.args, ft as FunctionType, genExpr);
         return;
       } else {
         throw new Error("Could not resolve function call target: " + ident.name);
@@ -220,6 +249,10 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         }
         
         if (methodIndex == -1) {
+          if (ft != null) {
+            generateClosureCall(ctx, call.callee, call.args, ft as FunctionType, genExpr);
+            return;
+          }
           throw new Error("Method not found in vtable: " + targetName);
         }
         
@@ -287,6 +320,10 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         }
         
         if (methodIndex == -1) {
+          if (ft != null) {
+            generateClosureCall(ctx, call.callee, call.args, ft as FunctionType, genExpr);
+            return;
+          }
           throw new Error("Method not found in interface vtable: " + targetName);
         }
         
@@ -312,6 +349,10 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       throw new Error("Unsupported method call on type: " + typeToString(objType));
     }
     case _: {
+      if (ft != null) {
+        generateClosureCall(ctx, call.callee, call.args, ft as FunctionType, genExpr);
+        return;
+      }
       throw new Error("Unsupported call expression");
     }        
   }

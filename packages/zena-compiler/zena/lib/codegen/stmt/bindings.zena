@@ -1,6 +1,7 @@
 import { Error } from 'zena:error';
 import { VariableDeclaration, Expression, IdentifierPattern } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
+import { typeToValType, getCellStruct } from '../wasm-module.zena';
 
 export let generateVariableDeclaration = (ctx: FunctionContext, stmt: VariableDeclaration, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (stmt.init != null) {
@@ -9,6 +10,12 @@ export let generateVariableDeclaration = (ctx: FunctionContext, stmt: VariableDe
       let ident = stmt.pattern as IdentifierPattern;
       let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
       if (sym != null && ctx.localIndices.has(sym.id)) {
+        if (ctx.isCelled(sym.id)) {
+          let symType = ctx.wasmFunction.model.getBindingType(sym);
+          let valType = typeToValType(ctx.wasm, symType);
+          let cellStruct = getCellStruct(ctx.wasm, valType);
+          ctx.emitter.emitStructNew(cellStruct.index);
+        }
         ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
       }
     }

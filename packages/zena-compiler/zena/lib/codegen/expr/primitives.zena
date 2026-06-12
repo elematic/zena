@@ -4,6 +4,7 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { parseI32, parseF64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
+import { typeToValType, getCellStruct } from '../wasm-module.zena';
 
 // TODO: Consider moving `generateIdentifier` to a dedicated file (e.g.,
 // `bindings.zena` or `variables.zena`). While it is parsed as a primary
@@ -15,6 +16,12 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
   if (sym != null) {
     if (ctx.localIndices.has(sym.id)) {
       ctx.emitter.emitLocalGet(ctx.localIndices[sym.id]);
+      if (ctx.isCelled(sym.id)) {
+        let symType = ctx.wasmFunction.model.getBindingType(sym);
+        let valType = typeToValType(ctx.wasm, symType);
+        let cellStruct = getCellStruct(ctx.wasm, valType);
+        ctx.emitter.emitStructGet(cellStruct.index, 0);
+      }
       return;
     }
     if (ctx.wasm.globalMap.has(sym.id)) {

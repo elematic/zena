@@ -6,7 +6,7 @@ import {
 } from '../../ast.zena';
 import { Type, F64Type, F32Type, VoidType, ClassType, typeToString } from '../../types.zena';
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull } from '../wasm.zena';
-import { typeToValType, getClassKey } from '../wasm-module.zena';
+import { typeToValType, getClassKey, getCellStruct } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 
@@ -224,6 +224,12 @@ let generateMatchPatternBindings = (
         if (sym != null && ctx.localIndices.has(sym.id)) {
           let idx = ctx.localIndices[sym.id];
           ctx.emitter.emitLocalGet(discriminantLocal);
+          if (ctx.isCelled(sym.id)) {
+            let symType = ctx.wasmFunction.model.getBindingType(sym);
+            let valType = typeToValType(ctx.wasm, symType);
+            let cellStruct = getCellStruct(ctx.wasm, valType);
+            ctx.emitter.emitStructNew(cellStruct.index);
+          }
           ctx.emitter.emitLocalSet(idx);
         }
       }
@@ -234,6 +240,12 @@ let generateMatchPatternBindings = (
         if (sym != null && ctx.localIndices.has(sym.id)) {
           let idx = ctx.localIndices[sym.id];
           ctx.emitter.emitLocalGet(discriminantLocal);
+          if (ctx.isCelled(sym.id)) {
+            let symType = ctx.wasmFunction.model.getBindingType(sym);
+            let valType = typeToValType(ctx.wasm, symType);
+            let cellStruct = getCellStruct(ctx.wasm, valType);
+            ctx.emitter.emitStructNew(cellStruct.index);
+          }
           ctx.emitter.emitLocalSet(idx);
         }
       }
@@ -243,6 +255,12 @@ let generateMatchPatternBindings = (
       if (sym != null && ctx.localIndices.has(sym.id)) {
         let idx = ctx.localIndices[sym.id];
         ctx.emitter.emitLocalGet(discriminantLocal);
+        if (ctx.isCelled(sym.id)) {
+          let symType = ctx.wasmFunction.model.getBindingType(sym);
+          let valType = typeToValType(ctx.wasm, symType);
+          let cellStruct = getCellStruct(ctx.wasm, valType);
+          ctx.emitter.emitStructNew(cellStruct.index);
+        }
         ctx.emitter.emitLocalSet(idx);
       }
       generateMatchPatternBindings(ctx, ap.pattern, discriminantLocal, discriminantType);

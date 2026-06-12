@@ -14,8 +14,8 @@ import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, Cl
 import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { ValType } from './wasm.zena';
-import { typeToValType, WasmField, WasmStruct, sortWasmFields, getClassKey, getInterfaceKey, collectMixinFields } from './wasm-module.zena';
+import { ValType, HeapType, heapTypeToSigned } from './wasm.zena';
+import { typeToValType, WasmField, WasmStruct, sortWasmFields, getClassKey, getInterfaceKey, collectMixinFields, getClosureStruct, getCellStruct } from './wasm-module.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
@@ -184,6 +184,8 @@ export class FunctionGenerator {
         if (!this.ctx.wasmFunction.isStatic) {
           offset = 1;
         }
+      } else if (this.ctx.wasmFunction.isClosure) {
+        offset = 1;
       }
       for (var i = 0; i < params.length; i += 1) {
         let param = params[i];
@@ -215,6 +217,57 @@ export class FunctionGenerator {
     
     
     this.ctx.emitter.emitFunctionLocalsStart(this.ctx.localTypes);
+    
+    if (params != null) {
+      for (var i = 0; i < params.length; i += 1) {
+        let param = params[i];
+        let sym = this.ctx.wasmFunction.model.resolveDeclaration(param.name);
+        if (sym != null && this.ctx.isCelled(sym.id)) {
+          let paramIdx = this.ctx.localIndices[sym.id];
+          let symType = this.ctx.wasmFunction.model.getBindingType(sym);
+          let valType = typeToValType(this.ctx.wasm, symType);
+          let cellStruct = getCellStruct(this.ctx.wasm, valType);
+          
+          let cellLocalIdx = this.ctx.allocLocal(new ValTypeRefNull(cellStruct));
+          this.ctx.emitter.emitLocalGet(paramIdx);
+          this.ctx.emitter.emitStructNew(cellStruct.index);
+          this.ctx.emitter.emitLocalSet(cellLocalIdx);
+          this.ctx.localIndices[sym.id] = cellLocalIdx;
+        }
+      }
+    }
+
+    if (this.ctx.wasmFunction.isClosure) {
+      let contextStruct = this.ctx.wasmFunction.contextStruct as WasmStruct;
+      if (contextStruct.fields.length > 0) {
+        let typedCtxLocalIdx = this.ctx.allocLocal(new ValTypeRefNull(contextStruct));
+        this.ctx.emitter.emitLocalGet(0);
+        this.ctx.emitter.emitRefCast(contextStruct.index);
+        this.ctx.emitter.emitLocalSet(typedCtxLocalIdx);
+        
+        var fieldIdx = 0;
+        if (this.ctx.wasmFunction.capturesThis) {
+          let field = contextStruct.fields[fieldIdx];
+          let thisLocalIdx = this.ctx.allocLocal(field.type);
+          this.ctx.thisLocalIndex = thisLocalIdx;
+          
+          this.ctx.emitter.emitLocalGet(typedCtxLocalIdx);
+          this.ctx.emitter.emitStructGet(contextStruct.index, fieldIdx);
+          this.ctx.emitter.emitLocalSet(thisLocalIdx);
+          fieldIdx += 1;
+        }
+        for (let symId in this.ctx.wasmFunction.captures) {
+          let field = contextStruct.fields[fieldIdx];
+          let localIdx = this.ctx.allocLocal(field.type);
+          this.ctx.localIndices[symId] = localIdx;
+          
+          this.ctx.emitter.emitLocalGet(typedCtxLocalIdx);
+          this.ctx.emitter.emitStructGet(contextStruct.index, fieldIdx);
+          this.ctx.emitter.emitLocalSet(localIdx);
+          fieldIdx += 1;
+        }
+      }
+    }
     
     if (bodyNode is MethodDefinition) {
       let mDef = bodyNode as MethodDefinition;
@@ -422,13 +475,20 @@ export class FunctionGenerator {
       case BooleanLiteral: generateBooleanLiteral(this.ctx, expr as BooleanLiteral)
       case StringLiteral: generateStringLiteral(this.ctx, expr as StringLiteral)
       case NullLiteral: {
-        this.ctx.emitter.emitRefNull(-15); // HeapType.none
+        this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
       }
       case RecordLiteral: generateRecordLiteral(this.ctx, expr as RecordLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case TupleLiteral: generateTupleLiteral(this.ctx, expr as TupleLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
       case ThisExpression: {
-        this.ctx.emitter.emitLocalGet(0);
+        if (this.ctx.thisLocalIndex >= 0) {
+          this.ctx.emitter.emitLocalGet(this.ctx.thisLocalIndex);
+        } else {
+          this.ctx.emitter.emitLocalGet(0);
+        }
+      }
+      case FunctionExpression: {
+        this.generateFunctionExpression(expr as FunctionExpression);
       }
       case BinaryExpression: generateBinaryExpression(this.ctx, expr as BinaryExpression, (e: Expression) => this.generateExpression(e))
       case AssignmentExpression: {
@@ -795,5 +855,51 @@ export class FunctionGenerator {
     }
 
     this.ctx.emitter.emitReturn();
+  }
+
+  generateFunctionExpression(fExpr: FunctionExpression): void {
+    if (let (true, closureFunc) = this.ctx.wasm.closureFunctions.get(fExpr)) {
+      let funcTypeNode = this.ctx.wasmFunction.model.getNodeType(fExpr) as Type;
+      let closureStruct = getClosureStruct(this.ctx.wasm, funcTypeNode);
+
+      // 1. Push function reference
+      this.ctx.emitter.emitRefFunc(closureFunc.index);
+
+      // 2. Push context pointer
+      let contextStruct = closureFunc.contextStruct as WasmStruct;
+      if (contextStruct.fields.length > 0) {
+        var fieldIdx = 0;
+        if (closureFunc.capturesThis) {
+          if (this.ctx.thisLocalIndex >= 0) {
+            this.ctx.emitter.emitLocalGet(this.ctx.thisLocalIndex);
+          } else {
+            this.ctx.emitter.emitLocalGet(0);
+          }
+          fieldIdx += 1;
+        }
+        for (let symId in closureFunc.captures) {
+          if (!this.ctx.localIndices.has(symId)) {
+            var keysStr = "";
+            for (let pair in this.ctx.localIndices) {
+              let name = if (this.ctx.wasm.symbolNames.has(pair.key)) this.ctx.wasm.symbolNames[pair.key] else "unknown";
+              keysStr = keysStr + name + " (" + i32ToString(pair.key as i32) + "), ";
+            }
+            let missingName = if (this.ctx.wasm.symbolNames.has(symId)) this.ctx.wasm.symbolNames[symId] else "unknown";
+            throw new Error("Key not found in localIndices for SymbolId: " + missingName + " (" + i32ToString(symId as i32) + ") (available: " + keysStr + ")");
+          }
+          let localIdx = this.ctx.localIndices[symId];
+          this.ctx.emitter.emitLocalGet(localIdx);
+          fieldIdx += 1;
+        }
+        this.ctx.emitter.emitStructNew(contextStruct.index);
+      } else {
+        this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.eq));
+      }
+
+      // 3. Create closure struct
+      this.ctx.emitter.emitStructNew(closureStruct.index);
+    } else {
+      throw new Error("Closure function not registered for FunctionExpression: " + i32ToString(fExpr.id as i32));
+    }
   }
 }

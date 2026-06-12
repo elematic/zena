@@ -1,0 +1,114 @@
+import { Array } from 'zena:array';
+import { HashSet } from 'zena:set';
+import { HashMap } from 'zena:map';
+import {
+  Node, Expression, Identifier, ThisExpression, AssignmentExpression,
+  FunctionExpression, Parameter, VariableDeclaration, MatchCase,
+  ForInStatement, LetPatternCondition, CatchClause, IdentifierPattern,
+  AsPattern, Module, ClassDeclaration, InterfaceDeclaration, EnumDeclaration,
+  MixinDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration,
+  BlockStatement, SetterInfo
+} from '../ast.zena';
+import { SemanticModel } from '../semantic-model.zena';
+import { Symbol, SymbolId } from '../scope/symbol.zena';
+import { walk, walkEnter } from '../visitor.zena';
+
+export class CaptureInfo {
+  captures = new Array<Symbol>();
+  mutableCaptures = new HashSet<SymbolId>();
+  var capturesThis: boolean = false;
+
+  new();
+}
+
+let isLocalSymbol = (sym: Symbol, model: SemanticModel): boolean => {
+  if (sym.declaration == null) { return false; }
+  let decl = sym.declaration as Node;
+  if (decl is Parameter) { return true; }
+
+  var curr = decl;
+  while (true) {
+    let parent = model.getParent(curr);
+    if (parent == null) { return false; }
+    match (parent) {
+      case Module: { return false; }
+      case ClassDeclaration: { return false; }
+      case InterfaceDeclaration: { return false; }
+      case EnumDeclaration: { return false; }
+      case MixinDeclaration: { return false; }
+      case VariableDeclaration: {
+        let varDeclParent = model.getParent(parent);
+        if (varDeclParent == null) { return false; }
+        match (varDeclParent) {
+          case Module: { return false; }
+          case ClassDeclaration: { return false; }
+          case InterfaceDeclaration: { return false; }
+          case MixinDeclaration: { return false; }
+          case _: { return true; }
+        }
+      }
+      case MethodDefinition: { return true; }
+      case FunctionExpression: { return true; }
+      case BlockStatement: { return true; }
+      case _: {
+        curr = parent;
+      }
+    }
+  }
+};
+
+let isDeclaredInClosure = (sym: Symbol, funcExpr: FunctionExpression, model: SemanticModel): boolean => {
+  if (sym.declaration == null) { return false; }
+  var curr = sym.declaration as Node;
+  while (true) {
+    let parent = model.getParent(curr);
+    if (parent == null) { return false; }
+    if (parent.id == funcExpr.id) {
+      return true;
+    }
+    curr = parent;
+  }
+};
+
+export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): CaptureInfo => {
+  let info = new CaptureInfo();
+  let seen = new HashSet<SymbolId>();
+
+  // Traverse the body and collect referenced variables that are declared outside
+  walkEnter(func.body, (n: Node): void => {
+    match (n) {
+      case Identifier as ident: {
+        let sym = model.resolve(ident);
+        if (sym != null && isLocalSymbol(sym, model)) {
+          if (!isDeclaredInClosure(sym, func, model)) {
+            if (!seen.has(sym.id)) {
+              seen.add(sym.id);
+              info.captures.push(sym);
+            }
+          }
+        }
+      }
+      case ThisExpression: {
+        info.capturesThis = true;
+      }
+      case AssignmentExpression as assign: {
+        if (assign.left is Identifier) {
+          let ident = assign.left as Identifier;
+          let sym = model.resolve(ident);
+          if (sym != null && isLocalSymbol(sym, model)) {
+            if (!isDeclaredInClosure(sym, func, model)) {
+              if (!seen.has(sym.id)) {
+                seen.add(sym.id);
+                info.captures.push(sym);
+              }
+              info.mutableCaptures.add(sym.id);
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+  });
+
+  return info;
+};

@@ -16,6 +16,9 @@ import { Error } from 'zena:error';
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode, WasmType, valTypeEquals } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
+import { analyzeCaptures } from '../analysis/capture.zena';
+import { NodeMap } from '../node-map.zena';
 import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
 import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, InterfaceType, TypeAliasType, U32Type, I64Type, U64Type, ArrayType, NullType, UnknownType, ErrorType, AnyType, AnyRefType, EqRefType, NeverType, HoleType, UnionType, FieldInfo, MethodInfo, TypeParameterType, typeToString} from '../types.zena';
 import { String } from "zena:string";
@@ -167,13 +170,24 @@ export class WasmFunction {
   /** The concrete target function for an interface trampoline method/property call. */
   var interfaceTrampolineTarget: WasmFunction | null = null;
 
+  var isClosure: boolean = false;
+  var isReferenceTaken: boolean = false;
+  var contextStruct: WasmStruct | null = null;
+  var captures = new Array<SymbolId>();
+  var mutableCaptures = new HashSet<SymbolId>();
+  var capturesThis: boolean = false;
+
   new(this.signature, this.node, this.model);
 }
 
 export class VTableInit {
   structType: WasmStruct;
   funcs: Array<WasmFunction>;
-  new(this.structType, this.funcs);
+  new(this.structType, this.funcs) {
+    for (let f in this.funcs) {
+      f.isReferenceTaken = true;
+    }
+  }
 }
 
 export class WasmGlobal {
@@ -250,6 +264,11 @@ export class WasmModule {
   
   recordDispatchInfos = new Array<RecordDispatchInfo>();
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
+  
+  cellStructs = new HashMap<String, WasmStruct>();
+  closureStructs = new HashMap<String, WasmStruct>();
+  closureFunctions = new NodeMap<WasmFunction>();
+  symbolNames = new HashMap<SymbolId, String>();
   
   findRecordDispatch(fields: Array<WasmField>): RecordDispatchInfo | null {
     for (var k = 0; k < this.recordDispatchInfos.length; k += 1) {
@@ -587,6 +606,7 @@ export class DiscoveryPass {
            this.discoverType(paramType, model);
         }
         this.discoverType(ft.returnType, model);
+        getClosureStruct(this.wasm, ft);
      } else if (t is ClassType) {
         let ct = t as ClassType;
         for (let pair in ct.members) {
@@ -1782,6 +1802,134 @@ export class DiscoveryPass {
           }
        }
     }
+
+    // Pass 2: Walk the AST of registered functions (including newly registered closures)
+    // to discover and register nested closures.
+    var fIdx = 0;
+    while (fIdx < this.wasm.functions.length) {
+      let f = this.wasm.functions[fIdx];
+      if (f.node != null) {
+        let funcNode = f.node as Node;
+        var bodyNode: Node | null = null;
+        match (funcNode) {
+          case FunctionExpression as fExpr: {
+            bodyNode = fExpr.body as Node;
+          }
+          case MethodDefinition as mDef: {
+            bodyNode = mDef.body;
+          }
+          case AccessorDeclaration as acc: {
+            bodyNode = acc.getter;
+          }
+          case SetterInfo as si: {
+            bodyNode = si.body;
+          }
+          case _: {}
+        }
+        
+        if (bodyNode != null) {
+          walk(bodyNode as Node, (n: Node) => true, (n: Node) => {
+            if (n is FunctionExpression) {
+              let funcExpr = n as FunctionExpression;
+              var isRegistered = false;
+              for (let otherF in this.wasm.functions) {
+                if (otherF.node != null && otherF.node.id == funcExpr.id) {
+                  isRegistered = true;
+                }
+              }
+              if (!isRegistered) {
+                this.registerClosure(funcExpr, f.model);
+              }
+            }
+          });
+        }
+      }
+      fIdx += 1;
+    }
+  }
+
+  registerClosure(funcExpr: FunctionExpression, model: SemanticModel): void {
+    let captureInfo = analyzeCaptures(funcExpr, model);
+    let funcTypeNode = model.getNodeType(funcExpr);
+    
+    let params = new Array<ValType>();
+    params.push(new ValTypeEqRef()); // ctx
+    let returns = new Array<ValType>();
+    
+    if (funcTypeNode is FunctionType) {
+      let ft = funcTypeNode as FunctionType;
+      for (let p in ft.parameters) {
+        params.push(typeToValType(this.wasm, p));
+      }
+      if (!(ft.returnType is VoidType)) {
+        returns.push(typeToValType(this.wasm, ft.returnType));
+      }
+    } else {
+      returns.push(new ValTypeI32());
+    }
+    
+    let sig = this.wasm.getSignature(params, returns);
+    let wasmFunc = new WasmFunction(sig, funcExpr, model);
+    wasmFunc.isClosure = true;
+    wasmFunc.isReferenceTaken = true;
+    wasmFunc.name = "closure_impl_" + i32ToString(funcExpr.id as i32);
+    
+    wasmFunc.capturesThis = captureInfo.capturesThis;
+    wasmFunc.mutableCaptures = captureInfo.mutableCaptures;
+    for (let sym in captureInfo.captures) {
+      this.wasm.symbolNames[sym.id] = sym.name;
+      wasmFunc.captures.push(sym.id);
+    }
+    
+    // Find enclosing class if 'this' is captured
+    var enclosingClassType: ClassType | null = null;
+    if (captureInfo.capturesThis) {
+      var curr = funcExpr as Node;
+      while (true) {
+        let parent = model.getParent(curr);
+        if (parent == null) { break; }
+        if (parent is ClassDeclaration) {
+          let cd = parent as ClassDeclaration;
+          let t = model.getNodeType(cd);
+          if (t is ClassType) {
+            enclosingClassType = t as ClassType;
+          }
+          break;
+        } else {
+          curr = parent as Node;
+        }
+      }
+    }
+    
+    let fields = new Array<WasmField>();
+    if (captureInfo.capturesThis && enclosingClassType != null) {
+      let ct = enclosingClassType as ClassType;
+      var thisValType: ValType = new ValTypeStructRef();
+      if (ct.isExtension && ct.onType != null) {
+        thisValType = typeToValType(this.wasm, ct.onType as Type);
+      } else {
+        thisValType = typeToValType(this.wasm, ct);
+      }
+      fields.push(new WasmField("this", thisValType, false));
+    }
+    
+    for (let sym in captureInfo.captures) {
+      let symType = model.getBindingType(sym);
+      let valType = typeToValType(this.wasm, symType);
+      var fieldType: ValType = valType;
+      if (captureInfo.mutableCaptures.has(sym.id)) {
+        let cellStruct = getCellStruct(this.wasm, valType);
+        fieldType = new ValTypeRefNull(cellStruct);
+      }
+      fields.push(new WasmField("capture_" + i32ToString(sym.id as i32), fieldType, false));
+    }
+    
+    let contextStruct = new WasmStruct("ClosureCtx_" + i32ToString(funcExpr.id as i32), fields);
+    this.wasm.types.push(contextStruct);
+    wasmFunc.contextStruct = contextStruct;
+    
+    this.wasm.addFunction(wasmFunc);
+    this.wasm.closureFunctions[funcExpr] = wasmFunc;
   }
 }
 
@@ -1876,6 +2024,82 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
 };
 
 
+export let getValTypeKey = (type: ValType): String => {
+  match (type) {
+    case ValTypeRef as r: {
+      if (r.target is WasmStruct) {
+        let s = r.target as WasmStruct;
+        if (s.name != null) {
+          return "ref_" + (s.name as String);
+        }
+      }
+      return "ref_anon";
+    }
+    case ValTypeRefNull as r: {
+      if (r.target is WasmStruct) {
+        let s = r.target as WasmStruct;
+        if (s.name != null) {
+          return "refnull_" + (s.name as String);
+        }
+      }
+      return "refnull_anon";
+    }
+    case _: {
+      return i32ToString(valTypeToOpcode(type));
+    }
+  }
+};
+
+export let getClosureStruct = (wasm: WasmModule, ftVal: any): WasmStruct => {
+  let ft = ftVal as FunctionType;
+  let params = new Array<ValType>();
+  params.push(new ValTypeEqRef()); // ctx
+  for (let p in ft.parameters) {
+    params.push(typeToValType(wasm, p));
+  }
+  let returns = new Array<ValType>();
+  if (!(ft.returnType is VoidType)) {
+    returns.push(typeToValType(wasm, ft.returnType));
+  }
+
+  let implSig = wasm.getSignature(params, returns);
+
+  var keyStr = "";
+  for (let p in params) {
+    keyStr = keyStr + getValTypeKey(p) + ",";
+  }
+  keyStr = keyStr + "=>";
+  for (let r in returns) {
+    keyStr = keyStr + getValTypeKey(r) + ",";
+  }
+
+  if (wasm.closureStructs.has(keyStr)) {
+    return wasm.closureStructs[keyStr];
+  }
+
+  let fields = new Array<WasmField>();
+  fields.push(new WasmField("func", new ValTypeRef(implSig), false));
+  fields.push(new WasmField("ctx", new ValTypeEqRef(), false));
+  let st = new WasmStruct("Closure", fields);
+  wasm.types.push(st);
+  wasm.closureStructs[keyStr] = st;
+  return st;
+};
+
+export let getCellStruct = (wasm: WasmModule, valType: ValType): WasmStruct => {
+  let keyStr = getValTypeKey(valType);
+  if (wasm.cellStructs.has(keyStr)) {
+    return wasm.cellStructs[keyStr];
+  }
+  let fields = new Array<WasmField>();
+  fields.push(new WasmField("value", valType, true)); // mutable
+  let name = "Cell_" + keyStr;
+  let st = new WasmStruct(name, fields);
+  wasm.types.push(st);
+  wasm.cellStructs[keyStr] = st;
+  return st;
+};
+
 export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
   case TypeAliasType as a: typeToValType(wasm, a.target)
   case F64Type: new ValTypeF64()
@@ -1955,7 +2179,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     throw new Error("Codegen should never see type: " + typeToString(t));
   }
   case FunctionType: {
-    throw new Error("Codegen not implemented for type: " + typeToString(t));
+    new ValTypeRefNull(getClosureStruct(wasm, t))
   }
   case UnionType as ut: {
     var hasVoid = false;

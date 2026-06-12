@@ -19,7 +19,7 @@ async function run() {
   const runList = [
     'case-classes',
     'classes',
-    // 'closures',
+    'closures',
     'compound-assignment',
     'control-flow',
     'functions',
@@ -49,6 +49,7 @@ async function run() {
     'upcast.zena', // Class initialization error when no constructor?
     'generic.zena', // Generics codegen not yet implemented
     'generic_equality.zena', // Generics codegen not yet implemented
+    'this_capture_generic.zena', // Generics not supported in self-hosted compiler yet
   ];
 
   let files = await glob(join(testsDir, '**/*.zena'));

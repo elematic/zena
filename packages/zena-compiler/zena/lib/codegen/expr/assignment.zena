@@ -4,7 +4,7 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
-import { typeToValType, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature, getClassMemberSignature } from '../wasm-module.zena';
+import { typeToValType, getCellStruct, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature, getClassMemberSignature } from '../wasm-module.zena';
 
 /**
  * Generates WASM code for an assignment expression.
@@ -18,34 +18,19 @@ export let generateAssignmentExpression = (
   discardValue: boolean,
   genExpr: (e: Expression, discardValue: boolean) => void): void => {
   
-  if (assign.operator != null) {
-    if (assign.left is Identifier) {
-      let ident = assign.left as Identifier;
-      let sym = ctx.wasmFunction.model.resolve(ident);
-      if (sym != null) {
-        let binOp = assign.operator as String;
-        let binExpr = new BinaryExpression(binOp, assign.left, assign.value, assign.loc);
-        generateBinaryExpression(ctx, binExpr, genExpr);
-
-        // Store back
-        if (ctx.localIndices.has((sym as Symbol).id)) {
-          if (discardValue) {
-            ctx.emitter.emitLocalSet(ctx.localIndices[(sym as Symbol).id]);
-          } else {
-            ctx.emitter.emitLocalTee(ctx.localIndices[(sym as Symbol).id]);
-          }
-          return;
-        } else if (ctx.wasm.globalMap.has((sym as Symbol).id)) {
-          let index = ctx.wasm.globalMap[(sym as Symbol).id].index;
-          ctx.emitter.emitGlobalSet(index);
-          if (!discardValue) {
-            ctx.emitter.emitGlobalGet(index);
-          }
-          return;
-        }
-      }
+  if (assign.operator != null && (assign.operator as String) != "??") {
+    let binOp = assign.operator as String;
+    let binExpr = new BinaryExpression(binOp, assign.left, assign.value, assign.loc);
+    let leftType = ctx.wasmFunction.model.getNodeType(assign.left);
+    if (leftType != null) {
+      ctx.wasmFunction.model.setNodeType(binExpr, leftType);
     }
-    throw new Error("Compound assignment target must be an identifier.");
+    let newAssign = new AssignmentExpression(assign.left, binExpr, null, assign.loc);
+    if (leftType != null) {
+      ctx.wasmFunction.model.setNodeType(newAssign, leftType);
+    }
+    generateAssignmentExpression(ctx, newAssign, discardValue, genExpr);
+    return;
   }
 
   if (assign.left is Identifier) {
@@ -53,11 +38,28 @@ export let generateAssignmentExpression = (
     let sym = ctx.wasmFunction.model.resolve(ident);
     if (sym != null) {
       if (ctx.localIndices.has((sym as Symbol).id)) {
-        genExpr(assign.value, false);
-        if (discardValue) {
-          ctx.emitter.emitLocalSet(ctx.localIndices[(sym as Symbol).id]);
+        if (ctx.isCelled((sym as Symbol).id)) {
+          let symType = ctx.wasmFunction.model.getBindingType(sym);
+          let valType = typeToValType(ctx.wasm, symType);
+          let cellStruct = getCellStruct(ctx.wasm, valType);
+          
+          genExpr(assign.value, false);
+          let valLocal = ctx.allocLocal(valType);
+          if (discardValue) {
+            ctx.emitter.emitLocalSet(valLocal);
+          } else {
+            ctx.emitter.emitLocalTee(valLocal);
+          }
+          ctx.emitter.emitLocalGet(ctx.localIndices[(sym as Symbol).id]);
+          ctx.emitter.emitLocalGet(valLocal);
+          ctx.emitter.emitStructSet(cellStruct.index, 0);
         } else {
-          ctx.emitter.emitLocalTee(ctx.localIndices[(sym as Symbol).id]);
+          genExpr(assign.value, false);
+          if (discardValue) {
+            ctx.emitter.emitLocalSet(ctx.localIndices[(sym as Symbol).id]);
+          } else {
+            ctx.emitter.emitLocalTee(ctx.localIndices[(sym as Symbol).id]);
+          }
         }
         return;
       }

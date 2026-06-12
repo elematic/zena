@@ -92,3 +92,13 @@ We need a suite of micro-benchmarks to track performance regressions.
   - Better register allocation opportunities for WASM engines
 - **Complexity**: Moderate. Requires tracking live ranges and ensuring correctness when variables are captured by closures (captured variables can't be reused).
 - **Priority**: Low. Modern WASM engines handle many locals efficiently. Implement only if profiling shows local count is a bottleneck.
+
+### Closure Context Optimization
+
+- **Problem**: Separately boxing every mutated captured variable (via individual cell structs) leads to multiple heap allocations and multiple levels of indirection (`struct.get` operations) inside the closure to dereference them.
+- **Solution**: Group captured variables that share the same exact set of closures into a single shared environment structure (or context struct).
+  - Closures sharing the same variables will reference the same environment struct.
+  - This reduces the number of heap allocations and simplifies retrieval (a single `struct.get` offset access on the shared environment, instead of fetching a cell pointer and then dereferencing it).
+- **Complexity**: Moderate. Requires identifying variable sharing sets during capture analysis.
+- **Priority**: Low for Phase 1. Box-per-variable keeps the initial implementation simple, correct, and matching the bootstrap compiler.
+

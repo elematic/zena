@@ -2,7 +2,7 @@ import { ValTypeFunc, ValTypeRef, ValTypeRefNull } from './wasm.zena';
 import { ByteBuffer } from 'zena:byte-buffer';
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmSignature, WasmFunction, WasmModule, DiscoveryPass } from './wasm-module.zena';
-import { SectionId, ValType, WasmType, Opcode, GcOpcode, HeapType, valTypeToOpcode } from './wasm.zena';
+import { SectionId, ValType, WasmType, Opcode, GcOpcode, HeapType, valTypeToOpcode, heapTypeToSigned } from './wasm.zena';
 
 export let emitValType = (buffer: ByteBuffer, type: ValType) => {
   let ignored = match (type) {
@@ -269,6 +269,19 @@ export class BinaryEmitter implements WasmEmitter {
     }
   }
 
+  emitElementSection(indices: Array<i32>): void {
+    if (indices.length == 0) return;
+    let section = new ByteBuffer();
+    section.writeULEB128(1); // 1 segment
+    section.writeULEB128(3); // flags: declarative (3)
+    section.writeULEB128(0); // elemkind: func (0)
+    section.writeULEB128(indices.length);
+    for (let idx in indices) {
+      section.writeULEB128(idx);
+    }
+    this.writeSection(SectionId.Element as i32, section);
+  }
+
   emitCodeSectionStart(count: i32): void {
     if (count == 0) return;
     this.currentSection = new ByteBuffer();
@@ -447,7 +460,7 @@ export class BinaryEmitter implements WasmEmitter {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.gc_prefix as i32);
     b.writeULEB128(GcOpcode.ref_cast as i32);
-    b.writeByte(0x6D); // HeapType.eq encoded as a single byte
+    b.writeSLEB128(heapTypeToSigned(HeapType.eq));
   }
 
   emitRefCast(typeIndex: i32): void {

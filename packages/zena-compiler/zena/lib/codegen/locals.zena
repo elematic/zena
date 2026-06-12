@@ -1,5 +1,5 @@
-import { ValTypeI32 } from './wasm.zena';
-import { typeToValType } from './wasm-module.zena';
+import { ValTypeI32, ValTypeRefNull } from './wasm.zena';
+import { typeToValType, getCellStruct } from './wasm-module.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
@@ -14,7 +14,6 @@ import {
 import { Type, F64Type, F32Type, FunctionType } from '../types.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { ValType } from './wasm.zena';
-import { typeToValType } from './wasm-module.zena';
 import { Array } from 'zena:array';
 import { FunctionContext } from './function-context.zena';
 
@@ -174,6 +173,10 @@ export let discoverLocalsFromStmt = (ctx: FunctionContext, stmt: Statement, disc
           if (varType != null) {
             vType = typeToValType(ctx.wasm, varType);
           }
+          if (ctx.isCelled(sym.id)) {
+            let cellStruct = getCellStruct(ctx.wasm, vType);
+            vType = new ValTypeRefNull(cellStruct);
+          }
           let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
           ctx.localIndices[sym.id] = index;
           ctx.localTypes.push(vType);
@@ -195,6 +198,10 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
           if (varType != null) {
             vType = typeToValType(ctx.wasm, varType);
           }
+          if (ctx.isCelled(sym.id)) {
+            let cellStruct = getCellStruct(ctx.wasm, vType);
+            vType = new ValTypeRefNull(cellStruct);
+          }
           let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
           ctx.localIndices[sym.id] = index;
           ctx.localTypes.push(vType);
@@ -208,6 +215,10 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
         var vType: ValType = new ValTypeI32();
         if (varType != null) {
           vType = typeToValType(ctx.wasm, varType);
+        }
+        if (ctx.isCelled(sym.id)) {
+          let cellStruct = getCellStruct(ctx.wasm, vType);
+          vType = new ValTypeRefNull(cellStruct);
         }
         let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
         ctx.localIndices[sym.id] = index;
