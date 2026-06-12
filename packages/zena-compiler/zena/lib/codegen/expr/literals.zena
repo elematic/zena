@@ -1,32 +1,113 @@
 import { FunctionContext } from '../function-context.zena';
-import { RecordLiteral, TupleLiteral, PropertyAssignment, Expression, Node } from '../../ast.zena';
-import { RecordType, TupleType, F64Type, F32Type, Type } from '../../types.zena';
-import { ValType } from '../wasm.zena';
-import { typeToValType } from '../wasm-module.zena';
-import { WasmField, sortWasmFields } from '../wasm-module.zena';
+import { RecordLiteral, TupleLiteral, PropertyAssignment, ArrayLiteral, Expression, Node, Identifier } from '../../ast.zena';
+import { RecordType, TupleType, InlineTupleType, ArrayType, F64Type, F32Type, Type } from '../../types.zena';
+import { ValType, ValTypeRefNull, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeStructRef, ValTypeEqRef, ValTypeAnyRef } from '../wasm.zena';
+import { typeToValType, WasmField, sortWasmFields, WasmArray } from '../wasm-module.zena';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { i32ToString } from 'zena:string-convert';
+
+let generateDefaultValue = (ctx: FunctionContext, type: ValType): void => {
+  if (type is ValTypeI32) {
+    ctx.emitter.emitI32Const(0);
+  } else if (type is ValTypeF64) {
+    ctx.emitter.emitF64Const(0.0);
+  } else if (type is ValTypeF32) {
+    ctx.emitter.emitF32Const(0.0);
+  } else {
+    match (type) {
+      case ValTypeRefNull as refNullType: {
+        ctx.emitter.emitRefNull(refNullType.target.index);
+      }
+      case ValTypeRef as refType: {
+        ctx.emitter.emitRefNull(refType.target.index);
+      }
+      case ValTypeStructRef: {
+        ctx.emitter.emitRefNull(-16);
+      }
+      case ValTypeEqRef: {
+        ctx.emitter.emitRefNull(-19);
+      }
+      case ValTypeAnyRef: {
+        ctx.emitter.emitRefNull(-18);
+      }
+      case _: {
+        ctx.emitter.emitRefNull(-16);
+      }
+    }
+  }
+};
+
+export let generateArrayLiteral = (
+    ctx: FunctionContext,
+    expr: ArrayLiteral,
+    genExpr: (e: Expression, discardValue: boolean) => void): void => {
+  let arrayType = ctx.wasmFunction.model.getNodeType(expr) as ArrayType;
+  let valType = typeToValType(ctx.wasm, arrayType);
+  let wasmArrayType = match (valType) {
+    case ValTypeRefNull as refNull: {
+      refNull.target as WasmArray
+    }
+    case ValTypeRef as ref: {
+      ref.target as WasmArray
+    }
+    case _: {
+      throw new Error("Expected reference type for ArrayLiteral");
+    }
+  };
+  
+  for (let el in expr.elements) {
+    genExpr(el, false);
+  }
+  
+  ctx.emitter.emitArrayNewFixed(wasmArrayType.index, expr.elements.length);
+};
 
 export let generateTupleLiteral = (
     ctx: FunctionContext,
     expr: TupleLiteral,
     genExpr: (e: Expression, discardValue: boolean) => void): void => {
-  let tupleType = ctx.wasmFunction.model.getNodeType(expr) as TupleType;
-  
-  let fields = new Array<WasmField>();
-  for (var i = 0; i < tupleType.elementTypes.length; i += 1) {
-    let type = tupleType.elementTypes[i];
-    fields.push(new WasmField(i32ToString(i), typeToValType(ctx.wasm, type), false));
-  }
-  
-  let structType = ctx.wasm.getStruct(null, fields);
-  
-  for (let el in expr.elements) {
-    genExpr(el, false);
-  }
+  let type = ctx.wasmFunction.model.getNodeType(expr);
+  match (type) {
+    case InlineTupleType as inlineTuple: {
+      for (var i = 0; i < expr.elements.length; i += 1) {
+        let el = expr.elements[i];
+        if (el is Identifier && (el as Identifier).name == "_") {
+          var valType: ValType = new ValTypeI32();
+          if (i < ctx.wasmFunction.signature.returns.length) {
+            valType = ctx.wasmFunction.signature.returns[i];
+          }
+          generateDefaultValue(ctx, valType);
+        } else {
+          genExpr(el, false);
+        }
+      }
+    }
+    case TupleType as tupleType: {
+      let fields = new Array<WasmField>();
+      for (var i = 0; i < tupleType.elementTypes.length; i += 1) {
+        let type = tupleType.elementTypes[i];
+        fields.push(new WasmField(i32ToString(i), typeToValType(ctx.wasm, type), false));
+      }
+      
+      let structType = ctx.wasm.getStruct(null, fields);
+      
+      for (var i = 0; i < expr.elements.length; i += 1) {
+        let el = expr.elements[i];
+        if (el is Identifier && (el as Identifier).name == "_") {
+          let valType = typeToValType(ctx.wasm, tupleType.elementTypes[i]);
+          generateDefaultValue(ctx, valType);
+        } else {
+          genExpr(el, false);
+        }
+      }
 
-  ctx.emitter.emitStructNew(structType.index);
+      ctx.emitter.emitStructNew(structType.index);
+    }
+    case _: {
+      throw new Error("Expected TupleType or InlineTupleType for TupleLiteral");
+    }
+  }
 };
 
 export let generateRecordLiteral = (

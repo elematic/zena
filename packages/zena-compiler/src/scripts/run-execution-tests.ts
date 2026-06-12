@@ -17,6 +17,7 @@ const NC = '\x1b[0m';
 
 async function run() {
   const runList = [
+    'arrays',
     'case-classes',
     'classes',
     'closures',
@@ -32,11 +33,10 @@ async function run() {
     // 'optional-chaining',
     'records',
     'sealed-classes',
+    'strings',
     'this-params',
     'tuples',
     'variables',
-    'string_log.zena',
-    'string_return.zena',
   ];
 
   const skipList = [

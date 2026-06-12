@@ -1,9 +1,9 @@
 import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration } from '../../ast.zena';
-import { Type, FunctionType, ClassType, InterfaceType, VoidType, typeToString } from '../../types.zena';
+import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef } from '../wasm.zena';
-import { WasmFunction, getClassKey, getInterfaceKey, typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct } from '../wasm-module.zena';
+import { WasmFunction, getClassKey, getInterfaceKey, typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, WasmStruct, WasmSignature, mapReturnTypeToWasmResults, getSignatureKey } from '../wasm-module.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { generateGlobalIntrinsic, generateArrayIntrinsic, isArrayIntrinsic } from './intrinsics.zena';
@@ -57,6 +57,65 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
   var ft: FunctionType | null = null;
   if (calleeType is FunctionType) {
     ft = calleeType as FunctionType;
+  }
+
+  var isDirectCall = false;
+  match (call.callee) {
+    case Identifier: {
+      let ident = call.callee as Identifier;
+      let sym = ctx.wasmFunction.model.resolve(ident);
+      if (sym != null) {
+        if (ctx.wasm.functionMap.has((sym as Symbol).id) || 
+            ctx.wasm.intrinsics.has((sym as Symbol).id) || 
+            (sym as Symbol).declaration is ImportSpecifier) {
+          isDirectCall = true;
+        }
+      } else {
+        if (isArrayIntrinsic(ident.name)) {
+          isDirectCall = true;
+        }
+      }
+    }
+    case MemberExpression: {
+      isDirectCall = true;
+    }
+    case SuperExpression: {
+      isDirectCall = true;
+    }
+    case _: {}
+  }
+
+  if (!isDirectCall && ft != null) {
+    let fType = ft as FunctionType;
+    let paramValTypes = new Array<ValType>();
+    for (let p in fType.parameters) {
+      paramValTypes.push(typeToValType(ctx.wasm, p));
+    }
+    let returnValTypes = new Array<ValType>();
+    mapReturnTypeToWasmResults(ctx.wasm, fType.returnType, returnValTypes);
+    
+    let closureStruct = ctx.wasm.getClosureStruct(paramValTypes, returnValTypes);
+    let funcFieldType = closureStruct.fields[0].type as ValTypeRef;
+    let implSig = funcFieldType.target as WasmSignature;
+
+    genExpr(call.callee, false);
+    ctx.emitter.emitRefCast(closureStruct.index);
+    
+    let closureLocal = ctx.allocLocal(new ValTypeRefNull(closureStruct));
+    ctx.emitter.emitLocalSet(closureLocal);
+    
+    ctx.emitter.emitLocalGet(closureLocal);
+    ctx.emitter.emitStructGet(closureStruct.index, 1);
+    
+    for (let arg in call.args) {
+      genExpr(arg, false);
+    }
+    
+    ctx.emitter.emitLocalGet(closureLocal);
+    ctx.emitter.emitStructGet(closureStruct.index, 0);
+    
+    ctx.emitter.emitCallRef(implSig.index);
+    return;
   }
 
   match (call.callee) {
@@ -132,13 +191,23 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         }
         let superType = currentClass.superType as ClassType;
         let targetName = member.property.name;
+        var lookupName = targetName;
+        if (superType.members.has(targetName)) {
+          let mInfo = superType.members[targetName];
+          if (mInfo.type is FunctionType) {
+            let baseFt = mInfo.type as FunctionType;
+            if (baseFt.overloads != null && ft != null) {
+              lookupName = targetName + getSignatureKey(ft as FunctionType);
+            }
+          }
+        }
         
         // Find the specific WasmFunction for this static class method call starting from superType
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = superType;
         while (currClass != null && foundFunc == null) {
           for (let f in ctx.wasm.functions) {
-            if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == targetName) {
+            if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == lookupName) {
               foundFunc = f;
             }
           }
@@ -166,6 +235,38 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       
       let objType = ctx.wasmFunction.model.getNodeType(member.object);
       
+      if (objType is ArrayType) {
+        let targetName = member.property.name;
+        var foundFunc: WasmFunction | null = null;
+        for (let f in ctx.wasm.functions) {
+          if (f.classType != null && f.methodName == targetName) {
+            let className = (f.classType as ClassType).name;
+            if (className == "FixedArray" || className == "ImmutableArray") {
+              foundFunc = f;
+            }
+          }
+        }
+        
+        if (foundFunc == null) {
+          throw new Error("Could not find extension function for array method call: " + targetName);
+        }
+
+        let f = foundFunc as WasmFunction;
+        
+        // 1. Emit arguments: `this` first, then args.
+        genExpr(member.object, false);
+        
+        var argIdx = 0;
+        while (argIdx < call.args.length) {
+          genExpr(call.args[argIdx], false);
+          argIdx += 1;
+        }
+
+        // 2. Direct static call
+        ctx.emitter.emitCall(f);
+        return;
+      }
+      
       if (objType is ClassType) {
         let ctVar = objType as ClassType;
         let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
@@ -178,13 +279,23 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
 
         if (isStaticAccess) {
           let targetName = member.property.name;
+          var lookupName = targetName;
+          if (ct.members.has(targetName)) {
+            let mInfo = ct.members[targetName];
+            if (mInfo.type is FunctionType) {
+              let baseFt = mInfo.type as FunctionType;
+              if (baseFt.overloads != null && ft != null) {
+                lookupName = targetName + getSignatureKey(ft as FunctionType);
+              }
+            }
+          }
           
           // Look up the specific WasmFunction for this static call
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
             for (let f in ctx.wasm.functions) {
-              if (f.classType != null && f.isStatic && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == targetName) {
+              if (f.classType != null && f.isStatic && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == lookupName) {
                 foundFunc = f;
               }
             }
@@ -209,13 +320,23 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
 
         if (ct.isExtension) {
           let targetName = member.property.name;
+          var lookupName = targetName;
+          if (ct.members.has(targetName)) {
+            let mInfo = ct.members[targetName];
+            if (mInfo.type is FunctionType) {
+              let baseFt = mInfo.type as FunctionType;
+              if (baseFt.overloads != null && ft != null) {
+                lookupName = targetName + getSignatureKey(ft as FunctionType);
+              }
+            }
+          }
           
           // Look up the specific WasmFunction for this call
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
             for (let f in ctx.wasm.functions) {
-              if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == targetName) {
+              if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == lookupName) {
                 foundFunc = f;
               }
             }
@@ -244,11 +365,21 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
         
         let targetName = member.property.name;
+        var lookupName = targetName;
+        if (ct.members.has(targetName)) {
+          let mInfo = ct.members[targetName];
+          if (mInfo.type is FunctionType) {
+            let baseFt = mInfo.type as FunctionType;
+            if (baseFt.overloads != null && ft != null) {
+              lookupName = targetName + getSignatureKey(ft as FunctionType);
+            }
+          }
+        }
         
         // Find method index in vtable
         var methodIndex = -1;
         for (var i = 0; i < vtableStruct.fields.length; i += 1) {
-          if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == targetName) {
+          if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == lookupName) {
             methodIndex = i;
           }
         }
@@ -286,7 +417,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
           for (let f in ctx.wasm.functions) {
-            if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == targetName) {
+            if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == lookupName) {
               foundFunc = f;
             }
           }

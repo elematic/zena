@@ -6513,6 +6513,33 @@ let checkMethodBody = (
     case _: {}
   }
 
+  let methodName = match (md.name) {
+    case Identifier {name}: name
+    case _: ""
+  };
+  if (methodName == "<constructor>") {
+    if (md.superInitializer != null) {
+      let superInit = md.superInitializer as SuperInitializer;
+      for (let arg in superInit.args) {
+        checkExpression(ctx, arg, null);
+      }
+    }
+    if (md.initializerList != null) {
+      for (let item in md.initializerList as Array<Node>) {
+        if (item is FieldInitializer) {
+          let fi = item as FieldInitializer;
+          let fieldName = fi.field.name;
+          let fieldType = if (classType.members.has(fieldName)) {
+            classType.members[fieldName].type
+          } else {
+            null as Type
+          };
+          checkExpression(ctx, fi.value, fieldType);
+        }
+      }
+    }
+  }
+
   ctx.setReturnType(prevReturnType);
   ctx.exitScope();
 };

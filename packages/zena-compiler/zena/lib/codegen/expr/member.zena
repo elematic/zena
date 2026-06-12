@@ -2,10 +2,11 @@ import { FunctionContext } from '../function-context.zena';
 import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral, SuperExpression, Identifier, ClassDeclaration, ImportSpecifier } from '../../ast.zena';
 import { Symbol } from '../../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { RecordType, TupleType, ClassType, InterfaceType } from '../../types.zena';
+import { RecordType, TupleType, ClassType, InterfaceType, ArrayType, typeToString, Type, FunctionType, VoidType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
-import { typeToValType, WasmField, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature, getClassMemberSignature } from '../wasm-module.zena';
+import { typeToValType, WasmField, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature, getClassMemberSignature, WasmArray, getSignatureKey } from '../wasm-module.zena';
+import { ValTypeRefNull, ValTypeRef, ValTypeI8 } from '../wasm.zena';
 import { Array } from 'zena:array';
 
 export let generateMemberExpression = (
@@ -167,6 +168,17 @@ export let generateMemberExpression = (
           throw new Error("Could not find extension getter: " + getterName);
         }
 
+        let f = foundFunc as WasmFunction;
+        if (f.intrinsic != null) {
+          let intr = f.intrinsic as String;
+          if (intr == "array.len") {
+            genExpr(expr.object, false);
+            ctx.emitter.emitArrayLen();
+            return;
+          }
+          throw new Error("Unsupported extension getter intrinsic: " + intr);
+        }
+
         genExpr(expr.object, false);
         ctx.emitter.emitCall(foundFunc as WasmFunction);
         return;
@@ -205,6 +217,27 @@ export let generateMemberExpression = (
       }
       
       if (vtableIndex != -1) {
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = ct;
+        while (currClass != null && foundFunc == null) {
+          for (let f in ctx.wasm.functions) {
+            if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == getterName) {
+              foundFunc = f;
+            }
+          }
+          currClass = (currClass as ClassType).superType;
+        }
+
+        if (foundFunc != null && (foundFunc as WasmFunction).intrinsic != null) {
+          let intr = (foundFunc as WasmFunction).intrinsic as String;
+          if (intr == "array.len") {
+            genExpr(expr.object, false);
+            ctx.emitter.emitArrayLen();
+            return;
+          }
+          throw new Error("Unsupported getter intrinsic: " + intr);
+        }
+
         if (expr.object is SuperExpression) {
           var superFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct; // ct is already the superclass (the type of SuperExpression)
@@ -267,7 +300,7 @@ export let generateMemberExpression = (
       }
       
       if (vtableIndex == -1) {
-        throw new Error("Property getter not found in interface vtable: " + getterName);
+        throw new Error("Property getter not found in interface vtable: " + getterName + " on interface: " + it.name);
       }
       
       genExpr(expr.object, false);
@@ -285,6 +318,11 @@ export let generateMemberExpression = (
       ctx.emitter.emitCallRef(sig.index);
     }
     case _: {
+       if (objectType is ArrayType && expr.property.name == "length") {
+         genExpr(expr.object, false);
+         ctx.emitter.emitArrayLen();
+         return;
+       }
        // We still need to evaluate the expression object for other types before failing
        genExpr(expr.object, false);
        throw new Error("Codegen for MemberExpression on non-record is not yet implemented.");
@@ -324,10 +362,119 @@ export let generateIndexExpression = (
         throw new Error("Codegen: Tuple index must be a constant number.");
       }
     }
+    case InterfaceType as it: {
+      let iName = getInterfaceKey(it);
+      let vst = ctx.wasm.interfaceVTableStructs[iName];
+      let fatPtr = ctx.wasm.interfaceStructs[iName];
+      
+      let targetName = "[]";
+      
+      var methodIndex = -1;
+      for (var i = 0; i < vst.fields.length; i += 1) {
+        if (vst.fields[i].name != null && (vst.fields[i].name as String) == targetName) {
+          methodIndex = i;
+        }
+      }
+      
+      if (methodIndex == -1) {
+        throw new Error("Method [] not found in interface vtable of " + it.name);
+      }
+      
+      genExpr(expr.object, false);
+      var scratchLocal = ctx.getStructScratchLocal(fatPtr);
+      ctx.emitter.emitLocalTee(scratchLocal);
+      ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
+      
+      genExpr(expr.index, false); // Evaluate index argument
+      
+      ctx.emitter.emitLocalGet(scratchLocal);
+      ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
+      ctx.emitter.emitStructGet(vst.index, methodIndex);
+      
+      let sig = getInterfaceMemberSignature(ctx.wasm, it, targetName);
+      ctx.emitter.emitCallRef(sig.index);
+      return;
+    }
     case _: {
+      var foundFunc: WasmFunction | null = null;
+      match (objectType) {
+        case ClassType as ctVar: {
+          let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
+            ctx.wasmFunction.classType as ClassType
+          } else {
+            ctVar
+          };
+          let indexType = ctx.wasmFunction.model.getNodeType(expr.index);
+          let params = new Array<Type>();
+          params.push(indexType);
+          let dummyFuncType = new FunctionType(params, null, new VoidType());
+          let lookupName = "[]" + getSignatureKey(dummyFuncType);
+
+          var currClass: ClassType | null = ct;
+          while (currClass != null && foundFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && 
+                  (f.classType as ClassType).id == (currClass as ClassType).id && 
+                  (f.methodName == lookupName || f.methodName == "[]")) {
+                if (f.intrinsic != null) {
+                  foundFunc = f;
+                }
+              }
+            }
+            if (foundFunc == null) {
+              for (let f in ctx.wasm.functions) {
+                if (f.classType != null && 
+                    (f.classType as ClassType).id == (currClass as ClassType).id && 
+                    (f.methodName == lookupName || f.methodName == "[]")) {
+                  foundFunc = f;
+                }
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+        }
+        case ArrayType as at: {}
+        case _: {}
+      }
+
+      var isArrayGet = false;
+      if (foundFunc != null && (foundFunc as WasmFunction).intrinsic != null) {
+        let intr = (foundFunc as WasmFunction).intrinsic as String;
+        if (intr == "array.get") {
+          isArrayGet = true;
+        } else {
+          throw new Error("Unsupported index intrinsic operator: " + intr);
+        }
+      } else if (objectType is ArrayType || (objectType is ClassType && (objectType as ClassType).name == "array")) {
+        isArrayGet = true;
+      }
+
+      if (isArrayGet) {
+        let valType = typeToValType(ctx.wasm, objectType);
+        let wasmArray = match (valType) {
+          case ValTypeRefNull as refNull: {
+            refNull.target as WasmArray
+          }
+          case ValTypeRef as ref: {
+            ref.target as WasmArray
+          }
+          case _: {
+            throw new Error("Expected array type for IndexExpression");
+          }
+        };
+        genExpr(expr.object, false);
+        genExpr(expr.index, false);
+        if (wasmArray.elementType is ValTypeI8) {
+          ctx.emitter.emitArrayGetU(wasmArray.index);
+        } else {
+          ctx.emitter.emitArrayGet(wasmArray.index);
+        }
+        return;
+      }
+
       genExpr(expr.object, false);
       genExpr(expr.index, false);
-      throw new Error("Codegen for IndexExpression on non-tuple is not yet implemented.");
+      throw new Error("Codegen for IndexExpression on non-tuple/non-array is not yet implemented. Object type: " + typeToString(objectType));
     }
   }
 };

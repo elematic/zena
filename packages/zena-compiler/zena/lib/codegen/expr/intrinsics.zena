@@ -1,10 +1,22 @@
 import { FunctionContext } from '../function-context.zena';
-import { CallExpression, Expression } from '../../ast.zena';
+import { CallExpression, Expression, Node } from '../../ast.zena';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import { Opcode } from '../wasm.zena';
 import { typeToValType, WasmFunction } from '../wasm-module.zena';
 import { ValTypeRefNull, ValTypeRef, ValTypeVoid } from '../wasm.zena';
+import { Type } from '../../types.zena';
+
+let getArrayTypeWithFallback = (ctx: FunctionContext, node: Node): Type | null => {
+  var t = ctx.wasmFunction.model.getNodeType(node);
+  if (t == null) {
+    let parent = ctx.wasmFunction.model.getParent(node);
+    if (parent != null) {
+      t = ctx.wasmFunction.model.getNodeType(parent as Node);
+    }
+  }
+  return t;
+};
 
 export let generateGlobalIntrinsic = (
   ctx: FunctionContext,
@@ -117,8 +129,11 @@ export let generateArrayIntrinsic = (
   }
   
   if (name == "__array_get" || name == "__byte_array_get") {
-    let arrayType = ctx.wasmFunction.model.getNodeType(args[0]);
-    let valType = typeToValType(ctx.wasm, arrayType);
+    let arrayType = getArrayTypeWithFallback(ctx, args[0]);
+    if (arrayType == null) {
+      throw new Error("generateArrayIntrinsic: arrayType is null for args[0] in __array_get");
+    }
+    let valType = typeToValType(ctx.wasm, arrayType as Type);
     var typeIndex = -1;
     match (valType) {
       case ValTypeRefNull {target}: { typeIndex = target.index; }
@@ -138,8 +153,11 @@ export let generateArrayIntrinsic = (
   }
   
   if (name == "__array_set" || name == "__byte_array_set") {
-    let arrayType = ctx.wasmFunction.model.getNodeType(args[0]);
-    let valType = typeToValType(ctx.wasm, arrayType);
+    let arrayType = getArrayTypeWithFallback(ctx, args[0]);
+    if (arrayType == null) {
+      throw new Error("generateArrayIntrinsic: arrayType is null for args[0] in __array_set");
+    }
+    let valType = typeToValType(ctx.wasm, arrayType as Type);
     var typeIndex = -1;
     match (valType) {
       case ValTypeRefNull {target}: { typeIndex = target.index; }
@@ -156,8 +174,11 @@ export let generateArrayIntrinsic = (
   }
   
   if (name == "__array_new") {
-    let arrayType = ctx.wasmFunction.model.getNodeType(call);
-    let valType = typeToValType(ctx.wasm, arrayType);
+    let arrayType = getArrayTypeWithFallback(ctx, call);
+    if (arrayType == null) {
+      throw new Error("generateArrayIntrinsic: arrayType is null for call in __array_new");
+    }
+    let valType = typeToValType(ctx.wasm, arrayType as Type);
     var typeIndex = -1;
     match (valType) {
       case ValTypeRefNull {target}: { typeIndex = target.index; }
@@ -173,8 +194,11 @@ export let generateArrayIntrinsic = (
   }
   
   if (name == "__array_new_empty" || name == "__byte_array_new") {
-    let arrayType = ctx.wasmFunction.model.getNodeType(call);
-    let valType = typeToValType(ctx.wasm, arrayType);
+    let arrayType = getArrayTypeWithFallback(ctx, call);
+    if (arrayType == null) {
+      throw new Error("generateArrayIntrinsic: arrayType is null for call in __array_new_empty");
+    }
+    let valType = typeToValType(ctx.wasm, arrayType as Type);
     var typeIndex = -1;
     match (valType) {
       case ValTypeRefNull {target}: { typeIndex = target.index; }
@@ -188,10 +212,16 @@ export let generateArrayIntrinsic = (
   }
   
   if (name == "__byte_array_copy") {
-    let destType = ctx.wasmFunction.model.getNodeType(args[0]);
-    let srcType = ctx.wasmFunction.model.getNodeType(args[2]);
-    let destValType = typeToValType(ctx.wasm, destType);
-    let srcValType = typeToValType(ctx.wasm, srcType);
+    let destType = getArrayTypeWithFallback(ctx, args[0]);
+    let srcType = getArrayTypeWithFallback(ctx, args[2]);
+    if (destType == null) {
+      throw new Error("generateArrayIntrinsic: destType is null for args[0] in __byte_array_copy");
+    }
+    if (srcType == null) {
+      throw new Error("generateArrayIntrinsic: srcType is null for args[2] in __byte_array_copy");
+    }
+    let destValType = typeToValType(ctx.wasm, destType as Type);
+    let srcValType = typeToValType(ctx.wasm, srcType as Type);
     
     var destTypeIndex = -1;
     var srcTypeIndex = -1;

@@ -1,10 +1,11 @@
-import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression, ClassDeclaration, ImportSpecifier } from '../../ast.zena';
-import { Type, F64Type, F32Type, ClassType, InterfaceType } from '../../types.zena';
+import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression, ClassDeclaration, ImportSpecifier, IndexExpression } from '../../ast.zena';
+import { Type, F64Type, F32Type, ClassType, InterfaceType, ArrayType, typeToString, FunctionType, VoidType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
-import { typeToValType, getCellStruct, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature, getClassMemberSignature } from '../wasm-module.zena';
+import { typeToValType, getCellStruct, getClassKey, WasmFunction, getInterfaceKey, getInterfaceMemberSignature, getClassMemberSignature, WasmArray, getSignatureKey } from '../wasm-module.zena';
+import { ValTypeRefNull, ValTypeRef } from '../wasm.zena';
 
 /**
  * Generates WASM code for an assignment expression.
@@ -356,6 +357,156 @@ export let generateAssignmentExpression = (
       }
       case _: {
         throw new Error("Assigning to non-class member is not yet implemented.");
+      }
+    }
+  } else if (assign.left is IndexExpression) {
+    let indexExpr = assign.left as IndexExpression;
+    let objectType = ctx.wasmFunction.model.getNodeType(indexExpr.object);
+    
+    match (objectType) {
+      case InterfaceType as it: {
+        let iName = getInterfaceKey(it);
+        let vst = ctx.wasm.interfaceVTableStructs[iName];
+        let fatPtr = ctx.wasm.interfaceStructs[iName];
+        
+        let targetName = "[]=";
+        
+        var methodIndex = -1;
+        for (var i = 0; i < vst.fields.length; i += 1) {
+          if (vst.fields[i].name != null && (vst.fields[i].name as String) == targetName) {
+            methodIndex = i;
+          }
+        }
+        
+        if (methodIndex == -1) {
+          throw new Error("Method []= not found in interface vtable of " + it.name);
+        }
+        
+        let valType = typeToValType(ctx.wasm, ctx.wasmFunction.model.getNodeType(assign.value));
+        var tempLocal = -1;
+        if (!discardValue) {
+          tempLocal = ctx.allocLocal(valType);
+        }
+        
+        genExpr(indexExpr.object, false);
+        var scratchLocal = ctx.getStructScratchLocal(fatPtr);
+        ctx.emitter.emitLocalSet(scratchLocal);
+        
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
+        
+        genExpr(indexExpr.index, false); // Evaluate index argument
+        
+        genExpr(assign.value, false); // Evaluate assigned value
+        if (!discardValue) {
+          ctx.emitter.emitLocalTee(tempLocal);
+        }
+        
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
+        ctx.emitter.emitStructGet(vst.index, methodIndex);
+        
+        let sig = getInterfaceMemberSignature(ctx.wasm, it, targetName);
+        ctx.emitter.emitCallRef(sig.index);
+        
+        if (!discardValue) {
+          ctx.emitter.emitLocalGet(tempLocal);
+        }
+        return;
+      }
+      case _: {
+        var foundFunc: WasmFunction | null = null;
+        match (objectType) {
+          case ClassType as ctVar: {
+            let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
+              ctx.wasmFunction.classType as ClassType
+            } else {
+              ctVar
+            };
+            let indexType = ctx.wasmFunction.model.getNodeType(indexExpr.index);
+            let valType = ctx.wasmFunction.model.getNodeType(assign.value);
+            let params = new Array<Type>();
+            params.push(indexType);
+            params.push(valType);
+            let dummyFuncType = new FunctionType(params, null, new VoidType());
+            let lookupName = "[]=" + getSignatureKey(dummyFuncType);
+
+            var currClass: ClassType | null = ct;
+            while (currClass != null && foundFunc == null) {
+              for (let f in ctx.wasm.functions) {
+                if (f.classType != null && 
+                    (f.classType as ClassType).id == (currClass as ClassType).id && 
+                    (f.methodName == lookupName || f.methodName == "[]=")) {
+                  if (f.intrinsic != null) {
+                    foundFunc = f;
+                  }
+                }
+              }
+              if (foundFunc == null) {
+                for (let f in ctx.wasm.functions) {
+                  if (f.classType != null && 
+                      (f.classType as ClassType).id == (currClass as ClassType).id && 
+                      (f.methodName == lookupName || f.methodName == "[]=")) {
+                    foundFunc = f;
+                  }
+                }
+              }
+              currClass = (currClass as ClassType).superType;
+            }
+          }
+          case ArrayType as at: {}
+          case _: {}
+        }
+
+        var isArraySet = false;
+        if (foundFunc != null && (foundFunc as WasmFunction).intrinsic != null) {
+          let intr = (foundFunc as WasmFunction).intrinsic as String;
+          if (intr == "array.set") {
+            isArraySet = true;
+          } else {
+            throw new Error("Unsupported index intrinsic assignment operator: " + intr);
+          }
+        } else if (objectType is ArrayType || (objectType is ClassType && (objectType as ClassType).name == "array")) {
+          isArraySet = true;
+        }
+
+        if (isArraySet) {
+          let valType = typeToValType(ctx.wasm, objectType);
+          let wasmArray = match (valType) {
+            case ValTypeRefNull as refNull: {
+              refNull.target as WasmArray
+            }
+            case ValTypeRef as ref: {
+              ref.target as WasmArray
+            }
+            case _: {
+              throw new Error("Expected array type for IndexExpression assignment");
+            }
+          };
+
+          let elementValType = typeToValType(ctx.wasm, ctx.wasmFunction.model.getNodeType(assign.value));
+          var tempLocal = -1;
+          if (!discardValue) {
+            tempLocal = ctx.allocLocal(elementValType);
+          }
+
+          genExpr(indexExpr.object, false);
+          genExpr(indexExpr.index, false);
+          genExpr(assign.value, false);
+
+          if (!discardValue) {
+            ctx.emitter.emitLocalTee(tempLocal);
+          }
+
+          ctx.emitter.emitArraySet(wasmArray.index);
+
+          if (!discardValue) {
+            ctx.emitter.emitLocalGet(tempLocal);
+          }
+          return;
+        }
+
+        throw new Error("Codegen for IndexExpression assignment on non-array is not yet implemented. Object type: " + typeToString(objectType));
       }
     }
   } else {

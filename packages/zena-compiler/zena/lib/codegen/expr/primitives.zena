@@ -1,10 +1,10 @@
-import { Node, Identifier, NumberLiteral, BooleanLiteral, StringLiteral, ImportSpecifier } from '../../ast.zena';
-import { Type, F64Type, F32Type, I32Type, baseType, typeToString } from '../../types.zena';
+import { Node, Identifier, NumberLiteral, BooleanLiteral, StringLiteral, ImportSpecifier, TemplateLiteral, Expression } from '../../ast.zena';
+import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { parseI32, parseF64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
-import { WasmStruct, typeToValType, getCellStruct } from '../wasm-module.zena';
+import { WasmStruct, typeToValType, getCellStruct, WasmFunction } from '../wasm-module.zena';
 import { ValTypeRefNull } from '../wasm.zena';
 
 // TODO: Consider moving `generateIdentifier` to a dedicated file (e.g.,
@@ -143,4 +143,112 @@ export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): 
 
   // 8. Return the String instance by getting it to the stack
   ctx.emitter.emitLocalGet(tempLocal);
+};
+
+export let generateTemplateLiteral = (
+  ctx: FunctionContext,
+  expr: TemplateLiteral,
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  let totalParts = expr.quasis.length + expr.expressions.length;
+
+  if (totalParts == 0) {
+    let dummyLiteral = new StringLiteral("", expr.loc);
+    generateStringLiteral(ctx, dummyLiteral);
+    return;
+  }
+
+  if (expr.expressions.length == 0) {
+    let dummyLiteral = new StringLiteral(expr.quasis[0].cooked, expr.loc);
+    generateStringLiteral(ctx, dummyLiteral);
+    return;
+  }
+
+  // 1. Find String type representation and the fromParts function
+  var stringKey: String | null = null;
+  for (let key in ctx.wasm.classStructs.keys()) {
+    if (key.startsWith("String_")) {
+      stringKey = key;
+    }
+  }
+  if (stringKey == null) {
+    throw new Error("String class struct not found during template literal generation!");
+  }
+  let stringStruct = ctx.wasm.classStructs[stringKey as String];
+  let stringWasmType = new ValTypeRefNull(stringStruct);
+
+  var fromPartsFunc: WasmFunction | null = null;
+  for (let f in ctx.wasm.functions) {
+    if (f.classType != null && (f.classType as ClassType).name == "String" && f.isStatic && f.methodName == "fromParts") {
+      fromPartsFunc = f;
+    }
+  }
+  if (fromPartsFunc == null) {
+    throw new Error("String.fromParts not found in Wasm functions!");
+  }
+
+  // 2. Generate and push all parts on the stack
+  var i = 0;
+  while (i < expr.expressions.length) {
+    // Push quasi[i]
+    let quasiLit = new StringLiteral(expr.quasis[i].cooked, expr.quasis[i].loc);
+    generateStringLiteral(ctx, quasiLit);
+
+    // Push expression[i] (and convert to string if primitive)
+    let subExpr = expr.expressions[i];
+    genExpr(subExpr, false);
+
+    let exprType = ctx.wasmFunction.model.getNodeType(subExpr);
+    if (exprType != null) {
+      let baseT = baseType(exprType as Type);
+      if (baseT is I32Type) {
+        var foundFunc: WasmFunction | null = null;
+        for (let f in ctx.wasm.functions) {
+          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "i32ToString") {
+            foundFunc = f;
+          }
+        }
+        if (foundFunc == null) {
+          throw new Error("i32ToString helper function not found in Wasm module!");
+        }
+        ctx.emitter.emitCall(foundFunc as WasmFunction);
+      } else if (baseT is F64Type) {
+        var foundFunc: WasmFunction | null = null;
+        for (let f in ctx.wasm.functions) {
+          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "f64ToString") {
+            foundFunc = f;
+          }
+        }
+        if (foundFunc == null) {
+          throw new Error("f64ToString helper function not found in Wasm module!");
+        }
+        ctx.emitter.emitCall(foundFunc as WasmFunction);
+      } else if (baseT is F32Type) {
+        var foundFunc: WasmFunction | null = null;
+        for (let f in ctx.wasm.functions) {
+          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "f32ToString") {
+            foundFunc = f;
+          }
+        }
+        if (foundFunc == null) {
+          throw new Error("f32ToString helper function not found in Wasm module!");
+        }
+        ctx.emitter.emitCall(foundFunc as WasmFunction);
+      } else if (baseT is ClassType && (baseT as ClassType).name == "String") {
+        // Already a string, do nothing
+      } else {
+        throw new Error("Unsupported type in template literal expression conversion: " + typeToString(baseT));
+      }
+    }
+    i += 1;
+  }
+
+  // Push final quasi
+  let lastQuasiLit = new StringLiteral(expr.quasis[expr.quasis.length - 1].cooked, expr.quasis[expr.quasis.length - 1].loc);
+  generateStringLiteral(ctx, lastQuasiLit);
+
+  // 3. Create the array<String> with all parts and call String.fromParts
+  let wasmArrayType = ctx.wasm.getArray(stringWasmType, true);
+  ctx.emitter.emitArrayNewFixed(wasmArrayType.index, totalParts);
+  ctx.emitter.emitCall(fromPartsFunc as WasmFunction);
 };

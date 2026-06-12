@@ -8,7 +8,7 @@ import {
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
   IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
   ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition,
-  AccessorDeclaration, SetterInfo, AsExpression, MatchExpression
+  AccessorDeclaration, SetterInfo, AsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
@@ -24,7 +24,7 @@ import { HashMap } from 'zena:map';
 import { parseI32, parseF64 } from 'zena:string-convert';
 import { walkEnter } from '../visitor.zena';
 import { FunctionContext } from './function-context.zena';
-import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral } from './expr/primitives.zena';
+import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral, generateTemplateLiteral } from './expr/primitives.zena';
 import { generateUnaryExpression, generateBinaryExpression } from './expr/operators.zena';
 
 import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral } from './expr/primitives.zena';
@@ -35,7 +35,7 @@ import { generateIfExpression } from './expr/control-flow.zena';
 import { generateNewExpression } from './expr/classes.zena';
 import { generateMatchExpression } from './expr/match.zena';
 import { generateMemberExpression, generateIndexExpression } from './expr/member.zena';
-import { generateRecordLiteral, generateTupleLiteral } from './expr/literals.zena';
+import { generateRecordLiteral, generateTupleLiteral, generateArrayLiteral } from './expr/literals.zena';
 import { generateReturnStatement, generateExpressionStatement, generateIfStatement } from './stmt/control-flow.zena';
 import { generateBreakStatement, generateContinueStatement, generateWhileStatement, generateForStatement } from './stmt/loops.zena';
 import { generateBlockStatement } from './stmt/blocks.zena';
@@ -328,6 +328,11 @@ export class FunctionGenerator {
               if (fd.value != null && !fd.isStatic) {
                 let fieldName = match (fd.name) {
                   case Identifier {name}: name
+                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                    case Identifier {name}: name
+                    case MemberExpression {property}: property.name
+                    case _: "<symbol>"
+                  }
                   case _: ""
                 };
                 if (fieldName != "") {
@@ -467,6 +472,12 @@ export class FunctionGenerator {
         }
         case _: {}
       }
+    } else {
+      let mName = this.ctx.wasmFunction.methodName;
+      if (mName == null || (mName as String) != "<constructor>") {
+        this.ctx.emitter.emitUnreachable();
+        this.ctx.isReachable = false;
+      }
     }
     
     this.ctx.emitter.emitFunctionEnd();
@@ -503,11 +514,13 @@ export class FunctionGenerator {
       case NumberLiteral: generateNumberLiteral(this.ctx, expr as NumberLiteral)
       case BooleanLiteral: generateBooleanLiteral(this.ctx, expr as BooleanLiteral)
       case StringLiteral: generateStringLiteral(this.ctx, expr as StringLiteral)
+      case TemplateLiteral: generateTemplateLiteral(this.ctx, expr as TemplateLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case NullLiteral: {
         this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
       }
       case RecordLiteral: generateRecordLiteral(this.ctx, expr as RecordLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case TupleLiteral: generateTupleLiteral(this.ctx, expr as TupleLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
+      case ArrayLiteral: generateArrayLiteral(this.ctx, expr as ArrayLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
       case ThisExpression: {
         if (this.ctx.thisLocalIndex >= 0) {
@@ -628,7 +641,9 @@ export class FunctionGenerator {
         }
       }
       case _: {
-        throw new Error("Unsupported expression type in codegen");
+        let t = this.ctx.wasmFunction.model.getNodeType(expr);
+        let tStr = if (t != null) { typeToString(t as Type) } else { "null" };
+        throw new Error("Unsupported expression type in codegen. Node type in model: " + tStr);
       }
     }
     

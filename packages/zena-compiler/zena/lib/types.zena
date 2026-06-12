@@ -177,6 +177,41 @@ export class ClassType extends Type {
   new(id: i32, name: String) : id = id, name = name;
 }
 
+let substituteInType = (
+  t: Type | null,
+  typeParameters: Array<TypeParameterType> | null,
+  typeArguments: Array<Type>
+): Type | null => {
+  if (t == null) return null;
+  return match (t as Type) {
+    case TypeParameterType as tp: {
+      var found: Type | null = null;
+      if (typeParameters != null) {
+        let tps = typeParameters as Array<TypeParameterType>;
+        for (var i = 0; i < tps.length; i += 1) {
+          if (tps[i].name == tp.name && i < typeArguments.length) {
+            found = typeArguments[i];
+          }
+        }
+      }
+      if (found != null) {
+        found as Type
+      } else {
+        tp
+      }
+    }
+    case ArrayType {elementType}: {
+      let subElem = substituteInType(elementType, typeParameters, typeArguments);
+      if (subElem != null) {
+        new ArrayType(subElem as Type)
+      } else {
+        t
+      }
+    }
+    case _: t
+  };
+};
+
 /**
  * Create an instantiated copy of a generic ClassType with concrete type arguments.
  * This is a factory function that properly initializes all fields from the source.
@@ -203,6 +238,9 @@ export let instantiateClassType = (
   result.isCaseClass = source.isCaseClass;
   result.isAbstract = source.isAbstract;
   result.isExtension = source.isExtension;
+  if (source.isExtension) {
+    result.onType = substituteInType(source.onType, source.typeParameters, typeArguments);
+  }
   result.isSealed = source.isSealed;
   return result;
 };
