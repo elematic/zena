@@ -1649,6 +1649,45 @@ class Document with Timestamped, Named {
 }
 ```
 
+### Constraints (the `on` clause)
+
+A mixin can restrict which classes it can be applied to by using the `on` clause. This allows the mixin to access fields and methods on `this` that are guaranteed by the constrained type:
+
+```ts
+mixin Syncable on Entity {
+  sync(): void {
+    this.save();  // OK: save() is defined on Entity
+  }
+}
+```
+
+#### Satisfying Constraints and Interface Implementation
+
+A target class satisfies a mixin's `on` constraint if the constraint type is assignable to:
+1. The target class's **superclass**.
+2. The target class's **extension `on` type** (if it is an extension class).
+3. Any interface in the target class's **`implements` list**.
+
+This allows classes to implement an interface (e.g. `Iterable<T>`) **via** a mixin that is constrained to that same interface (e.g. `on Iterable<T>`). During type checking, this is resolved cleanly without circular dependency:
+1. The class declares `implements Iterable<T>`, which immediately satisfies the mixin's `on Iterable<T>` constraint.
+2. The mixin is applied, injecting the required utility methods into the class.
+3. The compiler validates that the class fully implements all methods in `Iterable<T>`, which succeeds because the mixin provided the required methods.
+
+For example, `HashMap` implements `Map<K, V>` (which extends `Iterable`) by mixing in `IterableUtils` (which is `on Iterable`):
+
+```ts
+// HashMap satisfies 'on Iterable' via 'implements Map'
+export class HashMap<K, V> with IterableUtils<MapEntry<K, V>> implements Map<K, V> {
+  // Directly implements the core iterator method
+  :Iterable.iterator(): Iterator<MapEntry<K, V>> {
+    return new HashMapEntryIterator<K, V>(this.#buckets);
+  }
+
+  // The utility methods (contains, all, fold, etc.) required by Iterable
+  // are automatically supplied by IterableUtils!
+}
+```
+
 ## Arrays & Collections
 
 Zena provides both fixed-size and growable arrays, plus a hash map. All

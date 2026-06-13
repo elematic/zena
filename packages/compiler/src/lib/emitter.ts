@@ -563,11 +563,10 @@ export class WasmModule {
       const sectionBuffer: number[] = [];
       this.#writeUnsignedLEB128(sectionBuffer, this.#codes.length);
       for (const code of this.#codes) {
-        const entryBuffer: number[] = [];
-        entryBuffer.push(...code);
-
-        this.#writeUnsignedLEB128(sectionBuffer, entryBuffer.length);
-        sectionBuffer.push(...entryBuffer);
+        this.#writeUnsignedLEB128(sectionBuffer, code.length);
+        for (let i = 0; i < code.length; i++) {
+          sectionBuffer.push(code[i]);
+        }
       }
       this.#writeSectionToByteBuffer(buffer, SectionId.Code, sectionBuffer);
     }
@@ -577,7 +576,9 @@ export class WasmModule {
       const sectionBuffer: number[] = [];
       this.#writeUnsignedLEB128(sectionBuffer, this.#datas.length);
       for (const data of this.#datas) {
-        sectionBuffer.push(...data);
+        for (let i = 0; i < data.length; i++) {
+          sectionBuffer.push(data[i]);
+        }
       }
       this.#writeSectionToByteBuffer(buffer, SectionId.Data, sectionBuffer);
     }
@@ -597,7 +598,9 @@ export class WasmModule {
 
         sectionBuffer.push(0); // subsection id for module name
         this.#writeUnsignedLEB128(sectionBuffer, modNameBuffer.length);
-        sectionBuffer.push(...modNameBuffer);
+        for (let i = 0; i < modNameBuffer.length; i++) {
+          sectionBuffer.push(modNameBuffer[i]);
+        }
       }
 
       if (this.#functionNames.size > 0) {
@@ -619,7 +622,9 @@ export class WasmModule {
         // Write subsection: id (1 byte) + size (u32) + content
         sectionBuffer.push(1); // subsection id for function names
         this.#writeUnsignedLEB128(sectionBuffer, funcNamesBuffer.length);
-        sectionBuffer.push(...funcNamesBuffer);
+        for (let i = 0; i < funcNamesBuffer.length; i++) {
+          sectionBuffer.push(funcNamesBuffer[i]);
+        }
       }
 
       this.#writeSectionToByteBuffer(buffer, SectionId.Custom, sectionBuffer);

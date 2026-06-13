@@ -184,7 +184,7 @@ const buildCommand = async (
         '',
       );
     }
-    console.error(`Compilation failed: ${e.message}`);
+    console.error(`Compilation failed: ${e.message}`, e.stack);
     if (e.stack && !e.message.includes(':')) {
       console.error(`  while compiling: ${entryPoint}`);
     }

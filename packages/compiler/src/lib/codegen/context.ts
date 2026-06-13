@@ -236,9 +236,11 @@ export class CodegenContext {
   public genericMethods = new Map<string, MethodDefinition>();
   public functionReturnTypes = new Map<string, number[]>();
   public pendingMethodGenerations: (() => void)[] = [];
+  public pendingMethodRegistrationsMap = new Map<any, () => void>();
   public bodyGenerators: (() => void)[] = [];
   public syntheticClasses: ClassDeclaration[] = [];
   public isGeneratingBodies = false;
+  public importsFinalized = false;
 
   // Global variables
   public globals = new Map<string, {index: number; type: number[]}>();

@@ -3,6 +3,7 @@ import { KeyNotFoundError } from 'zena:error';
 import { Option, some, none } from 'zena:option';
 import { Iterable, Iterator } from 'zena:iterator';
 import { Hashable, hash, equals } from 'zena:hashable';
+import { IterableUtils } from 'zena:iterable-utils';
 
 export * from 'zena:hashable';
 
@@ -51,6 +52,7 @@ export interface Map<K, V> extends Iterable<MapEntry<K, V>> {
   operator []=(key: K, value: V): void;
   get(key: K): inline (true, V) | inline (false, _);
   getOr(key: K, defaultValue: V): V;
+  getOption(key: K): Option<V>;
   // getOrSet(key: K, defaultValue: V): V;
   has(key: K): boolean;
   delete(key: K): boolean;
@@ -116,7 +118,7 @@ class HashMapKeyIterator<K, V> implements Iterator<K> {
   }
 }
 
-export class HashMap<K, V> implements Map<K, V> {
+export class HashMap<K, V> with IterableUtils<MapEntry<K, V>> implements Map<K, V> {
   var #buckets: FixedArray<MapEntry<K, V> | null>;
   var #size = 0;
 
@@ -204,10 +206,10 @@ export class HashMap<K, V> implements Map<K, V> {
   }
 
   /**
-   * Finds the value for a key, returning Some(value) if found or None if not.
+   * Gets the value for a key, returning Some(value) if found or None if not.
    * Use this when you need to store or pass around the optional result.
    */
-  find(key: K): Option<V> {
+  getOption(key: K): Option<V> {
     let entry = this.#findEntry(key);
     if (entry != null) {
       return some(entry.value);

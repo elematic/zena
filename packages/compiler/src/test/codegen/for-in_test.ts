@@ -138,6 +138,7 @@ suite('for-in loops', () => {
     const result = await compileAndRun(
       `
       import { Iterator, Iterable } from 'zena:iterator';
+      import { IterableUtils } from 'zena:iterable-utils';
 
       final class CounterIterator implements Iterator<i32> {
         var #current: i32;
@@ -155,7 +156,7 @@ suite('for-in loops', () => {
         }
       }
 
-      final class Counter implements Iterable<i32> {
+      final class Counter with IterableUtils<i32> implements Iterable<i32> {
         #max: i32;
         
         new(max: i32) : #max = max {}
@@ -185,6 +186,7 @@ suite('for-in loops', () => {
     const result = await compileAndRun(
       `
       import { Iterator, Iterable } from 'zena:iterator';
+      import { IterableUtils } from 'zena:iterable-utils';
 
       final class RangeIterator implements Iterator<i32> {
         var #current: i32;
@@ -203,7 +205,7 @@ suite('for-in loops', () => {
       }
 
       // Non-final base class
-      class BaseIterable implements Iterable<i32> {
+      class BaseIterable with IterableUtils<i32> implements Iterable<i32> {
         :Iterable.iterator(): Iterator<i32> {
           return new RangeIterator(0, 3);  // yields 0, 1, 2
         }

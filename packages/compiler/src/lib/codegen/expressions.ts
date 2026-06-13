@@ -81,6 +81,7 @@ const HASH_CODE_METHOD = 'hashCode';
 
 import {
   decodeTypeIndex,
+  ensureClassMethodsRegistered,
   ensureRecordDispatchType,
   ensureRecordVtableGlobal,
   getSpecializedName,
@@ -2064,6 +2065,13 @@ function generateSymbolMemberAccess(
   }
 
   let classType = objectCheckerType as ClassType;
+  if (
+    (classType.isSyntheticMixinThis || classType.isMixinIntermediate) &&
+    ctx.currentClass &&
+    ctx.currentClass.classType
+  ) {
+    classType = ctx.currentClass.classType;
+  }
 
   // Intern the classType to ensure we use the canonical object
   if (
@@ -2170,6 +2178,13 @@ function generateSymbolMethodCall(
 
   if (objectCheckerType.kind === TypeKind.Class) {
     classType = objectCheckerType as ClassType;
+    if (
+      (classType.isSyntheticMixinThis || classType.isMixinIntermediate) &&
+      ctx.currentClass &&
+      ctx.currentClass.classType
+    ) {
+      classType = ctx.currentClass.classType;
+    }
     classInfo = ctx.getClassInfo(classType);
 
     // If not found and it's an extension class, try to instantiate it
@@ -2256,6 +2271,13 @@ function generateSymbolFieldAssignment(
   }
 
   let classType = objectCheckerType as ClassType;
+  if (
+    (classType.isSyntheticMixinThis || classType.isMixinIntermediate) &&
+    ctx.currentClass &&
+    ctx.currentClass.classType
+  ) {
+    classType = ctx.currentClass.classType;
+  }
 
   // Intern the classType to ensure we use the canonical object
   if (
@@ -3103,7 +3125,8 @@ function generateMemberExpression(
       return;
     }
 
-    const isArray = Array.from(ctx.arrayTypes.values()).includes(objectType[1]);
+    const heapTypeIndex = getHeapTypeIndex(ctx, objectType);
+    const isArray = Array.from(ctx.arrayTypes.values()).includes(heapTypeIndex);
 
     if (isArray) {
       const intrinsic = findArrayIntrinsic(ctx, 'length');
@@ -3678,6 +3701,14 @@ function generateCallExpression(
             ctx.currentTypeArguments,
           ) as ClassType;
         }
+        if (
+          (bindingClassType.isSyntheticMixinThis ||
+            bindingClassType.isMixinIntermediate) &&
+          ctx.currentClass &&
+          ctx.currentClass.classType
+        ) {
+          bindingClassType = ctx.currentClass.classType;
+        }
         foundClass = ctx.getClassInfo(bindingClassType);
         // If not found and this is an extension class, instantiate it now
         if (!foundClass && bindingClassType.isExtension) {
@@ -3696,43 +3727,46 @@ function generateCallExpression(
       memberExpr.object.inferredType.kind === TypeKind.Class
     ) {
       let classType = memberExpr.object.inferredType as ClassType;
-      if (classType.isSyntheticMixinThis) {
-        foundClass = ctx.currentClass || undefined;
-      } else {
-        // When inside a generic context (e.g., generating Array<SuiteResult>.from),
-        // the AST's inferredType may still be the unsubstituted Array<T>.
-        // Substitute type parameters to get the concrete type (Array<SuiteResult>).
-        if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
-          classType = ctx.checkerContext.substituteTypeParams(
-            classType,
-            ctx.currentTypeArguments,
-          ) as ClassType;
+      // When inside a generic context (e.g., generating Array<SuiteResult>.from),
+      // the AST's inferredType may still be the unsubstituted Array<T>.
+      // Substitute type parameters to get the concrete type (Array<SuiteResult>).
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        classType = ctx.checkerContext.substituteTypeParams(
+          classType,
+          ctx.currentTypeArguments,
+        ) as ClassType;
+      }
+      if (
+        (classType.isSyntheticMixinThis || classType.isMixinIntermediate) &&
+        ctx.currentClass &&
+        ctx.currentClass.classType
+      ) {
+        classType = ctx.currentClass.classType;
+      }
+      // Ensure we use the interned version for identity-based lookup
+      if (
+        classType.genericSource &&
+        classType.typeArguments &&
+        classType.typeArguments.length > 0
+      ) {
+        const interned = ctx.checkerContext.getInternedClass(
+          classType.genericSource,
+          classType.typeArguments,
+        );
+        if (interned) {
+          classType = interned;
         }
-        // Ensure we use the interned version for identity-based lookup
-        if (
-          classType.genericSource &&
-          classType.typeArguments &&
-          classType.typeArguments.length > 0
-        ) {
-          const interned = ctx.checkerContext.getInternedClass(
-            classType.genericSource,
-            classType.typeArguments,
-          );
-          if (interned) {
-            classType = interned;
-          }
-        }
-        foundClass = ctx.getClassInfo(classType);
+      }
+      foundClass = ctx.getClassInfo(classType);
 
-        // If identity lookup failed, instantiate via mapCheckerTypeToWasmType and retry
-        if (
-          !foundClass &&
-          classType.typeArguments &&
-          classType.typeArguments.length > 0
-        ) {
-          mapCheckerTypeToWasmType(ctx, classType);
-          foundClass = ctx.getClassInfo(classType);
-        }
+      // If identity lookup failed, instantiate via mapCheckerTypeToWasmType and retry
+      if (
+        !foundClass &&
+        classType.typeArguments &&
+        classType.typeArguments.length > 0
+      ) {
+        mapCheckerTypeToWasmType(ctx, classType);
+        foundClass = ctx.getClassInfo(classType);
       }
     }
 
@@ -7299,6 +7333,8 @@ function generateGetterFromBinding(
   if (!classInfo) {
     return false;
   }
+
+  ensureClassMethodsRegistered(ctx, classInfo);
 
   // Look up the getter method
   const methodInfo = classInfo.methods.get(methodName);
@@ -11125,6 +11161,11 @@ export function generateAdaptedArgument(
   expectedType: number[],
   body: number[],
 ) {
+  if (!expectedType) {
+    generateExpression(ctx, arg, body);
+    return;
+  }
+
   // 1. Infer actual type
   let actualType: number[];
   try {

@@ -1433,7 +1433,11 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
       case MixinType as mt: {
         if (mt.typeParameters != null) {
           applyAndCheckTypeArguments(ctx, mt.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
-          return instantiateMixinType(mt, resolvedArgs);
+          let inst = instantiateMixinType(mt, resolvedArgs);
+          if (mt.onType != null) {
+            inst.onType = substituteTypeParams(mt.typeParameters, resolvedArgs, mt.onType as Type);
+          }
+          return inst;
         }
       }
       case InterfaceType as it: {
@@ -1971,7 +1975,12 @@ let substituteTypeParams = (
           }
         }
         if (changed) {
-          return instantiateMixinType(mt.genericSource ?? mt, subArgs);
+          let genSource = mt.genericSource ?? mt;
+          let inst = instantiateMixinType(genSource, subArgs);
+          if (genSource.onType != null && genSource.typeParameters != null) {
+            inst.onType = substituteTypeParams(genSource.typeParameters, subArgs, genSource.onType as Type);
+          }
+          return inst;
         }
       }
       return t;

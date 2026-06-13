@@ -2272,6 +2272,16 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
         throw new Error(`Unknown mixin (identity lookup failed)`);
       }
 
+      const mixinTypeArgsMap = new Map<string, Type>();
+      const mt = mixinType as MixinType;
+      if (mt.typeArguments && mt.typeParameters) {
+        mt.typeParameters.forEach((param, index) => {
+          if (index < mt.typeArguments!.length) {
+            mixinTypeArgsMap.set(param.name, mt.typeArguments![index]);
+          }
+        });
+      }
+
       // Get the corresponding checker intermediate type (if available)
       const checkerIntermediateType = mixinIntermediateTypes[i];
 
@@ -2280,6 +2290,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
         currentSuperClassInfo,
         mixinDecl,
         checkerIntermediateType,
+        mixinTypeArgsMap,
       );
     }
 
@@ -2453,6 +2464,44 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   }
 }
 
+/**
+ * Ensures that all methods of a class (and all its superclasses recursively)
+ * have been registered. This prevents phase-ordering issues where subclasses
+ * or mixins attempt to copy parent methods before they are registered.
+ */
+export function ensureClassMethodsRegistered(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+): void {
+  if (classInfo.methodsRegistered) {
+    return;
+  }
+  if (classInfo.methodsRegistering) {
+    return;
+  }
+
+  // Prevent circular recursion
+  classInfo.methodsRegistering = true;
+
+  // 1. Recursively register superclass methods first
+  if (classInfo.superClassType) {
+    const superClassInfo = ctx.getClassInfo(classInfo.superClassType);
+    if (superClassInfo) {
+      ensureClassMethodsRegistered(ctx, superClassInfo);
+    }
+  }
+
+  // 2. Fetch and execute the registration callback
+  const registerCallback = ctx.pendingMethodRegistrationsMap.get(classInfo);
+  if (registerCallback) {
+    ctx.pendingMethodRegistrationsMap.delete(classInfo);
+    registerCallback();
+  }
+
+  classInfo.methodsRegistering = false;
+  classInfo.methodsRegistered = true;
+}
+
 export function registerClassMethods(
   ctx: CodegenContext,
   decl: ClassDeclaration,
@@ -2468,11 +2517,18 @@ export function registerClassMethods(
     );
   }
   const classType = decl.inferredType as ClassType;
+  if (typeContainsTypeParameter(classType)) {
+    return;
+  }
   const classInfo = ctx.getClassInfo(classType);
   if (!classInfo) {
     throw new Error(
       `Class ${decl.name.name} not found in registerClassMethods`,
     );
+  }
+
+  if (classInfo.methodsRegistered) {
+    return;
   }
 
   // Set current class for `this` type resolution in method signatures
@@ -2497,6 +2553,7 @@ export function registerClassMethods(
 
   // Inherit methods and vtable from superclass
   if (currentSuperClassInfo) {
+    ensureClassMethodsRegistered(ctx, currentSuperClassInfo);
     if (currentSuperClassInfo.vtable) {
       vtable.push(...currentSuperClassInfo.vtable);
     }
@@ -2506,7 +2563,31 @@ export function registerClassMethods(
   }
 
   // Register methods
-  const members = [...decl.body];
+  const mergedBody = [...decl.body];
+  if (decl.isExtension && decl.mixins) {
+    for (const mixinAnn of decl.mixins) {
+      const mixinType = mixinAnn.inferredType;
+      if (mixinType && mixinType.kind === TypeKind.Mixin) {
+        const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
+        if (mixinDecl) {
+          for (const m of mixinDecl.body) {
+            if (m.type === NodeType.MethodDefinition) {
+              const name = getMemberName(m.name);
+              const hasLocal = decl.body.some(
+                (lm) =>
+                  lm.type === NodeType.MethodDefinition &&
+                  getMemberName(lm.name) === name,
+              );
+              if (!hasLocal) {
+                mergedBody.push(m);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  const members = [...mergedBody];
   // ... (rest of the function)
 
   const hasConstructor = members.some(
@@ -3592,6 +3673,7 @@ export function registerClassMethods(
 
   const declForGen = {
     ...decl,
+    body: mergedBody,
     superClass: currentSuperClassInfo
       ? {type: NodeType.Identifier, name: currentSuperClassInfo.name}
       : decl.superClass,
@@ -3601,6 +3683,9 @@ export function registerClassMethods(
   ctx.bodyGenerators.push(() => {
     generateClassMethods(ctx, declForGen, undefined, classType);
   });
+
+  classInfo.methodsRegistered = true;
+  ctx.pendingMethodRegistrationsMap.delete(classInfo);
 
   // Restore previous class context
   ctx.currentClass = previousCurrentClass;
@@ -5135,10 +5220,24 @@ export function typeContainsTypeParameter(type: Type): boolean {
       return true;
     case TypeKind.Class: {
       const classType = type as ClassType;
+      if (
+        classType.typeParameters &&
+        classType.typeParameters.length > 0 &&
+        !classType.typeArguments
+      ) {
+        return true;
+      }
       return classType.typeArguments?.some(typeContainsTypeParameter) ?? false;
     }
     case TypeKind.Interface: {
       const ifaceType = type as InterfaceType;
+      if (
+        ifaceType.typeParameters &&
+        ifaceType.typeParameters.length > 0 &&
+        !ifaceType.typeArguments
+      ) {
+        return true;
+      }
       return ifaceType.typeArguments?.some(typeContainsTypeParameter) ?? false;
     }
     case TypeKind.Array:
@@ -5187,6 +5286,10 @@ export function instantiateClass(
    */
   checkerType: ClassType,
 ) {
+  if (typeContainsTypeParameter(checkerType)) {
+    return;
+  }
+
   // Try to intern the checkerType to ensure we use the canonical object
   if (
     checkerType.genericSource &&
@@ -5493,17 +5596,61 @@ function instantiateClassImpl(
       ? ctx.getClassInfo(baseSuperType)
       : undefined;
 
+    const pendingCountBefore = ctx.pendingMethodGenerations.length;
+
     for (let i = 0; i < decl.mixins.length; i++) {
       const mixinType = decl.mixins[i].inferredType;
       if (!mixinType || mixinType.kind !== TypeKind.Mixin) continue;
       const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
       if (!mixinDecl) continue;
+
+      // Compute mixin's concrete type arguments based on subclass's type arguments
+      const mixinTypeArgsMap = new Map<string, Type>();
+      const mixinAnnotation = decl.mixins[i];
+      const mixinSource = mixinDecl.inferredType as MixinType;
+      if (
+        mixinAnnotation.type === NodeType.TypeAnnotation &&
+        (mixinAnnotation as any).typeArguments &&
+        mixinSource &&
+        mixinSource.typeParameters
+      ) {
+        const namedAnn = mixinAnnotation as any;
+        const mixinTypeParams = mixinSource.typeParameters;
+        namedAnn.typeArguments.forEach((argAnn: any, index: number) => {
+          if (index < mixinTypeParams.length && argAnn.inferredType) {
+            let argType = argAnn.inferredType;
+            if (argType.kind === TypeKind.TypeParameter) {
+              const paramName = (argType as TypeParameterType).name;
+              const resolved = typeArguments.get(paramName);
+              if (resolved) {
+                argType = resolved;
+              }
+            } else if (ctx.checkerContext) {
+              argType = ctx.checkerContext.substituteTypeParams(
+                argType,
+                typeArguments,
+              );
+            }
+            mixinTypeArgsMap.set(mixinTypeParams[index].name, argType);
+          }
+        });
+      }
+
       currentSuperClassInfo = applyMixin(
         ctx,
         currentSuperClassInfo,
         mixinDecl,
         mixinIntermediateTypes[i],
+        mixinTypeArgsMap,
       );
+    }
+
+    // Execute any pending method registrations from the mixins
+    // so that methods and vtable are available for inheritance
+    while (ctx.pendingMethodGenerations.length > pendingCountBefore) {
+      const gen = ctx.pendingMethodGenerations[pendingCountBefore];
+      ctx.pendingMethodGenerations.splice(pendingCountBefore, 1);
+      gen();
     }
   }
 
@@ -5713,6 +5860,18 @@ function instantiateClassImpl(
   classInfo.structDefined = true;
 
   const registerMethods = () => {
+    // If the class type contains unresolved type parameters, skip method registration
+    // and code generation because this is a template representation, not a concrete one.
+    if (checkerType && typeContainsTypeParameter(checkerType)) {
+      return;
+    }
+
+    if (classInfo.methodsRegistered) {
+      return;
+    }
+    classInfo.methodsRegistered = true;
+    ctx.pendingMethodRegistrationsMap.delete(classInfo);
+
     // Set current class for `this` type resolution in method signatures
     const previousCurrentClass = ctx.currentClass;
     ctx.currentClass = classInfo;
@@ -5727,10 +5886,35 @@ function instantiateClassImpl(
           `superClassType identity lookup for registerMethods failed for ${specializedName} (superClass: ${superClassName})`,
         );
       }
+      ensureClassMethodsRegistered(ctx, baseClassInfo);
     }
 
     // Register methods
-    const members = [...decl.body];
+    const mergedBody = [...decl.body];
+    if (decl.isExtension && decl.mixins) {
+      for (const mixinAnn of decl.mixins) {
+        const mixinType = mixinAnn.inferredType;
+        if (mixinType && mixinType.kind === TypeKind.Mixin) {
+          const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
+          if (mixinDecl) {
+            for (const m of mixinDecl.body) {
+              if (m.type === NodeType.MethodDefinition) {
+                const name = getMemberName(m.name);
+                const hasLocal = decl.body.some(
+                  (lm) =>
+                    lm.type === NodeType.MethodDefinition &&
+                    getMemberName(lm.name) === name,
+                );
+                if (!hasLocal) {
+                  mergedBody.push(m);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    const members = [...mergedBody];
     const hasConstructor = members.some(
       (m) =>
         m.type === NodeType.MethodDefinition &&
@@ -6403,6 +6587,7 @@ function instantiateClassImpl(
       const declForGen = {
         ...decl,
         name: {type: NodeType.Identifier, name: specializedName},
+        body: mergedBody,
         superClass: undefined,
       } as ClassDeclaration;
 
@@ -6433,6 +6618,11 @@ function instantiateClassImpl(
     for (const methodName of vtable) {
       const methodInfo = methods.get(methodName);
       if (!methodInfo) throw new Error(`Method ${methodName} not found`);
+      if (methodInfo.index === -1) {
+        console.log(
+          `WARNING/ERROR: Method info has index -1 inside registerMethods for class ${classInfo.name}, method ${methodName}`,
+        );
+      }
       vtableInit.push(Opcode.ref_func);
       vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     }
@@ -6453,7 +6643,15 @@ function instantiateClassImpl(
       createUnitVariantSingleton(ctx, classInfo);
     }
 
-    generateInterfaceVTable(ctx, classInfo, decl);
+    const registerVTable = () => {
+      generateInterfaceVTable(ctx, classInfo, decl);
+    };
+
+    if (ctx.importsFinalized) {
+      registerVTable();
+    } else {
+      ctx.pendingFunctionRegistrations.push(registerVTable);
+    }
 
     if (ctx.shouldExport(decl) && structTypeIndex !== -1) {
       const ctorInfo = methods.get(CONSTRUCTOR_NAME)!;
@@ -6465,64 +6663,77 @@ function instantiateClassImpl(
       ];
 
       const wrapperTypeIndex = ctx.module.addType(params, results);
-      const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
-      // Set debug name for generic class constructor wrapper
-      ctx.setFunctionDebugName(wrapperFuncIndex, `${specializedName}.$new`);
 
-      const exportName = specializedName;
-      ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);
+      const registerCtorWrapper = () => {
+        const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
+        // Set debug name for generic class constructor wrapper
+        ctx.setFunctionDebugName(wrapperFuncIndex, `${specializedName}.$new`);
 
-      ctx.bodyGenerators.push(() => {
-        const body: number[] = [];
+        const exportName = specializedName;
+        ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);
 
-        // Params are locals 0..N-1, so start nextLocalIndex after them
-        ctx.pushFunctionScope(params.length);
+        ctx.bodyGenerators.push(() => {
+          const body: number[] = [];
 
-        // 1. Allocate
-        body.push(0xfb, GcOpcode.struct_new_default);
-        body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+          // Params are locals 0..N-1, so start nextLocalIndex after them
+          ctx.pushFunctionScope(params.length);
 
-        // 2. Store in temp
-        const tempLocal = ctx.declareLocal('$$export_new', results[0]);
-        body.push(Opcode.local_tee);
-        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-
-        // 3. Init VTable (if needed)
-        if (classInfo.vtableGlobalIndex !== undefined) {
-          body.push(Opcode.global_get);
-          body.push(
-            ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
-          );
-          body.push(0xfb, GcOpcode.struct_set);
+          // 1. Allocate
+          body.push(0xfb, GcOpcode.struct_new_default);
           body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
-          body.push(...WasmModule.encodeSignedLEB128(0));
 
+          // 2. Store in temp
+          const tempLocal = ctx.declareLocal('$$export_new', results[0]);
+          body.push(Opcode.local_tee);
+          body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+          // 3. Init VTable (if needed)
+          if (classInfo.vtableGlobalIndex !== undefined) {
+            body.push(Opcode.global_get);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
+            );
+            body.push(0xfb, GcOpcode.struct_set);
+            body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+            body.push(...WasmModule.encodeSignedLEB128(0));
+
+            body.push(Opcode.local_get);
+            body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+          }
+
+          // 4. Load args
+          for (let i = 0; i < params.length; i++) {
+            body.push(Opcode.local_get, i);
+          }
+
+          // 5. Call constructor
+          console.log(
+            `DEBUG: ctor wrapper bodygen specializedName=${specializedName} ctorInfo.index=${ctorInfo.index}`,
+          );
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+
+          // 6. Return
           body.push(Opcode.local_get);
           body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-        }
 
-        // 4. Load args
-        for (let i = 0; i < params.length; i++) {
-          body.push(Opcode.local_get, i);
-        }
+          body.push(Opcode.end);
 
-        // 5. Call constructor
-        body.push(Opcode.call);
-        body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+          ctx.module.addCode(wrapperFuncIndex, ctx.extraLocals, body);
+        });
+      };
 
-        // 6. Return
-        body.push(Opcode.local_get);
-        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-
-        body.push(Opcode.end);
-
-        ctx.module.addCode(wrapperFuncIndex, ctx.extraLocals, body);
-      });
+      if (ctx.importsFinalized) {
+        registerCtorWrapper();
+      } else {
+        ctx.pendingFunctionRegistrations.push(registerCtorWrapper);
+      }
     }
 
     const declForGen = {
       ...decl,
       name: {...decl.name, name: specializedName},
+      body: mergedBody,
       superClass: baseClassInfo
         ? {type: NodeType.Identifier, name: baseClassInfo.name}
         : decl.superClass,
@@ -6543,6 +6754,9 @@ function instantiateClassImpl(
     ctx.currentClass = previousCurrentClass;
   };
 
+  if (!ctx.pendingMethodRegistrationsMap.has(classInfo)) {
+    ctx.pendingMethodRegistrationsMap.set(classInfo, registerMethods);
+  }
   if (ctx.isGeneratingBodies) {
     registerMethods();
   } else {
@@ -6947,11 +7161,50 @@ function preRegisterMixin(
   return classInfo;
 }
 
+function mapMixinReturnTypeToWasmResults(
+  ctx: CodegenContext,
+  type: Type,
+): number[][] {
+  if (
+    type.kind === TypeKind.Void ||
+    type.kind === TypeKind.Never ||
+    type.kind === TypeKind.Hole
+  ) {
+    return [];
+  }
+  if (type.kind === TypeKind.InlineTuple) {
+    const tupleType = type as InlineTupleType;
+    return tupleType.elementTypes.map((el) =>
+      mapCheckerTypeToWasmType(ctx, el),
+    );
+  }
+  // Handle union of inline tuples: (true, T) | (false, _)
+  if (type.kind === TypeKind.Union) {
+    const unionType = type as UnionType;
+    if (unionType.types.some((t) => t.kind === TypeKind.Void)) {
+      return [];
+    }
+    // Find the first inline tuple in the union to get the WASM signature
+    for (const t of unionType.types) {
+      if (t.kind === TypeKind.InlineTuple) {
+        const tupleType = t as InlineTupleType;
+        return tupleType.elementTypes.map((el) =>
+          mapCheckerTypeToWasmType(ctx, el),
+        );
+      }
+    }
+  }
+  // For all other types, wrap in an array
+  const mapped = mapCheckerTypeToWasmType(ctx, type);
+  return mapped.length > 0 ? [mapped] : [];
+}
+
 function applyMixin(
   ctx: CodegenContext,
   baseClassInfo: ClassInfo | undefined,
   mixinDecl: MixinDeclaration,
   checkerIntermediateType?: ClassType,
+  mixinTypeArgumentsMap?: Map<string, Type>,
 ): ClassInfo {
   const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
   const intermediateName = `${baseName}_${mixinDecl.name.name}`;
@@ -6971,7 +7224,7 @@ function applyMixin(
     : undefined;
 
   // Get or create the ClassInfo (might already be pre-registered)
-  const classInfo = preRegistered || {
+  const classInfo: ClassInfo = preRegistered || {
     name: intermediateName,
     classType: checkerIntermediateType,
     structTypeIndex: ctx.module.reserveType(),
@@ -6982,13 +7235,14 @@ function applyMixin(
     vtable: [],
   };
 
-  // Update superClassType if we have the checker type but it's not set yet
-  if (
-    preRegistered &&
-    !classInfo.superClassType &&
-    checkerIntermediateType?.superType
-  ) {
-    classInfo.superClassType = checkerIntermediateType.superType;
+  // Update classType and superClassType if we have the checker type but they're not set yet
+  if (preRegistered && checkerIntermediateType) {
+    if (!classInfo.classType) {
+      classInfo.classType = checkerIntermediateType;
+    }
+    if (!classInfo.superClassType && checkerIntermediateType.superType) {
+      classInfo.superClassType = checkerIntermediateType.superType;
+    }
   }
 
   if (!preRegistered) {
@@ -7074,10 +7328,28 @@ function applyMixin(
   // Define the struct type at the pre-reserved index
   ctx.module.defineStructType(structTypeIndex, fieldTypes, superTypeIndex);
 
-  // Update the ClassInfo with the actual field info
-  classInfo.fields = fields;
-  classInfo.methods = methods;
-  classInfo.vtable = vtable;
+  // Register mixin's own methods (deferred if not yet generating bodies)
+  const mixinSource = mixinDecl.inferredType as MixinType;
+  const typeArgumentsMap = new Map<string, Type>();
+  if (mixinTypeArgumentsMap) {
+    for (const [k, v] of mixinTypeArgumentsMap) {
+      typeArgumentsMap.set(k, v);
+    }
+  } else if (
+    checkerIntermediateType &&
+    checkerIntermediateType.typeArguments &&
+    mixinSource &&
+    mixinSource.typeParameters
+  ) {
+    mixinSource.typeParameters.forEach((param, index) => {
+      if (index < checkerIntermediateType.typeArguments!.length) {
+        typeArgumentsMap.set(
+          param.name,
+          checkerIntermediateType.typeArguments![index],
+        );
+      }
+    });
+  }
 
   const declForGen = {
     ...mixinDecl,
@@ -7093,6 +7365,349 @@ function applyMixin(
   } as unknown as ClassDeclaration;
 
   ctx.syntheticClasses.push(declForGen);
+
+  const registerMixinMethods = () => {
+    // If the mixin itself is generic, we must only register methods and vtable entries
+    // for concrete instantiations (where mixinTypeArgumentsMap is provided and contains
+    // no type parameters). We skip them for the generic template version.
+    const mixinSource = mixinDecl.inferredType as MixinType;
+    if (
+      mixinSource &&
+      mixinSource.typeParameters &&
+      mixinSource.typeParameters.length > 0
+    ) {
+      if (!mixinTypeArgumentsMap) {
+        return;
+      }
+      for (const arg of mixinTypeArgumentsMap.values()) {
+        if (typeContainsTypeParameter(arg)) {
+          return;
+        }
+      }
+    }
+
+    // If the intermediate type contains unresolved type parameters, skip method registration
+    // and code generation because this is a template representation, not a concrete one.
+    if (
+      checkerIntermediateType &&
+      typeContainsTypeParameter(checkerIntermediateType)
+    ) {
+      return;
+    }
+
+    if (classInfo.methodsRegistered) {
+      return;
+    }
+    classInfo.methodsRegistered = true;
+    ctx.pendingMethodRegistrationsMap.delete(classInfo);
+
+    // Copy inherited methods and vtable from baseClassInfo
+    if (baseClassInfo) {
+      ensureClassMethodsRegistered(ctx, baseClassInfo);
+      for (const [name, info] of baseClassInfo.methods.entries()) {
+        methods.set(name, {...info});
+      }
+      if (baseClassInfo.vtable) {
+        for (const entry of baseClassInfo.vtable) {
+          if (!vtable.includes(entry)) {
+            vtable.push(entry);
+          }
+        }
+      }
+    }
+
+    // Copy constraint methods and vtable from onType
+    if (checkerIntermediateType && checkerIntermediateType.onType) {
+      let onType = checkerIntermediateType.onType;
+      if (typeArgumentsMap.size > 0 && ctx.checkerContext) {
+        onType = ctx.checkerContext.substituteTypeParams(
+          onType,
+          typeArgumentsMap,
+        );
+      }
+      if (
+        onType.kind === TypeKind.Class ||
+        onType.kind === TypeKind.Interface
+      ) {
+        const constraintVal = onType as any;
+
+        // 1. Regular Methods
+        if (constraintVal.methods) {
+          for (const [
+            methodName,
+            methodType,
+          ] of constraintVal.methods.entries()) {
+            if (methods.has(methodName)) continue;
+
+            let resolvedType = methodType;
+            if (typeArgumentsMap.size > 0 && ctx.checkerContext) {
+              resolvedType = ctx.checkerContext.substituteTypeParams(
+                methodType,
+                typeArgumentsMap,
+              ) as FunctionType;
+            }
+
+            if (
+              resolvedType.typeParameters &&
+              resolvedType.typeParameters.length > 0
+            ) {
+              continue;
+            }
+
+            const returnWasmType = mapCheckerTypeToWasmType(
+              ctx,
+              resolvedType.returnType,
+            );
+            const paramWasmTypes = resolvedType.parameters.map((p: any) =>
+              mapCheckerTypeToWasmType(ctx, p),
+            );
+            const thisWasmType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(structTypeIndex),
+            ];
+            const params = [thisWasmType, ...paramWasmTypes];
+            const results = returnWasmType.length > 0 ? [returnWasmType] : [];
+            const typeIndex = ctx.module.addType(params, results);
+
+            methods.set(methodName, {
+              index: -1,
+              returnType: returnWasmType,
+              typeIndex,
+              paramTypes: params,
+              isFinal: false,
+            });
+
+            if (!vtable.includes(methodName)) {
+              vtable.push(methodName);
+            }
+          }
+        }
+
+        // 2. Symbol Methods
+        if (constraintVal.symbolMethods) {
+          for (const [
+            symbolType,
+            methodType,
+          ] of constraintVal.symbolMethods.entries()) {
+            const memberName = getSymbolMemberName(symbolType);
+            if (methods.has(memberName)) continue;
+
+            let resolvedType = methodType;
+            if (typeArgumentsMap.size > 0 && ctx.checkerContext) {
+              resolvedType = ctx.checkerContext.substituteTypeParams(
+                methodType,
+                typeArgumentsMap,
+              ) as FunctionType;
+            }
+
+            if (
+              resolvedType.typeParameters &&
+              resolvedType.typeParameters.length > 0
+            ) {
+              continue;
+            }
+
+            const returnWasmType = mapCheckerTypeToWasmType(
+              ctx,
+              resolvedType.returnType,
+            );
+            const paramWasmTypes = resolvedType.parameters.map((p: any) =>
+              mapCheckerTypeToWasmType(ctx, p),
+            );
+            const thisWasmType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(structTypeIndex),
+            ];
+            const params = [thisWasmType, ...paramWasmTypes];
+            const results = returnWasmType.length > 0 ? [returnWasmType] : [];
+            const typeIndex = ctx.module.addType(params, results);
+
+            methods.set(memberName, {
+              index: -1,
+              returnType: returnWasmType,
+              typeIndex,
+              paramTypes: params,
+              isFinal: false,
+            });
+
+            if (!classInfo.symbolMethods) {
+              classInfo.symbolMethods = new Map();
+            }
+            classInfo.symbolMethods.set(memberName, {
+              index: -1,
+              returnType: returnWasmType,
+              typeIndex,
+              paramTypes: params,
+              isFinal: false,
+            });
+
+            if (!vtable.includes(memberName)) {
+              vtable.push(memberName);
+            }
+          }
+        }
+      }
+    }
+
+    if (mixinSource && mixinSource.methods) {
+      for (const [methodName, methodType] of mixinSource.methods.entries()) {
+        let resolvedType = methodType;
+        // Substitute generic type parameters of the mixin if we have concrete type arguments
+        if (typeArgumentsMap.size > 0 && ctx.checkerContext) {
+          resolvedType = ctx.checkerContext.substituteTypeParams(
+            methodType,
+            typeArgumentsMap,
+          ) as FunctionType;
+        }
+
+        if (resolvedType.isAbstract) {
+          const existing = methods.get(methodName);
+          if (existing && existing.index !== -1) {
+            continue;
+          }
+        }
+
+        // If the mixin method itself is generic (e.g. Map<R>), skip normal registration
+        if (
+          resolvedType.typeParameters &&
+          resolvedType.typeParameters.length > 0
+        ) {
+          const key = `${intermediateName}.${methodName}`;
+          const methodDef = mixinDecl.body.find(
+            (m) =>
+              m.type === NodeType.MethodDefinition &&
+              getMemberName(m.name) === methodName,
+          );
+          if (methodDef) {
+            ctx.genericMethods.set(key, methodDef as MethodDefinition);
+          }
+          continue;
+        }
+
+        const results = mapMixinReturnTypeToWasmResults(
+          ctx,
+          resolvedType.returnType,
+        );
+        const returnWasmType = results.length > 0 ? results[0] : [];
+        const paramWasmTypes = resolvedType.parameters.map((p) =>
+          mapCheckerTypeToWasmType(ctx, p),
+        );
+
+        const thisWasmType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+        const params = [thisWasmType, ...paramWasmTypes];
+
+        const typeIndex = ctx.module.addType(params, results);
+        const funcIndex = ctx.module.addFunction(typeIndex);
+        ctx.setFunctionDebugName(
+          funcIndex,
+          `${intermediateName}.${methodName}`,
+        );
+
+        methods.set(methodName, {
+          index: funcIndex,
+          returnType: returnWasmType,
+          typeIndex,
+          paramTypes: params,
+          isFinal: resolvedType.isFinal,
+        });
+
+        if (!vtable.includes(methodName)) {
+          vtable.push(methodName);
+        }
+      }
+    }
+
+    // Register default constructor in methods so body generators/DCE can find it
+    const ctorParams: number[][] = [
+      [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
+    ];
+    const ctorResults: number[][] = [];
+    const ctorTypeIndex = ctx.module.addType(ctorParams, ctorResults);
+    const ctorFuncIndex = ctx.module.addFunction(ctorTypeIndex);
+    ctx.setFunctionDebugName(
+      ctorFuncIndex,
+      `${intermediateName}.${CONSTRUCTOR_NAME}`,
+    );
+    methods.set(CONSTRUCTOR_NAME, {
+      index: ctorFuncIndex,
+      returnType: [],
+      typeIndex: ctorTypeIndex,
+      paramTypes: ctorParams,
+      isFinal: false,
+    });
+
+    // Update the ClassInfo with the actual method / vtable info once registered
+    classInfo.methods = methods;
+    classInfo.vtable = vtable;
+
+    // Create VTable Struct Type
+    let vtableSuperTypeIndex: number | undefined;
+    if (baseClassInfo) {
+      vtableSuperTypeIndex = baseClassInfo.vtableTypeIndex;
+    }
+
+    const vtableTypeIndex = ctx.module.addStructType(
+      vtable.map(() => ({type: [HeapType.func], mutable: false})),
+      vtableSuperTypeIndex,
+    );
+
+    // Create VTable Global (only if all methods have valid indices)
+    const canCreateGlobal = vtable.every((name) => {
+      const methodInfo = methods.get(name);
+      return methodInfo && methodInfo.index !== -1;
+    });
+    let vtableGlobalIndex: number | undefined;
+
+    if (canCreateGlobal) {
+      const vtableInit: number[] = [];
+      for (const methodName of vtable) {
+        const methodInfo = methods.get(methodName)!;
+        vtableInit.push(Opcode.ref_func);
+        vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+      }
+      vtableInit.push(0xfb, GcOpcode.struct_new);
+      vtableInit.push(...WasmModule.encodeSignedLEB128(vtableTypeIndex));
+
+      vtableGlobalIndex = ctx.module.addGlobal(
+        [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
+        false,
+        vtableInit,
+      );
+    }
+
+    classInfo.vtableTypeIndex = vtableTypeIndex;
+    if (vtableGlobalIndex !== undefined) {
+      classInfo.vtableGlobalIndex = vtableGlobalIndex;
+    }
+
+    // Schedule body generation
+    ctx.bodyGenerators.push(() => {
+      generateClassMethods(
+        ctx,
+        declForGen,
+        intermediateName,
+        checkerIntermediateType,
+        typeArgumentsMap,
+      );
+    });
+  };
+
+  if (!ctx.pendingMethodRegistrationsMap.has(classInfo)) {
+    ctx.pendingMethodRegistrationsMap.set(classInfo, registerMixinMethods);
+  }
+  if (ctx.isGeneratingBodies) {
+    registerMixinMethods();
+  } else {
+    ctx.pendingMethodGenerations.push(registerMixinMethods);
+  }
+
+  // Update the ClassInfo with the initial field info and empty/pre-registered structures
+  classInfo.fields = fields;
+  classInfo.methods = methods;
+  classInfo.vtable = vtable;
 
   return classInfo;
 }

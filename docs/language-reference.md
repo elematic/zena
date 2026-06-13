@@ -2973,6 +2973,48 @@ if (let (true, true, value) = data()) {
 This feature enables zero-allocation iteration idioms like `for-in` loops, which
 internally use `while (let (true, elem) = iter.next())`.
 
+### Mixins
+
+Mixins in Zena allow reuse of code across class hierarchies. A mixin is declared using the `mixin` keyword and applied to a class using the `with` clause. Unlike interfaces, mixins can contain field and method implementations.
+
+```zena
+mixin Timestamped {
+  createdAt: i64;
+  touch() {
+    this.createdAt = now();
+  }
+}
+
+class Document with Timestamped {
+  content: String;
+  new(this.content) : createdAt = now();
+}
+```
+
+#### The `on` Clause
+
+Mixins can restrict their target classes using the `on` clause, which guarantees that `this` in the mixin is treated as a subtype of the constrained type:
+
+```zena
+mixin Syncable on Entity {
+  sync(): void {
+    this.save(); // OK: save() is defined on Entity
+  }
+}
+```
+
+#### Constraint Satisfaction and Type Checking
+
+A target class satisfies a mixin's `on` constraint if the constrained type is assignable to:
+1. The target class's **superclass**.
+2. The target class's **extension `on` type** (if it is an extension class).
+3. Any interface in the target class's **`implements` list**.
+
+This enables a class to implement an interface (e.g. `Iterable<T>`) **via** a mixin that is constrained to that interface (e.g. `on Iterable<T>`). When type checking:
+1. The class declares `implements Iterable<T>`, immediately satisfying the mixin's `on` constraint.
+2. The mixin is applied, injecting the required implementation methods.
+3. The compiler validates that the class has implemented all members of the interface, which succeeds because of the injected mixin methods.
+
 ## 8. Modules & Exports
 
 ### Exports

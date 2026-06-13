@@ -657,7 +657,14 @@ function generateIteratorMethodCall(
 
   // Handle class types directly
   if (iterableType.kind === TypeKind.Class) {
-    const classType = iterableType as ClassType;
+    let classType = iterableType as ClassType;
+    if (
+      (classType.isSyntheticMixinThis || classType.isMixinIntermediate) &&
+      ctx.currentClass &&
+      ctx.currentClass.classType
+    ) {
+      classType = ctx.currentClass.classType;
+    }
     // Try direct lookup first, then ensure instantiated if not found
     classInfo = ctx.getClassInfo(classType);
     if (!classInfo) {

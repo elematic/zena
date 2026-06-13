@@ -26,6 +26,7 @@ import {
   preRegisterClassStruct,
   defineClassStruct,
   registerClassMethods,
+  ensureClassMethodsRegistered,
   preRegisterInterface,
   defineInterfaceMethods,
   getMemberName,
@@ -247,6 +248,39 @@ export class CodeGenerator {
       }
     }
 
+    // 2.5 Register Imports (DeclareFunction)
+    // Imports must be registered before ANY defined functions (including on-demand
+    // generic/template methods registered during class definition/instantiation) to ensure correct index space.
+    // Note: WASI imports (wasi_snapshot_preview1) are already registered in Pass 0.
+    for (const statement of statements) {
+      if (statement.type === NodeType.DeclareFunction) {
+        const decl = statement as DeclareFunction;
+        // Generic intrinsic functions must always be registered because they're
+        // inlined at codegen time via ctx.globalIntrinsics (no function index
+        // allocated). DCE may incorrectly mark them as unused when they're called
+        // indirectly from stdlib modules.
+        const isGenericIntrinsic =
+          decl.typeParameters &&
+          decl.typeParameters.length > 0 &&
+          decl.decorators?.some((d) => d.name === 'intrinsic');
+        if (!isGenericIntrinsic && !this.#isUsed(decl)) continue;
+        // Skip WASI imports - already processed in Pass 0
+        const moduleName = decl.externalModule || 'env';
+        if (moduleName === 'wasi_snapshot_preview1') continue;
+        registerDeclaredFunction(this.#ctx, decl, this.#ctx.shouldExport(decl));
+      }
+    }
+
+    // 2.6 Flush pending function registrations from Pass 2.5 (e.g. wrappers for external functions)
+    // We do this here to ensure all imports (Pass 2.5) are added to WasmModule before any functions are added.
+    this.#ctx.importsFinalized = true;
+    let pendingFuncIdx = 0;
+    while (pendingFuncIdx < this.#ctx.pendingFunctionRegistrations.length) {
+      const register = this.#ctx.pendingFunctionRegistrations[pendingFuncIdx++];
+      register();
+    }
+    this.#ctx.pendingFunctionRegistrations.length = 0;
+
     // 3. Define Interface Methods (Third pass)
     // Now that all classes have reserved indices, class types can be resolved correctly.
     for (const statement of statements) {
@@ -271,42 +305,7 @@ export class CodeGenerator {
       }
     }
 
-    // 5. Register Imports (DeclareFunction)
-    // Imports must be registered before defined functions to ensure correct index space.
-    // Note: WASI imports (wasi_snapshot_preview1) are already registered in Pass 0.
-    for (const statement of statements) {
-      if (statement.type === NodeType.DeclareFunction) {
-        const decl = statement as DeclareFunction;
-        // Generic intrinsic functions must always be registered because they're
-        // inlined at codegen time via ctx.globalIntrinsics (no function index
-        // allocated). DCE may incorrectly mark them as unused when they're called
-        // indirectly from stdlib modules.
-        const isGenericIntrinsic =
-          decl.typeParameters &&
-          decl.typeParameters.length > 0 &&
-          decl.decorators?.some((d) => d.name === 'intrinsic');
-        if (!isGenericIntrinsic && !this.#isUsed(decl)) continue;
-        // Skip WASI imports - already processed in Pass 0
-        const moduleName = decl.externalModule || 'env';
-        if (moduleName === 'wasi_snapshot_preview1') continue;
-        registerDeclaredFunction(this.#ctx, decl, this.#ctx.shouldExport(decl));
-      }
-    }
-
-    // 5.5 Flush pending function registrations from Pass 5 (e.g. wrappers for external functions)
-    // We do this here to ensure all imports (Pass 5) are added to WasmModule before any functions are added.
-    for (const register of this.#ctx.pendingFunctionRegistrations) {
-      register();
-    }
-
     // 6. Register Class Methods (Sixth pass)
-    // Execute pending method registrations (e.g. from mixins created in Pass 2)
-    let pendingIndex = 0;
-    while (pendingIndex < this.#ctx.pendingMethodGenerations.length) {
-      const generator = this.#ctx.pendingMethodGenerations[pendingIndex++];
-      generator();
-    }
-
     const typeToDecl = new Map<ClassType, ClassDeclaration>();
     for (const stmt of statements) {
       if (stmt.type === NodeType.ClassDeclaration) {
@@ -331,16 +330,21 @@ export class CodeGenerator {
       return this.#ctx.getGenericDeclaration(classType);
     };
 
+    const registeredClasses = new Set<ClassType>();
     const ensureMethodsRegistered = (classType: ClassType) => {
       const classInfo = this.#ctx.getClassInfo(classType);
-      if (!classInfo || (classInfo as any).methodsRegistered) return;
+      if (!classInfo || registeredClasses.has(classType)) return;
+      registeredClasses.add(classType);
       if (classType.superType) {
         ensureMethodsRegistered(classType.superType);
       }
-      const decl = findDeclForType(classType);
-      if (decl) {
-        registerClassMethods(this.#ctx, decl);
-        (classInfo as any).methodsRegistered = true;
+      if (classType.isSyntheticMixinThis || classType.isMixinIntermediate) {
+        ensureClassMethodsRegistered(this.#ctx, classInfo);
+      } else {
+        const decl = findDeclForType(classType);
+        if (decl) {
+          registerClassMethods(this.#ctx, decl);
+        }
       }
     };
 
@@ -359,6 +363,14 @@ export class CodeGenerator {
           ensureMethodsRegistered(classDecl.inferredType as ClassType);
         }
       }
+    }
+
+    // Now, run all method registrations using ensureClassMethodsRegistered to ensure
+    // that superclasses are fully registered before their subclasses/mixins copy their methods.
+    for (const classInfo of Array.from(
+      this.#ctx.pendingMethodRegistrationsMap.keys(),
+    )) {
+      ensureClassMethodsRegistered(this.#ctx, classInfo);
     }
 
     // 6. Register Functions and Variables (Sixth pass)
@@ -487,9 +499,10 @@ export class CodeGenerator {
     }
 
     // Execute any pending method registrations added during Pass 5 (e.g. from type inference)
-    while (pendingIndex < this.#ctx.pendingMethodGenerations.length) {
-      const generator = this.#ctx.pendingMethodGenerations[pendingIndex++];
-      generator();
+    for (const classInfo of Array.from(
+      this.#ctx.pendingMethodRegistrationsMap.keys(),
+    )) {
+      ensureClassMethodsRegistered(this.#ctx, classInfo);
     }
 
     // Pass 2: Generate bodies

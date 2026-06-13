@@ -3442,6 +3442,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         vtable: superType ? [...superType.vtable] : [],
         isFinal: false, // Intermediate classes are not final
         isMixinIntermediate: true, // Mark as synthetic mixin intermediate
+        onType: mixin.onType,
       };
 
       // Inherit from superType

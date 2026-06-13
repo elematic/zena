@@ -396,6 +396,20 @@ export function substituteType(
       ctx.internClass(source, newTypeArguments, newClass);
 
       return newClass;
+    } else if (ct.typeParameters) {
+      const hasMatch = ct.typeParameters.some((param) =>
+        typeMap.has(param.name),
+      );
+      if (hasMatch) {
+        const newTypeArguments = ct.typeParameters.map(
+          (param) => typeMap.get(param.name) || param,
+        );
+        return substituteType(
+          {...ct, typeArguments: newTypeArguments} as ClassType,
+          typeMap,
+          ctx,
+        );
+      }
     }
   }
   if (type.kind === TypeKind.Interface) {
@@ -447,6 +461,20 @@ export function substituteType(
         symbolFields: newSymbolFields.size > 0 ? newSymbolFields : undefined,
         extends: newExtends,
       } as InterfaceType;
+    } else if (it.typeParameters) {
+      const hasMatch = it.typeParameters.some((param) =>
+        typeMap.has(param.name),
+      );
+      if (hasMatch) {
+        const newTypeArguments = it.typeParameters.map(
+          (param) => typeMap.get(param.name) || param,
+        );
+        return substituteType(
+          {...it, typeArguments: newTypeArguments} as InterfaceType,
+          typeMap,
+          ctx,
+        );
+      }
     }
   }
   if (type.kind === TypeKind.Mixin) {

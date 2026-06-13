@@ -3,6 +3,7 @@ import { KeyNotFoundError } from 'zena:error';
 import { Option, some, none } from 'zena:option';
 import { Iterable, Iterator } from 'zena:iterator';
 import { Map, MapEntry } from 'zena:map';
+import { IterableUtils } from 'zena:iterable-utils';
 
 @intrinsic('hash')
 declare function hash<T>(value: T): i32;
@@ -82,7 +83,7 @@ class OrderedMapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
  *   m["c"] = 3;
  *   // Iteration order: "b", "a", "c"
  */
-export class OrderedMap<K, V> implements Map<K, V> {
+export class OrderedMap<K, V> with IterableUtils<MapEntry<K, V>> implements Map<K, V> {
   var #buckets: FixedArray<OrderedEntry<K, V> | null>;
   var #size = 0;
   var #head: OrderedEntry<K, V> | null = null;
@@ -188,7 +189,7 @@ export class OrderedMap<K, V> implements Map<K, V> {
   /**
    * Finds the value for a key, returning Some(value) if found or None if not.
    */
-  find(key: K): Option<V> {
+  getOption(key: K): Option<V> {
     let h = hash(key);
     let len = this.#buckets.length;
     var index = h % len;

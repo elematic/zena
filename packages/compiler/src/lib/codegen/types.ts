@@ -84,6 +84,14 @@ export interface ClassInfo {
    */
   structDefined?: boolean;
   /**
+   * Guard to prevent duplicate method registration.
+   */
+  methodsRegistered?: boolean;
+  /**
+   * Guard to prevent circular recursion during method registration.
+   */
+  methodsRegistering?: boolean;
+  /**
    * For unit variant classes (sealed hierarchy variants with no fields):
    * the WASM global index holding the singleton instance.
    */
