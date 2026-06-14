@@ -1,0 +1,187 @@
+import { 
+  Node, MethodDefinition, FieldDefinition, AccessorDeclaration, MixinDeclaration, TypeAnnotation
+} from '../ast.zena';
+import { 
+  Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, BooleanType, BoolLiteralType, 
+  ByteArrayType, NullType, VoidType, ClassType, InterfaceType, ArrayType, RecordType, 
+  TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString
+} from '../types.zena';
+import { SemanticModel } from '../semantic-model.zena';
+import { Symbol } from '../scope/symbol.zena';
+import { String } from "zena:string";
+import { i32ToString } from "zena:string-convert";
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+
+// TODO: Add string comparison to the stdlib and use that instead.
+export let compareStrings = (a: String, b: String): i32 => {
+  let lenA = a.length;
+  let lenB = b.length;
+  var minLen = lenA;
+  if (lenB < lenA) {
+    minLen = lenB;
+  }
+  
+  for (var i = 0; i < minLen; i += 1) {
+    let byteA = a.getByteAt(i);
+    let byteB = b.getByteAt(i);
+    if (byteA < byteB) return -1;
+    if (byteA > byteB) return 1;
+  }
+  
+  if (lenA < lenB) return -1;
+  if (lenA > lenB) return 1;
+  return 0;
+};
+
+export let getMemberRootClass = (ct: ClassType, memberName: String): ClassType => {
+  var rootClass = ct;
+  var currClass = ct.superType;
+  while (currClass != null) {
+    let superCt = currClass as ClassType;
+    var hasMember = superCt.members.has(memberName);
+    if (!hasMember && memberName.startsWith("get#")) {
+      let propName = memberName.sliceBytes(4, memberName.length);
+      hasMember = superCt.members.has(propName);
+    }
+    if (!hasMember && memberName.startsWith("set#")) {
+      let propName = memberName.sliceBytes(4, memberName.length);
+      hasMember = superCt.members.has(propName);
+    }
+    if (hasMember) {
+      rootClass = superCt;
+    }
+    currClass = superCt.superType;
+  }
+  return rootClass;
+};
+
+export let getClassKey = (ct: ClassType): String => {
+  return ct.name + "_" + i32ToString(ct.id as i32);
+};
+
+export let getInterfaceKey = (it: InterfaceType): String => {
+  return it.name + "_" + i32ToString(it.id as i32);
+};
+
+export let getTypeKey = (type: Type): String => {
+  return match (type) {
+    case I32Type: "i32"
+    case U32Type: "u32"
+    case I64Type: "i64"
+    case U64Type: "u64"
+    case F32Type: "f32"
+    case F64Type: "f64"
+    case BooleanType: "bool"
+    case BoolLiteralType: "bool"
+    case ByteArrayType: "string"
+    case NullType: "null"
+    case VoidType: "void"
+    case ClassType as ct: ct.name
+    case InterfaceType as it: it.name
+    case ArrayType {elementType}: "arr_" + getTypeKey(elementType)
+    case RecordType: "rec"
+    case TupleType {elementTypes}: "tup" + i32ToString(elementTypes.length)
+    case InlineTupleType {elementTypes}: "tup" + i32ToString(elementTypes.length)
+    case UnionType: "union"
+    case TypeParameterType as tp: tp.name
+    case _: "unknown"
+  };
+};
+
+export let getSignatureKey = (funcType: FunctionType): String => {
+  if (funcType.parameters.length == 0) {
+    return "$void";
+  }
+  var sb = "";
+  for (let p in funcType.parameters) {
+    sb = sb + "$" + getTypeKey(p);
+  }
+  return sb;
+};
+
+export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: MethodDefinition): FunctionType | null => {
+  if (ft.overloads == null) {
+    return null;
+  }
+  let paramTypes = new Array<Type>();
+  for (let p in mDef.params) {
+    let sym = moduleModel.resolveDeclaration(p as Node);
+    if (sym != null) {
+      let pType = moduleModel.getBindingType(sym as Symbol);
+      if (pType != null) {
+        paramTypes.push(pType as Type);
+      } else {
+        paramTypes.push(new UnknownType());
+      }
+    } else {
+      paramTypes.push(new UnknownType());
+    }
+  }
+  
+  let ovs = ft.overloads as Array<FunctionType>;
+  for (let ov in ovs) {
+    if (ov.parameters.length == paramTypes.length) {
+      var match = true;
+      for (var pi = 0; pi < paramTypes.length; pi += 1) {
+        if (typeToString(ov.parameters[pi]) != typeToString(paramTypes[pi])) {
+          match = false;
+        }
+      }
+      if (match) {
+        return ov;
+      }
+    }
+  }
+  return null;
+};
+
+export let collectMixinMembers = (
+  model: SemanticModel,
+  mixinAnns: Array<TypeAnnotation> | null,
+  methods: Array<Node>,
+  seen: HashMap<String, boolean>
+): void => {
+  if (mixinAnns == null) { return; }
+  for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
+    let sym = model.resolve(ann);
+    if (sym != null && (sym as Symbol).declaration is MixinDeclaration) {
+      let md = (sym as Symbol).declaration as MixinDeclaration;
+      let mixinKey = md.name.name;
+      if (!seen.has(mixinKey)) {
+        seen[mixinKey] = true;
+        collectMixinMembers(model, md.mixins, methods, seen);
+        for (let member in md.body) {
+          if (member is MethodDefinition || member is AccessorDeclaration || member is FieldDefinition) {
+            methods.push(member);
+          }
+        }
+      }
+    }
+  }
+};
+
+export let collectMixinFields = (
+  model: SemanticModel,
+  mixinAnns: Array<TypeAnnotation> | null,
+  fields: Array<FieldDefinition>,
+  seen: HashMap<String, boolean>
+): void => {
+  if (mixinAnns == null) { return; }
+  for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
+    let sym = model.resolve(ann);
+    if (sym != null && (sym as Symbol).declaration is MixinDeclaration) {
+      let md = (sym as Symbol).declaration as MixinDeclaration;
+      let mixinKey = md.name.name;
+      if (!seen.has(mixinKey)) {
+        seen[mixinKey] = true;
+        collectMixinFields(model, md.mixins, fields, seen);
+        for (let member in md.body) {
+          if (member is FieldDefinition) {
+            fields.push(member as FieldDefinition);
+          }
+        }
+      }
+    }
+  }
+};

@@ -1,0 +1,406 @@
+import { 
+  Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, 
+  InterfaceType, TypeAliasType, U32Type, I64Type, U64Type, ArrayType, NullType, 
+  UnknownType, ErrorType, AnyType, AnyRefType, EqRefType, NeverType, HoleType, 
+  FieldInfo, MethodInfo, typeToString, ByteArrayType, TypeParameterType, ThisType, 
+  UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
+  RecordType, TupleType
+} from '../types.zena';
+import { SemanticModel } from '../semantic-model.zena';
+import { 
+  WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
+  sortWasmFields
+} from './wasm-module.zena';
+import { 
+  ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, 
+  ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode 
+} from './wasm.zena';
+import { String } from "zena:string";
+import { i32ToString } from "zena:string-convert";
+import { Array } from 'zena:array';
+import { 
+  getMemberRootClass, getClassKey, getInterfaceKey
+} from './codegen-utils.zena';
+
+export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, fieldName: String): WasmSignature => {
+  if (fieldName.startsWith("get#")) {
+    let propName = fieldName.sliceBytes(4, fieldName.length);
+    var memberType: Type | null = null;
+    if (it.members.has(propName)) {
+      let fi = it.members[propName] as FieldInfo;
+      memberType = fi.type;
+    } else if (it.members.has(fieldName)) {
+      let mi = it.members[fieldName] as MethodInfo;
+      let ft = mi.type as FunctionType;
+      memberType = ft.returnType;
+    }
+    if (memberType == null) {
+      throw new Error("Interface getter member " + fieldName + " not found on interface " + it.name);
+    }
+    let params = new Array<ValType>();
+    params.push(new ValTypeStructRef());
+    let returns = new Array<ValType>();
+    returns.push(typeToValType(wasm, memberType as Type));
+    return wasm.getSignature(params, returns);
+  } else if (fieldName.startsWith("set#")) {
+    let propName = fieldName.sliceBytes(4, fieldName.length);
+    var memberType: Type | null = null;
+    if (it.members.has(propName)) {
+      let fi = it.members[propName] as FieldInfo;
+      memberType = fi.type;
+    } else if (it.members.has(fieldName)) {
+      let mi = it.members[fieldName] as MethodInfo;
+      let ft = mi.type as FunctionType;
+      if (ft.parameters.length > 0) {
+        memberType = ft.parameters[0];
+      }
+    }
+    if (memberType == null) {
+      throw new Error("Interface setter member " + fieldName + " not found on interface " + it.name);
+    }
+    let params = new Array<ValType>();
+    params.push(new ValTypeStructRef());
+    params.push(typeToValType(wasm, memberType as Type));
+    let returns = new Array<ValType>();
+    return wasm.getSignature(params, returns);
+  } else {
+    let mi = it.members[fieldName] as MethodInfo;
+    let ft = mi.type as FunctionType;
+    let params = new Array<ValType>();
+    params.push(new ValTypeStructRef());
+    for (let p in ft.parameters) {
+      params.push(typeToValType(wasm, p));
+    }
+    let returns = new Array<ValType>();
+    mapReturnTypeToWasmResults(wasm, ft.returnType, returns);
+    return wasm.getSignature(params, returns);
+  }
+};
+
+export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName: String): WasmSignature => {
+  let rootClass = getMemberRootClass(ct, fieldName);
+  let params = new Array<ValType>();
+  let classStruct = wasm.classStructs[getClassKey(rootClass)];
+  if (classStruct != null) {
+    params.push(new ValTypeRefNull(classStruct));
+  } else {
+    params.push(new ValTypeStructRef());
+  }
+
+  let returns = new Array<ValType>();
+
+  if (fieldName.startsWith("get#")) {
+    let propName = fieldName.sliceBytes(4, fieldName.length);
+    var fieldType: Type = new VoidType();
+    if (ct.members.has(propName)) {
+      fieldType = ct.members[propName].type;
+    } else if (ct.members.has(fieldName)) {
+      let mi = ct.members[fieldName] as MethodInfo;
+      let ft = mi.type as FunctionType;
+      fieldType = ft.returnType;
+    }
+    returns.push(typeToValType(wasm, fieldType));
+    return wasm.getSignature(params, returns);
+  } else if (fieldName.startsWith("set#")) {
+    let propName = fieldName.sliceBytes(4, fieldName.length);
+    var fieldType: Type = new VoidType();
+    if (ct.members.has(propName)) {
+      fieldType = ct.members[propName].type;
+    } else if (ct.members.has(fieldName)) {
+      let mi = ct.members[fieldName] as MethodInfo;
+      let ft = mi.type as FunctionType;
+      fieldType = ft.parameters[0];
+    }
+    params.push(typeToValType(wasm, fieldType));
+    return wasm.getSignature(params, returns);
+  } else {
+    var ft: FunctionType | null = null;
+    if (ct.members.has(fieldName)) {
+      let mi = ct.members[fieldName] as MethodInfo;
+      ft = mi.type as FunctionType;
+    }
+    if (ft != null) {
+      let fType = ft as FunctionType;
+      for (let p in fType.parameters) {
+        params.push(typeToValType(wasm, p));
+      }
+      if (!(fType.returnType is VoidType)) {
+        returns.push(typeToValType(wasm, fType.returnType));
+      }
+    }
+    return wasm.getSignature(params, returns);
+  }
+};
+
+export let getValTypeKey = (type: ValType): String => {
+  match (type) {
+    case ValTypeRef as r: {
+      if (r.target is WasmStruct) {
+        let s = r.target as WasmStruct;
+        if (s.name != null) {
+          return "ref_" + (s.name as String);
+        }
+      }
+      return "ref_anon";
+    }
+    case ValTypeRefNull as r: {
+      if (r.target is WasmStruct) {
+        let s = r.target as WasmStruct;
+        if (s.name != null) {
+          return "refnull_" + (s.name as String);
+        }
+      }
+      return "refnull_anon";
+    }
+    case _: {
+      return i32ToString(valTypeToOpcode(type));
+    }
+  }
+};
+
+export let getClosureStruct = (wasm: WasmModule, ftVal: any): WasmStruct => {
+  let ft = ftVal as FunctionType;
+  let params = new Array<ValType>();
+  params.push(new ValTypeEqRef()); // ctx
+  for (let p in ft.parameters) {
+    params.push(typeToValType(wasm, p));
+  }
+  let returns = new Array<ValType>();
+  if (!(ft.returnType is VoidType)) {
+    returns.push(typeToValType(wasm, ft.returnType));
+  }
+
+  let implSig = wasm.getSignature(params, returns);
+
+  var keyStr = "";
+  for (let p in params) {
+    keyStr = keyStr + getValTypeKey(p) + ",";
+  }
+  keyStr = keyStr + "=>";
+  for (let r in returns) {
+    keyStr = keyStr + getValTypeKey(r) + ",";
+  }
+
+  if (wasm.closureStructs.has(keyStr)) {
+    return wasm.closureStructs[keyStr];
+  }
+
+  let fields = new Array<WasmField>();
+  fields.push(new WasmField("func", new ValTypeRef(implSig), false));
+  fields.push(new WasmField("ctx", new ValTypeEqRef(), false));
+  let st = new WasmStruct("Closure", fields);
+  wasm.types.push(st);
+  wasm.closureStructs[keyStr] = st;
+  return st;
+};
+
+export let getCellStruct = (wasm: WasmModule, valType: ValType): WasmStruct => {
+  let keyStr = getValTypeKey(valType);
+  if (wasm.cellStructs.has(keyStr)) {
+    return wasm.cellStructs[keyStr];
+  }
+  let fields = new Array<WasmField>();
+  fields.push(new WasmField("value", valType, true)); // mutable
+  let name = "Cell_" + keyStr;
+  let st = new WasmStruct(name, fields);
+  wasm.types.push(st);
+  wasm.cellStructs[keyStr] = st;
+  return st;
+};
+
+export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
+  case TypeAliasType as a: typeToValType(wasm, a.target)
+  case BoolLiteralType: new ValTypeI32()
+  case NumLiteralType as num: typeToValType(wasm, baseType(num))
+  case StringLiteralType: {
+    var stringStruct: WasmStruct | null = null;
+    for (let key in wasm.classStructs.keys()) {
+      if (key.startsWith("String_")) {
+        stringStruct = wasm.classStructs[key];
+      }
+    }
+    if (stringStruct != null) {
+      new ValTypeRefNull(stringStruct as WasmStruct)
+    } else {
+      new ValTypeStructRef()
+    }
+  }
+  case F64Type: new ValTypeF64()
+  case F32Type: new ValTypeF32()
+  case I32Type: new ValTypeI32()
+  case U32Type: new ValTypeI32()
+  case I64Type: new ValTypeI64()
+  case U64Type: new ValTypeI64()
+  case BooleanType: new ValTypeI32()
+  case RecordType as rec: {
+    let fields = new Array<WasmField>();
+    for (let pair in rec.properties) {
+       fields.push(new WasmField(pair.key, typeToValType(wasm, pair.value), false));
+    }
+    sortWasmFields(fields);
+    let info_opt = wasm.findRecordDispatch(fields);
+    match (info_opt) {
+      case RecordDispatchInfo as info: new ValTypeRef(info.fatPtrType)
+      case null: {
+        var errStr = "";
+        for (let f in fields) {
+           if (f.name != null) errStr = errStr + (f.name as String) + ", ";
+        }
+        throw new Error("Record fat ptr type not generated during discovery pass! Fields: " + errStr);
+      }
+    }
+  }
+  case TupleType as tup: {
+    let fields = new Array<WasmField>();
+    for (var i = 0; i < tup.elementTypes.length; i += 1) {
+      let t_i = tup.elementTypes[i];
+      fields.push(new WasmField(i32ToString(i), typeToValType(wasm, t_i), false));
+    }
+    let structDef = wasm.getStruct(null, fields);
+    new ValTypeRef(structDef);
+  }
+  case ClassType as ct: {
+    if (ct.name == "array" && ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
+      let elemValType = typeToValType(wasm, (ct.typeArguments as Array<Type>)[0]);
+      return new ValTypeRefNull(wasm.getArray(elemValType, true));
+    }
+    if (ct.name == "ByteArray") {
+      return new ValTypeRefNull(wasm.getByteArrayType());
+    }
+    if (ct.isExtension && ct.onType != null) {
+      return typeToValType(wasm, ct.onType as Type);
+    }
+    if (wasm.classStructs.has(getClassKey(ct))) {
+      new ValTypeRefNull(wasm.classStructs[getClassKey(ct)])
+    } else {
+      throw new Error("Class struct not found for: " + ct.name);
+    }
+  }
+  case InterfaceType as it: {
+    let key = getInterfaceKey(it);
+    if (wasm.interfaceStructs.has(key)) {
+      new ValTypeRefNull(wasm.interfaceStructs[key])
+    } else {
+      throw new Error("Interface fat pointer type not generated during discovery pass! Name: " + it.name);
+    }
+  }
+  case ArrayType as at: {
+    let elemValType = typeToValType(wasm, at.elementType);
+    new ValTypeRefNull(wasm.getArray(elemValType, true))
+  }
+  case ByteArrayType: {
+    new ValTypeRefNull(wasm.getByteArrayType())
+  }
+  case UnionType as ut: {
+    var hasVoid = false;
+    for (let memberType in ut.types) {
+      if (memberType is VoidType) {
+        hasVoid = true;
+      }
+    }
+    if (hasVoid) {
+      new ValTypeVoid()
+    } else {
+      new ValTypeEqRef()
+    }
+  }
+  case VoidType: new ValTypeVoid()
+  case NullType: new ValTypeStructRef()
+  case UnknownType: {
+    throw new Error("Codegen should never see type: " + typeToString(t));
+  }
+  case ErrorType: {
+    throw new Error("Codegen should never see type: " + typeToString(t));
+  }
+  case AnyType: new ValTypeAnyRef()
+  case TypeParameterType: new ValTypeAnyRef()
+  case AnyRefType: new ValTypeAnyRef()
+  case EqRefType: new ValTypeEqRef()
+  case TypeParameterType: new ValTypeAnyRef()
+  case ThisType: new ValTypeAnyRef()
+  case NeverType: {
+    throw new Error("Codegen should never see type: " + typeToString(t));
+  }
+  case HoleType: new ValTypeI32()
+  case FunctionType: {
+    new ValTypeRefNull(getClosureStruct(wasm, t))
+  }
+  case UnionType as ut: {
+    var hasVoid = false;
+    for (let t_i in ut.types) {
+      if (t_i is VoidType) {
+        hasVoid = true;
+      }
+    }
+    if (hasVoid) {
+      new ValTypeVoid()
+    } else {
+      let nonNeverTypes = new Array<Type>();
+      for (let t_i in ut.types) {
+        if (!(t_i is NeverType || t_i is HoleType)) {
+          nonNeverTypes.push(t_i);
+        }
+      }
+      if (nonNeverTypes.length == 0) {
+        new ValTypeVoid()
+      } else if (nonNeverTypes.length < ut.types.length) {
+        if (nonNeverTypes.length == 1) {
+          typeToValType(wasm, nonNeverTypes[0])
+        } else {
+          typeToValType(wasm, new UnionType(nonNeverTypes))
+        }
+      } else {
+        let nonNullTypes = new Array<Type>();
+        for (let t_i in ut.types) {
+          if (!(t_i is NullType)) {
+            nonNullTypes.push(t_i);
+          }
+        }
+        if (nonNullTypes.length == 1) {
+          typeToValType(wasm, nonNullTypes[0])
+        } else {
+          new ValTypeEqRef()
+        }
+      }
+    }
+  }
+  case _: {
+    throw new Error("typeToValType: unsupported type: " + typeToString(t));
+  }
+};
+
+export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: Array<ValType>): void => {
+  if (type is VoidType || type is NeverType || type is HoleType) {
+    return;
+  }
+  if (type is InlineTupleType) {
+    let tupleType = type as InlineTupleType;
+    for (let el in tupleType.elementTypes) {
+      returns.push(typeToValType(wasm, el));
+    }
+    return;
+  }
+  if (type is UnionType) {
+    let unionType = type as UnionType;
+    var hasVoid = false;
+    for (let t in unionType.types) {
+      if (t is VoidType) {
+        hasVoid = true;
+      }
+    }
+    if (hasVoid) {
+      return;
+    }
+    // Find the first inline tuple in the union to get the WASM signature
+    for (let t in unionType.types) {
+      if (t is InlineTupleType) {
+        let tupleType = t as InlineTupleType;
+        for (let el in tupleType.elementTypes) {
+          returns.push(typeToValType(wasm, el));
+        }
+        return;
+      }
+    }
+  }
+  returns.push(typeToValType(wasm, type));
+};

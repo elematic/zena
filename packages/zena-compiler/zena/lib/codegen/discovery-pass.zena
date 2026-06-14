@@ -1,0 +1,1640 @@
+import { 
+  Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern,
+  Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
+  ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
+  ImportDeclaration, ImportSpecifier, ClassDeclaration, InterfaceDeclaration, DeclareFunction,
+  TypeAliasDeclaration, RecordLiteral, MethodDefinition, FieldDefinition,
+  AccessorDeclaration, SetterInfo, SuperInitializer, TypeParameter, MixinDeclaration,
+  Parameter, TypeAnnotation, Decorator, Pattern, MemberExpression, AssignmentExpression, IndexExpression,
+  SymbolPropertyName, TemplateElement, EnumDeclaration
+} from '../ast.zena';
+import { walk } from '../visitor.zena';
+import { RecordType, TupleType } from '../types.zena';
+import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
+import { Program, CompilationUnit } from '../program.zena';
+import { SymbolId, Symbol } from '../scope/symbol.zena';
+import { Error } from 'zena:error';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef } from './wasm.zena';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
+import { analyzeCaptures } from '../analysis/capture.zena';
+import { NodeMap } from '../node-map.zena';
+import { UsageAnalyzer, UsageAnalysisResult } from '../analysis/usage.zena';
+import { Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, InterfaceType, TypeAliasType, U32Type, I64Type, U64Type, ArrayType, NullType, UnknownType, ErrorType, AnyType, AnyRefType, EqRefType, NeverType, HoleType, FieldInfo, MethodInfo, typeToString, ByteArrayType, TypeParameterType, ThisType, UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType} from '../types.zena';
+import { String } from "zena:string";
+import { i32ToString } from "zena:string-convert";
+import { console } from 'zena:console';
+
+import { 
+  WasmModule, WasmFunction, WasmStruct, WasmField, WasmSignature, WasmGlobal, 
+  VTableInit, RecordDispatchInfo 
+} from './wasm-module.zena';
+import { 
+  getClassKey, getInterfaceKey, getSignatureKey, matchOverload, 
+  collectMixinMembers, collectMixinFields, getMemberRootClass 
+} from './codegen-utils.zena';
+import { 
+  typeToValType, getClosureStruct, getCellStruct, getInterfaceMemberSignature, 
+  mapReturnTypeToWasmResults 
+} from './type-mapping.zena';
+
+/**
+ * Traverses a Zena Program's AST to discover all functions, structs, and 
+ * imports that need to be emitted into the WebAssembly module.
+ * Dedupes signatures and assigns Zena Symbols to WasmFunctions.
+ */
+export class DiscoveryPass {
+  program: Program;
+  wasm: WasmModule;
+  usage: UsageAnalysisResult;
+  new(this.program, this.wasm, this.usage);
+  
+  getClassType(node: ClassDeclaration, model: SemanticModel): ClassType | null {
+    let t = model.getNodeType(node);
+    if (t is ClassType) {
+      return t as ClassType;
+    }
+    let sym = model.resolve(node);
+    if (sym != null) {
+      let bt = model.getBindingType(sym);
+      if (bt is ClassType) {
+        return bt as ClassType;
+      }
+    }
+    return null;
+  }
+
+  discoverType(t: Type | null, model: SemanticModel): void {
+     if (t == null) { return; }
+     if (t is RecordType) {
+        let rec = t as RecordType;
+        for (let pair in rec.properties) {
+           this.discoverType(pair.value, model);
+        }
+        let fields = new Array<WasmField>();
+        for (let pair in rec.properties) {
+           fields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
+        }
+        this.wasm.getRecordDispatch(model, fields);
+     } else if (t is TupleType) {
+        let tup = t as TupleType;
+        for (var i = 0; i < tup.elementTypes.length; i += 1) {
+           this.discoverType(tup.elementTypes[i], model);
+        }
+        let fields = new Array<WasmField>();
+        for (var i = 0; i < tup.elementTypes.length; i += 1) {
+           let type = tup.elementTypes[i];
+           fields.push(new WasmField(i32ToString(i), typeToValType(this.wasm, type), false));
+        }
+        this.wasm.getStruct(null, fields);
+     } else if (t is FunctionType) {
+        let ft = t as FunctionType;
+        for (let paramType in ft.parameters) {
+           this.discoverType(paramType, model);
+        }
+        this.discoverType(ft.returnType, model);
+        getClosureStruct(this.wasm, ft);
+     } else if (t is ClassType) {
+        let ct = t as ClassType;
+        for (let pair in ct.members) {
+           if (pair.value is FieldInfo) {
+              this.discoverType(pair.value.type, model);
+           }
+        }
+     } else if (t is ArrayType) {
+        let at = t as ArrayType;
+        this.discoverType(at.elementType, model);
+        let elemValType = typeToValType(this.wasm, at.elementType);
+        this.wasm.getArray(elemValType, true);
+     } else if (t is ByteArrayType) {
+        this.wasm.getByteArrayType();
+     }
+  }
+
+  registerClassMethod(
+      cType: ClassType,
+      cDecl: ClassDeclaration | null,
+      methName: String,
+      methodNode: Node | null,
+      isSynthesizedGetter: boolean,
+      isSynthesizedSetter: boolean,
+      backingFieldName: String | null,
+      model: SemanticModel): void {
+    var realMethName = methName;
+    var methodTypeNode: Type | null = null;
+    if (cType != null) {
+      if (methName == "<constructor>") {
+        methodTypeNode = cType.constructorType;
+      } else {
+        var specificFuncType: FunctionType | null = null;
+        var hasOverloads = false;
+        if (methodNode != null && methodNode is MethodDefinition) {
+          if (cType.members.has(methName)) {
+            let mInfo = cType.members[methName];
+            if (mInfo.type is FunctionType) {
+              let ft = mInfo.type as FunctionType;
+              if (ft.overloads != null) {
+                hasOverloads = true;
+                specificFuncType = matchOverload(model, ft, methodNode as MethodDefinition);
+              }
+            }
+          }
+        }
+        
+        if (hasOverloads && specificFuncType != null) {
+          methodTypeNode = specificFuncType;
+          realMethName = methName + getSignatureKey(specificFuncType as FunctionType);
+        } else if (cType.members.has(methName)) {
+          methodTypeNode = cType.members[methName].type;
+        } else if (methName.startsWith("get#")) {
+          let fieldName = methName.sliceBytes(4, methName.length);
+          if (cType.members.has(fieldName) && cType.members[fieldName] is FieldInfo) {
+            let fi = cType.members[fieldName] as FieldInfo;
+            methodTypeNode = new FunctionType(new Array<Type>(), null, fi.type);
+          }
+        } else if (methName.startsWith("set#")) {
+          let fieldName = methName.sliceBytes(4, methName.length);
+          if (cType.members.has(fieldName) && cType.members[fieldName] is FieldInfo) {
+            let fi = cType.members[fieldName] as FieldInfo;
+            let params = new Array<Type>();
+            params.push(fi.type);
+            methodTypeNode = new FunctionType(params, null, new VoidType());
+          }
+        }
+      }
+    }
+
+    let params = new Array<ValType>();
+    let returns = new Array<ValType>();
+
+    var rootClass = if (methName == "<constructor>") cType else getMemberRootClass(cType, methName);
+
+    var isStatic = false;
+    if (methodNode != null) {
+      let nodeVal = methodNode as Node;
+      if (nodeVal is MethodDefinition) {
+        isStatic = (nodeVal as MethodDefinition).isStatic;
+      } else if (nodeVal is AccessorDeclaration) {
+        isStatic = (nodeVal as AccessorDeclaration).isStatic;
+      } else if (nodeVal is FieldDefinition) {
+        isStatic = (nodeVal as FieldDefinition).isStatic;
+      }
+    }
+
+    if (!isStatic) {
+      if (cType.isExtension && cType.onType != null) {
+        params.push(typeToValType(this.wasm, cType.onType as Type));
+      } else {
+        if (this.wasm.classStructs.has(getClassKey(rootClass))) {
+          params.push(new ValTypeRefNull(this.wasm.classStructs[getClassKey(rootClass)]));
+        } else {
+          params.push(new ValTypeStructRef());
+        }
+      }
+    }
+    if (methodTypeNode is FunctionType) {
+      let fType = methodTypeNode as FunctionType;
+      for (let p in fType.parameters) {
+        params.push(typeToValType(this.wasm, p));
+      }
+      if (methName != "<constructor>") {
+        mapReturnTypeToWasmResults(this.wasm, fType.returnType, returns);
+      }
+    } else {
+      if (methName != "<constructor>") {
+        returns.push(new ValTypeI32());
+      }
+    }
+    
+    let sig = this.wasm.getSignature(params, returns);
+    let wasmFunc = new WasmFunction(sig, methodNode, model);
+
+    if (methodNode != null) {
+      let nodeVal = methodNode as Node;
+      var decs: Array<Decorator> | null = null;
+      if (nodeVal is MethodDefinition) {
+        decs = (nodeVal as MethodDefinition).decorators;
+      } else if (nodeVal is AccessorDeclaration) {
+        decs = (nodeVal as AccessorDeclaration).decorators;
+      } else if (nodeVal is FieldDefinition) {
+        decs = (nodeVal as FieldDefinition).decorators;
+      }
+      
+      if (decs != null) {
+        for (let dec in decs as Array<Decorator>) {
+          if (dec.name == "intrinsic" && dec.args.length == 1) {
+            wasmFunc.intrinsic = dec.args[0].value;
+          }
+        }
+      }
+    }
+
+    wasmFunc.isStatic = isStatic;
+    this.wasm.addFunction(wasmFunc);
+    let cName = if (cDecl != null) (cDecl as ClassDeclaration).name.name else cType.name;
+    wasmFunc.name = cName + "." + realMethName;
+    wasmFunc.methodName = realMethName;
+    wasmFunc.classDecl = cDecl;
+    
+    wasmFunc.classType = cType;
+    if (this.wasm.classStructs.has(getClassKey(cType))) {
+        wasmFunc.structType = this.wasm.classStructs[getClassKey(cType)];
+    }
+
+    if (isSynthesizedGetter && backingFieldName != null) {
+      let st = wasmFunc.structType;
+      if (st != null) {
+        var idx = -1;
+        let backingName = backingFieldName as String;
+        let lookupBackingName = if (backingName.length > 0 && backingName.sliceBytes(0, 1) == "#") {
+          getClassKey(cType) + "::" + backingName
+        } else {
+          backingName
+        };
+        for (var fi = 0; fi < (st as WasmStruct).fields.length; fi += 1) {
+          if ((st as WasmStruct).fields[fi].name == lookupBackingName) {
+            idx = fi;
+          }
+        }
+        wasmFunc.getterStruct = st;
+        wasmFunc.getterFieldIndex = idx;
+      }
+    } else if (isSynthesizedSetter && backingFieldName != null) {
+      let st = wasmFunc.structType;
+      if (st != null) {
+        var idx = -1;
+        let backingName = backingFieldName as String;
+        let lookupBackingName = if (backingName.length > 0 && backingName.sliceBytes(0, 1) == "#") {
+          getClassKey(cType) + "::" + backingName
+        } else {
+          backingName
+        };
+        for (var fi = 0; fi < (st as WasmStruct).fields.length; fi += 1) {
+          if ((st as WasmStruct).fields[fi].name == lookupBackingName) {
+            idx = fi;
+          }
+        }
+        wasmFunc.setterStruct = st;
+        wasmFunc.setterFieldIndex = idx;
+      }
+    }
+  }
+
+  registerWasiInfra(model: SemanticModel): void {
+    if (this.wasm.wasiFdWriteIndex >= 0) return;
+    
+    // 1. Enable memory
+    this.wasm.ensureMemory();
+    
+    // 2. Add signature: (i32, i32, i32, i32) -> i32 for fd_write
+    let fdWriteParams = new Array<ValType>();
+    fdWriteParams.push(new ValTypeI32());
+    fdWriteParams.push(new ValTypeI32());
+    fdWriteParams.push(new ValTypeI32());
+    fdWriteParams.push(new ValTypeI32());
+    let fdWriteReturns = new Array<ValType>();
+    fdWriteReturns.push(new ValTypeI32());
+    let fdWriteSig = this.wasm.getSignature(fdWriteParams, fdWriteReturns);
+    
+    // 3. Create WasmFunction for fd_write import
+    let fdWriteFunc = new WasmFunction(fdWriteSig, null, model);
+    fdWriteFunc.isImport = true;
+    fdWriteFunc.importModule = "wasi_snapshot_preview1";
+    fdWriteFunc.importName = "fd_write";
+    this.wasm.functionImports.push(fdWriteFunc);
+    this.wasm.wasiFdWriteIndex = 1; // dummy placeholder
+    
+    // 4. Register signature: (i32, ref null $String) -> void for wasi_write_string_helper
+    var stringStruct: WasmStruct | null = null;
+    for (let key in this.wasm.classStructs.keys()) {
+      if (key.startsWith("String_")) {
+        stringStruct = this.wasm.classStructs[key];
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("wasi_write_string_helper discovery: String class struct not found!");
+    }
+    
+    let helperParams = new Array<ValType>();
+    helperParams.push(new ValTypeI32());
+    helperParams.push(new ValTypeRefNull(stringStruct as WasmStruct));
+    let helperReturns = new Array<ValType>();
+    let helperSig = this.wasm.getSignature(helperParams, helperReturns);
+    
+    // 5. Create WasmFunction for helper (synthetic, node is null)
+    let helperFunc = new WasmFunction(helperSig, null, model);
+    helperFunc.name = "wasi_write_string_helper";
+    this.wasm.functions.push(helperFunc);
+    this.wasm.wasiWriteStringIndex = 1; // dummy placeholder
+  }
+
+  /**
+   * Run the discovery pass on the program, populating the given WasmModule.
+   */
+  run(): void {
+    // Preliminary Pass: Discover all referenced interface members across all compilation units
+    for (let unit in this.program.units) {
+      let mod = unit.ast;
+      let moduleModel = unit.model;
+      walk(mod as Node, (n: Node) => true, (n: Node) => {
+        if (n is MemberExpression) {
+          let mem = n as MemberExpression;
+          let objType = moduleModel.getNodeType(mem.object);
+          if (objType is InterfaceType) {
+            let it = objType as InterfaceType;
+            let iName = getInterfaceKey(it);
+            let propName = mem.property.name;
+            let getterName = "get#" + propName;
+            let setterName = "set#" + propName;
+            if (it.members.has(propName)) {
+              let member = it.members[propName];
+              if (member is MethodInfo) {
+                this.wasm.usedInterfaceMembers[iName + "::" + propName] = true;
+              } else if (member is FieldInfo) {
+                this.wasm.usedInterfaceMembers[iName + "::get#" + propName] = true;
+              }
+            }
+            if (it.members.has(getterName)) {
+              this.wasm.usedInterfaceMembers[iName + "::" + getterName] = true;
+            }
+            if (it.members.has(setterName)) {
+              this.wasm.usedInterfaceMembers[iName + "::" + setterName] = true;
+            }
+          }
+        } else if (n is IndexExpression) {
+          let idxExpr = n as IndexExpression;
+          let objType = moduleModel.getNodeType(idxExpr.object);
+          if (objType is InterfaceType) {
+            let it = objType as InterfaceType;
+            let iName = getInterfaceKey(it);
+            let targetName = "[]";
+            if (it.members.has(targetName)) {
+              this.wasm.usedInterfaceMembers[iName + "::[]"] = true;
+            }
+          }
+        } else if (n is AssignmentExpression) {
+          let assign = n as AssignmentExpression;
+          if (assign.left is MemberExpression) {
+            let mem = assign.left as MemberExpression;
+            let objType = moduleModel.getNodeType(mem.object);
+            if (objType is InterfaceType) {
+              let it = objType as InterfaceType;
+              let iName = getInterfaceKey(it);
+              let propName = mem.property.name;
+              let setterName = "set#" + propName;
+              if (it.members.has(propName)) {
+                let member = it.members[propName];
+                if (member is FieldInfo) {
+                  let fi = member as FieldInfo;
+                  if (fi.isMutable) {
+                    this.wasm.usedInterfaceMembers[iName + "::set#" + propName] = true;
+                  }
+                }
+              }
+              if (it.members.has(setterName)) {
+                this.wasm.usedInterfaceMembers[iName + "::" + setterName] = true;
+              }
+            }
+          } else if (assign.left is IndexExpression) {
+            let idxExpr = assign.left as IndexExpression;
+            let objType = moduleModel.getNodeType(idxExpr.object);
+            if (objType is InterfaceType) {
+              let it = objType as InterfaceType;
+              let iName = getInterfaceKey(it);
+              let targetName = "[]=";
+              if (it.members.has(targetName)) {
+                this.wasm.usedInterfaceMembers[iName + "::[]="] = true;
+              }
+            }
+          }
+        }
+      });
+    }
+
+    for (let unit in this.program.units) {
+      let mod = unit.ast;
+      let moduleModel = unit.model;
+      
+      // Pass 0: Pre-register empty WasmStructs for all nominal classes to break cyclic dependencies
+      walk(mod as Node, (n: Node) => true, (n: Node) => {
+        if (n is ClassDeclaration) {
+          let classDecl = n as ClassDeclaration;
+          let classType = this.getClassType(classDecl, moduleModel);
+          if (classType is ClassType) {
+            let cType = classType as ClassType;
+            if (cType.isExtension) { return; }
+            let cKey = getClassKey(cType);
+            if (!this.wasm.classStructs.has(cKey)) {
+              let emptyStruct = new WasmStruct(cType.name, new Array<WasmField>());
+              emptyStruct.classType = cType;
+              this.wasm.types.push(emptyStruct);
+              this.wasm.classStructs[cKey] = emptyStruct;
+              let emptyVTableStruct = new WasmStruct(cType.name + "_VTable", new Array<WasmField>());
+              emptyVTableStruct.classType = cType;
+              this.wasm.types.push(emptyVTableStruct);
+              this.wasm.classVTableStructs[cKey] = emptyVTableStruct;
+            }
+            if (cType.sealedVariants != null) {
+              let variants = cType.sealedVariants as Array<ClassType>;
+              for (let vType in variants) {
+                if (vType == null) { continue; }
+                let vKey = getClassKey(vType);
+                if (!this.wasm.classStructs.has(vKey)) {
+                  let emptyStruct = new WasmStruct(vType.name, new Array<WasmField>());
+                  emptyStruct.classType = vType;
+                  this.wasm.types.push(emptyStruct);
+                  this.wasm.classStructs[vKey] = emptyStruct;
+                  let emptyVTableStruct = new WasmStruct(vType.name + "_VTable", new Array<WasmField>());
+                  emptyVTableStruct.classType = vType;
+                  this.wasm.types.push(emptyVTableStruct);
+                  this.wasm.classVTableStructs[vKey] = emptyVTableStruct;
+                }
+              }
+            }
+          }
+        } else if (n is InterfaceDeclaration) {
+          let ifaceDecl = n as InterfaceDeclaration;
+          let ifaceType = moduleModel.getNodeType(ifaceDecl);
+          if (ifaceType is InterfaceType) {
+            let it = ifaceType as InterfaceType;
+            let emptyVTableStruct = new WasmStruct(it.name + "_VTable", new Array<WasmField>());
+            this.wasm.types.push(emptyVTableStruct);
+            this.wasm.interfaceVTableStructs[getInterfaceKey(it)] = emptyVTableStruct;
+
+            let fatPtrFields = new Array<WasmField>();
+            fatPtrFields.push(new WasmField("instance", new ValTypeStructRef(), false));
+            fatPtrFields.push(new WasmField("vtable", new ValTypeRef(emptyVTableStruct), false));
+            let emptyStruct = new WasmStruct(it.name + "_FatPtr", fatPtrFields);
+            this.wasm.types.push(emptyStruct);
+            this.wasm.interfaceStructs[getInterfaceKey(it)] = emptyStruct;
+          }
+        }
+      });
+      
+      // Pass 0.5: Link superStruct for inheritance and figure out vtable array
+      walk(mod as Node, (n: Node) => true, (n: Node) => {
+        if (n is ClassDeclaration) {
+          let classDecl = n as ClassDeclaration;
+          let classType = this.getClassType(classDecl, moduleModel);
+          if (classType is ClassType) {
+            let cType = classType as ClassType;
+            if (cType.isExtension) { return; }
+
+            let linkSuperAndVT = (ct: ClassType) => {
+              if (ct.superType != null) {
+                let superCt = ct.superType as ClassType;
+                let cKey = getClassKey(ct);
+                let superKey = getClassKey(superCt);
+                
+                if (!this.wasm.classStructs.has(cKey) || !this.wasm.classStructs.has(superKey)) {
+                  console.log("Error: linkSuperAndVT missing struct for cKey: " + cKey + " or superKey: " + superKey);
+                  return;
+                }
+                
+                let st = this.wasm.classStructs[cKey];
+                st.superStruct = this.wasm.classStructs[superKey];
+                
+                if (this.wasm.classVTableStructs.has(cKey) && this.wasm.classVTableStructs.has(superKey)) {
+                  let vst = this.wasm.classVTableStructs[cKey];
+                  vst.superStruct = this.wasm.classVTableStructs[superKey];
+                }
+                
+                // Inherit vtable slots from supertype
+                if (superCt.vtable != null) {
+                  for (let methName in superCt.vtable) {
+                    var hasMeth = false;
+                    for (let existing in ct.vtable) {
+                      if (existing == methName) { hasMeth = true; }
+                    }
+                    if (!hasMeth) {
+                      ct.vtable.push(methName);
+                    }
+                  }
+                }
+              }
+            };
+
+            linkSuperAndVT(cType);
+
+            // Add new methods to vtable slots
+            let mixinMembers = new Array<Node>();
+            let seenMixins = new HashMap<String, boolean>();
+            collectMixinMembers(moduleModel, classDecl.mixins, mixinMembers, seenMixins);
+
+            let allMembers = new Array<Node>();
+            for (let ms in classDecl.body) {
+              allMembers.push(ms);
+            }
+            for (let ms in mixinMembers) {
+              allMembers.push(ms);
+            }
+
+            for (let ms in allMembers) {
+              if (ms is MethodDefinition) {
+                let mDef = ms as MethodDefinition;
+                if (mDef.isStatic) { continue; }
+                let methName = match (mDef.name) {
+                  case Identifier {name}: name
+                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                    case Identifier {name}: name
+                    case MemberExpression {property}: property.name
+                    case _: "<symbol>"
+                  }
+                  case _: ""
+                };
+                if (methName != "") {
+                  var vtableMethName = methName;
+                  if (cType.members.has(methName)) {
+                    let mInfo = cType.members[methName];
+                    if (mInfo.type is FunctionType) {
+                      let ft = mInfo.type as FunctionType;
+                      let specificType = matchOverload(moduleModel, ft, mDef);
+                      if (specificType != null) {
+                        vtableMethName = methName + getSignatureKey(specificType as FunctionType);
+                      }
+                    }
+                  }
+                  
+                  var found = false;
+                  for (let existing in cType.vtable) {
+                    if (existing == vtableMethName) { found = true; }
+                  }
+                  if (!found && methName != "<constructor>") {
+                    cType.vtable.push(vtableMethName);
+                  }
+                }
+              } else if (ms is AccessorDeclaration) {
+                let acc = ms as AccessorDeclaration;
+                if (acc.isStatic) { continue; }
+                let accName = match (acc.name) {
+                  case Identifier {name}: name
+                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                    case Identifier {name}: name
+                    case MemberExpression {property}: property.name
+                    case _: "<symbol>"
+                  }
+                  case _: ""
+                };
+                if (accName != "") {
+                  if (acc.getter != null) {
+                    let getterName = "get#" + accName;
+                    var found = false;
+                    for (let existing in cType.vtable) {
+                      if (existing == getterName) {
+                        found = true;
+                        break;
+                      }
+                    }
+                    if (!found) {
+                      cType.vtable.push(getterName);
+                    }
+                  }
+                  if (acc.setter != null) {
+                    let setterName = "set#" + accName;
+                    var found = false;
+                    for (let existing in cType.vtable) {
+                      if (existing == setterName) {
+                        found = true;
+                        break;
+                      }
+                    }
+                    if (!found) {
+                      cType.vtable.push(setterName);
+                    }
+                  }
+                }
+              } else if (ms is FieldDefinition) {
+                let fd = ms as FieldDefinition;
+                if (fd.isStatic) { continue; }
+                let fieldName = match (fd.name) {
+                  case Identifier {name}: name
+                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                    case Identifier {name}: name
+                    case MemberExpression {property}: property.name
+                    case _: "<symbol>"
+                  }
+                  case _: ""
+                };
+                if (fd.setterName != null && fieldName != "") {
+                  let getterName = "get#" + fieldName;
+                  var found = false;
+                  for (let existing in cType.vtable) {
+                    if (existing == getterName) {
+                      found = true;
+                      break;
+                    }
+                  }
+                  if (!found) {
+                    cType.vtable.push(getterName);
+                  }
+                }
+                if (fd.isAbstract && fieldName != "") {
+                  let getterName = "get#" + fieldName;
+                  var found = false;
+                  for (let existing in cType.vtable) {
+                    if (existing == getterName) {
+                      found = true;
+                      break;
+                    }
+                  }
+                  if (!found) {
+                    cType.vtable.push(getterName);
+                  }
+                  if (fd.mutability != null && fd.mutability == "var") {
+                    let setterName = "set#" + fieldName;
+                    var foundS = false;
+                    for (let existing in cType.vtable) {
+                      if (existing == setterName) {
+                        foundS = true;
+                        break;
+                      }
+                    }
+                    if (!foundS) {
+                      cType.vtable.push(setterName);
+                    }
+                  }
+                }
+              }
+            }
+
+            if (cType.sealedVariants != null) {
+              let variants = cType.sealedVariants as Array<ClassType>;
+              for (let vType in variants) {
+                if (vType == null) { continue; }
+                let vKey = getClassKey(vType);
+                if (!this.wasm.classStructs.has(vKey)) {
+                  console.log("Error: classStructs missing key: " + vKey + " for variant of sealed class " + cType.name);
+                  continue;
+                }
+                let vst = this.wasm.classStructs[vKey];
+                if (vst.superStruct == null) {
+                  linkSuperAndVT(vType);
+                }
+              }
+            }
+          }
+        }
+      });
+      
+      // First, discover any record types used in any node and register their Structs
+      walk(mod as Node, (n: Node) => true, (n: Node) => {
+        let nodeType = moduleModel.getNodeType(n);
+        this.discoverType(nodeType, moduleModel);
+        
+        if (n is StringLiteral) {
+          let strLit = n as StringLiteral;
+          this.wasm.getStringLiteralDataIndex(strLit.value);
+        }
+        
+        if (n is TemplateElement) {
+          let tmplEl = n as TemplateElement;
+          this.wasm.getStringLiteralDataIndex(tmplEl.cooked);
+        }
+        
+        if (n is Expression) {
+          let expr = n as Expression;
+          let adaptation = moduleModel.getRecordAdaptation(expr);
+          if (adaptation != null) {
+            this.discoverType(adaptation.target, moduleModel);
+            
+            let inFields = new Array<WasmField>();
+            for (let pair in adaptation.source.properties) {
+              inFields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
+            }
+            let outFields = new Array<WasmField>();
+            for (let pair in adaptation.target.properties) {
+              outFields.push(new WasmField(pair.key, typeToValType(this.wasm, pair.value), false));
+            }
+            this.wasm.getAdaptedRecordDispatch(moduleModel, inFields, outFields);
+          }
+          
+          let ifaceAdaptation = moduleModel.getInterfaceAdaptation(expr);
+          if (ifaceAdaptation != null) {
+            let adapt = ifaceAdaptation as InterfaceAdaptation;
+            let cName = getClassKey(adapt.source);
+            let iName = getInterfaceKey(adapt.target);
+            this.wasm.usedInterfaceAdaptations[cName + "::" + iName] = true;
+          }
+        } else if (n is ClassDeclaration) {
+          // Defer populating to Pass 1 statement loop
+        } else if (n is InterfaceDeclaration) {
+          let ifaceDecl = n as InterfaceDeclaration;
+          let ifaceType = moduleModel.getNodeType(ifaceDecl);
+          if (ifaceType is InterfaceType) {
+            let it = ifaceType as InterfaceType;
+            let iName = getInterfaceKey(it);
+            let vst = this.wasm.interfaceVTableStructs[iName];
+            let keys = it.members.keys();
+            while (let (true, key) = keys.next()) {
+              let member = it.members[key];
+              match (member) {
+                case FieldInfo as fi: {
+                  let getterKey = iName + "::get#" + key;
+                  if (this.wasm.usedInterfaceMembers.has(getterKey)) {
+                    let sig = getInterfaceMemberSignature(this.wasm, it, "get#" + key);
+                    vst.fields.push(new WasmField("get#" + key, new ValTypeRef(sig), false));
+                  }
+                  if (fi.isMutable) {
+                    let setterKey = iName + "::set#" + key;
+                    if (this.wasm.usedInterfaceMembers.has(setterKey)) {
+                      let sig = getInterfaceMemberSignature(this.wasm, it, "set#" + key);
+                      vst.fields.push(new WasmField("set#" + key, new ValTypeRef(sig), false));
+                    }
+                  }
+                }
+                case MethodInfo as mi: {
+                  let methodKey = iName + "::" + key;
+                  if (this.wasm.usedInterfaceMembers.has(methodKey)) {
+                    let sig = getInterfaceMemberSignature(this.wasm, it, key);
+                    vst.fields.push(new WasmField(key, new ValTypeRef(sig), false));
+                  }
+                }
+                case _: {}
+              }
+            }
+          }
+        }
+      });
+      
+      for (let stmt in mod.body) {
+        if (stmt == null) {
+          continue;
+        }
+        match (stmt) {
+          case VariableDeclaration: {
+            let varDecl = stmt as VariableDeclaration;
+            var isNeeded = false;
+            
+            if (varDecl.exported) {
+              isNeeded = true;
+            } else if (varDecl.pattern is IdentifierPattern) {
+              if (this.usage.isUsed(varDecl.pattern as Node)) {
+                isNeeded = true;
+              }
+            }
+            
+            if (this.usage.isUsed(stmt as Node)) {
+              isNeeded = true;
+            }
+
+            if (isNeeded) {
+              let varDecl = stmt as VariableDeclaration;
+              if (varDecl.init is FunctionExpression) {
+                let funcExpr = varDecl.init as FunctionExpression;
+                let funcTypeNode = moduleModel.getNodeType(funcExpr);
+                let params = new Array<ValType>();
+                let returns = new Array<ValType>();
+                
+                if (funcTypeNode is FunctionType) {
+                  let fType = funcTypeNode as FunctionType;
+                  for (let p in fType.parameters) {
+                    params.push(typeToValType(this.wasm, p));
+                  }
+                  mapReturnTypeToWasmResults(this.wasm, fType.returnType, returns);
+                } else {
+                  returns.push(new ValTypeI32());
+                }
+                
+                let sig = this.wasm.getSignature(params, returns);
+                let wasmFunc = new WasmFunction(sig, funcExpr, moduleModel);
+                this.wasm.addFunction(wasmFunc);
+                
+                if (varDecl.pattern is IdentifierPattern) {
+                  let ident = varDecl.pattern as IdentifierPattern;
+                  wasmFunc.name = ident.name;
+                  let sym = moduleModel.resolveDeclaration(ident);
+                  if (sym != null) {
+                    this.wasm.functionMap[sym.id] = wasmFunc;
+                    if (varDecl.exported) {
+                      this.wasm.exportMap[ident.name] = wasmFunc;
+                    }
+                  }
+                }
+              } else {
+                // Global Variable
+                if (varDecl.pattern is IdentifierPattern && varDecl.init != null) {
+                  let ident = varDecl.pattern as IdentifierPattern;
+                  let expr = varDecl.init as Expression;
+                  let nodeType = moduleModel.getNodeType(ident);
+                  var isMutable = true;
+                  
+                  var vType = typeToValType(this.wasm, nodeType);
+
+                  let sym = moduleModel.resolveDeclaration(ident);
+                  if (sym != null) {
+                    let name = ident.name + "_" + i32ToString(sym.id as i32);
+                    let wasmGlobal = new WasmGlobal(name, ident.name, vType, isMutable, expr, null, moduleModel);
+                    this.wasm.globals.push(wasmGlobal);
+                    this.wasm.globalMap[sym.id] = wasmGlobal;
+                    
+                    if (varDecl.exported) {
+                      this.wasm.exportGlobalMap[ident.name] = wasmGlobal;
+                    }
+                  }
+                }
+              }
+            }
+          }
+          case ImportDeclaration: {}
+          case ClassDeclaration: {
+            let classDecl = stmt as ClassDeclaration;
+            let classType = this.getClassType(classDecl, moduleModel) as ClassType;
+
+            // Register static fields as globals
+            for (let member in classDecl.body) {
+              if (member is FieldDefinition) {
+                let fd = member as FieldDefinition;
+                if (fd.isStatic) {
+                  let fieldName = match (fd.name) {
+                    case Identifier {name}: name
+                    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                      case Identifier {name}: name
+                      case MemberExpression {property}: property.name
+                      case _: "<symbol>"
+                    }
+                    case _: ""
+                  };
+                  if (fieldName != "") {
+                    let fType = if (classType != null && (classType as ClassType).members.has(fieldName)) {
+                      (classType as ClassType).members[fieldName].type
+                    } else {
+                      moduleModel.getNodeType(fd)
+                    };
+                    let vType = typeToValType(this.wasm, fType);
+                    let name = classDecl.name.name + "_" + fieldName;
+                    let initExp = if (fd.value != null) { fd.value as Expression } else { null as Expression };
+                    let wasmGlobal = new WasmGlobal(name, fieldName, vType, true, initExp, null, moduleModel);
+                    this.wasm.globals.push(wasmGlobal);
+                  }
+                }
+              }
+            }
+
+            let registerClassMethod = (
+                cType: ClassType,
+                cDecl: ClassDeclaration | null,
+                methName: String,
+                methodNode: Node | null,
+                isSynthesizedGetter: boolean,
+                isSynthesizedSetter: boolean,
+                backingFieldName: String | null) => {
+              this.registerClassMethod(cType, cDecl, methName, methodNode, isSynthesizedGetter, isSynthesizedSetter, backingFieldName, moduleModel);
+            };
+
+            let populateClassStructAndMethods = (ct: ClassType, cd: ClassDeclaration | null) => {
+              if (ct.isCaseClass) {
+                if (!ct.members.has("==")) {
+                  let eqParams = new Array<Type>();
+                  eqParams.push(ct);
+                  let eqNames = new Array<String>();
+                  eqNames.push("other");
+                  ct.members["=="] = new MethodInfo(new FunctionType(eqParams, eqNames, new BooleanType()), false, false, false, false);
+                }
+                var hasEqV = false;
+                for (let existing in ct.vtable) {
+                  if (existing == "==") { hasEqV = true; }
+                }
+                if (!hasEqV) {
+                  ct.vtable.push("==");
+                }
+
+                if (!ct.members.has("hashCode")) {
+                  ct.members["hashCode"] = new MethodInfo(new FunctionType(new Array<Type>(), null, new I32Type()), false, false, false, false);
+                }
+                var hasHashV = false;
+                for (let existing in ct.vtable) {
+                  if (existing == "hashCode") { hasHashV = true; }
+                }
+                if (!hasHashV) {
+                  ct.vtable.push("hashCode");
+                }
+              }
+
+              let vst = this.wasm.classVTableStructs[getClassKey(ct)];
+              if (vst.fields.length == 0) {
+                for (let methName in ct.vtable) {
+                  vst.fields.push(new WasmField(methName, new ValTypeFuncRef(), false));
+                }
+              }
+
+              let st = this.wasm.classStructs[getClassKey(ct)];
+              if (st.fields.length == 0) {
+                let fields = new Array<WasmField>();
+                if (ct.superType != null) {
+                  let superKey = getClassKey(ct.superType as ClassType);
+                  let superSt = this.wasm.classStructs[superKey];
+                  for (let f in superSt.fields) {
+                    fields.push(f);
+                  }
+                } else {
+                  var rootVst = vst;
+                  while (rootVst.superStruct != null) {
+                    rootVst = rootVst.superStruct as WasmStruct;
+                  }
+                  fields.push(new WasmField("<vtable>", new ValTypeRefNull(rootVst), true));
+                }
+
+                let isStaticField = (name: String): boolean => {
+                  if (cd == null) return false;
+                  for (let ms in (cd as ClassDeclaration).body) {
+                    if (ms is FieldDefinition) {
+                      let fd = ms as FieldDefinition;
+                      let fieldName = match (fd.name) {
+                        case Identifier {name}: name
+                        case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                          case Identifier {name}: name
+                          case MemberExpression {property}: property.name
+                          case _: "<symbol>"
+                        }
+                        case _: ""
+                      };
+                      if (fieldName == name) {
+                        return fd.isStatic;
+                      }
+                    }
+                  }
+                  return false;
+                };
+
+                for (let pair in ct.members) {
+                  if (pair.value is MethodInfo) {
+                    continue;
+                  }
+                  if (pair.value.isAbstract) {
+                    continue;
+                  }
+                  if (isStaticField(pair.key)) {
+                    continue;
+                  }
+                  var isInherited = false;
+                  if (ct.superType != null) {
+                    let superKey = getClassKey(ct.superType as ClassType);
+                    let superSt = this.wasm.classStructs[superKey];
+                    for (let sf in superSt.fields) {
+                      if (sf.name == pair.key) {
+                        isInherited = true;
+                      }
+                    }
+                  }
+                  if (!isInherited) {
+                    let fName = if (pair.key.length > 0 && pair.key.sliceBytes(0, 1) == "#") {
+                      getClassKey(ct) + "::" + pair.key
+                    } else {
+                      pair.key
+                    };
+                    fields.push(new WasmField(fName, typeToValType(this.wasm, pair.value.type), true));
+                  }
+                }
+                for (let f in fields) {
+                  st.fields.push(f);
+                }
+              }
+
+              if (ct.isCaseClass) {
+                var hasCtor = false;
+                for (let f in this.wasm.functions) {
+                  if (f.classType != null && (f.classType as ClassType).id == ct.id && f.methodName != null && (f.methodName as String) == "<constructor>") {
+                    hasCtor = true;
+                    break;
+                  }
+                }
+                if (!hasCtor) {
+                  registerClassMethod(ct, cd, "<constructor>", null, false, false, null);
+                }
+
+                var hasEq = false;
+                for (let f in this.wasm.functions) {
+                  if (f.classType != null && (f.classType as ClassType).id == ct.id && f.methodName != null && (f.methodName as String) == "==") {
+                    hasEq = true;
+                    break;
+                  }
+                }
+                if (!hasEq) {
+                  registerClassMethod(ct, cd, "==", null, false, false, null);
+                  let eqFunc = this.wasm.functions[this.wasm.functions.length - 1];
+                  eqFunc.isCaseClassEq = true;
+                }
+
+                var hasHash = false;
+                for (let f in this.wasm.functions) {
+                  if (f.classType != null && (f.classType as ClassType).id == ct.id && f.methodName != null && (f.methodName as String) == "hashCode") {
+                    hasHash = true;
+                    break;
+                  }
+                }
+                if (!hasHash) {
+                  registerClassMethod(ct, cd, "hashCode", null, false, false, null);
+                  let hashFunc = this.wasm.functions[this.wasm.functions.length - 1];
+                  hashFunc.isCaseClassHash = true;
+                }
+              }
+            };
+
+            if (!classType.isExtension) {
+              populateClassStructAndMethods(classType, classDecl);
+              if (classType.sealedVariants != null) {
+                let variants = classType.sealedVariants as Array<ClassType>;
+                for (let vType in variants) {
+                  if (vType == null) { continue; }
+                  populateClassStructAndMethods(vType, null);
+                }
+              }
+            }
+
+            let mixinMembers = new Array<Node>();
+            let seenMixins = new HashMap<String, boolean>();
+            collectMixinMembers(moduleModel, classDecl.mixins, mixinMembers, seenMixins);
+
+            let allMembers = new Array<Node>();
+            for (let ms in classDecl.body) {
+              allMembers.push(ms);
+            }
+            for (let ms in mixinMembers) {
+              allMembers.push(ms);
+            }
+
+            for (let member in allMembers) {
+              if (member is MethodDefinition) {
+                let method = member as MethodDefinition;
+                if (method.isAbstract) { continue; }
+                 let methName = match(method.name) {
+                  case Identifier {name}: name
+                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                    case Identifier {name}: name
+                    case MemberExpression {property}: property.name
+                    case _: "<symbol>"
+                  }
+                  case _: "<unknown>"
+                };
+                registerClassMethod(classType, classDecl, methName, method as Node, false, false, null);
+              } else if (member is AccessorDeclaration) {
+                let acc = member as AccessorDeclaration;
+                let accName = match(acc.name) {
+                  case Identifier {name}: name
+                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                    case Identifier {name}: name
+                    case MemberExpression {property}: property.name
+                    case _: "<symbol>"
+                  }
+                  case _: "<unknown>"
+                };
+                if (acc.getter != null) {
+                  registerClassMethod(classType, classDecl, "get#" + accName, acc as Node, false, false, null);
+                }
+                if (acc.setter != null) {
+                  registerClassMethod(classType, classDecl, "set#" + accName, acc.setter as Node, false, false, null);
+                }
+              } else if (member is FieldDefinition) {
+                let fd = member as FieldDefinition;
+                let fieldName = match (fd.name) {
+                  case Identifier {name}: name
+                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                    case Identifier {name}: name
+                    case MemberExpression {property}: property.name
+                    case _: "<symbol>"
+                  }
+                  case _: ""
+                };
+                if (fieldName != "") {
+                  if (fd.setterName != null) {
+                    let backingName = match(fd.setterName as Node) {
+                      case Identifier {name}: name
+                      case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                        case Identifier {name}: name
+                        case MemberExpression {property}: property.name
+                        case _: "<symbol>"
+                      }
+                      case _: fieldName
+                    };
+                    registerClassMethod(classType, classDecl, "get#" + fieldName, null, true, false, backingName);
+                  } else if (fd.isDeclare) {
+                    registerClassMethod(classType, classDecl, "get#" + fieldName, fd as Node, true, false, null);
+                  }
+                }
+              }
+            }
+
+            if (!classType.isExtension) {
+              for (let iface in classType.implementsList) {
+                let it = iface as InterfaceType;
+                let iName = getInterfaceKey(it);
+                let cName = getClassKey(classType);
+                if (this.wasm.usedInterfaceAdaptations.has(cName + "::" + iName)) {
+                  let keys = it.members.keys();
+                  while (let (true, key) = keys.next()) {
+                    let member = it.members[key];
+                    if (member is FieldInfo) {
+                      let fi = member as FieldInfo;
+                      let getterName = "get#" + key;
+                      if (this.wasm.usedInterfaceMembers.has(iName + "::" + getterName)) {
+                        var hasGetter = false;
+                        for (let f in this.wasm.functions) {
+                          if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName != null && (f.methodName as String) == getterName) {
+                            hasGetter = true;
+                          }
+                        }
+                        if (!hasGetter) {
+                          registerClassMethod(classType, classDecl, getterName, null, true, false, key);
+                        }
+                      }
+                      
+                      if (fi.isMutable) {
+                        let setterName = "set#" + key;
+                        if (this.wasm.usedInterfaceMembers.has(iName + "::" + setterName)) {
+                          var hasSetter = false;
+                          for (let f in this.wasm.functions) {
+                            if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName != null && (f.methodName as String) == setterName) {
+                              hasSetter = true;
+                            }
+                          }
+                          if (!hasSetter) {
+                            registerClassMethod(classType, classDecl, setterName, null, false, true, key);
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            var hasConstructor = false;
+            for (let member in classDecl.body) {
+              if (member is MethodDefinition) {
+                let method = member as MethodDefinition;
+                let methName = match(method.name) {
+                  case Identifier {name}: name
+                  case _: "<unknown>"
+                };
+                if (methName == "<constructor>") {
+                  hasConstructor = true;
+                }
+              }
+            }
+
+            if (!hasConstructor && classType != null && !(classType as ClassType).isExtension && classDecl.caseParams == null) {
+              let cType = classType as ClassType;
+              let synthParams = new Array<Parameter>();
+              let superInitArgs = new Array<Expression>();
+              
+              if (cType.superType != null) {
+                let st = cType.superType as ClassType;
+                if (st.constructorType != null) {
+                  let superCtor = st.constructorType as FunctionType;
+                  var pi = 0;
+                  while (pi < superCtor.parameters.length) {
+                    var pName = "p" + i32ToString(pi);
+                    if (superCtor.parameterNames != null) {
+                      let pNames = superCtor.parameterNames as Array<String>;
+                      if (pNames.length > pi) {
+                        pName = pNames[pi];
+                      }
+                    }
+                    
+                    let paramIdent = new Identifier(pName, classDecl.name.loc);
+                    var pPattern: Pattern | null = null;
+                    var pTypeAnno: TypeAnnotation | null = null;
+                    var pDefValue: Expression | null = null;
+                    let synthParam = new Parameter(
+                      paramIdent,
+                      pPattern,
+                      pTypeAnno,
+                      false,
+                      pDefValue,
+                      false,
+                      classDecl.name.loc
+                    );
+                    synthParams.push(synthParam);
+                    
+                    let argExpr = new Identifier(pName, classDecl.name.loc) as Expression;
+                    superInitArgs.push(argExpr);
+                    
+                    pi = pi + 1;
+                  }
+                }
+              }
+              
+              var superInit: SuperInitializer | null = null;
+              if (cType.superType != null) {
+                superInit = new SuperInitializer(superInitArgs, classDecl.name.loc);
+              }
+              
+              var typeParams: Array<TypeParameter> | null = null;
+              var returnType: TypeAnnotation | null = null;
+              var initList: Array<Node> | null = null;
+              
+              let syntheticDecorator = new Decorator("synthetic_constructor", new Array<StringLiteral>(), classDecl.name.loc);
+              let synthDecorators = new Array<Decorator>();
+              synthDecorators.push(syntheticDecorator);
+              
+              let synthCtor = new MethodDefinition(
+                new Identifier("<constructor>", classDecl.name.loc),
+                typeParams,
+                synthParams,
+                returnType,
+                new BlockStatement(new Array<Statement>(), classDecl.name.loc),
+                initList,
+                superInit,
+                false, // isFinal
+                false, // isAbstract
+                false, // isStatic
+                false, // isDeclare
+                synthDecorators,
+                classDecl.name.loc
+              );
+              
+              registerClassMethod(cType, classDecl, "<constructor>", synthCtor as Node, false, false, null);
+            }
+          }
+          case DeclareFunction: {
+            let decl = stmt as DeclareFunction;
+            let sym = moduleModel.resolveDeclaration(decl);
+            if (sym != null) {
+              for (let dec in decl.decorators) {
+                if (dec.name == 'intrinsic') {
+                  if (dec.args.length == 1) {
+                    let intrinsicName = dec.args[0].value;
+                    this.wasm.intrinsics[sym.id] = intrinsicName;
+                    if (intrinsicName == "wasi_write_string") {
+                      this.registerWasiInfra(moduleModel);
+                    }
+                  } else {
+                    throw new Error("Intrinsic decorator must have exactly one argument");
+                  }
+                } else if (dec.name == 'external') {
+                  if (dec.args.length == 2) {
+                     let moduleName = dec.args[0].value;
+                     let exportName = dec.args[1].value;
+                     let funcType = moduleModel.getNodeType(decl) as FunctionType;
+                     let params = new Array<ValType>();
+                     for (let pt in funcType.parameters) {
+                       params.push(typeToValType(this.wasm, pt));
+                     }
+                     let returns = new Array<ValType>();
+                     mapReturnTypeToWasmResults(this.wasm, funcType.returnType, returns);
+                     let sig = this.wasm.getSignature(params, returns);
+                     let wasmFunc = new WasmFunction(sig, decl, moduleModel);
+                     wasmFunc.isImport = true;
+                     wasmFunc.importModule = moduleName;
+                     wasmFunc.importName = exportName;
+                     this.wasm.functionImports.push(wasmFunc);
+                     this.wasm.functionMap[sym.id] = wasmFunc;
+                  } else {
+                    throw new Error("External decorator must have exactly two arguments");
+                  }
+                }
+              }
+            }
+          }
+          case TypeAliasDeclaration: {}
+          // TODO: Divergence from design doc. Currently we don't emit a global
+          // struct for the enum namespace, and instead we only constant-fold
+          // MemberExpressions. We should converge either by emitting the struct
+          // here, or updating the language to completely erase Enum namespaces
+          // at runtime.
+          case EnumDeclaration: {}
+          case _: {}
+        }
+      }
+    }
+
+    // Pass 1.1: Synthesize physical field getters/setters for virtual/inherited slots
+    for (let cPair in this.wasm.classStructs) {
+      let cName = cPair.key;
+      let cStruct = cPair.value;
+      if (cStruct.classType != null) {
+        let cType = cStruct.classType as ClassType;
+        for (let methName in cType.vtable) {
+          if (methName.startsWith("get#")) {
+            let fieldName = methName.sliceBytes(4, methName.length);
+            var hasPhysical = false;
+            var backingName = "";
+            let lookupName = fieldName;
+            let lookupPrivateName = cName + "::" + fieldName;
+            for (let f in cStruct.fields) {
+              if (f.name != null) {
+                let fname = f.name as String;
+                if (fname == lookupName) {
+                  hasPhysical = true;
+                  backingName = lookupName;
+                } else if (fname == lookupPrivateName) {
+                  hasPhysical = true;
+                  backingName = lookupName;
+                } else if (fname.endsWith("::" + fieldName)) {
+                  hasPhysical = true;
+                  backingName = fieldName;
+                }
+              }
+            }
+            if (hasPhysical) {
+              var hasGetter = false;
+              for (let f in this.wasm.functions) {
+                if (f.classType != null && (f.classType as ClassType).id == cType.id && f.methodName != null && (f.methodName as String) == methName) {
+                  hasGetter = true;
+                  break;
+                }
+              }
+              if (!hasGetter) {
+                this.registerClassMethod(cType, null, methName, null, true, false, backingName, this.program.units[0].model);
+              }
+            }
+          } else if (methName.startsWith("set#")) {
+            let fieldName = methName.sliceBytes(4, methName.length);
+            var hasPhysical = false;
+            var backingName = "";
+            let lookupName = fieldName;
+            let lookupPrivateName = cName + "::" + fieldName;
+            for (let f in cStruct.fields) {
+              if (f.name != null) {
+                let fname = f.name as String;
+                if (fname == lookupName) {
+                  hasPhysical = true;
+                  backingName = lookupName;
+                } else if (fname == lookupPrivateName) {
+                  hasPhysical = true;
+                  backingName = lookupName;
+                } else if (fname.endsWith("::" + fieldName)) {
+                  hasPhysical = true;
+                  backingName = fieldName;
+                }
+              }
+            }
+            if (hasPhysical) {
+              var hasSetter = false;
+              for (let f in this.wasm.functions) {
+                if (f.classType != null && (f.classType as ClassType).id == cType.id && f.methodName != null && (f.methodName as String) == methName) {
+                  hasSetter = true;
+                  break;
+                }
+              }
+              if (!hasSetter) {
+                this.registerClassMethod(cType, null, methName, null, false, true, backingName, this.program.units[0].model);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Pass 1.5: Build class vtable globals
+    for (let cPair in this.wasm.classVTableStructs) {
+       let cName = cPair.key;
+       let vst = cPair.value;
+       var methods = new Array<WasmFunction>();
+       let fields = vst.fields;
+       var newFields = new Array<WasmField>();
+       let cType = vst.classType as ClassType;
+       for (var i = 0; i < fields.length; i += 1) {
+          let field = fields[i];
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = cType;
+          while (currClass != null && foundFunc == null) {
+             for (let f in this.wasm.functions) {
+                if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName != null && (f.methodName as String) == field.name) {
+                   foundFunc = f;
+                   break;
+                }
+             }
+             currClass = (currClass as ClassType).superType;
+          }
+           if (foundFunc != null) {
+               newFields.push(new WasmField(field.name, new ValTypeRef((foundFunc as WasmFunction).signature), false));
+               methods.push(foundFunc);
+           } else {
+             // push dummy? or fail?
+             newFields.push(field);
+             methods.push(this.wasm.functions[0]);
+          }
+       }
+       while (vst.fields.length > 0) {
+          let ignored = vst.fields.pop();
+       }
+       for (var fIdx = 0; fIdx < newFields.length; fIdx += 1) {
+          vst.fields.push(newFields[fIdx]);
+       }
+       
+       let vtableInit = new VTableInit(vst, methods);
+       let vtableGlobal = new WasmGlobal(
+         cName + "_vtable",
+         cName + "_vtable",
+         new ValTypeRef(vst),
+         false,
+         null,
+         vtableInit,
+         this.program.units[0].model
+       );
+       this.wasm.globals.push(vtableGlobal);
+       this.wasm.classVTableGlobals[cName] = vtableGlobal;
+     }
+
+    // Pass 1.25: Allocate singleton globals for unit variants
+    for (let cPair in this.wasm.classStructs) {
+      let cName = cPair.key;
+      let cStruct = cPair.value;
+      if (cStruct.classType != null) {
+        let cType = cStruct.classType as ClassType;
+        if (cType.isCaseClass && (cType.constructorType == null || (cType.constructorType as FunctionType).parameters.length == 0)) {
+          let globalName = cName + "_singleton";
+          let globalType = new ValTypeRefNull(cStruct);
+          let wasmGlobal = new WasmGlobal(
+            globalName,
+            globalName,
+            globalType,
+            false,
+            null,
+            null,
+            this.program.units[0].model
+          );
+          wasmGlobal.initSingletonStruct = cType;
+          this.wasm.globals.push(wasmGlobal);
+          this.wasm.classSingletonGlobals[cName] = wasmGlobal;
+        }
+      }
+    }
+
+    for (let cPair in this.wasm.classStructs) {
+       let cName = cPair.key;
+       let cStruct = cPair.value;
+       if (cStruct.classType != null) {
+          let cType = cStruct.classType as ClassType;
+          for (let iface in cType.implementsList) {
+              let it = iface as InterfaceType;
+              let iName = getInterfaceKey(it);
+              let key = cName + "::" + iName;
+              if (this.wasm.usedInterfaceAdaptations.has(key)) {
+                let vst = this.wasm.interfaceVTableStructs[iName];
+                
+                var methods = new Array<WasmFunction>();
+                for (var i = 0; i < vst.fields.length; i += 1) {
+                   let field = vst.fields[i];
+                   var foundFunc: WasmFunction | null = null;
+                   var currClass: ClassType | null = cType;
+                   while (currClass != null && foundFunc == null) {
+                      for (let f in this.wasm.functions) {
+                         if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName != null && (f.methodName as String) == field.name) {
+                            foundFunc = f;
+                            break;
+                         }
+                      }
+                      currClass = (currClass as ClassType).superType;
+                   }
+                    if (foundFunc != null) {
+                       let targetFunc = foundFunc as WasmFunction;
+                       let trampSig = getInterfaceMemberSignature(this.wasm, it, field.name);
+                       let trampFunc = new WasmFunction(trampSig, null, this.program.units[0].model);
+                       trampFunc.name = cName + "_" + iName + "_" + field.name + "_trampoline";
+                       trampFunc.interfaceTrampolineTarget = targetFunc;
+                       this.wasm.functions.push(trampFunc);
+                       methods.push(trampFunc);
+                    } else {
+                       methods.push(this.wasm.functions[0]);
+                    }
+                }
+                
+                let vtableInit = new VTableInit(vst, methods);
+                let vtableGlobal = new WasmGlobal(
+                   cName + "_" + iName + "_vtable",
+                   cName + "_" + iName + "_vtable",
+                   new ValTypeRef(vst),
+                   false,
+                   null,
+                   vtableInit,
+                   this.program.units[0].model
+                );
+                this.wasm.globals.push(vtableGlobal);
+                this.wasm.classInterfaceVTables[key] = vtableGlobal;
+              }
+          }
+       }
+    }
+
+    // Pass 2: Walk the AST of registered functions (including newly registered closures)
+    // to discover and register nested closures.
+    var fIdx = 0;
+    while (fIdx < this.wasm.functions.length) {
+      let f = this.wasm.functions[fIdx];
+      if (f.node != null) {
+        let funcNode = f.node as Node;
+        var bodyNode: Node | null = null;
+        match (funcNode) {
+          case FunctionExpression as fExpr: {
+            bodyNode = fExpr.body as Node;
+          }
+          case MethodDefinition as mDef: {
+            bodyNode = mDef.body;
+          }
+          case AccessorDeclaration as acc: {
+            bodyNode = acc.getter;
+          }
+          case SetterInfo as si: {
+            bodyNode = si.body;
+          }
+          case _: {}
+        }
+        
+        if (bodyNode != null) {
+          walk(bodyNode as Node, (n: Node) => true, (n: Node) => {
+            if (n is FunctionExpression) {
+              let funcExpr = n as FunctionExpression;
+              var isRegistered = false;
+              for (let otherF in this.wasm.functions) {
+                if (otherF.node != null && otherF.node.id == funcExpr.id) {
+                  isRegistered = true;
+                }
+              }
+              if (!isRegistered) {
+                this.registerClosure(funcExpr, f.model);
+              }
+            }
+          });
+        }
+      }
+      fIdx += 1;
+    }
+  }
+
+  registerClosure(funcExpr: FunctionExpression, model: SemanticModel): void {
+    let captureInfo = analyzeCaptures(funcExpr, model);
+    let funcTypeNode = model.getNodeType(funcExpr);
+    
+    let params = new Array<ValType>();
+    params.push(new ValTypeEqRef()); // ctx
+    let returns = new Array<ValType>();
+    
+    if (funcTypeNode is FunctionType) {
+      let ft = funcTypeNode as FunctionType;
+      for (let p in ft.parameters) {
+        params.push(typeToValType(this.wasm, p));
+      }
+      if (!(ft.returnType is VoidType)) {
+        returns.push(typeToValType(this.wasm, ft.returnType));
+      }
+    } else {
+      returns.push(new ValTypeI32());
+    }
+    
+    let sig = this.wasm.getSignature(params, returns);
+    let wasmFunc = new WasmFunction(sig, funcExpr, model);
+    wasmFunc.isClosure = true;
+    wasmFunc.isReferenceTaken = true;
+    wasmFunc.name = "closure_impl_" + i32ToString(funcExpr.id as i32);
+    
+    wasmFunc.capturesThis = captureInfo.capturesThis;
+    wasmFunc.mutableCaptures = captureInfo.mutableCaptures;
+    for (let sym in captureInfo.captures) {
+      this.wasm.symbolNames[sym.id] = sym.name;
+      wasmFunc.captures.push(sym.id);
+    }
+    
+    // Find enclosing class if 'this' is captured
+    var enclosingClassType: ClassType | null = null;
+    if (captureInfo.capturesThis) {
+      var curr = funcExpr as Node;
+      while (true) {
+        let parent = model.getParent(curr);
+        if (parent == null) { break; }
+        if (parent is ClassDeclaration) {
+          let cd = parent as ClassDeclaration;
+          let t = model.getNodeType(cd);
+          if (t is ClassType) {
+            enclosingClassType = t as ClassType;
+          }
+          break;
+        } else {
+          curr = parent as Node;
+        }
+      }
+    }
+    
+    let fields = new Array<WasmField>();
+    if (captureInfo.capturesThis && enclosingClassType != null) {
+      let ct = enclosingClassType as ClassType;
+      var thisValType: ValType = new ValTypeStructRef();
+      if (ct.isExtension && ct.onType != null) {
+        thisValType = typeToValType(this.wasm, ct.onType as Type);
+      } else {
+        thisValType = typeToValType(this.wasm, ct);
+      }
+      fields.push(new WasmField("this", thisValType, false));
+    }
+    
+    for (let sym in captureInfo.captures) {
+      let symType = model.getBindingType(sym);
+      let valType = typeToValType(this.wasm, symType);
+      var fieldType: ValType = valType;
+      if (captureInfo.mutableCaptures.has(sym.id)) {
+        let cellStruct = getCellStruct(this.wasm, valType);
+        fieldType = new ValTypeRefNull(cellStruct);
+      }
+      fields.push(new WasmField("capture_" + i32ToString(sym.id as i32), fieldType, false));
+    }
+    
+    let contextStruct = new WasmStruct("ClosureCtx_" + i32ToString(funcExpr.id as i32), fields);
+    this.wasm.types.push(contextStruct);
+    wasmFunc.contextStruct = contextStruct;
+    
+    this.wasm.addFunction(wasmFunc);
+    this.wasm.closureFunctions[funcExpr] = wasmFunc;
+  }
+}
