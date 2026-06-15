@@ -126,7 +126,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
       for (let p in fType.parameters) {
         params.push(typeToValType(wasm, p));
       }
-      if (!(fType.returnType is VoidType)) {
+      if (!(fType.returnType is VoidType || fType.returnType is NeverType)) {
         returns.push(typeToValType(wasm, fType.returnType));
       }
     }
@@ -184,7 +184,7 @@ export let getClosureStruct = (wasm: WasmModule, ftVal: any): WasmStruct => {
     params.push(typeToValType(wasm, p));
   }
   let returns = new Array<ValType>();
-  if (!(ft.returnType is VoidType)) {
+  if (!(ft.returnType is VoidType || ft.returnType is NeverType)) {
     returns.push(typeToValType(wasm, ft.returnType));
   }
 
@@ -329,9 +329,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
   case EqRefType: new ValTypeEqRef()
   case TypeParameterType: new ValTypeAnyRef()
   case ThisType: new ValTypeAnyRef()
-  case NeverType: {
-    throw new Error("Codegen should never see type: " + typeToString(t));
-  }
+  case NeverType: new ValTypeVoid()
   case HoleType: new ValTypeI32()
   case FunctionType: {
     new ValTypeRefNull(getClosureStruct(wasm, t))

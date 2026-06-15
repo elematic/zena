@@ -175,7 +175,29 @@ export class WatEmitter implements WasmEmitter {
         .append('))\n');
   }
 
+  emitExportTag(name: String, tagIndex: i32): void {
+    this.indent();
+    this.sb
+        .append('(export "')
+        .append(name)
+        .append('" (tag ')
+        .append(i32ToString(tagIndex))
+        .append('))\n');
+  }
+
   emitExportSectionEnd(): void {}
+
+  emitTagSectionStart(count: i32): void {}
+  emitTagDefinition(index: i32, typeIndex: i32): void {
+    this.indent();
+    this.sb
+        .append('(tag (;')
+        .append(i32ToString(index))
+        .append(';) (type ')
+        .append(i32ToString(typeIndex))
+        .append('))\n');
+  }
+  emitTagSectionEnd(): void {}
 
   emitElementSection(indices: Array<i32>): void {
     if (indices.length == 0) return;
@@ -289,6 +311,26 @@ export class WatEmitter implements WasmEmitter {
     this.sb.append('br_if ').append(i32ToString(depth)).append('\n');
   }
 
+  emitThrow(tagIndex: i32): void {
+    this.indent();
+    this.sb.append('throw ').append(i32ToString(tagIndex)).append('\n');
+  }
+
+  emitTryTableCatch(resultType: ValType, tagIndex: i32, destDepth: i32): void {
+    this.indent();
+    this.sb.append('try_table');
+    if (!(resultType is ValTypeVoid)) {
+      this.sb.append(' (result ').append(getTypeName(resultType)).append(')');
+    }
+    this.sb
+        .append(' (catch ')
+        .append(i32ToString(tagIndex))
+        .append(' ')
+        .append(i32ToString(destDepth))
+        .append(')\n');
+    this.indentDepth += 1;
+  }
+
   emitReturn(): void {
     this.indent();
     this.sb.append('return\n');
@@ -335,6 +377,16 @@ export class WatEmitter implements WasmEmitter {
     this.sb.append('ref.null ').append(typeStr).append('\n');
   }
 
+  emitAnyConvertExtern(): void {
+    this.indent();
+    this.sb.append('any.convert_extern\n');
+  }
+
+  emitExternConvertAny(): void {
+    this.indent();
+    this.sb.append('extern.convert_any\n');
+  }
+
   // GC operations
   emitStructNew(typeIndex: i32): void {
     this.indent();
@@ -361,9 +413,19 @@ export class WatEmitter implements WasmEmitter {
     this.sb.append('ref.cast eq\n');
   }
 
+  emitRefCastEqNull(): void {
+    this.indent();
+    this.sb.append('ref.cast (ref null eq)\n');
+  }
+
   emitRefCast(typeIndex: i32): void {
     this.indent();
     this.sb.append('ref.cast ').append(i32ToString(typeIndex)).append('\n');
+  }
+
+  emitRefCastNull(typeIndex: i32): void {
+    this.indent();
+    this.sb.append('ref.cast (ref null ').append(i32ToString(typeIndex)).append(')\n');
   }
 
   emitRefTest(typeIndex: i32): void {

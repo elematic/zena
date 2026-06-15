@@ -1,5 +1,5 @@
 import { console } from 'zena:console';
-import { ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeAnyRef, ValTypeEqRef, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeVoid, valTypeEquals } from './wasm.zena';
+import { ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeAnyRef, ValTypeEqRef, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeVoid, valTypeEquals, ValTypeExternRef } from './wasm.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, NullLiteral, BlockStatement,
@@ -11,7 +11,8 @@ import {
   ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition,
   AccessorDeclaration, SetterInfo, AsExpression, IsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral,
   SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
-  TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction
+  TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction,
+  ThrowExpression, TryExpression
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
@@ -24,7 +25,7 @@ import { typeToValType, getClosureStruct, getCellStruct } from './type-mapping.z
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
   getClassPrivateFieldKey, isStringClassKey, classInterfaceKeyToString,
-  MixinKey
+  MixinKey, ClassKey
 } from './codegen-utils.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
@@ -41,7 +42,7 @@ import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, gene
 import { generateUnaryExpression, generateBinaryExpression } from './expr/operators.zena';
 import { generateCallExpression } from './expr/calls.zena';
 import { generateAssignmentExpression } from './expr/assignment.zena';
-import { generateIfExpression } from './expr/control-flow.zena';
+import { generateIfExpression, generateThrowExpression, generateTryExpression } from './expr/control-flow.zena';
 import { generateNewExpression } from './expr/classes.zena';
 import { generateMatchExpression } from './expr/match.zena';
 import { generateMemberExpression, generateIndexExpression } from './expr/member.zena';
@@ -98,6 +99,20 @@ export class FunctionGenerator {
   }
 
   generate(): void {
+    if (this.ctx.wasmFunction.importWrapperTarget != null) {
+      this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
+      var name = "func" + i32ToString(this.ctx.wasmFunction.index);
+      if (this.ctx.wasmFunction.name != null) {
+        name = this.ctx.wasmFunction.name as String;
+      }
+      this.ctx.emitter.emitFunctionSignatureStart(name, this.ctx.wasmFunction.signature.index);
+      this.ctx.emitter.emitFunctionLocalsStart(new Array<ValType>());
+      this.generateImportWrapperBody();
+      this.ctx.emitter.emitFunctionEnd();
+      this.ctx.emitter.emitFunctionCodeEnd(this.ctx.wasmFunction);
+      return;
+    }
+
     if (this.ctx.wasmFunction.node == null) {
       if (this.ctx.wasmFunction.name != null && (this.ctx.wasmFunction.name as String) == "__start") {
         this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
@@ -186,8 +201,14 @@ export class FunctionGenerator {
           i += 1;
         }
         this.ctx.emitter.emitCall(target);
+      } else if (this.ctx.wasmFunction.importWrapperTarget != null) {
+        this.generateImportWrapperBody();
       } else if (name == "wasi_write_string_helper") {
         this.generateWasiWriteStringHelper();
+      } else if (name == "$stringCreate") {
+        this.generateStringCreate();
+      } else if (name == "$stringSetByte") {
+        this.generateStringSetByte();
       } else {
         this.ctx.emitter.emitUnreachable();
       }
@@ -608,6 +629,43 @@ export class FunctionGenerator {
         // Evaluate to `this` instance
         this.ctx.emitter.emitLocalGet(0);
       }
+      case ThrowExpression: {
+        generateThrowExpression(this.ctx, expr as ThrowExpression, (e: Expression) => this.generateExpression(e));
+      }
+      case TryExpression: {
+        generateTryExpression(
+          this.ctx,
+          expr as TryExpression,
+          discardValue,
+          (e: Expression, d: boolean = false) => this.generateExpression(e, d),
+          (s: Statement) => this.generateStatement(s)
+        );
+        handlesDiscardNatively = true;
+      }
+      case IsExpression: {
+        let isExpr = expr as IsExpression;
+        this.generateExpression(isExpr.expression);
+        
+        let targetType = this.ctx.wasmFunction.model.getNodeType(isExpr.typeAnnotation);
+        if (targetType == null) {
+          throw new Error("IsExpression target type not found in semantic model!");
+        }
+        
+        let targetWasmType = typeToValType(this.ctx.wasm, targetType as Type);
+        match (targetWasmType) {
+          case ValTypeRefNull as targetRefNull: {
+            let targetIdx = targetRefNull.target.index;
+            this.ctx.emitter.emitRefTest(targetIdx);
+          }
+          case ValTypeRef as targetRef: {
+            let targetIdx = targetRef.target.index;
+            this.ctx.emitter.emitRefTest(targetIdx);
+          }
+          case _: {
+            throw new Error("Unsupported type for is-check: " + typeToString(targetType as Type));
+          }
+        }
+      }
       case AsExpression: {
         let asExpr = expr as AsExpression;
         this.generateExpression(asExpr.expression);
@@ -790,6 +848,31 @@ export class FunctionGenerator {
       if (!(exprType is VoidType)) {
         this.ctx.emitter.emitDrop();
       }
+    }
+  }
+
+  generateImportWrapperBody(): void {
+    let target = this.ctx.wasmFunction.importWrapperTarget as WasmFunction;
+    var i = 0;
+    while (i < this.ctx.wasmFunction.signature.params.length) {
+      this.ctx.emitter.emitLocalGet(i);
+      i += 1;
+    }
+    this.ctx.emitter.emitCall(target);
+    this.ctx.emitter.emitAnyConvertExtern();
+    
+    let wrapperResultType = this.ctx.wasmFunction.signature.returns[0];
+    match (wrapperResultType) {
+      case ValTypeRefNull as r: {
+        this.ctx.emitter.emitRefCastNull(r.target.index);
+      }
+      case ValTypeRef as r: {
+        this.ctx.emitter.emitRefCast(r.target.index);
+      }
+      case ValTypeEqRef: {
+        this.ctx.emitter.emitRefCastEqNull();
+      }
+      case _: {}
     }
   }
 
@@ -1177,5 +1260,140 @@ export class FunctionGenerator {
     }
     this.ctx.emitter.emitCall(fdWriteImport as WasmFunction);
     this.ctx.emitter.emitDrop(); // Ignore return value (errno)
+  }
+
+  generateStringCreate(): void {
+    var stringStruct: WasmStruct | null = null;
+    let keys = this.ctx.wasm.classStructs.keys();
+    while (let (true, key) = keys.next()) {
+      if (isStringClassKey(key)) {
+        stringStruct = this.ctx.wasm.classStructs[key];
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("$stringCreate: String class struct not found!");
+    }
+    let stringStructIndex = (stringStruct as WasmStruct).index;
+    let byteArrayType = this.ctx.wasm.getByteArrayType();
+    let byteArrayTypeIndex = byteArrayType.index;
+
+    var dataFieldIdx = -1;
+    var startFieldIdx = -1;
+    var endFieldIdx = -1;
+    var encodingFieldIdx = -1;
+    for (var f = 0; f < (stringStruct as WasmStruct).fields.length; f += 1) {
+      let fieldName = (stringStruct as WasmStruct).fields[f].name;
+      if (fieldName != null) {
+        let nameStr = fieldName as String;
+        if (nameStr.endsWith("::#data")) {
+          dataFieldIdx = f;
+        } else if (nameStr.endsWith("::#start")) {
+          startFieldIdx = f;
+        } else if (nameStr.endsWith("::#end")) {
+          endFieldIdx = f;
+        } else if (nameStr.endsWith("::#encoding")) {
+          encodingFieldIdx = f;
+        }
+      }
+    }
+
+    if (dataFieldIdx == -1 || startFieldIdx == -1 || endFieldIdx == -1 || encodingFieldIdx == -1) {
+      throw new Error("$stringCreate: String layout fields not found in structure!");
+    }
+
+    let locals = new Array<ValType>();
+    locals.push(new ValTypeRefNull(stringStruct as WasmStruct)); // local 1
+    this.ctx.emitter.emitFunctionLocalsStart(locals);
+
+    let lenParam = 0;
+    let stringLocal = 1;
+
+    this.ctx.emitter.emitStructNewDefault(stringStructIndex);
+    this.ctx.emitter.emitLocalTee(stringLocal);
+
+    let stringKey = getClassKey((stringStruct as WasmStruct).classType as ClassType);
+    let vtableGlobal = this.ctx.wasm.classVTableGlobals[stringKey as ClassKey];
+    this.ctx.emitter.emitGlobalGet(vtableGlobal.index);
+    this.ctx.emitter.emitStructSet(stringStructIndex, 0);
+
+    this.ctx.emitter.emitLocalGet(stringLocal);
+    this.ctx.emitter.emitLocalGet(lenParam);
+    this.ctx.emitter.emitArrayNewDefault(byteArrayTypeIndex);
+    this.ctx.emitter.emitStructSet(stringStructIndex, dataFieldIdx);
+
+    this.ctx.emitter.emitLocalGet(stringLocal);
+    this.ctx.emitter.emitI32Const(0);
+    this.ctx.emitter.emitStructSet(stringStructIndex, startFieldIdx);
+
+    this.ctx.emitter.emitLocalGet(stringLocal);
+    this.ctx.emitter.emitLocalGet(lenParam);
+    this.ctx.emitter.emitStructSet(stringStructIndex, endFieldIdx);
+
+    this.ctx.emitter.emitLocalGet(stringLocal);
+    this.ctx.emitter.emitI32Const(0);
+    this.ctx.emitter.emitStructSet(stringStructIndex, encodingFieldIdx);
+
+    this.ctx.emitter.emitLocalGet(stringLocal);
+    this.ctx.emitter.emitExternConvertAny();
+  }
+
+  generateStringSetByte(): void {
+    var stringStruct: WasmStruct | null = null;
+    let keys = this.ctx.wasm.classStructs.keys();
+    while (let (true, key) = keys.next()) {
+      if (isStringClassKey(key)) {
+        stringStruct = this.ctx.wasm.classStructs[key];
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("$stringSetByte: String class struct not found!");
+    }
+    let stringStructIndex = (stringStruct as WasmStruct).index;
+    let byteArrayType = this.ctx.wasm.getByteArrayType();
+    let byteArrayTypeIndex = byteArrayType.index;
+
+    var dataFieldIdx = -1;
+    var startFieldIdx = -1;
+    for (var f = 0; f < (stringStruct as WasmStruct).fields.length; f += 1) {
+      let fieldName = (stringStruct as WasmStruct).fields[f].name;
+      if (fieldName != null) {
+        let nameStr = fieldName as String;
+        if (nameStr.endsWith("::#data")) {
+          dataFieldIdx = f;
+        } else if (nameStr.endsWith("::#start")) {
+          startFieldIdx = f;
+        }
+      }
+    }
+
+    if (dataFieldIdx == -1 || startFieldIdx == -1) {
+      throw new Error("$stringSetByte: String layout fields not found in structure!");
+    }
+
+    let locals = new Array<ValType>();
+    locals.push(new ValTypeRefNull(stringStruct as WasmStruct)); // local 3
+    this.ctx.emitter.emitFunctionLocalsStart(locals);
+
+    let strParam = 0;
+    let indexParam = 1;
+    let valueParam = 2;
+    let strLocal = 3;
+
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitAnyConvertExtern();
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitLocalSet(strLocal);
+
+    this.ctx.emitter.emitLocalGet(strLocal);
+    this.ctx.emitter.emitStructGet(stringStructIndex, dataFieldIdx);
+
+    this.ctx.emitter.emitLocalGet(strLocal);
+    this.ctx.emitter.emitStructGet(stringStructIndex, startFieldIdx);
+    this.ctx.emitter.emitLocalGet(indexParam);
+    this.ctx.emitter.emitI32Add();
+
+    this.ctx.emitter.emitLocalGet(valueParam);
+
+    this.ctx.emitter.emitArraySet(byteArrayTypeIndex);
   }
 }

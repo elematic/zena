@@ -138,11 +138,11 @@ This plan tracks all features required for the code generation phase to achieve 
 
 ### 8. Exception Handling
 
-- [ ] **Throw Expressions:**
-  - [ ] `throw` expression of type `never` creating a WASM exception payload.
-- [ ] **Try-Catch Blocks:**
-  - [ ] Code generation mapping `try-catch-finally` to WASM standard exception handlers.
-  - [ ] Runtime type-matching of caught exception payloads to Zena `Error` subclasses.
+- [x] **Throw Expressions:**
+  - [x] `throw` expression of type `never` creating a WASM exception payload.
+- [x] **Try-Catch Blocks:**
+  - [x] Code generation mapping `try-catch-finally` to WASM standard exception handlers.
+  - [x] Runtime type-matching of caught exception payloads to Zena `Error` subclasses.
 
 ### 9. Module Execution & Infrastructure
 

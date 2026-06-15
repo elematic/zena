@@ -23,6 +23,7 @@ async function run() {
     'closures',
     'compound-assignment',
     'control-flow',
+    'exceptions',
     'functions',
     'imports',
     'interfaces',

@@ -9,7 +9,7 @@ import {
   ContinueStatement, RecordLiteral, ArrayLiteral, TupleLiteral, MemberExpression,
   AsExpression, IsExpression, PipelineExpression, IndexExpression, PropertyAssignment,
   AsPattern, ClassPattern, RecordPattern, TuplePattern, LogicalPattern, BindingPattern,
-  NullLiteral, MatchExpression, MatchCase, BindingProperty, ForInStatement
+  NullLiteral, MatchExpression, MatchCase, BindingProperty, ForInStatement, ThrowExpression, TryExpression, CatchClause
 } from '../ast.zena';
 import { Type, F64Type, F32Type, FunctionType } from '../types.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
@@ -112,6 +112,19 @@ export let discoverLocalsFromExpr = (ctx: FunctionContext, expr: Expression, dis
         } else if (mc.body is Expression) {
           discExpr(mc.body as Expression);
         }
+      }
+    }
+    case ThrowExpression {argument}: {
+      discExpr(argument);
+    }
+    case TryExpression {body, handler, finalizer}: {
+      discStmt(body);
+      if (handler != null) {
+        let clause = handler as CatchClause;
+        discStmt(clause.body);
+      }
+      if (finalizer != null) {
+        discStmt(finalizer as BlockStatement);
       }
     }
     case _: {}

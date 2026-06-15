@@ -1,9 +1,10 @@
-import { ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64 } from '../wasm.zena';
-import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement } from '../../ast.zena';
+import { ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeEqRef } from '../wasm.zena';
+import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement, ThrowExpression, TryExpression, CatchClause, Identifier } from '../../ast.zena';
 import { Type, F64Type, F32Type, VoidType } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
+import { WasmTag, WasmGlobal, WasmStruct } from '../wasm-module.zena';
 import { typeToValType } from '../type-mapping.zena';
 
 export let generateIfExpression = (
@@ -68,4 +69,212 @@ export let generateIfBranch = (
   } else {
     throw new Error("Invalid if branch type in codegen");
   }
+};
+
+export let generateThrowExpression = (
+  ctx: FunctionContext,
+  expr: ThrowExpression,
+  genExpr: (e: Expression) => void
+): void => {
+  ctx.wasm.ensureExceptionInfra(ctx.wasmFunction.model);
+  
+  genExpr(expr.argument);
+  let payloadGlobal = ctx.wasm.exceptionPayload as WasmGlobal;
+  ctx.emitter.emitGlobalSet(payloadGlobal.index);
+  
+  let tag = ctx.wasm.exceptionTag as WasmTag;
+  ctx.emitter.emitThrow(tag.index);
+  
+  ctx.isReachable = false;
+};
+
+export let generateTryExpression = (
+  ctx: FunctionContext,
+  expr: TryExpression,
+  discardValue: boolean,
+  genExpr: (e: Expression, discardValue: boolean) => void,
+  genStmt: (s: Statement) => void
+): void => {
+  let wasReachable = ctx.isReachable;
+  ctx.wasm.ensureExceptionInfra(ctx.wasmFunction.model);
+  let tag = ctx.wasm.exceptionTag as WasmTag;
+
+  let nodeType = ctx.wasmFunction.model.getNodeType(expr as Node);
+  let resultType = typeToValType(ctx.wasm, nodeType);
+
+  var resultLocal: i32 = -1;
+  if (!discardValue && !(resultType is ValTypeVoid)) {
+    resultLocal = ctx.allocLocal(resultType);
+  }
+
+  if (expr.handler != null) {
+    // block $done
+    ctx.emitter.emitBlock(new ValTypeVoid());
+    ctx.enterBlockStructure();
+
+    // block $catch
+    ctx.emitter.emitBlock(new ValTypeVoid());
+    ctx.enterBlockStructure();
+
+    // try_table with catch targeting block $catch (which is at depth 0 right now)
+    ctx.emitter.emitTryTableCatch(new ValTypeVoid(), tag.index, 0);
+    ctx.enterBlockStructure();
+
+    // Generate try body
+    generateIfBranch(ctx, expr.body as Node, resultLocal == -1, genExpr, genStmt);
+    if (resultLocal != -1) {
+      ctx.emitter.emitLocalSet(resultLocal);
+    }
+
+    // End try_table
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+
+    // If we have finally, run it now (success path)
+    if (expr.finalizer != null) {
+      let tryReachable = ctx.isReachable;
+      ctx.isReachable = wasReachable;
+      generateIfBranch(ctx, expr.finalizer as Node, true, genExpr, genStmt);
+      ctx.isReachable = tryReachable;
+    }
+
+    // Success - branch past catch block to done (block $done is at depth 1 right now)
+    ctx.emitter.emitBr(1);
+
+    // End block $catch
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+
+    // Exception was caught - payload is in global.
+    // Set up parameter if present
+    ctx.isReachable = wasReachable;
+    let handler = expr.handler as CatchClause;
+    if (handler.param != null) {
+      let paramIdent = handler.param as Identifier;
+      let sym = ctx.wasmFunction.model.resolveDeclaration(paramIdent);
+      if (sym != null) {
+        var errorStruct: WasmStruct | null = null;
+        let keys = ctx.wasm.classStructs.keys();
+        while (let (true, k) = keys.next()) {
+          let s = ctx.wasm.classStructs[k];
+          if (s.name != null && (s.name as String) == "Error") {
+            errorStruct = s;
+          }
+        }
+        
+        let localIdx = ctx.allocLocal(if (errorStruct != null) new ValTypeRefNull(errorStruct as WasmStruct) else new ValTypeEqRef());
+        ctx.localIndices[sym.id] = localIdx;
+        
+        // Get payload from global
+        let payloadGlobal = ctx.wasm.exceptionPayload as WasmGlobal;
+        ctx.emitter.emitGlobalGet(payloadGlobal.index);
+        
+        // Cast to Error struct if found
+        if (errorStruct != null) {
+          ctx.emitter.emitRefCast((errorStruct as WasmStruct).index);
+        }
+        
+        ctx.emitter.emitLocalSet(localIdx);
+      }
+    }
+
+    // Generate catch body
+    generateIfBranch(ctx, handler.body as Node, resultLocal == -1, genExpr, genStmt);
+    if (resultLocal != -1) {
+      ctx.emitter.emitLocalSet(resultLocal);
+    }
+
+    // If we have finally, run it (catch path)
+    if (expr.finalizer != null) {
+      let catchReachable = ctx.isReachable;
+      ctx.isReachable = wasReachable;
+      generateIfBranch(ctx, expr.finalizer as Node, true, genExpr, genStmt);
+      ctx.isReachable = catchReachable;
+    }
+
+    // End block $done
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+
+    // Load result on stack
+    if (resultLocal != -1) {
+      ctx.emitter.emitLocalGet(resultLocal);
+    }
+  } else {
+    // Only finally, no catch handler
+    // We need to catch, run finally, then rethrow
+    // Exception payload is in global, we save it to local for rethrowing
+
+    // Local for exception payload
+    let exnLocal = ctx.allocLocal(new ValTypeEqRef());
+    let caughtLocal = ctx.allocLocal(new ValTypeI32());
+
+    // Initialize caught flag to 0
+    ctx.emitter.emitI32Const(0);
+    ctx.emitter.emitLocalSet(caughtLocal);
+
+    // Outer block $done
+    ctx.emitter.emitBlock(new ValTypeVoid());
+    ctx.enterBlockStructure();
+
+    // Block $catch
+    ctx.emitter.emitBlock(new ValTypeVoid());
+    ctx.enterBlockStructure();
+
+    // try_table with catch targeting block $catch (depth 0)
+    ctx.emitter.emitTryTableCatch(new ValTypeVoid(), tag.index, 0);
+    ctx.enterBlockStructure();
+
+    // Generate try body
+    generateIfBranch(ctx, expr.body as Node, resultLocal == -1, genExpr, genStmt);
+    if (resultLocal != -1) {
+      ctx.emitter.emitLocalSet(resultLocal);
+    }
+
+    // End try_table
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+
+    // Success path - branch to done (depth 1)
+    ctx.emitter.emitBr(1);
+
+    // End block $catch
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+
+    // Exception caught - read payload from global, save to local, set caught=1
+    let payloadGlobal = ctx.wasm.exceptionPayload as WasmGlobal;
+    ctx.emitter.emitGlobalGet(payloadGlobal.index);
+    ctx.emitter.emitLocalSet(exnLocal);
+
+    ctx.emitter.emitI32Const(1);
+    ctx.emitter.emitLocalSet(caughtLocal);
+
+    // End block $done
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+
+    // Run finally (both paths end up here)
+    ctx.isReachable = wasReachable;
+    generateIfBranch(ctx, expr.finalizer as Node, true, genExpr, genStmt);
+
+    // If we caught an exception, restore payload and rethrow
+    ctx.emitter.emitLocalGet(caughtLocal);
+    ctx.emitter.emitIf(new ValTypeVoid());
+    ctx.enterBlockStructure();
+
+    ctx.emitter.emitLocalGet(exnLocal);
+    ctx.emitter.emitGlobalSet(payloadGlobal.index);
+    ctx.emitter.emitThrow(tag.index);
+
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+
+    // Load result
+    if (resultLocal != -1) {
+      ctx.emitter.emitLocalGet(resultLocal);
+    }
+  }
+  
+  ctx.isReachable = true;
 };

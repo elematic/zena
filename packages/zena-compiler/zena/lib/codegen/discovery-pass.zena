@@ -14,7 +14,7 @@ import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef } from './wasm.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, ValTypeExternRef } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -1446,15 +1446,49 @@ export class DiscoveryPass {
                      }
                      let returns = new Array<ValType>();
                      mapReturnTypeToWasmResults(this.wasm, funcType.returnType, returns);
-                     let sig = this.wasm.getSignature(params, returns);
-                     let wasmFunc = new WasmFunction(sig, decl, moduleModel);
-                     wasmFunc.isImport = true;
-                     wasmFunc.importModule = moduleName;
-                     wasmFunc.importName = exportName;
-                     this.wasm.functionImports.push(wasmFunc);
-                     this.wasm.functionMap[sym.id] = wasmFunc;
+
+                     let isWasi = (moduleName == "wasi_snapshot_preview1");
+                     var isGcRef = false;
+                     if (returns.length == 1) {
+                       match (returns[0]) {
+                         case ValTypeAnyRef: { isGcRef = true; }
+                         case ValTypeEqRef: { isGcRef = true; }
+                         case ValTypeStructRef: { isGcRef = true; }
+                         case ValTypeRef: { isGcRef = true; }
+                         case ValTypeRefNull: { isGcRef = true; }
+                         case _: {}
+                       }
+                     }
+
+                     if (isGcRef && !isWasi) {
+                       let importReturns = new Array<ValType>();
+                       importReturns.push(new ValTypeExternRef());
+                       let importSig = this.wasm.getSignature(params, importReturns);
+                       let importFunc = new WasmFunction(importSig, decl, moduleModel);
+                       importFunc.isImport = true;
+                       importFunc.importModule = moduleName;
+                       importFunc.importName = exportName;
+                       importFunc.name = decl.name.name + "_raw_import";
+                       this.wasm.functionImports.push(importFunc);
+
+                       let wrapperSig = this.wasm.getSignature(params, returns);
+                       let wrapperFunc = new WasmFunction(wrapperSig, decl, moduleModel);
+                       wrapperFunc.name = decl.name.name;
+                       wrapperFunc.importWrapperTarget = importFunc;
+                       this.wasm.functions.push(wrapperFunc);
+
+                       this.wasm.functionMap[sym.id] = wrapperFunc;
+                     } else {
+                       let sig = this.wasm.getSignature(params, returns);
+                       let wasmFunc = new WasmFunction(sig, decl, moduleModel);
+                       wasmFunc.isImport = true;
+                       wasmFunc.importModule = moduleName;
+                       wasmFunc.importName = exportName;
+                       this.wasm.functionImports.push(wasmFunc);
+                       this.wasm.functionMap[sym.id] = wasmFunc;
+                     }
                   } else {
-                    throw new Error("External decorator must have exactly two arguments");
+                     throw new Error("External decorator must have exactly two arguments");
                   }
                 }
               }

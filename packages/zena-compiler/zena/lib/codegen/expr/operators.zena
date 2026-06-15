@@ -1,4 +1,4 @@
-import { Node, UnaryExpression, BinaryExpression, Expression } from '../../ast.zena';
+import { Node, UnaryExpression, BinaryExpression, Expression, NullLiteral } from '../../ast.zena';
 import { Type, F64Type, F32Type, I32Type, RecordType, ClassType, ArrayType,
   AnyType, isFloatType, baseType, typeToString,
   InterfaceType, TypeParameterType, ThisType, AnyRefType, EqRefType, FunctionType, TupleType, NullType,
@@ -57,7 +57,24 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     ctx.emitter.emitEnd();
     return;
   }
- 
+  if (bin.operator == "==" || bin.operator == "!=" || bin.operator == "===" || bin.operator == "!==") {
+    if (bin.right is NullLiteral) {
+      genExpr(bin.left, false);
+      ctx.emitter.emitRefIsNull();
+      if (bin.operator == "!=" || bin.operator == "!==") {
+        ctx.emitter.emitI32Eqz();
+      }
+      return;
+    }
+    if (bin.left is NullLiteral) {
+      genExpr(bin.right, false);
+      ctx.emitter.emitRefIsNull();
+      if (bin.operator == "!=" || bin.operator == "!==") {
+        ctx.emitter.emitI32Eqz();
+      }
+      return;
+    }
+  }
   let model = ctx.wasmFunction.model;
   let leftType = model.getNodeType(bin.left);
   let rightType = model.getNodeType(bin.right);

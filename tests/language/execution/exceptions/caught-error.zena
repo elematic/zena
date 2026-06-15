@@ -1,0 +1,103 @@
+// @mode: run
+// @result: 42
+
+import { Error } from 'zena:error';
+
+class Result {
+  value: i32;
+  error: Error | null;
+  
+  new(value: i32, error: Error | null) : value = value, error = error {}
+  
+  hasError(): boolean {
+    return this.error != null;
+  }
+}
+
+class ErrorHandler {
+  var lastError: Error | null = null;
+          
+  setError(e: Error | null): void {
+    this.lastError = e;
+  }
+  
+  getCode(): i32 {
+    if (this.lastError != null) {
+      return 42;
+    }
+    return 0;
+  }
+}
+
+class Container {
+  var error: Error | null = null;
+}
+
+let testConstructor = (): boolean => {
+  let result = try {
+    throw new Error('test error');
+    new Result(0, null)
+  } catch (e) {
+    new Result(42, e)
+  };
+  
+  return result.hasError() && result.value == 42;
+};
+
+let testMethod = (): boolean => {
+  let handler = new ErrorHandler();
+  try {
+    throw new Error('test');
+  } catch (e) {
+    handler.setError(e);
+  };
+  return handler.getCode() == 42;
+};
+
+let testVariable = (): boolean => {
+  var savedError: Error | null = null;
+  
+  try {
+    throw new Error('saved');
+  } catch (e) {
+    savedError = e;
+  };
+  
+  return savedError != null;
+};
+
+let testField = (): boolean => {
+  let container = new Container();
+  
+  try {
+    throw new Error('field test');
+  } catch (e) {
+    container.error = e;
+  };
+  
+  return container.error != null;
+};
+
+let catchError = (): i32 => {
+  var result: Error | null = null;
+  try {
+    throw new Error('returned');
+  } catch (e) {
+    result = e;
+  };
+  if (result != null) {
+    return 42;
+  }
+  return 0;
+};
+
+let testReturn = (): boolean => {
+  return catchError() == 42;
+};
+
+export let main = (): i32 => {
+  if (testConstructor() && testMethod() && testVariable() && testField() && testReturn()) {
+    return 42;
+  }
+  return 0;
+};

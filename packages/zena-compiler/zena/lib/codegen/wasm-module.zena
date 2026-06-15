@@ -6,8 +6,9 @@ import { SymbolId } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { 
   ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef, 
-  ValTypeI8, WasmType, valTypeEquals 
+  ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32 
 } from './wasm.zena';
+import { isStringClassKey } from './codegen-utils.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -120,6 +121,8 @@ export class WasmFunction {
   var setterFieldIndex: i32 = -1;
   /** The concrete target function for an interface trampoline method/property call. */
   var interfaceTrampolineTarget: WasmFunction | null = null;
+  /** The target imported function for an external reference wrapper. */
+  var importWrapperTarget: WasmFunction | null = null;
   var intrinsic: String | null = null;
 
   var isClosure: boolean = false;
@@ -166,8 +169,18 @@ export class RecordDispatchInfo {
   new(this.fatPtrType, this.vtableType, this.concreteType, this.vtableGlobal, this.fields, this.getterTypes);
 }
 
+export class WasmTag {
+  var index: i32 = -1;
+  signature: WasmSignature;
+  new(this.signature);
+}
+
 export class WasmModule {
   var types = new Array<WasmType>();
+  tags = new Array<WasmTag>();
+  exportTagMap = new HashMap<String, WasmTag>();
+  var exceptionTag: WasmTag | null = null;
+  var exceptionPayload: WasmGlobal | null = null;
   var isLayoutLocked: boolean = false;
   var startFunction: WasmFunction | null = null;
   
@@ -539,6 +552,64 @@ export class WasmModule {
     this.hasMemory = true;
   }
   
+  ensureExceptionInfra(model: SemanticModel): void {
+    if (this.exceptionTag != null) {
+      return;
+    }
+    
+    var errorStruct: WasmStruct | null = null;
+    let keys = this.classStructs.keys();
+    while (let (true, k) = keys.next()) {
+      let s = this.classStructs[k];
+      if (s.name != null && (s.name as String) == "Error") {
+        errorStruct = s;
+      }
+    }
+    
+    let payloadType = if (errorStruct != null) new ValTypeRefNull(errorStruct as WasmStruct) else new ValTypeEqRef();
+    
+    let params = new Array<ValType>();
+    let sig = this.getSignature(params, new Array<ValType>());
+    
+    let tag = new WasmTag(sig);
+    this.tags.push(tag);
+    this.exceptionTag = tag;
+    this.exportTagMap["__zena_exception"] = tag;
+    
+    let payloadGlobal = new WasmGlobal(
+      "__zena_exception_payload",
+      "__zena_exception_payload",
+      payloadType,
+      true,
+      null,
+      null,
+      model
+    );
+    this.globals.push(payloadGlobal);
+    this.exceptionPayload = payloadGlobal;
+
+    // Register $stringCreate helper function (i32) -> externref
+    let createParams = new Array<ValType>();
+    createParams.push(new ValTypeI32());
+    let createReturns = new Array<ValType>();
+    createReturns.push(new ValTypeExternRef());
+    let createSig = this.getSignature(createParams, createReturns);
+    let createFunc = new WasmFunction(createSig, null, model);
+    createFunc.name = "$stringCreate";
+    this.functions.push(createFunc);
+
+    // Register $stringSetByte helper function (externref, i32, i32) -> void
+    let setByteParams = new Array<ValType>();
+    setByteParams.push(new ValTypeExternRef());
+    setByteParams.push(new ValTypeI32());
+    setByteParams.push(new ValTypeI32());
+    let setByteReturns = new Array<ValType>();
+    let setByteSig = this.getSignature(setByteParams, setByteReturns);
+    let setByteFunc = new WasmFunction(setByteSig, null, model);
+    setByteFunc.name = "$stringSetByte";
+    this.functions.push(setByteFunc);
+  }
+  
   /**
    * Locks in the module layout, assigning final WebAssembly indices (i32)
    * to all types, functions, and globals. Must be called after all
@@ -605,6 +676,10 @@ export class WasmModule {
 
     for (var i = 0; i < this.types.length; i += 1) {
       let t = this.types[i];
+      t.index = i;
+    }
+    for (var i = 0; i < this.tags.length; i += 1) {
+      let t = this.tags[i];
       t.index = i;
     }
     var functionIndex = 0;

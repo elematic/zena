@@ -1,13 +1,14 @@
 import { ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeStructRef } from './wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature,
-  WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray
+  WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, WasmTag
 } from './wasm-module.zena';
 import { DiscoveryPass } from './discovery-pass.zena';
 import { getClassKey } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
-import { VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral } from '../ast.zena';
+import { Node, VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral, ThrowExpression, TryExpression } from '../ast.zena';
 import { String } from 'zena:string';
+import { walk } from '../visitor.zena';
 import { ValType } from './wasm.zena';
 import { parseI32, parseF64 } from 'zena:string-convert';
 import { Array } from 'zena:array';
@@ -61,6 +62,18 @@ export class ModuleGenerator {
       wasm.startFunction = startFunc;
     }
 
+    let found = new Array<boolean>();
+    for (let u in this.program.units) {
+      walk(u.ast as Node, (n: Node): boolean => true, (n: Node): void => {
+        if (n is ThrowExpression || n is TryExpression) {
+          found.push(true);
+        }
+      });
+    }
+
+    if (found.length > 0) {
+      wasm.ensureExceptionInfra(this.program.units[0].model);
+    }
     wasm.layout();
 
     this.emitter.emitModuleStart();
@@ -164,6 +177,13 @@ export class ModuleGenerator {
       this.emitter.emitMemorySection(1);
     }
 
+    this.emitter.emitTagSectionStart(wasm.tags.length);
+    for (var i = 0; i < wasm.tags.length; i += 1) {
+      let tag = wasm.tags[i];
+      this.emitter.emitTagDefinition(tag.index, tag.signature.index);
+    }
+    this.emitter.emitTagSectionEnd();
+
     this.emitter.emitGlobalSectionStart(wasm.globals.length);
     for (let g in wasm.globals) {
       this.emitter.emitGlobal(g.type, g.isMutable);
@@ -252,21 +272,35 @@ export class ModuleGenerator {
             if (sym != null) {
               if (wasm.functionMap.has(sym.id)) {
                 let wasmFunc = wasm.functionMap[sym.id];
-                exports.push(new WasmExport(ident.name, wasmFunc));
+                 exports.push(new WasmExport(ident.name, wasmFunc));
               }
             }
           }
         }
       }
     }
+
+    for (let f in wasm.functions) {
+      if (f.name != null && ((f.name as String) == "$stringCreate" || (f.name as String) == "$stringSetByte")) {
+        exports.push(new WasmExport(f.name as String, f));
+      }
+    }
     
-    // Compute total exports = functions + globals
+    // Compute total exports = functions + globals + tags
     var totalExports = exports.length;
     let globalExports = new Array<WasmGlobal>();
     for (let gName in wasm.exportGlobalMap.keys()) {
       globalExports.push(wasm.exportGlobalMap[gName]);
     }
     totalExports += globalExports.length;
+    
+    let tagExports = new Array<String>();
+    let tagKeys = wasm.exportTagMap.keys();
+    while (let (true, k) = tagKeys.next()) {
+      tagExports.push(k);
+    }
+    totalExports += tagExports.length;
+
     if (wasm.hasMemory) {
       totalExports += 1;
     }
@@ -277,6 +311,10 @@ export class ModuleGenerator {
     }
     for (let g in globalExports) {
       this.emitter.emitExportGlobal(g.zenaName, g.index);
+    }
+    for (let tName in tagExports) {
+      let tag = wasm.exportTagMap[tName];
+      this.emitter.emitExportTag(tName, tag.index);
     }
     if (wasm.hasMemory) {
       this.emitter.emitExportMemory("memory", 0);

@@ -36,6 +36,7 @@ export class BinaryEmitter implements WasmEmitter {
   var currentSection: ByteBuffer | null = null;
   var currentBuffer: ByteBuffer | null = null;
   var currentLocals: Array<ValType> | null = null;
+  functionsList = new Array<WasmFunction>();
   
   new(this.mainBuffer);
 
@@ -269,6 +270,21 @@ export class BinaryEmitter implements WasmEmitter {
     section.writeULEB128(globalIndex);
   }
 
+  emitExportTag(name: String, tagIndex: i32): void {
+    let section = this.currentSection;
+    if (section == null) {
+      return;
+    }
+    
+    let nameLen = name.length;
+    section.writeULEB128(nameLen);
+    for (var j = 0; j < nameLen; j += 1) {
+      section.writeByte(name.getByteAt(j));
+    }
+    section.writeByte(4); // tag
+    section.writeULEB128(tagIndex);
+  }
+
   emitExportSectionEnd(): void {
     if (this.currentSection != null) {
       this.writeSection(SectionId.Export as i32, this.currentSection as ByteBuffer);
@@ -288,6 +304,26 @@ export class BinaryEmitter implements WasmEmitter {
     }
     this.writeSection(SectionId.Element as i32, section);
   }
+
+  emitTagSectionStart(count: i32): void {
+    if (count == 0) return;
+    this.currentSection = new ByteBuffer();
+    (this.currentSection as ByteBuffer).writeULEB128(count);
+  }
+
+  emitTagDefinition(index: i32, typeIndex: i32): void {
+    if (this.currentSection != null) {
+      (this.currentSection as ByteBuffer).writeByte(0); // attribute: 0 = exception
+      (this.currentSection as ByteBuffer).writeULEB128(typeIndex);
+    }
+  }
+
+  emitTagSectionEnd(): void {
+    if (this.currentSection != null) {
+      this.writeSection(SectionId.Tag as i32, this.currentSection as ByteBuffer);
+      this.currentSection = null;
+    }
+  }
   
   emitStartSection(funcIndex: i32): void {
     let payload = new ByteBuffer();
@@ -303,6 +339,7 @@ export class BinaryEmitter implements WasmEmitter {
   
   emitFunctionCodeStart(func: WasmFunction): void {
     this.currentBuffer = new ByteBuffer();
+    this.functionsList.push(func);
   }
   
   emitFunctionCodeEnd(func: WasmFunction): void {
@@ -338,7 +375,52 @@ export class BinaryEmitter implements WasmEmitter {
     }
   }
 
-  emitModuleEnd(): void {}
+  emitModuleEnd(): void {
+    let namedFuncs = new Array<WasmFunction>();
+    for (let f in this.functionsList) {
+      var name = f.name;
+      if (name == null && f.methodName != null) {
+        name = f.methodName;
+      }
+      if (name != null) {
+        namedFuncs.push(f);
+      }
+    }
+
+    if (namedFuncs.length > 0) {
+      let payload = new ByteBuffer();
+      // Write section name: "name"
+      payload.writeULEB128(4);
+      payload.writeByte(110); // 'n'
+      payload.writeByte(97);  // 'a'
+      payload.writeByte(109); // 'm'
+      payload.writeByte(101); // 'e'
+
+      // Subsection 1: Function names
+      let subPayload = new ByteBuffer();
+      subPayload.writeULEB128(namedFuncs.length);
+      for (let f in namedFuncs) {
+        subPayload.writeULEB128(f.index);
+        
+        var name = f.name;
+        if (name == null && f.methodName != null) {
+          name = f.methodName;
+        }
+        let nameStr = name as String;
+        let len = nameStr.length;
+        subPayload.writeULEB128(len);
+        for (var i = 0; i < len; i += 1) {
+          subPayload.writeByte(nameStr.getByteAt(i));
+        }
+      }
+
+      payload.writeByte(1); // subsection id for function names
+      payload.writeULEB128(subPayload.length);
+      payload.writeBuffer(subPayload);
+
+      this.writeSection(0, payload); // section id 0 for custom sections
+    }
+  }
 
   // Function lifecycle
   emitFunctionSignatureStart(name: String, typeIndex: i32): void {}
@@ -392,6 +474,23 @@ export class BinaryEmitter implements WasmEmitter {
     b.writeByte(Opcode.br_if as i32);
     b.writeULEB128(depth);
   }
+
+  emitThrow(tagIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.throw as i32);
+    b.writeULEB128(tagIndex);
+  }
+
+  emitTryTableCatch(resultType: ValType, tagIndex: i32, destDepth: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.try_table as i32);
+    emitValType(b, resultType);
+    b.writeULEB128(1); // catch count
+    b.writeByte(0);    // catch kind: 0 = catch
+    b.writeULEB128(tagIndex);
+    b.writeULEB128(destDepth);
+  }
+
   emitReturn(): void {
     (this.currentBuffer as ByteBuffer).writeByte(Opcode.return_ as i32);
   }
@@ -476,10 +575,24 @@ export class BinaryEmitter implements WasmEmitter {
     b.writeSLEB128(heapTypeToSigned(HeapType.eq));
   }
 
+  emitRefCastEqNull(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.ref_cast_null as i32);
+    b.writeSLEB128(heapTypeToSigned(HeapType.eq));
+  }
+
   emitRefCast(typeIndex: i32): void {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.gc_prefix as i32);
     b.writeULEB128(GcOpcode.ref_cast as i32);
+    b.writeSLEB128(typeIndex);
+  }
+
+  emitRefCastNull(typeIndex: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.ref_cast_null as i32);
     b.writeSLEB128(typeIndex);
   }
 
@@ -501,6 +614,18 @@ export class BinaryEmitter implements WasmEmitter {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.ref_null as i32);
     b.writeSLEB128(heapType);
+  }
+
+  emitAnyConvertExtern(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.any_convert_extern as i32);
+  }
+
+  emitExternConvertAny(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.gc_prefix as i32);
+    b.writeULEB128(GcOpcode.extern_convert_any as i32);
   }
 
   // Variables
