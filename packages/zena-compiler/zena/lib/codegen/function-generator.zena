@@ -9,7 +9,7 @@ import {
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
   IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
   ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition,
-  AccessorDeclaration, SetterInfo, AsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral,
+  AccessorDeclaration, SetterInfo, AsExpression, IsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral,
   SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction
 } from '../ast.zena';
@@ -612,7 +612,17 @@ export class FunctionGenerator {
         let asExpr = expr as AsExpression;
         this.generateExpression(asExpr.expression);
         
-        let sourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
+        let rawSourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
+        var sourceType = rawSourceType;
+        if (asExpr.expression is Identifier) {
+          let sym = this.ctx.wasmFunction.model.resolve(asExpr.expression as Identifier);
+          if (sym != null) {
+            let bType = this.ctx.wasmFunction.model.getBindingType(sym);
+            if (bType != null) {
+              sourceType = bType;
+            }
+          }
+        }
         let targetType = this.ctx.wasmFunction.model.getNodeType(asExpr);
         
         let sourceWasmType = typeToValType(this.ctx.wasm, sourceType);
@@ -683,6 +693,29 @@ export class FunctionGenerator {
             case _: {
               throw new Error("Unsupported cast in self-hosted compiler: " + typeToString(sourceType) + " to " + typeToString(targetType));
             }
+          }
+        }
+      }
+      case IsExpression: {
+        let isExpr = expr as IsExpression;
+        this.generateExpression(isExpr.expression);
+        
+        let targetType = this.ctx.wasmFunction.model.getNodeType(isExpr.typeAnnotation);
+        if (targetType == null) {
+          throw new Error("IsExpression target type not found in model");
+        }
+        
+        let targetWasmType = typeToValType(this.ctx.wasm, targetType as Type);
+        
+        match (targetWasmType) {
+          case ValTypeRefNull as targetRefNull: {
+            this.ctx.emitter.emitRefTest(targetRefNull.target.index);
+          }
+          case ValTypeRef as targetRef: {
+            this.ctx.emitter.emitRefTest(targetRef.target.index);
+          }
+          case _: {
+            throw new Error("Unsupported target type for 'is' check in self-hosted compiler: " + typeToString(targetType as Type));
           }
         }
       }

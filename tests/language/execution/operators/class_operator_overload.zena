@@ -1,0 +1,76 @@
+// @mode: run
+// @stdout: true\nfalse\ntrue\ntrue\nfalse\nfalse\ntrue\n6\ntrue\ntrue
+import { console } from 'zena:console';
+
+let btos = (b: boolean): String => if (b) "true" else "false";
+
+class Vector {
+  x: i32;
+  y: i32;
+
+  new(this.x, this.y);
+
+  operator +(other: Vector): Vector {
+    return new Vector(this.x + other.x, this.y + other.y);
+  }
+
+  operator ==(other: Vector): boolean {
+    return this.x == other.x && this.y == other.y;
+  }
+}
+
+class Vector3D extends Vector {
+  z: i32;
+
+  new(x: i32, y: i32, this.z) : super(x, y);
+
+  operator +(other: Vector): Vector {
+    if (other is Vector3D) {
+      let o = other as Vector3D;
+      return new Vector3D(this.x + o.x, this.y + o.y, this.z + o.z);
+    }
+    return new Vector(this.x + other.x, this.y + other.y);
+  }
+
+  operator ==(other: Vector): boolean {
+    if (other is Vector3D) {
+      let o = other as Vector3D;
+      return this.x == o.x && this.y == o.y && this.z == o.z;
+    }
+    return false;
+  }
+}
+
+export let main = (): void => {
+  let v1 = new Vector(1, 2);
+  let v2 = new Vector(3, 4);
+
+  // 1. Vector addition
+  let v3 = v1 + v2;
+  console.log(btos(v3.x == 4 && v3.y == 6)); // true
+
+  // 2. Vector equality
+  console.log(btos(v1 == v2)); // false
+  console.log(btos(v1 == new Vector(1, 2))); // true
+
+  // 3. Dynamic dispatch on Vector3D overrides
+  let w1: Vector = new Vector3D(1, 2, 3);
+  let w2: Vector = new Vector3D(1, 2, 3);
+  let w3: Vector = new Vector3D(1, 2, 4);
+  let w4: Vector = new Vector(1, 2);
+
+  console.log(btos(w1 == w2)); // true (Vector3D.==)
+  console.log(btos(w1 == w3)); // false (Vector3D.==)
+  console.log(btos(w1 == w4)); // false (Vector3D.==)
+
+  let w5 = w1 + w2; // dynamically calls Vector3D.+
+  console.log(btos(w5 is Vector3D)); // true
+  if (w5 is Vector3D) {
+    let w5_3d = w5 as Vector3D;
+    console.log(if (w5_3d.z == 6) "6" else "error");
+  }
+
+  // 4. Strict identity checks
+  console.log(btos(w1 === w1)); // true (same reference)
+  console.log(btos(w1 !== w2)); // true (different reference, even though w1 == w2 is true)
+};

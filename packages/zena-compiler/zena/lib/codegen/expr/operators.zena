@@ -1,16 +1,17 @@
 import { Node, UnaryExpression, BinaryExpression, Expression } from '../../ast.zena';
 import { Type, F64Type, F32Type, I32Type, RecordType, ClassType, ArrayType,
   AnyType, isFloatType, baseType, typeToString,
-  InterfaceType, TypeParameterType, ThisType, AnyRefType, EqRefType, FunctionType, TupleType, NullType
+  InterfaceType, TypeParameterType, ThisType, AnyRefType, EqRefType, FunctionType, TupleType, NullType,
+  isRefType
 } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { ValType, ValTypeI32, ValTypeAnyRef } from '../wasm.zena';
 import { WasmField, WasmFunction } from '../wasm-module.zena';
-import { getClassKey } from '../codegen-utils.zena';
-import { typeToValType } from '../type-mapping.zena';
+import { getClassKey, getSignatureKey } from '../codegen-utils.zena';
+import { typeToValType, getClassMemberSignature } from '../type-mapping.zena';
 import { Array } from 'zena:array';
-
+ 
 export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (un.operator == "-") {
     let rawType = ctx.wasmFunction.model.getNodeType(un);
@@ -34,8 +35,9 @@ export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression,
     throw new Error("Unsupported unary operator: " + un.operator);
   }
 };
-
+ 
 export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
+  // 1. Short-circuiting logical operators (&&, ||)
   if (bin.operator == "&&") {
     genExpr(bin.left, false);
     ctx.emitter.emitIf(new ValTypeI32());
@@ -45,7 +47,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     ctx.emitter.emitEnd();
     return;
   }
-
+ 
   if (bin.operator == "||") {
     genExpr(bin.left, false);
     ctx.emitter.emitIf(new ValTypeI32());
@@ -55,7 +57,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     ctx.emitter.emitEnd();
     return;
   }
-
+ 
   let model = ctx.wasmFunction.model;
   let leftType = model.getNodeType(bin.left);
   let rightType = model.getNodeType(bin.right);
@@ -63,131 +65,152 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
   if (leftType == null || rightType == null) {
     throw new Error("Missing type info in semantic model for binary expression operands");
   }
-
-  let isRefType = (t: Type): boolean => {
-    return t is RecordType || t is ClassType || t is ArrayType || t is AnyType || 
-           t is InterfaceType || t is TypeParameterType || t is ThisType || 
-           t is AnyRefType || t is EqRefType || t is FunctionType || 
-           t is TupleType || t is NullType;
-  };
-  let isRefContext = isRefType(leftType) || isRefType(rightType);
-  
-  if (bin.operator == "&&") {
-    genExpr(bin.left, false);
-    ctx.emitter.emitIf(new ValTypeI32());
-    genExpr(bin.right, false);
-    ctx.emitter.emitElse();
-    ctx.emitter.emitI32Const(0);
-    ctx.emitter.emitEnd();
-    return;
-  }
-  if (bin.operator == "||") {
-    genExpr(bin.left, false);
-    ctx.emitter.emitIf(new ValTypeI32());
-    ctx.emitter.emitI32Const(1);
-    ctx.emitter.emitElse();
-    genExpr(bin.right, false);
-    ctx.emitter.emitEnd();
-    return;
-  }
-  
-  var isFloatContext = false;
-  if (leftType is F64Type || rightType is F64Type || leftType is F32Type || rightType is F32Type) {
-      isFloatContext = true;
-  }
-
-    // Implicit F64 upconversion logic
-    if (isFloatContext && !(leftType is F64Type) && !(leftType is F32Type)) {
-      genExpr(bin.left, false);
-      ctx.emitter.emitF64ConvertI32S();
-    } else {
-      genExpr(bin.left, false);
-      if (leftType is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-        let leftRT = leftType as RecordType;
-        let leftFields = new Array<WasmField>();
-        for (let pair in leftRT.properties) {
-          leftFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
+ 
+  let leftBase = baseType(leftType);
+  let rightBase = baseType(rightType);
+ 
+  let isRefContext = isRefType(leftBase) || isRefType(rightBase);
+  let isFloatContext = isFloatType(leftBase) || isFloatType(rightBase);
+ 
+  // 2. Check for class overloaded operators (if the operator is overridable)
+  // Non-overridable operators: ===, !==
+  if (bin.operator != "===" && bin.operator != "!==") {
+    if (leftBase is ClassType) {
+      let ct = leftBase as ClassType;
+      let opMember = if (bin.operator == "!=") "==" else bin.operator;
+      if (ct.members.has(opMember)) {
+        // Evaluate left and right operands onto the stack first
+        genExpr(bin.left, false);
+        genExpr(bin.right, false);
+ 
+        // Find the operator function
+        let lookupName = opMember;
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = ct;
+        while (currClass != null && foundFunc == null) {
+          for (let f in ctx.wasm.functions) {
+            if (f.classType != null && !f.isStatic && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == lookupName) {
+              foundFunc = f;
+              break;
+            }
+          }
+          currClass = (currClass as ClassType).superType;
         }
-        let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, leftFields);
-        ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
-        ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
-        ctx.emitter.emitRefCastEq();
-      } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-        let leftWasmType = typeToValType(ctx.wasm, leftType);
-        if (leftWasmType is ValTypeAnyRef) {
-          ctx.emitter.emitRefCastEq();
+ 
+        if (foundFunc != null) {
+          if (ct.isFinal) {
+            // Direct static call
+            ctx.emitter.emitCall(foundFunc as WasmFunction);
+          } else {
+            // Dynamic dispatch via vtable
+            let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+            let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+            
+            var methodIndex = -1;
+            for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+              if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == lookupName) {
+                methodIndex = i;
+              }
+            }
+            
+            if (methodIndex != -1) {
+              let rightValType = typeToValType(ctx.wasm, rightType);
+              let rightLocal = ctx.allocLocal(rightValType);
+              ctx.emitter.emitLocalSet(rightLocal);
+              
+              let scratchLocal = ctx.getStructScratchLocal(structInfo);
+              ctx.emitter.emitLocalTee(scratchLocal);
+              
+              ctx.emitter.emitLocalGet(rightLocal);
+              
+              ctx.emitter.emitLocalGet(scratchLocal);
+              ctx.emitter.emitRefCast(structInfo.index);
+              ctx.emitter.emitStructGet(structInfo.index, 0);
+              ctx.emitter.emitRefCast(vtableStruct.index);
+              ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
+              
+              let sig = getClassMemberSignature(ctx.wasm, ct, lookupName);
+              ctx.emitter.emitRefCast(sig.index);
+              ctx.emitter.emitCallRef(sig.index);
+            } else {
+              throw new Error("Method not found in vtable: " + lookupName);
+            }
+          }
+ 
+          // If the operator was !=, negate the boolean result of ==
+          if (bin.operator == "!=") {
+            ctx.emitter.emitI32Eqz();
+          }
+          return;
         }
       }
     }
-
-    if (isFloatContext && !(rightType is F64Type) && !(rightType is F32Type)) {
-      genExpr(bin.right, false);
-      ctx.emitter.emitF64ConvertI32S();
-    } else {
-      genExpr(bin.right, false);
-      if (rightType is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-        let rightRT = rightType as RecordType;
-        let rightFields = new Array<WasmField>();
-        for (let pair in rightRT.properties) {
-          rightFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
-        }
-        let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, rightFields);
-        ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
-        ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
+  }
+ 
+  // 3. Built-in (non-overloaded) operations
+  // Evaluate left operand
+  if (isFloatContext && !isFloatType(leftBase)) {
+    genExpr(bin.left, false);
+    ctx.emitter.emitF64ConvertI32S();
+  } else {
+    genExpr(bin.left, false);
+    if (leftBase is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+      let leftRT = leftBase as RecordType;
+      let leftFields = new Array<WasmField>();
+      for (let pair in leftRT.properties) {
+        leftFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
+      }
+      let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, leftFields);
+      ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
+      ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
+      ctx.emitter.emitRefCastEq();
+    } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+      let leftWasmType = typeToValType(ctx.wasm, leftType);
+      if (leftWasmType is ValTypeAnyRef) {
         ctx.emitter.emitRefCastEq();
-      } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-        let rightWasmType = typeToValType(ctx.wasm, rightType);
-        if (rightWasmType is ValTypeAnyRef) {
-          ctx.emitter.emitRefCastEq();
-        }
       }
     }
-    
-    if (isRefContext) {
-      match (bin.operator) {
-        case "==": {
-          var eqFunc: WasmFunction | null = null;
-          if (leftType is ClassType) {
-            let ct = leftType as ClassType;
-            for (let f in ctx.wasm.functions) {
-              if (f.classType != null && (f.classType as ClassType).id == ct.id && f.methodName == "==") {
-                eqFunc = f;
-                break;
-              }
-            }
-          }
-          if (eqFunc != null) {
-            ctx.emitter.emitCall(eqFunc as WasmFunction);
-          } else {
-            ctx.emitter.emitRefEq();
-          }
-        }
-        case "!=": {
-          var eqFunc: WasmFunction | null = null;
-          if (leftType is ClassType) {
-            let ct = leftType as ClassType;
-            for (let f in ctx.wasm.functions) {
-              if (f.classType != null && (f.classType as ClassType).id == ct.id && f.methodName == "==") {
-                eqFunc = f;
-                break;
-              }
-            }
-          }
-          if (eqFunc != null) {
-            ctx.emitter.emitCall(eqFunc as WasmFunction);
-          } else {
-            ctx.emitter.emitRefEq();
-          }
-          ctx.emitter.emitI32Eqz();
-        }
-        case "===": ctx.emitter.emitRefEq()
-        case "!==": {
-           ctx.emitter.emitRefEq();
-           ctx.emitter.emitI32Eqz();
-        }
-        case _: throw new Error("Unsupported operator for references: " + bin.operator)
+  }
+ 
+  // Evaluate right operand
+  if (isFloatContext && !isFloatType(rightBase)) {
+    genExpr(bin.right, false);
+    ctx.emitter.emitF64ConvertI32S();
+  } else {
+    genExpr(bin.right, false);
+    if (rightBase is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+      let rightRT = rightBase as RecordType;
+      let rightFields = new Array<WasmField>();
+      for (let pair in rightRT.properties) {
+        rightFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
       }
-    } else if (isFloatContext) {
+      let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, rightFields);
+      ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
+      ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
+      ctx.emitter.emitRefCastEq();
+    } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+      let rightWasmType = typeToValType(ctx.wasm, rightType);
+      if (rightWasmType is ValTypeAnyRef) {
+        ctx.emitter.emitRefCastEq();
+      }
+    }
+  }
+ 
+  if (isRefContext) {
+    match (bin.operator) {
+      case "==": ctx.emitter.emitRefEq()
+      case "!=": {
+        ctx.emitter.emitRefEq();
+        ctx.emitter.emitI32Eqz();
+      }
+      case "===": ctx.emitter.emitRefEq()
+      case "!==": {
+        ctx.emitter.emitRefEq();
+        ctx.emitter.emitI32Eqz();
+      }
+      case _: throw new Error("Unsupported operator for references: " + bin.operator)
+    }
+  } else if (isFloatContext) {
     match (bin.operator) {
       case "+": ctx.emitter.emitF64Add()
       case "-": ctx.emitter.emitF64Sub()

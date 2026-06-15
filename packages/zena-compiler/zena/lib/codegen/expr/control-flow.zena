@@ -4,6 +4,7 @@ import { Type, F64Type, F32Type, VoidType } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
+import { typeToValType } from '../type-mapping.zena';
 
 export let generateIfExpression = (
   ctx: FunctionContext, 
@@ -14,14 +15,8 @@ export let generateIfExpression = (
 ): void => {
   let nodeType = ctx.wasmFunction.model.getNodeType(expr);
   var resultValType: ValType = new ValTypeVoid();
-  if (!discardValue) {
-    if (nodeType is F64Type) {
-      resultValType = new ValTypeF64();
-    } else if (nodeType is F32Type) {
-      resultValType = new ValTypeF32();
-    } else if (!(nodeType is VoidType)) {
-      resultValType = new ValTypeI32();
-    }
+  if (!discardValue && nodeType != null && !(nodeType is VoidType)) {
+    resultValType = typeToValType(ctx.wasm, nodeType as Type);
   }
 
   genExpr(expr.test as Expression, false);

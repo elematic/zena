@@ -44,7 +44,6 @@ async function run() {
     'class-field.zena', // Class field default initializers/access limitations
     'private-field.zena', // Private field access boundaries not fully enforced in codegen
     'param-default-fresh.zena', // Parameter default expression evaluation scoping
-    'string-plus-equals.zena', // String concatenation / plus-equals operator support
     'string-array-plus-equals.zena', // String array concatenation operator support
     'nullable-ref.zena', // Nullable reference wrapping/unwrapping
     'downcast.zena', // Class initialization error when no constructor?
@@ -101,6 +100,7 @@ async function run() {
         ) {
           expectedStdout = expectedStdout.slice(1, -1);
         }
+        expectedStdout = expectedStdout.replace(/\\n/g, '\n');
       }
 
       const matchInvoke = line.match(/\/\/\s*@invoke:\s*(\S+)/);
