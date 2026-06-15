@@ -699,9 +699,7 @@ async function runExecutionTest(
       }
 
       if (actual !== directives.result) {
-        throw new Error(
-          `Expected result ${directives.result}, got ${actual} (raw: ${ret})`,
-        );
+        throw new Error(`Expected result ${directives.result}, got ${actual}`);
       }
     }
   }

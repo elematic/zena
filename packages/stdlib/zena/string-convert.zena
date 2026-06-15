@@ -688,3 +688,83 @@ export let parseF64 = (s: String): f64 => {
   if (negative) { result = (0.0 as f64) - result; }
   return result;
 };
+
+/**
+ * Parse an i64 integer from a string, supporting optional leading sign,
+ * optional hex prefix (0x or 0X), and optional underscores (_).
+ * Returns `inline (true, value)` on success, `inline (false, _)` on failure.
+ */
+export let parseI64 = (s: String): inline (true, i64) | inline (false, _) => {
+  if (s.length == 0) {
+    return (false, _);
+  }
+  var isNeg = false;
+  var start = 0;
+  let first = s.getByteAt(0);
+  if (first == 45) { // '-'
+    isNeg = true;
+    start = 1;
+  } else if (first == 43) { // '+'
+    start = 1;
+  }
+  if (start >= s.length) {
+    return (false, _);
+  }
+  
+  var isHex = false;
+  if (start + 2 <= s.length) {
+    let c0 = s.getByteAt(start);
+    let c1 = s.getByteAt(start + 1);
+    if (c0 == 48 && (c1 == 120 || c1 == 88)) { // '0' and ('x' or 'X')
+      isHex = true;
+      start = start + 2;
+    }
+  }
+  if (start >= s.length) {
+    return (false, _);
+  }
+
+  var res: u64 = 0 as u64;
+  var i = start;
+  let ten = 10 as u64;
+  let sixteen = 16 as u64;
+  var hasDigits = false;
+  
+  while (i < s.length) {
+    let code = s.getByteAt(i);
+    var digit = -1;
+    if (code >= 48 && code <= 57) { // '0'..'9'
+      digit = code - 48;
+    } else if (isHex && code >= 97 && code <= 102) { // 'a'..'f'
+      digit = code - 97 + 10;
+    } else if (isHex && code >= 65 && code <= 70) { // 'A'..'F'
+      digit = code - 65 + 10;
+    } else if (code == 95) { // '_'
+      i += 1;
+      continue;
+    } else {
+      return (false, _);
+    }
+    
+    let base = if (isHex) sixteen else ten;
+    let limit: u64 = if (isNeg) (9223372036854775807 as u64) + (1 as u64) else 9223372036854775807 as u64;
+
+    let limitDivBase = div(limit, base);
+    let limitModBase = (limit - div(limit, base) * base) as i32;
+
+    if (res > limitDivBase || (res == limitDivBase && digit > limitModBase)) {
+      return (false, _);
+    }
+    
+    res = res * base + (digit as u64);
+    hasDigits = true;
+    i += 1;
+  }
+  
+  if (!hasDigits) {
+    return (false, _);
+  }
+
+  let finalVal: i64 = if (isNeg) (0 as i64) - (res as i64) else res as i64;
+  return (true, finalVal);
+};

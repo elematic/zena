@@ -1,5 +1,5 @@
 import { Node, UnaryExpression, BinaryExpression, Expression, NullLiteral } from '../../ast.zena';
-import { Type, F64Type, F32Type, I32Type, RecordType, ClassType, ArrayType,
+import { Type, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, RecordType, ClassType, ArrayType,
   AnyType, isFloatType, baseType, typeToString,
   InterfaceType, TypeParameterType, ThisType, AnyRefType, EqRefType, FunctionType, TupleType, NullType,
   isRefType
@@ -88,6 +88,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
  
   let isRefContext = isRefType(leftBase) || isRefType(rightBase);
   let isFloatContext = isFloatType(leftBase) || isFloatType(rightBase);
+  let isI64Context = leftBase is I64Type || leftBase is U64Type || rightBase is I64Type || rightBase is U64Type;
  
   // 2. Check for class overloaded operators (if the operator is overridable)
   // Non-overridable operators: ===, !==
@@ -243,26 +244,51 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
       case ">=": ctx.emitter.emitF64Ge()
       case _: throw new Error("Unsupported operator for f64: " + bin.operator)
     }
+  } else if (isI64Context) {
+    let useUnsigned = leftBase is U32Type || leftBase is U64Type || rightBase is U32Type || rightBase is U64Type;
+    match (bin.operator) {
+      case "+": ctx.emitter.emitI64Add()
+      case "-": ctx.emitter.emitI64Sub()
+      case "*": ctx.emitter.emitI64Mul()
+      case "/": if (useUnsigned) ctx.emitter.emitI64DivU() else ctx.emitter.emitI64DivS()
+      case "%": if (useUnsigned) ctx.emitter.emitI64RemU() else ctx.emitter.emitI64RemS()
+      case "==": ctx.emitter.emitI64Eq()
+      case "!=": ctx.emitter.emitI64Ne()
+      case "===": ctx.emitter.emitI64Eq()
+      case "!==": ctx.emitter.emitI64Ne()
+      case "<": if (useUnsigned) ctx.emitter.emitI64LtU() else ctx.emitter.emitI64LtS()
+      case "<=": if (useUnsigned) ctx.emitter.emitI64LeU() else ctx.emitter.emitI64LeS()
+      case ">": if (useUnsigned) ctx.emitter.emitI64GtU() else ctx.emitter.emitI64GtS()
+      case ">=": if (useUnsigned) ctx.emitter.emitI64GeU() else ctx.emitter.emitI64GeS()
+      case "&": ctx.emitter.emitI64And()
+      case "|": ctx.emitter.emitI64Or()
+      case "^": ctx.emitter.emitI64Xor()
+      case "<<": ctx.emitter.emitI64Shl()
+      case ">>": if (useUnsigned) ctx.emitter.emitI64ShrU() else ctx.emitter.emitI64ShrS()
+      case ">>>": ctx.emitter.emitI64ShrU()
+      case _: throw new Error("Unsupported operator for i64: " + bin.operator)
+    }
   } else {
+    let useUnsigned = leftBase is U32Type || rightBase is U32Type;
     match (bin.operator) {
       case "+": ctx.emitter.emitI32Add()
       case "-": ctx.emitter.emitI32Sub()
       case "*": ctx.emitter.emitI32Mul()
-      case "/": ctx.emitter.emitI32DivS()
-      case "%": ctx.emitter.emitI32RemS()
+      case "/": if (useUnsigned) ctx.emitter.emitI32DivU() else ctx.emitter.emitI32DivS()
+      case "%": if (useUnsigned) ctx.emitter.emitI32RemU() else ctx.emitter.emitI32RemS()
       case "==": ctx.emitter.emitI32Eq()
       case "!=": ctx.emitter.emitI32Ne()
       case "===": ctx.emitter.emitI32Eq()
       case "!==": ctx.emitter.emitI32Ne()
-      case "<": ctx.emitter.emitI32LtS()
-      case "<=": ctx.emitter.emitI32LeS()
-      case ">": ctx.emitter.emitI32GtS()
-      case ">=": ctx.emitter.emitI32GeS()
+      case "<": if (useUnsigned) ctx.emitter.emitI32LtU() else ctx.emitter.emitI32LtS()
+      case "<=": if (useUnsigned) ctx.emitter.emitI32LeU() else ctx.emitter.emitI32LeS()
+      case ">": if (useUnsigned) ctx.emitter.emitI32GtU() else ctx.emitter.emitI32GtS()
+      case ">=": if (useUnsigned) ctx.emitter.emitI32GeU() else ctx.emitter.emitI32GeS()
       case "&": ctx.emitter.emitI32And()
       case "|": ctx.emitter.emitI32Or()
       case "^": ctx.emitter.emitI32Xor()
       case "<<": ctx.emitter.emitI32Shl()
-      case ">>": ctx.emitter.emitI32ShrS()
+      case ">>": if (useUnsigned) ctx.emitter.emitI32ShrU() else ctx.emitter.emitI32ShrS()
       case ">>>": ctx.emitter.emitI32ShrU()
       case _: throw new Error("Unsupported operator for i32: " + bin.operator)
     }

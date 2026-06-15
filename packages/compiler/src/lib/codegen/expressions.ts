@@ -10645,7 +10645,7 @@ function generateTemplateLiteral(
       ctx,
       {
         type: NodeType.StringLiteral,
-        value: expr.quasis[0].value.raw,
+        value: expr.quasis[0].value.cooked,
       } as StringLiteral,
       body,
     );
@@ -10660,7 +10660,7 @@ function generateTemplateLiteral(
       ctx,
       {
         type: NodeType.StringLiteral,
-        value: expr.quasis[i].value.raw,
+        value: expr.quasis[i].value.cooked,
       } as StringLiteral,
       body,
     );
@@ -10678,7 +10678,7 @@ function generateTemplateLiteral(
     ctx,
     {
       type: NodeType.StringLiteral,
-      value: expr.quasis[expr.quasis.length - 1].value.raw,
+      value: expr.quasis[expr.quasis.length - 1].value.cooked,
     } as StringLiteral,
     body,
   );

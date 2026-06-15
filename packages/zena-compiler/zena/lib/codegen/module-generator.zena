@@ -1,4 +1,4 @@
-import { ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeStructRef } from './wasm.zena';
+import { ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeStructRef } from './wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature,
   WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, WasmTag
 } from './wasm-module.zena';
@@ -10,7 +10,7 @@ import { Node, VariableDeclaration, IdentifierPattern, Expression, NumberLiteral
 import { String } from 'zena:string';
 import { walk } from '../visitor.zena';
 import { ValType } from './wasm.zena';
-import { parseI32, parseF64 } from 'zena:string-convert';
+import { parseI32, parseF64, parseI64 } from 'zena:string-convert';
 import { Array } from 'zena:array';
 import { FunctionGenerator } from './function-generator.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
@@ -199,13 +199,19 @@ export class ModuleGenerator {
                 } else {
                   this.emitter.emitI32Const(0);
                 }
+             } else if (type is ValTypeI64 ) {
+                if (let (true, val) = parseI64(raw)) {
+                  this.emitter.emitI64Const(val);
+                } else {
+                  this.emitter.emitI64Const(0 as i64);
+                }
              } else if (type is ValTypeF64 ) {
                 this.emitter.emitF64Const(parseF64(raw));
              } else if (type is ValTypeF32 ) {
                 this.emitter.emitF32Const(parseF64(raw)); // f32 requires casting
              } else {
-               this.emitter.emitI32Const(0);
-             }
+                this.emitter.emitI32Const(0);
+              }
              emitted = true;
           }
           case BooleanLiteral {value}: {
@@ -235,6 +241,8 @@ export class ModuleGenerator {
         let type = g.type;
         if (type is ValTypeI32) {
           this.emitter.emitI32Const(0);
+        } else if (type is ValTypeI64) {
+          this.emitter.emitI64Const(0 as i64);
         } else if (type is ValTypeF64) {
           this.emitter.emitF64Const(0.0);
         } else if (type is ValTypeF32) {

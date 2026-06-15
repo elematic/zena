@@ -9,7 +9,8 @@ import {
   ContinueStatement, RecordLiteral, ArrayLiteral, TupleLiteral, MemberExpression,
   AsExpression, IsExpression, PipelineExpression, IndexExpression, PropertyAssignment,
   AsPattern, ClassPattern, RecordPattern, TuplePattern, LogicalPattern, BindingPattern,
-  NullLiteral, MatchExpression, MatchCase, BindingProperty, ForInStatement, ThrowExpression, TryExpression, CatchClause
+  NullLiteral, MatchExpression, MatchCase, BindingProperty, ForInStatement, ThrowExpression, TryExpression, CatchClause,
+  TemplateLiteral, TaggedTemplateExpression
 } from '../ast.zena';
 import { Type, F64Type, F32Type, FunctionType } from '../types.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
@@ -127,6 +128,17 @@ export let discoverLocalsFromExpr = (ctx: FunctionContext, expr: Expression, dis
         discStmt(finalizer as BlockStatement);
       }
     }
+    case TemplateLiteral {expressions}: {
+      for (let el in expressions) {
+        discExpr(el);
+      }
+    }
+    case TaggedTemplateExpression {tag, quasi}: {
+      discExpr(tag);
+      for (let el in quasi.expressions) {
+        discExpr(el);
+      }
+    }
     case _: {}
   }
 };
@@ -182,24 +194,7 @@ export let discoverLocalsFromStmt = (ctx: FunctionContext, stmt: Statement, disc
       if (decl.init != null) {
         discExpr(decl.init as Expression);
       }
-      if (decl.pattern is IdentifierPattern) {
-        let ident = decl.pattern as IdentifierPattern;
-        let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
-        if (sym != null) {
-          let varType = ctx.wasmFunction.model.getNodeType(ident);
-          var vType: ValType = new ValTypeI32();
-          if (varType != null) {
-            vType = typeToValType(ctx.wasm, varType);
-          }
-          if (ctx.isCelled(sym.id)) {
-            let cellStruct = getCellStruct(ctx.wasm, vType);
-            vType = new ValTypeRefNull(cellStruct);
-          }
-          let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
-          ctx.localIndices[sym.id] = index;
-          ctx.localTypes.push(vType);
-        }
-      }
+      discoverLocalsFromPattern(ctx, decl.pattern);
     }
     case _: {}
   }

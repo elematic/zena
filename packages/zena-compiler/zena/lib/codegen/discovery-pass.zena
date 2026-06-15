@@ -6,7 +6,7 @@ import {
   TypeAliasDeclaration, RecordLiteral, MethodDefinition, FieldDefinition,
   AccessorDeclaration, SetterInfo, SuperInitializer, TypeParameter, MixinDeclaration,
   Parameter, TypeAnnotation, Decorator, Pattern, MemberExpression, AssignmentExpression, IndexExpression,
-  SymbolPropertyName, TemplateElement, EnumDeclaration, ForInStatement
+  SymbolPropertyName, TemplateElement, EnumDeclaration, ForInStatement, TaggedTemplateExpression
 } from '../ast.zena';
 import { walk } from '../visitor.zena';
 import { RecordType, TupleType } from '../types.zena';
@@ -36,7 +36,7 @@ import {
   ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey,
   ExportKey, ExportGlobalKey, getClassInterfaceKey, getInterfaceMemberKey,
   getClassPrivateFieldKey, getClassVTableName, getClassSingletonName,
-  getInterfaceTrampolineName, getClassInterfaceVTableName, isStringClassKey,
+  getInterfaceTrampolineName, getClassInterfaceVTableName,
   MixinKey, getMixinKey, classInterfaceKeyToString, getMixinKeyFromSymbol
 } from './codegen-utils.zena';
 import { 
@@ -57,17 +57,27 @@ export class DiscoveryPass {
   
   getClassType(node: ClassDeclaration, model: SemanticModel): ClassType | null {
     let t = model.getNodeType(node);
+    var ret: ClassType | null = null;
     if (t is ClassType) {
-      return t as ClassType;
-    }
-    let sym = model.resolve(node);
-    if (sym != null) {
-      let bt = model.getBindingType(sym);
-      if (bt is ClassType) {
-        return bt as ClassType;
+      ret = t as ClassType;
+    } else {
+      let sym = model.resolve(node);
+      if (sym != null) {
+        let bt = model.getBindingType(sym);
+        if (bt is ClassType) {
+          ret = bt as ClassType;
+        }
       }
     }
-    return null;
+    if (ret != null) {
+      let r = ret as ClassType;
+      if (r.name == "String" && r.sourcePath == "zena:string") {
+        this.wasm.stringClass = r;
+      } else if (r.name == "TemplateStringsArray" && r.sourcePath == "zena:template-strings-array") {
+        this.wasm.templateStringsArrayClass = r;
+      }
+    }
+    return ret;
   }
 
   findPreludeInterface(name: String): InterfaceType | null {
@@ -113,6 +123,11 @@ export class DiscoveryPass {
         getClosureStruct(this.wasm, ft);
      } else if (t is ClassType) {
         let ct = t as ClassType;
+        if (ct.name == "String" && ct.sourcePath == "zena:string") {
+           this.wasm.stringClass = ct;
+        } else if (ct.name == "TemplateStringsArray" && ct.sourcePath == "zena:template-strings-array") {
+           this.wasm.templateStringsArrayClass = ct;
+        }
         for (let pair in ct.members) {
            if (pair.value is FieldInfo) {
               this.discoverType(pair.value.type, model);
@@ -323,8 +338,10 @@ export class DiscoveryPass {
     
     // 4. Register signature: (i32, ref null $String) -> void for wasi_write_string_helper
     var stringStruct: WasmStruct | null = null;
-    for (let key in this.wasm.classStructs.keys()) {
-      if (isStringClassKey(key)) {
+    let stringClass = this.wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (this.wasm.classStructs.has(key)) {
         stringStruct = this.wasm.classStructs[key];
       }
     }
@@ -585,11 +602,10 @@ export class DiscoveryPass {
       });
     }
 
+    // Pass 0: Pre-register empty WasmStructs for all nominal classes and interfaces across all units to break cyclic dependencies
     for (let unit in this.program.units) {
       let mod = unit.ast;
       let moduleModel = unit.model;
-      
-      // Pass 0: Pre-register empty WasmStructs for all nominal classes to break cyclic dependencies
       walk(mod as Node, (n: Node) => true, (n: Node) => {
         if (n is ClassDeclaration) {
           let classDecl = n as ClassDeclaration;
@@ -644,6 +660,11 @@ export class DiscoveryPass {
           }
         }
       });
+    }
+
+    for (let unit in this.program.units) {
+      let mod = unit.ast;
+      let moduleModel = unit.model;
       
       // Pass 0.5: Link superStruct for inheritance and figure out vtable array
       walk(mod as Node, (n: Node) => true, (n: Node) => {
@@ -863,6 +884,37 @@ export class DiscoveryPass {
         if (n is TemplateElement) {
           let tmplEl = n as TemplateElement;
           this.wasm.getStringLiteralDataIndex(tmplEl.cooked);
+        }
+        
+        if (n is TaggedTemplateExpression) {
+          let expr = n as TaggedTemplateExpression;
+          if (!this.wasm.templateLiteralGlobals.has(expr)) {
+            var tsaStruct: WasmStruct | null = null;
+            let tsaClass = this.wasm.templateStringsArrayClass;
+            if (tsaClass != null) {
+              let key = getClassKey(tsaClass as ClassType);
+              if (this.wasm.classStructs.has(key)) {
+                tsaStruct = this.wasm.classStructs[key];
+              }
+            }
+            if (tsaStruct == null) {
+              throw new Error("TemplateStringsArray class struct not found during tagged template literal discovery!");
+            }
+            
+            let globalName = "tsa_cache_" + i32ToString(expr.id as i32);
+            let globalType = new ValTypeRefNull(tsaStruct);
+            let g = new WasmGlobal(
+              globalName,
+              globalName,
+              globalType,
+              true, // isMutable
+              null, // initExpr
+              null, // initVTable
+              moduleModel
+            );
+            this.wasm.globals.push(g);
+            this.wasm.templateLiteralGlobals[expr] = g;
+          }
         }
         
         if (n is Expression) {
@@ -1428,7 +1480,7 @@ export class DiscoveryPass {
                 if (dec.name == 'intrinsic') {
                   if (dec.args.length == 1) {
                     let intrinsicName = dec.args[0].value;
-                    this.wasm.intrinsics[sym.id] = intrinsicName;
+                    this.wasm.intrinsics[decl.id] = intrinsicName;
                     if (intrinsicName == "wasi_write_string") {
                       this.registerWasiInfra(moduleModel);
                     }
@@ -1816,9 +1868,7 @@ export class DiscoveryPass {
       for (let p in ft.parameters) {
         params.push(typeToValType(this.wasm, p));
       }
-      if (!(ft.returnType is VoidType)) {
-        returns.push(typeToValType(this.wasm, ft.returnType));
-      }
+      mapReturnTypeToWasmResults(this.wasm, ft.returnType, returns);
     } else {
       returns.push(new ValTypeI32());
     }

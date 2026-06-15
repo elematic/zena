@@ -1,6 +1,7 @@
-import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration } from '../../ast.zena';
+import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration } from '../../ast.zena';
 import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
+import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature } from '../wasm-module.zena';
@@ -9,6 +10,7 @@ import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, ge
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { generateGlobalIntrinsic, generateArrayIntrinsic, isArrayIntrinsic } from './intrinsics.zena';
+import { dirName, normalizePath } from '../../module-resolver.zena';
 
 let generateClosureCall = (
   ctx: FunctionContext,
@@ -67,8 +69,9 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       let ident = call.callee as Identifier;
       let sym = ctx.wasmFunction.model.resolve(ident);
       if (sym != null) {
+        let targetDecl = findDeclaration(ctx, sym as Symbol, ft);
         if (ctx.wasm.functionMap.has((sym as Symbol).id) || 
-            ctx.wasm.intrinsics.has((sym as Symbol).id) || 
+            (targetDecl != null && ctx.wasm.intrinsics.has((targetDecl as DeclareFunction).id)) || 
             (sym as Symbol).declaration is ImportSpecifier) {
           isDirectCall = true;
         }
@@ -135,8 +138,11 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         throw new Error("Unresolved identifier in codegen: " + ident.name);
       }
 
-      if (let (true, intrinsic) = ctx.wasm.intrinsics.get((sym as Symbol).id)) {
-        generateGlobalIntrinsic(ctx, intrinsic, call, genExpr);
+      // Resolve the DeclareFunction for the symbol (accounting for overloads)
+      let targetDecl = findDeclaration(ctx, sym as Symbol, ft);
+      if (targetDecl != null && ctx.wasm.intrinsics.has((targetDecl as DeclareFunction).id)) {
+        let intrinsicName = ctx.wasm.intrinsics[(targetDecl as DeclareFunction).id];
+        generateGlobalIntrinsic(ctx, intrinsicName, call, genExpr);
         return;
       }
 
@@ -157,6 +163,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       } else if ((sym as Symbol).declaration is ImportSpecifier) {
         let spec = (sym as Symbol).declaration as ImportSpecifier;
         let importedName = spec.imported.name;
+
         if (ctx.wasm.exportMap.has(importedName as ExportKey)) {
           var i = 0;
           while (i < call.args.length) {
@@ -494,4 +501,120 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       throw new Error("Unsupported call expression");
     }        
   }
+};
+
+let matchOverload = (t1: Type, t2: Type): boolean => {
+  if (t1 is FunctionType && t2 is FunctionType) {
+    let ft1 = t1 as FunctionType;
+    let ft2 = t2 as FunctionType;
+    if (ft1.parameters.length != ft2.parameters.length) {
+      return false;
+    }
+    var i = 0;
+    while (i < ft1.parameters.length) {
+      if (typeToString(ft1.parameters[i]) != typeToString(ft2.parameters[i])) {
+        return false;
+      }
+      i += 1;
+    }
+    return true;
+  }
+  return typeToString(t1) == typeToString(t2);
+};
+
+let findModuleNode = (model: SemanticModel, node: Node): Module | null => {
+  var curr: Node | null = node;
+  while (curr != null && !(curr is Module)) {
+    curr = model.getParent(curr as Node);
+  }
+  if (curr == null) return null;
+  return curr as Module;
+};
+
+let findDeclaration = (ctx: FunctionContext, sym: Symbol, expectedType: Type | null): DeclareFunction | null => {
+  let decl = sym.declaration;
+  if (decl == null) return null;
+  
+  if (decl is ImportSpecifier) {
+    let spec = decl as ImportSpecifier;
+    return resolveImportedSymbol(ctx, spec, expectedType);
+  }
+  
+  if (decl is DeclareFunction) {
+    let importedName = sym.name;
+    // Search the current module's body for the correct overload
+    let currentModule = findModuleNode(ctx.wasmFunction.model, ctx.wasmFunction.node);
+    if (currentModule != null) {
+      for (let stmt in (currentModule as Module).body) {
+        match (stmt) {
+          case DeclareFunction {name}: {
+            if (name.name == importedName) {
+              let stmtType = ctx.wasmFunction.model.getNodeType(stmt);
+              if (expectedType == null) {
+                return stmt as DeclareFunction;
+              }
+              if (stmtType != null && matchOverload(stmtType, expectedType)) {
+                return stmt as DeclareFunction;
+              }
+            }
+          }
+          case _: {}
+        }
+      }
+    }
+  }
+  return null;
+};
+
+let resolveImportedSymbol = (ctx: FunctionContext, spec: ImportSpecifier, expectedType: Type | null = null): DeclareFunction | null => {
+  let parentNode = ctx.wasmFunction.model.getParent(spec);
+  if (parentNode == null || !(parentNode is ImportDeclaration)) {
+    return null;
+  }
+  let importDecl = parentNode as ImportDeclaration;
+  let specifier = importDecl.moduleSpecifier.value;
+  
+  // Resolve specifier to its canonical path
+  var canonicalPath = specifier;
+  if (specifier.startsWith("./") || specifier.startsWith("../")) {
+    let referrer = ctx.wasmFunction.model.getParent(importDecl);
+    if (referrer != null && referrer is Module) {
+      let mod = referrer as Module;
+      let dir = dirName(mod.path);
+      canonicalPath = normalizePath(dir + "/" + specifier);
+    }
+  }
+  
+  let prog = ctx.wasm.program;
+  if (prog == null) {
+    return null;
+  }
+  
+  if (!prog.unitsByPath.has(canonicalPath)) {
+    return null;
+  }
+  
+  let targetUnit = prog.unitsByPath[canonicalPath];
+  let importedName = spec.imported.name;
+  
+  for (let stmt in targetUnit.ast.body) {
+    match (stmt) {
+      case DeclareFunction {name}: {
+        if (name.name == importedName) {
+          let stmtSym = targetUnit.model.resolve(stmt);
+          if (stmtSym != null) {
+            let stmtType = targetUnit.model.getNodeType(stmt);
+            if (expectedType == null) {
+              return stmt as DeclareFunction;
+            }
+            if (stmtType != null && matchOverload(stmtType, expectedType)) {
+              return stmt as DeclareFunction;
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+  }
+  return null;
 };

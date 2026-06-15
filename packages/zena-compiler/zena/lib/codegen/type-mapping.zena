@@ -20,8 +20,7 @@ import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
 import { 
   getMemberRootClass, getClassKey, getInterfaceKey, ClassKey, InterfaceKey, 
-  ClassInterfaceKey, InterfaceMemberKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey,
-  isStringClassKey
+  ClassInterfaceKey, InterfaceMemberKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey
 } from './codegen-utils.zena';
 
 export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, fieldName: String): WasmSignature => {
@@ -126,9 +125,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
       for (let p in fType.parameters) {
         params.push(typeToValType(wasm, p));
       }
-      if (!(fType.returnType is VoidType || fType.returnType is NeverType)) {
-        returns.push(typeToValType(wasm, fType.returnType));
-      }
+      mapReturnTypeToWasmResults(wasm, fType.returnType, returns);
     }
     return wasm.getSignature(params, returns);
   }
@@ -184,9 +181,7 @@ export let getClosureStruct = (wasm: WasmModule, ftVal: any): WasmStruct => {
     params.push(typeToValType(wasm, p));
   }
   let returns = new Array<ValType>();
-  if (!(ft.returnType is VoidType || ft.returnType is NeverType)) {
-    returns.push(typeToValType(wasm, ft.returnType));
-  }
+  mapReturnTypeToWasmResults(wasm, ft.returnType, returns);
 
   let implSig = wasm.getSignature(params, returns);
 
@@ -225,8 +220,10 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
   case NumLiteralType as num: typeToValType(wasm, baseType(num))
   case StringLiteralType: {
     var stringStruct: WasmStruct | null = null;
-    for (let key in wasm.classStructs.keys()) {
-      if (isStringClassKey(key)) {
+    let stringClass = wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (wasm.classStructs.has(key)) {
         stringStruct = wasm.classStructs[key];
       }
     }

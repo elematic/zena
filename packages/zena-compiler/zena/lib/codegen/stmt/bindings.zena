@@ -1,7 +1,28 @@
 import { Error } from 'zena:error';
-import { VariableDeclaration, Expression, IdentifierPattern } from '../../ast.zena';
+import { VariableDeclaration, Expression, IdentifierPattern, TuplePattern, Node } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
 import { typeToValType, getCellStruct } from '../type-mapping.zena';
+import { Type, InlineTupleType, UnionType } from '../../types.zena';
+import { Array } from 'zena:array';
+
+let getInlineTupleElementTypes = (t: Type | null): Array<Type> | null => {
+  if (t == null) return null;
+  match (t as Type) {
+    case InlineTupleType: {
+      return (t as InlineTupleType).elementTypes;
+    }
+    case UnionType: {
+      let ut = t as UnionType;
+      for (let member in ut.types) {
+        if (member is InlineTupleType) {
+          return (member as InlineTupleType).elementTypes;
+        }
+      }
+    }
+    case _: {}
+  }
+  return null;
+};
 
 export let generateVariableDeclaration = (ctx: FunctionContext, stmt: VariableDeclaration, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (stmt.init != null) {
@@ -17,6 +38,42 @@ export let generateVariableDeclaration = (ctx: FunctionContext, stmt: VariableDe
           ctx.emitter.emitStructNew(cellStruct.index);
         }
         ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
+      }
+    } else if (stmt.pattern is TuplePattern) {
+      let tp = stmt.pattern as TuplePattern;
+      let initType = ctx.wasmFunction.model.getNodeType(stmt.init as Expression);
+      let inlineElements = getInlineTupleElementTypes(initType);
+      if (inlineElements != null) {
+        let elems = inlineElements as Array<Type>;
+        var i = tp.elements.length - 1;
+        while (i >= 0) {
+          let el = tp.elements[i];
+          if (el != null) {
+            match (el as Node) {
+              case IdentifierPattern: {
+                let ident = el as IdentifierPattern;
+                let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
+                if (sym != null && ctx.localIndices.has(sym.id)) {
+                  if (ctx.isCelled(sym.id)) {
+                    let symType = ctx.wasmFunction.model.getBindingType(sym);
+                    let valType = typeToValType(ctx.wasm, symType);
+                    let cellStruct = getCellStruct(ctx.wasm, valType);
+                    ctx.emitter.emitStructNew(cellStruct.index);
+                  }
+                  ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
+                }
+              }
+              case _: {
+                throw new Error("Nested patterns in inline tuple destructuring not yet supported");
+              }
+            }
+          } else {
+            ctx.emitter.emitDrop();
+          }
+          i -= 1;
+        }
+      } else {
+        throw new Error("Boxed tuple destructuring in variable declaration not yet supported");
       }
     }
   }

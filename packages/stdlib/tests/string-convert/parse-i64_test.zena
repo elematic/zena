@@ -1,0 +1,95 @@
+// @stdlib: true
+import {suite, test, TestContext} from 'zena:test';
+import {equal, fail} from 'zena:assert';
+import {parseI64} from 'zena:string-convert';
+
+export let tests = suite('parseI64', () => {
+  test('parses zero', (ctx) => {
+    let (ok, v) = parseI64("0");
+    equal(ok, true);
+    equal(v, 0 as i64);
+  });
+
+  test('parses positive integer', (ctx) => {
+    let (ok, v) = parseI64("42");
+    equal(ok, true);
+    equal(v, 42 as i64);
+  });
+
+  test('parses large positive integer', (ctx) => {
+    let (ok, v) = parseI64("9223372036854775807");
+    equal(ok, true);
+    equal(v, 9223372036854775807 as i64);
+  });
+
+  test('parses negative integer', (ctx) => {
+    let (ok, v) = parseI64("-123");
+    equal(ok, true);
+    equal(v, -123 as i64);
+  });
+
+  test('parses with plus sign', (ctx) => {
+    let (ok, v) = parseI64("+7");
+    equal(ok, true);
+    equal(v, 7 as i64);
+  });
+
+  test('parses hex integer', (ctx) => {
+    let (ok, v) = parseI64("0x2a");
+    equal(ok, true);
+    equal(v, 42 as i64);
+  });
+
+  test('parses hex uppercase integer', (ctx) => {
+    let (ok, v) = parseI64("0X2F");
+    equal(ok, true);
+    equal(v, 47 as i64);
+  });
+
+  test('parses with underscores', (ctx) => {
+    let (ok, v) = parseI64("123_456");
+    equal(ok, true);
+    equal(v, 123456 as i64);
+  });
+
+  test('fails on empty string', (ctx) => {
+    let (ok, _) = parseI64("");
+    equal(ok, false);
+  });
+
+  test('fails on non-digit characters', (ctx) => {
+    let (ok, _) = parseI64("12abc");
+    equal(ok, false);
+  });
+
+  test('fails on bare sign', (ctx) => {
+    let (ok, _) = parseI64("-");
+    equal(ok, false);
+  });
+
+  test('fails on whitespace', (ctx) => {
+    let (ok, _) = parseI64(" 42");
+    equal(ok, false);
+  });
+
+  test('fails on decimal', (ctx) => {
+    let (ok, _) = parseI64("3.14");
+    equal(ok, false);
+  });
+
+  test('fails on positive overflow', (ctx) => {
+    let (ok, _) = parseI64("9223372036854775808");
+    equal(ok, false);
+  });
+
+  test('parses i64 min', (ctx) => {
+    let (ok, v) = parseI64("-9223372036854775808");
+    equal(ok, true);
+    equal(v, -9223372036854775808 as i64);
+  });
+
+  test('fails on negative overflow', (ctx) => {
+    let (ok, _) = parseI64("-9223372036854775809");
+    equal(ok, false);
+  });
+});

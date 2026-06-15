@@ -9,7 +9,7 @@ import {
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
   IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
   ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition,
-  AccessorDeclaration, SetterInfo, AsExpression, IsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral,
+  AccessorDeclaration, SetterInfo, AsExpression, IsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral, TaggedTemplateExpression,
   SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction,
   ThrowExpression, TryExpression
@@ -24,7 +24,7 @@ import { WasmField, WasmStruct, sortWasmFields } from './wasm-module.zena';
 import { typeToValType, getClosureStruct, getCellStruct } from './type-mapping.zena';
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
-  getClassPrivateFieldKey, isStringClassKey, classInterfaceKeyToString,
+  getClassPrivateFieldKey, classInterfaceKeyToString,
   MixinKey, ClassKey
 } from './codegen-utils.zena';
 import { String } from "zena:string";
@@ -35,10 +35,7 @@ import { HashMap } from 'zena:map';
 import { parseI32, parseF64 } from 'zena:string-convert';
 import { walkEnter } from '../visitor.zena';
 import { FunctionContext } from './function-context.zena';
-import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral, generateTemplateLiteral } from './expr/primitives.zena';
-import { generateUnaryExpression, generateBinaryExpression } from './expr/operators.zena';
-
-import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral } from './expr/primitives.zena';
+import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral, generateTemplateLiteral, generateTaggedTemplateExpression } from './expr/primitives.zena';
 import { generateUnaryExpression, generateBinaryExpression } from './expr/operators.zena';
 import { generateCallExpression } from './expr/calls.zena';
 import { generateAssignmentExpression } from './expr/assignment.zena';
@@ -582,6 +579,7 @@ export class FunctionGenerator {
       case BooleanLiteral: generateBooleanLiteral(this.ctx, expr as BooleanLiteral)
       case StringLiteral: generateStringLiteral(this.ctx, expr as StringLiteral)
       case TemplateLiteral: generateTemplateLiteral(this.ctx, expr as TemplateLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
+      case TaggedTemplateExpression: generateTaggedTemplateExpression(this.ctx, expr as TaggedTemplateExpression, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case NullLiteral: {
         this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
       }
@@ -738,13 +736,55 @@ export class FunctionGenerator {
                 }
               }
             }
+            case ValTypeI64: {
+              match (sourceWasmType) {
+                case ValTypeI32: {
+                  this.ctx.emitter.emitI64ExtendI32S();
+                }
+                case _: {
+                  throw new Error("Unsupported primitive conversion to i64 from: " + typeToString(sourceType));
+                }
+              }
+            }
+            case ValTypeI32: {
+              match (sourceWasmType) {
+                case ValTypeI64: {
+                  this.ctx.emitter.emitI32WrapI64();
+                }
+                case _: {
+                  throw new Error("Unsupported primitive conversion to i32 from: " + typeToString(sourceType));
+                }
+              }
+            }
             case ValTypeF64: {
               match (sourceWasmType) {
                 case ValTypeI32: {
                   this.ctx.emitter.emitF64ConvertI32S();
                 }
+                case ValTypeI64: {
+                  this.ctx.emitter.emitF64ConvertI64S();
+                }
+                case ValTypeF32: {
+                  this.ctx.emitter.emitF64PromoteF32();
+                }
                 case _: {
                   throw new Error("Unsupported primitive conversion to f64 from: " + typeToString(sourceType));
+                }
+              }
+            }
+            case ValTypeF32: {
+              match (sourceWasmType) {
+                case ValTypeI32: {
+                  this.ctx.emitter.emitF32ConvertI32S();
+                }
+                case ValTypeI64: {
+                  this.ctx.emitter.emitF32ConvertI64S();
+                }
+                case ValTypeF64: {
+                  this.ctx.emitter.emitF32DemoteF64();
+                }
+                case _: {
+                  throw new Error("Unsupported primitive conversion to f32 from: " + typeToString(sourceType));
                 }
               }
             }
@@ -1111,8 +1151,10 @@ export class FunctionGenerator {
   
   generateWasiWriteStringHelper(): void {
     var stringStruct: WasmStruct | null = null;
-    for (let key in this.ctx.wasm.classStructs.keys()) {
-      if (isStringClassKey(key)) {
+    let stringClass = this.ctx.wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (this.ctx.wasm.classStructs.has(key)) {
         stringStruct = this.ctx.wasm.classStructs[key];
       }
     }
@@ -1264,9 +1306,10 @@ export class FunctionGenerator {
 
   generateStringCreate(): void {
     var stringStruct: WasmStruct | null = null;
-    let keys = this.ctx.wasm.classStructs.keys();
-    while (let (true, key) = keys.next()) {
-      if (isStringClassKey(key)) {
+    let stringClass = this.ctx.wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (this.ctx.wasm.classStructs.has(key)) {
         stringStruct = this.ctx.wasm.classStructs[key];
       }
     }
@@ -1339,9 +1382,10 @@ export class FunctionGenerator {
 
   generateStringSetByte(): void {
     var stringStruct: WasmStruct | null = null;
-    let keys = this.ctx.wasm.classStructs.keys();
-    while (let (true, key) = keys.next()) {
-      if (isStringClassKey(key)) {
+    let stringClass = this.ctx.wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (this.ctx.wasm.classStructs.has(key)) {
         stringStruct = this.ctx.wasm.classStructs[key];
       }
     }

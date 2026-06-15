@@ -1,5 +1,5 @@
 import { 
-  Node, Expression, ClassDeclaration
+  Node, Expression, ClassDeclaration, NodeId
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId } from '../scope/symbol.zena';
@@ -8,7 +8,6 @@ import {
   ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef, 
   ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32 
 } from './wasm.zena';
-import { isStringClassKey } from './codegen-utils.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -205,13 +204,15 @@ export class WasmModule {
   functionMap = new HashMap<SymbolId, WasmFunction>();
   
   /**
-   * Maps a Zena symbol ID to its compiler intrinsic name (e.g. `memory.size`).
+   * Maps a Zena AST Node ID to its compiler intrinsic name (e.g. `memory.size`).
    */
-  intrinsics = new HashMap<SymbolId, String>();
+  intrinsics = new HashMap<NodeId, String>();
 
   globalMap = new HashMap<SymbolId, WasmGlobal>();
 
   var program: Program | null = null;
+  var stringClass: ClassType | null = null;
+  var templateStringsArrayClass: ClassType | null = null;
   exportMap = new HashMap<ExportKey, WasmFunction>();
   exportGlobalMap = new HashMap<ExportGlobalKey, WasmGlobal>();
   classStructs = new HashMap<ClassKey, WasmStruct>();
@@ -237,6 +238,7 @@ export class WasmModule {
   cellStructs = new HashMap<CellKey, WasmStruct>();
   closureStructs = new HashMap<ClosureKey, WasmStruct>();
   closureFunctions = new NodeMap<WasmFunction>();
+  templateLiteralGlobals = new NodeMap<WasmGlobal>();
   symbolNames = new HashMap<SymbolId, String>();
   
   findRecordDispatch(fields: Array<WasmField>): RecordDispatchInfo | null {

@@ -1,13 +1,14 @@
-import { Node, Identifier, NumberLiteral, BooleanLiteral, StringLiteral, ImportSpecifier, TemplateLiteral, Expression } from '../../ast.zena';
-import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType } from '../../types.zena';
+import { Node, Identifier, NumberLiteral, BooleanLiteral, StringLiteral, ImportSpecifier, TemplateLiteral, Expression, TaggedTemplateExpression } from '../../ast.zena';
+import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType, I64Type, U64Type, U32Type, BooleanType, AnyType, ArrayType, FunctionType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
-import { parseI32, parseF64 } from 'zena:string-convert';
+import { parseI32, parseF64, i32ToString, parseI64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
-import { WasmStruct, WasmFunction } from '../wasm-module.zena';
-import { typeToValType, getCellStruct } from '../type-mapping.zena';
-import { ValTypeRefNull } from '../wasm.zena';
-import { ClassKey, ExportGlobalKey, isStringClassKey } from '../codegen-utils.zena';
+import { WasmStruct, WasmFunction, WasmGlobal, WasmSignature } from '../wasm-module.zena';
+import { typeToValType, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults } from '../type-mapping.zena';
+import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType } from '../wasm.zena';
+import { ClassKey, ExportGlobalKey, ExportKey, getClassKey } from '../codegen-utils.zena';
+import { String } from 'zena:string';
 
 // TODO: Consider moving `generateIdentifier` to a dedicated file (e.g.,
 // `bindings.zena` or `variables.zena`). While it is parsed as a primary
@@ -43,6 +44,8 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
   throw new Error("Could not resolve identifier: " + ident.name);
 };
 
+
+
 export let generateNumberLiteral = (ctx: FunctionContext, expr: NumberLiteral): void => {
   let nodeType = ctx.wasmFunction.model.getNodeType(expr as Node);
   let baseT = baseType(nodeType);
@@ -53,13 +56,19 @@ export let generateNumberLiteral = (ctx: FunctionContext, expr: NumberLiteral): 
   } else if (baseT is F32Type) {
     let val = parseF64(expr.raw);
     ctx.emitter.emitF32Const(val);
+  } else if (baseT is I64Type || baseT is U64Type) {
+    if (let (true, val) = parseI64(expr.raw)) {
+      ctx.emitter.emitI64Const(val);
+    } else {
+      ctx.emitter.emitI64Const(0 as i64);
+    }
   } else {
     // Treat all other numeric types (i32, u32, i8, etc) as 32-bit integers in Wasm for now
-    let (ok, val) = parseI32(expr.raw);
-    if (!ok) {
-      throw new Error('Failed to parse i32: ' + expr.raw);
+    if (let (true, val) = parseI64(expr.raw)) {
+      ctx.emitter.emitI32Const(val as i32);
+    } else {
+      ctx.emitter.emitI32Const(0);
     }
-    ctx.emitter.emitI32Const(val as i32);
   }
 };
 
@@ -68,16 +77,12 @@ export let generateBooleanLiteral = (ctx: FunctionContext, expr: BooleanLiteral)
 };
 
 export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): void => {
-  var stringKey: ClassKey | null = null;
-  for (let key in ctx.wasm.classStructs.keys()) {
-    if (isStringClassKey(key)) {
-      stringKey = key;
-    }
-  }
-  if (stringKey == null) {
+  let stringClass = ctx.wasm.stringClass;
+  if (stringClass == null) {
     throw new Error("String class struct not found during string literal generation!");
   }
-  let structType = ctx.wasm.classStructs[stringKey as ClassKey];
+  let stringKey = getClassKey(stringClass as ClassType);
+  let structType = ctx.wasm.classStructs[stringKey];
   let tempLocal = ctx.allocLocal(new ValTypeRefNull(structType));
 
   // 1. Allocate String struct with default values
@@ -167,21 +172,17 @@ export let generateTemplateLiteral = (
   }
 
   // 1. Find String type representation and the fromParts function
-  var stringKey: ClassKey | null = null;
-  for (let key in ctx.wasm.classStructs.keys()) {
-    if (isStringClassKey(key)) {
-      stringKey = key;
-    }
-  }
-  if (stringKey == null) {
+  let stringClass = ctx.wasm.stringClass;
+  if (stringClass == null) {
     throw new Error("String class struct not found during template literal generation!");
   }
-  let stringStruct = ctx.wasm.classStructs[stringKey as ClassKey];
+  let stringKey = getClassKey(stringClass as ClassType);
+  let stringStruct = ctx.wasm.classStructs[stringKey];
   let stringWasmType = new ValTypeRefNull(stringStruct);
 
   var fromPartsFunc: WasmFunction | null = null;
   for (let f in ctx.wasm.functions) {
-    if (f.classType != null && (f.classType as ClassType).name == "String" && f.isStatic && f.methodName == "fromParts") {
+    if (f.classType != null && f.classType == ctx.wasm.stringClass && f.isStatic && f.methodName == "fromParts") {
       fromPartsFunc = f;
     }
   }
@@ -236,6 +237,50 @@ export let generateTemplateLiteral = (
           throw new Error("f32ToString helper function not found in Wasm module!");
         }
         ctx.emitter.emitCall(foundFunc as WasmFunction);
+      } else if (baseT is I64Type) {
+        var foundFunc: WasmFunction | null = null;
+        for (let f in ctx.wasm.functions) {
+          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "i64ToString") {
+            foundFunc = f;
+          }
+        }
+        if (foundFunc == null) {
+          throw new Error("i64ToString helper function not found in Wasm module!");
+        }
+        ctx.emitter.emitCall(foundFunc as WasmFunction);
+      } else if (baseT is U64Type) {
+        var foundFunc: WasmFunction | null = null;
+        for (let f in ctx.wasm.functions) {
+          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "u64ToString") {
+            foundFunc = f;
+          }
+        }
+        if (foundFunc == null) {
+          throw new Error("u64ToString helper function not found in Wasm module!");
+        }
+        ctx.emitter.emitCall(foundFunc as WasmFunction);
+      } else if (baseT is U32Type) {
+        var foundFunc: WasmFunction | null = null;
+        for (let f in ctx.wasm.functions) {
+          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "u32ToString") {
+            foundFunc = f;
+          }
+        }
+        if (foundFunc == null) {
+          throw new Error("u32ToString helper function not found in Wasm module!");
+        }
+        ctx.emitter.emitCall(foundFunc as WasmFunction);
+      } else if (baseT is BooleanType) {
+        var foundFunc: WasmFunction | null = null;
+        for (let f in ctx.wasm.functions) {
+          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "boolToString") {
+            foundFunc = f;
+          }
+        }
+        if (foundFunc == null) {
+          throw new Error("boolToString helper function not found in Wasm module!");
+        }
+        ctx.emitter.emitCall(foundFunc as WasmFunction);
       } else if (baseT is ClassType && (baseT as ClassType).name == "String") {
         // Already a string, do nothing
       } else {
@@ -253,4 +298,256 @@ export let generateTemplateLiteral = (
   let wasmArrayType = ctx.wasm.getArray(stringWasmType, true);
   ctx.emitter.emitArrayNewFixed(wasmArrayType.index, totalParts);
   ctx.emitter.emitCall(fromPartsFunc as WasmFunction);
+};
+
+export let generateTaggedTemplateExpression = (
+  ctx: FunctionContext,
+  expr: TaggedTemplateExpression,
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  // 1. Identify TemplateStringsArray struct
+  let tsaClass = ctx.wasm.templateStringsArrayClass;
+  if (tsaClass == null) {
+    throw new Error("TemplateStringsArray class struct not found during tagged template literal generation!");
+  }
+  let tsaKey = getClassKey(tsaClass as ClassType);
+  let tsaStruct = ctx.wasm.classStructs[tsaKey];
+
+  // 2. Identify String class struct
+  let stringClass = ctx.wasm.stringClass;
+  if (stringClass == null) {
+    throw new Error("String class struct not found during tagged template literal generation!");
+  }
+  let stringKey = getClassKey(stringClass as ClassType);
+  let stringStruct = ctx.wasm.classStructs[stringKey];
+  let stringWasmType = new ValTypeRefNull(stringStruct);
+  let wasmArrayType = ctx.wasm.getArray(stringWasmType, true);
+  let stringsArrayTypeIndex = wasmArrayType.index;
+
+  // 3. Find TemplateStringsArray field indexes
+  var stringsFieldIdx = -1;
+  var rawFieldIdx = -1;
+  for (var f = 0; f < tsaStruct.fields.length; f += 1) {
+    let fieldName = tsaStruct.fields[f].name;
+    if (fieldName != null) {
+      let nameStr = fieldName as String;
+      if (nameStr.endsWith("::#strings")) {
+        stringsFieldIdx = f;
+      } else if (nameStr.endsWith("::#raw")) {
+        rawFieldIdx = f;
+      }
+    }
+  }
+  if (stringsFieldIdx == -1 || rawFieldIdx == -1) {
+    throw new Error("TemplateStringsArray private fields (#strings, #raw) not found in struct!");
+  }
+
+  // 4. Retrieve the pre-registered global cache variable
+  if (!ctx.wasm.templateLiteralGlobals.has(expr)) {
+    throw new Error("TemplateStringsArray global cache variable not registered during discovery pass!");
+  }
+  let wasmGlobal = ctx.wasm.templateLiteralGlobals[expr];
+
+  // 5. Emit lazy initialization logic
+  ctx.emitter.emitGlobalGet(wasmGlobal.index);
+  ctx.emitter.emitRefIsNull();
+  ctx.emitter.emitIf(new ValTypeVoid());
+
+  // Cooked strings
+  for (let quasi in expr.quasi.quasis) {
+    let quasiLit = new StringLiteral(quasi.cooked, quasi.loc);
+    generateStringLiteral(ctx, quasiLit);
+  }
+  ctx.emitter.emitArrayNewFixed(stringsArrayTypeIndex, expr.quasi.quasis.length);
+  let cookedLocal = ctx.allocLocal(new ValTypeRefNull(wasmArrayType));
+  ctx.emitter.emitLocalSet(cookedLocal);
+
+  // Raw strings
+  for (let quasi in expr.quasi.quasis) {
+    let quasiLit = new StringLiteral(quasi.raw, quasi.loc);
+    generateStringLiteral(ctx, quasiLit);
+  }
+  ctx.emitter.emitArrayNewFixed(stringsArrayTypeIndex, expr.quasi.quasis.length);
+  let rawLocal = ctx.allocLocal(new ValTypeRefNull(wasmArrayType));
+  ctx.emitter.emitLocalSet(rawLocal);
+
+  // Instantiate TSA struct
+  let hasVTable = ctx.wasm.classVTableGlobals.has(tsaKey as ClassKey);
+  if (hasVTable) {
+    let vtableGlobal = ctx.wasm.classVTableGlobals[tsaKey as ClassKey];
+    ctx.emitter.emitGlobalGet(vtableGlobal.index);
+  } else {
+    ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
+  }
+
+  for (var f = 1; f < tsaStruct.fields.length; f += 1) {
+    if (f == stringsFieldIdx) {
+      ctx.emitter.emitLocalGet(cookedLocal);
+    } else if (f == rawFieldIdx) {
+      ctx.emitter.emitLocalGet(rawLocal);
+    } else {
+      let fieldType = tsaStruct.fields[f].type;
+      if (fieldType is ValTypeI32) {
+        ctx.emitter.emitI32Const(0);
+      } else if (fieldType is ValTypeF32) {
+        ctx.emitter.emitF32Const(0.0);
+      } else if (fieldType is ValTypeF64) {
+        ctx.emitter.emitF64Const(0.0);
+      } else {
+        ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
+      }
+    }
+  }
+
+  ctx.emitter.emitStructNew(tsaStruct.index);
+  ctx.emitter.emitGlobalSet(wasmGlobal.index);
+  ctx.emitter.emitEnd();
+
+  // Push TSA onto stack
+  ctx.emitter.emitGlobalGet(wasmGlobal.index);
+
+  // 6. Push values array
+  var expectedValueType: Type = new AnyType();
+  let calleeType = ctx.wasmFunction.model.getNodeType(expr.tag);
+  if (calleeType is FunctionType) {
+    let ft = calleeType as FunctionType;
+    if (ft.parameters.length >= 2) {
+      let valuesParamType = ft.parameters[1];
+      if (valuesParamType is ClassType) {
+        let ct = valuesParamType as ClassType;
+        if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
+          expectedValueType = (ct.typeArguments as Array<Type>)[0];
+        }
+      } else if (valuesParamType is ArrayType) {
+        let at = valuesParamType as ArrayType;
+        expectedValueType = at.elementType;
+      }
+    }
+  } else if (expr.quasi.expressions.length > 0) {
+    expectedValueType = ctx.wasmFunction.model.getNodeType(expr.quasi.expressions[0]);
+  }
+
+  if (expectedValueType == null) {
+    expectedValueType = new AnyType();
+  }
+
+  let valElemType = typeToValType(ctx.wasm, expectedValueType);
+  let wasmValuesArray = ctx.wasm.getArray(valElemType, true);
+  let valuesArrayTypeIndex = wasmValuesArray.index;
+
+  for (let subExpr in expr.quasi.expressions) {
+    let subExprType = ctx.wasmFunction.model.getNodeType(subExpr);
+    if (subExprType == null) {
+      throw new Error("Debug: subExprType is null!");
+    } else {
+      let bType = baseType(subExprType as Type);
+      if (!(bType is I32Type || bType is F64Type || bType is F32Type || bType is I64Type || bType is U64Type || bType is U32Type || bType is BooleanType || (bType is ClassType && (bType as ClassType).name == "String"))) {
+        throw new Error("Debug: subExprType is unexpected: " + typeToString(subExprType as Type));
+      }
+    }
+    genExpr(subExpr, false);
+  }
+  ctx.emitter.emitArrayNewFixed(valuesArrayTypeIndex, expr.quasi.expressions.length);
+
+  // 7. Invoke tag function
+  match (expr.tag) {
+    case Identifier: {
+      let ident = expr.tag as Identifier;
+      let model = ctx.wasmFunction.model;
+      let sym = model.resolve(ident);
+
+      if (sym == null) {
+        throw new Error("Unresolved identifier in tagged template tag: " + ident.name);
+      }
+
+      if (ctx.wasm.functionMap.has((sym as Symbol).id)) {
+        ctx.emitter.emitCall(ctx.wasm.functionMap[(sym as Symbol).id]);
+      } else if ((sym as Symbol).declaration is ImportSpecifier) {
+        let spec = (sym as Symbol).declaration as ImportSpecifier;
+        let importedName = spec.imported.name;
+        if (ctx.wasm.exportMap.has(importedName as ExportKey)) {
+          ctx.emitter.emitCall(ctx.wasm.exportMap[importedName as ExportKey]);
+        } else {
+          throw new Error("Export map missing: " + importedName);
+        }
+      } else if (calleeType is FunctionType) {
+        let fType = calleeType as FunctionType;
+        let paramValTypes = new Array<ValType>();
+        for (let p in fType.parameters) {
+          paramValTypes.push(typeToValType(ctx.wasm, p));
+        }
+        let returnValTypes = new Array<ValType>();
+        mapReturnTypeToWasmResults(ctx.wasm, fType.returnType, returnValTypes);
+        
+        let closureStruct = ctx.wasm.getClosureStruct(paramValTypes, returnValTypes);
+        let funcFieldType = closureStruct.fields[0].type as ValTypeRef;
+        let implSig = funcFieldType.target as WasmSignature;
+
+        let valuesLocal = ctx.allocLocal(new ValTypeRefNull(wasmValuesArray));
+        ctx.emitter.emitLocalSet(valuesLocal);
+        
+        let tsaLocal = ctx.allocLocal(new ValTypeRefNull(tsaStruct));
+        ctx.emitter.emitLocalSet(tsaLocal);
+        
+        generateIdentifier(ctx, ident);
+        ctx.emitter.emitRefCast(closureStruct.index);
+        
+        let closureLocal = ctx.allocLocal(new ValTypeRefNull(closureStruct));
+        ctx.emitter.emitLocalSet(closureLocal);
+        
+        ctx.emitter.emitLocalGet(closureLocal);
+        ctx.emitter.emitStructGet(closureStruct.index, 1);
+        
+        ctx.emitter.emitLocalGet(tsaLocal);
+        ctx.emitter.emitLocalGet(valuesLocal);
+        
+        ctx.emitter.emitLocalGet(closureLocal);
+        ctx.emitter.emitStructGet(closureStruct.index, 0);
+        
+        ctx.emitter.emitCallRef(implSig.index);
+      } else {
+        throw new Error("Could not resolve tagged template tag call target: " + ident.name);
+      }
+    }
+    case _: {
+      if (calleeType is FunctionType) {
+        let fType = calleeType as FunctionType;
+        let paramValTypes = new Array<ValType>();
+        for (let p in fType.parameters) {
+          paramValTypes.push(typeToValType(ctx.wasm, p));
+        }
+        let returnValTypes = new Array<ValType>();
+        mapReturnTypeToWasmResults(ctx.wasm, fType.returnType, returnValTypes);
+        
+        let closureStruct = ctx.wasm.getClosureStruct(paramValTypes, returnValTypes);
+        let funcFieldType = closureStruct.fields[0].type as ValTypeRef;
+        let implSig = funcFieldType.target as WasmSignature;
+
+        let valuesLocal = ctx.allocLocal(new ValTypeRefNull(wasmValuesArray));
+        ctx.emitter.emitLocalSet(valuesLocal);
+        
+        let tsaLocal = ctx.allocLocal(new ValTypeRefNull(tsaStruct));
+        ctx.emitter.emitLocalSet(tsaLocal);
+
+        genExpr(expr.tag, false);
+        ctx.emitter.emitRefCast(closureStruct.index);
+        
+        let closureLocal = ctx.allocLocal(new ValTypeRefNull(closureStruct));
+        ctx.emitter.emitLocalSet(closureLocal);
+        
+        ctx.emitter.emitLocalGet(closureLocal);
+        ctx.emitter.emitStructGet(closureStruct.index, 1);
+        
+        ctx.emitter.emitLocalGet(tsaLocal);
+        ctx.emitter.emitLocalGet(valuesLocal);
+        
+        ctx.emitter.emitLocalGet(closureLocal);
+        ctx.emitter.emitStructGet(closureStruct.index, 0);
+        
+        ctx.emitter.emitCallRef(implSig.index);
+      } else {
+        throw new Error("Unsupported tagged template tag expression type");
+      }
+    }
+  }
 };

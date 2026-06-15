@@ -1543,6 +1543,23 @@ function isReferenceType(type: Type): boolean {
  * Returns true if the cast should be allowed.
  */
 function isValidCast(sourceType: Type, targetType: Type): boolean {
+  // Primitive → Primitive: VALID only if both are numeric or both are boolean
+  if (isValuePrimitive(sourceType) && isValuePrimitive(targetType)) {
+    const isSrcNum =
+      sourceType.kind === TypeKind.Number ||
+      (sourceType.kind === TypeKind.Literal &&
+        typeof (sourceType as LiteralType).value === 'number');
+    const isTgtNum =
+      targetType.kind === TypeKind.Number ||
+      (targetType.kind === TypeKind.Literal &&
+        typeof (targetType as LiteralType).value === 'number');
+    const isSrcBool = isBooleanType(sourceType);
+    const isTgtBool = isBooleanType(targetType);
+    if ((isSrcNum && isTgtNum) || (isSrcBool && isTgtBool)) {
+      return true;
+    }
+    return false;
+  }
   // Primitive → Extension on same primitive: VALID (distinct type wrapping)
   if (
     isValuePrimitive(sourceType) &&

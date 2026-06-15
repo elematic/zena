@@ -2266,6 +2266,109 @@ let widenType = (ctx: CheckerContext, t: Type): Type => match (t) {
   case _: t
 };
 
+let isValuePrimitive = (type: Type): boolean => {
+  return match (type) {
+    case I32Type: true
+    case U32Type: true
+    case I64Type: true
+    case U64Type: true
+    case F32Type: true
+    case F64Type: true
+    case BooleanType: true
+    case BoolLiteralType: true
+    case NumLiteralType: true
+    case _: false
+  };
+};
+
+let isReferenceType = (type: Type): boolean => {
+  return match (type) {
+    case ClassType as ct: {
+      if (ct.isExtension && ct.onType != null) {
+        !isValuePrimitive(ct.onType as Type)
+      } else {
+        true
+      }
+    }
+    case InterfaceType: true
+    case ArrayType: true
+    case RecordT: true
+    case TupleT: true
+    case InlineTupleT: true
+    case FunctionType: true
+    case NullType: true
+    case AnyRefType: true
+    case EqRefType: true
+    case ByteArrayType: true
+    case StringLiteralType: true
+    case _: false
+  };
+};
+
+let isValidCast = (sourceType: Type, targetType: Type): boolean => {
+  // Primitive → Primitive: VALID only if both are numeric or both are boolean
+  if (isValuePrimitive(sourceType) && isValuePrimitive(targetType)) {
+    let isSrcNum: boolean = match (sourceType) {
+      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type | NumLiteralType: true
+      case _: false
+    };
+    let isTgtNum: boolean = match (targetType) {
+      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type | NumLiteralType: true
+      case _: false
+    };
+    let isSrcBool: boolean = match (sourceType) {
+      case BooleanType | BoolLiteralType: true
+      case _: false
+    };
+    let isTgtBool: boolean = match (targetType) {
+      case BooleanType | BoolLiteralType: true
+      case _: false
+    };
+    if ((isSrcNum && isTgtNum) || (isSrcBool && isTgtBool)) {
+      return true;
+    }
+    return false;
+  }
+
+  // Primitive → Extension on same primitive: VALID (distinct type wrapping)
+  if (isValuePrimitive(sourceType) && targetType is ClassType) {
+    let ct = targetType as ClassType;
+    if (ct.isExtension && ct.onType != null) {
+      let onType = ct.onType as Type;
+      let isSrcNum: boolean = match (sourceType) {
+        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type | NumLiteralType: true
+        case _: false
+      };
+      let isOnNum: boolean = match (onType) {
+        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type | NumLiteralType: true
+        case _: false
+      };
+      if (isSrcNum && isOnNum) {
+        return true;
+      }
+      let isSrcBool: boolean = match (sourceType) {
+        case BooleanType | BoolLiteralType: true
+        case _: false
+      };
+      let isOnBool: boolean = match (onType) {
+        case BooleanType | BoolLiteralType: true
+        case _: false
+      };
+      if (isSrcBool && isOnBool) {
+        return true;
+      }
+    }
+  }
+
+  // Primitive → Reference (not an extension on primitive): INVALID
+  if (isValuePrimitive(sourceType) && isReferenceType(targetType)) {
+    return false;
+  }
+
+  // All other casts are allowed (checked at runtime)
+  return true;
+};
+
 let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void => {
   if (sourceType is ClassType && targetType is InterfaceType) {
     ctx.model.setInterfaceAdaptation(node, sourceType as ClassType, targetType as InterfaceType);
@@ -4783,6 +4886,21 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (ctx.warnUnnecessaryCasts && typesEqual(sourceType, targetType)) {
       ctx.warning("Unnecessary cast: expression is already of type '" + typeToString(targetType) + "'.", DiagnosticCode.UnnecessaryCast, loc);
     }
+    if (targetType is UnionT) {
+      ctx.error(
+        "Cannot use union type '" + typeToString(targetType) + "' as cast target. Cast to each type separately.",
+        DiagnosticCode.TypeMismatch,
+        typeAnnotation.loc
+      );
+    }
+    if (!isValidCast(sourceType, targetType)) {
+      ctx.error(
+        "Cannot cast primitive type '" + typeToString(sourceType) + "' to reference type '" + typeToString(targetType) + "'. " +
+        "Use string concatenation or a conversion function instead.",
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
     checkAndRegisterInterfaceAdaptation(ctx, expr, sourceType, targetType);
     targetType
   }
@@ -4942,7 +5060,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
     }
   }
-  case TemplateLiteral {loc}: {
+  case TemplateLiteral {expressions, loc}: {
+    for (let subExpr in expressions) {
+      checkExpression(ctx, subExpr, null);
+    }
     let stringType = ctx.resolveTypeName("String");
     if (stringType != null) { return stringType as Type; }
     ctx.error(
@@ -9033,7 +9154,7 @@ let checkCallExpression = (
 
   // If optional and not nullable, proceed normally.
   // If optional and nullable, wrap result in union with null.
-  let resultType = checkCallExpressionInner(ctx, baseCalleeType, args, typeArguments, loc);
+  let resultType = checkCallExpressionInner(ctx, callee, baseCalleeType, args, typeArguments, loc);
 
   if (isNullable && optional) {
     let types = new Array<Type>();
@@ -9047,6 +9168,7 @@ let checkCallExpression = (
 
 let checkCallExpressionInner = (
   ctx: CheckerContext,
+  callee: Expression,
   calleeType: Type,
   args: Array<Expression>,
   typeArguments: Array<TypeAnnotation> | null,
@@ -9230,6 +9352,8 @@ let checkCallExpressionInner = (
           loc
         );
       }
+
+      ctx.model.setNodeType(callee, effectiveFt);
 
       // Check argument types (re-evaluating to apply generic substitutions and defaults).
       var j = 0;

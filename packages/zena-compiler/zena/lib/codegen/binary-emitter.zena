@@ -2,7 +2,7 @@ import { ValTypeFunc, ValTypeRef, ValTypeRefNull } from './wasm.zena';
 import { ByteBuffer } from 'zena:byte-buffer';
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmSignature, WasmFunction, WasmModule } from './wasm-module.zena';
-import { SectionId, ValType, WasmType, Opcode, GcOpcode, HeapType, valTypeToOpcode, heapTypeToSigned } from './wasm.zena';
+import { SectionId, ValType, WasmType, Opcode, SatOpcode, GcOpcode, HeapType, valTypeToOpcode, heapTypeToSigned } from './wasm.zena';
 
 export let emitValType = (buffer: ByteBuffer, type: ValType) => {
   let ignored = match (type) {
@@ -688,14 +688,20 @@ export class BinaryEmitter implements WasmEmitter {
   emitI32Sub(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_sub as i32); }
   emitI32Mul(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_mul as i32); }
   emitI32DivS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_div_s as i32); }
+  emitI32DivU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_div_u as i32); }
   emitI32Eq(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_eq as i32); }
   emitI32Eqz(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_eqz as i32); }
   emitI32Ne(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_ne as i32); }
   emitI32LtS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_lt_s as i32); }
+  emitI32LtU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_lt_u as i32); }
   emitI32LeS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_le_s as i32); }
+  emitI32LeU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_le_u as i32); }
   emitI32GtS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_gt_s as i32); }
+  emitI32GtU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_gt_u as i32); }
   emitI32GeS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_ge_s as i32); }
+  emitI32GeU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_ge_u as i32); }
   emitI32RemS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_rem_s as i32); }
+  emitI32RemU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_rem_u as i32); }
   emitI32And(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_and as i32); }
   emitI32Or(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_or as i32); }
   emitI32Xor(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_xor as i32); }
@@ -874,4 +880,93 @@ export class BinaryEmitter implements WasmEmitter {
     b.writeULEB128(destTypeIndex);
     b.writeULEB128(srcTypeIndex);
   }
+
+  emitI64Const(value: i64): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.i64_const as i32);
+    b.writeSLEB128_64(value);
+  }
+
+  emitI64Add(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_add as i32); }
+  emitI64Sub(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_sub as i32); }
+  emitI64Mul(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_mul as i32); }
+  emitI64DivS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_div_s as i32); }
+  emitI64DivU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_div_u as i32); }
+  emitI64RemS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_rem_s as i32); }
+  emitI64RemU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_rem_u as i32); }
+  emitI64And(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_and as i32); }
+  emitI64Or(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_or as i32); }
+  emitI64Xor(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_xor as i32); }
+  emitI64Shl(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_shl as i32); }
+  emitI64ShrS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_shr_s as i32); }
+  emitI64ShrU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_shr_u as i32); }
+
+  emitI64Eqz(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_eqz as i32); }
+  emitI64Eq(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_eq as i32); }
+  emitI64Ne(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_ne as i32); }
+  emitI64LtS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_lt_s as i32); }
+  emitI64LtU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_lt_u as i32); }
+  emitI64LeS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_le_s as i32); }
+  emitI64LeU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_le_u as i32); }
+  emitI64GtS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_gt_s as i32); }
+  emitI64GtU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_gt_u as i32); }
+  emitI64GeS(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_ge_s as i32); }
+  emitI64GeU(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_ge_u as i32); }
+
+  emitF32Abs(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.f32_abs as i32); }
+  emitF64Abs(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.f64_abs as i32); }
+  emitF32Nearest(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.f32_nearest as i32); }
+  emitF64Nearest(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.f64_nearest as i32); }
+
+  emitI64TruncSatF32S(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.sat_prefix as i32);
+    b.writeByte(SatOpcode.i64_trunc_sat_f32_s as i32);
+  }
+  emitI64TruncSatF32U(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.sat_prefix as i32);
+    b.writeByte(SatOpcode.i64_trunc_sat_f32_u as i32);
+  }
+  emitI64TruncSatF64S(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.sat_prefix as i32);
+    b.writeByte(SatOpcode.i64_trunc_sat_f64_s as i32);
+  }
+  emitI64TruncSatF64U(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.sat_prefix as i32);
+    b.writeByte(SatOpcode.i64_trunc_sat_f64_u as i32);
+  }
+
+  emitI32TruncSatF32S(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.sat_prefix as i32);
+    b.writeByte(SatOpcode.i32_trunc_sat_f32_s as i32);
+  }
+  emitI32TruncSatF32U(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.sat_prefix as i32);
+    b.writeByte(SatOpcode.i32_trunc_sat_f32_u as i32);
+  }
+  emitI32TruncSatF64S(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.sat_prefix as i32);
+    b.writeByte(SatOpcode.i32_trunc_sat_f64_s as i32);
+  }
+  emitI32TruncSatF64U(): void {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.sat_prefix as i32);
+    b.writeByte(SatOpcode.i32_trunc_sat_f64_u as i32);
+  }
+
+  emitI64ReinterpretF64(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_reinterpret_f64 as i32); }
+  emitF64ReinterpretI64(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.f64_reinterpret_i64 as i32); }
+
+  emitI64ExtendI32S(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_extend_i32_s as i32); }
+  emitI32WrapI64(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_wrap_i64 as i32); }
+  emitF32ConvertI64S(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.f32_convert_i64_s as i32); }
+  emitF64ConvertI64S(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.f64_convert_i64_s as i32); }
+  emitF64PromoteF32(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.f64_promote_f32 as i32); }
+  emitF32DemoteF64(): void { (this.currentBuffer as ByteBuffer).writeByte(Opcode.f32_demote_f64 as i32); }
 }
