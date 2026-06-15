@@ -4,7 +4,7 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature } from '../wasm-module.zena';
-import { getClassKey, getInterfaceKey, getSignatureKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults } from '../type-mapping.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
@@ -157,7 +157,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       } else if ((sym as Symbol).declaration is ImportSpecifier) {
         let spec = (sym as Symbol).declaration as ImportSpecifier;
         let importedName = spec.imported.name;
-        if (ctx.wasm.exportMap.has(importedName)) {
+        if (ctx.wasm.exportMap.has(importedName as ExportKey)) {
           var i = 0;
           while (i < call.args.length) {
             genExpr(call.args[i], false);
@@ -169,7 +169,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             }
             i += 1;
           }
-          ctx.emitter.emitCall(ctx.wasm.exportMap[importedName]);
+          ctx.emitter.emitCall(ctx.wasm.exportMap[importedName as ExportKey]);
           return;
         }
         throw new Error("Export map missing: " + importedName);

@@ -1,0 +1,45 @@
+// @mode: run
+// @result: 6
+
+import { Iterable, Iterator } from 'zena:iterator';
+
+class Item {
+  value: i32;
+  new(this.value);
+}
+
+class MyIterator implements Iterator<Item> {
+  var count: i32 = 0;
+  new();
+  
+  next(): inline (true, Item) | inline (false, _) {
+    if (this.count < 3) {
+      this.count += 1;
+      return (true, new Item(this.count));
+    }
+    return (false, _);
+  }
+}
+
+class MyIterable implements Iterable<Item> {
+  new();
+  
+  :Iterable.iterator(): Iterator<Item> {
+    return new MyIterator();
+  }
+  
+  contains(value: Item): boolean { return false; }
+  all(predicate: (item: Item) => boolean): boolean { return false; }
+  some(predicate: (item: Item) => boolean): boolean { return false; }
+  fold<R>(initial: R, combine: (acc: R, item: Item) => R): R { return initial; }
+  find(predicate: (item: Item) => boolean): inline (true, Item) | inline (false, _) { return (false, _); }
+}
+
+export let main = (): i32 => {
+  let iterable = new MyIterable();
+  var sum = 0;
+  for (let x in iterable) {
+    sum = sum + x.value;
+  }
+  return sum;
+};

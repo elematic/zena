@@ -4,7 +4,8 @@ import {
 import { 
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, BooleanType, BoolLiteralType, 
   ByteArrayType, NullType, VoidType, ClassType, InterfaceType, ArrayType, RecordType, 
-  TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString
+  TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
+  MixinType
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol } from '../scope/symbol.zena';
@@ -12,6 +13,7 @@ import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { Program, CompilationUnit } from '../program.zena';
 
 // TODO: Add string comparison to the stdlib and use that instead.
 export let compareStrings = (a: String, b: String): i32 => {
@@ -56,13 +58,72 @@ export let getMemberRootClass = (ct: ClassType, memberName: String): ClassType =
   return rootClass;
 };
 
-export let getClassKey = (ct: ClassType): String => {
-  return ct.name + "_" + i32ToString(ct.id as i32);
+export distinct type ClassKey = String;
+export distinct type InterfaceKey = String;
+export distinct type ClassInterfaceKey = String;
+export distinct type InterfaceMemberKey = String;
+export distinct type CellKey = String;
+export distinct type ClosureKey = String;
+export distinct type ExportKey = String;
+export distinct type ExportGlobalKey = String;
+export distinct type MixinKey = String;
+
+export let getClassKey = (ct: ClassType): ClassKey => {
+  return (ct.name + "_" + i32ToString(ct.id as i32)) as ClassKey;
 };
 
-export let getInterfaceKey = (it: InterfaceType): String => {
-  return it.name + "_" + i32ToString(it.id as i32);
+export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
+  return (it.name + "_" + i32ToString(it.id as i32)) as InterfaceKey;
 };
+
+export let getMixinKey = (mt: MixinType): MixinKey => {
+  return (mt.sourcePath + "::" + mt.name) as MixinKey;
+};
+
+export let getMixinKeyFromSymbol = (model: SemanticModel, sym: Symbol): MixinKey => {
+  let mt = model.getBindingType(sym);
+  if (mt == null || !(mt is MixinType)) {
+    throw new Error("Symbol is not a mixin: " + sym.name);
+  }
+  return getMixinKey(mt as MixinType);
+};
+
+export let getClassInterfaceKey = (classKey: ClassKey, interfaceKey: InterfaceKey): ClassInterfaceKey => {
+  return ((classKey as String) + "::" + (interfaceKey as String)) as ClassInterfaceKey;
+};
+
+export let getInterfaceMemberKey = (interfaceKey: InterfaceKey, memberName: String): InterfaceMemberKey => {
+  return ((interfaceKey as String) + "::" + memberName) as InterfaceMemberKey;
+};
+
+export let isStringClassKey = (key: ClassKey): boolean => {
+  return (key as String).startsWith("String_");
+};
+
+export let getClassPrivateFieldKey = (classKey: ClassKey, fieldName: String): String => {
+  return (classKey as String) + "::" + fieldName;
+};
+
+export let getClassInterfaceVTableName = (cName: ClassKey, iName: InterfaceKey): String => {
+  return (cName as String) + "_" + (iName as String) + "_vtable";
+};
+
+export let getInterfaceTrampolineName = (cName: ClassKey, iName: InterfaceKey, fieldName: String): String => {
+  return (cName as String) + "_" + (iName as String) + "_" + fieldName + "_trampoline";
+};
+
+export let getClassVTableName = (cName: ClassKey): String => {
+  return (cName as String) + "_vtable";
+};
+
+export let getClassSingletonName = (cName: ClassKey): String => {
+  return (cName as String) + "_singleton";
+};
+
+export let classInterfaceKeyToString = (key: ClassInterfaceKey): String => {
+  return key as String;
+};
+
 
 export let getTypeKey = (type: Type): String => {
   return match (type) {
@@ -136,24 +197,45 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
   return null;
 };
 
+export let findMixinDeclaration = (program: Program, mt: MixinType): MixinDeclaration | null => {
+  let path = mt.sourcePath;
+  if (let (true, unit) = program.unitsByPath.get(path)) {
+    for (let stmt in (unit as CompilationUnit).ast.body) {
+      if (stmt is MixinDeclaration) {
+        let md = stmt as MixinDeclaration;
+        if (md.name.name == mt.name) {
+          return md;
+        }
+      }
+    }
+  }
+  return null;
+};
+
 export let collectMixinMembers = (
+  program: Program,
   model: SemanticModel,
   mixinAnns: Array<TypeAnnotation> | null,
   methods: Array<Node>,
-  seen: HashMap<String, boolean>
+  seen: HashMap<MixinKey, boolean>
 ): void => {
   if (mixinAnns == null) { return; }
   for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
     let sym = model.resolve(ann);
-    if (sym != null && (sym as Symbol).declaration is MixinDeclaration) {
-      let md = (sym as Symbol).declaration as MixinDeclaration;
-      let mixinKey = md.name.name;
-      if (!seen.has(mixinKey)) {
-        seen[mixinKey] = true;
-        collectMixinMembers(model, md.mixins, methods, seen);
-        for (let member in md.body) {
-          if (member is MethodDefinition || member is AccessorDeclaration || member is FieldDefinition) {
-            methods.push(member);
+    if (sym != null) {
+      let mt = model.getBindingType(sym as Symbol);
+      if (mt != null && mt is MixinType) {
+        let md = findMixinDeclaration(program, mt as MixinType);
+        if (md != null) {
+          let mixinKey = getMixinKey(mt as MixinType);
+          if (!seen.has(mixinKey)) {
+            seen[mixinKey] = true;
+            collectMixinMembers(program, model, (md as MixinDeclaration).mixins, methods, seen);
+            for (let member in (md as MixinDeclaration).body) {
+              if (member is MethodDefinition || member is AccessorDeclaration || member is FieldDefinition) {
+                methods.push(member);
+              }
+            }
           }
         }
       }
@@ -162,23 +244,29 @@ export let collectMixinMembers = (
 };
 
 export let collectMixinFields = (
+  program: Program,
   model: SemanticModel,
   mixinAnns: Array<TypeAnnotation> | null,
   fields: Array<FieldDefinition>,
-  seen: HashMap<String, boolean>
+  seen: HashMap<MixinKey, boolean>
 ): void => {
   if (mixinAnns == null) { return; }
   for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
     let sym = model.resolve(ann);
-    if (sym != null && (sym as Symbol).declaration is MixinDeclaration) {
-      let md = (sym as Symbol).declaration as MixinDeclaration;
-      let mixinKey = md.name.name;
-      if (!seen.has(mixinKey)) {
-        seen[mixinKey] = true;
-        collectMixinFields(model, md.mixins, fields, seen);
-        for (let member in md.body) {
-          if (member is FieldDefinition) {
-            fields.push(member as FieldDefinition);
+    if (sym != null) {
+      let mt = model.getBindingType(sym as Symbol);
+      if (mt != null && mt is MixinType) {
+        let md = findMixinDeclaration(program, mt as MixinType);
+        if (md != null) {
+          let mixinKey = getMixinKey(mt as MixinType);
+          if (!seen.has(mixinKey)) {
+            seen[mixinKey] = true;
+            collectMixinFields(program, model, (md as MixinDeclaration).mixins, fields, seen);
+            for (let member in (md as MixinDeclaration).body) {
+              if (member is FieldDefinition) {
+                fields.push(member as FieldDefinition);
+              }
+            }
           }
         }
       }

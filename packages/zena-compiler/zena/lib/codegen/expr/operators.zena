@@ -1,10 +1,11 @@
 import { Node, UnaryExpression, BinaryExpression, Expression } from '../../ast.zena';
 import { Type, F64Type, F32Type, I32Type, RecordType, ClassType, ArrayType,
-  AnyType, isFloatType, baseType, typeToString
+  AnyType, isFloatType, baseType, typeToString,
+  InterfaceType, TypeParameterType, ThisType, AnyRefType, EqRefType, FunctionType, TupleType, NullType
 } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
-import { ValType, ValTypeI32 } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeAnyRef } from '../wasm.zena';
 import { WasmField, WasmFunction } from '../wasm-module.zena';
 import { getClassKey } from '../codegen-utils.zena';
 import { typeToValType } from '../type-mapping.zena';
@@ -62,6 +63,14 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
   if (leftType == null || rightType == null) {
     throw new Error("Missing type info in semantic model for binary expression operands");
   }
+
+  let isRefType = (t: Type): boolean => {
+    return t is RecordType || t is ClassType || t is ArrayType || t is AnyType || 
+           t is InterfaceType || t is TypeParameterType || t is ThisType || 
+           t is AnyRefType || t is EqRefType || t is FunctionType || 
+           t is TupleType || t is NullType;
+  };
+  let isRefContext = isRefType(leftType) || isRefType(rightType);
   
   if (bin.operator == "&&") {
     genExpr(bin.left, false);
@@ -103,6 +112,11 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
         ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
         ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
         ctx.emitter.emitRefCastEq();
+      } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+        let leftWasmType = typeToValType(ctx.wasm, leftType);
+        if (leftWasmType is ValTypeAnyRef) {
+          ctx.emitter.emitRefCastEq();
+        }
       }
     }
 
@@ -121,12 +135,12 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
         ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
         ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
         ctx.emitter.emitRefCastEq();
+      } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+        let rightWasmType = typeToValType(ctx.wasm, rightType);
+        if (rightWasmType is ValTypeAnyRef) {
+          ctx.emitter.emitRefCastEq();
+        }
       }
-    }
-    
-    var isRefContext = false;
-    if (leftType is RecordType || leftType is ClassType || leftType is ArrayType || leftType is AnyType || rightType is RecordType || rightType is ClassType || rightType is ArrayType || rightType is AnyType) {
-      isRefContext = true;
     }
     
     if (isRefContext) {

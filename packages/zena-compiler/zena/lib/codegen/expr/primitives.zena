@@ -7,6 +7,7 @@ import { Error } from 'zena:error';
 import { WasmStruct, WasmFunction } from '../wasm-module.zena';
 import { typeToValType, getCellStruct } from '../type-mapping.zena';
 import { ValTypeRefNull } from '../wasm.zena';
+import { ClassKey, ExportGlobalKey, isStringClassKey } from '../codegen-utils.zena';
 
 // TODO: Consider moving `generateIdentifier` to a dedicated file (e.g.,
 // `bindings.zena` or `variables.zena`). While it is parsed as a primary
@@ -33,8 +34,8 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
     if ((sym as Symbol).declaration is ImportSpecifier) {
       let spec = (sym as Symbol).declaration as ImportSpecifier;
       let importedName = spec.imported.name;
-      if (ctx.wasm.exportGlobalMap.has(importedName)) {
-        ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[importedName].index);
+      if (ctx.wasm.exportGlobalMap.has(importedName as ExportGlobalKey)) {
+        ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[importedName as ExportGlobalKey].index);
         return;
       }
     }
@@ -67,16 +68,16 @@ export let generateBooleanLiteral = (ctx: FunctionContext, expr: BooleanLiteral)
 };
 
 export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): void => {
-  var stringKey: String | null = null;
+  var stringKey: ClassKey | null = null;
   for (let key in ctx.wasm.classStructs.keys()) {
-    if (key.startsWith("String_")) {
+    if (isStringClassKey(key)) {
       stringKey = key;
     }
   }
   if (stringKey == null) {
     throw new Error("String class struct not found during string literal generation!");
   }
-  let structType = ctx.wasm.classStructs[stringKey as String];
+  let structType = ctx.wasm.classStructs[stringKey as ClassKey];
   let tempLocal = ctx.allocLocal(new ValTypeRefNull(structType));
 
   // 1. Allocate String struct with default values
@@ -84,9 +85,9 @@ export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): 
   ctx.emitter.emitLocalSet(tempLocal);
 
   // 2. Set vtable (field 0)
-  let hasVTable = ctx.wasm.classVTableGlobals.has(stringKey as String);
+  let hasVTable = ctx.wasm.classVTableGlobals.has(stringKey as ClassKey);
   if (hasVTable) {
-    let vtableGlobal = ctx.wasm.classVTableGlobals[stringKey as String];
+    let vtableGlobal = ctx.wasm.classVTableGlobals[stringKey as ClassKey];
     ctx.emitter.emitLocalGet(tempLocal);
     ctx.emitter.emitGlobalGet(vtableGlobal.index);
     ctx.emitter.emitStructSet(structType.index, 0); // vtable is field 0
@@ -166,16 +167,16 @@ export let generateTemplateLiteral = (
   }
 
   // 1. Find String type representation and the fromParts function
-  var stringKey: String | null = null;
+  var stringKey: ClassKey | null = null;
   for (let key in ctx.wasm.classStructs.keys()) {
-    if (key.startsWith("String_")) {
+    if (isStringClassKey(key)) {
       stringKey = key;
     }
   }
   if (stringKey == null) {
     throw new Error("String class struct not found during template literal generation!");
   }
-  let stringStruct = ctx.wasm.classStructs[stringKey as String];
+  let stringStruct = ctx.wasm.classStructs[stringKey as ClassKey];
   let stringWasmType = new ValTypeRefNull(stringStruct);
 
   var fromPartsFunc: WasmFunction | null = null;

@@ -45,6 +45,14 @@ import { Symbol, SymbolId } from './scope/symbol.zena';
 import { SymbolMap } from './scope/scope-builder.zena';
 import { NodeMap } from './node-map.zena';
 
+export type SemanticModelProgramUnit = {
+  model: SemanticModel,
+};
+
+export interface ProgramInterface {
+  getUnits(): Array<SemanticModelProgramUnit>;
+}
+
 export class RecordAdaptation {
   source: RecordType;
   target: RecordType;
@@ -60,6 +68,8 @@ export class InterfaceAdaptation {
 }
 
 export class SemanticModel {
+  var program: ProgramInterface | null = null;
+
   /**
    * Map from node.id → inferred Type.
    * Used for both expression types and declaration/binding types.
@@ -75,9 +85,24 @@ export class SemanticModel {
     this.#recordAdaptations[node] = new RecordAdaptation(source, target);
   }
 
-  getRecordAdaptation(node: Node): RecordAdaptation | null {
+  getRecordAdaptationDirect(node: Node): RecordAdaptation | null {
     if (let (true, t) = this.#recordAdaptations.get(node)) {
       return t;
+    }
+    return null;
+  }
+
+  getRecordAdaptation(node: Node): RecordAdaptation | null {
+    let t = this.getRecordAdaptationDirect(node);
+    if (t != null) return t;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherT = unit.model.getRecordAdaptationDirect(node);
+          if (otherT != null) return otherT;
+        }
+      }
     }
     return null;
   }
@@ -91,9 +116,24 @@ export class SemanticModel {
     this.#interfaceAdaptations[node] = new InterfaceAdaptation(source, target);
   }
 
-  getInterfaceAdaptation(node: Node): InterfaceAdaptation | null {
+  getInterfaceAdaptationDirect(node: Node): InterfaceAdaptation | null {
     if (let (true, t) = this.#interfaceAdaptations.get(node)) {
       return t;
+    }
+    return null;
+  }
+
+  getInterfaceAdaptation(node: Node): InterfaceAdaptation | null {
+    let t = this.getInterfaceAdaptationDirect(node);
+    if (t != null) return t;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherT = unit.model.getInterfaceAdaptationDirect(node);
+          if (otherT != null) return otherT;
+        }
+      }
     }
     return null;
   }
@@ -107,9 +147,22 @@ export class SemanticModel {
     this.#staticAccesses[node] = isStatic;
   }
 
-  isStaticAccess(node: Node): boolean {
+  isStaticAccessDirect(node: Node): boolean {
     if (let (true, s) = this.#staticAccesses.get(node)) {
       return s;
+    }
+    return false;
+  }
+
+  isStaticAccess(node: Node): boolean {
+    if (this.isStaticAccessDirect(node)) return true;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          if (unit.model.isStaticAccessDirect(node)) return true;
+        }
+      }
     }
     return false;
   }
@@ -170,26 +223,48 @@ export class SemanticModel {
     this.#parents[child] = parent;
   }
 
-  /**
-   * Get the parent of a node, or null if it is a root or not recorded.
-   */
-  getParent(child: Node): Node | null {
+  getParentDirect(child: Node): Node | null {
     if (let (true, parent) = this.#parents.get(child)) {
       return parent;
     }
     return null;
   }
 
-  /**
-   * Resolve an identifier node to its Symbol (from scope analysis).
-   * Returns null if the identifier was unresolved or no SymbolMap is set.
-   */
-  resolve(node: Node): Symbol | null {
-    // TODO: This should be `return this.#symbols?.getByNode(node);`
+  getParent(child: Node): Node | null {
+    let p = this.getParentDirect(child);
+    if (p != null) return p;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherP = unit.model.getParentDirect(child);
+          if (otherP != null) return otherP;
+        }
+      }
+    }
+    return null;
+  }
+
+  resolveDirect(node: Node): Symbol | null {
     if (this.#symbols == null) {
       return null;
     }
     return (this.#symbols as SymbolMap).getByNode(node);
+  }
+
+  resolve(node: Node): Symbol | null {
+    let sym = this.resolveDirect(node);
+    if (sym != null) return sym;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherSym = unit.model.resolveDirect(node);
+          if (otherSym != null) return otherSym;
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -210,12 +285,24 @@ export class SemanticModel {
     this.#nodeTypes[node] = type;
   }
 
-  /**
-   * Get the inferred type for an AST node, or null if not recorded.
-   */
-  getNodeType(node: Node): Type | null {
+  getNodeTypeDirect(node: Node): Type | null {
     if (let (true, t) = this.#nodeTypes.get(node)) {
       return t;
+    }
+    return null;
+  }
+
+  getNodeType(node: Node): Type | null {
+    let t = this.getNodeTypeDirect(node);
+    if (t != null) return t;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherT = unit.model.getNodeTypeDirect(node);
+          if (otherT != null) return otherT;
+        }
+      }
     }
     return null;
   }
@@ -229,12 +316,24 @@ export class SemanticModel {
     this.#bindingTypes[info.id] = type;
   }
 
-  /**
-   * Get the type for a named binding, or null if not yet checked.
-   */
-  getBindingType(info: Symbol): Type | null {
+  getBindingTypeDirect(info: Symbol): Type | null {
     if (this.#bindingTypes.has(info.id)) {
       return this.#bindingTypes[info.id];
+    }
+    return null;
+  }
+
+  getBindingType(info: Symbol): Type | null {
+    let t = this.getBindingTypeDirect(info);
+    if (t != null) return t;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherT = unit.model.getBindingTypeDirect(info);
+          if (otherT != null) return otherT;
+        }
+      }
     }
     return null;
   }

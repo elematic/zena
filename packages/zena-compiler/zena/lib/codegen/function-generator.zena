@@ -1,3 +1,4 @@
+import { console } from 'zena:console';
 import { ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeAnyRef, ValTypeEqRef, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeVoid, valTypeEquals } from './wasm.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
@@ -8,16 +9,23 @@ import {
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
   IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
   ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition,
-  AccessorDeclaration, SetterInfo, AsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral
+  AccessorDeclaration, SetterInfo, AsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral,
+  SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
+  TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
+import { Program } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned } from './wasm.zena';
 import { WasmField, WasmStruct, sortWasmFields } from './wasm-module.zena';
 import { typeToValType, getClosureStruct, getCellStruct } from './type-mapping.zena';
-import { getClassKey, getInterfaceKey, collectMixinFields } from './codegen-utils.zena';
+import { 
+  getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
+  getClassPrivateFieldKey, isStringClassKey, classInterfaceKeyToString,
+  MixinKey
+} from './codegen-utils.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
@@ -39,7 +47,7 @@ import { generateMatchExpression } from './expr/match.zena';
 import { generateMemberExpression, generateIndexExpression } from './expr/member.zena';
 import { generateRecordLiteral, generateTupleLiteral, generateArrayLiteral } from './expr/literals.zena';
 import { generateReturnStatement, generateExpressionStatement, generateIfStatement } from './stmt/control-flow.zena';
-import { generateBreakStatement, generateContinueStatement, generateWhileStatement, generateForStatement } from './stmt/loops.zena';
+import { generateBreakStatement, generateContinueStatement, generateWhileStatement, generateForStatement, generateForInStatement } from './stmt/loops.zena';
 import { generateBlockStatement } from './stmt/blocks.zena';
 import { generateVariableDeclaration } from './stmt/bindings.zena';
 import { discoverLocalsFromExpr, discoverLocalsFromStmt } from './locals.zena';
@@ -149,9 +157,16 @@ export class FunctionGenerator {
       } else if (this.ctx.wasmFunction.interfaceTrampolineTarget != null) {
         let target = this.ctx.wasmFunction.interfaceTrampolineTarget as WasmFunction;
         this.ctx.emitter.emitLocalGet(0);
-        let ct = target.classType as ClassType;
-        let classStruct = this.ctx.wasm.classStructs[getClassKey(ct)];
-        this.ctx.emitter.emitRefCast(classStruct.index);
+        let receiverType = target.signature.params[0];
+        match (receiverType) {
+          case ValTypeRefNull as r: {
+            this.ctx.emitter.emitRefCast(r.target.index);
+          }
+          case ValTypeRef as r: {
+            this.ctx.emitter.emitRefCast(r.target.index);
+          }
+          case _: {}
+        }
         var i = 1;
         while (i < this.ctx.wasmFunction.signature.params.length) {
           this.ctx.emitter.emitLocalGet(i);
@@ -313,8 +328,8 @@ export class FunctionGenerator {
           if (classDecl != null) {
             let cd = classDecl as ClassDeclaration;
             let mixinFields = new Array<FieldDefinition>();
-            let seenMixins = new HashMap<String, boolean>();
-            collectMixinFields(this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
+            let seenMixins = new HashMap<MixinKey, boolean>();
+            collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
 
             let allFields = new Array<FieldDefinition>();
             for (let member in cd.body) {
@@ -351,7 +366,7 @@ export class FunctionGenerator {
                   var fieldIndex = -1;
                   let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
                     if (this.ctx.wasmFunction.classType != null) {
-                      getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + actualFieldName
+                      getClassPrivateFieldKey(getClassKey(this.ctx.wasmFunction.classType as ClassType), actualFieldName)
                     } else {
                       actualFieldName
                     }
@@ -393,7 +408,7 @@ export class FunctionGenerator {
                 var fieldIndex = -1;
                 let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
                   if (this.ctx.wasmFunction.classType != null) {
-                    getClassKey(this.ctx.wasmFunction.classType as ClassType) + "::" + actualFieldName
+                    getClassPrivateFieldKey(getClassKey(this.ctx.wasmFunction.classType as ClassType), actualFieldName)
                   } else {
                     actualFieldName
                   }
@@ -499,8 +514,37 @@ export class FunctionGenerator {
       case IfStatement: generateIfStatement(this.ctx, stmt as IfStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
       case WhileStatement: generateWhileStatement(this.ctx, stmt as WhileStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
       case ForStatement: generateForStatement(this.ctx, stmt as ForStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
+      case ForInStatement: generateForInStatement(this.ctx, stmt as ForInStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
       case VariableDeclaration: generateVariableDeclaration(this.ctx, stmt as VariableDeclaration, (e: Expression) => this.generateExpression(e))
       case _: {
+        var typeStr = "Other Node";
+        if (stmt is ForInStatement) {
+          typeStr = "ForInStatement";
+        } else if (stmt is ClassDeclaration) {
+          typeStr = "ClassDeclaration";
+        } else if (stmt is InterfaceDeclaration) {
+          typeStr = "InterfaceDeclaration";
+        } else if (stmt is EnumDeclaration) {
+          typeStr = "EnumDeclaration";
+        } else if (stmt is MixinDeclaration) {
+          typeStr = "MixinDeclaration";
+        } else if (stmt is TypeAliasDeclaration) {
+          typeStr = "TypeAliasDeclaration";
+        } else if (stmt is ImportDeclaration) {
+          typeStr = "ImportDeclaration";
+        } else if (stmt is ExportAllDeclaration) {
+          typeStr = "ExportAllDeclaration";
+        } else if (stmt is ExportFromDeclaration) {
+          typeStr = "ExportFromDeclaration";
+        } else if (stmt is DeclareFunction) {
+          typeStr = "DeclareFunction";
+        }
+        if (stmt.loc != null) {
+          let loc = stmt.loc as SourceLocation;
+          console.log("Unsupported statement type in codegen: " + typeStr + " at line=" + i32ToString(loc.line) + " col=" + i32ToString(loc.column));
+        } else {
+          console.log("Unsupported statement type in codegen: " + typeStr + " with null loc");
+        }
         throw new Error("Unsupported statement type in codegen");
       }
     }
@@ -696,9 +740,9 @@ export class FunctionGenerator {
       let cName = getClassKey(ia.source);
       let iName = getInterfaceKey(ia.target);
       
-      let key = cName + "::" + iName;
+      let key = getClassInterfaceKey(cName, iName);
       if (!this.ctx.wasm.classInterfaceVTables.has(key)) {
-        throw new Error("Interface vtable global not found for " + key);
+        throw new Error("Interface vtable global not found for " + classInterfaceKeyToString(key));
       }
       let vtableGlobal = this.ctx.wasm.classInterfaceVTables[key];
       
@@ -828,7 +872,7 @@ export class FunctionGenerator {
         while (pi < ctorType.parameters.length) {
           let pName = parameterNames[pi];
           let lookupName = if (pName.length > 0 && pName.sliceBytes(0, 1) == "#") {
-            getClassKey(cType) + "::" + pName
+            getClassPrivateFieldKey(getClassKey(cType), pName)
           } else {
             pName
           };
@@ -852,8 +896,8 @@ export class FunctionGenerator {
     if (classDecl != null) {
       let cd = classDecl as ClassDeclaration;
       let mixinFields = new Array<FieldDefinition>();
-      let seenMixins = new HashMap<String, boolean>();
-      collectMixinFields(this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
+      let seenMixins = new HashMap<MixinKey, boolean>();
+      collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
 
       let allFields = new Array<FieldDefinition>();
       for (let member in cd.body) {
@@ -881,7 +925,7 @@ export class FunctionGenerator {
             }
             var fieldIndex = -1;
             let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
-              getClassKey(cType) + "::" + actualFieldName
+              getClassPrivateFieldKey(getClassKey(cType), actualFieldName)
             } else {
               actualFieldName
             };
@@ -952,7 +996,7 @@ export class FunctionGenerator {
   generateWasiWriteStringHelper(): void {
     var stringStruct: WasmStruct | null = null;
     for (let key in this.ctx.wasm.classStructs.keys()) {
-      if (key.startsWith("String_")) {
+      if (isStringClassKey(key)) {
         stringStruct = this.ctx.wasm.classStructs[key];
       }
     }

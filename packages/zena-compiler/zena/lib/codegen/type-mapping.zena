@@ -19,7 +19,9 @@ import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
 import { 
-  getMemberRootClass, getClassKey, getInterfaceKey
+  getMemberRootClass, getClassKey, getInterfaceKey, ClassKey, InterfaceKey, 
+  ClassInterfaceKey, InterfaceMemberKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey,
+  isStringClassKey
 } from './codegen-utils.zena';
 
 export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, fieldName: String): WasmSignature => {
@@ -38,7 +40,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
       throw new Error("Interface getter member " + fieldName + " not found on interface " + it.name);
     }
     let params = new Array<ValType>();
-    params.push(new ValTypeStructRef());
+    params.push(new ValTypeAnyRef());
     let returns = new Array<ValType>();
     returns.push(typeToValType(wasm, memberType as Type));
     return wasm.getSignature(params, returns);
@@ -59,7 +61,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
       throw new Error("Interface setter member " + fieldName + " not found on interface " + it.name);
     }
     let params = new Array<ValType>();
-    params.push(new ValTypeStructRef());
+    params.push(new ValTypeAnyRef());
     params.push(typeToValType(wasm, memberType as Type));
     let returns = new Array<ValType>();
     return wasm.getSignature(params, returns);
@@ -67,7 +69,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     let mi = it.members[fieldName] as MethodInfo;
     let ft = mi.type as FunctionType;
     let params = new Array<ValType>();
-    params.push(new ValTypeStructRef());
+    params.push(new ValTypeAnyRef());
     for (let p in ft.parameters) {
       params.push(typeToValType(wasm, p));
     }
@@ -84,7 +86,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
   if (classStruct != null) {
     params.push(new ValTypeRefNull(classStruct));
   } else {
-    params.push(new ValTypeStructRef());
+    params.push(new ValTypeAnyRef());
   }
 
   let returns = new Array<ValType>();
@@ -158,6 +160,22 @@ export let getValTypeKey = (type: ValType): String => {
   }
 };
 
+export let getClosureKey = (params: Array<ValType>, returns: Array<ValType>): ClosureKey => {
+  var keyStr = "";
+  for (let p in params) {
+    keyStr = keyStr + getValTypeKey(p) + ",";
+  }
+  keyStr = keyStr + "=>";
+  for (let r in returns) {
+    keyStr = keyStr + getValTypeKey(r) + ",";
+  }
+  return keyStr as ClosureKey;
+};
+
+export let getCellKey = (valType: ValType): CellKey => {
+  return getValTypeKey(valType) as CellKey;
+};
+
 export let getClosureStruct = (wasm: WasmModule, ftVal: any): WasmStruct => {
   let ft = ftVal as FunctionType;
   let params = new Array<ValType>();
@@ -172,17 +190,10 @@ export let getClosureStruct = (wasm: WasmModule, ftVal: any): WasmStruct => {
 
   let implSig = wasm.getSignature(params, returns);
 
-  var keyStr = "";
-  for (let p in params) {
-    keyStr = keyStr + getValTypeKey(p) + ",";
-  }
-  keyStr = keyStr + "=>";
-  for (let r in returns) {
-    keyStr = keyStr + getValTypeKey(r) + ",";
-  }
+  let key = getClosureKey(params, returns);
 
-  if (wasm.closureStructs.has(keyStr)) {
-    return wasm.closureStructs[keyStr];
+  if (wasm.closureStructs.has(key)) {
+    return wasm.closureStructs[key];
   }
 
   let fields = new Array<WasmField>();
@@ -190,21 +201,21 @@ export let getClosureStruct = (wasm: WasmModule, ftVal: any): WasmStruct => {
   fields.push(new WasmField("ctx", new ValTypeEqRef(), false));
   let st = new WasmStruct("Closure", fields);
   wasm.types.push(st);
-  wasm.closureStructs[keyStr] = st;
+  wasm.closureStructs[key] = st;
   return st;
 };
 
 export let getCellStruct = (wasm: WasmModule, valType: ValType): WasmStruct => {
-  let keyStr = getValTypeKey(valType);
-  if (wasm.cellStructs.has(keyStr)) {
-    return wasm.cellStructs[keyStr];
+  let key = getCellKey(valType);
+  if (wasm.cellStructs.has(key)) {
+    return wasm.cellStructs[key];
   }
   let fields = new Array<WasmField>();
   fields.push(new WasmField("value", valType, true)); // mutable
-  let name = "Cell_" + keyStr;
+  let name = "Cell_" + (key as String);
   let st = new WasmStruct(name, fields);
   wasm.types.push(st);
-  wasm.cellStructs[keyStr] = st;
+  wasm.cellStructs[key] = st;
   return st;
 };
 
@@ -215,7 +226,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
   case StringLiteralType: {
     var stringStruct: WasmStruct | null = null;
     for (let key in wasm.classStructs.keys()) {
-      if (key.startsWith("String_")) {
+      if (isStringClassKey(key)) {
         stringStruct = wasm.classStructs[key];
       }
     }

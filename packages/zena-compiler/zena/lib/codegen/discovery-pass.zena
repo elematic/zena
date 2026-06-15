@@ -6,7 +6,7 @@ import {
   TypeAliasDeclaration, RecordLiteral, MethodDefinition, FieldDefinition,
   AccessorDeclaration, SetterInfo, SuperInitializer, TypeParameter, MixinDeclaration,
   Parameter, TypeAnnotation, Decorator, Pattern, MemberExpression, AssignmentExpression, IndexExpression,
-  SymbolPropertyName, TemplateElement, EnumDeclaration
+  SymbolPropertyName, TemplateElement, EnumDeclaration, ForInStatement
 } from '../ast.zena';
 import { walk } from '../visitor.zena';
 import { RecordType, TupleType } from '../types.zena';
@@ -32,7 +32,12 @@ import {
 } from './wasm-module.zena';
 import { 
   getClassKey, getInterfaceKey, getSignatureKey, matchOverload, 
-  collectMixinMembers, collectMixinFields, getMemberRootClass 
+  collectMixinMembers, collectMixinFields, getMemberRootClass,
+  ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey,
+  ExportKey, ExportGlobalKey, getClassInterfaceKey, getInterfaceMemberKey,
+  getClassPrivateFieldKey, getClassVTableName, getClassSingletonName,
+  getInterfaceTrampolineName, getClassInterfaceVTableName, isStringClassKey,
+  MixinKey, getMixinKey, classInterfaceKeyToString, getMixinKeyFromSymbol
 } from './codegen-utils.zena';
 import { 
   typeToValType, getClosureStruct, getCellStruct, getInterfaceMemberSignature, 
@@ -60,6 +65,17 @@ export class DiscoveryPass {
       let bt = model.getBindingType(sym);
       if (bt is ClassType) {
         return bt as ClassType;
+      }
+    }
+    return null;
+  }
+
+  findPreludeInterface(name: String): InterfaceType | null {
+    for (let unit in this.program.units) {
+      let model = unit.model;
+      let t = model.getExportType(name);
+      if (t != null && t is InterfaceType) {
+        return t as InterfaceType;
       }
     }
     return null;
@@ -189,7 +205,7 @@ export class DiscoveryPass {
         if (this.wasm.classStructs.has(getClassKey(rootClass))) {
           params.push(new ValTypeRefNull(this.wasm.classStructs[getClassKey(rootClass)]));
         } else {
-          params.push(new ValTypeStructRef());
+          params.push(new ValTypeAnyRef());
         }
       }
     }
@@ -248,7 +264,7 @@ export class DiscoveryPass {
         var idx = -1;
         let backingName = backingFieldName as String;
         let lookupBackingName = if (backingName.length > 0 && backingName.sliceBytes(0, 1) == "#") {
-          getClassKey(cType) + "::" + backingName
+          getClassPrivateFieldKey(getClassKey(cType), backingName)
         } else {
           backingName
         };
@@ -266,7 +282,7 @@ export class DiscoveryPass {
         var idx = -1;
         let backingName = backingFieldName as String;
         let lookupBackingName = if (backingName.length > 0 && backingName.sliceBytes(0, 1) == "#") {
-          getClassKey(cType) + "::" + backingName
+          getClassPrivateFieldKey(getClassKey(cType), backingName)
         } else {
           backingName
         };
@@ -308,7 +324,7 @@ export class DiscoveryPass {
     // 4. Register signature: (i32, ref null $String) -> void for wasi_write_string_helper
     var stringStruct: WasmStruct | null = null;
     for (let key in this.wasm.classStructs.keys()) {
-      if (key.startsWith("String_")) {
+      if (isStringClassKey(key)) {
         stringStruct = this.wasm.classStructs[key];
       }
     }
@@ -329,10 +345,66 @@ export class DiscoveryPass {
     this.wasm.wasiWriteStringIndex = 1; // dummy placeholder
   }
 
+  #addInterfaceToTransitiveList(it: InterfaceType, list: Array<InterfaceType>, seen: HashMap<InterfaceKey, boolean>): void {
+    let key = getInterfaceKey(it);
+    if (!seen.has(key)) {
+      seen[key] = true;
+      list.push(it);
+      for (let ext in it.extendsList) {
+        this.#addInterfaceToTransitiveList(ext, list, seen);
+      }
+    }
+  }
+
+  collectAllImplementedInterfaces(ct: ClassType): Array<InterfaceType> {
+    let list = new Array<InterfaceType>();
+    let seen = new HashMap<InterfaceKey, boolean>();
+    
+    for (let iface in ct.implementsList) {
+      this.#addInterfaceToTransitiveList(iface, list, seen);
+    }
+    
+    var curr = ct.superType;
+    while (curr != null) {
+      let superCt = curr as ClassType;
+      for (let iface in superCt.implementsList) {
+        this.#addInterfaceToTransitiveList(iface, list, seen);
+      }
+      curr = superCt.superType;
+    }
+    
+    return list;
+  }
+
   /**
    * Run the discovery pass on the program, populating the given WasmModule.
    */
   run(): void {
+    let mixinToClasses = new HashMap<MixinKey, Array<ClassType>>();
+    for (let unit in this.program.units) {
+      let mod = unit.ast;
+      let moduleModel = unit.model;
+      walk(mod as Node, (n: Node) => true, (n: Node) => {
+        if (n is ClassDeclaration) {
+          let classDecl = n as ClassDeclaration;
+          let classType = this.getClassType(classDecl, moduleModel);
+          if (classType is ClassType) {
+            let cType = classType as ClassType;
+            let mixinMembers = new Array<Node>();
+            let seenMixins = new HashMap<MixinKey, boolean>();
+            collectMixinMembers(this.program, moduleModel, classDecl.mixins, mixinMembers, seenMixins);
+            let mKeys = seenMixins.keys();
+            while (let (true, mixKey) = mKeys.next()) {
+              if (!mixinToClasses.has(mixKey)) {
+                mixinToClasses[mixKey] = new Array<ClassType>();
+              }
+              mixinToClasses[mixKey].push(cType);
+            }
+          }
+        }
+      });
+    }
+
     // Preliminary Pass: Discover all referenced interface members across all compilation units
     for (let unit in this.program.units) {
       let mod = unit.ast;
@@ -350,16 +422,16 @@ export class DiscoveryPass {
             if (it.members.has(propName)) {
               let member = it.members[propName];
               if (member is MethodInfo) {
-                this.wasm.usedInterfaceMembers[iName + "::" + propName] = true;
+                this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, propName)] = true;
               } else if (member is FieldInfo) {
-                this.wasm.usedInterfaceMembers[iName + "::get#" + propName] = true;
+                this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "get#" + propName)] = true;
               }
             }
             if (it.members.has(getterName)) {
-              this.wasm.usedInterfaceMembers[iName + "::" + getterName] = true;
+              this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, getterName)] = true;
             }
             if (it.members.has(setterName)) {
-              this.wasm.usedInterfaceMembers[iName + "::" + setterName] = true;
+              this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, setterName)] = true;
             }
           }
         } else if (n is IndexExpression) {
@@ -370,7 +442,7 @@ export class DiscoveryPass {
             let iName = getInterfaceKey(it);
             let targetName = "[]";
             if (it.members.has(targetName)) {
-              this.wasm.usedInterfaceMembers[iName + "::[]"] = true;
+              this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "[]")] = true;
             }
           }
         } else if (n is AssignmentExpression) {
@@ -388,12 +460,12 @@ export class DiscoveryPass {
                 if (member is FieldInfo) {
                   let fi = member as FieldInfo;
                   if (fi.isMutable) {
-                    this.wasm.usedInterfaceMembers[iName + "::set#" + propName] = true;
+                    this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "set#" + propName)] = true;
                   }
                 }
               }
               if (it.members.has(setterName)) {
-                this.wasm.usedInterfaceMembers[iName + "::" + setterName] = true;
+                this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, setterName)] = true;
               }
             }
           } else if (assign.left is IndexExpression) {
@@ -404,8 +476,109 @@ export class DiscoveryPass {
               let iName = getInterfaceKey(it);
               let targetName = "[]=";
               if (it.members.has(targetName)) {
-                this.wasm.usedInterfaceMembers[iName + "::[]="] = true;
+                this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "[]=")] = true;
               }
+            }
+          }
+        } else if (n is ForInStatement) {
+          let forIn = n as ForInStatement;
+          let iterableType = moduleModel.getNodeType(forIn.iterable);
+          if (iterableType != null) {
+            if (iterableType is InterfaceType) {
+              let it = iterableType as InterfaceType;
+              let iName = getInterfaceKey(it);
+              this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, ":iterator")] = true;
+            }
+            
+            let resolvedIterableTypes = new Array<ClassType>();
+            if (iterableType is ClassType) {
+              let ct = iterableType as ClassType;
+              if (ct.name.length >= 5 && ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
+                // Find enclosing mixin declaration
+                var enclosingMixinDecl: MixinDeclaration | null = null;
+                var curr = forIn as Node;
+                while (true) {
+                  let parent = moduleModel.getParent(curr);
+                  if (parent == null) { break; }
+                  if (parent is MixinDeclaration) {
+                    enclosingMixinDecl = parent as MixinDeclaration;
+                    break;
+                  }
+                  curr = parent;
+                }
+                if (enclosingMixinDecl != null) {
+                  var mixinSym = moduleModel.resolve(enclosingMixinDecl.name);
+                  if (mixinSym == null) {
+                    mixinSym = moduleModel.resolve(enclosingMixinDecl);
+                  }
+                  if (mixinSym != null) {
+                    let mixKey = getMixinKeyFromSymbol(moduleModel, mixinSym as Symbol);
+                    if (mixinToClasses.has(mixKey)) {
+                      let classes = mixinToClasses[mixKey];
+                      for (let cType in classes) {
+                        resolvedIterableTypes.push(cType);
+                      }
+                    }
+                  }
+                }
+              } else {
+                resolvedIterableTypes.push(ct);
+              }
+            } else if (iterableType is ThisType) {
+              // Find enclosing ClassDeclaration or MixinDeclaration
+              var enclosingClassDecl: ClassDeclaration | null = null;
+              var enclosingMixinDecl: MixinDeclaration | null = null;
+              var curr = forIn as Node;
+              while (true) {
+                let parent = moduleModel.getParent(curr);
+                if (parent == null) { break; }
+                if (parent is ClassDeclaration) {
+                  enclosingClassDecl = parent as ClassDeclaration;
+                  break;
+                }
+                if (parent is MixinDeclaration) {
+                  enclosingMixinDecl = parent as MixinDeclaration;
+                  break;
+                }
+                curr = parent;
+              }
+              if (enclosingClassDecl != null) {
+                let ct = this.getClassType(enclosingClassDecl as ClassDeclaration, moduleModel);
+                if (ct != null) {
+                  resolvedIterableTypes.push(ct as ClassType);
+                }
+              } else if (enclosingMixinDecl != null) {
+                var mixinSym = moduleModel.resolve((enclosingMixinDecl as MixinDeclaration).name);
+                if (mixinSym == null) {
+                  mixinSym = moduleModel.resolve(enclosingMixinDecl as MixinDeclaration);
+                }
+                if (mixinSym != null) {
+                  let mixKey = getMixinKeyFromSymbol(moduleModel, mixinSym as Symbol);
+                  if (mixinToClasses.has(mixKey)) {
+                    let classes = mixinToClasses[mixKey];
+                    for (let cType in classes) {
+                      resolvedIterableTypes.push(cType);
+                    }
+                  }
+                }
+              }
+            }
+
+            for (let resolvedClass in resolvedIterableTypes) {
+              let iterableIface = this.findPreludeInterface("Iterable");
+              if (iterableIface != null) {
+                let iterableKey = getInterfaceKey(iterableIface as InterfaceType);
+                this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iterableKey, ":iterator")] = true;
+                
+                let cName = getClassKey(resolvedClass);
+                this.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iterableKey)] = true;
+              }
+            }
+
+            let iteratorIface = this.findPreludeInterface("Iterator");
+            if (iteratorIface != null) {
+              let iteratorKey = getInterfaceKey(iteratorIface as InterfaceType);
+              this.wasm.usedInterfaceMembers[getInterfaceMemberKey(iteratorKey, "next")] = true;
             }
           }
         }
@@ -463,7 +636,7 @@ export class DiscoveryPass {
             this.wasm.interfaceVTableStructs[getInterfaceKey(it)] = emptyVTableStruct;
 
             let fatPtrFields = new Array<WasmField>();
-            fatPtrFields.push(new WasmField("instance", new ValTypeStructRef(), false));
+            fatPtrFields.push(new WasmField("instance", new ValTypeAnyRef(), false));
             fatPtrFields.push(new WasmField("vtable", new ValTypeRef(emptyVTableStruct), false));
             let emptyStruct = new WasmStruct(it.name + "_FatPtr", fatPtrFields);
             this.wasm.types.push(emptyStruct);
@@ -488,7 +661,7 @@ export class DiscoveryPass {
                 let superKey = getClassKey(superCt);
                 
                 if (!this.wasm.classStructs.has(cKey) || !this.wasm.classStructs.has(superKey)) {
-                  console.log("Error: linkSuperAndVT missing struct for cKey: " + cKey + " or superKey: " + superKey);
+                  console.log("Error: linkSuperAndVT missing struct for cKey: " + (cKey as String) + " or superKey: " + (superKey as String));
                   return;
                 }
                 
@@ -519,8 +692,8 @@ export class DiscoveryPass {
 
             // Add new methods to vtable slots
             let mixinMembers = new Array<Node>();
-            let seenMixins = new HashMap<String, boolean>();
-            collectMixinMembers(moduleModel, classDecl.mixins, mixinMembers, seenMixins);
+            let seenMixins = new HashMap<MixinKey, boolean>();
+            collectMixinMembers(this.program, moduleModel, classDecl.mixins, mixinMembers, seenMixins);
 
             let allMembers = new Array<Node>();
             for (let ms in classDecl.body) {
@@ -664,7 +837,7 @@ export class DiscoveryPass {
                 if (vType == null) { continue; }
                 let vKey = getClassKey(vType);
                 if (!this.wasm.classStructs.has(vKey)) {
-                  console.log("Error: classStructs missing key: " + vKey + " for variant of sealed class " + cType.name);
+                  console.log("Error: classStructs missing key: " + (vKey as String) + " for variant of sealed class " + cType.name);
                   continue;
                 }
                 let vst = this.wasm.classStructs[vKey];
@@ -714,7 +887,7 @@ export class DiscoveryPass {
             let adapt = ifaceAdaptation as InterfaceAdaptation;
             let cName = getClassKey(adapt.source);
             let iName = getInterfaceKey(adapt.target);
-            this.wasm.usedInterfaceAdaptations[cName + "::" + iName] = true;
+            this.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iName)] = true;
           }
         } else if (n is ClassDeclaration) {
           // Defer populating to Pass 1 statement loop
@@ -730,13 +903,13 @@ export class DiscoveryPass {
               let member = it.members[key];
               match (member) {
                 case FieldInfo as fi: {
-                  let getterKey = iName + "::get#" + key;
+                  let getterKey = getInterfaceMemberKey(iName, "get#" + key);
                   if (this.wasm.usedInterfaceMembers.has(getterKey)) {
                     let sig = getInterfaceMemberSignature(this.wasm, it, "get#" + key);
                     vst.fields.push(new WasmField("get#" + key, new ValTypeRef(sig), false));
                   }
                   if (fi.isMutable) {
-                    let setterKey = iName + "::set#" + key;
+                    let setterKey = getInterfaceMemberKey(iName, "set#" + key);
                     if (this.wasm.usedInterfaceMembers.has(setterKey)) {
                       let sig = getInterfaceMemberSignature(this.wasm, it, "set#" + key);
                       vst.fields.push(new WasmField("set#" + key, new ValTypeRef(sig), false));
@@ -744,7 +917,7 @@ export class DiscoveryPass {
                   }
                 }
                 case MethodInfo as mi: {
-                  let methodKey = iName + "::" + key;
+                  let methodKey = getInterfaceMemberKey(iName, key);
                   if (this.wasm.usedInterfaceMembers.has(methodKey)) {
                     let sig = getInterfaceMemberSignature(this.wasm, it, key);
                     vst.fields.push(new WasmField(key, new ValTypeRef(sig), false));
@@ -807,7 +980,7 @@ export class DiscoveryPass {
                   if (sym != null) {
                     this.wasm.functionMap[sym.id] = wasmFunc;
                     if (varDecl.exported) {
-                      this.wasm.exportMap[ident.name] = wasmFunc;
+                      this.wasm.exportMap[ident.name as ExportKey] = wasmFunc;
                     }
                   }
                 }
@@ -829,7 +1002,7 @@ export class DiscoveryPass {
                     this.wasm.globalMap[sym.id] = wasmGlobal;
                     
                     if (varDecl.exported) {
-                      this.wasm.exportGlobalMap[ident.name] = wasmGlobal;
+                      this.wasm.exportGlobalMap[ident.name as ExportGlobalKey] = wasmGlobal;
                     }
                   }
                 }
@@ -979,7 +1152,7 @@ export class DiscoveryPass {
                   }
                   if (!isInherited) {
                     let fName = if (pair.key.length > 0 && pair.key.sliceBytes(0, 1) == "#") {
-                      getClassKey(ct) + "::" + pair.key
+                      getClassPrivateFieldKey(getClassKey(ct), pair.key)
                     } else {
                       pair.key
                     };
@@ -1043,8 +1216,8 @@ export class DiscoveryPass {
             }
 
             let mixinMembers = new Array<Node>();
-            let seenMixins = new HashMap<String, boolean>();
-            collectMixinMembers(moduleModel, classDecl.mixins, mixinMembers, seenMixins);
+            let seenMixins = new HashMap<MixinKey, boolean>();
+            collectMixinMembers(this.program, moduleModel, classDecl.mixins, mixinMembers, seenMixins);
 
             let allMembers = new Array<Node>();
             for (let ms in classDecl.body) {
@@ -1120,14 +1293,14 @@ export class DiscoveryPass {
                 let it = iface as InterfaceType;
                 let iName = getInterfaceKey(it);
                 let cName = getClassKey(classType);
-                if (this.wasm.usedInterfaceAdaptations.has(cName + "::" + iName)) {
+                if (this.wasm.usedInterfaceAdaptations.has(getClassInterfaceKey(cName, iName))) {
                   let keys = it.members.keys();
                   while (let (true, key) = keys.next()) {
                     let member = it.members[key];
                     if (member is FieldInfo) {
                       let fi = member as FieldInfo;
                       let getterName = "get#" + key;
-                      if (this.wasm.usedInterfaceMembers.has(iName + "::" + getterName)) {
+                      if (this.wasm.usedInterfaceMembers.has(getInterfaceMemberKey(iName, getterName))) {
                         var hasGetter = false;
                         for (let f in this.wasm.functions) {
                           if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName != null && (f.methodName as String) == getterName) {
@@ -1141,7 +1314,7 @@ export class DiscoveryPass {
                       
                       if (fi.isMutable) {
                         let setterName = "set#" + key;
-                        if (this.wasm.usedInterfaceMembers.has(iName + "::" + setterName)) {
+                        if (this.wasm.usedInterfaceMembers.has(getInterfaceMemberKey(iName, setterName))) {
                           var hasSetter = false;
                           for (let f in this.wasm.functions) {
                             if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName != null && (f.methodName as String) == setterName) {
@@ -1311,7 +1484,7 @@ export class DiscoveryPass {
             var hasPhysical = false;
             var backingName = "";
             let lookupName = fieldName;
-            let lookupPrivateName = cName + "::" + fieldName;
+            let lookupPrivateName = getClassPrivateFieldKey(cName, fieldName);
             for (let f in cStruct.fields) {
               if (f.name != null) {
                 let fname = f.name as String;
@@ -1344,7 +1517,7 @@ export class DiscoveryPass {
             var hasPhysical = false;
             var backingName = "";
             let lookupName = fieldName;
-            let lookupPrivateName = cName + "::" + fieldName;
+            let lookupPrivateName = getClassPrivateFieldKey(cName, fieldName);
             for (let f in cStruct.fields) {
               if (f.name != null) {
                 let fname = f.name as String;
@@ -1415,9 +1588,10 @@ export class DiscoveryPass {
        }
        
        let vtableInit = new VTableInit(vst, methods);
+       let vName = getClassVTableName(cName);
        let vtableGlobal = new WasmGlobal(
-         cName + "_vtable",
-         cName + "_vtable",
+         vName,
+         vName,
          new ValTypeRef(vst),
          false,
          null,
@@ -1435,7 +1609,7 @@ export class DiscoveryPass {
       if (cStruct.classType != null) {
         let cType = cStruct.classType as ClassType;
         if (cType.isCaseClass && (cType.constructorType == null || (cType.constructorType as FunctionType).parameters.length == 0)) {
-          let globalName = cName + "_singleton";
+          let globalName = getClassSingletonName(cName);
           let globalType = new ValTypeRefNull(cStruct);
           let wasmGlobal = new WasmGlobal(
             globalName,
@@ -1453,59 +1627,100 @@ export class DiscoveryPass {
       }
     }
 
+    let classes = new Array<ClassType>();
+    let seenClassKeys = new HashMap<ClassKey, boolean>();
+
     for (let cPair in this.wasm.classStructs) {
-       let cName = cPair.key;
        let cStruct = cPair.value;
        if (cStruct.classType != null) {
           let cType = cStruct.classType as ClassType;
-          for (let iface in cType.implementsList) {
-              let it = iface as InterfaceType;
-              let iName = getInterfaceKey(it);
-              let key = cName + "::" + iName;
-              if (this.wasm.usedInterfaceAdaptations.has(key)) {
-                let vst = this.wasm.interfaceVTableStructs[iName];
-                
-                var methods = new Array<WasmFunction>();
-                for (var i = 0; i < vst.fields.length; i += 1) {
-                   let field = vst.fields[i];
-                   var foundFunc: WasmFunction | null = null;
-                   var currClass: ClassType | null = cType;
-                   while (currClass != null && foundFunc == null) {
-                      for (let f in this.wasm.functions) {
-                         if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName != null && (f.methodName as String) == field.name) {
-                            foundFunc = f;
-                            break;
-                         }
-                      }
-                      currClass = (currClass as ClassType).superType;
-                   }
-                    if (foundFunc != null) {
-                       let targetFunc = foundFunc as WasmFunction;
-                       let trampSig = getInterfaceMemberSignature(this.wasm, it, field.name);
-                       let trampFunc = new WasmFunction(trampSig, null, this.program.units[0].model);
-                       trampFunc.name = cName + "_" + iName + "_" + field.name + "_trampoline";
-                       trampFunc.interfaceTrampolineTarget = targetFunc;
-                       this.wasm.functions.push(trampFunc);
-                       methods.push(trampFunc);
-                    } else {
-                       methods.push(this.wasm.functions[0]);
-                    }
-                }
-                
-                let vtableInit = new VTableInit(vst, methods);
-                let vtableGlobal = new WasmGlobal(
-                   cName + "_" + iName + "_vtable",
-                   cName + "_" + iName + "_vtable",
-                   new ValTypeRef(vst),
-                   false,
-                   null,
-                   vtableInit,
-                   this.program.units[0].model
-                );
-                this.wasm.globals.push(vtableGlobal);
-                this.wasm.classInterfaceVTables[key] = vtableGlobal;
-              }
+          let cKey = getClassKey(cType);
+          if (!seenClassKeys.has(cKey)) {
+             seenClassKeys[cKey] = true;
+             classes.push(cType);
           }
+       }
+    }
+
+    for (let unit in this.program.units) {
+       let moduleModel = unit.model;
+       walk(unit.ast as Node, (n: Node) => true, (n: Node) => {
+          if (n is ClassDeclaration) {
+             let classDecl = n as ClassDeclaration;
+             let ct = this.getClassType(classDecl, moduleModel);
+             if (ct != null) {
+                let cType = ct as ClassType;
+                let cKey = getClassKey(cType);
+                if (!seenClassKeys.has(cKey)) {
+                   seenClassKeys[cKey] = true;
+                   classes.push(cType);
+                }
+             }
+          }
+       });
+    }
+
+    for (let cType in classes) {
+       let cName = getClassKey(cType);
+       let allIfaces = this.collectAllImplementedInterfaces(cType);
+       for (let iface in allIfaces) {
+           let it = iface as InterfaceType;
+           let iName = getInterfaceKey(it);
+           let key = getClassInterfaceKey(cName, iName);
+           if (this.wasm.usedInterfaceAdaptations.has(key)) {
+             // Retrieve the interface's vtable structure definition.
+             let vst = this.wasm.interfaceVTableStructs[iName];
+             
+             // Resolve the implementing function for each method slot in the interface vtable.
+             var methods = new Array<WasmFunction>();
+             for (var i = 0; i < vst.fields.length; i += 1) {
+                let field = vst.fields[i];
+                var foundFunc: WasmFunction | null = null;
+                var currClass: ClassType | null = cType;
+                
+                // Look up the method in the inheritance hierarchy (traversing up through superclasses).
+                while (currClass != null && foundFunc == null) {
+                   for (let f in this.wasm.functions) {
+                       // Match functions where the class and method name match the current slot.
+                       let isMatch = f.methodName != null && field.name != null && 
+                                     (f.methodName as String) == (field.name as String);
+                       if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && isMatch) {
+                          foundFunc = f;
+                          break;
+                       }
+                    }
+                    currClass = (currClass as ClassType).superType;
+                }
+                 if (foundFunc != null) {
+                    // Generate a trampoline function to adapt the interface-level call signature
+                    // to the specific class method signature.
+                    let targetFunc = foundFunc as WasmFunction;
+                    let trampSig = getInterfaceMemberSignature(this.wasm, it, field.name);
+                    let trampFunc = new WasmFunction(trampSig, null, this.program.units[0].model);
+                    trampFunc.name = getInterfaceTrampolineName(cName, iName, field.name);
+                    trampFunc.interfaceTrampolineTarget = targetFunc;
+                    this.wasm.functions.push(trampFunc);
+                    methods.push(trampFunc);
+                 } else {
+                    // Fallback to a placeholder function (index 0) if no implementation was found.
+                    methods.push(this.wasm.functions[0]);
+                 }
+             }
+             
+             let vtableInit = new VTableInit(vst, methods);
+             let viName = getClassInterfaceVTableName(cName, iName);
+             let vtableGlobal = new WasmGlobal(
+                viName,
+                viName,
+                new ValTypeRef(vst),
+                false,
+                null,
+                vtableInit,
+                this.program.units[0].model
+             );
+             this.wasm.globals.push(vtableGlobal);
+             this.wasm.classInterfaceVTables[key] = vtableGlobal;
+           }
        }
     }
 
@@ -1610,7 +1825,7 @@ export class DiscoveryPass {
     let fields = new Array<WasmField>();
     if (captureInfo.capturesThis && enclosingClassType != null) {
       let ct = enclosingClassType as ClassType;
-      var thisValType: ValType = new ValTypeStructRef();
+      var thisValType: ValType = new ValTypeAnyRef();
       if (ct.isExtension && ct.onType != null) {
         thisValType = typeToValType(this.wasm, ct.onType as Type);
       } else {

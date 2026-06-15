@@ -1,7 +1,7 @@
 import { Module, VariableDeclaration } from './ast.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
-import { SemanticModel } from './semantic-model.zena';
+import { SemanticModel, ProgramInterface, SemanticModelProgramUnit } from './semantic-model.zena';
 
 export type CompilationUnit = {
   ast: Module,
@@ -12,7 +12,7 @@ export type CompilationUnit = {
  * An immutable snapshot of a single compilation state.
  * Encapsulates the compilation units and entry point.
  */
-export class Program {
+export class Program implements ProgramInterface {
   // This array maintains topological ordering guarantees from the compiler
   // pipeline, which is necessary for sequential WebAssembly code emission.
   // Although a tree walk (DFS) over a module dependency graph could derive
@@ -26,5 +26,13 @@ export class Program {
     for (let u in this.units) {
       this.unitsByPath[u.ast.path] = u;
     }
+  }
+
+  getUnits(): Array<SemanticModelProgramUnit> {
+    let result = new Array<SemanticModelProgramUnit>();
+    for (let u in this.units) {
+      result.push({ model: u.model } as SemanticModelProgramUnit);
+    }
+    return result;
   }
 }

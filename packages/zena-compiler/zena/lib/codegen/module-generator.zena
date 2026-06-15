@@ -14,6 +14,7 @@ import { Array } from 'zena:array';
 import { FunctionGenerator } from './function-generator.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
 import { UsageAnalyzer } from '../analysis/usage.zena';
+import { ProgramInterface } from '../semantic-model.zena';
 
 
 export class ModuleGenerator {
@@ -27,7 +28,11 @@ export class ModuleGenerator {
   }
   
   compile(): void {
+    for (let u in this.program.units) {
+      u.model.program = this.program as ProgramInterface;
+    }
     let wasm = new WasmModule();
+    wasm.program = this.program;
     let usageAnalyzer = new UsageAnalyzer(this.program);
     let usage = usageAnalyzer.analyze();
     let pass = new DiscoveryPass(this.program, wasm, usage);

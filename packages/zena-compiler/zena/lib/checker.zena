@@ -562,6 +562,7 @@ class CheckerContext {
   
   registerType(info: Symbol, t: Type): void {
     this.#materializedTypes[info.id] = t;
+    this.model.setBindingType(info, t);
   }
 
   /**
@@ -577,6 +578,7 @@ class CheckerContext {
     let info = this.model.resolveDeclaration(tp as Node);
     if (info != null) {
       this.#materializedTypes[(info as Symbol).id] = tpType as Type;
+      this.model.setBindingType(info as Symbol, tpType as Type);
     }
   }
 
@@ -660,6 +662,7 @@ class CheckerContext {
           let bt = depModel.getBindingType(info);
           if (bt != null) {
             this.#materializedTypes[info.id] = bt as Type;
+            this.model.setBindingType(info, bt as Type);
             return bt as Type;
           }
         }
@@ -672,6 +675,7 @@ class CheckerContext {
         let declLoc = declNode.loc as SourceLocation;
         if (let (true, cached) = this.#materializedDeclTypes.get(declLoc.start)) {
           this.#materializedTypes[info.id] = cached;
+          this.model.setBindingType(info, cached);
           return cached;
         }
       }
@@ -691,6 +695,7 @@ class CheckerContext {
     if (t != null) {
       let materialized = t as Type;
       this.#materializedTypes[info.id] = materialized;
+      this.model.setBindingType(info, materialized);
       if (info.declaration != null) {
         let declNode = info.declaration as Node;
         if (declNode.loc != null) {
@@ -837,7 +842,9 @@ class CheckerContext {
         return it;
       }
       case MixinDeclaration as md: {
-        return new MixinType(md.name.name);
+        let mt = new MixinType(md.name.name);
+        mt.sourcePath = this.filePath;
+        return mt;
       }
       case SealedVariant as sv: {
         let ct = new ClassType(this.freshTypeId(), sv.name.name);

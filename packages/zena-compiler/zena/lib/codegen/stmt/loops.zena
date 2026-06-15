@@ -1,11 +1,18 @@
-import { ValTypeVoid } from '../wasm.zena';
+import { ValTypeVoid, ValTypeRefNull, ValTypeRef, ValTypeStructRef, ValTypeI32, ValTypeAnyRef } from '../wasm.zena';
 import { Error } from 'zena:error';
 import { 
-  Node, BreakStatement, ContinueStatement, WhileStatement, ForStatement, Statement, Expression
+  Node, BreakStatement, ContinueStatement, WhileStatement, ForStatement, Statement, Expression,
+  ForInStatement, BindingPattern, IdentifierPattern
 } from '../../ast.zena';
-import { VoidType } from '../../types.zena';
+import { VoidType, Type, InterfaceType, ClassType, ArrayType, ThisType } from '../../types.zena';
 import { ValType } from "../wasm.zena";
 import { FunctionContext } from '../function-context.zena';
+import { typeToValType, getInterfaceMemberSignature } from '../type-mapping.zena';
+import { 
+  getInterfaceKey, getInterfaceMemberKey, getClassKey, getClassInterfaceKey,
+  classInterfaceKeyToString
+} from '../codegen-utils.zena';
+import { Program, CompilationUnit } from '../../program.zena';
 
 export let generateBreakStatement = (ctx: FunctionContext, stmt: BreakStatement): void => {
   let n = ctx.loopStack.length;
@@ -92,4 +99,202 @@ export let generateForStatement = (ctx: FunctionContext, stmt: ForStatement, gen
   ctx.emitter.emitEnd();
   
   ctx.isReachable = wasReachable;
+};
+
+let findPreludeInterface = (ctx: FunctionContext, name: String): InterfaceType | null => {
+  if (ctx.wasm.program != null) {
+    let prog = ctx.wasm.program as Program;
+    for (let unit in prog.units) {
+      let model = unit.model;
+      let t = model.getExportType(name);
+      if (t != null && t is InterfaceType) {
+        return t as InterfaceType;
+      }
+    }
+  }
+  return null;
+};
+
+export let generateForInStatement = (
+  ctx: FunctionContext,
+  stmt: ForInStatement,
+  genExpr: (e: Expression, discardValue: boolean) => void,
+  genStmt: (s: Statement) => void
+): void => {
+  let iterableType = ctx.wasmFunction.model.getNodeType(stmt.iterable);
+  if (iterableType == null) {
+    throw new Error("for-in iterable type is missing");
+  }
+
+  var resolvedIterableType = iterableType;
+  if (iterableType is ThisType) {
+    if (ctx.wasmFunction.classType != null) {
+      resolvedIterableType = ctx.wasmFunction.classType as ClassType;
+    } else {
+      throw new Error("ThisType found but wasmFunction has no classType");
+    }
+  } else if (iterableType is ClassType) {
+    let ctVar = iterableType as ClassType;
+    if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
+      if (ctx.wasmFunction.classType != null) {
+        resolvedIterableType = ctx.wasmFunction.classType as ClassType;
+      } else {
+        throw new Error("Mixin synthetic class type found but wasmFunction has no classType");
+      }
+    }
+  }
+
+  let iteratorIface = findPreludeInterface(ctx, "Iterator");
+  if (iteratorIface == null) {
+    throw new Error("prelude Iterator interface not found");
+  }
+
+  // 1. Generate iterable fat pointer and get iterator fat pointer (via :iterator)
+  genExpr(stmt.iterable, false);
+
+  var isIterator = false;
+  if (resolvedIterableType is InterfaceType && (resolvedIterableType as InterfaceType).name == "Iterator") {
+    isIterator = true;
+  }
+
+  if (!isIterator) {
+    var it: InterfaceType | null = null;
+    if (resolvedIterableType is ClassType) {
+      let ct = resolvedIterableType as ClassType;
+      let cName = getClassKey(ct);
+      let iterableIface = findPreludeInterface(ctx, "Iterable");
+      if (iterableIface == null) {
+        throw new Error("prelude Iterable interface not found");
+      }
+      it = iterableIface as InterfaceType;
+      let iName = getInterfaceKey(it as InterfaceType);
+      
+      let key = getClassInterfaceKey(cName, iName);
+      if (!ctx.wasm.classInterfaceVTables.has(key)) {
+        throw new Error("Interface vtable global not found for " + classInterfaceKeyToString(key));
+      }
+      let vtableGlobal = ctx.wasm.classInterfaceVTables[key];
+      
+      ctx.emitter.emitGlobalGet(vtableGlobal.index);
+      
+      let fatPtrStruct = ctx.wasm.interfaceStructs[iName];
+      ctx.emitter.emitStructNew(fatPtrStruct.index);
+    } else if (resolvedIterableType is InterfaceType) {
+      it = resolvedIterableType as InterfaceType;
+    } else {
+      throw new Error("Self-hosted compiler only supports for-in on InterfaceType and ClassType for now");
+    }
+
+    let iName = getInterfaceKey(it as InterfaceType);
+    let vst = ctx.wasm.interfaceVTableStructs[iName];
+    let fatPtr = ctx.wasm.interfaceStructs[iName];
+    let targetName = ":iterator";
+    
+    var methodIndex = -1;
+    for (var i = 0; i < vst.fields.length; i += 1) {
+      if (vst.fields[i].name != null && (vst.fields[i].name as String) == targetName) {
+        methodIndex = i;
+      }
+    }
+    if (methodIndex == -1) {
+      throw new Error("Method :iterator not found in interface vtable of " + (it as InterfaceType).name);
+    }
+    
+    let scratchLocal = ctx.getStructScratchLocal(fatPtr);
+    ctx.emitter.emitLocalTee(scratchLocal);
+    ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
+    
+    ctx.emitter.emitLocalGet(scratchLocal);
+    ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
+    ctx.emitter.emitStructGet(vst.index, methodIndex); // Get function ref
+    
+    let sig = getInterfaceMemberSignature(ctx.wasm, it as InterfaceType, targetName);
+    ctx.emitter.emitCallRef(sig.index);
+  }
+
+  // 2. Store the Iterator fat pointer in a local
+  let iteratorFatPtr = ctx.wasm.interfaceStructs[getInterfaceKey(iteratorIface as InterfaceType)];
+  let iterLocal = ctx.allocLocal(new ValTypeRefNull(iteratorFatPtr));
+  ctx.emitter.emitLocalSet(iterLocal);
+
+  // 3. Pre-declare temp locals for next() return values: (i32, anyref)
+  let boolTemp = ctx.allocLocal(new ValTypeI32());
+  let elemTemp = ctx.allocLocal(new ValTypeAnyRef());
+
+  // 4. Generate loop structure
+  ctx.emitter.emitBlock(new ValTypeVoid());
+  ctx.emitter.emitLoop(new ValTypeVoid());
+
+  // Call iter.next()
+  ctx.emitter.emitLocalGet(iterLocal);
+  let iteratorKey = getInterfaceKey(iteratorIface as InterfaceType);
+  let iterVst = ctx.wasm.interfaceVTableStructs[iteratorKey];
+  let nextMethodName = "next";
+  var nextMethodIndex = -1;
+  for (var i = 0; i < iterVst.fields.length; i += 1) {
+    if (iterVst.fields[i].name != null && (iterVst.fields[i].name as String) == nextMethodName) {
+      nextMethodIndex = i;
+    }
+  }
+  if (nextMethodIndex == -1) {
+    throw new Error("Method next not found in Iterator vtable");
+  }
+
+  let iterScratch = ctx.getStructScratchLocal(iteratorFatPtr);
+  ctx.emitter.emitLocalTee(iterScratch);
+  ctx.emitter.emitStructGet(iteratorFatPtr.index, 0); // Get Instance
+  
+  ctx.emitter.emitLocalGet(iterScratch);
+  ctx.emitter.emitStructGet(iteratorFatPtr.index, 1); // Get VTable
+  ctx.emitter.emitStructGet(iterVst.index, nextMethodIndex); // Get next function ref
+  
+  let nextSig = getInterfaceMemberSignature(ctx.wasm, iteratorIface as InterfaceType, nextMethodName);
+  ctx.emitter.emitCallRef(nextSig.index);
+
+  // Store values (reverse order)
+  ctx.emitter.emitLocalSet(elemTemp);
+  ctx.emitter.emitLocalSet(boolTemp);
+
+  // Check condition, break if false
+  ctx.emitter.emitLocalGet(boolTemp);
+  ctx.emitter.emitI32Eqz();
+  ctx.emitter.emitBrIf(1); // break to outer block (depth 1)
+
+  // 5. Bind pattern variable
+  var patternNode = stmt.pattern;
+  if (patternNode is BindingPattern) {
+    patternNode = (patternNode as BindingPattern).pattern;
+  }
+  if (patternNode is IdentifierPattern) {
+    let ident = patternNode as IdentifierPattern;
+    let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
+    if (sym != null && ctx.localIndices.has(sym.id)) {
+      ctx.emitter.emitLocalGet(elemTemp);
+      
+      let symType = ctx.wasmFunction.model.getBindingType(sym);
+      let targetWasmType = typeToValType(ctx.wasm, symType);
+      match (targetWasmType) {
+        case ValTypeRefNull as refNull: {
+          ctx.emitter.emitRefCast(refNull.target.index);
+        }
+        case ValTypeRef as refVal: {
+          ctx.emitter.emitRefCast(refVal.target.index);
+        }
+        case _: {}
+      }
+      
+      ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
+    }
+  }
+
+  // 6. Generate loop body
+  let wasReachable = ctx.isReachable;
+  ctx.enterLoop();
+  genStmt(stmt.body);
+  ctx.exitLoop();
+
+  ctx.isReachable = wasReachable;
+  ctx.emitter.emitBr(0); // continue
+  ctx.emitter.emitEnd(); // end loop
+  ctx.emitter.emitEnd(); // end block
 };
