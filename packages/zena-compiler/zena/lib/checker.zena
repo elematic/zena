@@ -2370,8 +2370,27 @@ let isValidCast = (sourceType: Type, targetType: Type): boolean => {
 };
 
 let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void => {
-  if (sourceType is ClassType && targetType is InterfaceType) {
-    ctx.model.setInterfaceAdaptation(node, sourceType as ClassType, targetType as InterfaceType);
+  var effectiveTarget = targetType;
+  match (targetType) {
+    case UnionT {types}: {
+      for (let member in types) {
+        if (isAssignableTo(ctx, sourceType, member)) {
+          effectiveTarget = member;
+          break;
+        }
+      }
+    }
+    case _: {}
+  }
+
+  if (sourceType is ClassType && effectiveTarget is InterfaceType) {
+    ctx.model.setInterfaceAdaptation(node, sourceType as ClassType, effectiveTarget as InterfaceType);
+  } else if (sourceType is FunctionType && effectiveTarget is FunctionType) {
+    let src = sourceType as FunctionType;
+    let tgt = effectiveTarget as FunctionType;
+    if (!typesEqual(src, tgt)) {
+      ctx.model.setFunctionAdaptation(node, src, tgt);
+    }
   }
 };
 
@@ -9199,6 +9218,56 @@ let checkCallExpressionInner = (
   loc: SourceLocation | null
 ): Type => {
   match (calleeType) {
+    case UnionT {types}: {
+      var matchedFt: FunctionType | null = null;
+      for (let t in types) {
+        if (t is FunctionType) {
+          let ft = t as FunctionType;
+          var requiredCount = ft.parameters.length;
+          if (ft.optionalParameters != null) {
+            let optionals = ft.optionalParameters as Array<boolean>;
+            requiredCount = 0;
+            var oi = 0;
+            while (oi < optionals.length) {
+              if (!optionals[oi]) { requiredCount = requiredCount + 1; }
+              oi += 1;
+            }
+          }
+          if (args.length >= requiredCount && args.length <= ft.parameters.length) {
+            matchedFt = ft;
+            break;
+          }
+        }
+      }
+      
+      if (matchedFt == null) {
+        ctx.error("No matching signature in union type for call", DiagnosticCode.ArgumentCountMismatch, loc);
+        return new ErrorType();
+      }
+      
+      let effectiveFt = matchedFt as FunctionType;
+      ctx.model.setNodeType(callee, effectiveFt);
+      ctx.model.setUnionCallCalleeType(callee, calleeType as UnionT);
+      
+      var j = 0;
+      while (j < args.length && j < effectiveFt.parameters.length) {
+        let expectedParamType = effectiveFt.parameters[j];
+        let argType = checkExpression(ctx, args[j], expectedParamType);
+        if (!isAssignableTo(ctx, argType, expectedParamType)) {
+          ctx.error(
+            "Type mismatch: argument '" + typeToString(argType) +
+            "' is not assignable to parameter '" + typeToString(expectedParamType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+        } else {
+          checkAndRegisterInterfaceAdaptation(ctx, args[j], argType, expectedParamType);
+        }
+        j = j + 1;
+      }
+      
+      return effectiveFt.returnType;
+    }
     case FunctionType as ft: {
       var effectiveFt = ft;
 

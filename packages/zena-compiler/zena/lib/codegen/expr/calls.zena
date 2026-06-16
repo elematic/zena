@@ -1,9 +1,9 @@
 import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration } from '../../ast.zena';
-import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, typeToString } from '../../types.zena';
+import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, UnionType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
-import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef } from '../wasm.zena';
+import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults } from '../type-mapping.zena';
@@ -57,6 +57,84 @@ let generateClosureCall = (
 };
 
 export let generateCallExpression = (ctx: FunctionContext, call: CallExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
+  let unionCalleeType = ctx.wasmFunction.model.getUnionCallCalleeType(call.callee);
+  if (unionCalleeType != null) {
+    let ut = unionCalleeType as UnionType;
+    genExpr(call.callee, false);
+    let calleeLocal = ctx.allocLocal(new ValTypeEqRef());
+    ctx.emitter.emitLocalSet(calleeLocal);
+    
+    let argLocals = new Array<i32>();
+    for (let arg in call.args) {
+      genExpr(arg, false);
+      let argType = ctx.wasmFunction.model.getNodeType(arg);
+      let argLocal = ctx.allocLocal(typeToValType(ctx.wasm, argType));
+      ctx.emitter.emitLocalSet(argLocal);
+      argLocals.push(argLocal);
+    }
+    
+    let callType = ctx.wasmFunction.model.getNodeType(call);
+    var resultLocal = -1;
+    if (!(callType is VoidType)) {
+      resultLocal = ctx.allocLocal(typeToValType(ctx.wasm, callType));
+    }
+    
+    ctx.emitter.emitBlock(new ValTypeVoid());
+    
+    for (let member in ut.types) {
+      if (member is FunctionType) {
+        let ftVal = member as FunctionType;
+        let closureStruct = getClosureStruct(ctx.wasm, ftVal);
+        
+        ctx.emitter.emitLocalGet(calleeLocal);
+        ctx.emitter.emitRefTest(closureStruct.index);
+        ctx.emitter.emitIf(new ValTypeVoid());
+        
+        ctx.emitter.emitLocalGet(calleeLocal);
+        ctx.emitter.emitRefCast(closureStruct.index);
+        ctx.emitter.emitStructGet(closureStruct.index, 1);
+        
+        let sigParams = new Array<ValType>();
+        sigParams.push(new ValTypeEqRef());
+        for (let p in ftVal.parameters) {
+          sigParams.push(typeToValType(ctx.wasm, p));
+        }
+        let arity = sigParams.length - 1;
+        var argIdx = 0;
+        while (argIdx < arity) {
+          ctx.emitter.emitLocalGet(argLocals[argIdx]);
+          argIdx += 1;
+        }
+        
+        ctx.emitter.emitLocalGet(calleeLocal);
+        ctx.emitter.emitRefCast(closureStruct.index);
+        ctx.emitter.emitStructGet(closureStruct.index, 0);
+        
+        let returns = new Array<ValType>();
+        if (!(ftVal.returnType is VoidType)) {
+          returns.push(typeToValType(ctx.wasm, ftVal.returnType));
+        }
+        let implSig = ctx.wasm.getSignature(sigParams, returns);
+        ctx.emitter.emitCallRef(implSig.index);
+        
+        if (resultLocal != -1) {
+          ctx.emitter.emitLocalSet(resultLocal);
+        }
+        
+        ctx.emitter.emitBr(1);
+        ctx.emitter.emitEnd();
+      }
+    }
+    
+    ctx.emitter.emitUnreachable();
+    ctx.emitter.emitEnd();
+    
+    if (resultLocal != -1) {
+      ctx.emitter.emitLocalGet(resultLocal);
+    }
+    return;
+  }
+
   let calleeType = ctx.wasmFunction.model.getNodeType(call.callee);
   var ft: FunctionType | null = null;
   if (calleeType is FunctionType) {

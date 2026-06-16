@@ -12,7 +12,7 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { NodeMap } from '../node-map.zena';
-import { ClassType, InterfaceType } from '../types.zena';
+import { ClassType, InterfaceType, FunctionType } from '../types.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { ByteBuffer } from 'zena:byte-buffer';
@@ -130,6 +130,9 @@ export class WasmFunction {
   var captures = new Array<SymbolId>();
   var mutableCaptures = new HashSet<SymbolId>();
   var capturesThis: boolean = false;
+  var isFunctionAdaptation: boolean = false;
+  var functionAdaptationSource: FunctionType | null = null;
+  var functionAdaptationTarget: FunctionType | null = null;
 
   new(this.signature, this.node, this.model);
 }
@@ -239,6 +242,7 @@ export class WasmModule {
   closureStructs = new HashMap<ClosureKey, WasmStruct>();
   closureFunctions = new NodeMap<WasmFunction>();
   templateLiteralGlobals = new NodeMap<WasmGlobal>();
+  functionAdaptationWrappers = new NodeMap<WasmFunction>();
   symbolNames = new HashMap<SymbolId, String>();
   
   findRecordDispatch(fields: Array<WasmField>): RecordDispatchInfo | null {

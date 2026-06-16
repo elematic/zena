@@ -15,12 +15,12 @@ import {
   ThrowExpression, TryExpression
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString } from '../types.zena';
-import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
+import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
 import { Program } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned } from './wasm.zena';
-import { WasmField, WasmStruct, sortWasmFields } from './wasm-module.zena';
+import { WasmField, WasmStruct, WasmSignature, sortWasmFields } from './wasm-module.zena';
 import { typeToValType, getClosureStruct, getCellStruct } from './type-mapping.zena';
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
@@ -198,6 +198,8 @@ export class FunctionGenerator {
           i += 1;
         }
         this.ctx.emitter.emitCall(target);
+      } else if (this.ctx.wasmFunction.isFunctionAdaptation) {
+        this.generateFunctionAdaptationBody();
       } else if (this.ctx.wasmFunction.importWrapperTarget != null) {
         this.generateImportWrapperBody();
       } else if (name == "wasi_write_string_helper") {
@@ -885,12 +887,83 @@ export class FunctionGenerator {
       this.ctx.emitter.emitStructNew(fatPtrStruct.index);
     }
 
+    let funcAdaptation = this.ctx.wasmFunction.model.getFunctionAdaptation(expr);
+    if (funcAdaptation != null && !discardValue) {
+      if (this.ctx.wasm.functionAdaptationWrappers.has(expr)) {
+        let wrapperFunc = this.ctx.wasm.functionAdaptationWrappers[expr];
+        let src = funcAdaptation.source;
+        let tgt = funcAdaptation.target;
+        
+        let actualClosureStruct = getClosureStruct(this.ctx.wasm, src);
+        let expectedClosureStruct = getClosureStruct(this.ctx.wasm, tgt);
+        
+        let actualLocal = this.ctx.getStructScratchLocal(actualClosureStruct);
+        this.ctx.emitter.emitRefCast(actualClosureStruct.index);
+        this.ctx.emitter.emitLocalSet(actualLocal);
+        
+        this.ctx.emitter.emitRefFunc(wrapperFunc.index);
+        this.ctx.emitter.emitLocalGet(actualLocal);
+        
+        this.ctx.emitter.emitStructNew(expectedClosureStruct.index);
+      } else {
+        throw new Error("Function adaptation wrapper not registered during discovery pass for expr: " + i32ToString(expr.id as i32));
+      }
+    }
+
     if (discardValue && !handlesDiscardNatively) {
       let exprType = this.ctx.wasmFunction.model.getNodeType(expr);
       if (!(exprType is VoidType)) {
         this.ctx.emitter.emitDrop();
       }
     }
+  }
+
+  generateFunctionAdaptationBody(): void {
+    let actualFt = this.ctx.wasmFunction.functionAdaptationSource as FunctionType;
+    let expectedFt = this.ctx.wasmFunction.functionAdaptationTarget as FunctionType;
+    
+    let actualClosureStruct = getClosureStruct(this.ctx.wasm, actualFt);
+    
+    // 1. Load context (param 0)
+    this.ctx.emitter.emitLocalGet(0);
+    // 2. Cast to the actual closure struct type
+    this.ctx.emitter.emitRefCast(actualClosureStruct.index);
+    // 3. Extract the actual closure's context (field 1)
+    this.ctx.emitter.emitStructGet(actualClosureStruct.index, 1);
+    
+    // 4. Load parameters that the actual function expects
+    var i = 0;
+    let actualArity = actualFt.parameters.length;
+    while (i < actualArity) {
+      this.ctx.emitter.emitLocalGet(i + 1);
+      
+      let expectedParamWasmType = typeToValType(this.ctx.wasm, expectedFt.parameters[i]);
+      let actualParamWasmType = typeToValType(this.ctx.wasm, actualFt.parameters[i]);
+      
+      if (!valTypeEquals(expectedParamWasmType, actualParamWasmType)) {
+        match (actualParamWasmType) {
+          case ValTypeRefNull as targetRefNull: {
+            this.ctx.emitter.emitRefCast(targetRefNull.target.index);
+          }
+          case ValTypeRef as targetRef: {
+            this.ctx.emitter.emitRefCast(targetRef.target.index);
+          }
+          case _: {}
+        }
+      }
+      i += 1;
+    }
+    
+    // 5. Load actual closure function reference (field 0)
+    this.ctx.emitter.emitLocalGet(0);
+    this.ctx.emitter.emitRefCast(actualClosureStruct.index);
+    this.ctx.emitter.emitStructGet(actualClosureStruct.index, 0);
+    
+    // 6. Call ref
+    let actualFuncFieldType = actualClosureStruct.fields[0].type as ValTypeRef;
+    let actualImplSig = actualFuncFieldType.target as WasmSignature;
+    this.ctx.emitter.emitCallRef(actualImplSig.index);
+    this.ctx.emitter.emitReturn();
   }
 
   generateImportWrapperBody(): void {

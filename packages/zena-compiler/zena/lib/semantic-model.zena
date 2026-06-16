@@ -37,7 +37,7 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, UnionType
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
 import { Node, NodeId, SourceLocation } from './ast.zena';
@@ -63,6 +63,13 @@ export class RecordAdaptation {
 export class InterfaceAdaptation {
   source: ClassType;
   target: InterfaceType;
+  
+  new(this.source, this.target);
+}
+
+export class FunctionAdaptation {
+  source: FunctionType;
+  target: FunctionType;
   
   new(this.source, this.target);
 }
@@ -131,6 +138,68 @@ export class SemanticModel {
       for (let unit in prog.getUnits()) {
         if (unit.model != this) {
           let otherT = unit.model.getInterfaceAdaptationDirect(node);
+          if (otherT != null) return otherT;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Map from node.id → FunctionAdaptation for implicit function argument adaptation.
+   */
+  #functionAdaptations = new NodeMap<FunctionAdaptation>();
+
+  setFunctionAdaptation(node: Node, source: FunctionType, target: FunctionType): void {
+    this.#functionAdaptations[node] = new FunctionAdaptation(source, target);
+  }
+
+  getFunctionAdaptationDirect(node: Node): FunctionAdaptation | null {
+    if (let (true, t) = this.#functionAdaptations.get(node)) {
+      return t;
+    }
+    return null;
+  }
+
+  getFunctionAdaptation(node: Node): FunctionAdaptation | null {
+    let t = this.getFunctionAdaptationDirect(node);
+    if (t != null) return t;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherT = unit.model.getFunctionAdaptationDirect(node);
+          if (otherT != null) return otherT;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Map from node.id -> UnionType representing the original union type of a callee.
+   */
+  #unionCallCalleeTypes = new NodeMap<UnionType>();
+
+  setUnionCallCalleeType(node: Node, type: UnionType): void {
+    this.#unionCallCalleeTypes[node] = type;
+  }
+
+  getUnionCallCalleeTypeDirect(node: Node): UnionType | null {
+    if (let (true, t) = this.#unionCallCalleeTypes.get(node)) {
+      return t;
+    }
+    return null;
+  }
+
+  getUnionCallCalleeType(node: Node): UnionType | null {
+    let t = this.getUnionCallCalleeTypeDirect(node);
+    if (t != null) return t;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherT = unit.model.getUnionCallCalleeTypeDirect(node);
           if (otherT != null) return otherT;
         }
       }

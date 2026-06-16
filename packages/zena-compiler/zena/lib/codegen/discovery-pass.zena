@@ -10,7 +10,7 @@ import {
 } from '../ast.zena';
 import { walk } from '../visitor.zena';
 import { RecordType, TupleType } from '../types.zena';
-import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
+import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
@@ -943,6 +943,52 @@ export class DiscoveryPass {
             let cName = getClassKey(adapt.source);
             let iName = getInterfaceKey(adapt.target);
             this.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iName)] = true;
+          }
+
+          let funcAdaptation = moduleModel.getFunctionAdaptation(expr);
+          if (funcAdaptation != null) {
+            let src = funcAdaptation.source;
+            let tgt = funcAdaptation.target;
+            
+            this.discoverType(src, moduleModel);
+            this.discoverType(tgt, moduleModel);
+            
+            let pValTypes = new Array<ValType>();
+            pValTypes.push(new ValTypeEqRef()); // ctx
+            for (let p in tgt.parameters) {
+              pValTypes.push(typeToValType(this.wasm, p));
+            }
+            let rValTypes = new Array<ValType>();
+            mapReturnTypeToWasmResults(this.wasm, tgt.returnType, rValTypes);
+            let wrapperSig = this.wasm.getSignature(pValTypes, rValTypes);
+            
+            var existingWrapper: WasmFunction | null = null;
+            for (let w in this.wasm.functions) {
+              if (w.isFunctionAdaptation &&
+                  w.functionAdaptationSource != null && w.functionAdaptationTarget != null &&
+                  typeToString(w.functionAdaptationSource as Type) == typeToString(src) &&
+                  typeToString(w.functionAdaptationTarget as Type) == typeToString(tgt)) {
+                existingWrapper = w;
+                break;
+              }
+            }
+
+            if (existingWrapper != null) {
+              this.wasm.functionAdaptationWrappers[expr] = existingWrapper as WasmFunction;
+            } else {
+              let wrapperFunc = new WasmFunction(wrapperSig, null, moduleModel);
+              wrapperFunc.name = "function_adapt_" + i32ToString(expr.id as i32);
+              wrapperFunc.isFunctionAdaptation = true;
+              wrapperFunc.isReferenceTaken = true;
+              wrapperFunc.functionAdaptationSource = src;
+              wrapperFunc.functionAdaptationTarget = tgt;
+              
+              this.wasm.addFunction(wrapperFunc);
+              this.wasm.functionAdaptationWrappers[expr] = wrapperFunc;
+            }
+            
+            let srcClosure = getClosureStruct(this.wasm, src);
+            let tgtClosure = getClosureStruct(this.wasm, tgt);
           }
         } else if (n is ClassDeclaration) {
           // Defer populating to Pass 1 statement loop

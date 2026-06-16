@@ -234,8 +234,49 @@ export let tests = suite('WatGenerator', (): void => {
     let program = new Program(units, entryUnit);
     let generator = new WatGenerator();
     let result = generator.generate(program);
+  });
+  
+  test('function adaptation deduplication', (ctx: TestContext): void => {
+    let host = new MockHost();
+    let source = "export let main = (): void => {\n" +
+                 "  let f1 = (a: i32): i32 => a;\n" +
+                 "  let f2 = (a: i32): i32 => a;\n" +
+                 "  let u1: (a: i32, b: i32) => i32 = f1;\n" +
+                 "  let u2: (a: i32, b: i32) => i32 = f2;\n" +
+                 "  let f3 = (a: f64): f64 => a;\n" +
+                 "  let u3: (a: f64, b: f64) => f64 = f3;\n" +
+                 "  u1(10, 20);\n" +
+                 "  u2(30, 40);\n" +
+                 "  u3(50.0, 60.0);\n" +
+                 "};";
+    host.addFile("test.zena", source);
     
-    assertSnapshot('record_property_access', result);
+    let compiler = makeCompiler(host);
+    let compResult = compiler.compile("test.zena");
+    let checkRes = checkCompilation(compResult, null, false);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    assertSnapshot('function_adaptation_deduplication', result);
   });
 });
 
