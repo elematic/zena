@@ -80,9 +80,9 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Automatic generation of adapter wrappers when passing functions with fewer arguments than expected by the call site.
 - [ ] **Overloaded Functions:**
   - [ ] Overload name mangling based on parameter counts and types to resolve unique WASM export names.
-- [ ] **Custom Operator Protocols:**
-  - [ ] Custom `operator ==` overloading resolution and method/vtable compilation.
-  - [ ] Custom index accessors (`operator []`) resolving to indexed `get`/`set` function calls.
+- [x] **Custom Operator Protocols:**
+  - [x] Custom `operator ==` overloading resolution and method/vtable compilation.
+  - [x] Custom index accessors (`operator []`) resolving to indexed `get`/`set` function calls.
 
 ### 5. Classes & Objects
 

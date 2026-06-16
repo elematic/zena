@@ -508,6 +508,69 @@ export let generateAssignmentExpression = (
           return;
         }
 
+        if (foundFunc != null) {
+          let f = foundFunc as WasmFunction;
+          let ct = f.classType as ClassType;
+          
+          let valType = typeToValType(ctx.wasm, ctx.wasmFunction.model.getNodeType(assign.value));
+          var tempLocal = -1;
+          if (!discardValue) {
+            tempLocal = ctx.allocLocal(valType);
+          }
+
+          if (ct.isExtension) {
+            genExpr(indexExpr.object, false);
+            genExpr(indexExpr.index, false);
+            genExpr(assign.value, false);
+            if (!discardValue) {
+              ctx.emitter.emitLocalTee(tempLocal);
+            }
+            ctx.emitter.emitCall(f);
+            if (!discardValue) {
+              ctx.emitter.emitLocalGet(tempLocal);
+            }
+            return;
+          } else {
+            let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+            let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+            let lookupName = f.methodName;
+            
+            var methodIndex = -1;
+            for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+              if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == lookupName) {
+                methodIndex = i;
+              }
+            }
+            if (methodIndex == -1) {
+              throw new Error("Method not found in vtable: " + lookupName);
+            }
+            
+            genExpr(indexExpr.object, false);
+            var scratchLocal = ctx.getStructScratchLocal(structInfo);
+            ctx.emitter.emitLocalTee(scratchLocal);
+            
+            genExpr(indexExpr.index, false);
+            genExpr(assign.value, false);
+            if (!discardValue) {
+              ctx.emitter.emitLocalTee(tempLocal);
+            }
+            
+            ctx.emitter.emitLocalGet(scratchLocal);
+            ctx.emitter.emitRefCast(structInfo.index);
+            ctx.emitter.emitStructGet(structInfo.index, 0);
+            ctx.emitter.emitRefCast(vtableStruct.index);
+            ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
+            
+            ctx.emitter.emitRefCast(f.signature.index);
+            ctx.emitter.emitCallRef(f.signature.index);
+            
+            if (!discardValue) {
+              ctx.emitter.emitLocalGet(tempLocal);
+            }
+            return;
+          }
+        }
+
         throw new Error("Codegen for IndexExpression assignment on non-array is not yet implemented. Object type: " + typeToString(objectType));
       }
     }

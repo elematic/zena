@@ -1,0 +1,68 @@
+// @mode: run
+// @result: 100
+
+class Container {
+  var #item: i32;
+  new(item: i32) : #item = item;
+  
+  operator [](index: i32): i32 {
+    return this.#item;
+  }
+  
+  operator []=(index: i32, value: i32): void {
+    this.#item = value;
+  }
+}
+
+class Base {
+  operator [](index: i32): i32 {
+    return 10;
+  }
+}
+
+class Derived extends Base {}
+
+class OverrideBase {
+  operator [](index: i32): i32 {
+    return 10;
+  }
+}
+
+class OverrideDerived extends OverrideBase {
+  operator [](index: i32): i32 {
+    return 20;
+  }
+}
+
+class OverloadedIndex {
+  operator [](index: i32): i32 {
+    return index * 2;
+  }
+  
+  operator [](key: String): i32 {
+    return key.length;
+  }
+}
+
+export let main = (): i32 => {
+  let c = new Container(42);
+  let read1 = c[0]; // should be 42
+  c[0] = 50;
+  let read2 = c[0]; // should be 50
+  
+  let d = new Derived();
+  let inheritVal = d[0]; // should be 10
+  
+  let od = new OverrideDerived();
+  let overrideVal = od[0]; // should be 20
+  
+  let oi = new OverloadedIndex();
+  let overloadInt = oi[15]; // should be 30
+  let overloadStr = oi["hello"]; // should be 5
+  let overloadVal = overloadInt + overloadStr; // 35
+  
+  // Sum = read1 (42) + read2 (50) + inheritVal (10) + overrideVal (20) + overloadVal (35)
+  // Sum = 42 + 50 + 10 + 20 + 35 = 157
+  // 157 - 57 = 100
+  return read1 + read2 + inheritVal + overrideVal + overloadVal - 57;
+};

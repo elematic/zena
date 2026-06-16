@@ -41,7 +41,6 @@ async function run() {
   ];
 
   const skipList = [
-    'param-default-fresh.zena', // Parameter default expression evaluation scoping
     'nullable-ref.zena', // Nullable reference wrapping/unwrapping
     'downcast.zena', // Class initialization error when no constructor?
     'upcast.zena', // Class initialization error when no constructor?

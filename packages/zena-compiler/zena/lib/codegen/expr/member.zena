@@ -474,6 +474,47 @@ export let generateIndexExpression = (
         return;
       }
 
+      if (foundFunc != null) {
+        let f = foundFunc as WasmFunction;
+        let ct = f.classType as ClassType;
+        if (ct.isExtension) {
+          genExpr(expr.object, false);
+          genExpr(expr.index, false);
+          ctx.emitter.emitCall(f);
+          return;
+        } else {
+          let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+          let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+          let lookupName = f.methodName;
+          
+          var methodIndex = -1;
+          for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+            if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == lookupName) {
+              methodIndex = i;
+            }
+          }
+          if (methodIndex == -1) {
+            throw new Error("Method not found in vtable: " + lookupName);
+          }
+          
+          genExpr(expr.object, false);
+          var scratchLocal = ctx.getStructScratchLocal(structInfo);
+          ctx.emitter.emitLocalTee(scratchLocal);
+          
+          genExpr(expr.index, false);
+          
+          ctx.emitter.emitLocalGet(scratchLocal);
+          ctx.emitter.emitRefCast(structInfo.index);
+          ctx.emitter.emitStructGet(structInfo.index, 0);
+          ctx.emitter.emitRefCast(vtableStruct.index);
+          ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
+          
+          ctx.emitter.emitRefCast(f.signature.index);
+          ctx.emitter.emitCallRef(f.signature.index);
+          return;
+        }
+      }
+
       genExpr(expr.object, false);
       genExpr(expr.index, false);
       throw new Error("Codegen for IndexExpression on non-tuple/non-array is not yet implemented. Object type: " + typeToString(objectType));
