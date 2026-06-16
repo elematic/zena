@@ -41,11 +41,7 @@ async function run() {
   ];
 
   const skipList = [
-    'array-index.zena', // Array operator [] indexing not yet supported in codegen
-    'class-field.zena', // Class field default initializers/access limitations
-    'private-field.zena', // Private field access boundaries not fully enforced in codegen
     'param-default-fresh.zena', // Parameter default expression evaluation scoping
-    'string-array-plus-equals.zena', // String array concatenation operator support
     'nullable-ref.zena', // Nullable reference wrapping/unwrapping
     'downcast.zena', // Class initialization error when no constructor?
     'upcast.zena', // Class initialization error when no constructor?
