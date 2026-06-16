@@ -536,6 +536,7 @@ async function runExecutionTest(
     filePath,
     compiler.semanticContext,
     compiler.checkerContext,
+    {debug: true},
   );
   const bytes = codegen.generate();
 

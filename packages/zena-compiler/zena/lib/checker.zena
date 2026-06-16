@@ -4911,6 +4911,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     new BooleanType()
   }
   case ArrayLiteral {elements, loc}: {
+    var inferredElementType: Type = new ErrorType() as Type;
     if (elements.length == 0) {
       // Empty array — need contextual type or return unknown element type.
       if (expectedType != null) {
@@ -4919,14 +4920,16 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             if ((isPreludeClassType(ctx, ct, "Array") || isPreludeClassType(ctx, ct, "FixedArray")) && ct.typeArguments != null) {
               let typeArgs = ct.typeArguments as Array<Type>;
               if (typeArgs.length > 0) {
-                return new ArrayType(typeArgs[0]);
+                inferredElementType = typeArgs[0];
               }
             }
+          }
+          case ArrayType {elementType}: {
+            inferredElementType = elementType;
           }
           case _: {}
         }
       }
-      new ArrayType(new ErrorType())
     } else {
       // Infer element type from first element.
       let firstType = checkExpression(ctx, elements[0], null);
@@ -4942,7 +4945,25 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         }
         i += 1;
       }
-      new ArrayType(firstType)
+      inferredElementType = firstType;
+    }
+
+    var faType = ctx.resolvePreludeType("FixedArray");
+    if (ctx.currentClass != null && (ctx.currentClass as ClassType).name == "FixedArray") {
+      faType = ctx.currentClass as Type;
+    }
+    if (faType == null) {
+      throw new Error("prelude FixedArray class not found");
+    }
+    match (faType as Type) {
+      case ClassType as faCt: {
+        let typeArgs = new Array<Type>();
+        typeArgs.push(inferredElementType);
+        instantiateClassType(faCt, typeArgs) as Type
+      }
+      case _: {
+        throw new Error("prelude FixedArray is not a ClassType");
+      }
     }
   }
   case RecordLiteral {properties, loc}: {
@@ -7792,7 +7813,10 @@ let resolveMemberType = (
     case ArrayType {elementType}: {
       // ArrayType is produced by array literals [1, 2, 3].
       // Delegate to FixedArray<T> prelude type with T = elementType.
-      let faType = ctx.resolveTypeName("FixedArray");
+      var faType = ctx.resolvePreludeType("FixedArray");
+      if (ctx.currentClass != null && (ctx.currentClass as ClassType).name == "FixedArray") {
+        faType = ctx.currentClass as Type;
+      }
       if (faType != null) {
         match (faType as Type) {
           case ClassType as faCt: {

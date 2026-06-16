@@ -56,11 +56,11 @@ async function run() {
 
   let files = await glob(join(testsDir, '**/*.zena'));
   files = files.filter((f) => {
-    const segments = f.split(sep);
-    return (
-      runList.some((r) => segments.includes(r)) &&
-      !skipList.some((s) => segments.includes(s))
-    );
+    const relPath = relative(testsDir, f);
+    const segments = relPath.split(sep);
+    const isAllowed =
+      segments.length === 1 || runList.some((r) => segments.includes(r));
+    return isAllowed && !skipList.some((s) => segments.includes(s));
   });
 
   const filter = process.argv[2];
@@ -76,11 +76,20 @@ async function run() {
     const relPath = relative(testsDir, file);
     const content = readFileSync(file, 'utf-8');
 
-    // Parse expected result, expected stdout, and invocation target
+    // Parse expected result, expected stdout, invocation target, and skip directives
     let expectedResult: string | undefined;
     let expectedStdout: string | undefined;
     let invokeTarget = 'main';
+    let shouldSkip = false;
     for (const line of content.split('\n')) {
+      const matchSkip = line.match(/\/\/\s*@skip:\s*(.*)/);
+      if (matchSkip) {
+        const skipCompilers = matchSkip[1].trim().split(/\s*,\s*/);
+        if (skipCompilers.includes('self-hosted')) {
+          shouldSkip = true;
+        }
+      }
+
       const matchResult = line.match(/\/\/\s*@result:\s*(.*)/);
       if (matchResult) {
         expectedResult = matchResult[1].trim();
@@ -108,6 +117,11 @@ async function run() {
       if (matchInvoke) {
         invokeTarget = matchInvoke[1];
       }
+    }
+
+    if (shouldSkip) {
+      console.log(`${DIM}S${NC} ${relPath} (Skipped: self-hosted)`);
+      continue;
     }
 
     if (expectedResult === undefined && expectedStdout === undefined) {

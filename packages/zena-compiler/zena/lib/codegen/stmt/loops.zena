@@ -115,6 +115,20 @@ let findPreludeInterface = (ctx: FunctionContext, name: String): InterfaceType |
   return null;
 };
 
+let findPreludeClass = (ctx: FunctionContext, name: String): ClassType | null => {
+  if (ctx.wasm.program != null) {
+    let prog = ctx.wasm.program as Program;
+    for (let unit in prog.units) {
+      let model = unit.model;
+      let t = model.getExportType(name);
+      if (t != null && t is ClassType) {
+        return t as ClassType;
+      }
+    }
+  }
+  return null;
+};
+
 export let generateForInStatement = (
   ctx: FunctionContext,
   stmt: ForInStatement,
@@ -127,7 +141,13 @@ export let generateForInStatement = (
   }
 
   var resolvedIterableType = iterableType;
-  if (iterableType is ThisType) {
+  if (iterableType is ArrayType) {
+    let faClass = findPreludeClass(ctx, "FixedArray");
+    if (faClass == null) {
+      throw new Error("prelude FixedArray class not found");
+    }
+    resolvedIterableType = faClass as ClassType;
+  } else if (iterableType is ThisType) {
     if (ctx.wasmFunction.classType != null) {
       resolvedIterableType = ctx.wasmFunction.classType as ClassType;
     } else {

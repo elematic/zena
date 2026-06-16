@@ -5865,7 +5865,21 @@ function generateBinaryExpression(
   }
 
   generateExpression(ctx, expr.left, body);
+  const leftIsInterface = expr.left.inferredType?.kind === TypeKind.Interface;
+  const leftIsRecord = expr.left.inferredType?.kind === TypeKind.Record;
+  const needsEqrefCast = (t: number[]) =>
+    (t.length === 1 && t[0] === ValType.anyref) ||
+    (t.length === 2 && t[0] === ValType.ref_null && t[1] === HeapType.any);
+  if (!leftIsInterface && !leftIsRecord && needsEqrefCast(leftType)) {
+    body.push(0xfb, GcOpcode.ref_cast_null, HeapType.eq);
+  }
+
   generateExpression(ctx, expr.right, body);
+  const rightIsInterface = expr.right.inferredType?.kind === TypeKind.Interface;
+  const rightIsRecord = expr.right.inferredType?.kind === TypeKind.Record;
+  if (!rightIsInterface && !rightIsRecord && needsEqrefCast(rightType)) {
+    body.push(0xfb, GcOpcode.ref_cast_null, HeapType.eq);
+  }
 
   // Check for reference equality
   const isRefType = (t: number[]) =>

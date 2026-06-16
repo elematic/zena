@@ -999,6 +999,23 @@ export function registerInterface(
   defineInterfaceMethods(ctx, decl);
 }
 
+function adaptReference(body: number[], source: number[], target: number[]) {
+  if (
+    target.length > 1 &&
+    (target[0] === ValType.ref || target[0] === ValType.ref_null)
+  ) {
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...target.slice(1));
+  } else if (
+    target.length === 1 &&
+    target[0] === ValType.eqref &&
+    source.length === 1 &&
+    source[0] === ValType.anyref
+  ) {
+    body.push(0xfb, GcOpcode.ref_cast_null, HeapType.eq);
+  }
+}
+
 export function generateTrampoline(
   ctx: CodegenContext,
   classInfo: ClassInfo,
@@ -1143,13 +1160,8 @@ export function generateTrampoline(
         // 2. Pass semantic type through generateTrampoline
         // See docs/design/primitive-boxing-semantic-types.md for details.
         unboxPrimitive(ctx, classParamType, body);
-      } else if (
-        classParamType.length > 1 &&
-        (classParamType[0] === ValType.ref ||
-          classParamType[0] === ValType.ref_null)
-      ) {
-        body.push(0xfb, GcOpcode.ref_cast_null);
-        body.push(...classParamType.slice(1));
+      } else {
+        adaptReference(body, interfaceParamType, classParamType);
       }
     } else {
       // Check if both are closure types but with different type indices
@@ -1286,6 +1298,8 @@ export function generateTrampoline(
                   wrapperBody.push(
                     ...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex),
                   );
+                } else {
+                  adaptReference(wrapperBody, classParam, ifaceParam);
                 }
               }
             }
@@ -1428,6 +1442,16 @@ export function generateTrampoline(
         ) {
           return true; // Needs primitive boxing
         }
+        // Check if interface is eqref but class is anyref (needs cast to eqref)
+        if (
+          (interfaceType[0] === ValType.eqref ||
+            (interfaceType.length === 2 &&
+              interfaceType[1] === ValType.eqref)) &&
+          (classType[0] === ValType.anyref ||
+            (classType.length === 2 && classType[1] === ValType.anyref))
+        ) {
+          return true; // Needs ref.cast eq
+        }
         // Check if class returns specific ref type (needs no adaptation, but different type)
         if (
           classType.length > 1 &&
@@ -1486,8 +1510,9 @@ export function generateTrampoline(
           ) {
             // TODO(primitive-boxing): Pass semantic type once MethodInfo tracks checker types.
             boxPrimitive(ctx, classType, body);
+          } else {
+            adaptReference(body, classType, interfaceType);
           }
-          // Specific ref types are subtypes of anyref - no adaptation needed
         } else {
           // Check for interface boxing
           const interfaceTypeIndex = decodeTypeIndex(interfaceType);
@@ -1621,6 +1646,8 @@ export function generateTrampoline(
               }
             }
           }
+        } else {
+          adaptReference(body, classReturnType, interfaceResults[0]);
         }
       }
     }
