@@ -36,11 +36,11 @@ This plan tracks all features required for the code generation phase to achieve 
   - [ ] Auto-unboxing primitives when casting from `any` back to value types.
 - [ ] **Distinct Types:**
   - [ ] Compile-time nominal distinction with zero runtime overhead (complete erasure to backing type).
-- [ ] **Strings & Templates:**
+- [x] **Strings & Templates:**
   - [x] Basic string literals.
-  - [ ] String concatenation (`+` operator) using runtime helper functions.
-  - [ ] Template literals with `${expression}` interpolation.
-  - [ ] Tagged template literals with referentially stable `TemplateStringsArray` allocated globally.
+  - [x] String concatenation (`+` operator) using runtime helper functions.
+  - [x] Template literals with `${expression}` interpolation.
+  - [x] Tagged template literals with referentially stable `TemplateStringsArray` allocated globally.
 
 ### 3. Records, Tuples, & Destructuring
 
@@ -130,8 +130,8 @@ This plan tracks all features required for the code generation phase to achieve 
 - [ ] **Conditional Patterns:**
   - [ ] `if let` statement pattern checking and local scope binding.
   - [ ] `while let` loop condition checking and iteration control.
-- [ ] **Loop Iterations:**
-  - [ ] `for-in` loop compilation over collections implementing `Iterator`/`Sequence` protocol (unrolling iteration steps).
+- [x] **Loop Iterations:**
+  - [x] `for-in` loop compilation over collections implementing `Iterator`/`Sequence` protocol (unrolling iteration steps).
 - [ ] **Ranges & Pipelines:**
   - [ ] Range object instantiation (`..` operator variants: `BoundedRange`, `FromRange`, etc.).
   - [ ] Pipeline expressions (`|>`) replacing temporary variables via stack manipulation/placeholder `$` replacement.
