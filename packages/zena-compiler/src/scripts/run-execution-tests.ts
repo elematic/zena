@@ -42,8 +42,6 @@ async function run() {
 
   const skipList = [
     'nullable-ref.zena', // Nullable reference wrapping/unwrapping
-    'downcast.zena', // Class initialization error when no constructor?
-    'upcast.zena', // Class initialization error when no constructor?
     'generic.zena', // Generics codegen not yet implemented
     'generic_equality.zena', // Generics codegen not yet implemented
     'this_capture_generic.zena', // Generics not supported in self-hosted compiler yet

@@ -14,7 +14,7 @@ import {
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction,
   ThrowExpression, TryExpression
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString, isRefType, AnyType, AnyRefType, EqRefType } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
 import { Program } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
@@ -644,13 +644,31 @@ export class FunctionGenerator {
       }
       case IsExpression: {
         let isExpr = expr as IsExpression;
-        this.generateExpression(isExpr.expression);
+        let sourceType = this.ctx.wasmFunction.model.getNodeType(isExpr.expression);
+        if (sourceType == null) {
+          throw new Error("IsExpression source type not found in semantic model!");
+        }
         
         let targetType = this.ctx.wasmFunction.model.getNodeType(isExpr.typeAnnotation);
         if (targetType == null) {
           throw new Error("IsExpression target type not found in semantic model!");
         }
         
+        if (!isRefType(sourceType as Type)) {
+          this.generateExpression(isExpr.expression);
+          this.ctx.emitter.emitDrop();
+          
+          let sType = sourceType as Type;
+          let tType = targetType as Type;
+          if (typeToString(sType) == typeToString(tType) || tType is AnyType || tType is AnyRefType || tType is EqRefType) {
+            this.ctx.emitter.emitI32Const(1);
+          } else {
+            this.ctx.emitter.emitI32Const(0);
+          }
+          return;
+        }
+
+        this.generateExpression(isExpr.expression);
         let targetWasmType = typeToValType(this.ctx.wasm, targetType as Type);
         match (targetWasmType) {
           case ValTypeRefNull as targetRefNull: {
@@ -798,29 +816,7 @@ export class FunctionGenerator {
           }
         }
       }
-      case IsExpression: {
-        let isExpr = expr as IsExpression;
-        this.generateExpression(isExpr.expression);
-        
-        let targetType = this.ctx.wasmFunction.model.getNodeType(isExpr.typeAnnotation);
-        if (targetType == null) {
-          throw new Error("IsExpression target type not found in model");
-        }
-        
-        let targetWasmType = typeToValType(this.ctx.wasm, targetType as Type);
-        
-        match (targetWasmType) {
-          case ValTypeRefNull as targetRefNull: {
-            this.ctx.emitter.emitRefTest(targetRefNull.target.index);
-          }
-          case ValTypeRef as targetRef: {
-            this.ctx.emitter.emitRefTest(targetRef.target.index);
-          }
-          case _: {
-            throw new Error("Unsupported target type for 'is' check in self-hosted compiler: " + typeToString(targetType as Type));
-          }
-        }
-      }
+
       case _: {
         let t = this.ctx.wasmFunction.model.getNodeType(expr);
         let tStr = if (t != null) { typeToString(t as Type) } else { "null" };
