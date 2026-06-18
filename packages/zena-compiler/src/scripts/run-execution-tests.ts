@@ -30,7 +30,7 @@ async function run() {
     'intrinsics',
     'mixins',
     'null-coalescing',
-    // 'nullish-assignment',
+    'nullish-assignment',
     'operators',
     // 'optional-chaining',
     'records',
