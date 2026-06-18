@@ -7,8 +7,8 @@ import { generateNumberLiteral, generateStringLiteral } from './primitives.zena'
 import { parseI32, i32ToString } from 'zena:string-convert';
 import { WasmField, WasmFunction, WasmArray } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
-import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature } from '../type-mapping.zena';
-import { ValTypeRefNull, ValTypeRef, ValTypeI8 } from '../wasm.zena';
+import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getNonNullableType } from '../type-mapping.zena';
+import { ValTypeRefNull, ValTypeRef, ValTypeI8, ValTypeVoid, HeapType, heapTypeToSigned, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeEqRef, ValTypeAnyRef, ValTypeStructRef } from '../wasm.zena';
 import { Array } from 'zena:array';
 
 export let generateMemberExpression = (
@@ -18,320 +18,386 @@ export let generateMemberExpression = (
 ): void => {
   // 1. Figure out the type of the object
   let objectType = ctx.wasmFunction.model.getNodeType(expr.object);
+  if (objectType == null) throw new Error("Missing object type info in semantic model");
 
-  match (objectType) {
-    case RecordType as rt: {
-      if (rt.enumDeclaration != null) {
-        let ed = rt.enumDeclaration as EnumDeclaration;
-        let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
-        let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
-        var nextValue: i32 = 0;
-        
-        for (let member in ed.members) {
-          if (isStringEnum) {
-            if (member.name.name == propName) {
-              if (member.initializer is StringLiteral) {
-                generateStringLiteral(ctx, member.initializer as StringLiteral);
-                return;
-              } else {
-                throw new Error("Codegen: String enum member initializer is not a literal.");
-              }
-            }
-          } else {
-            var currentValue: i32 = nextValue;
-            if (member.initializer != null) {
-              if (member.initializer is NumberLiteral) {
-                let numLit = member.initializer as NumberLiteral;
-                let (ok, val) = parseI32(numLit.raw);
-                if (ok) {
-                  currentValue = val as i32;
+  let isStaticAccess = match (objectType) {
+    case ClassType: ctx.wasmFunction.model.isStaticAccess(expr)
+    case _: false
+  };
+
+  var genObject = (): void => {
+    genExpr(expr.object, false);
+  };
+
+  var hasEnteredOptionalIf = false;
+
+  let generateNonNullMember = (): void => {
+    let nonNullObjType = getNonNullableType(objectType);
+    match (nonNullObjType) {
+      case RecordType as rt: {
+        if (rt.enumDeclaration != null) {
+          let ed = rt.enumDeclaration as EnumDeclaration;
+          let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
+          let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
+          var nextValue: i32 = 0;
+          
+          for (let member in ed.members) {
+            if (isStringEnum) {
+              if (member.name.name == propName) {
+                if (member.initializer is StringLiteral) {
+                  generateStringLiteral(ctx, member.initializer as StringLiteral);
+                  return;
+                } else {
+                  throw new Error("Codegen: String enum member initializer is not a literal.");
                 }
-              } else {
-                throw new Error("Codegen: Enum member initializer is not a literal.");
               }
+            } else {
+              var currentValue: i32 = nextValue;
+              if (member.initializer != null) {
+                if (member.initializer is NumberLiteral) {
+                  let numLit = member.initializer as NumberLiteral;
+                  let (ok, val) = parseI32(numLit.raw);
+                  if (ok) {
+                    currentValue = val as i32;
+                  }
+                } else {
+                  throw new Error("Codegen: Enum member initializer is not a literal.");
+                }
+              }
+              
+              if (member.name.name == propName) {
+                ctx.emitter.emitI32Const(currentValue);
+                return;
+              }
+              nextValue = currentValue + 1;
             }
-            
-            if (member.name.name == propName) {
-              ctx.emitter.emitI32Const(currentValue);
-              return;
-            }
-            nextValue = currentValue + 1;
           }
+          throw new Error("Codegen: Enum member " + propName + " not found in declaration.");
         }
-        throw new Error("Codegen: Enum member " + propName + " not found in declaration.");
-      }
 
-      // Generate code for the object (since it's a real struct)
-      genExpr(expr.object, false);
+        // Generate code for the object (since it's a real struct)
+        genObject();
 
-      let fields = new Array<WasmField>();
-      for (let pair in rt.properties) {
-        fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
-      }
-      let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields);
-      
-      var fieldIndex = -1;
-      let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
-      
-      for (var i = 0; i < fields.length; i += 1) {
-        if (fields[i].name != null && (fields[i].name as String) == propName) {
-           fieldIndex = i;
+        let fields = new Array<WasmField>();
+        for (let pair in rt.properties) {
+          fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
         }
-      }
-      
-      if (fieldIndex == -1) {
-         throw new Error("Could not find property " + propName + " on record");
-      }
-      
-      let scratchLocal = ctx.getStructScratchLocal(dispatchInfo.fatPtrType);
-      ctx.emitter.emitLocalSet(scratchLocal);
-      
-      // Push the instance (argument 1)
-      ctx.emitter.emitLocalGet(scratchLocal);
-      ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance
-      
-      // Push the function reference
-      ctx.emitter.emitLocalGet(scratchLocal);
-      ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 1); // Get VTable
-      ctx.emitter.emitStructGet(dispatchInfo.vtableType.index, fieldIndex); // Get Func
-      
-      // Call the function reference
-      ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
-    }
-    case ClassType as ctVar: {
-      let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
-        ctx.wasmFunction.classType as ClassType
-      } else {
-        ctVar
-      };
-      let isStaticAccess = ctx.wasmFunction.model.isStaticAccess(expr);
-
-      if (isStaticAccess) {
+        let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields);
+        
+        var fieldIndex = -1;
         let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
-        let getterName = "get#" + propName;
-
-        // 1. Check for static getter/method in class hierarchy
-        var foundFunc: WasmFunction | null = null;
-        var currClass: ClassType | null = ct;
-        while (currClass != null && foundFunc == null) {
-          for (let f in ctx.wasm.functions) {
-            if (f.classType != null && f.isStatic &&
-                (f.classType as ClassType).id == (currClass as ClassType).id && 
-                f.methodName == getterName) {
-              foundFunc = f;
-            }
+        
+        for (var i = 0; i < fields.length; i += 1) {
+          if (fields[i].name != null && (fields[i].name as String) == propName) {
+             fieldIndex = i;
           }
-          currClass = (currClass as ClassType).superType;
         }
-
-        if (foundFunc != null) {
-          ctx.emitter.emitCall(foundFunc as WasmFunction);
-          return;
+        
+        if (fieldIndex == -1) {
+           throw new Error("Could not find property " + propName + " on record");
         }
-
-        // 2. Check for static field (global) in class hierarchy
-        var foundGlobalIndex = -1;
-        currClass = ct;
-        while (currClass != null && foundGlobalIndex == -1) {
-          for (let g in ctx.wasm.globals) {
-            if (g.name == (currClass as ClassType).name + "_" + propName) {
-              foundGlobalIndex = g.index;
-            }
-          }
-          currClass = (currClass as ClassType).superType;
-        }
-
-        if (foundGlobalIndex != -1) {
-          ctx.emitter.emitGlobalGet(foundGlobalIndex);
-          return;
-        }
-
-        throw new Error("Could not find static member " + propName + " on class " + ct.name);
+        
+        let scratchLocal = ctx.getStructScratchLocal(dispatchInfo.fatPtrType);
+        ctx.emitter.emitLocalSet(scratchLocal);
+        
+        // Push the instance (argument 1)
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance
+        
+        // Push the function reference
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 1); // Get VTable
+        ctx.emitter.emitStructGet(dispatchInfo.vtableType.index, fieldIndex); // Get Func
+        
+        // Call the function reference
+        ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
       }
-
-      if (ct.isExtension) {
-        let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
-        let getterName = "get#" + propName;
-        // Find the specific WasmFunction for this getter
-        var foundFunc: WasmFunction | null = null;
-        var currClass: ClassType | null = ct;
-        while (currClass != null && foundFunc == null) {
-          for (let f in ctx.wasm.functions) {
-            if (f.classType != null && 
-                (f.classType as ClassType).id == (currClass as ClassType).id && 
-                f.methodName == getterName) {
-              foundFunc = f;
-            }
-          }
-          currClass = (currClass as ClassType).superType;
-        }
-
-        if (foundFunc == null) {
-          throw new Error("Could not find extension getter: " + getterName);
-        }
-
-        let f = foundFunc as WasmFunction;
-        if (f.intrinsic != null) {
-          let intr = f.intrinsic as String;
-          if (intr == "array.len") {
-            genExpr(expr.object, false);
-            ctx.emitter.emitArrayLen();
-            return;
-          }
-          throw new Error("Unsupported extension getter intrinsic: " + intr);
-        }
-
-        genExpr(expr.object, false);
-        ctx.emitter.emitCall(foundFunc as WasmFunction);
-        return;
-      }
-
-      if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
-        throw new Error("Class struct not found: " + ct.name);
-      }
-      let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
-      
-      var fieldIndex = -1;
-      let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
-      let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
-        if (ctx.wasmFunction.classType != null) {
-          getClassPrivateFieldKey(getClassKey(ctx.wasmFunction.classType as ClassType), propName)
+      case ClassType as ctVar: {
+        let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
+          ctx.wasmFunction.classType as ClassType
         } else {
-          propName
-        }
-      } else {
-        propName
-      };
-      
-      for (var i = 0; i < structInfo.fields.length; i += 1) {
-        if (structInfo.fields[i].name != null && (structInfo.fields[i].name as String) == lookupName) {
-           fieldIndex = i;
-        }
-      }
+          ctVar
+        };
+        let isStaticAccess = ctx.wasmFunction.model.isStaticAccess(expr);
 
-      let getterName = "get#" + propName;
-      let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
-      var vtableIndex = -1;
-      for (var i = 0; i < vtableStruct.fields.length; i += 1) {
-        if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == getterName) {
-          vtableIndex = i;
-        }
-      }
-      
-      if (vtableIndex != -1) {
-        var foundFunc: WasmFunction | null = null;
-        var currClass: ClassType | null = ct;
-        while (currClass != null && foundFunc == null) {
-          for (let f in ctx.wasm.functions) {
-            if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == getterName) {
-              foundFunc = f;
-            }
-          }
-          currClass = (currClass as ClassType).superType;
-        }
+        if (isStaticAccess) {
+          let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
+          let getterName = "get#" + propName;
 
-        if (foundFunc != null && (foundFunc as WasmFunction).intrinsic != null) {
-          let intr = (foundFunc as WasmFunction).intrinsic as String;
-          if (intr == "array.len") {
-            genExpr(expr.object, false);
-            ctx.emitter.emitArrayLen();
-            return;
-          }
-          throw new Error("Unsupported getter intrinsic: " + intr);
-        }
-
-        if (expr.object is SuperExpression) {
-          var superFunc: WasmFunction | null = null;
-          var currClass: ClassType | null = ct; // ct is already the superclass (the type of SuperExpression)
-          while (currClass != null && superFunc == null) {
+          // 1. Check for static getter/method in class hierarchy
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = ct;
+          while (currClass != null && foundFunc == null) {
             for (let f in ctx.wasm.functions) {
-              if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == getterName) {
-                superFunc = f;
+              if (f.classType != null && f.isStatic &&
+                  (f.classType as ClassType).id == (currClass as ClassType).id && 
+                  f.methodName == getterName) {
+                foundFunc = f;
               }
             }
             currClass = (currClass as ClassType).superType;
           }
 
-          if (superFunc == null) {
-            throw new Error("Could not find superclass getter implementation for " + getterName);
+          if (foundFunc != null) {
+            ctx.emitter.emitCall(foundFunc as WasmFunction);
+            return;
           }
 
-          ctx.emitter.emitLocalGet(0);
-          ctx.emitter.emitCall(superFunc as WasmFunction);
+          // 2. Check for static field (global) in class hierarchy
+          var foundGlobalIndex = -1;
+          currClass = ct;
+          while (currClass != null && foundGlobalIndex == -1) {
+            for (let g in ctx.wasm.globals) {
+              if (g.name == (currClass as ClassType).name + "_" + propName) {
+                foundGlobalIndex = g.index;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (foundGlobalIndex != -1) {
+            ctx.emitter.emitGlobalGet(foundGlobalIndex);
+            return;
+          }
+
+          throw new Error("Could not find static member " + propName + " on class " + ct.name);
+        }
+
+        if (ct.isExtension) {
+          let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
+          let getterName = "get#" + propName;
+          // Find the specific WasmFunction for this getter
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = ct;
+          while (currClass != null && foundFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && 
+                  (f.classType as ClassType).id == (currClass as ClassType).id && 
+                  f.methodName == getterName) {
+                foundFunc = f;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (foundFunc == null) {
+            throw new Error("Could not find extension getter: " + getterName);
+          }
+
+          let f = foundFunc as WasmFunction;
+          if (f.intrinsic != null) {
+            let intr = f.intrinsic as String;
+            if (intr == "array.len") {
+              genObject();
+              ctx.emitter.emitArrayLen();
+              return;
+            }
+            throw new Error("Unsupported extension getter intrinsic: " + intr);
+          }
+
+          genObject();
+          ctx.emitter.emitCall(foundFunc as WasmFunction);
           return;
+        }
+
+        if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
+          throw new Error("Class struct not found: " + ct.name);
+        }
+        let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+        
+        var fieldIndex = -1;
+        let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
+        let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+          if (ctx.wasmFunction.classType != null) {
+            getClassPrivateFieldKey(getClassKey(ctx.wasmFunction.classType as ClassType), propName)
+          } else {
+            propName
+          }
         } else {
-          genExpr(expr.object, false);
-          var scratchLocal = ctx.getStructScratchLocal(structInfo);
-          ctx.emitter.emitLocalTee(scratchLocal);
-
-          ctx.emitter.emitLocalGet(scratchLocal);
-          ctx.emitter.emitRefCast(structInfo.index);
-          ctx.emitter.emitStructGet(structInfo.index, 0); // VTable is at index 0
-          ctx.emitter.emitRefCast(vtableStruct.index);
-          ctx.emitter.emitStructGet(vtableStruct.index, vtableIndex);
-
-          let sig = getClassMemberSignature(ctx.wasm, ct, getterName);
-          ctx.emitter.emitRefCast(sig.index);
-          ctx.emitter.emitCallRef(sig.index);
-          return;
+          propName
+        };
+        
+        for (var i = 0; i < structInfo.fields.length; i += 1) {
+          if (structInfo.fields[i].name != null && (structInfo.fields[i].name as String) == lookupName) {
+             fieldIndex = i;
+          }
         }
-      }
-      
-      if (fieldIndex == -1) {
-        throw new Error("Could not find property " + propName + " or virtual getter " + getterName + " on class " + ct.name);
-      }
-      
-      genExpr(expr.object, false);
-      
-      ctx.emitter.emitRefCast(structInfo.index);
-      ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
-    }
-    case InterfaceType as it: {
-      let iName = getInterfaceKey(it);
-      let vst = ctx.wasm.interfaceVTableStructs[iName];
-      let fatPtr = ctx.wasm.interfaceStructs[iName];
-      
-      let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
-      let getterName = "get#" + propName;
-      
-      var vtableIndex = -1;
-      for (var i = 0; i < vst.fields.length; i += 1) {
-        if (vst.fields[i].name != null && (vst.fields[i].name as String) == getterName) {
-          vtableIndex = i;
+
+        let getterName = "get#" + propName;
+        let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+        var vtableIndex = -1;
+        for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+          if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == getterName) {
+            vtableIndex = i;
+          }
         }
+        
+        if (vtableIndex != -1) {
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = ct;
+          while (currClass != null && foundFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == getterName) {
+                foundFunc = f;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (foundFunc != null && (foundFunc as WasmFunction).intrinsic != null) {
+            let intr = (foundFunc as WasmFunction).intrinsic as String;
+            if (intr == "array.len") {
+              genObject();
+              ctx.emitter.emitArrayLen();
+              return;
+            }
+            throw new Error("Unsupported getter intrinsic: " + intr);
+          }
+
+          if (expr.object is SuperExpression) {
+            var superFunc: WasmFunction | null = null;
+            var currClass: ClassType | null = ct; // ct is already the superclass (the type of SuperExpression)
+            while (currClass != null && superFunc == null) {
+              for (let f in ctx.wasm.functions) {
+                if (f.classType != null && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == getterName) {
+                  superFunc = f;
+                }
+              }
+              currClass = (currClass as ClassType).superType;
+            }
+
+            if (superFunc == null) {
+              throw new Error("Could not find superclass getter implementation for " + getterName);
+            }
+
+            ctx.emitter.emitLocalGet(0);
+            ctx.emitter.emitCall(superFunc as WasmFunction);
+            return;
+          } else {
+            genObject();
+            var scratchLocal = ctx.getStructScratchLocal(structInfo);
+            ctx.emitter.emitLocalTee(scratchLocal);
+
+            ctx.emitter.emitLocalGet(scratchLocal);
+            ctx.emitter.emitRefCast(structInfo.index);
+            ctx.emitter.emitStructGet(structInfo.index, 0); // VTable is at index 0
+            ctx.emitter.emitRefCast(vtableStruct.index);
+            ctx.emitter.emitStructGet(vtableStruct.index, vtableIndex);
+
+            let sig = getClassMemberSignature(ctx.wasm, ct, getterName);
+            ctx.emitter.emitRefCast(sig.index);
+            ctx.emitter.emitCallRef(sig.index);
+            return;
+          }
+        }
+        
+        if (fieldIndex == -1) {
+          throw new Error("Could not find property " + propName + " or virtual getter " + getterName + " on class " + ct.name);
+        }
+        
+        genObject();
+        
+        ctx.emitter.emitRefCast(structInfo.index);
+        ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
       }
-      
-      if (vtableIndex == -1) {
-        throw new Error("Property getter not found in interface vtable: " + getterName + " on interface: " + it.name);
+      case InterfaceType as it: {
+        let iName = getInterfaceKey(it);
+        let vst = ctx.wasm.interfaceVTableStructs[iName];
+        let fatPtr = ctx.wasm.interfaceStructs[iName];
+        
+        let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
+        let getterName = "get#" + propName;
+        
+        var vtableIndex = -1;
+        for (var i = 0; i < vst.fields.length; i += 1) {
+          if (vst.fields[i].name != null && (vst.fields[i].name as String) == getterName) {
+            vtableIndex = i;
+          }
+        }
+        
+        if (vtableIndex == -1) {
+          throw new Error("Property getter not found in interface vtable: " + getterName + " on interface: " + it.name);
+        }
+        
+        genObject();
+        var scratchLocal = ctx.getStructScratchLocal(fatPtr);
+        ctx.emitter.emitLocalSet(scratchLocal);
+        
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
+        
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
+        ctx.emitter.emitStructGet(vst.index, vtableIndex);
+        
+        let sig = getInterfaceMemberSignature(ctx.wasm, it, getterName);
+        ctx.emitter.emitCallRef(sig.index);
       }
-      
-      genExpr(expr.object, false);
-      var scratchLocal = ctx.getStructScratchLocal(fatPtr);
-      ctx.emitter.emitLocalSet(scratchLocal);
-      
-      ctx.emitter.emitLocalGet(scratchLocal);
-      ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
-      
-      ctx.emitter.emitLocalGet(scratchLocal);
-      ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
-      ctx.emitter.emitStructGet(vst.index, vtableIndex);
-      
-      let sig = getInterfaceMemberSignature(ctx.wasm, it, getterName);
-      ctx.emitter.emitCallRef(sig.index);
+      case _: {
+         if (nonNullObjType is ArrayType && expr.property.name == "length") {
+           genObject();
+           ctx.emitter.emitArrayLen();
+           return;
+         }
+         // We still need to evaluate the expression object for other types before failing
+         genObject();
+         throw new Error("Codegen for MemberExpression on non-record is not yet implemented.");
+      }
     }
-    case _: {
-       if (objectType is ArrayType && expr.property.name == "length") {
-         genExpr(expr.object, false);
-         ctx.emitter.emitArrayLen();
-         return;
-       }
-       // We still need to evaluate the expression object for other types before failing
-       genExpr(expr.object, false);
-       throw new Error("Codegen for MemberExpression on non-record is not yet implemented.");
+  };
+
+  if (expr.optional && !isStaticAccess) {
+    genExpr(expr.object, false);
+
+    let objectValType = typeToValType(ctx.wasm, objectType);
+    let objLocal = ctx.allocLocal(objectValType);
+    ctx.emitter.emitLocalSet(objLocal);
+
+    ctx.emitter.emitLocalGet(objLocal);
+    ctx.emitter.emitRefIsNull();
+    ctx.emitter.emitI32Eqz();
+
+    let exprType = ctx.wasmFunction.model.getNodeType(expr);
+    if (exprType == null) throw new Error("Missing member expression type info in semantic model");
+    let exprValType = typeToValType(ctx.wasm, exprType);
+
+    ctx.emitter.emitIf(exprValType);
+    ctx.enterBlockStructure();
+    hasEnteredOptionalIf = true;
+
+    genObject = (): void => {
+      ctx.emitter.emitLocalGet(objLocal);
+    };
+
+    ctx.emitter.emitI32Const(0);
+    ctx.emitter.emitLocalSet(ctx.getOptShortCircuitedLocal());
+    generateNonNullMember();
+
+    ctx.emitter.emitElse();
+
+    ctx.emitter.emitI32Const(1);
+    ctx.emitter.emitLocalSet(ctx.getOptShortCircuitedLocal());
+
+    match (exprValType) {
+      case ValTypeVoid: {}
+      case ValTypeI32: ctx.emitter.emitI32Const(0)
+      case ValTypeI64: ctx.emitter.emitI64Const(0 as i64)
+      case ValTypeF32: ctx.emitter.emitF32Const(0.0)
+      case ValTypeF64: ctx.emitter.emitF64Const(0.0)
+      case ValTypeRefNull as rn: ctx.emitter.emitRefNull(rn.target.index)
+      case ValTypeRef as r: ctx.emitter.emitRefNull(r.target.index)
+      case ValTypeEqRef: ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.eq))
+      case ValTypeAnyRef: ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.any))
+      case ValTypeStructRef: ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.struct))
+      case _: ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none))
     }
+
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+  } else {
+    generateNonNullMember();
   }
 };
-
 
 export let generateIndexExpression = (
   ctx: FunctionContext,
@@ -339,186 +405,248 @@ export let generateIndexExpression = (
   genExpr: (e: Expression, discardValue: boolean) => void
 ): void => {
   let objectType = ctx.wasmFunction.model.getNodeType(expr.object);
+  if (objectType == null) throw new Error("Missing object type info in semantic model");
 
-  match (objectType) {
-    case TupleType as tt: {
-      if (expr.index is NumberLiteral) {
-        let numLit = expr.index as NumberLiteral;
-        let (ok, indexVal) = parseI32(numLit.raw);
-        if (!ok) {
-          throw new Error("Codegen: Tuple index is not a valid number.");
+  var genObject = (): void => {
+    genExpr(expr.object, false);
+  };
+
+  var hasEnteredOptionalIf = false;
+
+  let generateNonNullIndex = (): void => {
+    let nonNullObjType = getNonNullableType(objectType);
+    match (nonNullObjType) {
+      case TupleType as tt: {
+        if (expr.index is NumberLiteral) {
+          let numLit = expr.index as NumberLiteral;
+          let (ok, indexVal) = parseI32(numLit.raw);
+          if (!ok) {
+            throw new Error("Codegen: Tuple index is not a valid number.");
+          }
+          let index = indexVal as i32;
+
+          let fields = new Array<WasmField>();
+          for (var i = 0; i < tt.elementTypes.length; i += 1) {
+            let type = tt.elementTypes[i];
+            fields.push(new WasmField(i32ToString(i), typeToValType(ctx.wasm, type), false));
+          }
+          
+          let structType = ctx.wasm.getStruct(null, fields);
+          
+          genObject();
+          ctx.emitter.emitRefCast(structType.index);
+          ctx.emitter.emitStructGet(structType.index, index);
+        } else {
+          throw new Error("Codegen: Tuple index must be a constant number.");
         }
-        let index = indexVal as i32;
-
-        let fields = new Array<WasmField>();
-        for (var i = 0; i < tt.elementTypes.length; i += 1) {
-          let type = tt.elementTypes[i];
-          fields.push(new WasmField(i32ToString(i), typeToValType(ctx.wasm, type), false));
+      }
+      case InterfaceType as it: {
+        let iName = getInterfaceKey(it);
+        let vst = ctx.wasm.interfaceVTableStructs[iName];
+        let fatPtr = ctx.wasm.interfaceStructs[iName];
+        
+        let targetName = "[]";
+        
+        var methodIndex = -1;
+        for (var i = 0; i < vst.fields.length; i += 1) {
+          if (vst.fields[i].name != null && (vst.fields[i].name as String) == targetName) {
+            methodIndex = i;
+          }
         }
         
-        let structType = ctx.wasm.getStruct(null, fields);
-        
-        genExpr(expr.object, false);
-        ctx.emitter.emitRefCast(structType.index);
-        ctx.emitter.emitStructGet(structType.index, index);
-      } else {
-        throw new Error("Codegen: Tuple index must be a constant number.");
-      }
-    }
-    case InterfaceType as it: {
-      let iName = getInterfaceKey(it);
-      let vst = ctx.wasm.interfaceVTableStructs[iName];
-      let fatPtr = ctx.wasm.interfaceStructs[iName];
-      
-      let targetName = "[]";
-      
-      var methodIndex = -1;
-      for (var i = 0; i < vst.fields.length; i += 1) {
-        if (vst.fields[i].name != null && (vst.fields[i].name as String) == targetName) {
-          methodIndex = i;
+        if (methodIndex == -1) {
+          throw new Error("Method [] not found in interface vtable of " + it.name);
         }
+        
+        genObject();
+        var scratchLocal = ctx.getStructScratchLocal(fatPtr);
+        ctx.emitter.emitLocalTee(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
+        
+        genExpr(expr.index, false); // Evaluate index argument
+        
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
+        ctx.emitter.emitStructGet(vst.index, methodIndex);
+        
+        let sig = getInterfaceMemberSignature(ctx.wasm, it, targetName);
+        ctx.emitter.emitCallRef(sig.index);
+        return;
       }
-      
-      if (methodIndex == -1) {
-        throw new Error("Method [] not found in interface vtable of " + it.name);
-      }
-      
-      genExpr(expr.object, false);
-      var scratchLocal = ctx.getStructScratchLocal(fatPtr);
-      ctx.emitter.emitLocalTee(scratchLocal);
-      ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
-      
-      genExpr(expr.index, false); // Evaluate index argument
-      
-      ctx.emitter.emitLocalGet(scratchLocal);
-      ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
-      ctx.emitter.emitStructGet(vst.index, methodIndex);
-      
-      let sig = getInterfaceMemberSignature(ctx.wasm, it, targetName);
-      ctx.emitter.emitCallRef(sig.index);
-      return;
-    }
-    case _: {
-      var foundFunc: WasmFunction | null = null;
-      match (objectType) {
-        case ClassType as ctVar: {
-          let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
-            ctx.wasmFunction.classType as ClassType
-          } else {
-            ctVar
-          };
-          let indexType = ctx.wasmFunction.model.getNodeType(expr.index);
-          let params = new Array<Type>();
-          params.push(indexType);
-          let dummyFuncType = new FunctionType(params, null, new VoidType());
-          let lookupName = "[]" + getSignatureKey(dummyFuncType);
+      case _: {
+        var foundFunc: WasmFunction | null = null;
+        match (nonNullObjType) {
+          case ClassType as ctVar: {
+            let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
+              ctx.wasmFunction.classType as ClassType
+            } else {
+              ctVar
+            };
+            let indexType = ctx.wasmFunction.model.getNodeType(expr.index);
+            let params = new Array<Type>();
+            params.push(indexType);
+            let dummyFuncType = new FunctionType(params, null, new VoidType());
+            let lookupName = "[]" + getSignatureKey(dummyFuncType);
 
-          var currClass: ClassType | null = ct;
-          while (currClass != null && foundFunc == null) {
-            for (let f in ctx.wasm.functions) {
-              if (f.classType != null && 
-                  (f.classType as ClassType).id == (currClass as ClassType).id && 
-                  (f.methodName == lookupName || f.methodName == "[]")) {
-                if (f.intrinsic != null) {
-                  foundFunc = f;
-                }
-              }
-            }
-            if (foundFunc == null) {
+            var currClass: ClassType | null = ct;
+            while (currClass != null && foundFunc == null) {
               for (let f in ctx.wasm.functions) {
                 if (f.classType != null && 
                     (f.classType as ClassType).id == (currClass as ClassType).id && 
                     (f.methodName == lookupName || f.methodName == "[]")) {
-                  foundFunc = f;
+                  if (f.intrinsic != null) {
+                    foundFunc = f;
+                  }
                 }
               }
+              if (foundFunc == null) {
+                for (let f in ctx.wasm.functions) {
+                  if (f.classType != null && 
+                      (f.classType as ClassType).id == (currClass as ClassType).id && 
+                      (f.methodName == lookupName || f.methodName == "[]")) {
+                    foundFunc = f;
+                  }
+                }
+              }
+              currClass = (currClass as ClassType).superType;
             }
-            currClass = (currClass as ClassType).superType;
           }
+          case ArrayType as at: {}
+          case _: {}
         }
-        case ArrayType as at: {}
-        case _: {}
-      }
 
-      var isArrayGet = false;
-      if (foundFunc != null && (foundFunc as WasmFunction).intrinsic != null) {
-        let intr = (foundFunc as WasmFunction).intrinsic as String;
-        if (intr == "array.get") {
+        var isArrayGet = false;
+        if (foundFunc != null && (foundFunc as WasmFunction).intrinsic != null) {
+          let intr = (foundFunc as WasmFunction).intrinsic as String;
+          if (intr == "array.get") {
+            isArrayGet = true;
+          } else {
+            throw new Error("Unsupported index intrinsic operator: " + intr);
+          }
+        } else if (nonNullObjType is ArrayType || (nonNullObjType is ClassType && (nonNullObjType as ClassType).name == "array")) {
           isArrayGet = true;
-        } else {
-          throw new Error("Unsupported index intrinsic operator: " + intr);
         }
-      } else if (objectType is ArrayType || (objectType is ClassType && (objectType as ClassType).name == "array")) {
-        isArrayGet = true;
-      }
 
-      if (isArrayGet) {
-        let valType = typeToValType(ctx.wasm, objectType);
-        let wasmArray = match (valType) {
-          case ValTypeRefNull as refNull: {
-            refNull.target as WasmArray
-          }
-          case ValTypeRef as ref: {
-            ref.target as WasmArray
-          }
-          case _: {
-            throw new Error("Expected array type for IndexExpression");
-          }
-        };
-        genExpr(expr.object, false);
-        genExpr(expr.index, false);
-        if (wasmArray.elementType is ValTypeI8) {
-          ctx.emitter.emitArrayGetU(wasmArray.index);
-        } else {
-          ctx.emitter.emitArrayGet(wasmArray.index);
-        }
-        return;
-      }
-
-      if (foundFunc != null) {
-        let f = foundFunc as WasmFunction;
-        let ct = f.classType as ClassType;
-        if (ct.isExtension) {
-          genExpr(expr.object, false);
-          genExpr(expr.index, false);
-          ctx.emitter.emitCall(f);
-          return;
-        } else {
-          let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
-          let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
-          let lookupName = f.methodName;
-          
-          var methodIndex = -1;
-          for (var i = 0; i < vtableStruct.fields.length; i += 1) {
-            if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == lookupName) {
-              methodIndex = i;
+        if (isArrayGet) {
+          let valType = typeToValType(ctx.wasm, nonNullObjType);
+          let wasmArray = match (valType) {
+            case ValTypeRefNull as refNull: {
+              refNull.target as WasmArray
             }
-          }
-          if (methodIndex == -1) {
-            throw new Error("Method not found in vtable: " + lookupName);
-          }
-          
-          genExpr(expr.object, false);
-          var scratchLocal = ctx.getStructScratchLocal(structInfo);
-          ctx.emitter.emitLocalTee(scratchLocal);
-          
+            case ValTypeRef as ref: {
+              ref.target as WasmArray
+            }
+            case _: {
+              throw new Error("Expected array type for IndexExpression");
+            }
+          };
+          genObject();
           genExpr(expr.index, false);
-          
-          ctx.emitter.emitLocalGet(scratchLocal);
-          ctx.emitter.emitRefCast(structInfo.index);
-          ctx.emitter.emitStructGet(structInfo.index, 0);
-          ctx.emitter.emitRefCast(vtableStruct.index);
-          ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
-          
-          ctx.emitter.emitRefCast(f.signature.index);
-          ctx.emitter.emitCallRef(f.signature.index);
+          if (wasmArray.elementType is ValTypeI8) {
+            ctx.emitter.emitArrayGetU(wasmArray.index);
+          } else {
+            ctx.emitter.emitArrayGet(wasmArray.index);
+          }
           return;
         }
-      }
 
-      genExpr(expr.object, false);
-      genExpr(expr.index, false);
-      throw new Error("Codegen for IndexExpression on non-tuple/non-array is not yet implemented. Object type: " + typeToString(objectType));
+        if (foundFunc != null) {
+          let f = foundFunc as WasmFunction;
+          let ct = f.classType as ClassType;
+          if (ct.isExtension) {
+            genObject();
+            genExpr(expr.index, false);
+            ctx.emitter.emitCall(f);
+            return;
+          } else {
+            let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+            let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+            let lookupName = f.methodName;
+            
+            var methodIndex = -1;
+            for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+              if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == lookupName) {
+                methodIndex = i;
+              }
+            }
+            if (methodIndex == -1) {
+              throw new Error("Method not found in vtable: " + lookupName);
+            }
+            
+            genObject();
+            var scratchLocal = ctx.getStructScratchLocal(structInfo);
+            ctx.emitter.emitLocalTee(scratchLocal);
+            
+            genExpr(expr.index, false);
+            
+            ctx.emitter.emitLocalGet(scratchLocal);
+            ctx.emitter.emitRefCast(structInfo.index);
+            ctx.emitter.emitStructGet(structInfo.index, 0);
+            ctx.emitter.emitRefCast(vtableStruct.index);
+            ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
+            
+            ctx.emitter.emitRefCast(f.signature.index);
+            ctx.emitter.emitCallRef(f.signature.index);
+            return;
+          }
+        }
+
+        genObject();
+        genExpr(expr.index, false);
+        throw new Error("Codegen for IndexExpression on non-tuple/non-array is not yet implemented. Object type: " + typeToString(nonNullObjType));
+      }
     }
+  };
+
+  if (expr.optional) {
+    genExpr(expr.object, false);
+
+    let objectValType = typeToValType(ctx.wasm, objectType);
+    let objLocal = ctx.allocLocal(objectValType);
+    ctx.emitter.emitLocalSet(objLocal);
+
+    ctx.emitter.emitLocalGet(objLocal);
+    ctx.emitter.emitRefIsNull();
+    ctx.emitter.emitI32Eqz();
+
+    let exprType = ctx.wasmFunction.model.getNodeType(expr);
+    if (exprType == null) throw new Error("Missing index expression type info in semantic model");
+    let exprValType = typeToValType(ctx.wasm, exprType);
+
+    ctx.emitter.emitIf(exprValType);
+    ctx.enterBlockStructure();
+    hasEnteredOptionalIf = true;
+
+    genObject = (): void => {
+      ctx.emitter.emitLocalGet(objLocal);
+    };
+
+    ctx.emitter.emitI32Const(0);
+    ctx.emitter.emitLocalSet(ctx.getOptShortCircuitedLocal());
+    generateNonNullIndex();
+
+    ctx.emitter.emitElse();
+
+    ctx.emitter.emitI32Const(1);
+    ctx.emitter.emitLocalSet(ctx.getOptShortCircuitedLocal());
+
+    match (exprValType) {
+      case ValTypeVoid: {}
+      case ValTypeI32: ctx.emitter.emitI32Const(0)
+      case ValTypeI64: ctx.emitter.emitI64Const(0 as i64)
+      case ValTypeF32: ctx.emitter.emitF32Const(0.0)
+      case ValTypeF64: ctx.emitter.emitF64Const(0.0)
+      case ValTypeRefNull as rn: ctx.emitter.emitRefNull(rn.target.index)
+      case ValTypeRef as r: ctx.emitter.emitRefNull(r.target.index)
+      case ValTypeEqRef: ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.eq))
+      case ValTypeAnyRef: ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.any))
+      case ValTypeStructRef: ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.struct))
+      case _: ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none))
+    }
+
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+  } else {
+    generateNonNullIndex();
   }
 };

@@ -6,7 +6,7 @@ import { Type, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, RecordType,
 } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
-import { ValType, ValTypeI32, ValTypeAnyRef, ValTypeRef, ValTypeRefNull, ValTypeVoid } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeAnyRef, ValTypeRef, ValTypeRefNull, ValTypeVoid, ValTypeEqRef, ValTypeStructRef, ValTypeFuncRef, ValTypeExternRef, ValTypeOptRef } from '../wasm.zena';
 import { WasmField, WasmFunction } from '../wasm-module.zena';
 import { getClassKey, getSignatureKey } from '../codegen-utils.zena';
 import { typeToValType, getClassMemberSignature } from '../type-mapping.zena';
@@ -51,6 +51,49 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
 
     // 2. Store left operand in a temporary local variable
     let leftValType = typeToValType(ctx.wasm, leftType);
+
+    let isRef = match (leftValType) {
+      case ValTypeRefNull: true
+      case ValTypeRef: true
+      case ValTypeEqRef: true
+      case ValTypeAnyRef: true
+      case ValTypeStructRef: true
+      case ValTypeFuncRef: true
+      case ValTypeExternRef: true
+      case ValTypeOptRef: true
+      case _: false
+    };
+
+    if (!isRef) {
+      let leftLocal = ctx.allocLocal(leftValType);
+      ctx.emitter.emitLocalSet(leftLocal);
+
+      // Check if optShortCircuitedLocal == 1
+      ctx.emitter.emitLocalGet(ctx.getOptShortCircuitedLocal());
+      ctx.emitter.emitI32Const(1);
+      ctx.emitter.emitI32Eq();
+
+      // Reset optShortCircuitedLocal = 0
+      ctx.emitter.emitI32Const(0);
+      ctx.emitter.emitLocalSet(ctx.getOptShortCircuitedLocal());
+
+      let overallValType = typeToValType(ctx.wasm, overallType);
+      ctx.emitter.emitIf(overallValType);
+      ctx.enterBlockStructure();
+
+      // Then block (short-circuited/null): evaluate right operand
+      genExpr(bin.right, false);
+
+      ctx.emitter.emitElse();
+
+      // Else block (not null): return left operand
+      ctx.emitter.emitLocalGet(leftLocal);
+
+      ctx.exitBlockStructure();
+      ctx.emitter.emitEnd();
+      return;
+    }
+
     let leftLocal = ctx.allocLocal(leftValType);
     ctx.emitter.emitLocalTee(leftLocal);
 
@@ -147,19 +190,70 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     return;
   }
   if (bin.operator == "==" || bin.operator == "!=" || bin.operator == "===" || bin.operator == "!==") {
+    let model = ctx.wasmFunction.model;
     if (bin.right is NullLiteral) {
-      genExpr(bin.left, false);
-      ctx.emitter.emitRefIsNull();
-      if (bin.operator == "!=" || bin.operator == "!==") {
-        ctx.emitter.emitI32Eqz();
+      let leftType = model.getNodeType(bin.left);
+      if (leftType == null) throw new Error("Missing type info");
+      let leftValType = typeToValType(ctx.wasm, leftType);
+      let isLeftRef = match (leftValType) {
+        case ValTypeRefNull: true
+        case ValTypeRef: true
+        case ValTypeEqRef: true
+        case ValTypeAnyRef: true
+        case ValTypeStructRef: true
+        case ValTypeFuncRef: true
+        case ValTypeExternRef: true
+        case ValTypeOptRef: true
+        case _: false
+      };
+
+      if (isLeftRef) {
+        genExpr(bin.left, false);
+        ctx.emitter.emitRefIsNull();
+        if (bin.operator == "!=" || bin.operator == "!==") {
+          ctx.emitter.emitI32Eqz();
+        }
+      } else {
+        genExpr(bin.left, true); // discard value
+        ctx.emitter.emitLocalGet(ctx.getOptShortCircuitedLocal());
+        ctx.emitter.emitI32Const(0);
+        ctx.emitter.emitLocalSet(ctx.getOptShortCircuitedLocal());
+        if (bin.operator == "!=" || bin.operator == "!==") {
+          ctx.emitter.emitI32Eqz();
+        }
       }
       return;
     }
     if (bin.left is NullLiteral) {
-      genExpr(bin.right, false);
-      ctx.emitter.emitRefIsNull();
-      if (bin.operator == "!=" || bin.operator == "!==") {
-        ctx.emitter.emitI32Eqz();
+      let rightType = model.getNodeType(bin.right);
+      if (rightType == null) throw new Error("Missing type info");
+      let rightValType = typeToValType(ctx.wasm, rightType);
+      let isRightRef = match (rightValType) {
+        case ValTypeRefNull: true
+        case ValTypeRef: true
+        case ValTypeEqRef: true
+        case ValTypeAnyRef: true
+        case ValTypeStructRef: true
+        case ValTypeFuncRef: true
+        case ValTypeExternRef: true
+        case ValTypeOptRef: true
+        case _: false
+      };
+
+      if (isRightRef) {
+        genExpr(bin.right, false);
+        ctx.emitter.emitRefIsNull();
+        if (bin.operator == "!=" || bin.operator == "!==") {
+          ctx.emitter.emitI32Eqz();
+        }
+      } else {
+        genExpr(bin.right, true); // discard value
+        ctx.emitter.emitLocalGet(ctx.getOptShortCircuitedLocal());
+        ctx.emitter.emitI32Const(0);
+        ctx.emitter.emitLocalSet(ctx.getOptShortCircuitedLocal());
+        if (bin.operator == "!=" || bin.operator == "!==") {
+          ctx.emitter.emitI32Eqz();
+        }
       }
       return;
     }

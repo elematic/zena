@@ -338,7 +338,11 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
         new ValTypeVoid()
       } else if (nonNeverTypes.length < ut.types.length) {
         if (nonNeverTypes.length == 1) {
-          typeToValType(wasm, nonNeverTypes[0])
+          let v = typeToValType(wasm, nonNeverTypes[0]);
+          match (v) {
+            case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+            case _: v
+          }
         } else {
           typeToValType(wasm, new UnionType(nonNeverTypes))
         }
@@ -350,7 +354,11 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
           }
         }
         if (nonNullTypes.length == 1) {
-          typeToValType(wasm, nonNullTypes[0])
+          let v = typeToValType(wasm, nonNullTypes[0]);
+          match (v) {
+            case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+            case _: v
+          }
         } else {
           new ValTypeEqRef()
         }
@@ -397,3 +405,21 @@ export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: 
   }
   returns.push(typeToValType(wasm, type));
 };
+
+export let getNonNullableType = (type: Type): Type => match (type) {
+  case UnionType {types}: {
+    let nonNullTypes = new Array<Type>();
+    for (let t_i in types) {
+      if (!(t_i is NullType)) {
+        nonNullTypes.push(t_i);
+      }
+    }
+    if (nonNullTypes.length == 1) {
+      nonNullTypes[0]
+    } else {
+      type
+    }
+  }
+  case _: type
+};
+

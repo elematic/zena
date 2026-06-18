@@ -32,7 +32,7 @@ async function run() {
     'null-coalescing',
     'nullish-assignment',
     'operators',
-    // 'optional-chaining',
+    'optional-chaining',
     'records',
     'sealed-classes',
     'strings',
