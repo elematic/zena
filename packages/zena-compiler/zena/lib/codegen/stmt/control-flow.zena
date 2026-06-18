@@ -6,9 +6,9 @@ import {
   LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral,
   IdentifierPattern, BindingPattern
 } from '../../ast.zena';
-import { VoidType, Type, UnionType, InlineTupleType, baseType, HoleType } from '../../types.zena';
+import { VoidType, Type, UnionType, InlineTupleType, baseType, HoleType, ClassType } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
-import { typeToValType, mapReturnTypeToWasmResults } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, mapReturnTypeToWasmResults, getNodeType, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { generatePatternBinding } from './bindings.zena';
 import { Array } from 'zena:array';
 import { InterfaceAdaptation, RecordAdaptation } from '../../semantic-model.zena';
@@ -18,7 +18,7 @@ export let generateValueReturn = (ctx: FunctionContext, arg: Expression, genExpr
 
   let expectedReturns = ctx.wasmFunction.signature.returns;
   if (expectedReturns.length > 0) {
-    let argType = ctx.wasmFunction.model.getNodeType(arg);
+    let argType = getNodeType(ctx, arg);
     if (argType != null) {
       var effectiveType = argType as Type;
       let interfaceAdaptation = ctx.wasmFunction.model.getInterfaceAdaptation(arg);
@@ -29,6 +29,11 @@ export let generateValueReturn = (ctx: FunctionContext, arg: Expression, genExpr
         if (recordAdaptation != null) {
           effectiveType = (recordAdaptation as RecordAdaptation).target as Type;
         }
+      }
+
+      let ct = ctx.wasmFunction.classType;
+      if (ct != null) {
+        effectiveType = substituteTypeParamsInClassContext(ct as ClassType, effectiveType);
       }
 
       let actualTypes = new Array<ValType>();
@@ -129,13 +134,32 @@ export let generateExpressionStatement = (ctx: FunctionContext, stmt: Expression
   genExpr(stmt.expression, true);
 };
 
+let getInlineTupleElementTypes = (t: Type): Array<Type> | null => {
+  let b = baseType(t);
+  if (b is InlineTupleType) {
+    return (b as InlineTupleType).elementTypes;
+  }
+  if (b is UnionType) {
+    let ut = b as UnionType;
+    for (let t_i in ut.types) {
+      let bt = baseType(t_i);
+      if (bt is InlineTupleType) {
+        return (bt as InlineTupleType).elementTypes;
+      }
+    }
+  }
+  return null;
+};
+
+
+
 export let generateIfStatement = (ctx: FunctionContext, stmt: IfStatement, genExpr: (e: Expression, discardValue: boolean) => void, genStmt: (s: Statement) => void): void => {
   if (stmt.test is LetPatternCondition) {
     let lpc = stmt.test as LetPatternCondition;
     let pattern = lpc.pattern;
     if (pattern is TuplePattern) {
       let tp = pattern as TuplePattern;
-      let initType = ctx.wasmFunction.model.getNodeType(lpc.init);
+      let initType = getNodeType(ctx, lpc.init);
       
       var baseT = baseType(initType as Type);
       var elementTypes: Array<Type> | null = null;
@@ -163,7 +187,7 @@ export let generateIfStatement = (ctx: FunctionContext, stmt: IfStatement, genEx
       let tempLocals = new Array<i32>();
       for (var i = tp.elements.length - 1; i >= 0; i -= 1) {
         let elType = elemTypes[i];
-        let valType = typeToValType(ctx.wasm, elType);
+        let valType = typeToValTypeWithSub(ctx.wasm, elType, ctx.wasmFunction.classType);
         let temp = ctx.allocLocal(valType);
         tempLocals.push(temp);
         ctx.emitter.emitLocalSet(temp);

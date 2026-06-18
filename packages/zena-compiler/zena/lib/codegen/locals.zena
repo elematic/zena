@@ -1,7 +1,7 @@
 import { ValTypeI32, ValTypeRefNull } from './wasm.zena';
-import { typeToValType, getCellStruct } from './type-mapping.zena';
+import { typeToValType, getCellStruct, getNodeType } from './type-mapping.zena';
 import { 
-  Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
+  Node, VariableDeclaration, FunctionExpression, IdentifierPattern, LetPatternCondition,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
   ImportSpecifier, BinaryExpression, UnaryExpression, AssignmentExpression,
@@ -10,7 +10,7 @@ import {
   AsExpression, IsExpression, PipelineExpression, IndexExpression, PropertyAssignment,
   AsPattern, ClassPattern, RecordPattern, TuplePattern, LogicalPattern, BindingPattern,
   NullLiteral, MatchExpression, MatchCase, BindingProperty, ForInStatement, ThrowExpression, TryExpression, CatchClause,
-  TemplateLiteral, TaggedTemplateExpression, LetPatternCondition, SealedVariant, ClassDeclaration
+  TemplateLiteral, TaggedTemplateExpression, SealedVariant, ClassDeclaration
 } from '../ast.zena';
 import { Type, F64Type, F32Type, FunctionType } from '../types.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
@@ -51,7 +51,7 @@ export let discoverLocalsFromExpr = (ctx: FunctionContext, expr: Expression, dis
       discExpr(right);
     }
     case CallExpression {callee, args}: {
-      let calleeType = ctx.wasmFunction.model.getNodeType(callee);
+      let calleeType = getNodeType(ctx, callee);
       match (calleeType) {
         case FunctionType as ft: {
           if (ft.parameterSymbols != null) {
@@ -228,7 +228,26 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
       if (pat.name != "_") {
         let sym = ctx.wasmFunction.model.resolveDeclaration(pat);
         if (sym != null && !ctx.localIndices.has(sym.id)) {
-          let varType = ctx.wasmFunction.model.getNodeType(pat);
+          let varType = getNodeType(ctx, pat);
+          var vType: ValType = new ValTypeI32();
+          if (varType != null) {
+            vType = typeToValType(ctx.wasm, varType);
+          }
+          if (ctx.isCelled(sym.id)) {
+            let cellStruct = getCellStruct(ctx.wasm, vType);
+            vType = new ValTypeRefNull(cellStruct);
+          }
+          let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
+          ctx.localIndices[sym.id] = index;
+          ctx.localTypes.push(vType);
+        }
+      }
+    }
+    case Identifier as pat: {
+      if (pat.name != "_") {
+        let sym = ctx.wasmFunction.model.resolveDeclaration(pat);
+        if (sym != null && !sym.isType() && ctx.wasmFunction.model.getBindingType(sym) != null && !ctx.localIndices.has(sym.id)) {
+          let varType = getNodeType(ctx, pat);
           var vType: ValType = new ValTypeI32();
           if (varType != null) {
             vType = typeToValType(ctx.wasm, varType);
@@ -295,7 +314,7 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
     case AsPattern as ap: {
       let sym = ctx.wasmFunction.model.resolveDeclaration(ap.name);
       if (sym != null && !ctx.localIndices.has(sym.id)) {
-        let varType = ctx.wasmFunction.model.getNodeType(ap.name);
+        let varType = getNodeType(ctx, ap.name);
         var vType: ValType = new ValTypeI32();
         if (varType != null) {
           vType = typeToValType(ctx.wasm, varType);

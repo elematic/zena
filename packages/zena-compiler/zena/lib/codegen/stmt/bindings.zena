@@ -5,7 +5,7 @@ import {
   AssignmentPattern, AsPattern, BindingPattern, BindingProperty, Node, Identifier 
 } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
-import { typeToValType, getCellStruct } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, getCellStruct } from '../type-mapping.zena';
 import { 
   Type, InlineTupleType, UnionType, TypeAliasType, NullType, VoidType, 
   RecordType, TupleType, ClassType 
@@ -57,7 +57,7 @@ export let generatePatternBinding = (
         loadValue();
         if (ctx.isCelled(sym.id)) {
           let symType = ctx.wasmFunction.model.getBindingType(sym);
-          let valType = typeToValType(ctx.wasm, symType);
+          let valType = typeToValTypeWithSub(ctx.wasm, symType, ctx.wasmFunction.classType);
           let cellStruct = getCellStruct(ctx.wasm, valType);
           ctx.emitter.emitStructNew(cellStruct.index);
         }
@@ -72,7 +72,7 @@ export let generatePatternBinding = (
           loadValue();
           if (ctx.isCelled(sym.id)) {
             let symType = ctx.wasmFunction.model.getBindingType(sym);
-            let valType = typeToValType(ctx.wasm, symType);
+            let valType = typeToValTypeWithSub(ctx.wasm, symType, ctx.wasmFunction.classType);
             let cellStruct = getCellStruct(ctx.wasm, valType);
             ctx.emitter.emitStructNew(cellStruct.index);
           }
@@ -93,7 +93,7 @@ export let generatePatternBinding = (
           loadValue();
           if (ctx.isCelled(sym.id)) {
             let symType = ctx.wasmFunction.model.getBindingType(sym);
-            let valType = typeToValType(ctx.wasm, symType);
+            let valType = typeToValTypeWithSub(ctx.wasm, symType, ctx.wasmFunction.classType);
             let cellStruct = getCellStruct(ctx.wasm, valType);
             ctx.emitter.emitStructNew(cellStruct.index);
           }
@@ -112,7 +112,7 @@ export let generatePatternBinding = (
         let itt = t as InlineTupleType;
         let tempLocals = new Array<i32>();
         for (let elType in itt.elementTypes) {
-          let vType = typeToValType(ctx.wasm, elType);
+          let vType = typeToValTypeWithSub(ctx.wasm, elType, ctx.wasmFunction.classType);
           tempLocals.push(ctx.allocLocal(vType));
         }
         
@@ -138,14 +138,14 @@ export let generatePatternBinding = (
         }
       } else if (t is TupleType) {
         let tt = t as TupleType;
-        let tempLocal = ctx.allocLocal(typeToValType(ctx.wasm, tt));
+        let tempLocal = ctx.allocLocal(typeToValTypeWithSub(ctx.wasm, tt, ctx.wasmFunction.classType));
         loadValue();
         ctx.emitter.emitLocalSet(tempLocal);
         
         let fields = new Array<WasmField>();
         for (var idx = 0; idx < tt.elementTypes.length; idx += 1) {
           let type = tt.elementTypes[idx];
-          fields.push(new WasmField(i32ToString(idx), typeToValType(ctx.wasm, type), false));
+          fields.push(new WasmField(i32ToString(idx), typeToValTypeWithSub(ctx.wasm, type, ctx.wasmFunction.classType), false));
         }
         let structType = ctx.wasm.getStruct(null, fields);
         
@@ -172,7 +172,7 @@ export let generatePatternBinding = (
         let rt = t as RecordType;
         let fields = new Array<WasmField>();
         for (let pair in rt.properties) {
-          fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
+          fields.push(new WasmField(pair.key, typeToValTypeWithSub(ctx.wasm, pair.value, ctx.wasmFunction.classType), false));
         }
         sortWasmFields(fields);
         let dispatchInfo_opt = ctx.wasm.findRecordDispatch(fields);
@@ -181,7 +181,7 @@ export let generatePatternBinding = (
           case null: ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields)
         };
         
-        let tempLocal = ctx.allocLocal(typeToValType(ctx.wasm, rt));
+        let tempLocal = ctx.allocLocal(typeToValTypeWithSub(ctx.wasm, rt, ctx.wasmFunction.classType));
         loadValue();
         ctx.emitter.emitLocalSet(tempLocal);
         
@@ -220,7 +220,7 @@ export let generatePatternBinding = (
         }
         let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
         
-        let tempLocal = ctx.allocLocal(typeToValType(ctx.wasm, ct));
+        let tempLocal = ctx.allocLocal(typeToValTypeWithSub(ctx.wasm, ct, ctx.wasmFunction.classType));
         loadValue();
         ctx.emitter.emitLocalSet(tempLocal);
         
@@ -265,7 +265,7 @@ export let generatePatternBinding = (
             
             let fieldWasmType = structInfo.fields[targetFieldIndex].type;
             if (fieldWasmType is ValTypeAnyRef) {
-              let targetWasmType = typeToValType(ctx.wasm, targetFieldType);
+              let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetFieldType, ctx.wasmFunction.classType);
               match (targetWasmType) {
                 case ValTypeRefNull as refNull: {
                   ctx.emitter.emitRefCast(refNull.target.index);

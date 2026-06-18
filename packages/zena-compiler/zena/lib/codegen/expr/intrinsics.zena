@@ -2,19 +2,19 @@ import { FunctionContext } from '../function-context.zena';
 import { CallExpression, Expression, Node } from '../../ast.zena';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
-import { Opcode } from '../wasm.zena';
+import { Opcode, ValType, ValTypeI32, ValTypeAnyRef, ValTypeRefNull, ValTypeRef, ValTypeVoid } from '../wasm.zena';
 import { WasmFunction, WasmStruct } from '../wasm-module.zena';
-import { ValTypeRefNull, ValTypeRef, ValTypeVoid, ValTypeI32, ValTypeAnyRef } from '../wasm.zena';
-import { Type, baseType, I32Type, BooleanType, U32Type, F64Type, ClassType, StringLiteralType, MethodInfo, MemberInfo } from '../../types.zena';
+import { typeToValType, getNodeType, getClassMemberSignature } from '../type-mapping.zena';
+import { Type, baseType, isRefType, isFloatType, isBooleanLike, I32Type, BooleanType, F32Type, F64Type, I64Type, U64Type, ClassType, InterfaceType, U32Type, StringLiteralType, MethodInfo, MemberInfo } from '../../types.zena';
 import { getClassKey } from '../codegen-utils.zena';
-import { typeToValType, getClassMemberSignature } from '../type-mapping.zena';
+import { Array } from 'zena:array';
 
 let getArrayTypeWithFallback = (ctx: FunctionContext, node: Node): Type | null => {
-  var t = ctx.wasmFunction.model.getNodeType(node);
+  var t = getNodeType(ctx, node);
   if (t == null) {
     let parent = ctx.wasmFunction.model.getParent(node);
     if (parent != null) {
-      t = ctx.wasmFunction.model.getNodeType(parent as Node);
+      t = getNodeType(ctx, parent as Node);
     }
   }
   return t;
@@ -253,7 +253,7 @@ export let generateGlobalIntrinsic = (
         (rightBase is StringLiteralType || (rightBase is ClassType && (rightBase as ClassType).name == "String"))) {
       var foundFunc: WasmFunction | null = null;
       for (let f in ctx.wasm.functions) {
-        if (f.classType != null && (f.classType as ClassType).name == "String" && f.methodName == "==") {
+        if (f.classType != null && (f.classType as ClassType).name == "String" && f.methodName != null && (f.methodName as String) == "==") {
           foundFunc = f;
         }
       }
@@ -340,7 +340,7 @@ export let generateGlobalIntrinsic = (
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
             for (let f in ctx.wasm.functions) {
-              if (f.classType != null && !f.isStatic && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == "hashCode") {
+              if (f.classType != null && !f.isStatic && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName != null && (f.methodName as String) == "hashCode") {
                 foundFunc = f;
               }
             }
@@ -445,6 +445,214 @@ export let generateGlobalIntrinsic = (
 
   if (name == 'unreachable') {
     ctx.emitter.emitUnreachable();
+    return;
+  }
+
+  if (name == 'eq') {
+    let leftType = getNodeType(ctx, args[0]);
+    let rightType = getNodeType(ctx, args[1]);
+    if (leftType == null || rightType == null) {
+      throw new Error("Missing type info for equals intrinsic operands");
+    }
+    let leftBase = baseType(leftType as Type);
+    let rightBase = baseType(rightType as Type);
+
+    let isRefContext = isRefType(leftBase) || isRefType(rightBase);
+    let isFloatContext = isFloatType(leftBase) || isFloatType(rightBase);
+    let isI64Context = leftBase is I64Type || leftBase is U64Type || rightBase is I64Type || rightBase is U64Type;
+
+    if (leftBase is ClassType) {
+      let ct = leftBase as ClassType;
+      if (ct.members.has("==")) {
+        genExpr(args[0], false);
+        genExpr(args[1], false);
+
+        let lookupName = "==";
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = ct;
+        while (currClass != null && foundFunc == null) {
+          for (let f in ctx.wasm.functions) {
+            if (f.classType != null && !f.isStatic && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == lookupName) {
+              foundFunc = f;
+              break;
+            }
+          }
+          currClass = (currClass as ClassType).superType;
+        }
+
+        if (foundFunc != null) {
+          if (ct.isFinal) {
+            ctx.emitter.emitCall(foundFunc as WasmFunction);
+          } else {
+            let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+            let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+            
+            var methodIndex = -1;
+            for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+              if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == lookupName) {
+                methodIndex = i;
+              }
+            }
+            
+            if (methodIndex != -1) {
+              let rightValType = typeToValType(ctx.wasm, rightType as Type);
+              let rightLocal = ctx.allocLocal(rightValType);
+              ctx.emitter.emitLocalSet(rightLocal);
+              
+              let scratchLocal = ctx.getStructScratchLocal(structInfo);
+              ctx.emitter.emitLocalTee(scratchLocal);
+              
+              ctx.emitter.emitLocalGet(rightLocal);
+              
+              ctx.emitter.emitLocalGet(scratchLocal);
+              ctx.emitter.emitRefCast(structInfo.index);
+              ctx.emitter.emitStructGet(structInfo.index, 0);
+              ctx.emitter.emitRefCast(vtableStruct.index);
+              ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
+              
+              let sig = getClassMemberSignature(ctx.wasm, ct, lookupName);
+              ctx.emitter.emitRefCast(sig.index);
+              ctx.emitter.emitCallRef(sig.index);
+            } else {
+              throw new Error("Method not found in vtable: " + lookupName);
+            }
+          }
+          return;
+        }
+      }
+    }
+
+    if (isRefContext) {
+      genExpr(args[0], false);
+      let leftWasmType = typeToValType(ctx.wasm, leftType as Type);
+      if (leftWasmType is ValTypeAnyRef) {
+        ctx.emitter.emitRefCastEq();
+      }
+
+      genExpr(args[1], false);
+      let rightWasmType = typeToValType(ctx.wasm, rightType as Type);
+      if (rightWasmType is ValTypeAnyRef) {
+        ctx.emitter.emitRefCastEq();
+      }
+
+      ctx.emitter.emitRefEq();
+    } else if (isFloatContext) {
+      if (leftBase is F32Type && rightBase is F32Type) {
+        genExpr(args[0], false);
+        genExpr(args[1], false);
+        ctx.emitter.emitF32Eq();
+      } else {
+        if (!isFloatType(leftBase)) {
+          genExpr(args[0], false);
+          ctx.emitter.emitF64ConvertI32S();
+        } else {
+          genExpr(args[0], false);
+        }
+        if (!isFloatType(rightBase)) {
+          genExpr(args[1], false);
+          ctx.emitter.emitF64ConvertI32S();
+        } else {
+          genExpr(args[1], false);
+        }
+        ctx.emitter.emitF64Eq();
+      }
+    } else if (isI64Context) {
+      genExpr(args[0], false);
+      genExpr(args[1], false);
+      ctx.emitter.emitI64Eq();
+    } else {
+      genExpr(args[0], false);
+      genExpr(args[1], false);
+      ctx.emitter.emitI32Eq();
+    }
+    return;
+  }
+
+  if (name == 'hash') {
+    let type = getNodeType(ctx, args[0]);
+    if (type == null) {
+      throw new Error("Missing type info for hash intrinsic operand");
+    }
+    let bType = baseType(type as Type);
+
+    if (bType is I32Type || bType is U32Type || isBooleanLike(bType)) {
+      genExpr(args[0], false);
+      return;
+    }
+
+    if (bType is ClassType && (bType as ClassType).name == "String") {
+      genExpr(args[0], false);
+      var foundFunc: WasmFunction | null = null;
+      for (let f in ctx.wasm.functions) {
+        if (f.name != null && (f.name as String) == "string_hash_helper") {
+          foundFunc = f;
+        }
+      }
+      if (foundFunc == null) {
+        throw new Error("string_hash_helper not found in functions!");
+      }
+      ctx.emitter.emitCall(foundFunc as WasmFunction);
+      return;
+    }
+
+    if (bType is ClassType) {
+      let ct = bType as ClassType;
+      if (ct.members.has("hashCode")) {
+        genExpr(args[0], false);
+
+        let lookupName = "hashCode";
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = ct;
+        while (currClass != null && foundFunc == null) {
+          for (let f in ctx.wasm.functions) {
+            if (f.classType != null && !f.isStatic && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == lookupName) {
+              foundFunc = f;
+              break;
+            }
+          }
+          currClass = (currClass as ClassType).superType;
+        }
+
+        if (foundFunc != null) {
+          if (ct.isFinal) {
+            ctx.emitter.emitCall(foundFunc as WasmFunction);
+          } else {
+            let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+            let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+            
+            var methodIndex = -1;
+            for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+              if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == lookupName) {
+                methodIndex = i;
+              }
+            }
+            
+            if (methodIndex != -1) {
+              let scratchLocal = ctx.getStructScratchLocal(structInfo);
+              ctx.emitter.emitLocalTee(scratchLocal);
+              
+              ctx.emitter.emitLocalGet(scratchLocal);
+              ctx.emitter.emitRefCast(structInfo.index);
+              ctx.emitter.emitStructGet(structInfo.index, 0);
+              ctx.emitter.emitRefCast(vtableStruct.index);
+              ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
+              
+              let sig = getClassMemberSignature(ctx.wasm, ct, lookupName);
+              ctx.emitter.emitRefCast(sig.index);
+              ctx.emitter.emitCallRef(sig.index);
+            } else {
+              throw new Error("Method not found in vtable: " + lookupName);
+            }
+          }
+          return;
+        }
+      }
+    }
+
+    // Fallback: evaluate and drop, return 0
+    genExpr(args[0], false);
+    ctx.emitter.emitDrop();
+    ctx.emitter.emitI32Const(0);
     return;
   }
 

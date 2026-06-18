@@ -44,9 +44,8 @@ async function run() {
 
   const skipList = [
     'nullable-ref.zena', // Nullable reference wrapping/unwrapping
-    'generic.zena', // Generics codegen not yet implemented
-    'generic_equality.zena', // Generics codegen not yet implemented
-    'this_capture_generic.zena', // Generics not supported in self-hosted compiler yet
+    'downcast.zena', // Class initialization error when no constructor?
+    'upcast.zena', // Class initialization error when no constructor?
   ];
 
   let files = await glob(join(testsDir, '**/*.zena'));

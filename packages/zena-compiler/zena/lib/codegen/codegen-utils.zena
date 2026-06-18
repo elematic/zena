@@ -5,7 +5,8 @@ import {
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, BooleanType, BoolLiteralType, 
   ByteArrayType, NullType, VoidType, ClassType, InterfaceType, ArrayType, RecordType, 
   TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
-  MixinType, instantiateClassType, TypeAliasType
+  MixinType, instantiateClassType, TypeAliasType, AnyType, ErrorType, HoleType, NeverType, ThisType,
+  AnyRefType, EqRefType, StringLiteralType, NumLiteralType
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol } from '../scope/symbol.zena';
@@ -68,25 +69,6 @@ export distinct type ExportKey = String;
 export distinct type ExportGlobalKey = String;
 export distinct type MixinKey = String;
 
-/**
- * Recursively checks if a type contains an unresolved generic type parameter.
- *
- * For composite types (like arrays, tuples, records, functions), it recursively
- * scans their sub-components.
- *
- * For generic types (ClassType, InterfaceType, TypeAliasType, MixinType):
- * - If the type is fully instantiated with concrete arguments (e.g. `List<i32>`),
- *   it returns `false` (since none of its arguments contain type parameters).
- * - If the type is partially instantiated with type parameters (e.g. `List<T>`),
- *   it returns `true`.
- * - If the type represents the uninstantiated open generic type definition itself
- *   (e.g., `class List<T>` where `typeArguments` is null/empty but `typeParameters`
- *   contains `T`), it returns `true` because it is still open and represents a generic context.
- *
- * This function is used during codegen to determine whether a given type can be
- * emitted/instantiated physically in WebAssembly or if it is still a generic,
- * unresolved type.
- */
 export let typeContainsTypeParameter = (t: Type): boolean => {
   return match (t) {
     case TypeParameterType: true
@@ -172,13 +154,191 @@ export let typeContainsTypeParameter = (t: Type): boolean => {
   };
 };
 
+export let isConcrete = (t: Type): boolean => {
+  return match (t) {
+    case TypeParameterType: false
+    case UnknownType: false
+    case ErrorType: false
+    case HoleType: false
+    case NeverType: false
+    case ThisType: false
+    case ClassType as ct: {
+      if (ct.typeArguments != null) {
+        let args = ct.typeArguments as Array<Type>;
+        var i = 0;
+        var concrete = true;
+        while (i < args.length) {
+          if (!isConcrete(args[i])) { concrete = false; }
+          i += 1;
+        }
+        concrete
+      } else {
+        true
+      }
+    }
+    case InterfaceType as it: {
+      if (it.typeArguments != null) {
+        let args = it.typeArguments as Array<Type>;
+        var i = 0;
+        var concrete = true;
+        while (i < args.length) {
+          if (!isConcrete(args[i])) { concrete = false; }
+          i += 1;
+        }
+        concrete
+      } else {
+        true
+      }
+    }
+    case ArrayType {elementType}: isConcrete(elementType)
+    case TupleType {elementTypes}: {
+      var concrete = true;
+      for (let el in elementTypes) {
+        if (!isConcrete(el)) { concrete = false; }
+      }
+      concrete
+    }
+    case InlineTupleType {elementTypes}: {
+      var concrete = true;
+      for (let el in elementTypes) {
+        if (!isConcrete(el)) { concrete = false; }
+      }
+      concrete
+    }
+    case UnionType {types}: {
+      var concrete = true;
+      for (let ut in types) {
+        if (!isConcrete(ut)) { concrete = false; }
+      }
+      concrete
+    }
+    case RecordType as rec: {
+      var concrete = true;
+      let keys = rec.properties.keys();
+      while (let (true, key) = keys.next()) {
+        if (!isConcrete(rec.properties[key])) { concrete = false; }
+      }
+      concrete
+    }
+    case FunctionType as ft: {
+      var concrete = true;
+      for (let p in ft.parameters) {
+        if (!isConcrete(p)) { concrete = false; }
+      }
+      if (!isConcrete(ft.returnType)) { concrete = false; }
+      concrete
+    }
+    case _: true
+  };
+};
+
+export let getTypeKeyForSpecialization = (type: Type): String => {
+  return match (type) {
+    case I32Type: "i32"
+    case U32Type: "u32"
+    case I64Type: "i64"
+    case U64Type: "u64"
+    case F32Type: "f32"
+    case F64Type: "f64"
+    case BooleanType: "bool"
+    case BoolLiteralType: "bool"
+    case ByteArrayType: "string"
+    case NullType: "null"
+    case VoidType: "void"
+    case ClassType as ct: {
+      let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
+      let base = ct.name + "_" + i32ToString(baseId as i32);
+      if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0 && isConcrete(ct)) {
+        let args = ct.typeArguments as Array<Type>;
+        var argKeys = "";
+        var i = 0;
+        while (i < args.length) {
+          if (i > 0) { argKeys = argKeys + "_"; }
+          argKeys = argKeys + getTypeKeyForSpecialization(args[i]);
+          i += 1;
+        }
+        base + "_" + argKeys
+      } else {
+        base
+      }
+    }
+    case InterfaceType as it: {
+      let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
+      let base = it.name + "_" + i32ToString(baseId as i32);
+      if (it.typeArguments != null && (it.typeArguments as Array<Type>).length > 0 && isConcrete(it)) {
+        let args = it.typeArguments as Array<Type>;
+        var argKeys = "";
+        var i = 0;
+        while (i < args.length) {
+          if (i > 0) { argKeys = argKeys + "_"; }
+          argKeys = argKeys + getTypeKeyForSpecialization(args[i]);
+          i += 1;
+        }
+        base + "_" + argKeys
+      } else {
+        base
+      }
+    }
+    case ArrayType {elementType}: "arr_" + getTypeKeyForSpecialization(elementType)
+    case RecordType as rec: {
+      var sb = "rec";
+      let keys = rec.properties.keys();
+      while (let (true, key) = keys.next()) {
+        sb = sb + "_" + key + "_" + getTypeKeyForSpecialization(rec.properties[key]);
+      }
+      sb
+    }
+    case TupleType {elementTypes}: {
+      var sb = "tup";
+      for (let t in elementTypes) {
+        sb = sb + "_" + getTypeKeyForSpecialization(t);
+      }
+      sb
+    }
+    case InlineTupleType {elementTypes}: {
+      var sb = "itup";
+      for (let t in elementTypes) {
+        sb = sb + "_" + getTypeKeyForSpecialization(t);
+      }
+      sb
+    }
+    case TypeParameterType as tp: tp.name
+    case UnionType {types}: {
+      var sb = "union";
+      for (let t in types) {
+        sb = sb + "_" + getTypeKeyForSpecialization(t);
+      }
+      sb
+    }
+    case FunctionType as ft: {
+      var sb = "func";
+      for (let p in ft.parameters) {
+        sb = sb + "_" + getTypeKeyForSpecialization(p);
+      }
+      sb = sb + "_" + getTypeKeyForSpecialization(ft.returnType);
+      sb
+    }
+    case TypeAliasType as ta: getTypeKeyForSpecialization(ta.target)
+    case NeverType: "never"
+    case HoleType: "hole"
+    case ErrorType: "error"
+    case UnknownType: "unknown"
+    case AnyType: "any"
+    case AnyRefType: "anyref"
+    case EqRefType: "eqref"
+    case StringLiteralType: "string"
+    case NumLiteralType: "number"
+    case ThisType: "this"
+    case _: "unknown"
+  };
+};
+
 export let getClassKey = (ct: ClassType): ClassKey => {
-  let root = if (ct.genericSource != null) ct.genericSource as ClassType else ct;
-  return (root.name + "_" + i32ToString(root.id as i32)) as ClassKey;
+  return getTypeKeyForSpecialization(ct) as ClassKey;
 };
 
 export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
-  return (it.name + "_" + i32ToString(it.id as i32)) as InterfaceKey;
+  return getTypeKeyForSpecialization(it) as InterfaceKey;
 };
 
 export let getMixinKey = (mt: MixinType): MixinKey => {

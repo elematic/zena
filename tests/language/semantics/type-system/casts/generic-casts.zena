@@ -1,0 +1,28 @@
+// @mode: check
+
+class Box<T> {
+  value: T;
+  new(this.value);
+}
+
+export let main = () => {
+  let anyBox: any = new Box<i32>(42);
+
+  // 1. Valid is-check with generics
+  if (anyBox is Box<i32>) {
+    // 2. Type narrowing should narrow anyBox to Box<i32>
+    let b1: Box<i32> = anyBox;
+    
+    // 3. Assigning to wrong instantiation should fail
+    let b2: Box<String> = anyBox; // @error: Type mismatch
+  }
+
+  // 4. Valid casts with generics
+  let casted1 = anyBox as Box<i32>;
+  let casted2 = anyBox as Box<String>; // allowed compile-time (checked at runtime)
+
+  // 5. Casting primitive to generic box should fail
+  let failCast = 123 as Box<i32>; // @error: Cannot cast primitive type
+
+  return 0;
+};

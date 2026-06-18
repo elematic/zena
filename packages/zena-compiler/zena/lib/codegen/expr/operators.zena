@@ -9,12 +9,12 @@ import { Error } from 'zena:error';
 import { ValType, ValTypeI32, ValTypeAnyRef, ValTypeRef, ValTypeRefNull, ValTypeVoid, ValTypeEqRef, ValTypeStructRef, ValTypeFuncRef, ValTypeExternRef, ValTypeOptRef } from '../wasm.zena';
 import { WasmField, WasmFunction } from '../wasm-module.zena';
 import { getClassKey, getSignatureKey } from '../codegen-utils.zena';
-import { typeToValType, getClassMemberSignature } from '../type-mapping.zena';
+import { typeToValType, getClassMemberSignature, getNodeType } from '../type-mapping.zena';
 import { Array } from 'zena:array';
  
 export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (un.operator == "-") {
-    let rawType = ctx.wasmFunction.model.getNodeType(un);
+    let rawType = getNodeType(ctx, un);
     if (rawType == null) throw new Error("Missing type info");
     let nodeType = baseType(rawType);
     if (nodeType is F64Type) {
@@ -259,8 +259,8 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     }
   }
   let model = ctx.wasmFunction.model;
-  let leftType = model.getNodeType(bin.left);
-  let rightType = model.getNodeType(bin.right);
+  let leftType = getNodeType(ctx, bin.left);
+  let rightType = getNodeType(ctx, bin.right);
   
   if (leftType == null || rightType == null) {
     throw new Error("Missing type info in semantic model for binary expression operands");
@@ -290,7 +290,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
           for (let f in ctx.wasm.functions) {
-            if (f.classType != null && !f.isStatic && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == lookupName) {
+            if (f.classType != null && !f.isStatic && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == lookupName) {
               foundFunc = f;
               break;
             }

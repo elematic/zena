@@ -14,14 +14,14 @@ import {
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction,
   ThrowExpression, TryExpression
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, typeToString, isRefType, AnyType, AnyRefType, EqRefType } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
 import { Program } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned } from './wasm.zena';
 import { WasmField, WasmStruct, WasmSignature, sortWasmFields } from './wasm-module.zena';
-import { typeToValType, getClosureStruct, getCellStruct } from './type-mapping.zena';
+import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters } from './type-mapping.zena';
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
   getClassPrivateFieldKey, classInterfaceKeyToString,
@@ -204,6 +204,8 @@ export class FunctionGenerator {
         this.generateImportWrapperBody();
       } else if (name == "wasi_write_string_helper") {
         this.generateWasiWriteStringHelper();
+      } else if (name == "string_hash_helper") {
+        this.generateStringHashHelper();
       } else if (name == "$stringCreate") {
         this.generateStringCreate();
       } else if (name == "$stringSetByte") {
@@ -296,7 +298,7 @@ export class FunctionGenerator {
         if (sym != null && this.ctx.isCelled(sym.id)) {
           let paramIdx = this.ctx.localIndices[sym.id];
           let symType = this.ctx.wasmFunction.model.getBindingType(sym);
-          let valType = typeToValType(this.ctx.wasm, symType);
+          let valType = typeToValTypeWithSub(this.ctx.wasm, symType, this.ctx.wasmFunction.classType);
           let cellStruct = getCellStruct(this.ctx.wasm, valType);
           
           let cellLocalIdx = this.ctx.allocLocal(new ValTypeRefNull(cellStruct));
@@ -479,7 +481,7 @@ export class FunctionGenerator {
             var ctorFunc: WasmFunction | null = null;
             
             for (let f in this.ctx.wasm.functions) {
-              if (f.classType != null && (f.classType as ClassType).id == st.id && f.methodName == "<constructor>") {
+              if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(st) && f.methodName != null && (f.methodName as String) == "<constructor>") {
                 ctorFunc = f;
               }
             }
@@ -689,7 +691,7 @@ export class FunctionGenerator {
         }
 
         this.generateExpression(isExpr.expression);
-        let targetWasmType = typeToValType(this.ctx.wasm, targetType as Type);
+        let targetWasmType = typeToValTypeWithSub(this.ctx.wasm, targetType as Type, this.ctx.wasmFunction.classType);
         match (targetWasmType) {
           case ValTypeRefNull as targetRefNull: {
             let targetIdx = targetRefNull.target.index;
@@ -721,8 +723,8 @@ export class FunctionGenerator {
         }
         let targetType = this.ctx.wasmFunction.model.getNodeType(asExpr);
         
-        let sourceWasmType = typeToValType(this.ctx.wasm, sourceType);
-        let targetWasmType = typeToValType(this.ctx.wasm, targetType);
+        let sourceWasmType = typeToValTypeWithSub(this.ctx.wasm, sourceType, this.ctx.wasmFunction.classType);
+        let targetWasmType = typeToValTypeWithSub(this.ctx.wasm, targetType, this.ctx.wasmFunction.classType);
         
         if (valTypeEquals(sourceWasmType, targetWasmType)) {
           // No-op identity cast
@@ -888,8 +890,15 @@ export class FunctionGenerator {
     let interfaceAdaptation = this.ctx.wasmFunction.model.getInterfaceAdaptation(expr);
     if (interfaceAdaptation != null && !discardValue) {
       let ia = interfaceAdaptation as InterfaceAdaptation;
-      let cName = getClassKey(ia.source);
-      let iName = getInterfaceKey(ia.target);
+      var srcType = ia.source as ClassType;
+      var tgtType = ia.target as InterfaceType;
+      if (this.ctx.wasmFunction.classType != null) {
+        let ct = this.ctx.wasmFunction.classType as ClassType;
+        srcType = substituteTypeParamsInCodegen(getClassTypeParameters(ct), ct.typeArguments, srcType) as ClassType;
+        tgtType = substituteTypeParamsInCodegen(getClassTypeParameters(ct), ct.typeArguments, tgtType) as InterfaceType;
+      }
+      let cName = getClassKey(srcType);
+      let iName = getInterfaceKey(tgtType);
       
       let key = getClassInterfaceKey(cName, iName);
       if (!this.ctx.wasm.classInterfaceVTables.has(key)) {
@@ -1100,7 +1109,7 @@ export class FunctionGenerator {
       let st = cType.superType as ClassType;
       var ctorFunc: WasmFunction | null = null;
       for (let f in this.ctx.wasm.functions) {
-        if (f.classType != null && (f.classType as ClassType).id == st.id && f.methodName == "<constructor>") {
+        if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(st) && f.methodName != null && (f.methodName as String) == "<constructor>") {
           ctorFunc = f;
           break;
         }
@@ -1113,8 +1122,10 @@ export class FunctionGenerator {
     
     if (cType.constructorType != null) {
       let ctorType = cType.constructorType as FunctionType;
+      console.log("CASE CTOR: class=" + cType.name + " typeParams=" + (if (cType.typeParameters != null) "yes" else "no") + " hasParamNames=" + (if (ctorType.parameterNames != null) "yes" else "no"));
       if (ctorType.parameterNames != null) {
         let parameterNames = ctorType.parameterNames as Array<String>;
+        console.log("  PARAM NAMES length=" + i32ToString(parameterNames.length as i32));
         var pi = 0;
         while (pi < ctorType.parameters.length) {
           let pName = parameterNames[pi];
@@ -1195,8 +1206,12 @@ export class FunctionGenerator {
   }
 
   generateFunctionExpression(fExpr: FunctionExpression): void {
-    if (let (true, closureFunc) = this.ctx.wasm.closureFunctions.get(fExpr)) {
-      let funcTypeNode = this.ctx.wasmFunction.model.getNodeType(fExpr) as Type;
+    let classType = this.ctx.wasmFunction.classType;
+    let classKey = if (classType != null) (getClassKey(classType as ClassType) as String) else "";
+    let closureKey = i32ToString(fExpr.id as i32) + "_" + classKey;
+    if (this.ctx.wasm.specializedClosures.has(closureKey)) {
+      let closureFunc = this.ctx.wasm.specializedClosures[closureKey];
+      let funcTypeNode = getNodeType(this.ctx, fExpr) as Type;
       let closureStruct = getClosureStruct(this.ctx.wasm, funcTypeNode);
 
       // 1. Push function reference
@@ -1236,7 +1251,7 @@ export class FunctionGenerator {
       // 3. Create closure struct
       this.ctx.emitter.emitStructNew(closureStruct.index);
     } else {
-      throw new Error("Closure function not registered for FunctionExpression: " + i32ToString(fExpr.id as i32));
+      throw new Error("Closure function not registered for FunctionExpression: " + i32ToString(fExpr.id as i32) + " with class key: " + classKey);
     }
   }
   
@@ -1393,6 +1408,121 @@ export class FunctionGenerator {
     }
     this.ctx.emitter.emitCall(fdWriteImport as WasmFunction);
     this.ctx.emitter.emitDrop(); // Ignore return value (errno)
+  }
+
+  generateStringHashHelper(): void {
+    var stringStruct: WasmStruct | null = null;
+    let stringClass = this.ctx.wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (this.ctx.wasm.classStructs.has(key)) {
+        stringStruct = this.ctx.wasm.classStructs[key];
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("string_hash_helper generation: String class struct not found!");
+    }
+    let stringStructIndex = (stringStruct as WasmStruct).index;
+    let byteArrayType = this.ctx.wasm.getByteArrayType();
+    let byteArrayTypeIndex = byteArrayType.index;
+
+    let locals = new Array<ValType>();
+    locals.push(new ValTypeRefNull(byteArrayType)); // 1: data
+    locals.push(new ValTypeI32()); // 2: hash
+    locals.push(new ValTypeI32()); // 3: i
+    locals.push(new ValTypeI32()); // 4: end
+    
+    this.ctx.emitter.emitFunctionLocalsStart(locals);
+
+    let strParam = 0;
+    let dataLocal = 1;
+    let hashLocal = 2;
+    let iLocal = 3;
+    let endLocal = 4;
+
+    var dataFieldIdx = -1;
+    var startFieldIdx = -1;
+    var endFieldIdx = -1;
+    for (var f = 0; f < (stringStruct as WasmStruct).fields.length; f += 1) {
+      let fieldName = (stringStruct as WasmStruct).fields[f].name;
+      if (fieldName != null) {
+        let nameStr = fieldName as String;
+        if (nameStr.endsWith("::#data")) {
+          dataFieldIdx = f;
+        } else if (nameStr.endsWith("::#start")) {
+          startFieldIdx = f;
+        } else if (nameStr.endsWith("::#end")) {
+          endFieldIdx = f;
+        }
+      }
+    }
+
+    if (dataFieldIdx == -1 || startFieldIdx == -1 || endFieldIdx == -1) {
+      throw new Error("String layout fields not found in structure!");
+    }
+
+    // data = s.#data (field 2)
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitStructGet(stringStructIndex, dataFieldIdx);
+    this.ctx.emitter.emitLocalSet(dataLocal);
+
+    // hash = 2166136261 (FNV offset basis)
+    this.ctx.emitter.emitI32Const(-2128831035);
+    this.ctx.emitter.emitLocalSet(hashLocal);
+
+    // i = s.#start
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitStructGet(stringStructIndex, startFieldIdx);
+    this.ctx.emitter.emitLocalSet(iLocal);
+
+    // end = s.#end
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitStructGet(stringStructIndex, endFieldIdx);
+    this.ctx.emitter.emitLocalSet(endLocal);
+
+    // loop
+    this.ctx.emitter.emitBlock(new ValTypeVoid()); // $break
+    this.ctx.emitter.emitLoop(new ValTypeVoid()); // $continue
+
+    // if i >= end break
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitLocalGet(endLocal);
+    this.ctx.emitter.emitI32GeU();
+    this.ctx.emitter.emitBrIf(1); // br $break
+
+    // byte = data[i]
+    this.ctx.emitter.emitLocalGet(dataLocal);
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitArrayGetU(byteArrayTypeIndex);
+
+    // hash = hash ^ byte
+    this.ctx.emitter.emitLocalGet(hashLocal);
+    this.ctx.emitter.emitI32Xor();
+    this.ctx.emitter.emitLocalSet(hashLocal);
+
+    // hash = hash * 16777619
+    this.ctx.emitter.emitLocalGet(hashLocal);
+    this.ctx.emitter.emitI32Const(16777619);
+    this.ctx.emitter.emitI32Mul();
+    this.ctx.emitter.emitLocalSet(hashLocal);
+
+    // i++
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitI32Const(1);
+    this.ctx.emitter.emitI32Add();
+    this.ctx.emitter.emitLocalSet(iLocal);
+
+    // br $continue
+    this.ctx.emitter.emitBr(0);
+
+    this.ctx.emitter.emitEnd(); // end loop
+    this.ctx.emitter.emitEnd(); // end block
+
+    // return hash
+    this.ctx.emitter.emitLocalGet(hashLocal);
   }
 
   generateStringCreate(): void {

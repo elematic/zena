@@ -154,43 +154,61 @@ fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
     // Pass the actual absolute path to the user's cache directory using the `-o` flag
     let out_path_arg = cached_wasm_path.to_string_lossy().to_string();
 
-    let wasi = WasiCtxBuilder::new()
-        .inherit_stdio()
-        .inherit_env()
-        .args(&["zc", &file_arg, "-o", &out_path_arg])
-        .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
-        .preopened_dir(stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
-        // Give the guest write access directly to the user's absolute cache directory
-        .preopened_dir(
-            &cache_dir,
-            cache_dir.to_str().unwrap(),
-            DirPerms::all(),
-            FilePerms::all(),
-        )?
-        .build_p1();
+    let needs_compile = if cached_wasm_path.exists() {
+        let source_mod = std::fs::metadata(&abs_path).and_then(|m| m.modified()).ok();
+        let compiler_mod = std::fs::metadata(&compiler_wasm).and_then(|m| m.modified()).ok();
+        let cached_mod = std::fs::metadata(&cached_wasm_path).and_then(|m| m.modified()).ok();
+        match (source_mod, compiler_mod, cached_mod) {
+            (Some(s), Some(c), Some(ch)) => s > ch || c > ch,
+            _ => true,
+        }
+    } else {
+        true
+    };
 
-    let mut store = Store::new(&engine, MyState { wasi });
+    if needs_compile {
+        if cached_wasm_path.exists() {
+            std::fs::remove_file(&cached_wasm_path).ok();
+        }
 
-    let compiler_instance = linker.instantiate(&mut store, &compiler_module)?;
-    let compiler_main = compiler_instance
-        .get_func(&mut store, "main")
-        .expect("missing main export in cli.wasm");
+        let wasi = WasiCtxBuilder::new()
+            .inherit_stdio()
+            .inherit_env()
+            .args(&["zc", &file_arg, "-o", &out_path_arg])
+            .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
+            .preopened_dir(stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
+            // Give the guest write access directly to the user's absolute cache directory
+            .preopened_dir(
+                &cache_dir,
+                cache_dir.to_str().unwrap(),
+                DirPerms::all(),
+                FilePerms::all(),
+            )?
+            .build_p1();
 
-    let mut compiler_results = vec![Val::I32(0); compiler_main.ty(&store).results().len()];
+        let mut store = Store::new(&engine, MyState { wasi });
 
-    if verbose {
-        println!("Compiling {}...", file);
-    }
-    if let Err(e) = compiler_main.call(&mut store, &[], &mut compiler_results) {
-        eprintln!("Compiler failed with error: {:?}", e);
-        anyhow::bail!("Compilation failed");
-    }
+        let compiler_instance = linker.instantiate(&mut store, &compiler_module)?;
+        let compiler_main = compiler_instance
+            .get_func(&mut store, "main")
+            .expect("missing main export in cli.wasm");
 
-    if !cached_wasm_path.exists() {
-        anyhow::bail!(
-            "Compiler did not emit expected WebAssembly file to {}.",
-            cached_wasm_path.display()
-        );
+        let mut compiler_results = vec![Val::I32(0); compiler_main.ty(&store).results().len()];
+
+        if verbose {
+            println!("Compiling {}...", file);
+        }
+        if let Err(e) = compiler_main.call(&mut store, &[], &mut compiler_results) {
+            eprintln!("Compiler failed with error: {:?}", e);
+            anyhow::bail!("Compilation failed");
+        }
+
+        if !cached_wasm_path.exists() {
+            anyhow::bail!(
+                "Compiler did not emit expected WebAssembly file to {}.",
+                cached_wasm_path.display()
+            );
+        }
     }
 
     Ok(cached_wasm_path)

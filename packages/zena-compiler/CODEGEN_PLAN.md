@@ -159,6 +159,17 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Initial setup of portable execution tests in `tests/language/execution/`.
   - [x] Execution in CI using `runList` in `run-execution-tests.ts`.
 
+### 11. Generics & Specialization
+
+- [ ] **Monomorphization:**
+  - [ ] Canonical, unique Wasm struct and vtable type mapping for specialized classes (e.g. `Box<i32>` vs `Box<String>`).
+  - [ ] Specialized method and constructor generation (cloning generic function bodies per specialization).
+  - [ ] Contextual type parameter substitution during codegen.
+  - [ ] Correct Wasm array and generic prelude type instantiations (like `Array<T>`).
+- [ ] **Casts & Checks on Generic Parameters:**
+  - [ ] Run-time generic type tests (`is`) and checks on specialized class types.
+  - [ ] Type casting (`as`) to specialized generic instances.
+
 ---
 
 ## Ongoing Maintenance

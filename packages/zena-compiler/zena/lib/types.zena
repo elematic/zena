@@ -191,6 +191,7 @@ let substituteInType = (
         for (var i = 0; i < tps.length; i += 1) {
           if (tps[i].name == tp.name && i < typeArguments.length) {
             found = typeArguments[i];
+            break;
           }
         }
       }
@@ -206,6 +207,221 @@ let substituteInType = (
         new ArrayType(subElem as Type)
       } else {
         t
+      }
+    }
+    case TupleType {elementTypes}: {
+      let newElems = new Array<Type>();
+      for (let el in elementTypes) {
+        let sub = substituteInType(el, typeParameters, typeArguments);
+        newElems.push((sub ?? el) as Type);
+      }
+      new TupleType(newElems)
+    }
+    case InlineTupleType {elementTypes}: {
+      let newElems = new Array<Type>();
+      for (let el in elementTypes) {
+        let sub = substituteInType(el, typeParameters, typeArguments);
+        newElems.push((sub ?? el) as Type);
+      }
+      new InlineTupleType(newElems)
+    }
+    case UnionType {types}: {
+      let newTypes = new Array<Type>();
+      for (let ut in types) {
+        let sub = substituteInType(ut, typeParameters, typeArguments);
+        newTypes.push((sub ?? ut) as Type);
+      }
+      new UnionType(newTypes)
+    }
+    case RecordType as rec: {
+      let newProps = new HashMap<String, Type>();
+      let keys = rec.properties.keys();
+      while (let (true, key) = keys.next()) {
+        let sub = substituteInType(rec.properties[key], typeParameters, typeArguments);
+        newProps[key] = (sub ?? rec.properties[key]) as Type;
+      }
+      let newRec = new RecordType(newProps, rec.optionalProperties);
+      newRec.enumDeclaration = rec.enumDeclaration;
+      newRec
+    }
+    case FunctionType as ft: {
+      let newParams = new Array<Type>();
+      for (let p in ft.parameters) {
+        let sub = substituteInType(p, typeParameters, typeArguments);
+        newParams.push((sub ?? p) as Type);
+      }
+      let newRet = substituteInType(ft.returnType, typeParameters, typeArguments);
+      let newFt = new FunctionType(newParams, ft.parameterNames, (newRet ?? ft.returnType) as Type);
+      newFt.typeParameters = ft.typeParameters;
+      newFt.typeArguments = ft.typeArguments;
+      newFt.genericSource = ft.genericSource;
+      newFt.parameterInitializers = ft.parameterInitializers;
+      newFt.parameterSymbols = ft.parameterSymbols;
+      newFt.optionalParameters = ft.optionalParameters;
+      newFt.isFinal = ft.isFinal;
+      newFt.isAbstract = ft.isAbstract;
+      newFt.overloads = ft.overloads;
+      newFt
+    }
+    case ClassType as ct: {
+      var hasArgs = false;
+      let ctArgsVal = new Array<Type>();
+      let ctParams = (ct.genericSource ?? ct).typeParameters;
+      if (ct.typeArguments != null) {
+        hasArgs = true;
+        for (let arg in (ct.typeArguments as Array<Type>)) {
+          ctArgsVal.push(arg);
+        }
+      } else if (typeParameters != null && ctParams != null) {
+        hasArgs = true;
+        for (let param in (ctParams as Array<TypeParameterType>)) {
+          ctArgsVal.push(param as Type);
+        }
+      }
+      if (hasArgs && ctArgsVal.length > 0) {
+        let newArgs = new Array<Type>();
+        for (let arg in ctArgsVal) {
+          let sub = substituteInType(arg, typeParameters, typeArguments);
+          newArgs.push((sub ?? arg) as Type);
+        }
+        let inst = new ClassType(ct.id, ct.name);
+        inst.typeParameters = ctParams;
+        inst.typeArguments = newArgs;
+        inst.genericSource = ct.genericSource ?? ct;
+        let combinedParams = new Array<TypeParameterType>();
+        let combinedArgs = new Array<Type>();
+        if (ctParams != null) {
+          for (let p in (ctParams as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in newArgs) {
+            combinedArgs.push(a);
+          }
+        }
+        if (typeParameters != null) {
+          for (let p in (typeParameters as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in typeArguments) {
+            combinedArgs.push(a);
+          }
+        }
+
+        if (ct.superType != null) {
+          let subSuper = substituteInType(ct.superType, combinedParams, combinedArgs);
+          inst.superType = (subSuper ?? ct.superType) as ClassType;
+        }
+        for (let impl in ct.implementsList) {
+          let subImpl = substituteInType(impl, combinedParams, combinedArgs);
+          inst.implementsList.push((subImpl ?? impl) as InterfaceType);
+        }
+        inst.members = ct.members;
+        inst.constructorType = ct.constructorType;
+        inst.fieldSetterNames = ct.fieldSetterNames;
+        for (let vt in ct.vtable) {
+          inst.vtable.push(vt);
+        }
+        inst.isFinal = ct.isFinal;
+        inst.isCaseClass = ct.isCaseClass;
+        inst.isAbstract = ct.isAbstract;
+        inst.isExtension = ct.isExtension;
+        inst.isSealed = ct.isSealed;
+        inst.sealedVariants = ct.sealedVariants;
+        if (ct.onType != null) {
+          inst.onType = substituteInType(ct.onType, combinedParams, combinedArgs);
+        }
+        inst.sourcePath = ct.sourcePath;
+        inst
+      } else {
+        ct
+      }
+    }
+    case InterfaceType as it: {
+      var hasArgs = false;
+      let itArgsVal = new Array<Type>();
+      let itParams = (it.genericSource ?? it).typeParameters;
+      if (it.typeArguments != null) {
+        hasArgs = true;
+        for (let arg in (it.typeArguments as Array<Type>)) {
+          itArgsVal.push(arg);
+        }
+      } else if (typeParameters != null && itParams != null) {
+        hasArgs = true;
+        for (let param in (itParams as Array<TypeParameterType>)) {
+          itArgsVal.push(param as Type);
+        }
+      }
+      if (hasArgs && itArgsVal.length > 0) {
+        let newArgs = new Array<Type>();
+        for (let arg in itArgsVal) {
+          let sub = substituteInType(arg, typeParameters, typeArguments);
+          newArgs.push((sub ?? arg) as Type);
+        }
+        let inst = new InterfaceType(it.id, it.name);
+        inst.typeParameters = itParams;
+        inst.typeArguments = newArgs;
+        inst.genericSource = it.genericSource ?? it;
+        let combinedParams = new Array<TypeParameterType>();
+        let combinedArgs = new Array<Type>();
+        if (itParams != null) {
+          for (let p in (itParams as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in newArgs) {
+            combinedArgs.push(a);
+          }
+        }
+        if (typeParameters != null) {
+          for (let p in (typeParameters as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in typeArguments) {
+            combinedArgs.push(a);
+          }
+        }
+        let newExtends = new Array<InterfaceType>();
+        for (let ext in it.extendsList) {
+          let subExt = substituteInType(ext, combinedParams, combinedArgs);
+          newExtends.push((subExt ?? ext) as InterfaceType);
+        }
+        inst.extendsList = newExtends;
+        inst.members = it.members;
+        inst
+      } else {
+        it
+      }
+    }
+    case TypeAliasType as alias: {
+      var hasArgs = false;
+      let aliasArgsVal = new Array<Type>();
+      let aliasParams = alias.typeParameters;
+      if (alias.typeArguments != null) {
+        hasArgs = true;
+        for (let arg in (alias.typeArguments as Array<Type>)) {
+          aliasArgsVal.push(arg);
+        }
+      } else if (typeParameters != null && aliasParams != null) {
+        hasArgs = true;
+        for (let param in (aliasParams as Array<TypeParameterType>)) {
+          aliasArgsVal.push(param as Type);
+        }
+      }
+      if (hasArgs && aliasArgsVal.length > 0) {
+        let newArgs = new Array<Type>();
+        for (let arg in aliasArgsVal) {
+          let sub = substituteInType(arg, typeParameters, typeArguments);
+          newArgs.push((sub ?? arg) as Type);
+        }
+        let inst = new TypeAliasType(
+          alias.name,
+          alias.typeParameters,
+          alias.target,
+          alias.isDistinct,
+          newArgs
+        );
+        inst
+      } else {
+        alias
       }
     }
     case _: t
@@ -413,7 +629,7 @@ export let isRefType = (t: Type): boolean => {
   return b is RecordType || b is ClassType || b is ArrayType || b is AnyType || 
          b is InterfaceType || b is TypeParameterType || b is ThisType || 
          b is AnyRefType || b is EqRefType || b is FunctionType || 
-         b is TupleType || b is NullType;
+         b is TupleType || b is NullType || b is UnionType || b is StringLiteralType;
 };
 
 /**

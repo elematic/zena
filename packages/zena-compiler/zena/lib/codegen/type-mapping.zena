@@ -7,6 +7,8 @@ import {
   RecordType, TupleType
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
+import { Node } from '../ast.zena';
+import { FunctionContext } from './function-context.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields
@@ -17,23 +19,356 @@ import {
 } from './wasm.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
+import { HashMap } from 'zena:map';
 import { Array } from 'zena:array';
 import { 
   getMemberRootClass, getClassKey, getInterfaceKey, ClassKey, InterfaceKey, 
   ClassInterfaceKey, InterfaceMemberKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey
 } from './codegen-utils.zena';
 
+export let getClassTypeParameters = (ct: ClassType): Array<TypeParameterType> | null => {
+  return (ct.genericSource ?? ct).typeParameters;
+};
+
+export let getInterfaceTypeParameters = (it: InterfaceType): Array<TypeParameterType> | null => {
+  return (it.genericSource ?? it).typeParameters;
+};
+
+export let substituteTypeParamsInCodegen = (
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null,
+  t: Type
+): Type => {
+  let params = typeParams;
+  let args = typeArgs;
+  return match (t) {
+    case TypeParameterType as tp: {
+      if (params != null && args != null) {
+        let paramsVal = params as Array<TypeParameterType>;
+        let argsVal = args as Array<Type>;
+        var found: Type | null = null;
+        for (var i = 0; i < paramsVal.length; i += 1) {
+          if (paramsVal[i].name == tp.name && i < argsVal.length) {
+            found = argsVal[i];
+            break;
+          }
+        }
+        if (found != null) {
+          return found as Type;
+        }
+      }
+      t
+    }
+    case ArrayType {elementType}: {
+      new ArrayType(substituteTypeParamsInCodegen(params, args, elementType))
+    }
+    case TupleType {elementTypes}: {
+      let newElems = new Array<Type>();
+      for (let el in elementTypes) {
+        newElems.push(substituteTypeParamsInCodegen(params, args, el));
+      }
+      new TupleType(newElems)
+    }
+    case InlineTupleType {elementTypes}: {
+      let newElems = new Array<Type>();
+      for (let el in elementTypes) {
+        newElems.push(substituteTypeParamsInCodegen(params, args, el));
+      }
+      new InlineTupleType(newElems)
+    }
+    case UnionType {types}: {
+      let newTypes = new Array<Type>();
+      for (let ut in types) {
+        newTypes.push(substituteTypeParamsInCodegen(params, args, ut));
+      }
+      new UnionType(newTypes)
+    }
+    case RecordType as rec: {
+      let newProps = new HashMap<String, Type>();
+      let keys = rec.properties.keys();
+      while (let (true, key) = keys.next()) {
+        newProps[key] = substituteTypeParamsInCodegen(params, args, rec.properties[key]);
+      }
+      let newRec = new RecordType(newProps, rec.optionalProperties);
+      newRec.enumDeclaration = rec.enumDeclaration;
+      newRec
+    }
+    case FunctionType as ft: {
+      let newParams = new Array<Type>();
+      for (let p in ft.parameters) {
+        newParams.push(substituteTypeParamsInCodegen(params, args, p));
+      }
+      let newRet = substituteTypeParamsInCodegen(params, args, ft.returnType);
+      let newFt = new FunctionType(newParams, ft.parameterNames, newRet);
+      newFt.typeParameters = ft.typeParameters;
+      newFt.typeArguments = ft.typeArguments;
+      newFt.genericSource = ft.genericSource;
+      newFt.parameterInitializers = ft.parameterInitializers;
+      newFt.parameterSymbols = ft.parameterSymbols;
+      newFt.optionalParameters = ft.optionalParameters;
+      newFt.isFinal = ft.isFinal;
+      newFt.isAbstract = ft.isAbstract;
+      newFt.overloads = ft.overloads;
+      newFt
+    }
+    case ClassType as ct: {
+      var hasArgs = false;
+      let ctArgsVal = new Array<Type>();
+      let ctParams = getClassTypeParameters(ct);
+      if (ct.typeArguments != null) {
+        hasArgs = true;
+        for (let arg in (ct.typeArguments as Array<Type>)) {
+          ctArgsVal.push(arg);
+        }
+      } else if (params != null && args != null && ctParams != null) {
+        hasArgs = true;
+        for (let param in (ctParams as Array<TypeParameterType>)) {
+          ctArgsVal.push(param as Type);
+        }
+      }
+      if (hasArgs && ctArgsVal.length > 0) {
+        let newArgs = new Array<Type>();
+        for (let arg in ctArgsVal) {
+          newArgs.push(substituteTypeParamsInCodegen(params, args, arg));
+        }
+        let inst = new ClassType(ct.id, ct.name);
+        inst.typeParameters = ctParams;
+        inst.typeArguments = newArgs;
+        inst.genericSource = ct.genericSource ?? ct;
+        let combinedParams = new Array<TypeParameterType>();
+        let combinedArgs = new Array<Type>();
+        if (ctParams != null) {
+          for (let p in (ctParams as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in newArgs) {
+            combinedArgs.push(a);
+          }
+        }
+        if (params != null && args != null) {
+          for (let p in (params as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in (args as Array<Type>)) {
+            combinedArgs.push(a);
+          }
+        }
+
+        if (ct.superType != null) {
+          inst.superType = substituteTypeParamsInCodegen(combinedParams, combinedArgs, ct.superType as Type) as ClassType;
+        }
+        for (let impl in ct.implementsList) {
+          inst.implementsList.push(substituteTypeParamsInCodegen(combinedParams, combinedArgs, impl) as InterfaceType);
+        }
+        inst.members = ct.members;
+        inst.constructorType = ct.constructorType;
+        inst.fieldSetterNames = ct.fieldSetterNames;
+        for (let vt in ct.vtable) {
+          inst.vtable.push(vt);
+        }
+        inst.isFinal = ct.isFinal;
+        inst.isCaseClass = ct.isCaseClass;
+        inst.isAbstract = ct.isAbstract;
+        inst.isExtension = ct.isExtension;
+        inst.isSealed = ct.isSealed;
+        inst.sealedVariants = ct.sealedVariants;
+        if (ct.onType != null) {
+          inst.onType = substituteTypeParamsInCodegen(combinedParams, combinedArgs, ct.onType as Type);
+        }
+        inst.sourcePath = ct.sourcePath;
+        inst
+      } else {
+        ct
+      }
+    }
+    case InterfaceType as it: {
+      var hasArgs = false;
+      let itArgsVal = new Array<Type>();
+      let itParams = getInterfaceTypeParameters(it);
+      if (it.typeArguments != null) {
+        hasArgs = true;
+        for (let arg in (it.typeArguments as Array<Type>)) {
+          itArgsVal.push(arg);
+        }
+      } else if (params != null && args != null && itParams != null) {
+        hasArgs = true;
+        for (let param in (itParams as Array<TypeParameterType>)) {
+          itArgsVal.push(param as Type);
+        }
+      }
+      if (hasArgs && itArgsVal.length > 0) {
+        let newArgs = new Array<Type>();
+        for (let arg in itArgsVal) {
+          newArgs.push(substituteTypeParamsInCodegen(params, args, arg));
+        }
+        let inst = new InterfaceType(it.id, it.name);
+        inst.typeParameters = itParams;
+        inst.typeArguments = newArgs;
+        inst.genericSource = it.genericSource ?? it;
+        let combinedParams = new Array<TypeParameterType>();
+        let combinedArgs = new Array<Type>();
+        if (itParams != null) {
+          for (let p in (itParams as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in newArgs) {
+            combinedArgs.push(a);
+          }
+        }
+        if (params != null && args != null) {
+          for (let p in (params as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in (args as Array<Type>)) {
+            combinedArgs.push(a);
+          }
+        }
+        let newExtends = new Array<InterfaceType>();
+        for (let ext in it.extendsList) {
+          newExtends.push(substituteTypeParamsInCodegen(combinedParams, combinedArgs, ext) as InterfaceType);
+        }
+        inst.extendsList = newExtends;
+        inst.members = it.members;
+        inst
+      } else {
+        it
+      }
+    }
+    case _: t
+  };
+};
+
+let addTransitiveInterfaces = (
+  it: InterfaceType,
+  allParams: Array<TypeParameterType>,
+  allArgs: Array<Type>,
+  seen: HashMap<String, boolean>
+): void => {
+  let key = getInterfaceKey(it) as String;
+  if (seen.has(key)) {
+    return;
+  }
+  seen[key] = true;
+  
+  let genericSource = it.genericSource ?? it;
+  let itParams = getInterfaceTypeParameters(it);
+  if (genericSource.typeParameters != null && it.typeArguments != null && itParams != null) {
+    let tps = genericSource.typeParameters as Array<TypeParameterType>;
+    let tas = it.typeArguments as Array<Type>;
+    for (var i = 0; i < tps.length; i += 1) {
+      allParams.push(tps[i]);
+      if (i < tas.length) {
+        allArgs.push(tas[i]);
+      } else {
+        allArgs.push(new AnyType());
+      }
+    }
+  }
+  
+  for (let ext in it.extendsList) {
+    let itParamsVal = getInterfaceTypeParameters(it);
+    let resolvedExt = substituteTypeParamsInCodegen(itParamsVal, it.typeArguments, ext) as InterfaceType;
+    addTransitiveInterfaces(resolvedExt, allParams, allArgs, seen);
+  }
+};
+
+let addClassTransitiveInterfaces = (
+  ct: ClassType,
+  allParams: Array<TypeParameterType>,
+  allArgs: Array<Type>,
+  seen: HashMap<String, boolean>
+): void => {
+  let ctParams = getClassTypeParameters(ct);
+  for (let impl in ct.implementsList) {
+    if (impl is InterfaceType) {
+      let resolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, impl) as InterfaceType;
+      addTransitiveInterfaces(resolved, allParams, allArgs, seen);
+    }
+  }
+  if (ct.superType != null) {
+    let superCt = ct.superType as ClassType;
+    let superResolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, superCt) as ClassType;
+    
+    // Add superclass's own type parameters
+    let genericSource = superResolved.genericSource ?? superResolved;
+    let superCtParams = getClassTypeParameters(superResolved);
+    if (genericSource.typeParameters != null && superResolved.typeArguments != null && superCtParams != null) {
+      let tps = genericSource.typeParameters as Array<TypeParameterType>;
+      let tas = superResolved.typeArguments as Array<Type>;
+      for (var i = 0; i < tps.length; i += 1) {
+        allParams.push(tps[i]);
+        if (i < tas.length) {
+          allArgs.push(tas[i]);
+        } else {
+          allArgs.push(new AnyType());
+        }
+      }
+    }
+    
+    // Recursively add superclass's interfaces and superclasses
+    addClassTransitiveInterfaces(superResolved, allParams, allArgs, seen);
+  }
+};
+
+export let substituteTypeParamsInClassContext = (classType: ClassType | null, t: Type): Type => {
+  if (classType == null) {
+    return t;
+  }
+  
+  let allParams = new Array<TypeParameterType>();
+  let allArgs = new Array<Type>();
+  
+  // 1. Add class's own type arguments
+  let ct = classType as ClassType;
+  let ctParams = getClassTypeParameters(ct);
+  if (ctParams != null && ct.typeArguments != null) {
+    let tps = ctParams as Array<TypeParameterType>;
+    let tas = ct.typeArguments as Array<Type>;
+    for (var i = 0; i < tps.length; i += 1) {
+      allParams.push(tps[i]);
+      if (i < tas.length) {
+        allArgs.push(tas[i]);
+      } else {
+        allArgs.push(new AnyType());
+      }
+    }
+  }
+  
+  // 2. Add implements list and superType recursively
+  let seen = new HashMap<String, boolean>();
+  addClassTransitiveInterfaces(ct, allParams, allArgs, seen);
+  
+  let substituted = substituteTypeParamsInCodegen(allParams, allArgs, t);
+  return mapMixinThisInType(ct, substituted);
+};
+
+export let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
+  let t = ctx.wasmFunction.model.getNodeType(node);
+  if (t == null) { return null as Type; }
+  let ct = ctx.wasmFunction.classType;
+  if (t is ThisType && ct != null) {
+    return ct;
+  }
+  if (ct != null) {
+    return substituteTypeParamsInClassContext(ct, t);
+  } else {
+    return substituteTypeParamsInCodegen(null, null, t);
+  }
+};
+
 export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, fieldName: String): WasmSignature => {
+  let itParams = getInterfaceTypeParameters(it);
   if (fieldName.startsWith("get#")) {
     let propName = fieldName.sliceBytes(4, fieldName.length);
     var memberType: Type | null = null;
     if (it.members.has(propName)) {
       let fi = it.members[propName] as FieldInfo;
-      memberType = fi.type;
+      memberType = substituteTypeParamsInCodegen(itParams, it.typeArguments, fi.type);
     } else if (it.members.has(fieldName)) {
       let mi = it.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      memberType = ft.returnType;
+      let resolvedFt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ft) as FunctionType;
+      memberType = resolvedFt.returnType;
     }
     if (memberType == null) {
       throw new Error("Interface getter member " + fieldName + " not found on interface " + it.name);
@@ -48,12 +383,13 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     var memberType: Type | null = null;
     if (it.members.has(propName)) {
       let fi = it.members[propName] as FieldInfo;
-      memberType = fi.type;
+      memberType = substituteTypeParamsInCodegen(itParams, it.typeArguments, fi.type);
     } else if (it.members.has(fieldName)) {
       let mi = it.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      if (ft.parameters.length > 0) {
-        memberType = ft.parameters[0];
+      let resolvedFt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ft) as FunctionType;
+      if (resolvedFt.parameters.length > 0) {
+        memberType = resolvedFt.parameters[0];
       }
     }
     if (memberType == null) {
@@ -67,13 +403,14 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
   } else {
     let mi = it.members[fieldName] as MethodInfo;
     let ft = mi.type as FunctionType;
+    let resolvedFt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ft) as FunctionType;
     let params = new Array<ValType>();
     params.push(new ValTypeAnyRef());
-    for (let p in ft.parameters) {
+    for (let p in resolvedFt.parameters) {
       params.push(typeToValType(wasm, p));
     }
     let returns = new Array<ValType>();
-    mapReturnTypeToWasmResults(wasm, ft.returnType, returns);
+    mapReturnTypeToWasmResults(wasm, resolvedFt.returnType, returns);
     return wasm.getSignature(params, returns);
   }
 };
@@ -81,9 +418,10 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
 export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName: String): WasmSignature => {
   let rootClass = getMemberRootClass(ct, fieldName);
   let params = new Array<ValType>();
-  let classStruct = wasm.classStructs[getClassKey(rootClass)];
+  let rootKey = getClassKey(rootClass);
+  let classStruct = if (wasm.classStructs.has(rootKey)) wasm.classStructs[rootKey] else null;
   if (classStruct != null) {
-    params.push(new ValTypeRefNull(classStruct));
+    params.push(new ValTypeRefNull(classStruct as WasmStruct));
   } else {
     params.push(new ValTypeAnyRef());
   }
@@ -94,11 +432,12 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
     let propName = fieldName.sliceBytes(4, fieldName.length);
     var fieldType: Type = new VoidType();
     if (ct.members.has(propName)) {
-      fieldType = ct.members[propName].type;
+      fieldType = substituteTypeParamsInClassContext(ct, ct.members[propName].type);
     } else if (ct.members.has(fieldName)) {
       let mi = ct.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      fieldType = ft.returnType;
+      let resolvedFt = substituteTypeParamsInClassContext(ct, ft) as FunctionType;
+      fieldType = resolvedFt.returnType;
     }
     returns.push(typeToValType(wasm, fieldType));
     return wasm.getSignature(params, returns);
@@ -106,11 +445,12 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
     let propName = fieldName.sliceBytes(4, fieldName.length);
     var fieldType: Type = new VoidType();
     if (ct.members.has(propName)) {
-      fieldType = ct.members[propName].type;
+      fieldType = substituteTypeParamsInClassContext(ct, ct.members[propName].type);
     } else if (ct.members.has(fieldName)) {
       let mi = ct.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      fieldType = ft.parameters[0];
+      let resolvedFt = substituteTypeParamsInClassContext(ct, ft) as FunctionType;
+      fieldType = resolvedFt.parameters[0];
     }
     params.push(typeToValType(wasm, fieldType));
     return wasm.getSignature(params, returns);
@@ -118,7 +458,8 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
     var ft: FunctionType | null = null;
     if (ct.members.has(fieldName)) {
       let mi = ct.members[fieldName] as MethodInfo;
-      ft = mi.type as FunctionType;
+      let rawFt = mi.type as FunctionType;
+      ft = substituteTypeParamsInClassContext(ct, rawFt) as FunctionType;
     }
     if (ft != null) {
       let fType = ft as FunctionType;
@@ -289,7 +630,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     if (wasm.interfaceStructs.has(key)) {
       new ValTypeRefNull(wasm.interfaceStructs[key])
     } else {
-      throw new Error("Interface fat pointer type not generated during discovery pass! Name: " + it.name);
+      throw new Error("Interface fat pointer type not generated during discovery pass! Key: " + (key as String) + " Name: " + it.name);
     }
   }
   case ArrayType as at: {
@@ -422,4 +763,160 @@ export let getNonNullableType = (type: Type): Type => match (type) {
   }
   case _: type
 };
+
+export let typeToValTypeWithSub = (wasm: WasmModule, t: Type, classType: ClassType | null): ValType => {
+  if (classType != null) {
+    return typeToValType(wasm, substituteTypeParamsInClassContext(classType, t));
+  }
+  return typeToValType(wasm, t);
+};
+
+export let mapReturnTypeToWasmResultsWithSub = (wasm: WasmModule, type: Type, returns: Array<ValType>, classType: ClassType | null): void => {
+  if (classType != null) {
+    mapReturnTypeToWasmResults(wasm, substituteTypeParamsInClassContext(classType, type), returns);
+  } else {
+    mapReturnTypeToWasmResults(wasm, type, returns);
+  }
+};
+
+export let containsMixinThis = (type: Type): boolean => match (type) {
+  case ClassType as resolvedCt: {
+    if (resolvedCt.name.length >= 5 && resolvedCt.name.sliceBytes(resolvedCt.name.length - 5, resolvedCt.name.length) == "_This") {
+      true
+    } else if (resolvedCt.typeArguments != null) {
+      var found = false;
+      for (let arg in (resolvedCt.typeArguments as Array<Type>)) {
+        if (containsMixinThis(arg)) {
+          found = true;
+          break;
+        }
+      }
+      found
+    } else {
+      false
+    }
+  }
+  case UnionType {types}: {
+    var found = false;
+    for (let ut in types) {
+      if (containsMixinThis(ut)) {
+        found = true;
+        break;
+      }
+    }
+    found
+  }
+  case ArrayType {elementType}: {
+    containsMixinThis(elementType)
+  }
+  case TupleType {elementTypes}: {
+    var found = false;
+    for (let el in elementTypes) {
+      if (containsMixinThis(el)) {
+        found = true;
+        break;
+      }
+    }
+    found
+  }
+  case InlineTupleType {elementTypes}: {
+    var found = false;
+    for (let el in elementTypes) {
+      if (containsMixinThis(el)) {
+        found = true;
+        break;
+      }
+    }
+    found
+  }
+  case FunctionType as ft: {
+    var found = false;
+    for (let p in ft.parameters) {
+      if (containsMixinThis(p)) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      found = containsMixinThis(ft.returnType);
+    }
+    found
+  }
+  case _: false
+};
+
+export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
+  if (!containsMixinThis(type)) {
+    return type;
+  }
+  return match (type) {
+    case ClassType as resolvedCt: {
+      if (resolvedCt.name.length >= 5 && resolvedCt.name.sliceBytes(resolvedCt.name.length - 5, resolvedCt.name.length) == "_This") {
+        ct as Type
+      } else {
+        if (resolvedCt.typeArguments != null) {
+          let newArgs = new Array<Type>();
+          for (let arg in (resolvedCt.typeArguments as Array<Type>)) {
+            newArgs.push(mapMixinThisInType(ct, arg));
+          }
+          let inst = new ClassType(resolvedCt.id, resolvedCt.name);
+          inst.typeParameters = resolvedCt.typeParameters;
+          inst.typeArguments = newArgs;
+          inst.genericSource = resolvedCt.genericSource;
+          inst.superType = resolvedCt.superType;
+          for (let impl in resolvedCt.implementsList) {
+            inst.implementsList.push(impl);
+          }
+          inst as Type
+        } else {
+          resolvedCt as Type
+        }
+      }
+    }
+    case UnionType {types}: {
+      let newTypes = new Array<Type>();
+      for (let ut in types) {
+        newTypes.push(mapMixinThisInType(ct, ut));
+      }
+      new UnionType(newTypes) as Type
+    }
+    case ArrayType {elementType}: {
+      new ArrayType(mapMixinThisInType(ct, elementType)) as Type
+    }
+    case TupleType {elementTypes}: {
+      let newElems = new Array<Type>();
+      for (let el in elementTypes) {
+        newElems.push(mapMixinThisInType(ct, el));
+      }
+      new TupleType(newElems) as Type
+    }
+    case InlineTupleType {elementTypes}: {
+      let newElems = new Array<Type>();
+      for (let el in elementTypes) {
+        newElems.push(mapMixinThisInType(ct, el));
+      }
+      new InlineTupleType(newElems) as Type
+    }
+    case FunctionType as ft: {
+      let newParams = new Array<Type>();
+      for (let p in ft.parameters) {
+        newParams.push(mapMixinThisInType(ct, p));
+      }
+      let newRet = mapMixinThisInType(ct, ft.returnType);
+      let newFt = new FunctionType(newParams, ft.parameterNames, newRet);
+      newFt.typeParameters = ft.typeParameters;
+      newFt.typeArguments = ft.typeArguments;
+      newFt.genericSource = ft.genericSource;
+      newFt.parameterInitializers = ft.parameterInitializers;
+      newFt.parameterSymbols = ft.parameterSymbols;
+      newFt.optionalParameters = ft.optionalParameters;
+      newFt.isFinal = ft.isFinal;
+      newFt.isAbstract = ft.isAbstract;
+      newFt.overloads = ft.overloads;
+      newFt as Type
+    }
+    case _: type
+  };
+};
+
 

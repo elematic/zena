@@ -5,7 +5,7 @@ import { Error } from 'zena:error';
 import { ClassType } from '../../types.zena';
 import { WasmField, WasmFunction } from '../wasm-module.zena';
 import { getClassKey } from '../codegen-utils.zena';
-import { typeToValType } from '../type-mapping.zena';
+import { typeToValType, getNodeType } from '../type-mapping.zena';
 import { Array } from 'zena:array';
 
 export let generateNewExpression = (
@@ -13,7 +13,7 @@ export let generateNewExpression = (
   expr: NewExpression,
   genExpr: (e: Expression, discardValue: boolean) => void
 ): void => {
-  let nodeType = ctx.wasmFunction.model.getNodeType(expr);
+  let nodeType = getNodeType(ctx, expr);
   if (nodeType is ClassType) {
     let classType = nodeType as ClassType;
     let cKey = getClassKey(classType);
@@ -45,7 +45,7 @@ export let generateNewExpression = (
     var ctorFunc: WasmFunction | null = null;
     
     for (let f in ctx.wasm.functions) {
-      if (f.classType != null && (f.classType as ClassType).id == classType.id && f.methodName == "<constructor>") {
+      if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(classType) && f.methodName != null && (f.methodName as String) == "<constructor>") {
         ctorFunc = f;
       }
     }
