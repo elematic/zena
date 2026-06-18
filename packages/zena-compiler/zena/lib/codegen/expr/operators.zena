@@ -6,7 +6,7 @@ import { Type, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, RecordType,
 } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
-import { ValType, ValTypeI32, ValTypeAnyRef } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeAnyRef, ValTypeRef, ValTypeRefNull, ValTypeVoid } from '../wasm.zena';
 import { WasmField, WasmFunction } from '../wasm-module.zena';
 import { getClassKey, getSignatureKey } from '../codegen-utils.zena';
 import { typeToValType, getClassMemberSignature } from '../type-mapping.zena';
@@ -37,6 +37,95 @@ export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression,
 };
  
 export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
+  if (bin.operator == "??") {
+    let model = ctx.wasmFunction.model;
+    let leftType = model.getNodeType(bin.left);
+    let rightType = model.getNodeType(bin.right);
+    let overallType = model.getNodeType(bin);
+    if (leftType == null || rightType == null || overallType == null) {
+      throw new Error("Missing type info in semantic model for ?? expression");
+    }
+
+    // 1. Evaluate left operand
+    genExpr(bin.left, false);
+
+    // 2. Store left operand in a temporary local variable
+    let leftValType = typeToValType(ctx.wasm, leftType);
+    let leftLocal = ctx.allocLocal(leftValType);
+    ctx.emitter.emitLocalTee(leftLocal);
+
+    // 3. Check if not null
+    ctx.emitter.emitRefIsNull();
+    ctx.emitter.emitI32Eqz();
+
+    // 4. Emit If block
+    let overallValType = typeToValType(ctx.wasm, overallType);
+    ctx.emitter.emitIf(overallValType);
+    ctx.enterBlockStructure();
+
+    // 5. Then block: return left (and cast if types don't match exactly)
+    ctx.emitter.emitLocalGet(leftLocal);
+    
+    // Cast if needed
+    if (leftValType is ValTypeRefNull && overallValType is ValTypeRefNull) {
+      let lRef = leftValType as ValTypeRefNull;
+      let oRef = overallValType as ValTypeRefNull;
+      if (lRef.target.index != oRef.target.index) {
+        ctx.emitter.emitRefCastNull(oRef.target.index);
+      }
+    } else if (leftValType is ValTypeRef && overallValType is ValTypeRef) {
+      let lRef = leftValType as ValTypeRef;
+      let oRef = overallValType as ValTypeRef;
+      if (lRef.target.index != oRef.target.index) {
+        ctx.emitter.emitRefCast(oRef.target.index);
+      }
+    } else if (leftValType is ValTypeRef && overallValType is ValTypeRefNull) {
+      let lRef = leftValType as ValTypeRef;
+      let oRef = overallValType as ValTypeRefNull;
+      if (lRef.target.index != oRef.target.index) {
+        ctx.emitter.emitRefCastNull(oRef.target.index);
+      }
+    } else if (leftValType is ValTypeRefNull && overallValType is ValTypeRef) {
+      let lRef = leftValType as ValTypeRefNull;
+      let oRef = overallValType as ValTypeRef;
+      ctx.emitter.emitRefCast(oRef.target.index);
+    }
+
+    // 6. Else block: evaluate right operand
+    ctx.emitter.emitElse();
+    genExpr(bin.right, false);
+
+    let rightValType = typeToValType(ctx.wasm, rightType);
+    if (rightValType is ValTypeRefNull && overallValType is ValTypeRefNull) {
+      let rRef = rightValType as ValTypeRefNull;
+      let oRef = overallValType as ValTypeRefNull;
+      if (rRef.target.index != oRef.target.index) {
+        ctx.emitter.emitRefCastNull(oRef.target.index);
+      }
+    } else if (rightValType is ValTypeRef && overallValType is ValTypeRef) {
+      let rRef = rightValType as ValTypeRef;
+      let oRef = overallValType as ValTypeRef;
+      if (rRef.target.index != oRef.target.index) {
+        ctx.emitter.emitRefCast(rRef.target.index);
+      }
+    } else if (rightValType is ValTypeRef && overallValType is ValTypeRefNull) {
+      let rRef = rightValType as ValTypeRef;
+      let oRef = overallValType as ValTypeRefNull;
+      if (rRef.target.index != oRef.target.index) {
+        ctx.emitter.emitRefCastNull(oRef.target.index);
+      }
+    } else if (rightValType is ValTypeRefNull && overallValType is ValTypeRef) {
+      let rRef = rightValType as ValTypeRefNull;
+      let oRef = overallValType as ValTypeRef;
+      ctx.emitter.emitRefCast(oRef.target.index);
+    }
+
+    // 7. End block
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+    return;
+  }
+
   // 1. Short-circuiting logical operators (&&, ||)
   if (bin.operator == "&&") {
     genExpr(bin.left, false);

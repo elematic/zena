@@ -29,7 +29,7 @@ async function run() {
     'interfaces',
     'intrinsics',
     'mixins',
-    // 'null-coalescing',
+    'null-coalescing',
     // 'nullish-assignment',
     'operators',
     // 'optional-chaining',
