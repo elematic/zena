@@ -216,6 +216,7 @@ export class WasmModule {
   var program: Program | null = null;
   var stringClass: ClassType | null = null;
   var templateStringsArrayClass: ClassType | null = null;
+  var boxClass: ClassType | null = null;
   exportMap = new HashMap<ExportKey, WasmFunction>();
   exportGlobalMap = new HashMap<ExportGlobalKey, WasmGlobal>();
   classStructs = new HashMap<ClassKey, WasmStruct>();
@@ -234,6 +235,7 @@ export class WasmModule {
   var hasMemory: boolean = false;
   var wasiFdWriteIndex: i32 = -1;
   var wasiWriteStringIndex: i32 = -1;
+  var stringHashFunc: WasmFunction | null = null;
   
   recordDispatchInfos = new Array<RecordDispatchInfo>();
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
@@ -614,6 +616,32 @@ export class WasmModule {
     let setByteFunc = new WasmFunction(setByteSig, null, model);
     setByteFunc.name = "$stringSetByte";
     this.functions.push(setByteFunc);
+  }
+
+  ensureHashInfra(model: SemanticModel): void {
+    if (this.stringHashFunc != null) {
+      return;
+    }
+    var stringStruct: WasmStruct | null = null;
+    let keys = this.classStructs.keys();
+    while (let (true, k) = keys.next()) {
+      let s = this.classStructs[k];
+      if (s.name != null && (s.name as String) == "String") {
+        stringStruct = s;
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("$stringHash discovery: String class struct not found!");
+    }
+    let params = new Array<ValType>();
+    params.push(new ValTypeRefNull(stringStruct as WasmStruct));
+    let returns = new Array<ValType>();
+    returns.push(new ValTypeI32());
+    let sig = this.getSignature(params, returns);
+    let hashFunc = new WasmFunction(sig, null, model);
+    hashFunc.name = "$stringHash";
+    this.functions.push(hashFunc);
+    this.stringHashFunc = hashFunc;
   }
   
   /**

@@ -83,7 +83,7 @@ import {
   LetPatternCondition, BindingProperty, PropertySignature, CatchClause,
   CaseClassParam, FieldInitializer, SuperInitializer, EnumMember, MapEntry,
   MethodSignature, AccessorSignature, SetterInfo, SealedVariant,
-  ImportSpecifier
+  ImportSpecifier, getMemberPropertyName
 } from './ast.zena';
 import {
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
@@ -3061,7 +3061,7 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
       if (base == null) {
         return null;
       }
-      let propStr = if (isSymbolAccess) ":" + property.name else property.name;
+      let propStr = getMemberPropertyName(isSymbolAccess, property.name);
       return (base as String) + "." + propStr;
     }
     case _: {
@@ -3080,7 +3080,7 @@ let getMemberPathKeyFromAccess = (
   if (base == null) {
     return null;
   }
-  let propStr = if (isSymbolAccess) ":" + property.name else property.name;
+  let propStr = getMemberPropertyName(isSymbolAccess, property.name);
   return (base as String) + "." + propStr;
 };
 
@@ -3128,7 +3128,7 @@ let isImmutableMemberPath = (ctx: CheckerContext, expr: Expression): boolean => 
   match (expr) {
     case MemberExpression {object, property, isSymbolAccess}: {
       let objectType = checkExpression(ctx, object, null);
-      let propName = if (isSymbolAccess) ":" + property.name else property.name;
+      let propName = getMemberPropertyName(isSymbolAccess, property.name);
       if (!isImmutableFieldAccess(objectType, propName)) {
         return false;
       }
@@ -4179,8 +4179,15 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
             }
           }
         }
+        case ClassType as ct: {
+          for (let prop in properties) {
+            let propName = prop.name.name;
+            let propType = resolveClassFieldType(ctx, ct, propName, prop.loc);
+            bindPattern(ctx, prop.value as Pattern, propType);
+          }
+        }
         case _: {
-          // If not a record, just bind the property names as unknown.
+          // If not a record or class, just bind the property names as unknown.
           for (let property in properties) {
             bindPattern(ctx, property.value as Pattern, new ErrorType());
           }
@@ -4548,7 +4555,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         }
       }
       case MemberExpression {object, property, isSymbolAccess}: {
-        let propName = if (isSymbolAccess) ":" + property.name else property.name;
+        let propName = getMemberPropertyName(isSymbolAccess, property.name);
         // Handle private field assignment outside class
         if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
           if (ctx.currentClass == null) {
@@ -7681,7 +7688,7 @@ let checkMemberExpression = (
   }
   ctx.model.setStaticAccess(expr, isStatic);
 
-  let propName = if (isSymbolAccess) ":" + property.name else property.name;
+  let propName = getMemberPropertyName(isSymbolAccess, property.name);
   let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
   let narrowedPathType = if (pathKey != null) {
     ctx.resolveNarrowedMemberPath(pathKey as String)

@@ -1,15 +1,124 @@
-import { ValTypeVoid } from '../wasm.zena';
+import { ValTypeVoid, ValType, ValTypeRefNull, ValTypeRef, ValTypeEqRef } from '../wasm.zena';
 import { Error } from 'zena:error';
+import { console } from 'zena:console';
 import { 
-  Node, ReturnStatement, ExpressionStatement, IfStatement, Statement, Expression
+  Node, ReturnStatement, ExpressionStatement, IfStatement, Statement, Expression,
+  LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral,
+  IdentifierPattern, BindingPattern
 } from '../../ast.zena';
-import { VoidType } from '../../types.zena';
-import { ValType } from "../wasm.zena";
+import { VoidType, Type, UnionType, InlineTupleType, baseType, HoleType } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
+import { typeToValType, mapReturnTypeToWasmResults } from '../type-mapping.zena';
+import { generatePatternBinding } from './bindings.zena';
+import { Array } from 'zena:array';
+import { InterfaceAdaptation, RecordAdaptation } from '../../semantic-model.zena';
+
+export let generateValueReturn = (ctx: FunctionContext, arg: Expression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
+  genExpr(arg, false);
+
+  let expectedReturns = ctx.wasmFunction.signature.returns;
+  if (expectedReturns.length > 0) {
+    let argType = ctx.wasmFunction.model.getNodeType(arg);
+    if (argType != null) {
+      var effectiveType = argType as Type;
+      let interfaceAdaptation = ctx.wasmFunction.model.getInterfaceAdaptation(arg);
+      if (interfaceAdaptation != null) {
+        effectiveType = (interfaceAdaptation as InterfaceAdaptation).target as Type;
+      } else {
+        let recordAdaptation = ctx.wasmFunction.model.getRecordAdaptation(arg);
+        if (recordAdaptation != null) {
+          effectiveType = (recordAdaptation as RecordAdaptation).target as Type;
+        }
+      }
+
+      let actualTypes = new Array<ValType>();
+      mapReturnTypeToWasmResults(ctx.wasm, effectiveType, actualTypes);
+
+      if (argType is InlineTupleType) {
+        let itt = argType as InlineTupleType;
+        for (var i = 0; i < itt.elementTypes.length; i += 1) {
+          if (i < expectedReturns.length && itt.elementTypes[i] is HoleType) {
+            actualTypes[i] = expectedReturns[i];
+          }
+        }
+      }
+
+      if (actualTypes.length == expectedReturns.length) {
+        var needsTemp = false;
+        if (actualTypes.length > 1) {
+          needsTemp = true;
+        } else if (actualTypes.length == 1) {
+          let actual = actualTypes[0];
+          let expected = expectedReturns[0];
+          match (expected) {
+            case ValTypeRefNull as r: {
+              if (!(actual is ValTypeRefNull && (actual as ValTypeRefNull).target.index == r.target.index)) {
+                needsTemp = true;
+              }
+            }
+            case ValTypeRef as r: {
+              if (!(actual is ValTypeRef && (actual as ValTypeRef).target.index == r.target.index)) {
+                needsTemp = true;
+              }
+            }
+            case ValTypeEqRef: {
+              if (!(actual is ValTypeEqRef)) {
+                needsTemp = true;
+              }
+            }
+            case _: {}
+          }
+        }
+
+        if (needsTemp) {
+          let tempLocals = new Array<i32>();
+          var i = actualTypes.length - 1;
+          while (i >= 0) {
+            let actualType = actualTypes[i];
+            let temp = ctx.allocLocal(actualType);
+            tempLocals.push(temp);
+            ctx.emitter.emitLocalSet(temp);
+            i -= 1;
+          }
+
+          var j = 0;
+          while (j < actualTypes.length) {
+            let temp = tempLocals[actualTypes.length - 1 - j];
+            let actual = actualTypes[j];
+            let expected = expectedReturns[j];
+            
+            ctx.emitter.emitLocalGet(temp);
+
+            match (expected) {
+              case ValTypeRefNull as r: {
+                if (!(actual is ValTypeRefNull && (actual as ValTypeRefNull).target.index == r.target.index)) {
+                  ctx.emitter.emitRefCastNull(r.target.index);
+                }
+              }
+              case ValTypeRef as r: {
+                if (!(actual is ValTypeRef && (actual as ValTypeRef).target.index == r.target.index)) {
+                  ctx.emitter.emitRefCast(r.target.index);
+                }
+              }
+              case ValTypeEqRef: {
+                if (!(actual is ValTypeEqRef)) {
+                  ctx.emitter.emitRefCastEqNull();
+                }
+              }
+              case _: {}
+            }
+
+            j += 1;
+          }
+        }
+      }
+    }
+  }
+};
 
 export let generateReturnStatement = (ctx: FunctionContext, stmt: ReturnStatement, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (stmt.argument != null) {
-    genExpr(stmt.argument as Expression, false);
+    generateValueReturn(ctx, stmt.argument as Expression, genExpr);
   }
   ctx.emitter.emitReturn();
   ctx.isReachable = false;
@@ -21,6 +130,100 @@ export let generateExpressionStatement = (ctx: FunctionContext, stmt: Expression
 };
 
 export let generateIfStatement = (ctx: FunctionContext, stmt: IfStatement, genExpr: (e: Expression, discardValue: boolean) => void, genStmt: (s: Statement) => void): void => {
+  if (stmt.test is LetPatternCondition) {
+    let lpc = stmt.test as LetPatternCondition;
+    let pattern = lpc.pattern;
+    if (pattern is TuplePattern) {
+      let tp = pattern as TuplePattern;
+      let initType = ctx.wasmFunction.model.getNodeType(lpc.init);
+      
+      var baseT = baseType(initType as Type);
+      var elementTypes: Array<Type> | null = null;
+      if (baseT is InlineTupleType) {
+        elementTypes = (baseT as InlineTupleType).elementTypes;
+      } else if (baseT is UnionType) {
+        for (let ut in (baseT as UnionType).types) {
+          if (ut is InlineTupleType) {
+            if (elementTypes == null) {
+              elementTypes = (ut as InlineTupleType).elementTypes;
+            }
+          }
+        }
+      }
+      
+      if (elementTypes == null) {
+        throw new Error("if-let expects inline tuple type");
+      }
+      let elemTypes = elementTypes as Array<Type>;
+      
+      // 1. Evaluate init (pushes values on stack)
+      genExpr(lpc.init, false);
+      
+      // 2. Pop to temp locals in reverse order
+      let tempLocals = new Array<i32>();
+      for (var i = tp.elements.length - 1; i >= 0; i -= 1) {
+        let elType = elemTypes[i];
+        let valType = typeToValType(ctx.wasm, elType);
+        let temp = ctx.allocLocal(valType);
+        tempLocals.push(temp);
+        ctx.emitter.emitLocalSet(temp);
+      }
+      
+      // 3. Emit condition (first element)
+      ctx.emitter.emitLocalGet(tempLocals[tp.elements.length - 1]);
+      
+      // 4. Emit WASM if block
+      ctx.emitter.emitIf(new ValTypeVoid());
+      ctx.enterBlockStructure();
+      
+      let wasReachable = ctx.isReachable;
+      
+      // 5. Bind pattern variables
+      for (var i = 0; i < tp.elements.length; i += 1) {
+        let el = tp.elements[i];
+        if (el != null) {
+          var typeStr = "unknown";
+          if (el is LiteralPattern) typeStr = "LiteralPattern";
+          if (el is BooleanLiteral) typeStr = "BooleanLiteral";
+          if (el is NumberLiteral) typeStr = "NumberLiteral";
+          if (el is StringLiteral) typeStr = "StringLiteral";
+          if (el is NullLiteral) typeStr = "NullLiteral";
+          if (el is IdentifierPattern) typeStr = "IdentifierPattern";
+          if (el is BindingPattern) typeStr = "BindingPattern";
+          console.log("Element pattern type: " + typeStr);
+        }
+        if (el != null && !(el is LiteralPattern) && !(el is BooleanLiteral) && !(el is NumberLiteral) && !(el is StringLiteral) && !(el is NullLiteral)) {
+          let temp = tempLocals[tp.elements.length - 1 - i];
+          let loadValue = (): void => {
+            ctx.emitter.emitLocalGet(temp);
+          };
+          generatePatternBinding(ctx, el as Node, elemTypes[i], loadValue);
+        }
+      }
+      
+      // 6. Generate consequent
+      genStmt(stmt.consequent);
+      let consReachable = ctx.isReachable;
+      
+      ctx.isReachable = wasReachable;
+      if (stmt.alternate != null) {
+        ctx.emitter.emitElse();
+        genStmt(stmt.alternate as Statement);
+        let altReachable = ctx.isReachable;
+        ctx.isReachable = consReachable || altReachable;
+        if (!ctx.isReachable) {
+          ctx.needsUnreachable = true;
+        }
+      } else {
+        ctx.isReachable = true;
+      }
+      
+      ctx.exitBlockStructure();
+      ctx.emitter.emitEnd();
+      return;
+    }
+  }
+
   genExpr(stmt.test as Expression, false);
   ctx.emitter.emitIf(new ValTypeVoid());
   ctx.enterBlockStructure();

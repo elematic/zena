@@ -12,6 +12,8 @@ import { Array } from 'zena:array';
 import { generateGlobalIntrinsic, generateArrayIntrinsic, isArrayIntrinsic } from './intrinsics.zena';
 import { dirName, normalizePath } from '../../module-resolver.zena';
 
+import { console } from 'zena:console';
+
 let generateClosureCall = (
   ctx: FunctionContext,
   callee: Expression,
@@ -33,7 +35,8 @@ let generateClosureCall = (
   // 3. Push arguments (params 1..N)
   var i = 0;
   while (i < args.length) {
-    genExpr(args[i], false);
+    let arg = args[i];
+    genExpr(arg, false);
     i += 1;
   }
   
@@ -190,8 +193,11 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
     ctx.emitter.emitLocalGet(closureLocal);
     ctx.emitter.emitStructGet(closureStruct.index, 1);
     
-    for (let arg in call.args) {
+    var i = 0;
+    while (i < call.args.length) {
+      let arg = call.args[i];
       genExpr(arg, false);
+      i += 1;
     }
     
     ctx.emitter.emitLocalGet(closureLocal);
@@ -225,9 +231,11 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       }
 
       if (ctx.wasm.functionMap.has((sym as Symbol).id)) {
+        let f = ctx.wasm.functionMap[(sym as Symbol).id];
         var i = 0;
         while (i < call.args.length) {
-          genExpr(call.args[i], false);
+          let arg = call.args[i];
+          genExpr(arg, false);
           if (ft != null && ft.parameterSymbols != null) {
             let syms = ft.parameterSymbols as Array<SymbolId>;
             if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {
@@ -236,16 +244,18 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
           i += 1;
         }
-        ctx.emitter.emitCall(ctx.wasm.functionMap[(sym as Symbol).id]);
+        ctx.emitter.emitCall(f);
         return;
       } else if ((sym as Symbol).declaration is ImportSpecifier) {
         let spec = (sym as Symbol).declaration as ImportSpecifier;
         let importedName = spec.imported.name;
 
         if (ctx.wasm.exportMap.has(importedName as ExportKey)) {
+          let f = ctx.wasm.exportMap[importedName as ExportKey];
           var i = 0;
           while (i < call.args.length) {
-            genExpr(call.args[i], false);
+            let arg = call.args[i];
+            genExpr(arg, false);
             if (ft != null && ft.parameterSymbols != null) {
               let syms = ft.parameterSymbols as Array<SymbolId>;
               if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {
@@ -254,7 +264,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             }
             i += 1;
           }
-          ctx.emitter.emitCall(ctx.wasm.exportMap[importedName as ExportKey]);
+          ctx.emitter.emitCall(f);
           return;
         }
         throw new Error("Export map missing: " + importedName);
@@ -309,9 +319,11 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         // `member.object` is SuperExpression which evaluates to `this` (param 0).
         genExpr(member.object, false);
         
+        let f = foundFunc as WasmFunction;
         var argIdx = 0;
         while (argIdx < call.args.length) {
-          genExpr(call.args[argIdx], false);
+          let arg = call.args[argIdx];
+          genExpr(arg, false);
           argIdx += 1;
         }
 
@@ -345,7 +357,8 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         
         var argIdx = 0;
         while (argIdx < call.args.length) {
-          genExpr(call.args[argIdx], false);
+          let arg = call.args[argIdx];
+          genExpr(arg, false);
           argIdx += 1;
         }
 
@@ -394,9 +407,11 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
 
           // Generate arguments (static call has no `this` argument)
+          let f = foundFunc as WasmFunction;
           var argIdx = 0;
           while (argIdx < call.args.length) {
-            genExpr(call.args[argIdx], false);
+            let arg = call.args[argIdx];
+            genExpr(arg, false);
             argIdx += 1;
           }
 
@@ -437,9 +452,11 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           // 1. Emit arguments: `this` first, then args.
           genExpr(member.object, false);
           
+          let f = foundFunc as WasmFunction;
           var argIdx = 0;
           while (argIdx < call.args.length) {
-            genExpr(call.args[argIdx], false);
+            let arg = call.args[argIdx];
+            genExpr(arg, false);
             argIdx += 1;
           }
 
@@ -479,27 +496,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           throw new Error("Method not found in vtable: " + targetName);
         }
         
-        // 1. Emit arguments: `this` first, then args
-        genExpr(member.object, false);
-        // Cast to our struct type to grab vtable
-        var scratchLocal = ctx.getStructScratchLocal(structInfo);
-        ctx.emitter.emitLocalTee(scratchLocal);
-        
-        var argIdx = 0;
-        while (argIdx < call.args.length) {
-          genExpr(call.args[argIdx], false);
-          argIdx += 1;
-        }
-        
-        // 2. Load the vtable map and extract function ref
-        ctx.emitter.emitLocalGet(scratchLocal);
-        ctx.emitter.emitRefCast(structInfo.index);
-        ctx.emitter.emitStructGet(structInfo.index, 0); // VTable is always field 0
-        ctx.emitter.emitRefCast(vtableStruct.index);
-        ctx.emitter.emitStructGet(vtableStruct.index, methodIndex); // Function ref
-        
-        // Look up the specific WasmFunction for this call to get its accurate signature type
-        var sigIndex = -1;
+        // Resolve signature/function before evaluating arguments so we can adapt types
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
@@ -511,16 +508,28 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           currClass = (currClass as ClassType).superType;
         }
 
-        if (foundFunc != null) {
-          sigIndex = (foundFunc as WasmFunction).signature.index;
-        } else {
-          if (ct.members.has(targetName)) {
-            let sig = getClassMemberSignature(ctx.wasm, ct, targetName);
-            sigIndex = sig.index;
-          } else {
-            throw new Error("Could not find implementation or abstract declaration for method call: " + targetName);
-          }
+        let sig = if (foundFunc != null) (foundFunc as WasmFunction).signature else getClassMemberSignature(ctx.wasm, ct, targetName);
+        let sigIndex = sig.index;
+
+        // 1. Emit arguments: `this` first, then args
+        genExpr(member.object, false);
+        // Cast to our struct type to grab vtable
+        var scratchLocal = ctx.getStructScratchLocal(structInfo);
+        ctx.emitter.emitLocalTee(scratchLocal);
+        
+        var argIdx = 0;
+        while (argIdx < call.args.length) {
+          let arg = call.args[argIdx];
+          genExpr(arg, false);
+          argIdx += 1;
         }
+        
+        // 2. Load the vtable map and extract function ref
+        ctx.emitter.emitLocalGet(scratchLocal);
+        ctx.emitter.emitRefCast(structInfo.index);
+        ctx.emitter.emitStructGet(structInfo.index, 0); // VTable is always field 0
+        ctx.emitter.emitRefCast(vtableStruct.index);
+        ctx.emitter.emitStructGet(vtableStruct.index, methodIndex); // Function ref
 
         ctx.emitter.emitRefCast(sigIndex);
         ctx.emitter.emitCallRef(sigIndex);
@@ -550,6 +559,8 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           throw new Error("Method not found in interface vtable: " + targetName);
         }
         
+        let sig = getInterfaceMemberSignature(ctx.wasm, it, targetName);
+
         genExpr(member.object, false);
         var scratchLocal = ctx.getStructScratchLocal(fatPtr);
         ctx.emitter.emitLocalTee(scratchLocal);
@@ -557,7 +568,8 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         
         var argIdx = 0;
         while (argIdx < call.args.length) {
-          genExpr(call.args[argIdx], false);
+          let arg = call.args[argIdx];
+          genExpr(arg, false);
           argIdx += 1;
         }
         
@@ -565,7 +577,6 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
         ctx.emitter.emitStructGet(vst.index, methodIndex); // Get Function reference
         
-        let sig = getInterfaceMemberSignature(ctx.wasm, it, targetName);
         ctx.emitter.emitCallRef(sig.index);
         return;
       }
@@ -620,25 +631,29 @@ let findDeclaration = (ctx: FunctionContext, sym: Symbol, expectedType: Type | n
   
   if (decl is DeclareFunction) {
     let importedName = sym.name;
-    // Search the current module's body for the correct overload
     let currentModule = findModuleNode(ctx.wasmFunction.model, ctx.wasmFunction.node);
     if (currentModule != null) {
+      var fallback: DeclareFunction | null = null;
       for (let stmt in (currentModule as Module).body) {
         match (stmt) {
-          case DeclareFunction {name}: {
-            if (name.name == importedName) {
-              let stmtType = ctx.wasmFunction.model.getNodeType(stmt);
+          case DeclareFunction as df: {
+            if (df.name.name == importedName) {
               if (expectedType == null) {
-                return stmt as DeclareFunction;
+                return df;
               }
-              if (stmtType != null && matchOverload(stmtType, expectedType)) {
-                return stmt as DeclareFunction;
+              let nodeType = ctx.wasmFunction.model.getNodeType(df);
+              if (nodeType != null) {
+                if (matchOverload(nodeType as Type, expectedType as Type)) {
+                  return df;
+                }
               }
+              fallback = df;
             }
           }
           case _: {}
         }
       }
+      return fallback;
     }
   }
   return null;
@@ -652,7 +667,6 @@ let resolveImportedSymbol = (ctx: FunctionContext, spec: ImportSpecifier, expect
   let importDecl = parentNode as ImportDeclaration;
   let specifier = importDecl.moduleSpecifier.value;
   
-  // Resolve specifier to its canonical path
   var canonicalPath = specifier;
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
     let referrer = ctx.wasmFunction.model.getParent(importDecl);
@@ -675,24 +689,25 @@ let resolveImportedSymbol = (ctx: FunctionContext, spec: ImportSpecifier, expect
   let targetUnit = prog.unitsByPath[canonicalPath];
   let importedName = spec.imported.name;
   
+  var fallback: DeclareFunction | null = null;
   for (let stmt in targetUnit.ast.body) {
     match (stmt) {
-      case DeclareFunction {name}: {
-        if (name.name == importedName) {
-          let stmtSym = targetUnit.model.resolve(stmt);
-          if (stmtSym != null) {
-            let stmtType = targetUnit.model.getNodeType(stmt);
-            if (expectedType == null) {
-              return stmt as DeclareFunction;
-            }
-            if (stmtType != null && matchOverload(stmtType, expectedType)) {
-              return stmt as DeclareFunction;
+      case DeclareFunction as df: {
+        if (df.name.name == importedName) {
+          if (expectedType == null) {
+            return df;
+          }
+          let nodeType = targetUnit.model.getNodeType(df);
+          if (nodeType != null) {
+            if (matchOverload(nodeType as Type, expectedType as Type)) {
+              return df;
             }
           }
+          fallback = df;
         }
       }
       case _: {}
     }
   }
-  return null;
+  return fallback;
 };

@@ -1,8 +1,8 @@
 import { FunctionContext } from '../function-context.zena';
-import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral, SuperExpression, Identifier, ClassDeclaration, ImportSpecifier } from '../../ast.zena';
+import { Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral, SuperExpression, Identifier, ClassDeclaration, ImportSpecifier, getMemberPropertyName } from '../../ast.zena';
 import { Symbol } from '../../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { RecordType, TupleType, ClassType, InterfaceType, ArrayType, typeToString, Type, FunctionType, VoidType } from '../../types.zena';
+import { RecordType, TupleType, ClassType, InterfaceType, ArrayType, typeToString, Type, FunctionType, VoidType, FieldInfo } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
 import { WasmField, WasmFunction, WasmArray } from '../wasm-module.zena';
@@ -24,7 +24,7 @@ export let generateMemberExpression = (
       if (rt.enumDeclaration != null) {
         let ed = rt.enumDeclaration as EnumDeclaration;
         let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
-        let propName = expr.property.name;
+        let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
         var nextValue: i32 = 0;
         
         for (let member in ed.members) {
@@ -71,7 +71,7 @@ export let generateMemberExpression = (
       let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields);
       
       var fieldIndex = -1;
-      let propName = expr.property.name;
+      let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
       
       for (var i = 0; i < fields.length; i += 1) {
         if (fields[i].name != null && (fields[i].name as String) == propName) {
@@ -107,7 +107,7 @@ export let generateMemberExpression = (
       let isStaticAccess = ctx.wasmFunction.model.isStaticAccess(expr);
 
       if (isStaticAccess) {
-        let propName = expr.property.name;
+        let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
         let getterName = "get#" + propName;
 
         // 1. Check for static getter/method in class hierarchy
@@ -150,7 +150,7 @@ export let generateMemberExpression = (
       }
 
       if (ct.isExtension) {
-        let propName = expr.property.name;
+        let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
         let getterName = "get#" + propName;
         // Find the specific WasmFunction for this getter
         var foundFunc: WasmFunction | null = null;
@@ -192,7 +192,7 @@ export let generateMemberExpression = (
       let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
       
       var fieldIndex = -1;
-      let propName = expr.property.name;
+      let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
       let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
         if (ctx.wasmFunction.classType != null) {
           getClassPrivateFieldKey(getClassKey(ctx.wasmFunction.classType as ClassType), propName)
@@ -291,7 +291,7 @@ export let generateMemberExpression = (
       let vst = ctx.wasm.interfaceVTableStructs[iName];
       let fatPtr = ctx.wasm.interfaceStructs[iName];
       
-      let propName = expr.property.name;
+      let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
       let getterName = "get#" + propName;
       
       var vtableIndex = -1;
@@ -331,6 +331,7 @@ export let generateMemberExpression = (
     }
   }
 };
+
 
 export let generateIndexExpression = (
   ctx: FunctionContext,

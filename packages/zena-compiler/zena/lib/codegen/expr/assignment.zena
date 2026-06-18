@@ -1,13 +1,13 @@
-import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression, ClassDeclaration, ImportSpecifier, IndexExpression } from '../../ast.zena';
+import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression, ClassDeclaration, ImportSpecifier, IndexExpression, getMemberPropertyName } from '../../ast.zena';
 import { Type, F64Type, F32Type, ClassType, InterfaceType, ArrayType, typeToString, FunctionType, VoidType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
-import { WasmFunction, WasmArray } from '../wasm-module.zena';
+import { WasmFunction, WasmArray, WasmStruct } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
 import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature } from '../type-mapping.zena';
-import { ValTypeRefNull, ValTypeRef } from '../wasm.zena';
+import { ValTypeRefNull, ValTypeRef, ValType } from '../wasm.zena';
 
 /**
  * Generates WASM code for an assignment expression.
@@ -91,7 +91,7 @@ export let generateAssignmentExpression = (
         let isStaticAccess = ctx.wasmFunction.model.isStaticAccess(memExpr);
 
         if (isStaticAccess) {
-          let propName = memExpr.property.name;
+          let propName = getMemberPropertyName(memExpr.isSymbolAccess, memExpr.property.name);
           let setterName = "set#" + propName;
 
           // 1. Look up static setter
@@ -151,7 +151,7 @@ export let generateAssignmentExpression = (
         }
 
         if (ct.isExtension) {
-          let propName = memExpr.property.name;
+          let propName = getMemberPropertyName(memExpr.isSymbolAccess, memExpr.property.name);
           let setterName = "set#" + propName;
           
           var foundFunc: WasmFunction | null = null;
@@ -199,7 +199,7 @@ export let generateAssignmentExpression = (
         let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
         
         var fieldIndex = -1;
-        let propName = memExpr.property.name;
+        let propName = getMemberPropertyName(memExpr.isSymbolAccess, memExpr.property.name);
         let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
           if (ctx.wasmFunction.classType != null) {
             getClassPrivateFieldKey(getClassKey(ctx.wasmFunction.classType as ClassType), propName)
@@ -313,7 +313,7 @@ export let generateAssignmentExpression = (
         let vst = ctx.wasm.interfaceVTableStructs[iName];
         let fatPtr = ctx.wasm.interfaceStructs[iName];
         
-        let propName = memExpr.property.name;
+        let propName = getMemberPropertyName(memExpr.isSymbolAccess, memExpr.property.name);
         let setterName = "set#" + propName;
         
         var vtableIndex = -1;

@@ -1,0 +1,129 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { Array } from 'zena:array';
+import { typeContainsTypeParameter } from '../lib/codegen/codegen-utils.zena';
+import {
+  Type, I32Type, ClassType, InterfaceType, TypeAliasType, MixinType, TypeParameterType
+} from '../lib/types.zena';
+
+export let tests = suite('codegen-utils: typeContainsTypeParameter', (): void => {
+  test('primitive types do not contain type parameters', (ctx: TestContext): void => {
+    isFalse(typeContainsTypeParameter(new I32Type() as Type));
+  });
+
+  test('direct TypeParameterType contains type parameter', (ctx: TestContext): void => {
+    let tParam = new TypeParameterType("T", null, null);
+    isTrue(typeContainsTypeParameter(tParam as Type));
+  });
+
+  test('ClassType details', (ctx: TestContext): void => {
+    let classType = new ClassType(1, "MyClass");
+    isFalse(typeContainsTypeParameter(classType as Type));
+
+    // With concrete type arguments
+    let args1 = new Array<Type>();
+    args1.push(new I32Type() as Type);
+    classType.typeArguments = args1;
+    isFalse(typeContainsTypeParameter(classType as Type));
+
+    // With type parameter arguments
+    let args2 = new Array<Type>();
+    args2.push(new TypeParameterType("T", null, null) as Type);
+    classType.typeArguments = args2;
+    isTrue(typeContainsTypeParameter(classType as Type));
+
+    // Open generic class (uninstantiated)
+    classType.typeArguments = null;
+    let tps = new Array<TypeParameterType>();
+    tps.push(new TypeParameterType("T", null, null));
+    classType.typeParameters = tps;
+    isTrue(typeContainsTypeParameter(classType as Type));
+  });
+
+  test('InterfaceType details', (ctx: TestContext): void => {
+    let interfaceType = new InterfaceType(2, "MyInterface");
+    isFalse(typeContainsTypeParameter(interfaceType as Type));
+
+    // With concrete type arguments
+    let args1 = new Array<Type>();
+    args1.push(new I32Type() as Type);
+    interfaceType.typeArguments = args1;
+    isFalse(typeContainsTypeParameter(interfaceType as Type));
+
+    // With type parameter arguments
+    let args2 = new Array<Type>();
+    args2.push(new TypeParameterType("T", null, null) as Type);
+    interfaceType.typeArguments = args2;
+    isTrue(typeContainsTypeParameter(interfaceType as Type));
+
+    // Open generic interface (uninstantiated)
+    interfaceType.typeArguments = null;
+    let tps = new Array<TypeParameterType>();
+    tps.push(new TypeParameterType("T", null, null));
+    interfaceType.typeParameters = tps;
+    isTrue(typeContainsTypeParameter(interfaceType as Type));
+  });
+
+  test('TypeAliasType details', (ctx: TestContext): void => {
+    let aliasType = new TypeAliasType(
+      "MyAlias",
+      null,
+      new I32Type() as Type,
+      false,
+      null
+    );
+    isFalse(typeContainsTypeParameter(aliasType as Type));
+
+    // With concrete type arguments
+    let args1 = new Array<Type>();
+    args1.push(new I32Type() as Type);
+    aliasType.typeArguments = args1;
+    isFalse(typeContainsTypeParameter(aliasType as Type));
+
+    // With type parameter arguments
+    let args2 = new Array<Type>();
+    args2.push(new TypeParameterType("T", null, null) as Type);
+    aliasType.typeArguments = args2;
+    isTrue(typeContainsTypeParameter(aliasType as Type));
+
+    // Open generic type alias (uninstantiated)
+    aliasType.typeArguments = null;
+    let tps = new Array<TypeParameterType>();
+    tps.push(new TypeParameterType("T", null, null));
+    aliasType.typeParameters = tps;
+    isTrue(typeContainsTypeParameter(aliasType as Type));
+  });
+
+  test('MixinType details', (ctx: TestContext): void => {
+    let mixinType = new MixinType("MyMixin");
+    isFalse(typeContainsTypeParameter(mixinType as Type));
+
+    // With concrete type arguments
+    let args1 = new Array<Type>();
+    args1.push(new I32Type() as Type);
+    mixinType.typeArguments = args1;
+    isFalse(typeContainsTypeParameter(mixinType as Type));
+
+    // With type parameter arguments
+    let args2 = new Array<Type>();
+    args2.push(new TypeParameterType("T", null, null) as Type);
+    mixinType.typeArguments = args2;
+    isTrue(typeContainsTypeParameter(mixinType as Type));
+
+    // Reset type arguments, test onType containing type parameter
+    mixinType.typeArguments = null;
+    mixinType.onType = new TypeParameterType("T", null, null) as Type;
+    isTrue(typeContainsTypeParameter(mixinType as Type));
+
+    // with concrete onType
+    mixinType.onType = new I32Type() as Type;
+    isFalse(typeContainsTypeParameter(mixinType as Type));
+
+    // Open generic mixin (uninstantiated)
+    mixinType.onType = null;
+    let tps = new Array<TypeParameterType>();
+    tps.push(new TypeParameterType("T", null, null));
+    mixinType.typeParameters = tps;
+    isTrue(typeContainsTypeParameter(mixinType as Type));
+  });
+});

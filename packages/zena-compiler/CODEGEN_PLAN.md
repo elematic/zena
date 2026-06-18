@@ -54,8 +54,8 @@ This plan tracks all features required for the code generation phase to achieve 
 - [x] **Tuples:**
   - [x] Fixed-length WASM GC struct/array layout representing the tuple.
   - [x] Compile-time known index access (`t[idx]`) mapping to structural field access.
-- [ ] **Destructuring:**
-  - [ ] Destructuring patterns for records (`let {x, y} = p`) and tuples (`let (a, b) = t`) in variable declarations.
+- [x] **Destructuring:**
+  - [x] Destructuring patterns for records (`let {x, y} = p`) and tuples (`let (a, b) = t`) in variable declarations.
 - [ ] **Multi-Value Returns:**
   - [ ] Unboxed multi-value returns mapping directly to WASM's multi-value stack representation (zero-heap allocation).
   - [ ] Immediate call-site destructuring for multi-value return bindings.
@@ -76,22 +76,13 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Capture analysis to identify non-local variables.
   - [x] Heap-allocated context struct creation to store captured lexical state.
   - [x] Rewriting variable references inside inner functions to access the context struct.
-        <<<<<<< HEAD
 - [x] **Argument Adaptation:**
   - [x] Automatic generation of adapter wrappers when passing functions with fewer arguments than expected by the call site.
 - [ ] **Overloaded Functions:**
-  - [ ] Overload name mangling based on parameter counts and types to resolve unique WASM export names.
+  - [x] Overload name mangling based on parameter counts and types to resolve unique WASM export names.
 - [x] **Custom Operator Protocols:**
   - [x] Custom `operator ==` overloading resolution and method/vtable compilation.
-  - [x] # Custom index accessors (`operator []`) resolving to indexed `get`/`set` function calls.
-- [ ] **Argument Adaptation:**
-  - [ ] Automatic generation of adapter wrappers when passing functions with fewer arguments than expected by the call site.
-- [x] **Overloaded Functions:**
-  - [x] Overload name mangling based on parameter counts and types to resolve unique WASM export names.
-- [ ] **Custom Operator Protocols:**
-  - [x] Custom `operator ==` overloading resolution and method/vtable compilation.
   - [ ] Custom index accessors (`operator []`) resolving to indexed `get`/`set` function calls.
-    > > > > > > > 5ef945b0 ([zena-compiler] Update codegen plan to reflect current status. Add `is` operator tests and fix primitive tests.)
 
 ### 5. Classes & Objects
 

@@ -1028,32 +1028,52 @@ export final class ScopeBuilder {
       case Pattern: { this.#declarePattern(node as Pattern, "let", node); }
       case Identifier as ident: {
         if (ident.name != "_") {
-          this.#current.declare(ident.name, false, ident, this.#modulePath);
+          let resolved = this.#current.resolve(ident.name);
+          var isTypePattern = false;
+          if (resolved != null) {
+            if ((resolved as Symbol).isType()) {
+              isTypePattern = true;
+            }
+          }
+          if (isTypePattern) {
+            this.#symbols.record(ident, resolved as Symbol);
+          } else {
+            this.#current.declare(ident.name, false, ident, this.#modulePath);
             let sym = this.#current.getLocal(ident.name) as Symbol;
             this.#symbols.record(ident, sym);
             this.#allVariables.push(sym);
           }
         }
-        case _: {}
       }
+      case _: {}
     }
+  }
 
-    #declarePatternNode(node: Node, kind: String, declaration: Node): void {
-      match (node) {
-        case Pattern: { this.#declarePattern(node as Pattern, kind, declaration); }
-        case Identifier as ident: {
-          if (ident.name != "_") {
-            // Note: ident bindings in declarePatternNode should theoretically propagate kind, 
-            // but the original code had "false". Leaving it as kind=="var" for correctness if used.
+  #declarePatternNode(node: Node, kind: String, declaration: Node): void {
+    match (node) {
+      case Pattern: { this.#declarePattern(node as Pattern, kind, declaration); }
+      case Identifier as ident: {
+        if (ident.name != "_") {
+          let resolved = this.#current.resolve(ident.name);
+          var isTypePattern = false;
+          if (resolved != null) {
+            if ((resolved as Symbol).isType()) {
+              isTypePattern = true;
+            }
+          }
+          if (isTypePattern) {
+            this.#symbols.record(ident, resolved as Symbol);
+          } else {
             this.#current.declare(ident.name, kind == "var", ident, this.#modulePath);
             let sym = this.#current.getLocal(ident.name) as Symbol;
             this.#symbols.record(ident, sym);
             this.#allVariables.push(sym);
           }
         }
-        case _: {}
       }
+      case _: {}
     }
+  }
 
   #declareParameter(param: Parameter): void {
     this.#current.declare(param.name.name, false, param, this.#modulePath);

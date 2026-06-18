@@ -10,11 +10,11 @@ import {
 } from '../ast.zena';
 import { walk } from '../visitor.zena';
 import { RecordType, TupleType } from '../types.zena';
-import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
+import { SemanticModel, InterfaceAdaptation } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, ValTypeExternRef } from './wasm.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, ValTypeExternRef, WasmType } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -28,7 +28,7 @@ import { console } from 'zena:console';
 
 import { 
   WasmModule, WasmFunction, WasmStruct, WasmField, WasmSignature, WasmGlobal, 
-  VTableInit, RecordDispatchInfo 
+  VTableInit, RecordDispatchInfo, WasmArray
 } from './wasm-module.zena';
 import { 
   getClassKey, getInterfaceKey, getSignatureKey, matchOverload, 
@@ -37,7 +37,8 @@ import {
   ExportKey, ExportGlobalKey, getClassInterfaceKey, getInterfaceMemberKey,
   getClassPrivateFieldKey, getClassVTableName, getClassSingletonName,
   getInterfaceTrampolineName, getClassInterfaceVTableName,
-  MixinKey, getMixinKey, classInterfaceKeyToString, getMixinKeyFromSymbol
+  MixinKey, getMixinKey, classInterfaceKeyToString, getMixinKeyFromSymbol,
+  substituteTypeParams
 } from './codegen-utils.zena';
 import { 
   typeToValType, getClosureStruct, getCellStruct, getInterfaceMemberSignature, 
@@ -53,6 +54,7 @@ export class DiscoveryPass {
   program: Program;
   wasm: WasmModule;
   usage: UsageAnalysisResult;
+  discoveredTypes = new HashSet<String>();
   new(this.program, this.wasm, this.usage);
   
   getClassType(node: ClassDeclaration, model: SemanticModel): ClassType | null {
@@ -75,6 +77,8 @@ export class DiscoveryPass {
         this.wasm.stringClass = r;
       } else if (r.name == "TemplateStringsArray" && r.sourcePath == "zena:template-strings-array") {
         this.wasm.templateStringsArrayClass = r;
+      } else if (r.name == "Box" && r.sourcePath == "zena:box") {
+        this.wasm.boxClass = r;
       }
     }
     return ret;
@@ -93,6 +97,12 @@ export class DiscoveryPass {
 
   discoverType(t: Type | null, model: SemanticModel): void {
      if (t == null) { return; }
+     let typeStr = typeToString(t as Type);
+     if (this.discoveredTypes.has(typeStr)) {
+        return;
+     }
+     this.discoveredTypes.add(typeStr);
+     
      if (t is RecordType) {
         let rec = t as RecordType;
         for (let pair in rec.properties) {
@@ -122,28 +132,147 @@ export class DiscoveryPass {
         this.discoverType(ft.returnType, model);
         getClosureStruct(this.wasm, ft);
      } else if (t is ClassType) {
-        let ct = t as ClassType;
-        if (ct.name == "String" && ct.sourcePath == "zena:string") {
-           this.wasm.stringClass = ct;
-        } else if (ct.name == "TemplateStringsArray" && ct.sourcePath == "zena:template-strings-array") {
-           this.wasm.templateStringsArrayClass = ct;
-        }
-        if (ct.isExtension && ct.onType != null) {
-           this.discoverType(ct.onType, model);
-        }
-        for (let pair in ct.members) {
-           if (pair.value is FieldInfo) {
-              this.discoverType(pair.value.type, model);
-           }
-        }
-     } else if (t is ArrayType) {
-        let at = t as ArrayType;
-        this.discoverType(at.elementType, model);
-        let elemValType = typeToValType(this.wasm, at.elementType);
-        this.wasm.getArray(elemValType, true);
-     } else if (t is ByteArrayType) {
-        this.wasm.getByteArrayType();
-     }
+         let ct = t as ClassType;
+         if (ct.isExtension) {
+            if (ct.onType != null) {
+               this.discoverType(ct.onType, model);
+            }
+         } else {
+            if (ct.genericSource != null) {
+            let genSrc = ct.genericSource as ClassType;
+            if (ct.vtable.length == 0 && genSrc.vtable.length > 0) {
+               for (let vEntry in genSrc.vtable) {
+                  ct.vtable.push(vEntry);
+               }
+            }
+         }
+         if (ct.name == "String" && ct.sourcePath == "zena:string") {
+            this.wasm.stringClass = ct;
+         } else if (ct.name == "TemplateStringsArray" && ct.sourcePath == "zena:template-strings-array") {
+            this.wasm.templateStringsArrayClass = ct;
+         } else if (ct.name == "Box" && ct.sourcePath == "zena:box") {
+            this.wasm.boxClass = ct;
+         }
+
+         // 1. Discover all type arguments recursively first
+         if (ct.typeArguments != null) {
+            let args = ct.typeArguments as Array<Type>;
+            for (let arg in args) {
+               this.discoverType(arg, model);
+            }
+         }
+
+         // 2. Register specialized class struct if it's not already present
+         let cKey = getClassKey(ct);
+         if (!this.wasm.classStructs.has(cKey)) {
+            var structName = ct.name;
+            if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
+               structName = structName + "_" + typeToString(ct);
+            }
+            let emptyStruct = new WasmStruct(structName, new Array<WasmField>());
+            emptyStruct.classType = ct;
+            this.wasm.types.push(emptyStruct);
+            this.wasm.classStructs[cKey] = emptyStruct;
+
+            let emptyVTableStruct = new WasmStruct(structName + "_VTable", new Array<WasmField>());
+            emptyVTableStruct.classType = ct;
+            this.wasm.types.push(emptyVTableStruct);
+            this.wasm.classVTableStructs[cKey] = emptyVTableStruct;
+            
+            // Link superStruct if ct has superType.
+            if (ct.superType != null) {
+               let superCt = ct.superType as ClassType;
+               this.discoverType(superCt, model);
+               
+               let superKey = getClassKey(superCt);
+               emptyStruct.superStruct = this.wasm.classStructs[superKey];
+               emptyVTableStruct.superStruct = this.wasm.classVTableStructs[superKey];
+            }
+            
+            // 3. Populate fields of the newly created WasmStruct!
+            let fields = new Array<WasmField>();
+            if (ct.superType != null) {
+               let superKey = getClassKey(ct.superType as ClassType);
+               let superSt = this.wasm.classStructs[superKey];
+               for (let f in superSt.fields) {
+                  fields.push(f);
+               }
+            } else {
+               var rootVst = emptyVTableStruct;
+               while (rootVst.superStruct != null) {
+                  rootVst = rootVst.superStruct as WasmStruct;
+               }
+               fields.push(new WasmField("<vtable>", new ValTypeRefNull(rootVst), true));
+            }
+            
+            for (let pair in ct.members) {
+               if (pair.value is MethodInfo) {
+                  continue;
+               }
+               if (pair.value.isAbstract) {
+                  continue;
+               }
+               if (pair.value.isStatic) {
+                  continue;
+               }
+               var isInherited = false;
+               if (ct.superType != null) {
+                  let superKey = getClassKey(ct.superType as ClassType);
+                  let superSt = this.wasm.classStructs[superKey];
+                  for (let sf in superSt.fields) {
+                     if (sf.name == pair.key) {
+                        isInherited = true;
+                     }
+                  }
+               }
+               if (!isInherited) {
+                  let fName = if (pair.key.length > 0 && pair.key.sliceBytes(0, 1) == "#") {
+                     getClassPrivateFieldKey(cKey, pair.key)
+                  } else {
+                     pair.key
+                  };
+                  let fieldType = substituteTypeParams(ct.typeParameters, ct.typeArguments, pair.value.type);
+                  // Make sure we discover the substituted field type as well!
+                  this.discoverType(fieldType, model);
+                  
+                  fields.push(new WasmField(fName, typeToValType(this.wasm, fieldType), true));
+               }
+            }
+            for (let f in fields) {
+               emptyStruct.fields.push(f);
+            }
+            
+            // Populate emptyVTableStruct fields
+            for (let methName in ct.vtable) {
+               emptyVTableStruct.fields.push(new WasmField(methName, new ValTypeFuncRef(), false));
+            }
+         }
+
+         let typeParams = ct.typeParameters;
+         let typeArgs = ct.typeArguments;
+         for (let pair in ct.members) {
+            if (pair.value is FieldInfo) {
+               let fieldType = substituteTypeParams(typeParams, typeArgs, pair.value.type);
+               this.discoverType(fieldType, model);
+            }
+         }
+         }
+      } else if (t is ArrayType) {
+         let at = t as ArrayType;
+         this.discoverType(at.elementType, model);
+         let elemValType = typeToValType(this.wasm, at.elementType);
+         this.wasm.getArray(elemValType, true);
+      } else if (t is ByteArrayType) {
+         this.wasm.getByteArrayType();
+      } else if (t is UnionType) {
+         let ut = t as UnionType;
+         for (let subtype in ut.types) {
+            this.discoverType(subtype, model);
+         }
+      } else if (t is TypeAliasType) {
+         let tat = t as TypeAliasType;
+         this.discoverType(tat.target, model);
+      }
   }
 
   registerClassMethod(
@@ -1533,6 +1662,9 @@ export class DiscoveryPass {
                     if (intrinsicName == "wasi_write_string") {
                       this.registerWasiInfra(moduleModel);
                     }
+                    if (intrinsicName == "hash") {
+                      this.wasm.ensureHashInfra(moduleModel);
+                    }
                   } else {
                     throw new Error("Intrinsic decorator must have exactly one argument");
                   }
@@ -1902,6 +2034,8 @@ export class DiscoveryPass {
       }
       fIdx += 1;
     }
+
+
   }
 
   registerClosure(funcExpr: FunctionExpression, model: SemanticModel): void {
@@ -1986,3 +2120,5 @@ export class DiscoveryPass {
     this.wasm.closureFunctions[funcExpr] = wasmFunc;
   }
 }
+
+

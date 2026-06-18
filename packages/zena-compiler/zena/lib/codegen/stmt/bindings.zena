@@ -1,36 +1,60 @@
 import { Error } from 'zena:error';
-import { VariableDeclaration, Expression, IdentifierPattern, TuplePattern, Node } from '../../ast.zena';
+import { Symbol } from '../../scope/symbol.zena';
+import { 
+  VariableDeclaration, Expression, IdentifierPattern, TuplePattern, RecordPattern, 
+  AssignmentPattern, AsPattern, BindingPattern, BindingProperty, Node, Identifier 
+} from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
 import { typeToValType, getCellStruct } from '../type-mapping.zena';
-import { Type, InlineTupleType, UnionType } from '../../types.zena';
+import { 
+  Type, InlineTupleType, UnionType, TypeAliasType, NullType, VoidType, 
+  RecordType, TupleType, ClassType 
+} from '../../types.zena';
 import { Array } from 'zena:array';
+import { RecordDispatchInfo, WasmField, sortWasmFields } from '../wasm-module.zena';
+import { getClassKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
+import { i32ToString } from 'zena:string-convert';
+import { ValTypeRefNull, ValTypeRef, ValType, ValTypeAnyRef } from '../wasm.zena';
 
-let getInlineTupleElementTypes = (t: Type | null): Array<Type> | null => {
-  if (t == null) return null;
-  match (t as Type) {
-    case InlineTupleType: {
-      return (t as InlineTupleType).elementTypes;
-    }
-    case UnionType: {
+export let generatePatternBinding = (
+  ctx: FunctionContext,
+  pattern: Node,
+  valueType: Type,
+  loadValue: () => void
+): void => {
+  // Unwrap aliases and unions
+  var t = valueType;
+  while (t is TypeAliasType || t is UnionType) {
+    if (t is TypeAliasType) {
+      t = (t as TypeAliasType).target;
+    } else {
       let ut = t as UnionType;
-      for (let member in ut.types) {
-        if (member is InlineTupleType) {
-          return (member as InlineTupleType).elementTypes;
+      var found: Type | null = null;
+      for (let m in ut.types) {
+        if (!(m is NullType || m is VoidType)) {
+          found = m;
+          break;
         }
       }
+      if (found != null) {
+        t = found as Type;
+      } else {
+        break;
+      }
     }
-    case _: {}
   }
-  return null;
-};
 
-export let generateVariableDeclaration = (ctx: FunctionContext, stmt: VariableDeclaration, genExpr: (e: Expression, discardValue: boolean) => void): void => {
-  if (stmt.init != null) {
-    genExpr(stmt.init as Expression, false);
-    if (stmt.pattern is IdentifierPattern) {
-      let ident = stmt.pattern as IdentifierPattern;
-      let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
+  match (pattern) {
+    case BindingPattern as bp: {
+      generatePatternBinding(ctx, bp.pattern, t, loadValue);
+    }
+    case AssignmentPattern as ap: {
+      generatePatternBinding(ctx, ap.left, t, loadValue);
+    }
+    case AsPattern as ap: {
+      let sym = ctx.wasmFunction.model.resolveDeclaration(ap.name);
       if (sym != null && ctx.localIndices.has(sym.id)) {
+        loadValue();
         if (ctx.isCelled(sym.id)) {
           let symType = ctx.wasmFunction.model.getBindingType(sym);
           let valType = typeToValType(ctx.wasm, symType);
@@ -39,42 +63,243 @@ export let generateVariableDeclaration = (ctx: FunctionContext, stmt: VariableDe
         }
         ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
       }
-    } else if (stmt.pattern is TuplePattern) {
-      let tp = stmt.pattern as TuplePattern;
-      let initType = ctx.wasmFunction.model.getNodeType(stmt.init as Expression);
-      let inlineElements = getInlineTupleElementTypes(initType);
-      if (inlineElements != null) {
-        let elems = inlineElements as Array<Type>;
-        var i = tp.elements.length - 1;
-        while (i >= 0) {
-          let el = tp.elements[i];
-          if (el != null) {
-            match (el as Node) {
-              case IdentifierPattern: {
-                let ident = el as IdentifierPattern;
-                let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
-                if (sym != null && ctx.localIndices.has(sym.id)) {
-                  if (ctx.isCelled(sym.id)) {
-                    let symType = ctx.wasmFunction.model.getBindingType(sym);
-                    let valType = typeToValType(ctx.wasm, symType);
-                    let cellStruct = getCellStruct(ctx.wasm, valType);
-                    ctx.emitter.emitStructNew(cellStruct.index);
-                  }
-                  ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
-                }
-              }
-              case _: {
-                throw new Error("Nested patterns in inline tuple destructuring not yet supported");
-              }
-            }
-          } else {
-            ctx.emitter.emitDrop();
+      generatePatternBinding(ctx, ap.pattern, t, loadValue);
+    }
+    case IdentifierPattern as ident: {
+      if (ident.name != "_") {
+        let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
+        if (sym != null && ctx.localIndices.has(sym.id)) {
+          loadValue();
+          if (ctx.isCelled(sym.id)) {
+            let symType = ctx.wasmFunction.model.getBindingType(sym);
+            let valType = typeToValType(ctx.wasm, symType);
+            let cellStruct = getCellStruct(ctx.wasm, valType);
+            ctx.emitter.emitStructNew(cellStruct.index);
           }
-          i -= 1;
+          ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
+        } else {
+          loadValue();
+          ctx.emitter.emitDrop();
         }
       } else {
-        throw new Error("Boxed tuple destructuring in variable declaration not yet supported");
+        loadValue();
+        ctx.emitter.emitDrop();
       }
     }
+    case Identifier as ident: {
+      if (ident.name != "_") {
+        let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
+        if (sym != null && !(sym as Symbol).isType() && ctx.localIndices.has(sym.id)) {
+          loadValue();
+          if (ctx.isCelled(sym.id)) {
+            let symType = ctx.wasmFunction.model.getBindingType(sym);
+            let valType = typeToValType(ctx.wasm, symType);
+            let cellStruct = getCellStruct(ctx.wasm, valType);
+            ctx.emitter.emitStructNew(cellStruct.index);
+          }
+          ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
+        } else {
+          loadValue();
+          ctx.emitter.emitDrop();
+        }
+      } else {
+        loadValue();
+        ctx.emitter.emitDrop();
+      }
+    }
+    case TuplePattern as tp: {
+      if (t is InlineTupleType) {
+        let itt = t as InlineTupleType;
+        let tempLocals = new Array<i32>();
+        for (let elType in itt.elementTypes) {
+          let vType = typeToValType(ctx.wasm, elType);
+          tempLocals.push(ctx.allocLocal(vType));
+        }
+        
+        loadValue();
+        
+        var i = itt.elementTypes.length - 1;
+        while (i >= 0) {
+          ctx.emitter.emitLocalSet(tempLocals[i]);
+          i -= 1;
+        }
+        
+        var idx = 0;
+        while (idx < tp.elements.length) {
+          let el = tp.elements[idx];
+          if (el != null) {
+            let elType = itt.elementTypes[idx];
+            let loadElem = (): void => {
+              ctx.emitter.emitLocalGet(tempLocals[idx]);
+            };
+            generatePatternBinding(ctx, el as Node, elType, loadElem);
+          }
+          idx += 1;
+        }
+      } else if (t is TupleType) {
+        let tt = t as TupleType;
+        let tempLocal = ctx.allocLocal(typeToValType(ctx.wasm, tt));
+        loadValue();
+        ctx.emitter.emitLocalSet(tempLocal);
+        
+        let fields = new Array<WasmField>();
+        for (var idx = 0; idx < tt.elementTypes.length; idx += 1) {
+          let type = tt.elementTypes[idx];
+          fields.push(new WasmField(i32ToString(idx), typeToValType(ctx.wasm, type), false));
+        }
+        let structType = ctx.wasm.getStruct(null, fields);
+        
+        var idx = 0;
+        while (idx < tp.elements.length) {
+          let el = tp.elements[idx];
+          if (el != null) {
+            let elType = tt.elementTypes[idx];
+            let loadElem = (): void => {
+              ctx.emitter.emitLocalGet(tempLocal);
+              ctx.emitter.emitRefCast(structType.index);
+              ctx.emitter.emitStructGet(structType.index, idx);
+            };
+            generatePatternBinding(ctx, el as Node, elType, loadElem);
+          }
+          idx += 1;
+        }
+      } else {
+        throw new Error("Tuple pattern destructuring expects TupleType or InlineTupleType");
+      }
+    }
+    case RecordPattern as rp: {
+      if (t is RecordType) {
+        let rt = t as RecordType;
+        let fields = new Array<WasmField>();
+        for (let pair in rt.properties) {
+          fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
+        }
+        sortWasmFields(fields);
+        let dispatchInfo_opt = ctx.wasm.findRecordDispatch(fields);
+        let dispatchInfo = match (dispatchInfo_opt) {
+          case RecordDispatchInfo as info: info
+          case null: ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields)
+        };
+        
+        let tempLocal = ctx.allocLocal(typeToValType(ctx.wasm, rt));
+        loadValue();
+        ctx.emitter.emitLocalSet(tempLocal);
+        
+        for (let prop in rp.properties) {
+          let propName = prop.name.name;
+          var fieldIndex = -1;
+          var fieldType: Type | null = null;
+          for (var idx = 0; idx < fields.length; idx += 1) {
+            if (fields[idx].name != null && (fields[idx].name as String) == propName) {
+              fieldIndex = idx;
+              if (rt.properties.has(propName)) {
+                fieldType = rt.properties[propName];
+              }
+            }
+          }
+          if (fieldIndex == -1 || fieldType == null) {
+            throw new Error("Property " + propName + " not found on record");
+          }
+          
+          let targetFieldType = fieldType as Type;
+          let targetFieldIndex = fieldIndex;
+          let loadField = (): void => {
+            ctx.emitter.emitLocalGet(tempLocal);
+            ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Instance
+            ctx.emitter.emitLocalGet(tempLocal);
+            ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 1); // VTable
+            ctx.emitter.emitStructGet(dispatchInfo.vtableType.index, targetFieldIndex);
+            ctx.emitter.emitCallRef(dispatchInfo.getterTypes[targetFieldIndex].index);
+          };
+          generatePatternBinding(ctx, prop.value, targetFieldType, loadField);
+        }
+      } else if (t is ClassType) {
+        let ct = t as ClassType;
+        if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
+          throw new Error("Class struct not found: " + ct.name);
+        }
+        let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+        
+        let tempLocal = ctx.allocLocal(typeToValType(ctx.wasm, ct));
+        loadValue();
+        ctx.emitter.emitLocalSet(tempLocal);
+        
+        for (let prop in rp.properties) {
+          let propName = prop.name.name;
+          var fieldIndex = -1;
+          var fieldType: Type | null = null;
+          
+          let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+            if (ctx.wasmFunction.classType != null) {
+              getClassPrivateFieldKey(getClassKey(ctx.wasmFunction.classType as ClassType), propName)
+            } else {
+              propName
+            }
+          } else {
+            propName
+          };
+          
+          for (var idx = 0; idx < structInfo.fields.length; idx += 1) {
+            if (structInfo.fields[idx].name != null && (structInfo.fields[idx].name as String) == lookupName) {
+              fieldIndex = idx;
+            }
+          }
+          if (ct.members.has(propName)) {
+            fieldType = ct.members[propName].type;
+          }
+          if (fieldIndex == -1 || fieldType == null) {
+            throw new Error("Field " + propName + " not found on class " + ct.name);
+          }
+          
+          var targetFieldType = fieldType as Type;
+          let nodeType = ctx.wasmFunction.model.getNodeType(prop.value);
+          if (nodeType != null) {
+            targetFieldType = nodeType as Type;
+          }
+          
+          let targetFieldIndex = fieldIndex;
+          let loadField = (): void => {
+            ctx.emitter.emitLocalGet(tempLocal);
+            ctx.emitter.emitRefCast(structInfo.index);
+            ctx.emitter.emitStructGet(structInfo.index, targetFieldIndex);
+            
+            let fieldWasmType = structInfo.fields[targetFieldIndex].type;
+            if (fieldWasmType is ValTypeAnyRef) {
+              let targetWasmType = typeToValType(ctx.wasm, targetFieldType);
+              match (targetWasmType) {
+                case ValTypeRefNull as refNull: {
+                  ctx.emitter.emitRefCast(refNull.target.index);
+                }
+                case ValTypeRef as refVal: {
+                  ctx.emitter.emitRefCast(refVal.target.index);
+                }
+                case _: {}
+              }
+            }
+          };
+          generatePatternBinding(ctx, prop.value, targetFieldType, loadField);
+        }
+      } else {
+        throw new Error("Record pattern destructuring expects RecordType or ClassType");
+      }
+    }
+    case _: {
+      throw new Error("Unsupported pattern for destructuring");
+    }
+  }
+};
+
+export let generateVariableDeclaration = (
+  ctx: FunctionContext, 
+  stmt: VariableDeclaration, 
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  if (stmt.init != null) {
+    let initExpr = stmt.init as Expression;
+    let initType = ctx.wasmFunction.model.getNodeType(initExpr);
+    let loadInit = (): void => {
+      genExpr(initExpr, false);
+    };
+    generatePatternBinding(ctx, stmt.pattern, initType, loadInit);
   }
 };

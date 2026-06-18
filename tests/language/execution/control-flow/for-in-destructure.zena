@@ -1,0 +1,56 @@
+// @mode: run
+// @stdout: found a=1\nfound b=2\ndone
+
+import { Iterable, Iterator } from 'zena:iterator';
+import { console } from 'zena:console';
+
+class Item {
+  key: String;
+  value: i32;
+  new(this.key, this.value);
+}
+
+class ItemIterator implements Iterator<Item> {
+  var count: i32 = 0;
+  new();
+
+  next(): inline (true, Item) | inline (false, _) {
+    if (this.count == 0) {
+      this.count = 1;
+      return (true, new Item("a", 1));
+    }
+    if (this.count == 1) {
+      this.count = 2;
+      return (true, new Item("b", 2));
+    }
+    return (false, _);
+  }
+}
+
+class ItemIterable implements Iterable<Item> {
+  new();
+
+  :Iterable.iterator(): Iterator<Item> {
+    return new ItemIterator();
+  }
+
+  contains(value: Item): boolean { return false; }
+  all(predicate: (item: Item) => boolean): boolean { return false; }
+  some(predicate: (item: Item) => boolean): boolean { return false; }
+  fold<R>(initial: R, combine: (acc: R, item: Item) => R): R { return initial; }
+  find(predicate: (item: Item) => boolean): inline (true, Item) | inline (false, _) { return (false, _); }
+}
+
+export let main = (): void => {
+  let iterable = new ItemIterable();
+
+  var foundA = false;
+  var foundB = false;
+  for (let {key, value} in iterable) {
+    if (key == "a" && value == 1) foundA = true;
+    if (key == "b" && value == 2) foundB = true;
+  }
+  if (foundA) console.log("found a=1");
+  if (foundB) console.log("found b=2");
+  console.log("done");
+};

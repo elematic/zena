@@ -44,11 +44,11 @@ import { generateNewExpression } from './expr/classes.zena';
 import { generateMatchExpression } from './expr/match.zena';
 import { generateMemberExpression, generateIndexExpression } from './expr/member.zena';
 import { generateRecordLiteral, generateTupleLiteral, generateArrayLiteral } from './expr/literals.zena';
-import { generateReturnStatement, generateExpressionStatement, generateIfStatement } from './stmt/control-flow.zena';
+import { generateReturnStatement, generateExpressionStatement, generateIfStatement, generateValueReturn } from './stmt/control-flow.zena';
 import { generateBreakStatement, generateContinueStatement, generateWhileStatement, generateForStatement, generateForInStatement } from './stmt/loops.zena';
 import { generateBlockStatement } from './stmt/blocks.zena';
-import { generateVariableDeclaration } from './stmt/bindings.zena';
-import { discoverLocalsFromExpr, discoverLocalsFromStmt } from './locals.zena';
+import { generateVariableDeclaration, generatePatternBinding } from './stmt/bindings.zena';
+import { discoverLocalsFromExpr, discoverLocalsFromStmt, discoverLocalsFromPattern } from './locals.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
 import { WasmFunction, WasmModule } from './wasm-module.zena';
 
@@ -208,6 +208,8 @@ export class FunctionGenerator {
         this.generateStringCreate();
       } else if (name == "$stringSetByte") {
         this.generateStringSetByte();
+      } else if (name == "$stringHash") {
+        this.generateStringHash();
       } else {
         this.ctx.emitter.emitUnreachable();
       }
@@ -259,6 +261,9 @@ export class FunctionGenerator {
         if (sym != null) {
           this.ctx.localIndices[sym.id] = i + offset;
         }
+        if (param.pattern != null) {
+          discoverLocalsFromPattern(this.ctx, param.pattern as Node);
+        }
       }
     }
     
@@ -299,6 +304,21 @@ export class FunctionGenerator {
           this.ctx.emitter.emitStructNew(cellStruct.index);
           this.ctx.emitter.emitLocalSet(cellLocalIdx);
           this.ctx.localIndices[sym.id] = cellLocalIdx;
+        }
+      }
+      
+      for (var i = 0; i < params.length; i += 1) {
+        let param = params[i];
+        if (param.pattern != null) {
+          let sym = this.ctx.wasmFunction.model.resolveDeclaration(param.name);
+          if (sym != null) {
+            let paramIdx = this.ctx.localIndices[sym.id];
+            let symType = this.ctx.wasmFunction.model.getBindingType(sym);
+            let loadParamValue = (): void => {
+              this.ctx.emitter.emitLocalGet(paramIdx);
+            };
+            generatePatternBinding(this.ctx, param.pattern as Node, symType, loadParamValue);
+          }
         }
       }
     }
@@ -503,7 +523,7 @@ export class FunctionGenerator {
           }
         }
         case Expression as expr: {
-          this.generateExpression(expr);
+          generateValueReturn(this.ctx, expr, (e: Expression, d: boolean = false) => this.generateExpression(e, d));
           this.ctx.emitter.emitReturn();
           this.ctx.isReachable = false;
         }
@@ -534,7 +554,7 @@ export class FunctionGenerator {
       case IfStatement: generateIfStatement(this.ctx, stmt as IfStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
       case WhileStatement: generateWhileStatement(this.ctx, stmt as WhileStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
       case ForStatement: generateForStatement(this.ctx, stmt as ForStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
-      case ForInStatement: generateForInStatement(this.ctx, stmt as ForInStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
+      case ForInStatement: generateForInStatement(this.ctx, stmt as ForInStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s), generatePatternBinding)
       case VariableDeclaration: generateVariableDeclaration(this.ctx, stmt as VariableDeclaration, (e: Expression) => this.generateExpression(e))
       case _: {
         var typeStr = "Other Node";
@@ -1510,5 +1530,114 @@ export class FunctionGenerator {
     this.ctx.emitter.emitLocalGet(valueParam);
 
     this.ctx.emitter.emitArraySet(byteArrayTypeIndex);
+  }
+
+  generateStringHash(): void {
+    var stringStruct: WasmStruct | null = null;
+    let stringClass = this.ctx.wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (this.ctx.wasm.classStructs.has(key)) {
+        stringStruct = this.ctx.wasm.classStructs[key];
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("$stringHash: String class struct not found!");
+    }
+    let stringStructIndex = (stringStruct as WasmStruct).index;
+    let byteArrayType = this.ctx.wasm.getByteArrayType();
+    let byteArrayTypeIndex = byteArrayType.index;
+
+    var dataFieldIdx = -1;
+    var startFieldIdx = -1;
+    var endFieldIdx = -1;
+    for (var f = 0; f < (stringStruct as WasmStruct).fields.length; f += 1) {
+      let fieldName = (stringStruct as WasmStruct).fields[f].name;
+      if (fieldName != null) {
+        let nameStr = fieldName as String;
+        if (nameStr.endsWith("::#data")) {
+          dataFieldIdx = f;
+        } else if (nameStr.endsWith("::#start")) {
+          startFieldIdx = f;
+        } else if (nameStr.endsWith("::#end")) {
+          endFieldIdx = f;
+        }
+      }
+    }
+
+    if (dataFieldIdx == -1 || startFieldIdx == -1 || endFieldIdx == -1) {
+      throw new Error("$stringHash: String layout fields not found in structure!");
+    }
+
+    let locals = new Array<ValType>();
+    locals.push(new ValTypeRefNull(byteArrayType)); // local 1: data
+    locals.push(new ValTypeI32()); // local 2: hash
+    locals.push(new ValTypeI32()); // local 3: i
+    locals.push(new ValTypeI32()); // local 4: end
+    this.ctx.emitter.emitFunctionLocalsStart(locals);
+
+    let sParam = 0;
+    let dataLocal = 1;
+    let hashLocal = 2;
+    let iLocal = 3;
+    let endLocal = 4;
+
+    // data = s.#data
+    this.ctx.emitter.emitLocalGet(sParam);
+    this.ctx.emitter.emitStructGet(stringStructIndex, dataFieldIdx);
+    this.ctx.emitter.emitLocalSet(dataLocal);
+
+    // hash = -2128831035
+    this.ctx.emitter.emitI32Const(-2128831035);
+    this.ctx.emitter.emitLocalSet(hashLocal);
+
+    // i = s.#start
+    this.ctx.emitter.emitLocalGet(sParam);
+    this.ctx.emitter.emitStructGet(stringStructIndex, startFieldIdx);
+    this.ctx.emitter.emitLocalSet(iLocal);
+
+    // end = s.#end
+    this.ctx.emitter.emitLocalGet(sParam);
+    this.ctx.emitter.emitStructGet(stringStructIndex, endFieldIdx);
+    this.ctx.emitter.emitLocalSet(endLocal);
+
+    // loop/block
+    this.ctx.emitter.emitBlock(new ValTypeVoid());
+    this.ctx.emitter.emitLoop(new ValTypeVoid());
+
+    // if i >= end break
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitLocalGet(endLocal);
+    this.ctx.emitter.emitI32GeU();
+    this.ctx.emitter.emitBrIf(1);
+
+    // byte = data[i]
+    this.ctx.emitter.emitLocalGet(dataLocal);
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitArrayGetU(byteArrayTypeIndex);
+
+    // hash ^= byte
+    this.ctx.emitter.emitLocalGet(hashLocal);
+    this.ctx.emitter.emitI32Xor();
+    this.ctx.emitter.emitLocalSet(hashLocal);
+
+    // hash *= 16777619
+    this.ctx.emitter.emitLocalGet(hashLocal);
+    this.ctx.emitter.emitI32Const(16777619);
+    this.ctx.emitter.emitI32Mul();
+    this.ctx.emitter.emitLocalSet(hashLocal);
+
+    // i++
+    this.ctx.emitter.emitLocalGet(iLocal);
+    this.ctx.emitter.emitI32Const(1);
+    this.ctx.emitter.emitI32Add();
+    this.ctx.emitter.emitLocalSet(iLocal);
+
+    this.ctx.emitter.emitBr(0);
+    this.ctx.emitter.emitEnd();
+    this.ctx.emitter.emitEnd();
+
+    // return hash
+    this.ctx.emitter.emitLocalGet(hashLocal);
   }
 }

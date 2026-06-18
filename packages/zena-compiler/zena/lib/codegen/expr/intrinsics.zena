@@ -3,10 +3,11 @@ import { CallExpression, Expression, Node } from '../../ast.zena';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import { Opcode } from '../wasm.zena';
-import { WasmFunction } from '../wasm-module.zena';
-import { typeToValType } from '../type-mapping.zena';
-import { ValTypeRefNull, ValTypeRef, ValTypeVoid } from '../wasm.zena';
-import { Type } from '../../types.zena';
+import { WasmFunction, WasmStruct } from '../wasm-module.zena';
+import { ValTypeRefNull, ValTypeRef, ValTypeVoid, ValTypeI32, ValTypeAnyRef } from '../wasm.zena';
+import { Type, baseType, I32Type, BooleanType, U32Type, F64Type, ClassType, StringLiteralType, MethodInfo, MemberInfo } from '../../types.zena';
+import { getClassKey } from '../codegen-utils.zena';
+import { typeToValType, getClassMemberSignature } from '../type-mapping.zena';
 
 let getArrayTypeWithFallback = (ctx: FunctionContext, node: Node): Type | null => {
   var t = ctx.wasmFunction.model.getNodeType(node);
@@ -207,6 +208,238 @@ export let generateGlobalIntrinsic = (
   if (name == 'f64.reinterpret_i64') {
     genExpr(args[0], false);
     ctx.emitter.emitF64ReinterpretI64();
+    return;
+  }
+
+  if (name == 'eq') {
+    let left = args[0];
+    let right = args[1];
+    var leftType = ctx.wasmFunction.model.getNodeType(left);
+    if (leftType == null) {
+      let parent = ctx.wasmFunction.model.getParent(left);
+      if (parent != null) {
+        leftType = ctx.wasmFunction.model.getNodeType(parent as Node);
+      }
+    }
+    var rightType = ctx.wasmFunction.model.getNodeType(right);
+    if (rightType == null) {
+      let parent = ctx.wasmFunction.model.getParent(right);
+      if (parent != null) {
+        rightType = ctx.wasmFunction.model.getNodeType(parent as Node);
+      }
+    }
+    if (leftType == null || rightType == null) {
+      throw new Error("Missing type info for eq arguments");
+    }
+    let leftBase = baseType(leftType as Type);
+    let rightBase = baseType(rightType as Type);
+
+    if ((leftBase is I32Type || leftBase is BooleanType || leftBase is U32Type) &&
+        (rightBase is I32Type || rightBase is BooleanType || rightBase is U32Type)) {
+      genExpr(left, false);
+      genExpr(right, false);
+      ctx.emitter.emitI32Eq();
+      return;
+    }
+
+    if (leftBase is F64Type && rightBase is F64Type) {
+      genExpr(left, false);
+      genExpr(right, false);
+      ctx.emitter.emitF64Eq();
+      return;
+    }
+
+    if ((leftBase is StringLiteralType || (leftBase is ClassType && (leftBase as ClassType).name == "String")) &&
+        (rightBase is StringLiteralType || (rightBase is ClassType && (rightBase as ClassType).name == "String"))) {
+      var foundFunc: WasmFunction | null = null;
+      for (let f in ctx.wasm.functions) {
+        if (f.classType != null && (f.classType as ClassType).name == "String" && f.methodName == "==") {
+          foundFunc = f;
+        }
+      }
+      if (foundFunc == null) {
+        throw new Error("String operator== not found!");
+      }
+      genExpr(left, false);
+      genExpr(right, false);
+      ctx.emitter.emitCall(foundFunc as WasmFunction);
+      return;
+    }
+
+    // Default reference equality fallback
+    genExpr(left, false);
+    let leftWasmType = typeToValType(ctx.wasm, leftType as Type);
+    if (leftWasmType is ValTypeAnyRef) {
+      ctx.emitter.emitRefCastEqNull();
+    }
+    genExpr(right, false);
+    let rightWasmType = typeToValType(ctx.wasm, rightType as Type);
+    if (rightWasmType is ValTypeAnyRef) {
+      ctx.emitter.emitRefCastEqNull();
+    }
+    ctx.emitter.emitRefEq();
+    return;
+  }
+
+  if (name == 'hash') {
+    let arg = args[0];
+    var argType = ctx.wasmFunction.model.getNodeType(arg);
+    if (argType == null) {
+      let parent = ctx.wasmFunction.model.getParent(arg);
+      if (parent != null) {
+        argType = ctx.wasmFunction.model.getNodeType(parent as Node);
+      }
+    }
+    if (argType == null) {
+      throw new Error("Missing type info for hash argument");
+    }
+    let baseT = baseType(argType as Type);
+
+    // Primitives
+    if (baseT is I32Type || baseT is BooleanType || baseT is U32Type) {
+      genExpr(arg, false);
+      return;
+    }
+
+    // String
+    if (baseT is StringLiteralType || (baseT is ClassType && (baseT as ClassType).name == "String")) {
+      genExpr(arg, false);
+      
+      var foundFunc: WasmFunction | null = null;
+      for (let f in ctx.wasm.functions) {
+        if (f.name != null && (f.name as String) == "$stringHash") {
+          foundFunc = f;
+        }
+      }
+      if (foundFunc == null) {
+        throw new Error("$stringHash helper function not found!");
+      }
+      ctx.emitter.emitCall(foundFunc as WasmFunction);
+      return;
+    }
+
+    // ClassTypes (vtable dispatch hashCode or direct call)
+    if (baseT is ClassType) {
+      let ct = baseT as ClassType;
+      // We will look up hashCode on ct
+      var methodInfo: MethodInfo | null = null;
+      if (ct.members.has("hashCode")) {
+        let member = ct.members["hashCode"];
+        if (member is MethodInfo) {
+          methodInfo = member as MethodInfo;
+        }
+      }
+      
+      if (methodInfo != null) {
+        let mInfo = methodInfo as MethodInfo;
+        genExpr(arg, false);
+        
+        if (ct.isFinal || mInfo.isFinal) {
+          // Direct call
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = ct;
+          while (currClass != null && foundFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && !f.isStatic && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName == "hashCode") {
+                foundFunc = f;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+          if (foundFunc == null) {
+            throw new Error("hashCode WasmFunction not found for class: " + ct.name);
+          }
+          ctx.emitter.emitCall(foundFunc as WasmFunction);
+        } else {
+          // Dynamic dispatch via vtable
+          let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+          let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+          
+          var methodIndex = -1;
+          for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+            if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == "hashCode") {
+              methodIndex = i;
+            }
+          }
+          if (methodIndex == -1) {
+            throw new Error("hashCode method not found in vtable for class: " + ct.name);
+          }
+          
+          var scratchLocal = ctx.getStructScratchLocal(structInfo);
+          ctx.emitter.emitLocalTee(scratchLocal);
+          
+          ctx.emitter.emitLocalGet(scratchLocal);
+          ctx.emitter.emitRefCast(structInfo.index);
+          ctx.emitter.emitStructGet(structInfo.index, 0); // vtable is field 0
+          ctx.emitter.emitRefCast(vtableStruct.index);
+          ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
+          
+          let sig = getClassMemberSignature(ctx.wasm, ct, "hashCode");
+          ctx.emitter.emitRefCast(sig.index);
+          ctx.emitter.emitCallRef(sig.index);
+        }
+        return;
+      }
+    }
+
+    // Generic fallback (erased reference, e.g., type parameter type K or anyref)
+    genExpr(arg, false); // Stack: [value]
+    
+    // We allocate a local to tee/get the value
+    let targetWasmType = typeToValType(ctx.wasm, baseT);
+    let valLocal = ctx.allocLocal(targetWasmType);
+    ctx.emitter.emitLocalSet(valLocal);
+    
+    // Check if null
+    ctx.emitter.emitLocalGet(valLocal);
+    ctx.emitter.emitRefIsNull();
+    ctx.emitter.emitIf(new ValTypeI32());
+    ctx.emitter.emitI32Const(0);
+    ctx.emitter.emitElse();
+    
+    // Check if it's String
+    var stringStruct: WasmStruct | null = null;
+    let stringClass = ctx.wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (ctx.wasm.classStructs.has(key)) {
+        stringStruct = ctx.wasm.classStructs[key];
+      }
+    }
+    
+    if (stringStruct != null) {
+      let stringStructIdx = (stringStruct as WasmStruct).index;
+      ctx.emitter.emitLocalGet(valLocal);
+      ctx.emitter.emitRefTest(stringStructIdx);
+      ctx.emitter.emitIf(new ValTypeI32());
+      
+      // If it is a String, cast and call string hash helper
+      ctx.emitter.emitLocalGet(valLocal);
+      ctx.emitter.emitRefCast(stringStructIdx);
+      
+      var foundHashFunc: WasmFunction | null = null;
+      for (let f in ctx.wasm.functions) {
+        if (f.name != null && (f.name as String) == "$stringHash") {
+          foundHashFunc = f;
+        }
+      }
+      if (foundHashFunc == null) {
+        throw new Error("$stringHash helper function not found!");
+      }
+      ctx.emitter.emitCall(foundHashFunc as WasmFunction);
+      
+      ctx.emitter.emitElse();
+      
+      // If it is not a String:
+      // Fallback: return 0
+      ctx.emitter.emitI32Const(0);
+      
+      ctx.emitter.emitEnd(); // end String check if
+    } else {
+      ctx.emitter.emitI32Const(0);
+    }
+    
+    ctx.emitter.emitEnd(); // end null check if
     return;
   }
 
