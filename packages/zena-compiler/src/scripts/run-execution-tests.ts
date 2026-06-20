@@ -73,6 +73,11 @@ async function run() {
   }
   files.sort();
 
+  if (files.length === 0) {
+    console.error('No files found');
+    process.exit(1);
+  }
+
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
   const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
 
