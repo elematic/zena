@@ -127,9 +127,9 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Pattern compilation tree (nested tests/casts) for literal, wildcard, variable, tuple, and record/class patterns.
   - [x] Conditional guard execution (`case ... if ...`).
   - [ ] Exhaustiveness checks producing compile-time traps or errors.
-- [ ] **Conditional Patterns:**
-  - [ ] `if let` statement pattern checking and local scope binding.
-  - [ ] `while let` loop condition checking and iteration control.
+- [x] **Conditional Patterns:**
+  - [x] `if let` statement pattern checking and local scope binding.
+  - [x] `while let` loop condition checking and iteration control.
 - [x] **Loop Iterations:**
   - [x] `for-in` loop compilation over collections implementing `Iterator`/`Sequence` protocol (unrolling iteration steps).
 - [ ] **Ranges & Pipelines:**

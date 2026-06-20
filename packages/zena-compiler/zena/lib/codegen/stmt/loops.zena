@@ -2,9 +2,9 @@ import { ValTypeVoid, ValTypeRefNull, ValTypeRef, ValTypeStructRef, ValTypeI32, 
 import { Error } from 'zena:error';
 import { 
   Node, BreakStatement, ContinueStatement, WhileStatement, ForStatement, Statement, Expression,
-  ForInStatement, BindingPattern, IdentifierPattern
+  ForInStatement, BindingPattern, IdentifierPattern, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral
 } from '../../ast.zena';
-import { VoidType, Type, InterfaceType, ClassType, ArrayType, ThisType, UnionType, NullType, instantiateClassType, MethodInfo, FunctionType } from '../../types.zena';
+import { VoidType, Type, InterfaceType, ClassType, ArrayType, ThisType, UnionType, NullType, instantiateClassType, MethodInfo, FunctionType, InlineTupleType, baseType } from '../../types.zena';
 import { ValType } from "../wasm.zena";
 import { FunctionContext } from '../function-context.zena';
 import { typeToValType, getInterfaceMemberSignature, substituteTypeParamsInCodegen, typeToValTypeWithSub, getNodeType, getClassTypeParameters, getInterfaceTypeParameters } from '../type-mapping.zena';
@@ -15,6 +15,7 @@ import {
 import { Program, CompilationUnit } from '../../program.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { generatePatternBinding } from './bindings.zena';
 
 export let generateBreakStatement = (ctx: FunctionContext, stmt: BreakStatement): void => {
   let n = ctx.loopStack.length;
@@ -39,6 +40,87 @@ export let generateContinueStatement = (ctx: FunctionContext, stmt: ContinueStat
 };
 
 export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement, genExpr: (e: Expression, discardValue: boolean) => void, genStmt: (s: Statement) => void): void => {
+  if (stmt.test is LetPatternCondition) {
+    let lpc = stmt.test as LetPatternCondition;
+    let pattern = lpc.pattern;
+    if (pattern is TuplePattern) {
+      let tp = pattern as TuplePattern;
+      let initType = getNodeType(ctx, lpc.init);
+      
+      var baseT = baseType(initType as Type);
+      var elementTypes: Array<Type> | null = null;
+      if (baseT is InlineTupleType) {
+        elementTypes = (baseT as InlineTupleType).elementTypes;
+      } else if (baseT is UnionType) {
+        for (let ut in (baseT as UnionType).types) {
+          if (ut is InlineTupleType) {
+            if (elementTypes == null) {
+              elementTypes = (ut as InlineTupleType).elementTypes;
+            }
+          }
+        }
+      }
+      
+      if (elementTypes == null) {
+        throw new Error("while-let expects inline tuple type");
+      }
+      let elemTypes = elementTypes as Array<Type>;
+      
+      // 1. Allocate temp locals (same types as tuple elements)
+      let tempLocals = new Array<i32>();
+      for (var i = 0; i < tp.elements.length; i += 1) {
+        let elType = elemTypes[i];
+        let valType = typeToValType(ctx.wasm, elType);
+        let temp = ctx.allocLocal(valType);
+        tempLocals.push(temp);
+      }
+      
+      // block $break (depth 1)
+      ctx.emitter.emitBlock(new ValTypeVoid());
+      // loop $continue (depth 0)
+      ctx.emitter.emitLoop(new ValTypeVoid());
+      
+      // 2. Evaluate init (pushes values on stack)
+      genExpr(lpc.init, false);
+      
+      // 3. Pop to temp locals in reverse order
+      for (var i = tp.elements.length - 1; i >= 0; i -= 1) {
+        let temp = tempLocals[i];
+        ctx.emitter.emitLocalSet(temp);
+      }
+      
+      // 4. Check condition (first element)
+      ctx.emitter.emitLocalGet(tempLocals[0]);
+      ctx.emitter.emitI32Eqz();
+      ctx.emitter.emitBrIf(1); // break to outer block (depth 1)
+      
+      let wasReachable = ctx.isReachable;
+      ctx.enterLoop();
+      
+      // 5. Bind pattern variables
+      for (var i = 0; i < tp.elements.length; i += 1) {
+        let el = tp.elements[i];
+        if (el != null && !(el is LiteralPattern) && !(el is BooleanLiteral) && !(el is NumberLiteral) && !(el is StringLiteral) && !(el is NullLiteral)) {
+          let temp = tempLocals[i];
+          let loadValue = (): void => {
+            ctx.emitter.emitLocalGet(temp);
+          };
+          generatePatternBinding(ctx, el as Node, elemTypes[i], loadValue);
+        }
+      }
+      
+      // 6. Generate body
+      genStmt(stmt.body);
+      ctx.exitLoop();
+      
+      ctx.isReachable = wasReachable;
+      ctx.emitter.emitBr(0); // continue loop (depth 0)
+      ctx.emitter.emitEnd(); // end loop
+      ctx.emitter.emitEnd(); // end block
+      return;
+    }
+  }
+
   ctx.emitter.emitBlock(new ValTypeVoid());
   ctx.emitter.emitLoop(new ValTypeVoid());
   

@@ -1,11 +1,12 @@
 import { ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeEqRef } from '../wasm.zena';
-import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement, ThrowExpression, TryExpression, CatchClause, Identifier } from '../../ast.zena';
-import { Type, F64Type, F32Type, VoidType } from '../../types.zena';
+import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement, ThrowExpression, TryExpression, CatchClause, Identifier, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral } from '../../ast.zena';
+import { Type, F64Type, F32Type, VoidType, InlineTupleType, UnionType, baseType } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { WasmTag, WasmGlobal, WasmStruct } from '../wasm-module.zena';
 import { typeToValType } from '../type-mapping.zena';
+import { generatePatternBinding } from '../stmt/bindings.zena';
 
 export let generateIfExpression = (
   ctx: FunctionContext, 
@@ -19,12 +20,99 @@ export let generateIfExpression = (
   if (!discardValue && nodeType != null && !(nodeType is VoidType)) {
     resultValType = typeToValType(ctx.wasm, nodeType as Type);
   }
+  let dropResult = discardValue || resultValType is ValTypeVoid;
+
+  if (expr.test is LetPatternCondition) {
+    let lpc = expr.test as LetPatternCondition;
+    let pattern = lpc.pattern;
+    if (pattern is TuplePattern) {
+      let tp = pattern as TuplePattern;
+      let initType = ctx.wasmFunction.model.getNodeType(lpc.init);
+      
+      var baseT = baseType(initType as Type);
+      var elementTypes: Array<Type> | null = null;
+      if (baseT is InlineTupleType) {
+        elementTypes = (baseT as InlineTupleType).elementTypes;
+      } else if (baseT is UnionType) {
+        for (let ut in (baseT as UnionType).types) {
+          if (ut is InlineTupleType) {
+            if (elementTypes == null) {
+              elementTypes = (ut as InlineTupleType).elementTypes;
+            }
+          }
+        }
+      }
+      
+      if (elementTypes == null) {
+        throw new Error("if-let expects inline tuple type");
+      }
+      let elemTypes = elementTypes as Array<Type>;
+      
+      // 1. Evaluate init (pushes values on stack)
+      genExpr(lpc.init, false);
+      
+      // 2. Pop to temp locals in reverse order
+      let tempLocals = new Array<i32>();
+      for (var i = tp.elements.length - 1; i >= 0; i -= 1) {
+        let elType = elemTypes[i];
+        let valType = typeToValType(ctx.wasm, elType);
+        let temp = ctx.allocLocal(valType);
+        tempLocals.push(temp);
+        ctx.emitter.emitLocalSet(temp);
+      }
+      
+      // 3. Emit condition (first element)
+      ctx.emitter.emitLocalGet(tempLocals[tp.elements.length - 1]);
+      
+      // 4. Emit WASM if block with result type
+      ctx.emitter.emitIf(resultValType);
+      ctx.enterBlockStructure();
+      
+      let wasReachable = ctx.isReachable;
+      
+      // 5. Bind pattern variables
+      for (var i = 0; i < tp.elements.length; i += 1) {
+        let el = tp.elements[i];
+        if (el != null && !(el is LiteralPattern) && !(el is BooleanLiteral) && !(el is NumberLiteral) && !(el is StringLiteral) && !(el is NullLiteral)) {
+          let temp = tempLocals[tp.elements.length - 1 - i];
+          let loadValue = (): void => {
+            ctx.emitter.emitLocalGet(temp);
+          };
+          generatePatternBinding(ctx, el as Node, elemTypes[i], loadValue);
+        }
+      }
+      
+      // 6. Generate consequent branch
+      generateIfBranch(ctx, expr.consequent, dropResult, genExpr, genStmt);
+      let consReachable = ctx.isReachable;
+      
+      // 7. Generate alternate branch (else)
+      ctx.isReachable = wasReachable;
+      if (expr.alternate != null) {
+        ctx.emitter.emitElse();
+        generateIfBranch(ctx, expr.alternate as Node, dropResult, genExpr, genStmt);
+        let altReachable = ctx.isReachable;
+        ctx.isReachable = consReachable || altReachable;
+        if (!ctx.isReachable) {
+          ctx.needsUnreachable = true;
+        }
+      } else {
+        if (!(resultValType is ValTypeVoid)) {
+          throw new Error("if-let expression returning value must have else branch");
+        }
+        ctx.isReachable = true;
+      }
+      
+      ctx.exitBlockStructure();
+      ctx.emitter.emitEnd();
+      return;
+    }
+  }
 
   genExpr(expr.test as Expression, false);
   ctx.emitter.emitIf(resultValType);
   ctx.enterBlockStructure();
 
-  let dropResult = discardValue || resultValType is ValTypeVoid ;
   generateIfBranch(ctx, expr.consequent, dropResult, genExpr, genStmt);
   
   if (expr.alternate != null) {

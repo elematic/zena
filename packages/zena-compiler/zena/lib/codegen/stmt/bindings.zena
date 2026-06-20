@@ -2,7 +2,8 @@ import { Error } from 'zena:error';
 import { Symbol } from '../../scope/symbol.zena';
 import { 
   VariableDeclaration, Expression, IdentifierPattern, TuplePattern, RecordPattern, 
-  AssignmentPattern, AsPattern, BindingPattern, BindingProperty, Node, Identifier 
+  AssignmentPattern, AsPattern, BindingPattern, BindingProperty, Node, Identifier,
+  ClassPattern
 } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
 import { typeToValType, typeToValTypeWithSub, getCellStruct } from '../type-mapping.zena';
@@ -281,6 +282,77 @@ export let generatePatternBinding = (
         }
       } else {
         throw new Error("Record pattern destructuring expects RecordType or ClassType");
+      }
+    }
+    case ClassPattern as cp: {
+      if (t is ClassType) {
+        let ct = t as ClassType;
+        if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
+          throw new Error("Class struct not found: " + ct.name);
+        }
+        let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+        
+        let tempLocal = ctx.allocLocal(typeToValTypeWithSub(ctx.wasm, ct, ctx.wasmFunction.classType));
+        loadValue();
+        ctx.emitter.emitLocalSet(tempLocal);
+        
+        for (let prop in cp.properties) {
+          let propName = prop.name.name;
+          var fieldIndex = -1;
+          var fieldType: Type | null = null;
+          
+          let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+            if (ctx.wasmFunction.classType != null) {
+              getClassPrivateFieldKey(getClassKey(ctx.wasmFunction.classType as ClassType), propName)
+            } else {
+              propName
+            }
+          } else {
+            propName
+          };
+          
+          for (var idx = 0; idx < structInfo.fields.length; idx += 1) {
+            if (structInfo.fields[idx].name != null && (structInfo.fields[idx].name as String) == lookupName) {
+              fieldIndex = idx;
+            }
+          }
+          if (ct.members.has(propName)) {
+            fieldType = ct.members[propName].type;
+          }
+          if (fieldIndex == -1 || fieldType == null) {
+            throw new Error("Field " + propName + " not found on class " + ct.name);
+          }
+          
+          var targetFieldType = fieldType as Type;
+          let nodeType = ctx.wasmFunction.model.getNodeType(prop.value);
+          if (nodeType != null) {
+            targetFieldType = nodeType as Type;
+          }
+          
+          let targetFieldIndex = fieldIndex;
+          let loadField = (): void => {
+            ctx.emitter.emitLocalGet(tempLocal);
+            ctx.emitter.emitRefCast(structInfo.index);
+            ctx.emitter.emitStructGet(structInfo.index, targetFieldIndex);
+            
+            let fieldWasmType = structInfo.fields[targetFieldIndex].type;
+            if (fieldWasmType is ValTypeAnyRef) {
+              let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetFieldType, ctx.wasmFunction.classType);
+              match (targetWasmType) {
+                case ValTypeRefNull as refNull: {
+                  ctx.emitter.emitRefCast(refNull.target.index);
+                }
+                case ValTypeRef as refVal: {
+                  ctx.emitter.emitRefCast(refVal.target.index);
+                }
+                case _: {}
+              }
+            }
+          };
+          generatePatternBinding(ctx, prop.value, targetFieldType, loadField);
+        }
+      } else {
+        throw new Error("Class pattern destructuring expects ClassType");
       }
     }
     case _: {

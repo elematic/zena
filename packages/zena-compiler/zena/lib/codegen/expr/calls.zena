@@ -1,4 +1,4 @@
-import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration } from '../../ast.zena';
+import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration, getMemberPropertyName } from '../../ast.zena';
 import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, UnionType, TypeParameterType, typeToString } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
@@ -306,7 +306,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       case MemberExpression: {
         let member = call.callee as MemberExpression;
         let objType = getNonNullableType(getNodeType(ctx, member.object) as Type);
-        let targetName = member.property.name;
+        let targetName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
         
         if (member.object is SuperExpression) {
           if (ctx.wasmFunction.classType == null) {
@@ -603,7 +603,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         }
         let superType = currentClass.superType as ClassType;
         let member = call.callee as MemberExpression;
-        let targetName = member.property.name;
+        let targetName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
         var lookupName = targetName;
         if (superType.members.has(targetName)) {
           let mInfo = superType.members[targetName];

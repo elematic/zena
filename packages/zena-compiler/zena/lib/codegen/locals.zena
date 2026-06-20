@@ -274,61 +274,6 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
         }
       }
     }
-    case Identifier as pat: {
-      console.log("locals.zena matched Identifier: " + pat.name);
-      if (pat.name != "_") {
-        let sym = ctx.wasmFunction.model.resolveDeclaration(pat);
-        if (sym == null) {
-          console.log("resolveDeclaration returned null!");
-        } else {
-          let s = sym as Symbol;
-          var declTypeStr = "unknown";
-          let d = s.declaration;
-          if (d == null) {
-            declTypeStr = "null";
-          } else if (d is ClassDeclaration) {
-            declTypeStr = "ClassDeclaration";
-          } else if (d is SealedVariant) {
-            declTypeStr = "SealedVariant";
-          } else if (d is ImportSpecifier) {
-            declTypeStr = "ImportSpecifier";
-          } else if (d is Identifier) {
-            declTypeStr = "Identifier";
-          } else if (d is IdentifierPattern) {
-            declTypeStr = "IdentifierPattern";
-          }
-          console.log("Symbol " + s.name + " has declaration type: " + declTypeStr + ", isType: " + (if (s.isType()) "true" else "false"));
-          if (s.isType()) {
-            console.log("resolveDeclaration returned type: " + s.name);
-          } else {
-            console.log("resolveDeclaration returned symbol: id=" + i32ToString(s.id as i32));
-            if (ctx.localIndices.has(s.id)) {
-              console.log("localIndices already has symbol!");
-            } else {
-              var varType = ctx.wasmFunction.model.getNodeType(pat);
-              if (varType == null || varType is ErrorType) {
-                let bt = ctx.wasmFunction.model.getBindingType(s);
-                if (bt != null) {
-                  varType = bt;
-                }
-              }
-              var vType: ValType = new ValTypeI32();
-              if (varType != null && !(varType is ErrorType)) {
-                vType = typeToValType(ctx.wasm, varType as Type);
-              }
-              if (ctx.isCelled(s.id)) {
-                let cellStruct = getCellStruct(ctx.wasm, vType);
-                vType = new ValTypeRefNull(cellStruct);
-              }
-              let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
-              ctx.localIndices[s.id] = index;
-              ctx.localTypes.push(vType);
-              console.log("Added local index=" + i32ToString(index));
-            }
-          }
-        }
-      }
-    }
     case AsPattern as ap: {
       let sym = ctx.wasmFunction.model.resolveDeclaration(ap.name);
       if (sym != null && !ctx.localIndices.has(sym.id)) {
