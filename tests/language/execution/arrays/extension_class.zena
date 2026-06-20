@@ -1,0 +1,36 @@
+// @mode: run
+// @stdlib: true
+// @result: true
+
+import {FixedArray} from 'zena:array';
+
+extension class ArrayExt<T> on array<T> {
+  first: T {
+    get { return this[0]; }
+  }
+}
+
+export let main = (): boolean => {
+  // Test 1: can call FixedArray methods on raw array<T> created via __array_new
+  let arr = __array_new(3, 0);
+  arr[0] = 1;
+  arr[1] = 2;
+  arr[2] = 3;
+  
+  // Call reverse() which is defined on FixedArray extension
+  let reversed = arr.reverse();
+  
+  if (reversed.length != 3) { return false; }
+  if (reversed[0] != 3) { return false; }
+  if (reversed[1] != 2) { return false; }
+  if (reversed[2] != 1) { return false; }
+
+  // Test 2: can access property on raw array<T> via generic extension class with cast
+  let arr2 = __array_new(3, 0);
+  arr2[0] = 42;
+  // Cast to ArrayExt to use its methods
+  let ext = arr2 as ArrayExt<i32>;
+  if (ext.first != 42) { return false; }
+
+  return true;
+};

@@ -377,6 +377,7 @@ async function runCheckTest(
     const compiler = new Compiler(host, {
       emitLocations: true,
       warnUnnecessaryCasts: directives.warnUnnecessaryCasts === 'true',
+      stdlibPaths: directives.stdlib === 'true' ? [filePath] : undefined,
     });
     const modules = compiler.compile(filePath);
 
@@ -510,7 +511,10 @@ async function runExecutionTest(
     },
   };
 
-  const compiler = new Compiler(host, {emitLocations: true});
+  const compiler = new Compiler(host, {
+    emitLocations: true,
+    stdlibPaths: directives.stdlib === 'true' ? [filePath] : undefined,
+  });
   // compile() does type checking and returns all modules with their diagnostics
   const modules = compiler.compile(filePath);
 
