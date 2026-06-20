@@ -1,9 +1,10 @@
-import {execSync, spawnSync} from 'node:child_process';
-import {existsSync, readFileSync, statSync} from 'node:fs';
+import {execSync, spawnSync, spawn} from 'node:child_process';
+import {existsSync, mkdirSync, readFileSync, statSync} from 'node:fs';
 import {dirname, join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
 import {sep} from 'node:path';
+import {availableParallelism, cpus} from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
@@ -14,6 +15,20 @@ const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
 const DIM = '\x1b[2m';
 const NC = '\x1b[0m';
+
+function isSelfHostedSkipped(file: string): boolean {
+  const content = readFileSync(file, 'utf-8');
+  for (const line of content.split('\n')) {
+    const matchSkip = line.match(/\/\/\s*@skip:\s*(.*)/);
+    if (matchSkip) {
+      const skipCompilers = matchSkip[1].trim().split(/\s*,\s*/);
+      if (skipCompilers.includes('self-hosted')) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 async function run() {
   const runList = [
@@ -63,6 +78,179 @@ async function run() {
     files = files.filter((f) => f.includes(filter));
   }
   files.sort();
+
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+  const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
+
+  // Check which files need compilation
+  const cliStat = existsSync(zenaCli) ? statSync(zenaCli) : null;
+  const compilerStat = existsSync(compilerWasm) ? statSync(compilerWasm) : null;
+
+  const filesToCompile: string[] = [];
+  for (const file of files) {
+    if (isSelfHostedSkipped(file)) {
+      continue;
+    }
+    const content = readFileSync(file, 'utf-8');
+    if (!content.includes('@result:') && !content.includes('@stdout:')) {
+      continue;
+    }
+    const relPath = relative(testsDir, file);
+    const wasmOut = join(pkgDir, 'zena', 'out', 'execution', `${relPath}.wasm`);
+
+    if (!existsSync(wasmOut)) {
+      filesToCompile.push(file);
+      continue;
+    }
+
+    const wasmStat = statSync(wasmOut);
+    const fileStat = statSync(file);
+
+    if (
+      fileStat.mtimeMs > wasmStat.mtimeMs ||
+      (cliStat && cliStat.mtimeMs > wasmStat.mtimeMs) ||
+      (compilerStat && compilerStat.mtimeMs > wasmStat.mtimeMs)
+    ) {
+      filesToCompile.push(file);
+    }
+  }
+
+  if (filesToCompile.length > 0) {
+    // Ensure output directories exist
+    for (const file of filesToCompile) {
+      const relPath = relative(testsDir, file);
+      const wasmOut = join(
+        pkgDir,
+        'zena',
+        'out',
+        'execution',
+        `${relPath}.wasm`,
+      );
+      mkdirSync(dirname(wasmOut), {recursive: true});
+    }
+
+    // Compile the first file synchronously to serialize cli.cwasm safely
+    // and avoid concurrent write race conditions between parallel workers.
+    const firstFile = filesToCompile[0];
+    const firstRelPath = relative(testsDir, firstFile);
+    const firstWasmOut = join(
+      pkgDir,
+      'zena',
+      'out',
+      'execution',
+      `${firstRelPath}.wasm`,
+    );
+    try {
+      execSync(`"${zenaCli}" build "${firstFile}" -o "${firstWasmOut}"`, {
+        cwd: repoRoot,
+        stdio: 'pipe',
+      });
+      const firstWatOut = join(
+        pkgDir,
+        'zena',
+        'out',
+        'execution',
+        `${firstRelPath}.wat`,
+      );
+      try {
+        execSync(`wasm-tools print "${firstWasmOut}" > "${firstWatOut}"`, {
+          stdio: 'pipe',
+        });
+      } catch (e) {}
+    } catch (e: any) {
+      console.error(
+        `Warm-up compilation failed for ${firstRelPath}:\n${e.stderr?.toString() || e.message}`,
+      );
+      throw e;
+    }
+
+    console.log(
+      `Compiling ${filesToCompile.length} execution tests in parallel...`,
+    );
+    const pLimit = availableParallelism
+      ? availableParallelism()
+      : cpus().length;
+    console.log(`Using ${pLimit} parallel workers`);
+
+    let fileIndex = 1;
+    let activeCount = 0;
+    let failedCompile = false;
+    let compileErrorMsg = '';
+
+    await new Promise<void>((resolve, reject) => {
+      const checkDone = () => {
+        if (fileIndex >= filesToCompile.length && activeCount === 0) {
+          if (failedCompile) {
+            reject(new Error(compileErrorMsg));
+          } else {
+            resolve();
+          }
+        }
+      };
+
+      const startNext = () => {
+        if (failedCompile) return;
+        if (fileIndex >= filesToCompile.length) {
+          checkDone();
+          return;
+        }
+
+        const file = filesToCompile[fileIndex++];
+        const relPath = relative(testsDir, file);
+        const wasmOut = join(
+          pkgDir,
+          'zena',
+          'out',
+          'execution',
+          `${relPath}.wasm`,
+        );
+
+        activeCount++;
+
+        const child = spawn(zenaCli, ['build', file, '-o', wasmOut], {
+          cwd: repoRoot,
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+
+        let stderr = '';
+        child.stderr?.on('data', (data) => {
+          stderr += data.toString();
+        });
+
+        child.on('close', (code) => {
+          activeCount--;
+          if (code !== 0) {
+            failedCompile = true;
+            compileErrorMsg = `Compilation failed for ${relPath}:\n${stderr}`;
+            reject(new Error(compileErrorMsg));
+            return;
+          }
+
+          // Output WAT as well for debugging
+          const watOut = join(
+            pkgDir,
+            'zena',
+            'out',
+            'execution',
+            `${relPath}.wat`,
+          );
+          try {
+            execSync(`wasm-tools print "${wasmOut}" > "${watOut}"`, {
+              stdio: 'pipe',
+            });
+          } catch (e) {}
+
+          startNext();
+        });
+      };
+
+      // Start initial batch of workers
+      const initialWorkers = Math.min(pLimit, filesToCompile.length);
+      for (let i = 0; i < initialWorkers; i++) {
+        startNext();
+      }
+    });
+  }
 
   let passed = 0;
   let failed = 0;
@@ -125,61 +313,9 @@ async function run() {
     }
 
     const wasmOut = join(pkgDir, 'zena', 'out', 'execution', `${relPath}.wasm`);
-    const watOut = join(pkgDir, 'zena', 'out', 'execution', `${relPath}.wat`);
-    const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
-
-    const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
-
-    let shouldCompile = true;
-    if (existsSync(wasmOut) && existsSync(zenaCli)) {
-      const wasmStat = statSync(wasmOut);
-      const fileStat = statSync(file);
-      const cliStat = statSync(zenaCli);
-      const compilerStat = existsSync(compilerWasm)
-        ? statSync(compilerWasm)
-        : null;
-      if (
-        wasmStat.mtimeMs > fileStat.mtimeMs &&
-        wasmStat.mtimeMs > cliStat.mtimeMs &&
-        (compilerStat === null || wasmStat.mtimeMs > compilerStat.mtimeMs)
-      ) {
-        shouldCompile = false;
-      }
+    if (!existsSync(wasmOut)) {
+      continue;
     }
-
-    let compileError = false;
-    if (shouldCompile) {
-      execSync(`mkdir -p "$(dirname "${wasmOut}")"`);
-
-      // Compile using self-hosted Zena CLI to generate WASM
-      try {
-        execSync(`"${zenaCli}" build "${file}" -o "${wasmOut}"`, {
-          stdio: 'pipe',
-          cwd: repoRoot,
-        });
-      } catch (e: any) {
-        console.log(`${RED}✗${NC} ${relPath} (Compile Failed)`);
-        if (e.stdout?.toString()) {
-          console.log(e.stdout.toString().trim());
-        }
-        console.error(e.stderr?.toString() || e.message);
-        failed++;
-        compileError = true;
-      }
-
-      if (!compileError) {
-        // Output WAT as well for debugging purposes
-        try {
-          execSync(`wasm-tools print "${wasmOut}" > "${watOut}"`, {
-            stdio: 'pipe',
-          });
-        } catch (e) {
-          // Ignore wasm-tools failure if not installed
-        }
-      }
-    }
-
-    if (compileError) continue;
 
     // Run using zena-cli
     try {

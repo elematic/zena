@@ -30,6 +30,10 @@ enum Commands {
         /// Output file path
         #[arg(short, long)]
         output: String,
+
+        /// Print timing results of compiler phases
+        #[arg(long)]
+        time: bool,
     },
     /// Run a compiled Zena source file or WASM file
     Run {
@@ -44,6 +48,10 @@ enum Commands {
         #[arg(long = "dir")]
         dirs: Vec<String>,
 
+        /// Print timing results of compiler phases
+        #[arg(long)]
+        time: bool,
+
         /// Arguments to pass to the Wasm program
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -57,25 +65,25 @@ struct MyState {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Build { file, output } => build_file(&file, &output, cli.verbose),
-        Commands::Run { file, invoke, dirs, args } => {
+        Commands::Build { file, output, time } => build_file(&file, &output, cli.verbose, time),
+        Commands::Run { file, invoke, dirs, time, args } => {
             if file.ends_with(".wasm") {
                 run_wasm(&file, &invoke, cli.verbose, &dirs, &args)
             } else {
-                compile_and_run(&file, &invoke, cli.verbose, &dirs, &args)
+                compile_and_run(&file, &invoke, cli.verbose, time, &dirs, &args)
             }
         }
     }
 }
 
-fn build_file(file: &str, output: &str, verbose: bool) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose)?;
+fn build_file(file: &str, output: &str, verbose: bool, time: bool) -> Result<()> {
+    let cached_wasm_path = compile_to_cache(file, verbose, time)?;
     std::fs::copy(&cached_wasm_path, output)?;
     Ok(())
 }
 
-fn compile_and_run(file: &str, invoke: &str, verbose: bool, dirs: &[String], args: &[String]) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose)?;
+fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, dirs: &[String], args: &[String]) -> Result<()> {
+    let cached_wasm_path = compile_to_cache(file, verbose, time)?;
     run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args)
 }
 
@@ -91,7 +99,12 @@ fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) 
     if needs_compile {
         let wasm_bytes = std::fs::read(wasm_path)?;
         let serialized = engine.precompile_module(&wasm_bytes)?;
-        std::fs::write(cwasm_path, serialized)?;
+        let temp_path = cwasm_path.with_extension(format!("tmp-{}", std::process::id()));
+        std::fs::write(&temp_path, serialized)?;
+        if let Err(e) = std::fs::rename(&temp_path, cwasm_path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(e.into());
+        }
     }
 
     unsafe { Ok(Module::deserialize_file(engine, cwasm_path)?) }
@@ -99,7 +112,7 @@ fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) 
 
 /// Compiles a `.zena` source file by invoking the pre-built self-hosted compiler (`cli.wasm`)
 /// inside a Wasmtime sandbox, returning the path to the cached WebAssembly file.
-fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
+fn compile_to_cache(file: &str, verbose: bool, time: bool) -> Result<std::path::PathBuf> {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -154,6 +167,11 @@ fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
     // Pass the actual absolute path to the user's cache directory using the `-o` flag
     let out_path_arg = cached_wasm_path.to_string_lossy().to_string();
 
+    let mut compiler_args = vec!["zc".to_string(), file_arg, "-o".to_string(), out_path_arg];
+    if time {
+        compiler_args.push("--time".to_string());
+    }
+
     let needs_compile = if cached_wasm_path.exists() {
         let source_mod = std::fs::metadata(&abs_path).and_then(|m| m.modified()).ok();
         let compiler_mod = std::fs::metadata(&compiler_wasm).and_then(|m| m.modified()).ok();
@@ -174,7 +192,7 @@ fn compile_to_cache(file: &str, verbose: bool) -> Result<std::path::PathBuf> {
         let wasi = WasiCtxBuilder::new()
             .inherit_stdio()
             .inherit_env()
-            .args(&["zc", &file_arg, "-o", &out_path_arg])
+            .args(&compiler_args)
             .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
             .preopened_dir(stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
             // Give the guest write access directly to the user's absolute cache directory
