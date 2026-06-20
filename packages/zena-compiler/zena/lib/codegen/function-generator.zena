@@ -32,7 +32,7 @@ import { i32ToString } from "zena:string-convert";
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 
-import { parseI32, parseF64 } from 'zena:string-convert';
+import { parseI32, parseF64, parseI64 } from 'zena:string-convert';
 import { walkEnter } from '../visitor.zena';
 import { FunctionContext } from './function-context.zena';
 import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral, generateTemplateLiteral, generateTaggedTemplateExpression } from './expr/primitives.zena';
@@ -708,28 +708,66 @@ export class FunctionGenerator {
       }
       case AsExpression: {
         let asExpr = expr as AsExpression;
-        this.generateExpression(asExpr.expression);
-        
-        let rawSourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
-        var sourceType = rawSourceType;
-        if (asExpr.expression is Identifier) {
-          let sym = this.ctx.wasmFunction.model.resolve(asExpr.expression as Identifier);
-          if (sym != null) {
-            let bType = this.ctx.wasmFunction.model.getBindingType(sym);
-            if (bType != null) {
-              sourceType = bType;
+        let targetType = this.ctx.wasmFunction.model.getNodeType(asExpr);
+        let targetWasmType = typeToValTypeWithSub(this.ctx.wasm, targetType, this.ctx.wasmFunction.classType);
+
+        var handledLiteral = false;
+
+        if (targetWasmType is ValTypeI64) {
+          if (asExpr.expression is NumberLiteral) {
+            let lit = asExpr.expression as NumberLiteral;
+            if (let (true, val) = parseI64(lit.raw)) {
+              this.ctx.emitter.emitI64Const(val);
+              handledLiteral = true;
+            }
+          } else if (asExpr.expression is UnaryExpression) {
+            let unary = asExpr.expression as UnaryExpression;
+            if (unary.operator == "-" && unary.argument is NumberLiteral) {
+              let lit = unary.argument as NumberLiteral;
+              if (let (true, val) = parseI64("-" + lit.raw)) {
+                this.ctx.emitter.emitI64Const(val);
+                handledLiteral = true;
+              }
+            }
+          }
+        } else if (targetWasmType is ValTypeF64) {
+          if (asExpr.expression is NumberLiteral) {
+            let lit = asExpr.expression as NumberLiteral;
+            let val = parseF64(lit.raw);
+            this.ctx.emitter.emitF64Const(val);
+            handledLiteral = true;
+          } else if (asExpr.expression is UnaryExpression) {
+            let unary = asExpr.expression as UnaryExpression;
+            if (unary.operator == "-" && unary.argument is NumberLiteral) {
+              let lit = unary.argument as NumberLiteral;
+              let val = parseF64("-" + lit.raw);
+              this.ctx.emitter.emitF64Const(val);
+              handledLiteral = true;
             }
           }
         }
-        let targetType = this.ctx.wasmFunction.model.getNodeType(asExpr);
-        
-        let sourceWasmType = typeToValTypeWithSub(this.ctx.wasm, sourceType, this.ctx.wasmFunction.classType);
-        let targetWasmType = typeToValTypeWithSub(this.ctx.wasm, targetType, this.ctx.wasmFunction.classType);
-        
-        if (valTypeEquals(sourceWasmType, targetWasmType)) {
-          // No-op identity cast
-        } else {
-          match (targetWasmType) {
+
+        if (!handledLiteral) {
+          this.generateExpression(asExpr.expression);
+          
+          let rawSourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
+          var sourceType = rawSourceType;
+          if (asExpr.expression is Identifier) {
+            let sym = this.ctx.wasmFunction.model.resolve(asExpr.expression as Identifier);
+            if (sym != null) {
+              let bType = this.ctx.wasmFunction.model.getBindingType(sym);
+              if (bType != null) {
+                sourceType = bType;
+              }
+            }
+          }
+          
+          let sourceWasmType = typeToValTypeWithSub(this.ctx.wasm, sourceType, this.ctx.wasmFunction.classType);
+          
+          if (valTypeEquals(sourceWasmType, targetWasmType)) {
+            // No-op identity cast
+          } else {
+            match (targetWasmType) {
             case ValTypeRefNull as targetRefNull: {
               let targetIdx = targetRefNull.target.index;
               match (sourceWasmType) {
@@ -850,6 +888,7 @@ export class FunctionGenerator {
           }
         }
       }
+    }
 
       case _: {
         let t = this.ctx.wasmFunction.model.getNodeType(expr);
