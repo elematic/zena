@@ -9,22 +9,89 @@ import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, 
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType } from '../type-mapping.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
 import { generateGlobalIntrinsic, generateArrayIntrinsic, isArrayIntrinsic } from './intrinsics.zena';
 import { dirName, normalizePath } from '../../module-resolver.zena';
 import { i32ToString } from 'zena:string-convert';
 import { console } from 'zena:console';
 
+let generateCallArguments = (
+  ctx: FunctionContext,
+  call: CallExpression,
+  ft: FunctionType | null,
+  thisLocalIndex: i32,
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  let model = ctx.wasmFunction.model;
+  let originalArgCount = model.getOriginalArgCount(call);
+  let defaultArgsOwner = model.getDefaultArgsOwner(call);
+
+  let actualArgCount = call.args.length;
+  let hasDefaults = originalArgCount != -1 && originalArgCount < actualArgCount;
+
+  // Save original parameter local mappings that we overwrite
+  // so we can restore them after the call.
+  let savedLocalIndices = new HashMap<SymbolId, i32>();
+
+  var i = 0;
+  while (i < actualArgCount) {
+    let arg = call.args[i];
+    let isDefault = hasDefaults && i >= originalArgCount;
+
+    let symId = if (ft != null && ft.parameterSymbols != null && i < (ft.parameterSymbols as Array<SymbolId>).length) {
+      (ft.parameterSymbols as Array<SymbolId>)[i]
+    } else {
+      -1 as SymbolId
+    };
+
+    if (isDefault) {
+      let savedClass = ctx.wasmFunction.classType;
+      let savedThisLocalIndex = ctx.thisLocalIndex;
+      if (defaultArgsOwner != null) {
+        ctx.wasmFunction.classType = defaultArgsOwner as ClassType;
+        ctx.thisLocalIndex = thisLocalIndex;
+      }
+      
+      genExpr(arg, false);
+
+      ctx.wasmFunction.classType = savedClass;
+      ctx.thisLocalIndex = savedThisLocalIndex;
+    } else {
+      genExpr(arg, false);
+    }
+
+    // Save parameter value for subsequent default arguments if needed
+    if (symId != (-1 as SymbolId)) {
+      let argType = getNodeType(ctx, arg);
+      if (argType == null) throw new Error("Missing parameter type for default arg save");
+      let tempLocal = ctx.allocLocal(typeToValType(ctx.wasm, argType));
+      if (ctx.localIndices.has(symId)) {
+        savedLocalIndices[symId] = ctx.localIndices[symId];
+      }
+      ctx.localIndices[symId] = tempLocal;
+      ctx.emitter.emitLocalTee(tempLocal);
+    }
+
+    i += 1;
+  }
+
+  // Restore any overwritten local indices
+  let keys = savedLocalIndices.keys();
+  for (let key in keys) {
+    ctx.localIndices[key] = savedLocalIndices[key];
+  }
+};
+
 let generateClosureCall = (
   ctx: FunctionContext,
-  callee: Expression,
-  args: Array<Expression>,
+  call: CallExpression,
   ftVal: FunctionType,
   genExpr: (e: Expression, discardValue: boolean) => void
 ): void => {
   let closureStruct = getClosureStruct(ctx.wasm, ftVal);
   
   // 1. Evaluate callee (closure struct)
-  genExpr(callee, false);
+  genExpr(call.callee, false);
   let closureLocal = ctx.allocLocal(new ValTypeRefNull(closureStruct));
   ctx.emitter.emitLocalSet(closureLocal);
   
@@ -33,12 +100,7 @@ let generateClosureCall = (
   ctx.emitter.emitStructGet(closureStruct.index, 1);
   
   // 3. Push arguments (params 1..N)
-  var i = 0;
-  while (i < args.length) {
-    let arg = args[i];
-    genExpr(arg, false);
-    i += 1;
-  }
+  generateCallArguments(ctx, call, ftVal, -1, genExpr);
   
   // 4. Push function reference onto stack
   ctx.emitter.emitLocalGet(closureLocal);
@@ -58,6 +120,7 @@ let generateClosureCall = (
   
   ctx.emitter.emitCallRef(implSig.index);
 };
+
 
 export let generateCallExpression = (ctx: FunctionContext, call: CallExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   var genCallee = (): void => {
@@ -210,11 +273,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       ctx.emitter.emitLocalGet(closureLocal);
       ctx.emitter.emitStructGet(closureStruct.index, 1);
       
-      var i = 0;
-      while (i < call.args.length) {
-        currentGenExpr(call.args[i], false);
-        i += 1;
-      }
+      generateCallArguments(ctx, call, fType, -1, currentGenExpr);
       
       ctx.emitter.emitLocalGet(closureLocal);
       ctx.emitter.emitStructGet(closureStruct.index, 0);
@@ -251,18 +310,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           
           if (ctx.wasm.functionMap.has(symVal.id)) {
             let f = ctx.wasm.functionMap[symVal.id];
-            var i = 0;
-            while (i < call.args.length) {
-              let arg = call.args[i];
-              currentGenExpr(arg, false);
-              if (ft != null && ft.parameterSymbols != null) {
-                let syms = ft.parameterSymbols as Array<SymbolId>;
-                if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {
-                  ctx.emitter.emitLocalTee(ctx.localIndices[syms[i]]);
-                }
-              }
-              i += 1;
-            }
+            generateCallArguments(ctx, call, ft, -1, currentGenExpr);
             ctx.emitter.emitCall(f);
             return;
           } else if (isImport) {
@@ -271,24 +319,13 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             let importedSymId = resolveImportedSymbolId(ctx, symVal.declaration as ImportSpecifier, ft);
             if (importedSymId != (-1 as SymbolId) && ctx.wasm.functionMap.has(importedSymId)) {
               let f = ctx.wasm.functionMap[importedSymId];
-              var i = 0;
-              while (i < call.args.length) {
-                let arg = call.args[i];
-                currentGenExpr(arg, false);
-                if (ft != null && ft.parameterSymbols != null) {
-                  let syms = ft.parameterSymbols as Array<SymbolId>;
-                  if (i < syms.length && syms[i] != (-1 as SymbolId) && ctx.localIndices.has(syms[i])) {
-                    ctx.emitter.emitLocalTee(ctx.localIndices[syms[i]]);
-                  }
-                }
-                i += 1;
-              }
+              generateCallArguments(ctx, call, ft, -1, currentGenExpr);
               ctx.emitter.emitCall(f);
               return;
             }
             throw new Error("Export map missing: " + importedName);
           } else if (ft != null) {
-            generateClosureCall(ctx, call.callee, call.args, ft as FunctionType, currentGenExpr);
+            generateClosureCall(ctx, call, ft as FunctionType, currentGenExpr);
             return;
           }
         } else {
@@ -297,7 +334,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             return;
           }
           if (ft != null) {
-            generateClosureCall(ctx, call.callee, call.args, ft as FunctionType, currentGenExpr);
+            generateClosureCall(ctx, call, ft as FunctionType, currentGenExpr);
             return;
           }
           throw new Error("Unresolved identifier in codegen: " + ident.name);
@@ -346,13 +383,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
           
           ctx.emitter.emitLocalGet(0);
-          
-          var argIdx = 0;
-          while (argIdx < call.args.length) {
-            let arg = call.args[argIdx];
-            currentGenExpr(arg, false);
-            argIdx += 1;
-          }
+          generateCallArguments(ctx, call, ft, if (ctx.thisLocalIndex >= 0) ctx.thisLocalIndex else 0, currentGenExpr);
           
           ctx.emitter.emitCall(foundFunc as WasmFunction);
           return;
@@ -389,11 +420,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
 
           if (foundFunc != null) {
-            var i = 0;
-            while (i < call.args.length) {
-              currentGenExpr(call.args[i], false);
-              i += 1;
-            }
+            generateCallArguments(ctx, call, ft, -1, currentGenExpr);
             ctx.emitter.emitCall(foundFunc as WasmFunction);
             return;
           }
@@ -424,12 +451,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             currentGenExpr(member.object, false);
             
             let f = foundFunc as WasmFunction;
-            var argIdx = 0;
-            while (argIdx < call.args.length) {
-              let arg = call.args[argIdx];
-              currentGenExpr(arg, false);
-              argIdx += 1;
-            }
+            generateCallArguments(ctx, call, ft, -1, currentGenExpr);
 
             ctx.emitter.emitCall(foundFunc as WasmFunction);
             return;
@@ -454,7 +476,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           
           if (methodIndex == -1) {
             if (ft != null) {
-              generateClosureCall(ctx, call.callee, call.args, ft as FunctionType, currentGenExpr);
+              generateClosureCall(ctx, call, ft as FunctionType, currentGenExpr);
               return;
             }
             throw new Error("Method not found in vtable: " + targetName);
@@ -480,12 +502,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           var scratchLocal = ctx.getStructScratchLocal(structInfo);
           ctx.emitter.emitLocalTee(scratchLocal);
           
-          var argIdx = 0;
-          while (argIdx < call.args.length) {
-            let arg = call.args[argIdx];
-            currentGenExpr(arg, false);
-            argIdx += 1;
-          }
+          generateCallArguments(ctx, call, ft, scratchLocal, currentGenExpr);
           
           ctx.emitter.emitLocalGet(scratchLocal);
           ctx.emitter.emitRefCast(structInfo.index);
@@ -513,7 +530,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           
           if (methodIndex == -1) {
             if (ft != null) {
-              generateClosureCall(ctx, call.callee, call.args, ft as FunctionType, currentGenExpr);
+              generateClosureCall(ctx, call, ft as FunctionType, currentGenExpr);
               return;
             }
             throw new Error("Method not found in interface vtable: " + targetName);
@@ -526,12 +543,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           ctx.emitter.emitLocalTee(scratchLocal);
           ctx.emitter.emitStructGet(fatPtr.index, 0); 
           
-          var argIdx = 0;
-          while (argIdx < call.args.length) {
-            let arg = call.args[argIdx];
-            currentGenExpr(arg, false);
-            argIdx += 1;
-          }
+          generateCallArguments(ctx, call, ft, scratchLocal, currentGenExpr);
           
           ctx.emitter.emitLocalGet(scratchLocal);
           ctx.emitter.emitStructGet(fatPtr.index, 1); 
@@ -580,12 +592,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
 
           let f = foundFunc as WasmFunction;
           currentGenExpr(member.object, false);
-          
-          var argIdx = 0;
-          while (argIdx < call.args.length) {
-            currentGenExpr(call.args[argIdx], false);
-            argIdx += 1;
-          }
+          generateCallArguments(ctx, call, ft, -1, currentGenExpr);
 
           ctx.emitter.emitCall(foundFunc as WasmFunction);
           return;
@@ -635,19 +642,14 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         currentGenExpr(member.object, false);
         
         let f = foundFunc as WasmFunction;
-        var argIdx = 0;
-        while (argIdx < call.args.length) {
-          let arg = call.args[argIdx];
-          currentGenExpr(arg, false);
-          argIdx += 1;
-        }
+        generateCallArguments(ctx, call, ft, if (ctx.thisLocalIndex >= 0) ctx.thisLocalIndex else 0, currentGenExpr);
 
         ctx.emitter.emitCall(foundFunc as WasmFunction);
         return;
       }
       case _: {
         if (ft != null) {
-          generateClosureCall(ctx, call.callee, call.args, ft as FunctionType, currentGenExpr);
+          generateClosureCall(ctx, call, ft as FunctionType, currentGenExpr);
           return;
         }
         throw new Error("Unsupported call expression");

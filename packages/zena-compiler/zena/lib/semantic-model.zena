@@ -208,6 +208,100 @@ export class SemanticModel {
   }
 
   /**
+   * Map from node.id -> original argument count (before checker filled in defaults)
+   */
+  #originalArgCounts = new NodeMap<i32>();
+
+  setOriginalArgCount(node: Node, count: i32): void {
+    this.#originalArgCounts[node] = count;
+  }
+
+  getOriginalArgCountDirect(node: Node): i32 {
+    if (let (true, count) = this.#originalArgCounts.get(node)) {
+      return count;
+    }
+    return -1;
+  }
+
+  getOriginalArgCount(node: Node): i32 {
+    let c = this.getOriginalArgCountDirect(node);
+    if (c != -1) return c;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherC = unit.model.getOriginalArgCountDirect(node);
+          if (otherC != -1) return otherC;
+        }
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * Map from node.id -> ClassType of the class that owns the method defaults
+   */
+  #defaultArgsOwners = new NodeMap<Type>();
+
+  setDefaultArgsOwner(node: Node, type: Type): void {
+    this.#defaultArgsOwners[node] = type;
+  }
+
+  getDefaultArgsOwnerDirect(node: Node): Type | null {
+    if (let (true, t) = this.#defaultArgsOwners.get(node)) {
+      return t;
+    }
+    return null;
+  }
+
+  getDefaultArgsOwner(node: Node): Type | null {
+    let t = this.getDefaultArgsOwnerDirect(node);
+    if (t != null) return t;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherT = unit.model.getDefaultArgsOwnerDirect(node);
+          if (otherT != null) return otherT;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Map from node.id -> Parameter names
+   */
+  #defaultArgParamNames = new NodeMap<Array<String>>();
+
+  setDefaultArgParamNames(node: Node, names: Array<String>): void {
+    this.#defaultArgParamNames[node] = names;
+  }
+
+  getDefaultArgParamNamesDirect(node: Node): Array<String> | null {
+    if (let (true, ns) = this.#defaultArgParamNames.get(node)) {
+      return ns;
+    }
+    return null;
+  }
+
+  getDefaultArgParamNames(node: Node): Array<String> | null {
+    let ns = this.getDefaultArgParamNamesDirect(node);
+    if (ns != null) return ns;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      for (let unit in prog.getUnits()) {
+        if (unit.model != this) {
+          let otherNs = unit.model.getDefaultArgParamNamesDirect(node);
+          if (otherNs != null) return otherNs;
+        }
+      }
+    }
+    return null;
+  }
+
+
+  /**
    * Map from node.id → boolean to record whether a member/call expression is a static access.
    */
   #staticAccesses = new NodeMap<boolean>();

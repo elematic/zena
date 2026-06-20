@@ -4728,8 +4728,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     checkFunctionExpression(ctx, typeParameters, params, returnType, body, loc, expectedType)
   }
 
-  case CallExpression {callee, args, typeArguments, optional, loc}: {
-    checkCallExpression(ctx, callee, args, typeArguments, optional, loc)
+  case CallExpression as call: {
+    checkCallExpression(ctx, call, expectedType)
   }
 
   // --- If Expression ---
@@ -6621,7 +6621,44 @@ let checkMethodSignature = (
     retType = resolveTypeAnnotation(ctx, md.returnType as TypeAnnotation, true);
   }
 
+  let paramSymbols = new Array<SymbolId>();
+  var pi = 0;
+  while (pi < md.params.length) {
+    let paramInfo = ctx.model.resolveDeclaration(md.params[pi].name);
+    if (paramInfo != null) {
+      let symId = (paramInfo as Symbol).id;
+      // Mark as -1 if the parameter is never actually referenced in subsequent default parameters.
+      let isReferenced = new Array<boolean>();
+      isReferenced.push(false);
+      var pi2 = pi + 1;
+      while (pi2 < md.params.length) {
+        if (md.params[pi2].defaultValue != null) {
+           walkEnter(md.params[pi2].defaultValue as Node, (n: Node): void => {
+             if (n is Identifier) {
+               let nSym = ctx.model.resolve(n as Identifier);
+               if (nSym != null) {
+                 if ((nSym as Symbol).id == symId) {
+                   isReferenced[0] = true;
+                 }
+               }
+             }
+           });
+        }
+        pi2 += 1;
+      }
+      if (isReferenced[0]) {
+        paramSymbols.push(symId);
+      } else {
+        paramSymbols.push(-1 as SymbolId);
+      }
+    } else {
+      paramSymbols.push(-1 as SymbolId);
+    }
+    pi += 1;
+  }
+
   let ft = new FunctionType(paramTypes, paramNames, retType);
+  ft.parameterSymbols = paramSymbols;
   ft.typeParameters = resolvedTypeParams;
   ft.isFinal = md.isFinal;
   ft.isAbstract = md.isAbstract;
@@ -9169,13 +9206,10 @@ let checkFunctionExpression = (
 
 let checkCallExpression = (
   ctx: CheckerContext,
-  callee: Expression,
-  args: Array<Expression>,
-  typeArguments: Array<TypeAnnotation> | null,
-  optional: boolean,
-  loc: SourceLocation | null
+  call: CallExpression,
+  expectedType: Type | null
 ): Type => {
-  let calleeType = checkExpression(ctx, callee, null);
+  let calleeType = checkExpression(ctx, call.callee, null);
 
   // Handle optional chaining on nullable callee.
   var baseCalleeType: Type = calleeType;
@@ -9204,9 +9238,9 @@ let checkCallExpression = (
 
   // If optional and not nullable, proceed normally.
   // If optional and nullable, wrap result in union with null.
-  let resultType = checkCallExpressionInner(ctx, callee, baseCalleeType, args, typeArguments, loc);
+  let resultType = checkCallExpressionInner(ctx, call, baseCalleeType, expectedType);
 
-  if (isNullable && optional) {
+  if (isNullable && call.optional) {
     let types = new Array<Type>();
     types.push(resultType);
     types.push(new NullType());
@@ -9218,12 +9252,14 @@ let checkCallExpression = (
 
 let checkCallExpressionInner = (
   ctx: CheckerContext,
-  callee: Expression,
+  call: CallExpression,
   calleeType: Type,
-  args: Array<Expression>,
-  typeArguments: Array<TypeAnnotation> | null,
-  loc: SourceLocation | null
+  expectedType: Type | null
 ): Type => {
+  let callee = call.callee;
+  let args = call.args;
+  let typeArguments = call.typeArguments;
+  let loc = call.loc;
   match (calleeType) {
     case UnionT {types}: {
       var matchedFt: FunctionType | null = null;
@@ -9391,6 +9427,7 @@ let checkCallExpressionInner = (
       let originalActualCount = args.length;
 
       // Fill in missing arguments with default values
+      var hasDefaults = false;
       if (effectiveFt.parameterInitializers != null) {
         var a = args.length;
         while (a < effectiveFt.parameters.length) {
@@ -9416,13 +9453,32 @@ let checkCallExpressionInner = (
               }
               case _: { args.push(initializer); }
             }
+            hasDefaults = true;
           } else {
             // Optional but no default? Inject null.
             args.push(new NullLiteral(loc));
           }
           a += 1;
         }
+
+        if (hasDefaults) {
+          ctx.model.setOriginalArgCount(call, originalActualCount);
+          if (effectiveFt.parameterNames != null) {
+            ctx.model.setDefaultArgParamNames(call, effectiveFt.parameterNames as Array<String>);
+          }
+          if (callee is MemberExpression) {
+            let memberExpr = callee as MemberExpression;
+            let objectType = checkExpression(ctx, memberExpr.object, null);
+            match (objectType) {
+              case ClassType: {
+                ctx.model.setDefaultArgsOwner(call, objectType);
+              }
+              case _: {}
+            }
+          }
+        }
       }
+
 
       let actualCount = args.length;
 

@@ -218,6 +218,9 @@ fn compile_to_cache(file: &str, verbose: bool, time: bool) -> Result<std::path::
         }
         if let Err(e) = compiler_main.call(&mut store, &[], &mut compiler_results) {
             eprintln!("Compiler failed with error: {:?}", e);
+            if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
+                eprintln!("Wasm Backtrace:\n{}", bt);
+            }
             anyhow::bail!("Compilation failed");
         }
 
