@@ -58,19 +58,11 @@ async function run() {
     'variables',
   ];
 
-  const skipList = [
-    'nullable-ref.zena', // Nullable reference wrapping/unwrapping
-    'downcast.zena', // Class initialization error when no constructor?
-    'upcast.zena', // Class initialization error when no constructor?
-  ];
-
   let files = await glob(join(testsDir, '**/*.zena'));
   files = files.filter((f) => {
     const relPath = relative(testsDir, f);
     const segments = relPath.split(sep);
-    const isAllowed =
-      segments.length === 1 || runList.some((r) => segments.includes(r));
-    return isAllowed && !skipList.some((s) => segments.includes(s));
+    return segments.length === 1 || runList.some((r) => segments.includes(r));
   });
 
   const filter = process.argv[2];
