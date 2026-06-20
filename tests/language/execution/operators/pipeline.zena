@@ -1,0 +1,64 @@
+// @mode: run
+// @result: 0
+
+let double = (x: i32): i32 => x * 2;
+let addOne = (x: i32): i32 => x + 1;
+let add = (a: i32, b: i32): i32 => a + b;
+let subtract = (a: i32, b: i32): i32 => a - b;
+
+var counter: i32 = 0;
+let sideEffect = (): i32 => {
+  counter = counter + 1;
+  return counter;
+};
+
+export let main = (): i32 => {
+  // 1. simple pipeline with arithmetic
+  if (10 |> $ + 5 != 15) return 1;
+
+  // 2. chained pipeline expressions
+  if (5 |> $ + 5 |> $ * 2 != 20) return 2;
+
+  // 3. pipeline with multiple $ references
+  if (10 |> $ + $ != 20) return 3;
+
+  // 4. pipeline with function call
+  if (5 |> double($) != 10) return 4;
+
+  // 5. chained pipeline with function calls
+  if (5 |> double($) |> addOne($) != 11) return 5;
+
+  // 6. pipeline with multiple arguments
+  if (5 |> add($, 10) != 15) return 6;
+
+  // 7. pipeline with $ in different argument positions
+  if (10 |> subtract($, 3) != 7) return 7;
+
+  // 8. pipeline with $ as second argument
+  if (3 |> subtract(10, $) != 7) return 8;
+
+  // 9. nested pipeline expressions
+  if ((1 |> addOne($)) + (2 |> double($)) != 6) return 9;
+
+  // 10. pipeline with conditional expression
+  if ((10 |> if ($ > 5) $ * 2 else $ + 2) != 20) return 10;
+
+  // 11. pipeline preserves evaluation order
+  if (sideEffect() |> $ + sideEffect() |> $ + sideEffect() != 6) return 11;
+
+  // 12. pipeline with float values
+  if (5.0 |> $ + 2.5 |> $ * 2.0 != 15.0) return 12;
+
+  // 13. pipeline in variable binding
+  let result = 5 |> double($) |> $ + 1;
+  if (result != 11) return 13;
+
+  // 14. pipeline with boolean result
+  let boolRes = 10 |> $ > 5;
+  if (!boolRes) return 14;
+
+  // 15. deeply chained pipeline
+  if (1 |> $ + 1 |> $ + 1 |> $ + 1 |> $ + 1 != 5) return 15;
+
+  return 0;
+};

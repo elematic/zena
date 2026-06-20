@@ -22,6 +22,9 @@ export class FunctionContext {
   /// Tuple holds: (breakDepth: i32, continueDepth: i32)
   loopStack = new Array<(i32, i32)>();
 
+  /// Stack of active pipeline value local indices.
+  pipelineLocalStack = new Array<i32>();
+
   new(this.wasm, this.emitter, this.wasmFunction);
 
   isCelled(symId: SymbolId): boolean {
@@ -98,5 +101,20 @@ export class FunctionContext {
     }
     this.optShortCircuitedLocal = this.allocLocal(new ValTypeI32());
     return this.optShortCircuitedLocal;
+  }
+
+  pushPipelineLocal(localIndex: i32): void {
+    this.pipelineLocalStack.push(localIndex);
+  }
+
+  popPipelineLocal(): void {
+    this.pipelineLocalStack.pop();
+  }
+
+  getPipelineLocal(): i32 {
+    if (this.pipelineLocalStack.length == 0) {
+      return -1;
+    }
+    return this.pipelineLocalStack[this.pipelineLocalStack.length - 1];
   }
 }

@@ -134,7 +134,7 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] `for-in` loop compilation over collections implementing `Iterator`/`Sequence` protocol (unrolling iteration steps).
 - [ ] **Ranges & Pipelines:**
   - [x] Range object instantiation (`..` operator variants: `BoundedRange`, `FromRange`, etc.).
-  - [ ] Pipeline expressions (`|>`) replacing temporary variables via stack manipulation/placeholder `$` replacement.
+  - [x] Pipeline expressions (`|>`) replacing temporary variables via stack manipulation/placeholder `$` replacement.
 
 ### 8. Exception Handling
 

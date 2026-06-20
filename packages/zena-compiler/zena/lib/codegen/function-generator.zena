@@ -12,7 +12,7 @@ import {
   AccessorDeclaration, SetterInfo, AsExpression, IsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral, TaggedTemplateExpression,
   SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction,
-  ThrowExpression, TryExpression, RangeExpression
+  ThrowExpression, TryExpression, RangeExpression, PipelineExpression, PipePlaceholder
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
@@ -39,7 +39,7 @@ import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, gene
 import { generateUnaryExpression, generateBinaryExpression } from './expr/operators.zena';
 import { generateCallExpression } from './expr/calls.zena';
 import { generateAssignmentExpression } from './expr/assignment.zena';
-import { generateIfExpression, generateThrowExpression, generateTryExpression } from './expr/control-flow.zena';
+import { generateIfExpression, generateThrowExpression, generateTryExpression, generatePipelineExpression, generatePipePlaceholder } from './expr/control-flow.zena';
 import { generateNewExpression, generateRangeExpression } from './expr/classes.zena';
 import { generateMatchExpression } from './expr/match.zena';
 import { generateMemberExpression, generateIndexExpression } from './expr/member.zena';
@@ -666,6 +666,12 @@ export class FunctionGenerator {
           (s: Statement) => this.generateStatement(s)
         );
         handlesDiscardNatively = true;
+      }
+      case PipelineExpression: {
+        generatePipelineExpression(this.ctx, expr as PipelineExpression, (e: Expression, d: boolean = false) => this.generateExpression(e, d));
+      }
+      case PipePlaceholder: {
+        generatePipePlaceholder(this.ctx, expr as PipePlaceholder);
       }
       case IsExpression: {
         let isExpr = expr as IsExpression;

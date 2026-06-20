@@ -1,5 +1,5 @@
 import { ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeEqRef } from '../wasm.zena';
-import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement, ThrowExpression, TryExpression, CatchClause, Identifier, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral } from '../../ast.zena';
+import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement, ThrowExpression, TryExpression, CatchClause, Identifier, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral, PipelineExpression, PipePlaceholder } from '../../ast.zena';
 import { Type, F64Type, F32Type, VoidType, InlineTupleType, UnionType, baseType } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import { FunctionContext } from '../function-context.zena';
@@ -365,4 +365,45 @@ export let generateTryExpression = (
   }
   
   ctx.isReachable = true;
+};
+
+export let generatePipelineExpression = (
+  ctx: FunctionContext,
+  expr: PipelineExpression,
+  genExpr: (e: Expression, discardValue: boolean) => void
+): void => {
+  // Generate the left-hand side
+  genExpr(expr.left, false);
+
+  // Get the type of the piped value to determine the WASM type for the local
+  let leftType = ctx.wasmFunction.model.getNodeType(expr.left);
+  var wasmType: ValType = new ValTypeEqRef();
+  if (leftType != null) {
+    wasmType = typeToValType(ctx.wasm, leftType as Type);
+  }
+
+  // Store in a temporary local
+  let tempLocal = ctx.allocLocal(wasmType);
+  ctx.emitter.emitLocalSet(tempLocal);
+
+  // Push the temp local index onto the pipeline stack
+  ctx.pushPipelineLocal(tempLocal);
+
+  // Generate the right-hand side (with $ available)
+  genExpr(expr.right, false);
+
+  // Pop the pipeline stack
+  ctx.popPipelineLocal();
+};
+
+export let generatePipePlaceholder = (
+  ctx: FunctionContext,
+  expr: PipePlaceholder
+): void => {
+  let localIndex = ctx.getPipelineLocal();
+  if (localIndex == -1) {
+    throw new Error("Pipeline placeholder ($) used outside of pipeline expression");
+  }
+
+  ctx.emitter.emitLocalGet(localIndex);
 };
