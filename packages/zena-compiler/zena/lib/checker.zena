@@ -7993,6 +7993,38 @@ let resolveIndexType = (
 
   match (objectType) {
     case ArrayType {elementType}: {
+      // Check for extension class operator[] on Array types (e.g., FixedArray<T>.operator[](Range))
+      let fixedArrayPrelude = ctx.resolvePreludeType("FixedArray");
+      if (fixedArrayPrelude != null && fixedArrayPrelude is ClassType) {
+        let faCt = fixedArrayPrelude as ClassType;
+        let typeArgs = new Array<Type>();
+        typeArgs.push(elementType);
+        let ct = instantiateClassType(faCt, typeArgs);
+        if (ct.members.has("[]")) {
+          let opMethodInfo = ct.members["[]"];
+          let baseMethod = opMethodInfo.type as FunctionType;
+          let candidates = new Array<FunctionType>();
+          candidates.push(baseMethod);
+          if (baseMethod.overloads != null) {
+            let ovs = baseMethod.overloads as Array<FunctionType>;
+            var oi = 0;
+            while (oi < ovs.length) {
+              candidates.push(ovs[oi]);
+              oi = oi + 1;
+            }
+          }
+          for (let candidate in candidates) {
+            let resolvedCandidate = substituteTypeParams(ct.typeParameters, ct.typeArguments, candidate) as FunctionType;
+            if (resolvedCandidate.parameters.length == 1) {
+              let paramType = resolvedCandidate.parameters[0];
+              if (isAssignableTo(ctx, indexType, paramType)) {
+                return substituteTypeParams(ct.typeParameters, ct.typeArguments, candidate.returnType);
+              }
+            }
+          }
+        }
+      }
+
       // Array indexing — index must be i32.
       if (!isIntegerType(indexType)) {
         ctx.error(
@@ -8030,8 +8062,29 @@ let resolveIndexType = (
       // Check for operator [] method.
       if (ct.members.has("[]")) {
         let opMethodInfo = ct.members["[]"];
-        // The return type is the element type.
-        return substituteTypeParams(ct.typeParameters, ct.typeArguments, (opMethodInfo.type as FunctionType).returnType);
+        let baseMethod = opMethodInfo.type as FunctionType;
+        let candidates = new Array<FunctionType>();
+        candidates.push(baseMethod);
+        if (baseMethod.overloads != null) {
+          let ovs = baseMethod.overloads as Array<FunctionType>;
+          var oi = 0;
+          while (oi < ovs.length) {
+            candidates.push(ovs[oi]);
+            oi = oi + 1;
+          }
+        }
+        var selectedMethod = baseMethod;
+        for (let candidate in candidates) {
+          let resolvedCandidate = substituteTypeParams(ct.typeParameters, ct.typeArguments, candidate) as FunctionType;
+          if (resolvedCandidate.parameters.length == 1) {
+            let paramType = resolvedCandidate.parameters[0];
+            if (isAssignableTo(ctx, indexType, paramType)) {
+              selectedMethod = candidate;
+              break;
+            }
+          }
+        }
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, selectedMethod.returnType);
       }
       ctx.error(
         "Type '" + ct.name + "' does not support indexing (no 'operator []' method).",
@@ -8043,7 +8096,29 @@ let resolveIndexType = (
     case InterfaceType as it: {
       if (it.members.has("[]")) {
         let opMethodInfo = it.members["[]"];
-        return substituteTypeParams(it.typeParameters, it.typeArguments, (opMethodInfo.type as FunctionType).returnType);
+        let baseMethod = opMethodInfo.type as FunctionType;
+        let candidates = new Array<FunctionType>();
+        candidates.push(baseMethod);
+        if (baseMethod.overloads != null) {
+          let ovs = baseMethod.overloads as Array<FunctionType>;
+          var oi = 0;
+          while (oi < ovs.length) {
+            candidates.push(ovs[oi]);
+            oi = oi + 1;
+          }
+        }
+        var selectedMethod = baseMethod;
+        for (let candidate in candidates) {
+          let resolvedCandidate = substituteTypeParams(it.typeParameters, it.typeArguments, candidate) as FunctionType;
+          if (resolvedCandidate.parameters.length == 1) {
+            let paramType = resolvedCandidate.parameters[0];
+            if (isAssignableTo(ctx, indexType, paramType)) {
+              selectedMethod = candidate;
+              break;
+            }
+          }
+        }
+        return substituteTypeParams(it.typeParameters, it.typeArguments, selectedMethod.returnType);
       }
       ctx.error(
         "Interface '" + it.name + "' does not support indexing (no 'operator []' method).",

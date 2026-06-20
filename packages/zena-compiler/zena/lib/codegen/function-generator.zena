@@ -12,7 +12,7 @@ import {
   AccessorDeclaration, SetterInfo, AsExpression, IsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral, TaggedTemplateExpression,
   SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction,
-  ThrowExpression, TryExpression
+  ThrowExpression, TryExpression, RangeExpression
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
@@ -40,7 +40,7 @@ import { generateUnaryExpression, generateBinaryExpression } from './expr/operat
 import { generateCallExpression } from './expr/calls.zena';
 import { generateAssignmentExpression } from './expr/assignment.zena';
 import { generateIfExpression, generateThrowExpression, generateTryExpression } from './expr/control-flow.zena';
-import { generateNewExpression } from './expr/classes.zena';
+import { generateNewExpression, generateRangeExpression } from './expr/classes.zena';
 import { generateMatchExpression } from './expr/match.zena';
 import { generateMemberExpression, generateIndexExpression } from './expr/member.zena';
 import { generateRecordLiteral, generateTupleLiteral, generateArrayLiteral } from './expr/literals.zena';
@@ -633,6 +633,9 @@ export class FunctionGenerator {
       case NewExpression: {
         generateNewExpression(this.ctx, expr as NewExpression, (e: Expression) => this.generateExpression(e));
       }
+      case RangeExpression: {
+        generateRangeExpression(this.ctx, expr as RangeExpression, (e: Expression, d: boolean = false) => this.generateExpression(e, d));
+      }
       case IfExpression: {
         generateIfExpression(this.ctx, expr as IfExpression, discardValue, (e: Expression, d: boolean = false) => this.generateExpression(e, d), (s: Statement) => this.generateStatement(s));
         handlesDiscardNatively = true;
@@ -889,13 +892,12 @@ export class FunctionGenerator {
         }
       }
     }
-
-      case _: {
-        let t = this.ctx.wasmFunction.model.getNodeType(expr);
-        let tStr = if (t != null) { typeToString(t as Type) } else { "null" };
-        throw new Error("Unsupported expression type in codegen. Node type in model: " + tStr);
-      }
+    case _: {
+      let t = this.ctx.wasmFunction.model.getNodeType(expr);
+      let tStr = if (t != null) { typeToString(t as Type) } else { "null" };
+      throw new Error("Unsupported expression type in codegen. Node type in model: " + tStr);
     }
+  }
     
     // EXCEPTION: Implicit Structural Adaptation
     // If the semantic model determined that this expression produces a record that is
