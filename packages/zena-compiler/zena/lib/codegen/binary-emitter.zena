@@ -1,7 +1,8 @@
 import { ValTypeFunc, ValTypeRef, ValTypeRefNull } from './wasm.zena';
 import { ByteBuffer } from 'zena:byte-buffer';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { WasmSignature, WasmFunction, WasmModule } from './wasm-module.zena';
+import { WasmSignature, WasmFunction, WasmModule, WasmStruct, WasmArray } from './wasm-module.zena';
+import { i32ToString } from 'zena:string-convert';
 import { SectionId, ValType, WasmType, Opcode, SatOpcode, GcOpcode, HeapType, valTypeToOpcode, heapTypeToSigned } from './wasm.zena';
 
 export let emitValType = (buffer: ByteBuffer, type: ValType) => {
@@ -351,6 +352,29 @@ export class BinaryEmitter implements WasmEmitter {
       funcBody.writeULEB128(lArray.length);
       for (let l in lArray) {
         funcBody.writeULEB128(1); // count 1
+        match (l) {
+          case ValTypeRef as ref: {
+            if (ref.target.index < 0) {
+              let fName = if (func.name == null) "func" + i32ToString(func.index) else func.name as String;
+              console.log("DEBUG ERROR: Invalid WasmType index for ValTypeRef in function: " + fName);
+            }
+          }
+          case ValTypeRefNull as ref: {
+            if (ref.target.index < 0) {
+              let fName = if (func.name == null) "func" + i32ToString(func.index) else func.name as String;
+              console.log("DEBUG ERROR: Invalid WasmType index for ValTypeRefNull in function: " + fName);
+              if (ref.target is WasmStruct) {
+                let s = ref.target as WasmStruct;
+                console.log("DEBUG ERROR: Target is WasmStruct with name: " + (if (s.name == null) "null" else s.name as String));
+              } else if (ref.target is WasmSignature) {
+                console.log("DEBUG ERROR: Target is WasmSignature");
+              } else if (ref.target is WasmArray) {
+                console.log("DEBUG ERROR: Target is WasmArray");
+              }
+            }
+          }
+          case _: {}
+        }
         emitValType(funcBody, l); 
       }
     } else {

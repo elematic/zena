@@ -861,15 +861,17 @@ export class DiscoveryPass {
         }
      } else if (t is TypeAliasType) {
         this.discoverType((t as TypeAliasType).target, model);
-     } else if (t is FunctionType) {
-        let ft = t as FunctionType;
-        for (let paramType in ft.parameters) {
-           this.discoverType(paramType, model);
-        }
-        this.discoverType(ft.returnType, model);
-        if (isConcrete(ft)) {
-           getClosureStruct(this.wasm, ft);
-        }
+      } else if (t is FunctionType) {
+         let ft = t as FunctionType;
+         console.log("DEBUG DISCOVER: FunctionType uniqueKey=" + typeStr + " isConcrete=" + (if (isConcrete(ft)) "true" else "false"));
+         for (let paramType in ft.parameters) {
+            this.discoverType(paramType, model);
+         }
+         this.discoverType(ft.returnType, model);
+         if (isConcrete(ft)) {
+            console.log("DEBUG DISCOVER: Calling getClosureStruct for concrete FunctionType: " + typeStr);
+            getClosureStruct(this.wasm, ft);
+         }
       } else if (t is ClassType) {
          let ct = t as ClassType;
          if (ct.name == "array" && ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {

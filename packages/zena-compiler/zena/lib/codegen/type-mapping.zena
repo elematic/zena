@@ -11,11 +11,12 @@ import { Node } from '../ast.zena';
 import { FunctionContext } from './function-context.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
-  sortWasmFields
+  sortWasmFields, WasmArray
 } from './wasm-module.zena';
 import { 
   ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, 
-  ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode 
+  ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode,
+  WasmType
 } from './wasm.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
@@ -472,29 +473,42 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
   }
 };
 
+let getWasmTypeKey = (target: WasmType): String => {
+  if (target is WasmStruct) {
+    let s = target as WasmStruct;
+    if (s.name != null) {
+      return s.name as String;
+    }
+    var structKey = "struct_anon_";
+    for (let f in s.fields) {
+      structKey = structKey + (if (f.name == null) "null" else f.name as String) + "_" + (if (f.isMutable) "mut_" else "imm_") + getValTypeKey(f.type) + "_";
+    }
+    return structKey;
+  }
+  if (target is WasmArray) {
+    let a = target as WasmArray;
+    return "array_" + (if (a.isMutable) "mut_" else "imm_") + getValTypeKey(a.elementType);
+  }
+  if (target is WasmSignature) {
+    let sig = target as WasmSignature;
+    var s = "sig_";
+    for (let p in sig.params) {
+      s = s + getValTypeKey(p) + "_";
+    }
+    s = s + "returns_";
+    for (let ret in sig.returns) {
+      s = s + getValTypeKey(ret) + "_";
+    }
+    return s;
+  }
+  return "anon";
+};
+
 export let getValTypeKey = (type: ValType): String => {
   match (type) {
-    case ValTypeRef as r: {
-      if (r.target is WasmStruct) {
-        let s = r.target as WasmStruct;
-        if (s.name != null) {
-          return "ref_" + (s.name as String);
-        }
-      }
-      return "ref_anon";
-    }
-    case ValTypeRefNull as r: {
-      if (r.target is WasmStruct) {
-        let s = r.target as WasmStruct;
-        if (s.name != null) {
-          return "refnull_" + (s.name as String);
-        }
-      }
-      return "refnull_anon";
-    }
-    case _: {
-      return i32ToString(valTypeToOpcode(type));
-    }
+    case ValTypeRef {target}: "ref_" + getWasmTypeKey(target)
+    case ValTypeRefNull {target}: "refnull_" + getWasmTypeKey(target)
+    case _: i32ToString(valTypeToOpcode(type))
   }
 };
 
@@ -535,8 +549,7 @@ export let getClosureStruct = (wasm: WasmModule, ftVal: any): WasmStruct => {
   let fields = new Array<WasmField>();
   fields.push(new WasmField("func", new ValTypeRef(implSig), false));
   fields.push(new WasmField("ctx", new ValTypeEqRef(), false));
-  let st = new WasmStruct("Closure", fields);
-  wasm.types.push(st);
+  let st = wasm.getStruct(null, fields);
   wasm.closureStructs[key] = st;
   return st;
 };
@@ -642,12 +655,8 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
   }
   case VoidType: new ValTypeVoid()
   case NullType: new ValTypeStructRef()
-  case UnknownType: {
-    throw new Error("Codegen should never see type: " + typeToString(t));
-  }
-  case ErrorType: {
-    throw new Error("Codegen should never see type: " + typeToString(t));
-  }
+  case UnknownType: new ValTypeAnyRef()
+  case ErrorType: new ValTypeAnyRef()
   case AnyType: new ValTypeAnyRef()
   case TypeParameterType: new ValTypeAnyRef()
   case AnyRefType: new ValTypeAnyRef()
@@ -671,7 +680,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     } else {
       let nonNeverTypes = new Array<Type>();
       for (let t_i in ut.types) {
-        if (!(t_i is NeverType || t_i is HoleType)) {
+        if (!(t_i is NeverType || t_i is HoleType || t_i is ErrorType || t_i is UnknownType)) {
           nonNeverTypes.push(t_i);
         }
       }
@@ -694,11 +703,34 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
             nonNullTypes.push(t_i);
           }
         }
-        if (nonNullTypes.length == 1) {
-          let v = typeToValType(wasm, nonNullTypes[0]);
-          match (v) {
-            case ValTypeRef as vr: new ValTypeRefNull(vr.target)
-            case _: v
+        let mappedValTypes = new Array<ValType>();
+        for (let t_i in nonNullTypes) {
+          mappedValTypes.push(typeToValType(wasm, t_i));
+        }
+        var allSame = true;
+        let firstKey = if (mappedValTypes.length > 0) getValTypeKey(mappedValTypes[0]) else "";
+        for (let mv in mappedValTypes) {
+          if (getValTypeKey(mv) != firstKey) {
+            allSame = false;
+            break;
+          }
+        }
+        if (allSame && mappedValTypes.length > 0) {
+          let commonValType = mappedValTypes[0];
+          var hasNull = false;
+          for (let t_i in ut.types) {
+            if (t_i is NullType) {
+              hasNull = true;
+              break;
+            }
+          }
+          if (hasNull) {
+            match (commonValType) {
+              case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+              case _: commonValType
+            }
+          } else {
+            commonValType
           }
         } else {
           new ValTypeEqRef()

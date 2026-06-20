@@ -4,8 +4,8 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { parseI32, parseF64, i32ToString, parseI64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
-import { WasmStruct, WasmFunction, WasmGlobal, WasmSignature } from '../wasm-module.zena';
-import { typeToValType, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults } from '../type-mapping.zena';
+import { WasmStruct, WasmFunction, WasmGlobal, WasmSignature, WasmArray } from '../wasm-module.zena';
+import { typeToValType, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults, getValTypeKey } from '../type-mapping.zena';
 import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType } from '../wasm.zena';
 import { ClassKey, ExportGlobalKey, ExportKey, getClassKey } from '../codegen-utils.zena';
 import { String } from 'zena:string';
@@ -326,6 +326,17 @@ export let generateTaggedTemplateExpression = (
   let stringStruct = ctx.wasm.classStructs[stringKey];
   let stringWasmType = new ValTypeRefNull(stringStruct);
   let wasmArrayType = ctx.wasm.getArray(stringWasmType, true);
+  if (wasmArrayType.index < 0) {
+    console.log("DEBUG: wasmArrayType index is < 0!");
+    console.log("DEBUG: stringStruct name=" + (if (stringStruct.name == null) "null" else stringStruct.name as String) + " index=" + i32ToString(stringStruct.index));
+    console.log("DEBUG: wasm.types length=" + i32ToString(ctx.wasm.types.length));
+    for (let t in ctx.wasm.types) {
+      if (t is WasmArray) {
+        let wa = t as WasmArray;
+        console.log("DEBUG: found WasmArray with elem=" + getValTypeKey(wa.elementType) + " index=" + i32ToString(wa.index));
+      }
+    }
+  }
   let stringsArrayTypeIndex = wasmArrayType.index;
 
   // 3. Find TemplateStringsArray field indexes

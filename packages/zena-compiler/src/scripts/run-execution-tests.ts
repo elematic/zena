@@ -28,6 +28,7 @@ async function run() {
     'imports',
     'interfaces',
     'intrinsics',
+    'match-expressions',
     'mixins',
     'null-coalescing',
     'nullish-assignment',

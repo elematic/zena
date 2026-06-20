@@ -1,0 +1,56 @@
+// @mode: run
+// @result: 10
+
+class A {
+  x: i32;
+  new(this.x);
+}
+
+class B {
+  a: A;
+  new(this.a);
+}
+
+let testAsPattern = (x: i32): i32 => {
+  return match (x) {
+    case 10 as y: y
+    case _: 0
+  };
+};
+
+let testAsPatternRecord = (r: { a: i32 }): i32 => {
+  return match (r) {
+    case { a: 10 } as y: y.a
+    case _: 0
+  };
+};
+
+let testAsPatternClassRenaming = (obj: A): i32 => {
+  return match (obj) {
+    case A { x: _ } as a: a.x
+  };
+};
+
+let testAsPatternClassNested = (obj: B): i32 => {
+  return match (obj) {
+    case B { a as inner }: match (inner) {
+      case A { x: _ } as a: a.x
+    }
+  };
+};
+
+export let main = (): i32 => {
+  if (testAsPattern(10) != 10) return 1;
+  if (testAsPattern(5) != 0) return 2;
+
+  let r = { a: 10 };
+  if (testAsPatternRecord(r) != 10) return 3;
+
+  let objA = new A(10);
+  if (testAsPatternClassRenaming(objA) != 10) return 4;
+
+  let objB = new B(new A(10));
+  if (testAsPatternClassNested(objB) != 10) return 5;
+
+  return 10;
+};

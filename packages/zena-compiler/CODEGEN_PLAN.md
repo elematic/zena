@@ -122,9 +122,9 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Basic `while` and C-style `for` loops (without custom iteration/pattern matching).
   - [x] `break` and `continue` statement redirection.
   - [x] Strict reachability analysis and control flow codegen.
-- [ ] **Match Expressions:**
-  - [ ] Code generation for exhaustive `match` expressions.
-  - [ ] Pattern compilation tree (nested tests/casts) for literal, wildcard, variable, tuple, and record/class patterns.
+- [x] **Match Expressions:**
+  - [x] Code generation for exhaustive `match` expressions.
+  - [x] Pattern compilation tree (nested tests/casts) for literal, wildcard, variable, tuple, and record/class patterns.
   - [x] Conditional guard execution (`case ... if ...`).
   - [ ] Exhaustiveness checks producing compile-time traps or errors.
 - [ ] **Conditional Patterns:**

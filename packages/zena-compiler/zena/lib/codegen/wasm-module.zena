@@ -6,7 +6,7 @@ import { SymbolId } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { 
   ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef, 
-  ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32 
+  ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32, valTypeToOpcode 
 } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
@@ -339,12 +339,24 @@ export class WasmModule {
     for (let t in this.types) {
       if (t is WasmStruct) {
         let s = t as WasmStruct;
-        if (s.fields.length == fields.length) {
+        let structNamesMatch = if (s.name == null) {
+          name == null
+        } else {
+          name != null && (s.name as String) == (name as String)
+        };
+        if (structNamesMatch && s.fields.length == fields.length) {
           var match = true;
           for (var i = 0; i < fields.length; i += 1) {
-            // A struct matches if fields have same type and mutability.
-            // Name doesn't matter for structural identity.
-            if (!valTypeEquals(s.fields[i].type, fields[i].type) || s.fields[i].isMutable != fields[i].isMutable) {
+            let nameA = s.fields[i].name;
+            let nameB = fields[i].name;
+            let namesMatch = if (nameA == null) {
+              nameB == null
+            } else {
+              nameB != null && (nameA as String) == (nameB as String)
+            };
+            if (!valTypeEquals(s.fields[i].type, fields[i].type) || 
+                s.fields[i].isMutable != fields[i].isMutable ||
+                !namesMatch) {
               match = false;
               break;
             }
@@ -354,6 +366,9 @@ export class WasmModule {
           }
         }
       }
+    }
+    if (this.isLayoutLocked) {
+      throw new Error("Struct allocated after layout");
     }
     let st = new WasmStruct(name, fields);
     this.types.push(st);

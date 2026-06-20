@@ -12,7 +12,7 @@ import {
   NullLiteral, MatchExpression, MatchCase, BindingProperty, ForInStatement, ThrowExpression, TryExpression, CatchClause,
   TemplateLiteral, TaggedTemplateExpression, SealedVariant, ClassDeclaration
 } from '../ast.zena';
-import { Type, F64Type, F32Type, FunctionType } from '../types.zena';
+import { Type, F64Type, F32Type, FunctionType, ErrorType } from '../types.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { ValType } from './wasm.zena';
 import { Array } from 'zena:array';
@@ -228,10 +228,16 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
       if (pat.name != "_") {
         let sym = ctx.wasmFunction.model.resolveDeclaration(pat);
         if (sym != null && !ctx.localIndices.has(sym.id)) {
-          let varType = getNodeType(ctx, pat);
+          var varType = getNodeType(ctx, pat);
+          if (varType == null || varType is ErrorType) {
+            let bt = ctx.wasmFunction.model.getBindingType(sym);
+            if (bt != null) {
+              varType = bt;
+            }
+          }
           var vType: ValType = new ValTypeI32();
-          if (varType != null) {
-            vType = typeToValType(ctx.wasm, varType);
+          if (varType != null && !(varType is ErrorType)) {
+            vType = typeToValType(ctx.wasm, varType as Type);
           }
           if (ctx.isCelled(sym.id)) {
             let cellStruct = getCellStruct(ctx.wasm, vType);
@@ -247,10 +253,16 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
       if (pat.name != "_") {
         let sym = ctx.wasmFunction.model.resolveDeclaration(pat);
         if (sym != null && !sym.isType() && ctx.wasmFunction.model.getBindingType(sym) != null && !ctx.localIndices.has(sym.id)) {
-          let varType = getNodeType(ctx, pat);
+          var varType = getNodeType(ctx, pat);
+          if (varType == null || varType is ErrorType) {
+            let bt = ctx.wasmFunction.model.getBindingType(sym);
+            if (bt != null) {
+              varType = bt;
+            }
+          }
           var vType: ValType = new ValTypeI32();
-          if (varType != null) {
-            vType = typeToValType(ctx.wasm, varType);
+          if (varType != null && !(varType is ErrorType)) {
+            vType = typeToValType(ctx.wasm, varType as Type);
           }
           if (ctx.isCelled(sym.id)) {
             let cellStruct = getCellStruct(ctx.wasm, vType);
@@ -293,10 +305,16 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
             if (ctx.localIndices.has(s.id)) {
               console.log("localIndices already has symbol!");
             } else {
-              let varType = ctx.wasmFunction.model.getNodeType(pat);
+              var varType = ctx.wasmFunction.model.getNodeType(pat);
+              if (varType == null || varType is ErrorType) {
+                let bt = ctx.wasmFunction.model.getBindingType(s);
+                if (bt != null) {
+                  varType = bt;
+                }
+              }
               var vType: ValType = new ValTypeI32();
-              if (varType != null) {
-                vType = typeToValType(ctx.wasm, varType);
+              if (varType != null && !(varType is ErrorType)) {
+                vType = typeToValType(ctx.wasm, varType as Type);
               }
               if (ctx.isCelled(s.id)) {
                 let cellStruct = getCellStruct(ctx.wasm, vType);
@@ -314,10 +332,16 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
     case AsPattern as ap: {
       let sym = ctx.wasmFunction.model.resolveDeclaration(ap.name);
       if (sym != null && !ctx.localIndices.has(sym.id)) {
-        let varType = getNodeType(ctx, ap.name);
+        var varType = getNodeType(ctx, ap.name);
+        if (varType == null || varType is ErrorType) {
+          let bt = ctx.wasmFunction.model.getBindingType(sym);
+          if (bt != null) {
+            varType = bt;
+          }
+        }
         var vType: ValType = new ValTypeI32();
-        if (varType != null) {
-          vType = typeToValType(ctx.wasm, varType);
+        if (varType != null && !(varType is ErrorType)) {
+          vType = typeToValType(ctx.wasm, varType as Type);
         }
         if (ctx.isCelled(sym.id)) {
           let cellStruct = getCellStruct(ctx.wasm, vType);
