@@ -1,6 +1,6 @@
 import { ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeEqRef } from '../wasm.zena';
 import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement, ThrowExpression, TryExpression, CatchClause, Identifier, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral, PipelineExpression, PipePlaceholder } from '../../ast.zena';
-import { Type, F64Type, F32Type, VoidType, InlineTupleType, UnionType, baseType } from '../../types.zena';
+import { Type, F64Type, F32Type, VoidType, InlineTupleType, UnionType, baseType, isVoidOrNeverType } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
@@ -17,7 +17,7 @@ export let generateIfExpression = (
 ): void => {
   let nodeType = ctx.wasmFunction.model.getNodeType(expr);
   var resultValType: ValType = new ValTypeVoid();
-  if (!discardValue && nodeType != null && !(nodeType is VoidType)) {
+  if (!discardValue && nodeType != null && !isVoidOrNeverType(nodeType as Type)) {
     resultValType = typeToValType(ctx.wasm, nodeType as Type);
   }
   let dropResult = discardValue || resultValType is ValTypeVoid;

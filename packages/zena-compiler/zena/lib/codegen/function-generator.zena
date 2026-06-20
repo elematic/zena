@@ -15,7 +15,7 @@ import {
   ThrowExpression, TryExpression, RangeExpression, PipelineExpression, PipePlaceholder,
   Module
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType, isVoidOrNeverType } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
@@ -289,6 +289,7 @@ export class FunctionGenerator {
     }
     
     let bodyNode = this.ctx.wasmFunction.node;
+
     var params: Array<Parameter> | null = null;
     var body: Node | null = null;
 
@@ -1070,7 +1071,7 @@ export class FunctionGenerator {
 
     if (discardValue && !handlesDiscardNatively) {
       let exprType = this.ctx.wasmFunction.model.getNodeType(expr);
-      if (!(exprType is VoidType)) {
+      if (exprType != null && !isVoidOrNeverType(exprType as Type)) {
         this.ctx.emitter.emitDrop();
       }
     }

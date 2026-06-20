@@ -1,8 +1,9 @@
 import { Node, UnaryExpression, BinaryExpression, Expression, NullLiteral } from '../../ast.zena';
+import { console } from 'zena:console';
 import { Type, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, RecordType, ClassType, ArrayType,
   AnyType, isFloatType, baseType, typeToString,
   InterfaceType, TypeParameterType, ThisType, AnyRefType, EqRefType, FunctionType, TupleType, NullType,
-  isRefType
+  isRefType, isNumericType, isBooleanLike, BooleanType, instantiateClassType
 } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
@@ -11,6 +12,49 @@ import { WasmField, WasmFunction } from '../wasm-module.zena';
 import { getClassKey, getSignatureKey } from '../codegen-utils.zena';
 import { typeToValType, getClassMemberSignature, getNodeType } from '../type-mapping.zena';
 import { Array } from 'zena:array';
+
+let isPrimitiveType = (t: Type): boolean => {
+  let b = baseType(t);
+  return isNumericType(b) || isBooleanLike(b);
+};
+
+let emitConversion = (ctx: FunctionContext, source: Type, target: Type): void => {
+  let src = baseType(source);
+  let tgt = baseType(target);
+  if (src is I32Type || src is U32Type || isBooleanLike(src)) {
+    if (tgt is I64Type || tgt is U64Type) {
+      ctx.emitter.emitI64ExtendI32S();
+    } else if (tgt is F32Type) {
+      ctx.emitter.emitF32ConvertI32S();
+    } else if (tgt is F64Type) {
+      ctx.emitter.emitF64ConvertI32S();
+    }
+  } else if (src is I64Type || src is U64Type) {
+    if (tgt is I32Type || tgt is U32Type) {
+      ctx.emitter.emitI32WrapI64();
+    } else if (tgt is F32Type) {
+      ctx.emitter.emitF32ConvertI64S();
+    } else if (tgt is F64Type) {
+      ctx.emitter.emitF64ConvertI64S();
+    }
+  } else if (src is F32Type) {
+    if (tgt is F64Type) {
+      ctx.emitter.emitF64PromoteF32();
+    } else if (tgt is I32Type || tgt is U32Type) {
+      ctx.emitter.emitI32TruncSatF32S();
+    } else if (tgt is I64Type || tgt is U64Type) {
+      ctx.emitter.emitI64TruncSatF32S();
+    }
+  } else if (src is F64Type) {
+    if (tgt is F32Type) {
+      ctx.emitter.emitF32DemoteF64();
+    } else if (tgt is I32Type || tgt is U32Type) {
+      ctx.emitter.emitI32TruncSatF64S();
+    } else if (tgt is I64Type || tgt is U64Type) {
+      ctx.emitter.emitI64TruncSatF64S();
+    }
+  }
+};
  
 export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (un.operator == "-") {
@@ -270,12 +314,16 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
   let rightBase = baseType(rightType);
  
   let isRefContext = isRefType(leftBase) || isRefType(rightBase);
-  let isFloatContext = isFloatType(leftBase) || isFloatType(rightBase);
-  let isI64Context = leftBase is I64Type || leftBase is U64Type || rightBase is I64Type || rightBase is U64Type;
- 
+  
   // 2. Check for class overloaded operators (if the operator is overridable)
   // Non-overridable operators: ===, !==
   if (bin.operator != "===" && bin.operator != "!==") {
+    if (bin.operator == "==" || bin.operator == "!=") {
+      console.log("DEBUG EQ operator: " + bin.operator +
+                  " | leftBase kind = " + typeToString(leftBase) +
+                  " | rightBase kind = " + typeToString(rightBase) +
+                  " | isRefContext = " + (if (isRefContext) "true" else "false"));
+    }
     if (leftBase is ClassType) {
       let ct = leftBase as ClassType;
       let opMember = if (bin.operator == "!=") "==" else bin.operator;
@@ -283,7 +331,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
         // Evaluate left and right operands onto the stack first
         genExpr(bin.left, false);
         genExpr(bin.right, false);
- 
+
         // Find the operator function
         let lookupName = opMember;
         var foundFunc: WasmFunction | null = null;
@@ -297,7 +345,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
           }
           currClass = (currClass as ClassType).superType;
         }
- 
+
         if (foundFunc != null) {
           if (ct.isFinal) {
             // Direct static call
@@ -337,7 +385,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
               throw new Error("Method not found in vtable: " + lookupName);
             }
           }
- 
+
           // If the operator was !=, negate the boolean result of ==
           if (bin.operator == "!=") {
             ctx.emitter.emitI32Eqz();
@@ -347,133 +395,311 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
       }
     }
   }
- 
+
   // 3. Built-in (non-overloaded) operations
+  if (isPrimitiveType(leftBase) && isPrimitiveType(rightBase)) {
+    var targetType: Type = new I32Type();
+    if (bin.operator == "/") {
+      let overallType = getNodeType(ctx, bin);
+      if (overallType != null && baseType(overallType) is F32Type) {
+        targetType = new F32Type();
+      } else {
+        targetType = new F64Type();
+      }
+    } else {
+      if (leftBase is F64Type || rightBase is F64Type) {
+        targetType = new F64Type();
+      } else if (leftBase is F32Type || rightBase is F32Type) {
+        if (leftBase is I64Type || leftBase is U64Type || rightBase is I64Type || rightBase is U64Type) {
+          targetType = new F64Type();
+        } else {
+          targetType = new F32Type();
+        }
+      } else if (leftBase is I64Type || leftBase is U64Type || rightBase is I64Type || rightBase is U64Type) {
+        targetType = new I64Type();
+      } else {
+        targetType = new I32Type();
+      }
+    }
+
+    genExpr(bin.left, false);
+    emitConversion(ctx, leftBase, targetType);
+
+    genExpr(bin.right, false);
+    emitConversion(ctx, rightBase, targetType);
+
+    if (targetType is F64Type) {
+      match (bin.operator) {
+        case "+": ctx.emitter.emitF64Add()
+        case "-": ctx.emitter.emitF64Sub()
+        case "*": ctx.emitter.emitF64Mul()
+        case "/": ctx.emitter.emitF64Div()
+        case "==": ctx.emitter.emitF64Eq()
+        case "!=": ctx.emitter.emitF64Ne()
+        case "===": ctx.emitter.emitF64Eq()
+        case "!==": ctx.emitter.emitF64Ne()
+        case "<": ctx.emitter.emitF64Lt()
+        case "<=": ctx.emitter.emitF64Le()
+        case ">": ctx.emitter.emitF64Gt()
+        case ">=": ctx.emitter.emitF64Ge()
+        case _: throw new Error("Unsupported operator for f64: " + bin.operator)
+      }
+    } else if (targetType is F32Type) {
+      match (bin.operator) {
+        case "+": ctx.emitter.emitF32Add()
+        case "-": ctx.emitter.emitF32Sub()
+        case "*": ctx.emitter.emitF32Mul()
+        case "/": ctx.emitter.emitF32Div()
+        case "==": ctx.emitter.emitF32Eq()
+        case "!=": ctx.emitter.emitF32Ne()
+        case "===": ctx.emitter.emitF32Eq()
+        case "!==": ctx.emitter.emitF32Ne()
+        case "<": ctx.emitter.emitF32Lt()
+        case "<=": ctx.emitter.emitF32Le()
+        case ">": ctx.emitter.emitF32Gt()
+        case ">=": ctx.emitter.emitF32Ge()
+        case _: throw new Error("Unsupported operator for f32: " + bin.operator)
+      }
+    } else if (targetType is I64Type) {
+      let useUnsigned = leftBase is U32Type || leftBase is U64Type || rightBase is U32Type || rightBase is U64Type;
+      match (bin.operator) {
+        case "+": ctx.emitter.emitI64Add()
+        case "-": ctx.emitter.emitI64Sub()
+        case "*": ctx.emitter.emitI64Mul()
+        case "/": if (useUnsigned) ctx.emitter.emitI64DivU() else ctx.emitter.emitI64DivS()
+        case "%": if (useUnsigned) ctx.emitter.emitI64RemU() else ctx.emitter.emitI64RemS()
+        case "==": ctx.emitter.emitI64Eq()
+        case "!=": ctx.emitter.emitI64Ne()
+        case "===": ctx.emitter.emitI64Eq()
+        case "!==": ctx.emitter.emitI64Ne()
+        case "<": if (useUnsigned) ctx.emitter.emitI64LtU() else ctx.emitter.emitI64LtS()
+        case "<=": if (useUnsigned) ctx.emitter.emitI64LeU() else ctx.emitter.emitI64LeS()
+        case ">": if (useUnsigned) ctx.emitter.emitI64GtU() else ctx.emitter.emitI64GtS()
+        case ">=": if (useUnsigned) ctx.emitter.emitI64GeU() else ctx.emitter.emitI64GeS()
+        case "&": ctx.emitter.emitI64And()
+        case "|": ctx.emitter.emitI64Or()
+        case "^": ctx.emitter.emitI64Xor()
+        case "<<": ctx.emitter.emitI64Shl()
+        case ">>": if (useUnsigned) ctx.emitter.emitI64ShrU() else ctx.emitter.emitI64ShrS()
+        case ">>>": ctx.emitter.emitI64ShrU()
+        case _: throw new Error("Unsupported operator for i64: " + bin.operator)
+      }
+    } else {
+      let useUnsigned = leftBase is U32Type || rightBase is U32Type;
+      match (bin.operator) {
+        case "+": ctx.emitter.emitI32Add()
+        case "-": ctx.emitter.emitI32Sub()
+        case "*": ctx.emitter.emitI32Mul()
+        case "/": if (useUnsigned) ctx.emitter.emitI32DivU() else ctx.emitter.emitI32DivS()
+        case "%": if (useUnsigned) ctx.emitter.emitI32RemU() else ctx.emitter.emitI32RemS()
+        case "==": ctx.emitter.emitI32Eq()
+        case "!=": ctx.emitter.emitI32Ne()
+        case "===": ctx.emitter.emitI32Eq()
+        case "!==": ctx.emitter.emitI32Ne()
+        case "<": if (useUnsigned) ctx.emitter.emitI32LtU() else ctx.emitter.emitI32LtS()
+        case "<=": if (useUnsigned) ctx.emitter.emitI32LeU() else ctx.emitter.emitI32LeS()
+        case ">": if (useUnsigned) ctx.emitter.emitI32GtU() else ctx.emitter.emitI32GtS()
+        case ">=": if (useUnsigned) ctx.emitter.emitI32GeU() else ctx.emitter.emitI32GeS()
+        case "&": ctx.emitter.emitI32And()
+        case "|": ctx.emitter.emitI32Or()
+        case "^": ctx.emitter.emitI32Xor()
+        case "<<": ctx.emitter.emitI32Shl()
+        case ">>": if (useUnsigned) ctx.emitter.emitI32ShrU() else ctx.emitter.emitI32ShrS()
+        case ">>>": ctx.emitter.emitI32ShrU()
+        case _: throw new Error("Unsupported operator for i32: " + bin.operator)
+      }
+    }
+    return;
+  }
+
+  // Fallback for non-numeric (references, records, etc.)
   // Evaluate left operand
-  if (isFloatContext && !isFloatType(leftBase)) {
-    genExpr(bin.left, false);
-    ctx.emitter.emitF64ConvertI32S();
-  } else {
-    genExpr(bin.left, false);
-    if (leftBase is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-      let leftRT = leftBase as RecordType;
-      let leftFields = new Array<WasmField>();
-      for (let pair in leftRT.properties) {
-        leftFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
-      }
-      let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, leftFields);
-      ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
-      ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
-      ctx.emitter.emitRefCastEq();
-    } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-      let leftWasmType = typeToValType(ctx.wasm, leftType);
-      if (leftWasmType is ValTypeAnyRef) {
-        ctx.emitter.emitRefCastEq();
-      }
+  genExpr(bin.left, false);
+  if (leftBase is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+    let leftRT = leftBase as RecordType;
+    let leftFields = new Array<WasmField>();
+    for (let pair in leftRT.properties) {
+      leftFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
+    }
+    let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, leftFields);
+    ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
+    ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
+    ctx.emitter.emitRefCastEqNull();
+  } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+    let leftWasmType = typeToValType(ctx.wasm, leftType);
+    if (leftWasmType is ValTypeAnyRef) {
+      ctx.emitter.emitRefCastEqNull();
     }
   }
- 
+
   // Evaluate right operand
-  if (isFloatContext && !isFloatType(rightBase)) {
-    genExpr(bin.right, false);
-    ctx.emitter.emitF64ConvertI32S();
-  } else {
-    genExpr(bin.right, false);
-    if (rightBase is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-      let rightRT = rightBase as RecordType;
-      let rightFields = new Array<WasmField>();
-      for (let pair in rightRT.properties) {
-        rightFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
-      }
-      let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, rightFields);
-      ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
-      ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
-      ctx.emitter.emitRefCastEq();
-    } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-      let rightWasmType = typeToValType(ctx.wasm, rightType);
-      if (rightWasmType is ValTypeAnyRef) {
-        ctx.emitter.emitRefCastEq();
-      }
+  genExpr(bin.right, false);
+  if (rightBase is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+    let rightRT = rightBase as RecordType;
+    let rightFields = new Array<WasmField>();
+    for (let pair in rightRT.properties) {
+      rightFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
+    }
+    let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, rightFields);
+    ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
+    ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
+    ctx.emitter.emitRefCastEqNull();
+  } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+    let rightWasmType = typeToValType(ctx.wasm, rightType);
+    if (rightWasmType is ValTypeAnyRef) {
+      ctx.emitter.emitRefCastEqNull();
     }
   }
- 
+
   if (isRefContext) {
-    match (bin.operator) {
-      case "==": ctx.emitter.emitRefEq()
-      case "!=": {
-        ctx.emitter.emitRefEq();
+    if (bin.operator == "==" || bin.operator == "!=") {
+      let eqValType = new ValTypeEqRef();
+      let leftLocal = ctx.allocLocal(eqValType);
+      let rightLocal = ctx.allocLocal(eqValType);
+
+      ctx.emitter.emitLocalSet(rightLocal);
+      ctx.emitter.emitLocalSet(leftLocal);
+
+      var openBlocks = 0;
+
+      // 1. Reference equality check
+      ctx.emitter.emitLocalGet(leftLocal);
+      ctx.emitter.emitLocalGet(rightLocal);
+      ctx.emitter.emitRefEq();
+      ctx.emitter.emitIf(new ValTypeI32());
+      ctx.enterBlockStructure();
+      ctx.emitter.emitI32Const(1);
+      ctx.emitter.emitElse();
+      openBlocks += 1;
+
+      // 2. Null check (since they are not ref-equal, if either is null they can't be equal)
+      ctx.emitter.emitLocalGet(leftLocal);
+      ctx.emitter.emitRefIsNull();
+      ctx.emitter.emitLocalGet(rightLocal);
+      ctx.emitter.emitRefIsNull();
+      ctx.emitter.emitI32Or();
+      ctx.emitter.emitIf(new ValTypeI32());
+      ctx.enterBlockStructure();
+      ctx.emitter.emitI32Const(0);
+      ctx.emitter.emitElse();
+      openBlocks += 1;
+
+      // 3. String equality check
+      let stringClass = ctx.wasm.stringClass;
+      if (stringClass != null) {
+        let stringStruct = ctx.wasm.classStructs[getClassKey(stringClass as ClassType)];
+        if (stringStruct != null) {
+          ctx.emitter.emitLocalGet(leftLocal);
+          ctx.emitter.emitRefTest(stringStruct.index);
+          ctx.emitter.emitLocalGet(rightLocal);
+          ctx.emitter.emitRefTest(stringStruct.index);
+          ctx.emitter.emitI32And();
+          ctx.emitter.emitIf(new ValTypeI32());
+          ctx.enterBlockStructure();
+
+          // Find String.== method
+          let lookupName = "==";
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = stringClass;
+          while (currClass != null && foundFunc == null) {
+            for (let f in ctx.wasm.functions) {
+              if (f.classType != null && !f.isStatic && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == lookupName) {
+                foundFunc = f;
+                break;
+              }
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+
+          if (foundFunc != null) {
+            ctx.emitter.emitLocalGet(leftLocal);
+            ctx.emitter.emitRefCast(stringStruct.index);
+            ctx.emitter.emitLocalGet(rightLocal);
+            ctx.emitter.emitRefCast(stringStruct.index);
+            ctx.emitter.emitCall(foundFunc as WasmFunction);
+          } else {
+            ctx.emitter.emitI32Const(0);
+          }
+
+          ctx.emitter.emitElse();
+          openBlocks += 1;
+        }
+      }
+
+      // 4. Boxed primitives check
+      let boxClass = ctx.wasm.boxClass;
+      if (boxClass != null) {
+        let types = new Array<Type>();
+        types.push(new I32Type());
+        types.push(new BooleanType());
+        types.push(new F64Type());
+        types.push(new F32Type());
+        types.push(new I64Type());
+
+        var idx = 0;
+        while (idx < types.length) {
+          let t = types[idx];
+          let typeArgs = new Array<Type>();
+          typeArgs.push(t);
+          let concreteBoxType = instantiateClassType(boxClass as ClassType, typeArgs);
+          let cKey = getClassKey(concreteBoxType);
+          if (ctx.wasm.classStructs.has(cKey)) {
+            let structType = ctx.wasm.classStructs[cKey];
+
+            ctx.emitter.emitLocalGet(leftLocal);
+            ctx.emitter.emitRefTest(structType.index);
+            ctx.emitter.emitLocalGet(rightLocal);
+            ctx.emitter.emitRefTest(structType.index);
+            ctx.emitter.emitI32And();
+            ctx.emitter.emitIf(new ValTypeI32());
+            ctx.enterBlockStructure();
+
+            ctx.emitter.emitLocalGet(leftLocal);
+            ctx.emitter.emitRefCast(structType.index);
+            ctx.emitter.emitStructGet(structType.index, 1);
+
+            ctx.emitter.emitLocalGet(rightLocal);
+            ctx.emitter.emitRefCast(structType.index);
+            ctx.emitter.emitStructGet(structType.index, 1);
+
+            match (t) {
+              case I32Type: ctx.emitter.emitI32Eq()
+              case BooleanType: ctx.emitter.emitI32Eq()
+              case F64Type: ctx.emitter.emitF64Eq()
+              case F32Type: ctx.emitter.emitF32Eq()
+              case I64Type: ctx.emitter.emitI64Eq()
+              case _: ctx.emitter.emitI32Const(0)
+            };
+
+            ctx.emitter.emitElse();
+            openBlocks += 1;
+          }
+          idx += 1;
+        }
+      }
+
+      // Fallback for non-boxed/different references (since we already checked ref.eq, they are false)
+      ctx.emitter.emitI32Const(0);
+
+      // Close all opened blocks
+      while (openBlocks > 0) {
+        ctx.exitBlockStructure();
+        ctx.emitter.emitEnd();
+        openBlocks -= 1;
+      }
+
+      if (bin.operator == "!=") {
         ctx.emitter.emitI32Eqz();
       }
-      case "===": ctx.emitter.emitRefEq()
-      case "!==": {
-        ctx.emitter.emitRefEq();
-        ctx.emitter.emitI32Eqz();
-      }
-      case _: throw new Error("Unsupported operator for references: " + bin.operator)
-    }
-  } else if (isFloatContext) {
-    match (bin.operator) {
-      case "+": ctx.emitter.emitF64Add()
-      case "-": ctx.emitter.emitF64Sub()
-      case "*": ctx.emitter.emitF64Mul()
-      case "/": ctx.emitter.emitF64Div()
-      case "==": ctx.emitter.emitF64Eq()
-      case "!=": ctx.emitter.emitF64Ne()
-      case "===": ctx.emitter.emitF64Eq()
-      case "!==": ctx.emitter.emitF64Ne()
-      case "<": ctx.emitter.emitF64Lt()
-      case "<=": ctx.emitter.emitF64Le()
-      case ">": ctx.emitter.emitF64Gt()
-      case ">=": ctx.emitter.emitF64Ge()
-      case _: throw new Error("Unsupported operator for f64: " + bin.operator)
-    }
-  } else if (isI64Context) {
-    let useUnsigned = leftBase is U32Type || leftBase is U64Type || rightBase is U32Type || rightBase is U64Type;
-    match (bin.operator) {
-      case "+": ctx.emitter.emitI64Add()
-      case "-": ctx.emitter.emitI64Sub()
-      case "*": ctx.emitter.emitI64Mul()
-      case "/": if (useUnsigned) ctx.emitter.emitI64DivU() else ctx.emitter.emitI64DivS()
-      case "%": if (useUnsigned) ctx.emitter.emitI64RemU() else ctx.emitter.emitI64RemS()
-      case "==": ctx.emitter.emitI64Eq()
-      case "!=": ctx.emitter.emitI64Ne()
-      case "===": ctx.emitter.emitI64Eq()
-      case "!==": ctx.emitter.emitI64Ne()
-      case "<": if (useUnsigned) ctx.emitter.emitI64LtU() else ctx.emitter.emitI64LtS()
-      case "<=": if (useUnsigned) ctx.emitter.emitI64LeU() else ctx.emitter.emitI64LeS()
-      case ">": if (useUnsigned) ctx.emitter.emitI64GtU() else ctx.emitter.emitI64GtS()
-      case ">=": if (useUnsigned) ctx.emitter.emitI64GeU() else ctx.emitter.emitI64GeS()
-      case "&": ctx.emitter.emitI64And()
-      case "|": ctx.emitter.emitI64Or()
-      case "^": ctx.emitter.emitI64Xor()
-      case "<<": ctx.emitter.emitI64Shl()
-      case ">>": if (useUnsigned) ctx.emitter.emitI64ShrU() else ctx.emitter.emitI64ShrS()
-      case ">>>": ctx.emitter.emitI64ShrU()
-      case _: throw new Error("Unsupported operator for i64: " + bin.operator)
+    } else if (bin.operator == "===") {
+      ctx.emitter.emitRefEq();
+    } else if (bin.operator == "!==") {
+      ctx.emitter.emitRefEq();
+      ctx.emitter.emitI32Eqz();
+    } else {
+      throw new Error("Unsupported operator for references: " + bin.operator);
     }
   } else {
-    let useUnsigned = leftBase is U32Type || rightBase is U32Type;
-    match (bin.operator) {
-      case "+": ctx.emitter.emitI32Add()
-      case "-": ctx.emitter.emitI32Sub()
-      case "*": ctx.emitter.emitI32Mul()
-      case "/": if (useUnsigned) ctx.emitter.emitI32DivU() else ctx.emitter.emitI32DivS()
-      case "%": if (useUnsigned) ctx.emitter.emitI32RemU() else ctx.emitter.emitI32RemS()
-      case "==": ctx.emitter.emitI32Eq()
-      case "!=": ctx.emitter.emitI32Ne()
-      case "===": ctx.emitter.emitI32Eq()
-      case "!==": ctx.emitter.emitI32Ne()
-      case "<": if (useUnsigned) ctx.emitter.emitI32LtU() else ctx.emitter.emitI32LtS()
-      case "<=": if (useUnsigned) ctx.emitter.emitI32LeU() else ctx.emitter.emitI32LeS()
-      case ">": if (useUnsigned) ctx.emitter.emitI32GtU() else ctx.emitter.emitI32GtS()
-      case ">=": if (useUnsigned) ctx.emitter.emitI32GeU() else ctx.emitter.emitI32GeS()
-      case "&": ctx.emitter.emitI32And()
-      case "|": ctx.emitter.emitI32Or()
-      case "^": ctx.emitter.emitI32Xor()
-      case "<<": ctx.emitter.emitI32Shl()
-      case ">>": if (useUnsigned) ctx.emitter.emitI32ShrU() else ctx.emitter.emitI32ShrS()
-      case ">>>": ctx.emitter.emitI32ShrU()
-      case _: throw new Error("Unsupported operator for i32: " + bin.operator)
-    }
+    throw new Error("Unsupported non-numeric binary operator: " + bin.operator);
   }
 };

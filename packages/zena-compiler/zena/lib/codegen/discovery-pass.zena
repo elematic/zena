@@ -2954,14 +2954,43 @@ export class DiscoveryPass {
              this.wasm.globals.push(vtableGlobal);
              this.wasm.classInterfaceVTables[key] = vtableGlobal;
            }
-       }
+        }
+     }
+
+    // Also walk the initializers of all registered global variables to discover closures.
+    console.log("STARTING GLOBAL VARIABLES INITIALIZER WALK, globals count = " + i32ToString(this.wasm.globals.length));
+    for (let g in this.wasm.globals) {
+      if (g.initExpr != null) {
+        console.log("  WALKING GLOBAL INITIALIZER: " + g.name);
+        let initExpr = g.initExpr as Expression;
+        walk(initExpr as Node, (n: Node) => true, (n: Node) => {
+          if (n is FunctionExpression) {
+            let funcExpr = n as FunctionExpression;
+            var isRegistered = false;
+            for (let otherF in this.wasm.functions) {
+              if (otherF.node != null && otherF.node.id == funcExpr.id) {
+                isRegistered = true;
+              }
+            }
+            if (!isRegistered) {
+              console.log("    REGISTERING CLOSURE FROM GLOBAL INITIALIZER: " + i32ToString(funcExpr.id as i32));
+              this.registerClosure(funcExpr, g.model, null);
+            }
+          }
+        });
+      }
     }
+    console.log("FINISHED GLOBAL VARIABLES INITIALIZER WALK");
 
     // Pass 2: Walk the AST of registered functions (including newly registered closures)
     // to discover and register nested closures.
     var fIdx = 0;
+    console.log("STARTING PASS 2 CLOSURE DISCOVERY, initial functions count = " + i32ToString(this.wasm.functions.length));
     while (fIdx < this.wasm.functions.length) {
       let f = this.wasm.functions[fIdx];
+      let fName = if (f.name != null) (f.name as String) else "null";
+      console.log("  PASS 2 PROCESSING FUNCTION [" + i32ToString(fIdx) + "]: name=" + fName);
+
       if (f.node != null) {
         let funcNode = f.node as Node;
         var bodyNode: Node | null = null;
@@ -2985,6 +3014,7 @@ export class DiscoveryPass {
           walk(bodyNode as Node, (n: Node) => true, (n: Node) => {
             if (n is FunctionExpression) {
               let funcExpr = n as FunctionExpression;
+
               var isRegistered = false;
               
               let targetClassType = f.classType;
@@ -3000,6 +3030,7 @@ export class DiscoveryPass {
                 }
               }
               if (!isRegistered) {
+                console.log("    REGISTERING NESTED CLOSURE FOR: " + f.name + " ID: " + i32ToString(funcExpr.id as i32));
                 this.registerClosure(funcExpr, f.model, f);
               }
             } else if (n is Identifier) {
@@ -3106,14 +3137,15 @@ export class DiscoveryPass {
       }
       fIdx += 1;
     }
+    console.log("FINISHED PASS 2 CLOSURE DISCOVERY");
 
 
   }
 
-  registerClosure(funcExpr: FunctionExpression, model: SemanticModel, enclosingFunc: WasmFunction): void {
+  registerClosure(funcExpr: FunctionExpression, model: SemanticModel, enclosingFunc: WasmFunction | null): void {
     let captureInfo = analyzeCaptures(funcExpr, model);
     let rawFuncTypeNode = model.getNodeType(funcExpr);
-    let classType = enclosingFunc.classType;
+    let classType = if (enclosingFunc != null) (enclosingFunc as WasmFunction).classType else null as ClassType;
     let ctParams = if (classType != null) getClassTypeParameters(classType as ClassType) else null;
     let funcTypeNode = if (classType != null) {
       substituteTypeParamsInCodegen(ctParams, (classType as ClassType).typeArguments, rawFuncTypeNode as Type)

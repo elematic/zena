@@ -1,9 +1,9 @@
 import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration, getMemberPropertyName } from '../../ast.zena';
-import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, UnionType, TypeParameterType, typeToString } from '../../types.zena';
+import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, UnionType, TypeParameterType, typeToString, isVoidOrNeverType, instantiateClassType, isRefType, baseType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
-import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned } from '../wasm.zena';
+import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16 } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType } from '../type-mapping.zena';
@@ -113,7 +113,7 @@ let generateClosureCall = (
     params.push(typeToValType(ctx.wasm, p));
   }
   let returns = new Array<ValType>();
-  if (!(ftVal.returnType is VoidType)) {
+  if (!isVoidOrNeverType(ftVal.returnType)) {
     returns.push(typeToValType(ctx.wasm, ftVal.returnType));
   }
   let implSig = ctx.wasm.getSignature(params, returns);
@@ -123,6 +123,7 @@ let generateClosureCall = (
 
 
 export let generateCallExpression = (ctx: FunctionContext, call: CallExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
+
   var genCallee = (): void => {
     genExpr(call.callee, false);
   };
@@ -158,8 +159,8 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       let callType = getNodeType(ctx, call);
       if (callType == null) throw new Error("Missing union call return type info");
       var resultLocal = -1;
-      if (!(callType is VoidType)) {
-        resultLocal = ctx.allocLocal(typeToValType(ctx.wasm, callType));
+      if (callType != null && !isVoidOrNeverType(callType as Type)) {
+        resultLocal = ctx.allocLocal(typeToValType(ctx.wasm, callType as Type));
       }
       
       ctx.emitter.emitBlock(new ValTypeVoid());
@@ -194,7 +195,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           ctx.emitter.emitStructGet(closureStruct.index, 0);
           
           let returns = new Array<ValType>();
-          if (!(ftVal.returnType is VoidType)) {
+          if (!isVoidOrNeverType(ftVal.returnType)) {
             returns.push(typeToValType(ctx.wasm, ftVal.returnType));
           }
           let implSig = ctx.wasm.getSignature(sigParams, returns);
@@ -265,7 +266,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         paramValTypes.push(typeToValType(ctx.wasm, p));
       }
       let returnValTypes = new Array<ValType>();
-      if (!(fType.returnType is VoidType)) {
+      if (!isVoidOrNeverType(fType.returnType)) {
         returnValTypes.push(typeToValType(ctx.wasm, fType.returnType));
       }
       
@@ -314,12 +315,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             console.log("CALL SITE LOOKUP: specName=" + specName + " has=" + (if (ctx.wasm.specializedFunctions.has(specName)) "true" else "false"));
             if (ctx.wasm.specializedFunctions.has(specName)) {
               let f = ctx.wasm.specializedFunctions[specName];
-              var i = 0;
-              while (i < call.args.length) {
-                let arg = call.args[i];
-                currentGenExpr(arg, false);
-                i += 1;
-              }
+              generateCallArguments(ctx, call, ft, -1, currentGenExpr);
               ctx.emitter.emitCall(f);
               return;
             }

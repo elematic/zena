@@ -141,6 +141,7 @@ export class ClassType extends Type {
   var typeArguments: Array<Type> | null = null;
   var superType: ClassType | null = null;
   implementsList = new Array<InterfaceType>();
+  mixins = new Array<MixinType>();
   
   /**
    * The members of the class (fields, methods, and accessors).
@@ -315,8 +316,25 @@ let substituteInType = (
           let subImpl = substituteInType(impl, combinedParams, combinedArgs);
           inst.implementsList.push((subImpl ?? impl) as InterfaceType);
         }
-        inst.members = ct.members;
-        inst.constructorType = ct.constructorType;
+        for (let m in ct.mixins) {
+          let subM = substituteInType(m, combinedParams, combinedArgs);
+          inst.mixins.push((subM ?? m) as MixinType);
+        }
+        inst.constructorType = if (ct.constructorType != null) {
+          let ctor = ct.constructorType as FunctionType;
+          let newParams = new Array<Type>();
+          for (let p in ctor.parameters) {
+            let sub = substituteInType(p, combinedParams, combinedArgs);
+            newParams.push((sub ?? p) as Type);
+          }
+          let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
+          newFt.parameterInitializers = ctor.parameterInitializers;
+          newFt.parameterSymbols = ctor.parameterSymbols;
+          newFt.optionalParameters = ctor.optionalParameters;
+          newFt
+        } else {
+          null
+        };
         inst.fieldSetterNames = ct.fieldSetterNames;
         for (let vt in ct.vtable) {
           inst.vtable.push(vt);
@@ -424,6 +442,39 @@ let substituteInType = (
         alias
       }
     }
+    case MixinType as mt: {
+      var hasArgs = false;
+      let mtArgsVal = new Array<Type>();
+      let mtParams = mt.typeParameters;
+      if (mt.typeArguments != null) {
+        hasArgs = true;
+        for (let arg in (mt.typeArguments as Array<Type>)) {
+          mtArgsVal.push(arg);
+        }
+      } else if (typeParameters != null && mtParams != null) {
+        hasArgs = true;
+        for (let param in (mtParams as Array<TypeParameterType>)) {
+          mtArgsVal.push(param as Type);
+        }
+      }
+      if (hasArgs && mtArgsVal.length > 0) {
+        let newArgs = new Array<Type>();
+        for (let arg in mtArgsVal) {
+          let sub = substituteInType(arg, typeParameters, typeArguments);
+          newArgs.push((sub ?? arg) as Type);
+        }
+        let inst = new MixinType(mt.name);
+        inst.typeParameters = mtParams;
+        inst.typeArguments = newArgs;
+        inst.genericSource = mt.genericSource ?? mt;
+        inst.onType = mt.onType;
+        inst.members = mt.members;
+        inst.sourcePath = mt.sourcePath;
+        inst
+      } else {
+        mt
+      }
+    }
     case _: t
   };
 };
@@ -447,8 +498,27 @@ export let instantiateClassType = (
     result.implementsList.push(source.implementsList[i]);
     i += 1;
   }
+  // Copy and substitute mixins list
+  for (let m in source.mixins) {
+    let subM = substituteInType(m, source.typeParameters, typeArguments);
+    result.mixins.push((subM ?? m) as MixinType);
+  }
   result.members = source.members;
-  result.constructorType = source.constructorType;
+  result.constructorType = if (source.constructorType != null) {
+    let ctor = source.constructorType as FunctionType;
+    let newParams = new Array<Type>();
+    for (let p in ctor.parameters) {
+      let sub = substituteInType(p, source.typeParameters, typeArguments);
+      newParams.push((sub ?? p) as Type);
+    }
+    let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
+    newFt.parameterInitializers = ctor.parameterInitializers;
+    newFt.parameterSymbols = ctor.parameterSymbols;
+    newFt.optionalParameters = ctor.optionalParameters;
+    newFt
+  } else {
+    null
+  };
   result.fieldSetterNames = source.fieldSetterNames;
   result.isFinal = source.isFinal;
   result.isCaseClass = source.isCaseClass;
@@ -533,6 +603,7 @@ export class MixinType extends Type {
   var members: OrderedMap<String, MemberInfo> = new OrderedMap<String, MemberInfo>();
   var genericSource: MixinType | null = null;
   var sourcePath: String = "";
+  mixins = new Array<MixinType>();
 
   new(name: String) : name = name;
 }
@@ -548,6 +619,11 @@ export let instantiateMixinType = (
   result.onType = source.onType;
   result.members = source.members;
   result.sourcePath = source.sourcePath;
+  // Copy and substitute mixins
+  for (let m in source.mixins) {
+    let subM = substituteInType(m, source.typeParameters, typeArguments);
+    result.mixins.push((subM ?? m) as MixinType);
+  }
   return result;
 };
 
@@ -652,7 +728,13 @@ export let isRefType = (t: Type): boolean => {
   return b is RecordType || b is ClassType || b is ArrayType || b is AnyType || 
          b is InterfaceType || b is TypeParameterType || b is ThisType || 
          b is AnyRefType || b is EqRefType || b is FunctionType || 
-         b is TupleType || b is NullType || b is UnionType || b is StringLiteralType;
+         b is TupleType || b is NullType || b is UnionType || b is StringLiteralType ||
+         b is ByteArrayType;
+};
+
+export let isVoidOrNeverType = (t: Type): boolean => {
+  let b = baseType(t);
+  return b is VoidType || b is NeverType || b is HoleType;
 };
 
 /**

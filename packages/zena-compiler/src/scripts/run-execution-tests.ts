@@ -128,41 +128,6 @@ async function run() {
       mkdirSync(dirname(wasmOut), {recursive: true});
     }
 
-    // Compile the first file synchronously to serialize cli.cwasm safely
-    // and avoid concurrent write race conditions between parallel workers.
-    const firstFile = filesToCompile[0];
-    const firstRelPath = relative(testsDir, firstFile);
-    const firstWasmOut = join(
-      pkgDir,
-      'zena',
-      'out',
-      'execution',
-      `${firstRelPath}.wasm`,
-    );
-    try {
-      execSync(`"${zenaCli}" build "${firstFile}" -o "${firstWasmOut}"`, {
-        cwd: repoRoot,
-        stdio: 'pipe',
-      });
-      const firstWatOut = join(
-        pkgDir,
-        'zena',
-        'out',
-        'execution',
-        `${firstRelPath}.wat`,
-      );
-      try {
-        execSync(`wasm-tools print "${firstWasmOut}" > "${firstWatOut}"`, {
-          stdio: 'pipe',
-        });
-      } catch (e) {}
-    } catch (e: any) {
-      console.error(
-        `Warm-up compilation failed for ${firstRelPath}:\n${e.stderr?.toString() || e.message}`,
-      );
-      throw e;
-    }
-
     console.log(
       `Compiling ${filesToCompile.length} execution tests in parallel...`,
     );
@@ -171,7 +136,7 @@ async function run() {
       : cpus().length;
     console.log(`Using ${pLimit} parallel workers`);
 
-    let fileIndex = 1;
+    let fileIndex = 0;
     let activeCount = 0;
     let failedCompile = false;
     let compileErrorMsg = '';

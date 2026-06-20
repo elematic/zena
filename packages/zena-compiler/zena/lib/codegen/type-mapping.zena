@@ -4,7 +4,7 @@ import {
   UnknownType, ErrorType, AnyType, AnyRefType, EqRefType, NeverType, HoleType, 
   FieldInfo, MethodInfo, typeToString, ByteArrayType, TypeParameterType, ThisType, 
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
-  RecordType, TupleType
+  RecordType, TupleType, MixinType
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Node } from '../ast.zena';
@@ -161,8 +161,26 @@ export let substituteTypeParamsInCodegen = (
         for (let impl in ct.implementsList) {
           inst.implementsList.push(substituteTypeParamsInCodegen(combinedParams, combinedArgs, impl) as InterfaceType);
         }
+        for (let m in ct.mixins) {
+          let subM = substituteTypeParamsInCodegen(combinedParams, combinedArgs, m);
+          inst.mixins.push((subM ?? m) as MixinType);
+        }
         inst.members = ct.members;
-        inst.constructorType = ct.constructorType;
+        inst.constructorType = if (ct.constructorType != null) {
+          let ctor = ct.constructorType as FunctionType;
+          let newParams = new Array<Type>();
+          for (let p in ctor.parameters) {
+            let sub = substituteTypeParamsInCodegen(combinedParams, combinedArgs, p);
+            newParams.push((sub ?? p) as Type);
+          }
+          let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
+          newFt.parameterInitializers = ctor.parameterInitializers;
+          newFt.parameterSymbols = ctor.parameterSymbols;
+          newFt.optionalParameters = ctor.optionalParameters;
+          newFt
+        } else {
+          null
+        };
         inst.fieldSetterNames = ct.fieldSetterNames;
         for (let vt in ct.vtable) {
           inst.vtable.push(vt);
@@ -173,6 +191,8 @@ export let substituteTypeParamsInCodegen = (
         inst.isExtension = ct.isExtension;
         inst.isSealed = ct.isSealed;
         inst.sealedVariants = ct.sealedVariants;
+        inst.declaredFields = ct.declaredFields;
+        inst.forwardVariantNames = ct.forwardVariantNames;
         if (ct.onType != null) {
           inst.onType = substituteTypeParamsInCodegen(combinedParams, combinedArgs, ct.onType as Type);
         }
@@ -233,6 +253,62 @@ export let substituteTypeParamsInCodegen = (
         inst
       } else {
         it
+      }
+    }
+    case MixinType as mt: {
+      var hasArgs = false;
+      let mtArgsVal = new Array<Type>();
+      let mtParams = mt.typeParameters;
+      if (mt.typeArguments != null) {
+        hasArgs = true;
+        for (let arg in (mt.typeArguments as Array<Type>)) {
+          mtArgsVal.push(arg);
+        }
+      } else if (params != null && args != null && mtParams != null) {
+        hasArgs = true;
+        for (let param in (mtParams as Array<TypeParameterType>)) {
+          mtArgsVal.push(param as Type);
+        }
+      }
+      if (hasArgs && mtArgsVal.length > 0) {
+        let newArgs = new Array<Type>();
+        for (let arg in mtArgsVal) {
+          newArgs.push(substituteTypeParamsInCodegen(params, args, arg));
+        }
+        let inst = new MixinType(mt.name);
+        inst.typeParameters = mtParams;
+        inst.typeArguments = newArgs;
+        inst.genericSource = mt.genericSource ?? mt;
+        let combinedParams = new Array<TypeParameterType>();
+        let combinedArgs = new Array<Type>();
+        if (mtParams != null) {
+          for (let p in (mtParams as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in newArgs) {
+            combinedArgs.push(a);
+          }
+        }
+        if (params != null && args != null) {
+          for (let p in (params as Array<TypeParameterType>)) {
+            combinedParams.push(p);
+          }
+          for (let a in (args as Array<Type>)) {
+            combinedArgs.push(a);
+          }
+        }
+        if (mt.onType != null) {
+          inst.onType = substituteTypeParamsInCodegen(combinedParams, combinedArgs, mt.onType as Type);
+        }
+        for (let m in mt.mixins) {
+          let subM = substituteTypeParamsInCodegen(combinedParams, combinedArgs, m);
+          inst.mixins.push((subM ?? m) as MixinType);
+        }
+        inst.members = mt.members;
+        inst.sourcePath = mt.sourcePath;
+        inst
+      } else {
+        mt
       }
     }
     case _: t
@@ -311,6 +387,51 @@ let addClassTransitiveInterfaces = (
   }
 };
 
+let addTransitiveMixins = (
+  mt: MixinType,
+  allParams: Array<TypeParameterType>,
+  allArgs: Array<Type>,
+  seen: HashMap<String, boolean>
+): void => {
+  let key = (mt.sourcePath + "::" + mt.name) as String;
+  if (seen.has(key)) {
+    return;
+  }
+  seen[key] = true;
+  
+  let mtParams = mt.typeParameters;
+  if (mtParams != null && mt.typeArguments != null) {
+    let tps = mtParams as Array<TypeParameterType>;
+    let tas = mt.typeArguments as Array<Type>;
+    for (var i = 0; i < tps.length; i += 1) {
+      allParams.push(tps[i]);
+      if (i < tas.length) {
+        allArgs.push(tas[i]);
+      } else {
+        allArgs.push(new AnyType());
+      }
+    }
+  }
+  
+  for (let composed in mt.mixins) {
+    addTransitiveMixins(composed, allParams, allArgs, seen);
+  }
+};
+
+let addClassTransitiveMixins = (
+  ct: ClassType,
+  allParams: Array<TypeParameterType>,
+  allArgs: Array<Type>,
+  seen: HashMap<String, boolean>
+): void => {
+  for (let m in ct.mixins) {
+    addTransitiveMixins(m, allParams, allArgs, seen);
+  }
+  if (ct.superType != null) {
+    addClassTransitiveMixins(ct.superType as ClassType, allParams, allArgs, seen);
+  }
+};
+
 export let substituteTypeParamsInClassContext = (classType: ClassType | null, t: Type): Type => {
   if (classType == null) {
     return t;
@@ -339,7 +460,23 @@ export let substituteTypeParamsInClassContext = (classType: ClassType | null, t:
   let seen = new HashMap<String, boolean>();
   addClassTransitiveInterfaces(ct, allParams, allArgs, seen);
   
+  // 3. Add mixins transitively
+  let seenMixins = new HashMap<String, boolean>();
+  addClassTransitiveMixins(ct, allParams, allArgs, seenMixins);
+  
   let substituted = substituteTypeParamsInCodegen(allParams, allArgs, t);
+  if (t is TypeParameterType) {
+    let tp = t as TypeParameterType;
+    var paramsStr = "";
+    for (let p in allParams) {
+      paramsStr = paramsStr + p.name + ", ";
+    }
+    var argsStr = "";
+    for (let a in allArgs) {
+      argsStr = argsStr + typeToString(a) + ", ";
+    }
+    console.log("DEBUG SUB: ct = " + ct.name + " (id=" + i32ToString(ct.id as i32) + ", ext=" + (if (ct.isExtension) "true" else "false") + ", mixins=" + i32ToString(ct.mixins.length as i32) + ") | t = " + tp.name + " | params = [" + paramsStr + "] | args = [" + argsStr + "] | substituted = " + typeToString(substituted));
+  }
   return mapMixinThisInType(ct, substituted);
 };
 
@@ -914,6 +1051,37 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
           for (let impl in resolvedCt.implementsList) {
             inst.implementsList.push(impl);
           }
+          for (let m in resolvedCt.mixins) {
+            inst.mixins.push(mapMixinThisInType(ct, m) as MixinType);
+          }
+          inst.members = resolvedCt.members;
+          inst.constructorType = if (resolvedCt.constructorType != null) {
+            let ctor = resolvedCt.constructorType as FunctionType;
+            let newParams = new Array<Type>();
+            for (let p in ctor.parameters) {
+              newParams.push(mapMixinThisInType(ct, p));
+            }
+            let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
+            newFt.parameterInitializers = ctor.parameterInitializers;
+            newFt.parameterSymbols = ctor.parameterSymbols;
+            newFt.optionalParameters = ctor.optionalParameters;
+            newFt
+          } else {
+            null
+          };
+          inst.fieldSetterNames = resolvedCt.fieldSetterNames;
+          for (let vt in resolvedCt.vtable) {
+            inst.vtable.push(vt);
+          }
+          inst.isFinal = resolvedCt.isFinal;
+          inst.isCaseClass = resolvedCt.isCaseClass;
+          inst.isAbstract = resolvedCt.isAbstract;
+          inst.isExtension = resolvedCt.isExtension;
+          inst.isSealed = resolvedCt.isSealed;
+          inst.sourcePath = resolvedCt.sourcePath;
+          inst.sealedVariants = resolvedCt.sealedVariants;
+          inst.declaredFields = resolvedCt.declaredFields;
+          inst.forwardVariantNames = resolvedCt.forwardVariantNames;
           inst as Type
         } else {
           resolvedCt as Type

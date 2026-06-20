@@ -89,9 +89,17 @@ fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, dirs: &[
 
 fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) -> Result<Module> {
     let needs_compile = if cwasm_path.exists() {
-        let wasm_mod = std::fs::metadata(wasm_path)?.modified()?;
-        let cwasm_mod = std::fs::metadata(cwasm_path)?.modified()?;
-        wasm_mod > cwasm_mod
+        let wasm_meta = std::fs::metadata(wasm_path);
+        let cwasm_meta = std::fs::metadata(cwasm_path);
+        match (wasm_meta, cwasm_meta) {
+            (Ok(w), Ok(c)) => {
+                match (w.modified(), c.modified()) {
+                    (Ok(w_time), Ok(c_time)) => w_time > c_time,
+                    _ => true,
+                }
+            }
+            _ => true,
+        }
     } else {
         true
     };
@@ -107,7 +115,15 @@ fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) 
         }
     }
 
-    unsafe { Ok(Module::deserialize_file(engine, cwasm_path)?) }
+    match unsafe { Module::deserialize_file(engine, cwasm_path) } {
+        Ok(m) => Ok(m),
+        Err(_) => {
+            let wasm_bytes = std::fs::read(wasm_path)?;
+            Module::new(engine, &wasm_bytes)
+                .map_err(anyhow::Error::from)
+                .context("Failed to compile module from WASM bytes")
+        }
+    }
 }
 
 /// Compiles a `.zena` source file by invoking the pre-built self-hosted compiler (`cli.wasm`)
