@@ -278,5 +278,38 @@ export let tests = suite('WatGenerator', (): void => {
     
     assertSnapshot('function_adaptation_deduplication', result);
   });
+
+  test('inline tuple multi-value return', (ctx: TestContext): void => {
+    let host = new MockHost();
+    let source = "export let pair = (): inline (i32, i32) => ((1, 2));";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = compiler.compile("test.zena");
+    let checkRes = checkCompilation(compResult, null, false);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    assertSnapshot('inline_tuple_multi_value_return', result);
+  });
 });
 

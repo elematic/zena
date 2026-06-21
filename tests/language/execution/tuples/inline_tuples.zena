@@ -1,0 +1,171 @@
+// @mode: run
+// @result: 0
+
+// Test case 1: basic multi-value return
+let pair = (): inline (i32, i32) => ((1, 2));
+
+// Test case 2: three values
+let triple = (): inline (i32, i32, i32) => ((1, 2, 3));
+
+// Test case 3: computed values
+let compute = (a: i32, b: i32): inline (i32, i32) => ((a + b, a * b));
+
+// Test case 4: return statement in block body
+let pairBlock = (): inline (i32, i32) => {
+  return (1, 2);
+};
+
+// Test case 5: conditional return
+let choose = (flag: boolean): inline (i32, i32) => {
+  if (flag) {
+    return (10, 20);
+  } else {
+    return (30, 40);
+  }
+};
+
+// Test case 6: mixed types
+let check = (n: i32): inline (i32, boolean) => {
+  return (n * 2, n > 5);
+};
+
+// Test case 7: f64 mixed types (using as f64)
+let sincos = (angle: f64): inline (f64, f64) => {
+  return (angle * 0.5, angle * 2.0);
+};
+
+// Test case 8: chained inline tuple functions
+let first = (): inline (i32, i32) => ((1, 2));
+let second = (): inline (i32, i32) => {
+  let (a, b) = first();
+  return (a * 10, b * 10);
+};
+
+// Test case 9: hole literals with i32 never slot
+let getOrZero = (hasValue: boolean): inline (true, i32) | inline (false, _) => {
+  if (hasValue) {
+    return (true, 42);
+  } else {
+    return (false, _);
+  }
+};
+
+// Test case 10: hole literals with reference type Box/null never slot
+class Box {
+  value: i32;
+  new(v: i32) : value = v {}
+}
+
+let maybeBox = (hasValue: boolean): inline (true, Box) | inline (false, _) => {
+  if (hasValue) {
+    return (true, new Box(100));
+  } else {
+    return (false, _);
+  }
+};
+
+// Test case 11: triple tuple with hole
+let getValues = (flag: boolean): inline (true, i32, i32, i32) | inline (false, i32, _, i32) => {
+  if (flag) {
+    return (true, 1, 2, 3);
+  } else {
+    return (false, 10, _, 30);
+  }
+};
+
+// Test case 12: multiple holes
+let getThird = (flag: boolean): inline (true, i32, i32, i32) | inline (false, _, _, i32) => {
+  if (flag) {
+    return (true, 1, 2, 99);
+  }
+  return (false, _, _, 99);
+};
+
+// Test case 13: hole with f64 type
+let maybeFloat = (has: boolean): inline (true, f64) | inline (false, _) => {
+  if (has) {
+    return (true, 100.0);
+  }
+  return (false, _);
+};
+
+export let main = (): i32 => {
+  // Test case 1
+  let (p1, p2) = pair();
+  if (p1 != 1 || p2 != 2) { return 1; }
+
+  // Test case 2
+  let (t1, t2, t3) = triple();
+  if (t1 != 1 || t2 != 2 || t3 != 3) { return 2; }
+
+  // Test case 3
+  let (c1, c2) = compute(3, 4);
+  if (c1 != 7 || c2 != 12) { return 3; }
+
+  // Test case 4
+  let (pb1, pb2) = pairBlock();
+  if (pb1 != 1 || pb2 != 2) { return 4; }
+
+  // Test case 5
+  let (ch1, ch2) = choose(true);
+  if (ch1 != 10 || ch2 != 20) { return 5; }
+  let (ch3, ch4) = choose(false);
+  if (ch3 != 30 || ch4 != 40) { return 6; }
+
+  // Test case 6
+  let (chk1, chk2) = check(3);
+  if (chk1 != 6 || chk2) { return 7; }
+  let (chk3, chk4) = check(10);
+  if (chk3 != 20 || !chk4) { return 8; }
+
+  // Test case 7
+  let (sc1, sc2) = sincos(10.0);
+  if (sc1 != 5.0 || sc2 != 20.0) { return 9; }
+
+  // Test case 8
+  let (sec1, sec2) = second();
+  if (sec1 != 10 || sec2 != 20) { return 10; }
+
+  // Test case 9
+  if (let (true, val1) = getOrZero(true)) {
+    if (val1 != 42) { return 11; }
+  } else {
+    return 12;
+  }
+  if (let (true, _) = getOrZero(false)) {
+    return 13;
+  }
+
+  // Test case 10
+  if (let (true, box) = maybeBox(true)) {
+    if ((box as Box).value != 100) { return 14; }
+  } else {
+    return 15;
+  }
+
+  // Test case 11
+  var sum11 = 0;
+  if (let (true, a, b, c) = getValues(true)) {
+    sum11 = sum11 + a + c;
+  }
+  if (let (false, x, _, z) = getValues(false)) {
+    sum11 = sum11 + x + z;
+  }
+  if (sum11 != 44) { return 16; }
+
+  // Test case 12
+  if (let (true, a, b, c) = getThird(true)) {
+    if (c != 99) { return 17; }
+  } else {
+    return 18;
+  }
+
+  // Test case 13
+  if (let (true, val) = maybeFloat(true)) {
+    if (val <= 50.0) { return 19; }
+  } else {
+    return 20;
+  }
+
+  return 0;
+};

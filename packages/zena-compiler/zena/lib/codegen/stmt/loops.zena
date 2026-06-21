@@ -16,6 +16,7 @@ import { Program, CompilationUnit } from '../../program.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { generatePatternBinding } from './bindings.zena';
+import { generateLetPatternCheck } from './control-flow.zena';
 
 export let generateBreakStatement = (ctx: FunctionContext, stmt: BreakStatement): void => {
   let n = ctx.loopStack.length;
@@ -89,8 +90,8 @@ export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement,
         ctx.emitter.emitLocalSet(temp);
       }
       
-      // 4. Check condition (first element)
-      ctx.emitter.emitLocalGet(tempLocals[0]);
+      // 4. Check condition (pattern check)
+      generateLetPatternCheck(ctx, tp, tempLocals, elemTypes, genExpr);
       ctx.emitter.emitI32Eqz();
       ctx.emitter.emitBrIf(1); // break to outer block (depth 1)
       

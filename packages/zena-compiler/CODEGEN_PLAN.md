@@ -56,9 +56,9 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Compile-time known index access (`t[idx]`) mapping to structural field access.
 - [x] **Destructuring:**
   - [x] Destructuring patterns for records (`let {x, y} = p`) and tuples (`let (a, b) = t`) in variable declarations.
-- [ ] **Multi-Value Returns:**
-  - [ ] Unboxed multi-value returns mapping directly to WASM's multi-value stack representation (zero-heap allocation).
-  - [ ] Immediate call-site destructuring for multi-value return bindings.
+- [x] **Multi-Value Returns:**
+  - [x] Unboxed multi-value returns mapping directly to WASM's multi-value stack representation (zero-heap allocation).
+  - [x] Immediate call-site destructuring for multi-value return bindings.
 
 ### 4. Functions, Closures, & Intrinsics
 
