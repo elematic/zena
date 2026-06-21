@@ -47,7 +47,7 @@ This plan tracks all features required for the code generation phase to achieve 
 - [ ] **Records:**
   - [x] Canonical WASM GC struct representations with lexicographically sorted keys.
   - [x] Record literals and member access (`.` operator) via fat-pointers for width subtyping (adaptation).
-  - [ ] Record spread expressions (`{...p, z: 3}`) with field copying into a new structural struct.
+  - [x] Record spread expressions (`{...p, z: 3}`) with field copying into a new structural struct.
   - [ ] **Record Devirtualization Optimizations:**
     - [ ] Devirtualize member access for exact type matches (skipping fat-pointer and vtable).
     - [ ] Devirtualize member access for prefix matches.

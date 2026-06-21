@@ -1,11 +1,14 @@
 import { FunctionContext } from '../function-context.zena';
-import { RecordLiteral, TupleLiteral, PropertyAssignment, ArrayLiteral, Expression, Node, Identifier } from '../../ast.zena';
-import { RecordType, TupleType, InlineTupleType, ArrayType, F64Type, F32Type, Type } from '../../types.zena';
+import { RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement, ArrayLiteral, Expression, Node, Identifier } from '../../ast.zena';
+import { RecordType, TupleType, InlineTupleType, ArrayType, F64Type, F32Type, Type, ClassType } from '../../types.zena';
 import { ValType, ValTypeRefNull, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeStructRef, ValTypeEqRef, ValTypeAnyRef } from '../wasm.zena';
 import { WasmField, WasmArray, sortWasmFields } from '../wasm-module.zena';
-import { typeToValType } from '../type-mapping.zena';
+import { typeToValType, getNonNullableType } from '../type-mapping.zena';
+import { getClassKey } from '../codegen-utils.zena';
+import { NodeMap } from '../../node-map.zena';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
+import { HashMap } from 'zena:map';
 import { i32ToString } from 'zena:string-convert';
 
 let generateDefaultValue = (ctx: FunctionContext, type: ValType): void => {
@@ -129,17 +132,106 @@ export let generateRecordLiteral = (
   let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields);
   let structType = dispatchInfo.concreteType;
   
-  // Generate properties in sorted order, or the order matching the struct definition
-  // Wasm GC struct.new expects fields in the exact order of the struct definition.
+  // 1. Evaluate all SpreadElement sub-expressions and store their references in local variables.
+  let spreadLocals = new NodeMap<i32>();
+  for (let prop in expr.properties) {
+    if (prop is SpreadElement) {
+      let spread = prop as SpreadElement;
+      genExpr(spread.argument, false);
+      let spreadType = ctx.wasmFunction.model.getNodeType(spread.argument) as Type;
+      let spreadValType = typeToValType(ctx.wasm, spreadType);
+      let localIdx = ctx.allocLocal(spreadValType);
+      ctx.emitter.emitLocalSet(localIdx);
+      spreadLocals[spread] = localIdx;
+    }
+  }
+
+  // 2. Generate values for each field in sorted order
   for (let field in fields) {
-    for (let node in expr.properties) {
-      if (node is PropertyAssignment) {
-        let prop = node as PropertyAssignment;
-        if (prop.name.name == field.name) {
-          genExpr(prop.value, false);
-          break;
+    let key = field.name as String;
+    var found = false;
+    var i = expr.properties.length - 1;
+    while (i >= 0 && !found) {
+      let prop = expr.properties[i];
+      if (prop is PropertyAssignment) {
+        let propAss = prop as PropertyAssignment;
+        if (propAss.name.name == key) {
+          genExpr(propAss.value, false);
+          found = true;
+        }
+      } else if (prop is SpreadElement) {
+        let spread = prop as SpreadElement;
+        let spreadType = ctx.wasmFunction.model.getNodeType(spread.argument) as Type;
+        let nonNullSpread = getNonNullableType(spreadType);
+        match (nonNullSpread) {
+          case RecordType as rt: {
+            if (rt.properties.has(key)) {
+              let localIndex = spreadLocals[spread];
+              let fieldsArr = new Array<WasmField>();
+              for (let {key as k, value as v} in rt.properties) {
+                fieldsArr.push(new WasmField(k, typeToValType(ctx.wasm, v), false));
+              }
+              sortWasmFields(fieldsArr);
+              let spreadDispatch = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fieldsArr);
+              
+              var fieldIndex = -1;
+              for (var fIdx = 0; fIdx < fieldsArr.length; fIdx += 1) {
+                if (fieldsArr[fIdx].name != null && (fieldsArr[fIdx].name as String) == key) {
+                  fieldIndex = fIdx;
+                }
+              }
+              if (fieldIndex == -1) {
+                throw new Error("Could not find spread record field index");
+              }
+              
+              // Load the instance (field 0 of fat pointer)
+              ctx.emitter.emitLocalGet(localIndex);
+              ctx.emitter.emitStructGet(spreadDispatch.fatPtrType.index, 0);
+              
+              // Load the getter from vtable (field 1 of fat pointer, then fieldIndex of vtable)
+              ctx.emitter.emitLocalGet(localIndex);
+              ctx.emitter.emitStructGet(spreadDispatch.fatPtrType.index, 1);
+              ctx.emitter.emitStructGet(spreadDispatch.vtableType.index, fieldIndex);
+              
+              // Call getter
+              ctx.emitter.emitCallRef(spreadDispatch.getterTypes[fieldIndex].index);
+              found = true;
+            }
+          }
+          case ClassType as ctVar: {
+            let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
+              ctx.wasmFunction.classType as ClassType
+            } else {
+              ctVar
+            };
+            if (ct.members.has(key) && !(key.length > 0 && key.sliceBytes(0, 1) == "#")) {
+              let localIndex = spreadLocals[spread];
+              let ctKey = getClassKey(ct);
+              if (!ctx.wasm.classStructs.has(ctKey)) {
+                throw new Error("Class struct not found: " + ct.name);
+              }
+              let structInfo = ctx.wasm.classStructs[ctKey];
+              var fieldIndex = -1;
+              for (var fIdx = 0; fIdx < structInfo.fields.length; fIdx += 1) {
+                if (structInfo.fields[fIdx].name != null && (structInfo.fields[fIdx].name as String) == key) {
+                  fieldIndex = fIdx;
+                }
+              }
+              if (fieldIndex != -1) {
+                ctx.emitter.emitLocalGet(localIndex);
+                ctx.emitter.emitRefCast(structInfo.index);
+                ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
+                found = true;
+              }
+            }
+          }
+          case _: {}
         }
       }
+      i -= 1;
+    }
+    if (!found) {
+      throw new Error("Missing value for field '" + key + "' in record literal");
     }
   }
 

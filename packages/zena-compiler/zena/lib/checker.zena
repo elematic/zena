@@ -5031,13 +5031,23 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           propTypes[name.name] = valType;
         }
         case SpreadElement {argument}: {
-          // Spread: merge properties from the argument's record type.
+          // Spread: merge properties from the argument's record/class type.
           let spreadType = checkExpression(ctx, argument, null);
-          match (spreadType) {
+          let nonNullSpread = subtractNullFromType(spreadType);
+          match (nonNullSpread) {
             case RecordT {properties as spreadProps}: {
               let keys = spreadProps.keys();
               while (let (true, key) = keys.next()) {
                 propTypes[key] = spreadProps[key];
+              }
+            }
+            case ClassType as ct: {
+              let keys = ct.members.keys();
+              while (let (true, key) = keys.next()) {
+                let member = ct.members[key];
+                if (member is FieldInfo && !member.isStatic && !member.isPrivate && !(key.length > 0 && key.sliceBytes(0, 1) == "#")) {
+                  propTypes[key] = member.type;
+                }
               }
             }
             case _: {}
