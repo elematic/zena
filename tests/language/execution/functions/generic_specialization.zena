@@ -1,0 +1,52 @@
+// @mode: run
+// @invoke: main
+// @result: 1
+
+let identity = <T>(x: T): T => {
+  return x;
+};
+
+export let main = (): i32 => {
+  // 1. Direct calls to generic functions
+  let val1 = identity<i32>(42);
+  if (val1 != 42) {
+    return 101;
+  }
+  
+  let val2 = identity<String>('hello');
+  if (val2 != 'hello') {
+    return 102;
+  }
+  
+  // 2. Reference generic functions as values (instantiates closures)
+  let f1: (x: i32) => i32 = identity;
+  let f2: (x: i32) => i32 = identity;
+  
+  // Call the closure value
+  if (f1(10) != 10) {
+    return 103;
+  }
+  
+  // Reference identity check: each instantiation produces a distinct closure struct,
+  // so reference equality (===) must be false.
+  if (f1 === f2) {
+    return 104;
+  }
+  
+  // 3. Type checking (is) - structural matching
+  if (!(f1 is (x: i32) => i32)) {
+    return 105;
+  }
+  if (f1 is (x: String) => String) {
+    // Should not match other signatures
+    return 106;
+  }
+  
+  // 4. Casting (as)
+  let f3 = f1 as (x: i32) => i32;
+  if (f3(20) != 20) {
+    return 107;
+  }
+  
+  return 1;
+};

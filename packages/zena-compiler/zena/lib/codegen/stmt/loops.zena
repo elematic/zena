@@ -4,10 +4,10 @@ import {
   Node, BreakStatement, ContinueStatement, WhileStatement, ForStatement, Statement, Expression,
   ForInStatement, BindingPattern, IdentifierPattern, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral
 } from '../../ast.zena';
-import { VoidType, Type, InterfaceType, ClassType, ArrayType, ThisType, UnionType, NullType, instantiateClassType, MethodInfo, FunctionType, InlineTupleType, baseType } from '../../types.zena';
+import { VoidType, Type, InterfaceType, ClassType, ArrayType, ThisType, UnionType, NullType, instantiateClassType, MethodInfo, FunctionType, InlineTupleType, baseType, typeToString } from '../../types.zena';
 import { ValType } from "../wasm.zena";
 import { FunctionContext } from '../function-context.zena';
-import { typeToValType, getInterfaceMemberSignature, substituteTypeParamsInCodegen, typeToValTypeWithSub, getNodeType, getClassTypeParameters, getInterfaceTypeParameters } from '../type-mapping.zena';
+import { typeToValType, getInterfaceMemberSignature, substituteTypeParamsInCodegen, typeToValTypeWithSub, getNodeType, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
 import { 
   getInterfaceKey, getInterfaceMemberKey, getClassKey, getClassInterfaceKey,
   classInterfaceKeyToString, InterfaceKey
@@ -226,11 +226,16 @@ let findIterableOrIteratorElementType = (t: Type): Type | null => {
       for (let iface in ct.implementsList) {
         let res = findIterableOrIteratorElementType(iface as Type);
         if (res != null) {
-          return res;
+          let ctParams = getClassTypeParameters(ct);
+          return substituteTypeParamsInCodegen(ctParams, ct.typeArguments, res as Type);
         }
       }
       if (ct.superType != null) {
-        return findIterableOrIteratorElementType(ct.superType as Type);
+        let res = findIterableOrIteratorElementType(ct.superType as Type);
+        if (res != null) {
+          let ctParams = getClassTypeParameters(ct);
+          return substituteTypeParamsInCodegen(ctParams, ct.typeArguments, res as Type);
+        }
       }
     }
     case InterfaceType as it: {
@@ -240,7 +245,8 @@ let findIterableOrIteratorElementType = (t: Type): Type | null => {
       for (let ext in it.extendsList) {
         let res = findIterableOrIteratorElementType(ext as Type);
         if (res != null) {
-          return res;
+          let itParams = getInterfaceTypeParameters(it);
+          return substituteTypeParamsInCodegen(itParams, it.typeArguments, res as Type);
         }
       }
     }
@@ -492,7 +498,7 @@ export let generateForInStatement = (
   var elemWasmType: ValType = new ValTypeAnyRef();
   if (iteratorType.typeArguments != null && (iteratorType.typeArguments as Array<Type>).length > 0) {
     let elemType = (iteratorType.typeArguments as Array<Type>)[0];
-    elemWasmType = typeToValTypeWithSub(ctx.wasm, elemType, ctx.wasmFunction.classType);
+    elemWasmType = typeToValTypeWithSub(ctx.wasm, elemType, ctx.wasmFunction);
   }
   let elemTemp = ctx.allocLocal(elemWasmType);
 
@@ -546,7 +552,7 @@ export let generateForInStatement = (
     ctx.emitter.emitLocalGet(elemTemp);
     
     // Cast anyref to loopElemType at runtime (since elemTemp is anyref)
-    let targetWasmType = typeToValTypeWithSub(ctx.wasm, loopElemType, ctx.wasmFunction.classType);
+    let targetWasmType = typeToValTypeWithSub(ctx.wasm, loopElemType, ctx.wasmFunction);
     match (targetWasmType) {
       case ValTypeRefNull as refNull: {
         ctx.emitter.emitRefCast(refNull.target.index);

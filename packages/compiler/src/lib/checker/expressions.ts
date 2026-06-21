@@ -189,6 +189,7 @@ import {
   getNonNullableType,
   makeNullable,
   typesEqual,
+  tryInstantiateGenericFunction,
 } from './types.js';
 import {
   checkPattern,
@@ -2087,6 +2088,15 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(argExpr.loc),
       );
+    } else {
+      const instantiated = tryInstantiateGenericFunction(
+        ctx,
+        argType,
+        paramType,
+      );
+      if (instantiated !== argType) {
+        argExpr.inferredType = instantiated;
+      }
     }
   }
 
@@ -2391,6 +2401,15 @@ function checkAssignmentExpression(
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
+    } else {
+      const instantiated = tryInstantiateGenericFunction(
+        ctx,
+        valueType,
+        symbol.type,
+      );
+      if (instantiated !== valueType) {
+        expr.value.inferredType = instantiated;
+      }
     }
 
     // ??= narrows the binding to non-null after assignment.

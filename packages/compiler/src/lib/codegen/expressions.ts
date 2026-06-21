@@ -199,7 +199,7 @@ export function generateExpression(
             ctx,
             resolved,
             body,
-            (expression as MemberExpression).property.name,
+            (expression as MemberExpression).property,
           )
         ) {
           break;
@@ -6259,7 +6259,7 @@ function generateIdentifier(
   if (binding) {
     // Resolve imports to their actual target (e.g., imported enum -> original enum declaration)
     const resolved = resolveImport(binding);
-    if (generateFromBinding(ctx, resolved, body, expr.name)) {
+    if (generateFromBinding(ctx, resolved, body, expr)) {
       return;
     }
   }
@@ -6289,8 +6289,9 @@ function generateFromBinding(
   ctx: CodegenContext,
   binding: ResolvedBinding,
   body: number[],
-  name: string,
+  expr: Identifier,
 ): boolean {
+  const name = expr.name;
   switch (binding.kind) {
     case 'local': {
       // Use name-based lookup - more reliable for generic method instantiation
@@ -6364,18 +6365,36 @@ function generateFromBinding(
       // - Field 0: function reference (to a wrapper that matches closure signature)
       // - Field 1: context (null for module-level functions with no captures)
       const funcBinding = binding as FunctionBinding;
-      const funcIndex = ctx.getFunctionIndexByDecl(funcBinding.declaration);
+      let funcIndex = ctx.getFunctionIndexByDecl(funcBinding.declaration);
       if (funcIndex === undefined) {
+        // Check if it's a generic function that needs instantiation
+        const exprType = expr.inferredType as FunctionType | undefined;
+        if (
+          exprType &&
+          exprType.kind === TypeKind.Function &&
+          exprType.typeArguments &&
+          exprType.typeArguments.length > 0
+        ) {
+          funcIndex = instantiateGenericFunction(
+            ctx,
+            name,
+            exprType.typeArguments,
+          );
+        }
+      }
+      if (funcIndex === undefined || funcIndex === -1) {
         return false;
       }
 
       // Get parameter and return types from the function's semantic type
-      const paramTypes = funcBinding.type.parameters.map((t) =>
+      const exprType = expr.inferredType as FunctionType | undefined;
+      const typeForSignature = exprType || funcBinding.type;
+      const paramTypes = typeForSignature.parameters.map((t) =>
         mapCheckerTypeToWasmType(ctx, t),
       );
       const returnType = mapCheckerTypeToWasmType(
         ctx,
-        funcBinding.type.returnType,
+        typeForSignature.returnType,
       );
 
       // Get or create the closure type for this signature

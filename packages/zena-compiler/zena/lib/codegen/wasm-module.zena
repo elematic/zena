@@ -1,5 +1,5 @@
 import { 
-  Node, Expression, ClassDeclaration, NodeId, ImportSpecifier
+  Node, Expression, ClassDeclaration, NodeId, ImportSpecifier, FunctionExpression, MethodDefinition
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId } from '../scope/symbol.zena';
@@ -12,7 +12,7 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { NodeMap } from '../node-map.zena';
-import { ClassType, InterfaceType, FunctionType } from '../types.zena';
+import { ClassType, InterfaceType, FunctionType, Type, TypeParameterType } from '../types.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { ByteBuffer } from 'zena:byte-buffer';
@@ -133,6 +133,10 @@ export class WasmFunction {
   var isFunctionAdaptation: boolean = false;
   var functionAdaptationSource: FunctionType | null = null;
   var functionAdaptationTarget: FunctionType | null = null;
+  var isClosureWrapper: boolean = false;
+  var closureWrapperTarget: WasmFunction | null = null;
+  var typeParameters: Array<TypeParameterType> | null = null;
+  var typeArguments: Array<Type> | null = null;
 
   var closureTrampoline: WasmFunction | null = null;
   var isClosureTrampoline: boolean = false;
@@ -251,7 +255,14 @@ export class WasmModule {
   closureStructs = new HashMap<ClosureKey, WasmStruct>();
   closureFunctions = new NodeMap<WasmFunction>();
   specializedClosures = new HashMap<String, WasmFunction>();
+  functionValueWrappers = new HashMap<String, WasmFunction>();
   templateLiteralGlobals = new NodeMap<WasmGlobal>();
+  genericFunctions = new HashMap<SymbolId, FunctionExpression>();
+  genericFunctionModels = new HashMap<SymbolId, SemanticModel>();
+  genericMethods = new HashMap<String, MethodDefinition>();
+  genericMethodModels = new HashMap<String, SemanticModel>();
+  specializedFunctions = new HashMap<String, WasmFunction>();
+  
   functionAdaptationWrappers = new NodeMap<WasmFunction>();
   symbolNames = new HashMap<SymbolId, String>();
   

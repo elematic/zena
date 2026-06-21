@@ -2231,10 +2231,108 @@ export function isAssignableTo(
   }
 
   if (source.kind === TypeKind.Function && target.kind === TypeKind.Function) {
-    return isAdaptable(ctx, source, target);
+    const sourceFunc = tryInstantiateGenericFunction(
+      ctx,
+      source,
+      target,
+    ) as FunctionType;
+    return isAdaptable(ctx, sourceFunc, target);
   }
 
   return typeToString(source) === typeToString(target);
+}
+
+export function tryInstantiateGenericFunction(
+  ctx: CheckerContext,
+  source: Type,
+  target: Type,
+): Type {
+  if (source.kind === TypeKind.Function && target.kind === TypeKind.Function) {
+    const sourceFunc = source as FunctionType;
+    const targetFunc = target as FunctionType;
+
+    if (sourceFunc.typeParameters && sourceFunc.typeParameters.length > 0) {
+      const inferred = new Map<string, Type>();
+
+      const inferTypeParam = (
+        srcType: Type,
+        tgtType: Type,
+        tpName: string,
+      ): boolean => {
+        if (
+          srcType.kind === TypeKind.TypeParameter &&
+          (srcType as TypeParameterType).name === tpName
+        ) {
+          inferred.set(tpName, tgtType);
+          return true;
+        }
+        if (
+          srcType.kind === TypeKind.Array &&
+          tgtType.kind === TypeKind.Array
+        ) {
+          return inferTypeParam(
+            (srcType as ArrayType).elementType,
+            (tgtType as ArrayType).elementType,
+            tpName,
+          );
+        }
+        if (
+          srcType.kind === TypeKind.Class &&
+          tgtType.kind === TypeKind.Class
+        ) {
+          const sClass = srcType as ClassType;
+          const tClass = tgtType as ClassType;
+          if (
+            sClass.typeArguments &&
+            tClass.typeArguments &&
+            sClass.typeArguments.length === tClass.typeArguments.length
+          ) {
+            for (let i = 0; i < sClass.typeArguments.length; i++) {
+              if (
+                inferTypeParam(
+                  sClass.typeArguments[i],
+                  tClass.typeArguments[i],
+                  tpName,
+                )
+              ) {
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      };
+
+      for (const tp of sourceFunc.typeParameters) {
+        let found = false;
+        for (let i = 0; i < sourceFunc.parameters.length; i++) {
+          if (i < targetFunc.parameters.length) {
+            if (
+              inferTypeParam(
+                sourceFunc.parameters[i],
+                targetFunc.parameters[i],
+                tp.name,
+              )
+            ) {
+              found = true;
+              break;
+            }
+          }
+        }
+        if (!found) {
+          inferTypeParam(sourceFunc.returnType, targetFunc.returnType, tp.name);
+        }
+      }
+
+      if (inferred.size === sourceFunc.typeParameters.length) {
+        const typeArgs = sourceFunc.typeParameters.map(
+          (tp) => inferred.get(tp.name)!,
+        );
+        return instantiateGenericFunction(sourceFunc, typeArgs, ctx);
+      }
+    }
+  }
+  return source;
 }
 
 export function isAdaptable(

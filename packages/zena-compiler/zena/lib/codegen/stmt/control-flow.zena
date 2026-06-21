@@ -8,7 +8,7 @@ import {
 } from '../../ast.zena';
 import { VoidType, Type, UnionType, InlineTupleType, baseType, HoleType, ClassType, F64Type, F32Type, I64Type, U64Type, isRefType } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
-import { typeToValType, typeToValTypeWithSub, mapReturnTypeToWasmResults, getNodeType, substituteTypeParamsInClassContext } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, mapReturnTypeToWasmResults, getNodeType, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
 import { generatePatternBinding } from './bindings.zena';
 import { Array } from 'zena:array';
 import { InterfaceAdaptation, RecordAdaptation } from '../../semantic-model.zena';
@@ -31,10 +31,7 @@ export let generateValueReturn = (ctx: FunctionContext, arg: Expression, genExpr
         }
       }
 
-      let ct = ctx.wasmFunction.classType;
-      if (ct != null) {
-        effectiveType = substituteTypeParamsInClassContext(ct as ClassType, effectiveType);
-      }
+      effectiveType = substituteTypeParamsInFunctionContext(ctx.wasmFunction, effectiveType);
 
       let actualTypes = new Array<ValType>();
       mapReturnTypeToWasmResults(ctx.wasm, effectiveType, actualTypes);
@@ -257,7 +254,7 @@ export let generateIfStatement = (ctx: FunctionContext, stmt: IfStatement, genEx
       let tempLocals = new Array<i32>();
       for (var i = 0; i < tp.elements.length; i += 1) {
         let elType = elemTypes[i];
-        let valType = typeToValTypeWithSub(ctx.wasm, elType, ctx.wasmFunction.classType);
+        let valType = typeToValTypeWithSub(ctx.wasm, elType, ctx.wasmFunction);
         let temp = ctx.allocLocal(valType);
         tempLocals.push(temp);
       }

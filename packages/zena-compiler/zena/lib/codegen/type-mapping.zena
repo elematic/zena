@@ -343,6 +343,25 @@ export let substituteTypeParamsInClassContext = (classType: ClassType | null, t:
   return mapMixinThisInType(ct, substituted);
 };
 
+export let substituteTypeParamsInFunctionContext = (wasmFunction: WasmFunction | null, t: Type): Type => {
+  if (wasmFunction == null) {
+    return t;
+  }
+  
+  var substituted = t;
+  if (wasmFunction.classType != null) {
+    substituted = substituteTypeParamsInClassContext(wasmFunction.classType, substituted);
+  }
+  
+  if (wasmFunction.typeParameters != null && wasmFunction.typeArguments != null) {
+    let tps = wasmFunction.typeParameters as Array<TypeParameterType>;
+    let tas = wasmFunction.typeArguments as Array<Type>;
+    substituted = substituteTypeParamsInCodegen(tps, tas, substituted);
+  }
+  
+  return substituted;
+};
+
 export let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
   let t = ctx.wasmFunction.model.getNodeType(node);
   if (t == null) { return null as Type; }
@@ -350,11 +369,7 @@ export let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
   if (t is ThisType && ct != null) {
     return ct;
   }
-  if (ct != null) {
-    return substituteTypeParamsInClassContext(ct, t);
-  } else {
-    return substituteTypeParamsInCodegen(null, null, t);
-  }
+  return substituteTypeParamsInFunctionContext(ctx.wasmFunction, t);
 };
 
 export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, fieldName: String): WasmSignature => {
@@ -796,16 +811,16 @@ export let getNonNullableType = (type: Type): Type => match (type) {
   case _: type
 };
 
-export let typeToValTypeWithSub = (wasm: WasmModule, t: Type, classType: ClassType | null): ValType => {
-  if (classType != null) {
-    return typeToValType(wasm, substituteTypeParamsInClassContext(classType, t));
+export let typeToValTypeWithSub = (wasm: WasmModule, t: Type, wasmFunction: WasmFunction | null): ValType => {
+  if (wasmFunction != null) {
+    return typeToValType(wasm, substituteTypeParamsInFunctionContext(wasmFunction, t));
   }
   return typeToValType(wasm, t);
 };
 
-export let mapReturnTypeToWasmResultsWithSub = (wasm: WasmModule, type: Type, returns: Array<ValType>, classType: ClassType | null): void => {
-  if (classType != null) {
-    mapReturnTypeToWasmResults(wasm, substituteTypeParamsInClassContext(classType, type), returns);
+export let mapReturnTypeToWasmResultsWithSub = (wasm: WasmModule, type: Type, returns: Array<ValType>, wasmFunction: WasmFunction | null): void => {
+  if (wasmFunction != null) {
+    mapReturnTypeToWasmResults(wasm, substituteTypeParamsInFunctionContext(wasmFunction, type), returns);
   } else {
     mapReturnTypeToWasmResults(wasm, type, returns);
   }

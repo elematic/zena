@@ -95,7 +95,7 @@ import {
   FunctionType, ClassType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
   instantiateClassType, instantiateInterfaceType, instantiateMixinType,
-  instantiateTypeAliasType, GenericNamedType,
+  instantiateTypeAliasType, instantiateFunctionType, GenericNamedType,
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, baseType,
   promoteNumeric, typeToString
@@ -2394,6 +2394,78 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
   }
 };
 
+let inferTypeParameter = (sourceType: Type, targetType: Type, tpName: String, inferred: HashMap<String, Type>): boolean => {
+  if (sourceType is TypeParameterType && (sourceType as TypeParameterType).name == tpName) {
+    inferred[tpName] = targetType;
+    return true;
+  }
+  if (sourceType is ArrayType) {
+    let at = sourceType as ArrayType;
+    if (targetType is ArrayType) {
+      let att = targetType as ArrayType;
+      return inferTypeParameter(at.elementType, att.elementType, tpName, inferred);
+    }
+  }
+  if (sourceType is ClassType) {
+    let ct = sourceType as ClassType;
+    if (targetType is ClassType) {
+      let ctt = targetType as ClassType;
+      if (ct.typeArguments != null && ctt.typeArguments != null) {
+        let sArgs = ct.typeArguments as Array<Type>;
+        let tArgs = ctt.typeArguments as Array<Type>;
+        if (sArgs.length == tArgs.length) {
+          var i = 0;
+          while (i < sArgs.length) {
+            if (inferTypeParameter(sArgs[i], tArgs[i], tpName, inferred)) {
+              return true;
+            }
+            i += 1;
+          }
+        }
+      }
+    }
+  }
+  return false;
+};
+
+let tryInstantiateGenericFunction = (
+  ctx: CheckerContext,
+  source: Type,
+  target: Type,
+): Type => {
+  if (source is FunctionType && target is FunctionType) {
+    let srcFunc = source as FunctionType;
+    let tgtFunc = target as FunctionType;
+    if (srcFunc.typeParameters != null && (srcFunc.typeParameters as Array<TypeParameterType>).length > 0) {
+      let tps = srcFunc.typeParameters as Array<TypeParameterType>;
+      let inferred = new HashMap<String, Type>();
+      for (let tp in tps) {
+        var found = false;
+        var pIdx = 0;
+        while (pIdx < srcFunc.parameters.length && !found) {
+          if (pIdx < tgtFunc.parameters.length) {
+            if (inferTypeParameter(srcFunc.parameters[pIdx], tgtFunc.parameters[pIdx], tp.name, inferred)) {
+              found = true;
+            }
+          }
+          pIdx += 1;
+        }
+        if (!found) {
+          inferTypeParameter(srcFunc.returnType, tgtFunc.returnType, tp.name, inferred);
+        }
+      }
+      if (inferred.size == tps.length) {
+        let typeArgs = new Array<Type>();
+        for (let tp in tps) {
+          typeArgs.push(inferred[tp.name]);
+        }
+        return instantiateFunctionType(srcFunc, typeArgs);
+      }
+    }
+  }
+  return source;
+};
+
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
   // Automatically unwrap non-distinct type aliases
   match (source) {
@@ -2527,13 +2599,15 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case FunctionType as srcFunc: {
       match (target) {
         case FunctionType as tgtFunc: {
+          let finalSrcFunc = tryInstantiateGenericFunction(ctx, srcFunc, tgtFunc) as FunctionType;
+
           // Allow argument adaptation: source can have fewer parameters.
-          if (srcFunc.parameters.length > tgtFunc.parameters.length) { return false; }
+          if (finalSrcFunc.parameters.length > tgtFunc.parameters.length) { return false; }
           // Covariant return type
-          if (!isAssignableTo(ctx, srcFunc.returnType, tgtFunc.returnType)) { return false; }
-          for (var i = 0; i < srcFunc.parameters.length; i += 1) {
+          if (!isAssignableTo(ctx, finalSrcFunc.returnType, tgtFunc.returnType)) { return false; }
+          for (var i = 0; i < finalSrcFunc.parameters.length; i += 1) {
             // Contravariant parameter types
-            if (!isAssignableTo(ctx, tgtFunc.parameters[i], srcFunc.parameters[i])) { return false; }
+            if (!isAssignableTo(ctx, tgtFunc.parameters[i], finalSrcFunc.parameters[i])) { return false; }
           }
           return true;
         }
@@ -3493,7 +3567,11 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
               loc
             );
           } else {
-            checkAndRegisterInterfaceAdaptation(ctx, argExpr, argType, expected);
+            let instantiated = tryInstantiateGenericFunction(ctx, argType, expected);
+            if (instantiated != argType) {
+              ctx.model.setNodeType(argExpr, instantiated);
+            }
+            checkAndRegisterInterfaceAdaptation(ctx, argExpr, instantiated, expected);
           }
         } else {
           // No expected return type at all (shouldn't happen in a function, but collect anyway)
@@ -3889,15 +3967,19 @@ let checkVariableDeclaration = (
         loc
       );
     } else {
-      if (initType is RecordT && expectedType is RecordT) {
+      let instantiated = tryInstantiateGenericFunction(ctx, initType, expectedType);
+      if (instantiated != initType) {
+        ctx.model.setNodeType(init, instantiated);
+      }
+      if (instantiated is RecordT && expectedType is RecordT) {
         // TODO: Fix narrowing here
-        let itR = initType as RecordT;
+        let itR = instantiated as RecordT;
         let expR = expectedType as RecordT;
         if (itR.properties.size != expR.properties.size) {
           ctx.model.setRecordAdaptation(init, itR, expR);
         }
       }
-      checkAndRegisterInterfaceAdaptation(ctx, init, initType, expectedType);
+      checkAndRegisterInterfaceAdaptation(ctx, init, instantiated, expectedType);
     }
     declType = expectedType;
   }
@@ -4745,6 +4827,11 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         loc
       );
     } else {
+      let instantiated = tryInstantiateGenericFunction(ctx, effectiveType, leftType);
+      if (instantiated != effectiveType) {
+        ctx.model.setNodeType(value, instantiated);
+        effectiveType = instantiated;
+      }
       checkAndRegisterInterfaceAdaptation(ctx, value, effectiveType, leftType);
     }
 
@@ -6336,6 +6423,11 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               DiagnosticCode.TypeMismatch,
               fd.loc
             );
+          } else {
+            let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
+            if (instantiatedVal != initType) {
+              ctx.model.setNodeType(fd.value as Expression, instantiatedVal);
+            }
           }
         }
         fieldIndex = fieldIndex + 1;
@@ -6621,6 +6713,11 @@ let checkMethodSignature = (
           DiagnosticCode.TypeMismatch,
           initExp.loc
         );
+      } else {
+        let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, paramType);
+        if (instantiatedVal != initType) {
+          ctx.model.setNodeType(initExp, instantiatedVal);
+        }
       }
     }
     initializers.push(param.defaultValue);
@@ -7694,7 +7791,11 @@ let checkNewExpression = (
             loc
           );
         } else {
-          checkAndRegisterInterfaceAdaptation(ctx, args[ai], argType, expectedParamType);
+          let instantiatedVal = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
+          if (instantiatedVal != argType) {
+            ctx.model.setNodeType(args[ai], instantiatedVal);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
         }
         ai = ai + 1;
       }
@@ -9418,7 +9519,11 @@ let checkCallExpressionInner = (
             loc
           );
         } else {
-          checkAndRegisterInterfaceAdaptation(ctx, args[j], argType, expectedParamType);
+          let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
+          if (instantiated != argType) {
+            ctx.model.setNodeType(args[j], instantiated);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
         }
         j = j + 1;
       }
@@ -9501,6 +9606,8 @@ let checkCallExpressionInner = (
             newFt.optionalParameters = effectiveFt.optionalParameters;
             newFt.parameterInitializers = effectiveFt.parameterInitializers;
             newFt.parameterSymbols = effectiveFt.parameterSymbols;
+            newFt.typeArguments = typeArgs;
+            newFt.genericSource = effectiveFt;
             effectiveFt = newFt;
           } else {
             // Infer type arguments from argument types.
@@ -9531,6 +9638,8 @@ let checkCallExpressionInner = (
             newFt.optionalParameters = effectiveFt.optionalParameters;
             newFt.parameterInitializers = effectiveFt.parameterInitializers;
             newFt.parameterSymbols = effectiveFt.parameterSymbols;
+            newFt.typeArguments = typeArgs;
+            newFt.genericSource = effectiveFt;
             effectiveFt = newFt;
           }
         }
@@ -9638,7 +9747,11 @@ let checkCallExpressionInner = (
             loc
           );
         } else {
-          checkAndRegisterInterfaceAdaptation(ctx, args[j], argType, expectedParamType);
+          let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
+          if (instantiated != argType) {
+            ctx.model.setNodeType(args[j], instantiated);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
         }
         j = j + 1;
       }

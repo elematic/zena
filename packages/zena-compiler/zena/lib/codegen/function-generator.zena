@@ -265,6 +265,8 @@ export class FunctionGenerator {
         this.generateFunctionAdaptationBody();
       } else if (this.ctx.wasmFunction.isClosureTrampoline) {
         this.generateClosureTrampolineBody();
+      } else if (this.ctx.wasmFunction.isClosureWrapper) {
+        this.generateClosureWrapperBody();
       } else if (this.ctx.wasmFunction.importWrapperTarget != null) {
         this.generateImportWrapperBody();
       } else if (name == "wasi_write_string_helper") {
@@ -363,7 +365,7 @@ export class FunctionGenerator {
         if (sym != null && this.ctx.isCelled(sym.id)) {
           let paramIdx = this.ctx.localIndices[sym.id];
           let symType = this.ctx.wasmFunction.model.getBindingType(sym);
-          let valType = typeToValTypeWithSub(this.ctx.wasm, symType, this.ctx.wasmFunction.classType);
+          let valType = typeToValTypeWithSub(this.ctx.wasm, symType, this.ctx.wasmFunction);
           let cellStruct = getCellStruct(this.ctx.wasm, valType);
           
           let cellLocalIdx = this.ctx.allocLocal(new ValTypeRefNull(cellStruct));
@@ -765,7 +767,7 @@ export class FunctionGenerator {
         }
 
         this.generateExpression(isExpr.expression);
-        let targetWasmType = typeToValTypeWithSub(this.ctx.wasm, targetType as Type, this.ctx.wasmFunction.classType);
+        let targetWasmType = typeToValTypeWithSub(this.ctx.wasm, targetType as Type, this.ctx.wasmFunction);
         match (targetWasmType) {
           case ValTypeRefNull as targetRefNull: {
             let targetIdx = targetRefNull.target.index;
@@ -783,7 +785,7 @@ export class FunctionGenerator {
       case AsExpression: {
         let asExpr = expr as AsExpression;
         let targetType = this.ctx.wasmFunction.model.getNodeType(asExpr);
-        let targetWasmType = typeToValTypeWithSub(this.ctx.wasm, targetType, this.ctx.wasmFunction.classType);
+        let targetWasmType = typeToValTypeWithSub(this.ctx.wasm, targetType, this.ctx.wasmFunction);
 
         var handledLiteral = false;
 
@@ -836,7 +838,7 @@ export class FunctionGenerator {
             }
           }
           
-          let sourceWasmType = typeToValTypeWithSub(this.ctx.wasm, sourceType, this.ctx.wasmFunction.classType);
+          let sourceWasmType = typeToValTypeWithSub(this.ctx.wasm, sourceType, this.ctx.wasmFunction);
           
           if (valTypeEquals(sourceWasmType, targetWasmType)) {
             // No-op identity cast
@@ -1155,6 +1157,17 @@ export class FunctionGenerator {
       i += 1;
     }
     this.ctx.emitter.emitCall(target);
+  }
+
+  generateClosureWrapperBody(): void {
+    let target = this.ctx.wasmFunction.closureWrapperTarget as WasmFunction;
+    var i = 1;
+    while (i < this.ctx.wasmFunction.signature.params.length) {
+      this.ctx.emitter.emitLocalGet(i);
+      i += 1;
+    }
+    this.ctx.emitter.emitCall(target);
+    this.ctx.emitter.emitReturn();
   }
 
   generateCaseClassEqBody(): void {

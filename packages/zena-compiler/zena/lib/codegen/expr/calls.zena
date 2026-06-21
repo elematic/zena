@@ -219,36 +219,42 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
     }
 
     let calleeType = getNonNullableType(getNodeType(ctx, call.callee) as Type);
+    console.log("CALL CALLEE: " + (if (call.callee is Identifier) (call.callee as Identifier).name else "other") + " type=" + typeToString(calleeType));
     var ft: FunctionType | null = null;
     if (calleeType is FunctionType) {
       ft = calleeType as FunctionType;
     }
 
     var isDirectCall = false;
-    match (call.callee) {
-      case Identifier: {
-        let ident = call.callee as Identifier;
-        let sym = ctx.wasmFunction.model.resolve(ident);
-        if (sym != null) {
-          let targetDecl = findDeclaration(ctx, sym as Symbol, ft);
-          if (ctx.wasm.functionMap.has((sym as Symbol).id) || 
-              (targetDecl != null && ctx.wasm.intrinsics.has((targetDecl as DeclareFunction).id)) || 
-              (sym as Symbol).declaration is ImportSpecifier) {
-            isDirectCall = true;
-          }
-        } else {
-          if (isArrayIntrinsic(ident.name)) {
-            isDirectCall = true;
+    let isSpecialized = ft != null && ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0;
+    if (isSpecialized) {
+      isDirectCall = true;
+    } else {
+      match (call.callee) {
+        case Identifier: {
+          let ident = call.callee as Identifier;
+          let sym = ctx.wasmFunction.model.resolve(ident);
+          if (sym != null) {
+            let targetDecl = findDeclaration(ctx, sym as Symbol, ft);
+            if (ctx.wasm.functionMap.has((sym as Symbol).id) || 
+                (targetDecl != null && ctx.wasm.intrinsics.has((targetDecl as DeclareFunction).id)) || 
+                (sym as Symbol).declaration is ImportSpecifier) {
+              isDirectCall = true;
+            }
+          } else {
+            if (isArrayIntrinsic(ident.name)) {
+              isDirectCall = true;
+            }
           }
         }
+        case MemberExpression: {
+          isDirectCall = true;
+        }
+        case SuperExpression: {
+          isDirectCall = true;
+        }
+        case _: {}
       }
-      case MemberExpression: {
-        isDirectCall = true;
-      }
-      case SuperExpression: {
-        isDirectCall = true;
-      }
-      case _: {}
     }
 
     if (!isDirectCall && ft != null) {
@@ -302,6 +308,23 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
           
           let resolved = symVal.resolveTarget();
+          let isSpecialized = ft != null && ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0;
+          if (isSpecialized) {
+            let specName = getSpecializedName(resolved.name, (ft as FunctionType).typeArguments as Array<Type>);
+            console.log("CALL SITE LOOKUP: specName=" + specName + " has=" + (if (ctx.wasm.specializedFunctions.has(specName)) "true" else "false"));
+            if (ctx.wasm.specializedFunctions.has(specName)) {
+              let f = ctx.wasm.specializedFunctions[specName];
+              var i = 0;
+              while (i < call.args.length) {
+                let arg = call.args[i];
+                currentGenExpr(arg, false);
+                i += 1;
+              }
+              ctx.emitter.emitCall(f);
+              return;
+            }
+          }
+          
           if (ctx.wasm.functionMap.has(resolved.id)) {
             let f = ctx.wasm.functionMap[resolved.id];
             generateCallArguments(ctx, call, ft, -1, currentGenExpr);
@@ -327,6 +350,25 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         let member = call.callee as MemberExpression;
         let objType = getNonNullableType(getNodeType(ctx, member.object) as Type);
         let targetName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+        
+        if (objType is ClassType && ft != null && ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0) {
+          let ct = objType as ClassType;
+          let specName = getSpecializedName((getClassKey(ct) as String) + "." + targetName, (ft as FunctionType).typeArguments as Array<Type>);
+          if (ctx.wasm.specializedFunctions.has(specName)) {
+            let f = ctx.wasm.specializedFunctions[specName];
+            if (!f.isStatic) {
+              currentGenExpr(member.object, false);
+            }
+            var argIdx = 0;
+            while (argIdx < call.args.length) {
+              let arg = call.args[argIdx];
+              currentGenExpr(arg, false);
+              argIdx += 1;
+            }
+            ctx.emitter.emitCall(f);
+            return;
+          }
+        }
         
         if (member.object is SuperExpression) {
           if (ctx.wasmFunction.classType == null) {
@@ -839,4 +881,12 @@ let resolveImportedSymbolId = (ctx: FunctionContext, spec: ImportSpecifier, expe
     return (sym as Symbol).resolveTarget().id;
   }
   return -1 as SymbolId;
+};
+
+let getSpecializedName = (baseName: String, typeArgs: Array<Type>): String => {
+  var sb = baseName + "_spec";
+  for (let arg in typeArgs) {
+    sb = sb + "_" + getTypeKeyForSpecialization(arg);
+  }
+  return sb;
 };

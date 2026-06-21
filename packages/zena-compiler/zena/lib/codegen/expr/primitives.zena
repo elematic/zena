@@ -1,13 +1,13 @@
 import { Node, Identifier, NumberLiteral, BooleanLiteral, StringLiteral, ImportSpecifier, TemplateLiteral, Expression, TaggedTemplateExpression } from '../../ast.zena';
-import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType, I64Type, U64Type, U32Type, BooleanType, AnyType, ArrayType, FunctionType } from '../../types.zena';
+import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType, I64Type, U64Type, U32Type, BooleanType, AnyType, ArrayType, FunctionType, VoidType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { parseI32, parseF64, i32ToString, parseI64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { WasmStruct, WasmFunction, WasmGlobal, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { typeToValType, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults, getValTypeKey } from '../type-mapping.zena';
-import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType } from '../wasm.zena';
-import { ClassKey, ExportGlobalKey, ExportKey, getClassKey } from '../codegen-utils.zena';
+import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType, ValTypeEqRef, ValTypeStructRef } from '../wasm.zena';
+import { ClassKey, ExportGlobalKey, ExportKey, getClassKey, getSpecializedName, getSignatureKey } from '../codegen-utils.zena';
 import { String } from 'zena:string';
 
 // TODO: Consider moving `generateIdentifier` to a dedicated file (e.g.,
@@ -36,6 +36,41 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
     if (ctx.wasm.exportGlobalMap.has(resolvedSym.name as ExportGlobalKey)) {
       ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[resolvedSym.name as ExportGlobalKey].index);
       return;
+    }
+    
+    // Check if the identifier is a function referenced as a value
+    let nodeType = ctx.wasmFunction.model.getNodeType(ident);
+    if (nodeType != null && nodeType is FunctionType) {
+      let ft = nodeType as FunctionType;
+      let isSpecialized = ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0;
+      var keyName = "";
+      if (isSpecialized) {
+        keyName = getSpecializedName(ident.name, ft.typeArguments as Array<Type>);
+      } else {
+        keyName = i32ToString(sym.id as i32);
+      }
+      
+      let wrapperParams = new Array<ValType>();
+      wrapperParams.push(new ValTypeStructRef()); // context
+      for (let p in ft.parameters) {
+        wrapperParams.push(typeToValType(ctx.wasm, p));
+      }
+      let wrapperReturns = new Array<ValType>();
+      if (!(ft.returnType is VoidType)) {
+        wrapperReturns.push(typeToValType(ctx.wasm, ft.returnType));
+      }
+      let sig = ctx.wasm.getSignature(wrapperParams, wrapperReturns);
+      
+      let wrapperKey = keyName + "_wrapper_" + getSignatureKey(ft);
+      if (ctx.wasm.functionValueWrappers.has(wrapperKey)) {
+        let wrapperFunc = ctx.wasm.functionValueWrappers[wrapperKey];
+        let closureStruct = getClosureStruct(ctx.wasm, ft);
+        
+        ctx.emitter.emitRefFunc(wrapperFunc.index);
+        ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
+        ctx.emitter.emitStructNew(closureStruct.index);
+        return;
+      }
     }
   }
   throw new Error("Could not resolve identifier: " + ident.name);

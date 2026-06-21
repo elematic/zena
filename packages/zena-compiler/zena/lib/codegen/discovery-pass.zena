@@ -35,7 +35,7 @@ import {
   getClassKey, getInterfaceKey, getSignatureKey, matchOverload, 
   collectMixinMembers, collectMixinFields, getMemberRootClass,
   ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey,
-  isConcrete,
+  isConcrete, getTypeKeyForSpecialization, getSpecializedName,
   ExportKey, ExportGlobalKey, getClassInterfaceKey, getInterfaceMemberKey,
   getClassPrivateFieldKey, getClassVTableName, getClassSingletonName,
   getInterfaceTrampolineName, getClassInterfaceVTableName,
@@ -45,7 +45,7 @@ import {
 import { 
   typeToValType, getClosureStruct, getCellStruct, getInterfaceMemberSignature, 
   mapReturnTypeToWasmResults, substituteTypeParamsInCodegen,
-  getClassTypeParameters, getInterfaceTypeParameters
+  getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInFunctionContext
 } from './type-mapping.zena';
 import { StringBuilder } from 'zena:string-builder';
 import { dirName, normalizePath } from '../module-resolver.zena';
@@ -2013,31 +2013,51 @@ export class DiscoveryPass {
               if (varDecl.init is FunctionExpression) {
                 let funcExpr = varDecl.init as FunctionExpression;
                 let funcTypeNode = moduleModel.getNodeType(funcExpr);
-                let params = new Array<ValType>();
-                let returns = new Array<ValType>();
-                
+                var isGeneric = false;
                 if (funcTypeNode is FunctionType) {
                   let fType = funcTypeNode as FunctionType;
-                  for (let p in fType.parameters) {
-                    params.push(typeToValType(this.wasm, p));
+                  if (fType.typeParameters != null && (fType.typeParameters as Array<TypeParameterType>).length > 0) {
+                    isGeneric = true;
                   }
-                  mapReturnTypeToWasmResults(this.wasm, fType.returnType, returns);
-                } else {
-                  returns.push(new ValTypeI32());
                 }
                 
-                let sig = this.wasm.getSignature(params, returns);
-                let wasmFunc = new WasmFunction(sig, funcExpr, moduleModel);
-                this.wasm.addFunction(wasmFunc);
-                
-                if (varDecl.pattern is IdentifierPattern) {
-                  let ident = varDecl.pattern as IdentifierPattern;
-                  wasmFunc.name = ident.name;
-                  let sym = moduleModel.resolveDeclaration(ident);
-                  if (sym != null) {
-                    this.wasm.functionMap[sym.id] = wasmFunc;
-                    if (varDecl.exported) {
-                      this.wasm.exportMap[ident.name as ExportKey] = wasmFunc;
+                if (isGeneric) {
+                  if (varDecl.pattern is IdentifierPattern) {
+                    let ident = varDecl.pattern as IdentifierPattern;
+                    let sym = moduleModel.resolveDeclaration(ident);
+                    if (sym != null) {
+                      console.log("REGISTER GENERIC FUNCTION: " + ident.name + " symId=" + i32ToString(sym.id as i32));
+                      this.wasm.genericFunctions[sym.id] = funcExpr;
+                      this.wasm.genericFunctionModels[sym.id] = moduleModel;
+                    }
+                  }
+                } else {
+                  let params = new Array<ValType>();
+                  let returns = new Array<ValType>();
+                  
+                  if (funcTypeNode is FunctionType) {
+                    let fType = funcTypeNode as FunctionType;
+                    for (let p in fType.parameters) {
+                      params.push(typeToValType(this.wasm, p));
+                    }
+                    mapReturnTypeToWasmResults(this.wasm, fType.returnType, returns);
+                  } else {
+                    returns.push(new ValTypeI32());
+                  }
+                  
+                  let sig = this.wasm.getSignature(params, returns);
+                  let wasmFunc = new WasmFunction(sig, funcExpr, moduleModel);
+                  this.wasm.addFunction(wasmFunc);
+                  
+                  if (varDecl.pattern is IdentifierPattern) {
+                    let ident = varDecl.pattern as IdentifierPattern;
+                    wasmFunc.name = ident.name;
+                    let sym = moduleModel.resolveDeclaration(ident);
+                    if (sym != null) {
+                      this.wasm.functionMap[sym.id] = wasmFunc;
+                      if (varDecl.exported) {
+                        this.wasm.exportMap[ident.name as ExportKey] = wasmFunc;
+                      }
                     }
                   }
                 }
@@ -2202,7 +2222,19 @@ export class DiscoveryPass {
               if (member is MethodDefinition) {
                 let method = member as MethodDefinition;
                 if (method.isAbstract) { continue; }
-                 if (method.typeParameters != null && (method.typeParameters as Array<TypeParameter>).length > 0) {
+                if (method.typeParameters != null && (method.typeParameters as Array<TypeParameter>).length > 0) {
+                  let methName = match(method.name) {
+                    case Identifier {name}: name
+                    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                      case Identifier {name}: name
+                      case MemberExpression {property}: property.name
+                      case _: "<symbol>"
+                    }
+                    case _: "<unknown>"
+                  };
+                  let key = (getClassKey(classType) as String) + "." + methName;
+                  this.wasm.genericMethods[key] = method;
+                  this.wasm.genericMethodModels[key] = moduleModel;
                   continue;
                 }
                  let methName = match(method.name) {
@@ -2970,6 +3002,104 @@ export class DiscoveryPass {
               if (!isRegistered) {
                 this.registerClosure(funcExpr, f.model, f);
               }
+            } else if (n is Identifier) {
+              let ident = n as Identifier;
+              let nodeType = f.model.getNodeType(ident);
+              if (nodeType != null && nodeType is FunctionType) {
+                let ft = nodeType as FunctionType;
+                let sym = f.model.resolve(ident);
+                if (sym != null) {
+                  let symVal = sym as Symbol;
+                  var targetSymId = symVal.id;
+                  if (symVal.declaration != null && symVal.declaration is ImportSpecifier) {
+                    targetSymId = resolveImportedSymbolId(this.program, f.model, symVal.declaration as ImportSpecifier);
+                  }
+                  
+                  let isSpecialized = ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0;
+                  if (isSpecialized && targetSymId != (-1 as SymbolId) && this.wasm.genericFunctions.has(targetSymId)) {
+                    this.instantiateGenericFunction(targetSymId, ft.typeArguments as Array<Type>);
+                  }
+                  
+                  let parentNode = f.model.getParent(ident);
+                  var isCallee = false;
+                  if (parentNode != null && parentNode is CallExpression) {
+                    let call = parentNode as CallExpression;
+                    if (call.callee == ident) {
+                      isCallee = true;
+                    }
+                  }
+                  
+                  if (!isCallee) {
+                    var targetWasmFunc: WasmFunction | null = null;
+                    var keyName = "";
+                    if (isSpecialized) {
+                      let specName = getSpecializedName(ident.name, ft.typeArguments as Array<Type>);
+                      keyName = specName;
+                      if (this.wasm.specializedFunctions.has(specName)) {
+                        targetWasmFunc = this.wasm.specializedFunctions[specName];
+                      }
+                    } else {
+                      keyName = i32ToString(symVal.id as i32);
+                      if (this.wasm.functionMap.has(targetSymId)) {
+                        targetWasmFunc = this.wasm.functionMap[targetSymId];
+                      }
+                    }
+                    if (targetWasmFunc != null) {
+                      let wrapperParams = new Array<ValType>();
+                      wrapperParams.push(new ValTypeStructRef());
+                      for (let p in ft.parameters) {
+                        wrapperParams.push(typeToValType(this.wasm, p));
+                      }
+                      let wrapperReturns = new Array<ValType>();
+                      if (!(ft.returnType is VoidType)) {
+                        wrapperReturns.push(typeToValType(this.wasm, ft.returnType));
+                      }
+                      let sig = this.wasm.getSignature(wrapperParams, wrapperReturns);
+                      
+                      let wrapperKey = keyName + "_wrapper_" + getSignatureKey(ft);
+                      if (!this.wasm.functionValueWrappers.has(wrapperKey)) {
+                        let wrapperFunc = new WasmFunction(sig, null as Node, f.model);
+                        let targetName = if ((targetWasmFunc as WasmFunction).name != null) (targetWasmFunc as WasmFunction).name as String else "func";
+                        wrapperFunc.name = targetName + "_valwrapper_" + getSignatureKey(ft);
+                        wrapperFunc.isClosureWrapper = true;
+                        wrapperFunc.closureWrapperTarget = targetWasmFunc;
+                        wrapperFunc.isReferenceTaken = true;
+                        
+                        this.wasm.functionValueWrappers[wrapperKey] = wrapperFunc;
+                        this.wasm.addFunction(wrapperFunc);
+                        
+                        getClosureStruct(this.wasm, ft);
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (n is MemberExpression) {
+              let member = n as MemberExpression;
+              let nodeType = f.model.getNodeType(member);
+              if (nodeType != null && nodeType is FunctionType) {
+                let ft = nodeType as FunctionType;
+                if (ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0) {
+                  let objType = f.model.getNodeType(member.object);
+                  if (objType != null && objType is ClassType) {
+                    let ct = objType as ClassType;
+                    let methName = member.property.name;
+                    var foundTemplate = false;
+                    var currClass: ClassType | null = ct;
+                    while (currClass != null && !foundTemplate) {
+                      let baseCt = if ((currClass as ClassType).genericSource != null) (currClass as ClassType).genericSource as ClassType else currClass as ClassType;
+                      let key = (getClassKey(baseCt) as String) + "." + methName;
+                      if (this.wasm.genericMethods.has(key)) {
+                        let methodDef = this.wasm.genericMethods[key];
+                        let methodModel = this.wasm.genericMethodModels[key];
+                        this.instantiateGenericMethod(ct, methodDef, methodModel, ft.typeArguments as Array<Type>);
+                        foundTemplate = true;
+                      }
+                      currClass = (currClass as ClassType).superType;
+                    }
+                  }
+                }
+              }
             }
           });
         }
@@ -3090,6 +3220,146 @@ export class DiscoveryPass {
     let closureKey = i32ToString(funcExpr.id as i32) + "_" + classKey;
     this.wasm.specializedClosures[closureKey] = wasmFunc;
   }
+
+  instantiateGenericFunction(symId: SymbolId, typeArgs: Array<Type>): WasmFunction {
+    let funcExpr = this.wasm.genericFunctions[symId];
+    let model = this.wasm.genericFunctionModels[symId];
+    
+    // Determine target name
+    var originalName = "";
+    let parentNode = model.getParent(funcExpr);
+    if (parentNode != null && parentNode is VariableDeclaration) {
+      let varDecl = parentNode as VariableDeclaration;
+      if (varDecl.pattern is IdentifierPattern) {
+        originalName = (varDecl.pattern as IdentifierPattern).name;
+      }
+    }
+    if (originalName == "") {
+      originalName = "generic_func";
+    }
+    
+    let specName = getSpecializedName(originalName, typeArgs);
+    console.log("INSTANTIATED GENERIC: specName=" + specName);
+    if (this.wasm.specializedFunctions.has(specName)) {
+      return this.wasm.specializedFunctions[specName];
+    }
+    
+    // Resolve the original generic FunctionType
+    let funcTypeNode = model.getNodeType(funcExpr) as FunctionType;
+    let typeParams = funcTypeNode.typeParameters as Array<TypeParameterType>;
+    
+    // Substitute typeParams with typeArgs in the function signature
+    let concreteParams = new Array<ValType>();
+    let concreteReturns = new Array<ValType>();
+    
+    for (let p in funcTypeNode.parameters) {
+      let subType = substituteTypeParamsInCodegen(typeParams, typeArgs, p);
+      concreteParams.push(typeToValType(this.wasm, subType));
+    }
+    
+    let subReturn = substituteTypeParamsInCodegen(typeParams, typeArgs, funcTypeNode.returnType);
+    mapReturnTypeToWasmResults(this.wasm, subReturn, concreteReturns);
+    
+    let sig = this.wasm.getSignature(concreteParams, concreteReturns);
+    let wasmFunc = new WasmFunction(sig, funcExpr, model);
+    
+    // Track type parameters and arguments for codegen context
+    wasmFunc.typeParameters = typeParams;
+    wasmFunc.typeArguments = typeArgs;
+    wasmFunc.name = specName;
+    
+    // Register it
+    this.wasm.specializedFunctions[specName] = wasmFunc;
+    this.wasm.addFunction(wasmFunc);
+    
+    return wasmFunc;
+  }
+
+  instantiateGenericMethod(cType: ClassType, method: MethodDefinition, model: SemanticModel, methodTypeArgs: Array<Type>): WasmFunction {
+    let methName = match(method.name) {
+      case Identifier {name}: name
+      case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+        case Identifier {name}: name
+        case MemberExpression {property}: property.name
+        case _: "<symbol>"
+      }
+      case _: "<unknown>"
+    };
+    
+    // Check if it's already instantiated
+    let specName = getSpecializedName((getClassKey(cType) as String) + "." + methName, methodTypeArgs);
+    if (this.wasm.specializedFunctions.has(specName)) {
+      return this.wasm.specializedFunctions[specName];
+    }
+    
+    // Resolve the original generic method signature
+    let mInfo = cType.members[methName];
+    let methodTypeNode = mInfo.type as FunctionType;
+    
+    let methodTypeParamsVal = new Array<TypeParameterType>();
+    if (method.typeParameters != null) {
+      for (let tp in method.typeParameters as Array<TypeParameter>) {
+        let tpType = model.getNodeType(tp);
+        if (tpType != null && tpType is TypeParameterType) {
+          methodTypeParamsVal.push(tpType as TypeParameterType);
+        } else {
+          methodTypeParamsVal.push(new TypeParameterType(tp.name, null, null));
+        }
+      }
+    }
+    
+    // 1. Substitute class type arguments
+    var resolvedType = substituteTypeParamsInCodegen(getClassTypeParameters(cType), cType.typeArguments, methodTypeNode);
+    // 2. Substitute method type arguments
+    resolvedType = substituteTypeParamsInCodegen(methodTypeParamsVal, methodTypeArgs, resolvedType);
+    
+    let fType = resolvedType as FunctionType;
+    
+    let params = new Array<ValType>();
+    let returns = new Array<ValType>();
+    
+    var rootClass = getMemberRootClass(cType, methName);
+    
+    var isStatic = method.isStatic;
+    if (!isStatic) {
+      if (cType.isExtension && cType.onType != null) {
+        params.push(typeToValType(this.wasm, cType.onType as Type));
+      } else {
+        if (this.wasm.classStructs.has(getClassKey(rootClass))) {
+          params.push(new ValTypeRefNull(this.wasm.classStructs[getClassKey(rootClass)]));
+        } else {
+          params.push(new ValTypeAnyRef());
+        }
+      }
+    }
+    
+    for (let p in fType.parameters) {
+      params.push(typeToValType(this.wasm, p));
+    }
+    mapReturnTypeToWasmResults(this.wasm, fType.returnType, returns);
+    
+    let sig = this.wasm.getSignature(params, returns);
+    let wasmFunc = new WasmFunction(sig, method, model);
+    
+    wasmFunc.isStatic = isStatic;
+    wasmFunc.typeParameters = methodTypeParamsVal;
+    wasmFunc.typeArguments = methodTypeArgs;
+    wasmFunc.name = specName;
+    wasmFunc.methodName = methName;
+    
+    let lookupId = if (cType.genericSource != null) (cType.genericSource as ClassType).id else cType.id;
+    wasmFunc.classDecl = if (this.classDecls.has(lookupId)) this.classDecls[lookupId] else null as ClassDeclaration;
+    wasmFunc.classType = cType;
+    if (this.wasm.classStructs.has(getClassKey(cType))) {
+      wasmFunc.structType = this.wasm.classStructs[getClassKey(cType)];
+    }
+    
+    // Register it
+    this.wasm.specializedFunctions[specName] = wasmFunc;
+    this.wasm.addFunction(wasmFunc);
+    
+    return wasmFunc;
+  }
 }
 
 let getNodeFilePath = (model: SemanticModel, node: Node): String => {
@@ -3133,4 +3403,148 @@ let sanitizeName = (s: String): String => {
     i += 1;
   }
   return sb.toString();
+};
+
+
+
+let resolveImportedSymbolId = (program: Program, model: SemanticModel, spec: ImportSpecifier, expectedType: Type | null = null): SymbolId => {
+  let parentNode = model.getParent(spec);
+  if (parentNode == null || !(parentNode is ImportDeclaration)) {
+    return -1 as SymbolId;
+  }
+  let importDecl = parentNode as ImportDeclaration;
+  let specifier = importDecl.moduleSpecifier.value;
+  
+  var canonicalPath = specifier;
+  if (specifier.startsWith("./") || specifier.startsWith("../")) {
+    let referrer = model.getParent(importDecl);
+    if (referrer != null && referrer is Module) {
+      let mod = referrer as Module;
+      let dir = dirName(mod.path);
+      canonicalPath = normalizePath(dir + "/" + specifier);
+    }
+  }
+  
+  if (!program.unitsByPath.has(canonicalPath)) {
+    return -1 as SymbolId;
+  }
+  
+  let targetUnit = program.unitsByPath[canonicalPath];
+  let importedName = spec.imported.name;
+  
+  var fallback: Symbol | null = null;
+  for (let stmt in targetUnit.ast.body) {
+    match (stmt) {
+      case DeclareFunction as df: {
+        if (df.name.name == importedName) {
+          let sym = targetUnit.model.resolveDeclaration(df);
+          if (expectedType == null) {
+            return (sym as Symbol).id;
+          }
+          let nodeType = targetUnit.model.getNodeType(df);
+          if (nodeType != null && matchOverloadForImport(nodeType as Type, expectedType as Type)) {
+            return (sym as Symbol).id;
+          }
+          fallback = sym;
+        }
+      }
+      case VariableDeclaration as vd: {
+        match (vd.pattern) {
+          case IdentifierPattern {name} as pat: {
+            if (name == importedName) {
+              let sym = targetUnit.model.resolve(pat);
+              if (sym != null) {
+                if (expectedType == null) {
+                  return (sym as Symbol).id;
+                }
+                let nodeType = targetUnit.model.getNodeType(pat);
+                if (nodeType != null && matchOverloadForImport(nodeType as Type, expectedType as Type)) {
+                  return (sym as Symbol).id;
+                }
+                fallback = sym;
+              }
+            }
+          }
+          case _: {}
+        }
+      }
+      case _: {}
+    }
+  }
+  if (fallback != null) {
+    return (fallback as Symbol).id;
+  }
+  return -1 as SymbolId;
+};
+
+let matchTypesForImport = (t1: Type, t2: Type): boolean => {
+  if (t1 is TypeParameterType) {
+    return true;
+  }
+  match (t1) {
+    case ArrayType {elementType}: {
+      if (t2 is ArrayType) {
+        return matchTypesForImport(elementType, (t2 as ArrayType).elementType);
+      }
+      return false;
+    }
+    case ClassType as ct1: {
+      if (t2 is ClassType) {
+        let ct2 = t2 as ClassType;
+        if (ct1.name != ct2.name) { return false; }
+        if (ct1.typeArguments != null && ct2.typeArguments != null) {
+          let args1 = ct1.typeArguments as Array<Type>;
+          let args2 = ct2.typeArguments as Array<Type>;
+          if (args1.length != args2.length) { return false; }
+          var i = 0;
+          while (i < args1.length) {
+            if (!matchTypesForImport(args1[i], args2[i])) { return false; }
+            i += 1;
+          }
+        }
+        return true;
+      }
+      return false;
+    }
+    case InterfaceType as it1: {
+      if (t2 is InterfaceType) {
+        let it2 = t2 as InterfaceType;
+        if (it1.name != it2.name) { return false; }
+        if (it1.typeArguments != null && it2.typeArguments != null) {
+          let args1 = it1.typeArguments as Array<Type>;
+          let args2 = it2.typeArguments as Array<Type>;
+          if (args1.length != args2.length) { return false; }
+          var i = 0;
+          while (i < args1.length) {
+            if (!matchTypesForImport(args1[i], args2[i])) { return false; }
+            i += 1;
+          }
+        }
+        return true;
+      }
+      return false;
+    }
+    case _: {
+      return typeToString(t1) == typeToString(t2);
+    }
+  }
+};
+
+let matchOverloadForImport = (t1: Type, t2: Type): boolean => {
+  if (t1 is FunctionType && t2 is FunctionType) {
+    let ft1 = t1 as FunctionType;
+    let ft2 = t2 as FunctionType;
+    if (ft1.parameters.length != ft2.parameters.length) {
+      return false;
+    }
+    var i = 0;
+    while (i < ft1.parameters.length) {
+      if (!matchTypesForImport(ft1.parameters[i], ft2.parameters[i])) {
+        return false;
+      }
+      i += 1;
+    }
+    return true;
+  }
+  return matchTypesForImport(t1, t2);
 };

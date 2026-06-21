@@ -89,6 +89,7 @@ import {
   typeToString,
   validateType,
   widenLiteralType,
+  tryInstantiateGenericFunction,
 } from './types.js';
 
 // =============================================================================
@@ -2227,6 +2228,15 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
     // This ensures codegen uses the correct WASM struct type.
     // Also handle type aliases that resolve to records/tuples.
     if (isCompatible && stmt.argument) {
+      const instantiated = tryInstantiateGenericFunction(
+        ctx,
+        argType,
+        ctx.currentFunctionReturnType,
+      );
+      if (instantiated !== argType) {
+        stmt.argument.inferredType = instantiated;
+      }
+
       if (stmt.argument.type === NodeType.RecordLiteral) {
         let targetType = ctx.currentFunctionReturnType;
         while (targetType.kind === TypeKind.TypeAlias) {
@@ -2388,6 +2398,16 @@ function checkVariableDeclaration(
       }
       if (targetType.kind === TypeKind.Tuple && type.kind === TypeKind.Tuple) {
         decl.init.inferredType = targetType;
+      }
+    }
+    if (compatible) {
+      const instantiated = tryInstantiateGenericFunction(
+        ctx,
+        type,
+        explicitType as Type,
+      );
+      if (instantiated !== type) {
+        decl.init.inferredType = instantiated;
       }
     }
 

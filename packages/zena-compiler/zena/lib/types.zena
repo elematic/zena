@@ -471,6 +471,29 @@ export let instantiateClassType = (
   return result;
 };
 
+export let instantiateFunctionType = (
+  source: FunctionType,
+  typeArguments: Array<Type>,
+): FunctionType => {
+  let newParams = new Array<Type>();
+  for (let p in source.parameters) {
+    let sub = substituteInType(p, source.typeParameters, typeArguments);
+    newParams.push((sub ?? p) as Type);
+  }
+  let newRet = substituteInType(source.returnType, source.typeParameters, typeArguments);
+  let newFt = new FunctionType(newParams, source.parameterNames, (newRet ?? source.returnType) as Type);
+  newFt.typeParameters = null as Array<TypeParameterType>;
+  newFt.typeArguments = typeArguments;
+  newFt.genericSource = source.genericSource ?? source;
+  newFt.parameterInitializers = source.parameterInitializers;
+  newFt.parameterSymbols = source.parameterSymbols;
+  newFt.optionalParameters = source.optionalParameters;
+  newFt.isFinal = source.isFinal;
+  newFt.isAbstract = source.isAbstract;
+  newFt.overloads = source.overloads;
+  return newFt;
+};
+
 export class InterfaceType extends Type {
   id: i32;
   name: String;
