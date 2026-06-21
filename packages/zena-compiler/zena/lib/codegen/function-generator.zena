@@ -174,7 +174,7 @@ export class FunctionGenerator {
                       let closureStruct = this.ctx.wasm.getClosureStruct(f.signature.params, f.signature.returns);
                       let refTarget = if (f.closureTrampoline != null) (f.closureTrampoline as WasmFunction) else f;
                       this.ctx.emitter.emitRefFunc(refTarget.index);
-                      this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.eq));
+                      this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.struct));
                       this.ctx.emitter.emitStructNew(closureStruct.index);
                     } else if (this.ctx.wasm.globalMap.has(sym.id)) {
                       let targetGlobal = this.ctx.wasm.globalMap[sym.id];
@@ -861,6 +861,9 @@ export class FunctionGenerator {
                 case ValTypeEqRef: {
                   this.ctx.emitter.emitRefCast(targetIdx);
                 }
+                case ValTypeStructRef: {
+                  this.ctx.emitter.emitRefCast(targetIdx);
+                }
                 case _: {
                   throw new Error("Unsupported ref_null cast in self-hosted compiler: " + typeToString(sourceType) + " to " + typeToString(targetType));
                 }
@@ -883,6 +886,9 @@ export class FunctionGenerator {
                   this.ctx.emitter.emitRefCast(targetIdx);
                 }
                 case ValTypeEqRef: {
+                  this.ctx.emitter.emitRefCast(targetIdx);
+                }
+                case ValTypeStructRef: {
                   this.ctx.emitter.emitRefCast(targetIdx);
                 }
                 case _: {
@@ -956,6 +962,7 @@ export class FunctionGenerator {
             }
             case ValTypeAnyRef: {}
             case ValTypeEqRef: {}
+            case ValTypeStructRef: {}
             case _: {
               throw new Error("Unsupported cast in self-hosted compiler: " + typeToString(sourceType) + " to " + typeToString(targetType));
             }
@@ -1379,7 +1386,7 @@ export class FunctionGenerator {
         }
         this.ctx.emitter.emitStructNew(contextStruct.index);
       } else {
-        this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.eq));
+        this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.struct));
       }
 
       // 3. Create closure struct
