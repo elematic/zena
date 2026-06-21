@@ -31,9 +31,6 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Numeric conversions (`i32` to `i64`, `f32` to `i32`, etc.) using WASM conversion/truncation instructions.
   - [x] Elision of zero-cost casts (e.g. casting distinct types or matching types).
   - [x] Runtime type tests (`is` operator) returning a boolean.
-- [ ] **Unions & Primitives Boxing:**
-  - [ ] Boxing primitives (`i32`, `f32`, `boolean`) into `Box<T>` when assigned to reference types or the top type `any`.
-  - [ ] Auto-unboxing primitives when casting from `any` back to value types.
 - [x] **Distinct Types:**
   - [x] Compile-time nominal distinction with zero runtime overhead (complete erasure to backing type).
 - [x] **Strings & Templates:**
@@ -48,9 +45,6 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Canonical WASM GC struct representations with lexicographically sorted keys.
   - [x] Record literals and member access (`.` operator) via fat-pointers for width subtyping (adaptation).
   - [x] Record spread expressions (`{...p, z: 3}`) with field copying into a new structural struct.
-  - [ ] **Record Devirtualization Optimizations:**
-    - [ ] Devirtualize member access for exact type matches (skipping fat-pointer and vtable).
-    - [ ] Devirtualize member access for prefix matches.
 - [x] **Tuples:**
   - [x] Fixed-length WASM GC struct/array layout representing the tuple.
   - [x] Compile-time known index access (`t[idx]`) mapping to structural field access.
@@ -78,11 +72,11 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Rewriting variable references inside inner functions to access the context struct.
 - [x] **Argument Adaptation:**
   - [x] Automatic generation of adapter wrappers when passing functions with fewer arguments than expected by the call site.
-- [ ] **Overloaded Functions:**
+- [x] **Overloaded Functions:**
   - [x] Overload name mangling based on parameter counts and types to resolve unique WASM export names.
 - [x] **Custom Operator Protocols:**
   - [x] Custom `operator ==` overloading resolution and method/vtable compilation.
-  - [ ] Custom index accessors (`operator []`) resolving to indexed `get`/`set` function calls.
+  - [x] Custom index accessors (`operator []`) resolving to indexed `get`/`set` function calls.
 
 ### 5. Classes & Objects
 
@@ -126,13 +120,13 @@ This plan tracks all features required for the code generation phase to achieve 
   - [x] Code generation for exhaustive `match` expressions.
   - [x] Pattern compilation tree (nested tests/casts) for literal, wildcard, variable, tuple, and record/class patterns.
   - [x] Conditional guard execution (`case ... if ...`).
-  - [ ] Exhaustiveness checks producing compile-time traps or errors.
+  - [x] Exhaustiveness checks producing compile-time traps or errors.
 - [x] **Conditional Patterns:**
   - [x] `if let` statement pattern checking and local scope binding.
   - [x] `while let` loop condition checking and iteration control.
 - [x] **Loop Iterations:**
   - [x] `for-in` loop compilation over collections implementing `Iterator`/`Sequence` protocol (unrolling iteration steps).
-- [ ] **Ranges & Pipelines:**
+- [x] **Ranges & Pipelines:**
   - [x] Range object instantiation (`..` operator variants: `BoundedRange`, `FromRange`, etc.).
   - [x] Pipeline expressions (`|>`) replacing temporary variables via stack manipulation/placeholder `$` replacement.
 
@@ -161,14 +155,25 @@ This plan tracks all features required for the code generation phase to achieve 
 
 ### 11. Generics & Specialization
 
-- [ ] **Monomorphization:**
-  - [ ] Canonical, unique Wasm struct and vtable type mapping for specialized classes (e.g. `Box<i32>` vs `Box<String>`).
-  - [ ] Specialized method and constructor generation (cloning generic function bodies per specialization).
-  - [ ] Contextual type parameter substitution during codegen.
-  - [ ] Correct Wasm array and generic prelude type instantiations (like `Array<T>`).
-- [ ] **Casts & Checks on Generic Parameters:**
-  - [ ] Run-time generic type tests (`is`) and checks on specialized class types.
-  - [ ] Type casting (`as`) to specialized generic instances.
+- [x] **Monomorphization:**
+  - [x] Canonical, unique Wasm struct and vtable type mapping for specialized classes (e.g. `Box<i32>` vs `Box<String>`).
+  - [x] Specialized method and constructor generation (cloning generic function bodies per specialization).
+  - [x] Contextual type parameter substitution during codegen.
+  - [x] Correct Wasm array and generic prelude type instantiations (like `Array<T>`).
+- [x] **Casts & Checks on Generic Parameters:**
+  - [x] Run-time generic type tests (`is`) and checks on specialized class types.
+  - [x] Type casting (`as`) to specialized generic instances.
+
+### 12. Optimizations
+
+- [ ] **Devirtualization:**
+  - [ ] **Record Devirtualization:** Devirtualize member access for exact type matches (skipping fat-pointer and vtable) and prefix matches.
+  - [ ] **Class Method Devirtualization:** Devirtualize virtual method/property calls on classes when the concrete class type is statically known.
+  - [ ] **Closure Devirtualization:** Devirtualize closure calls when the concrete function target is statically known.
+- [ ] **Wasm Size & Code Size Reduction:**
+  - [ ] **Unused Type Elimination:** Elide unused Wasm types (e.g. only generating closure structs for functions that are never called as closures).
+  - [ ] **Hybrid Monomorphization:** Share a single specialization for all reference type arguments (e.g., `Box<anyref>`) to reduce binary size.
+  - [ ] **Specialization/Function Sharing:** Share functions and specializations that generate identical Wasm bytecode.
 
 ---
 
