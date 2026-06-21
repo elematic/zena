@@ -48,6 +48,8 @@ import {
   getClassTypeParameters, getInterfaceTypeParameters
 } from './type-mapping.zena';
 import { StringBuilder } from 'zena:string-builder';
+import { dirName, normalizePath } from '../module-resolver.zena';
+import { collectValueExports } from './function-generator.zena';
 
 let getTypeUniqueKey = (t: Type): String => {
   match (t) {
@@ -2064,7 +2066,75 @@ export class DiscoveryPass {
               }
             }
           }
-          case ImportDeclaration: {}
+          case ImportDeclaration {imports}: {
+            for (let spec in imports) {
+              if (spec.imported.name == "*") {
+                let localIdent = spec.local;
+                let sym = moduleModel.resolveDeclaration(spec as Node);
+                if (sym != null) {
+                  let nodeType = moduleModel.getBindingType(sym as Symbol);
+                  if (nodeType != null) {
+                    this.discoverType(nodeType as Type, moduleModel);
+                    let vType = typeToValType(this.wasm, nodeType as Type);
+                    let name = localIdent.name + "_" + i32ToString(sym.id as i32);
+                    
+                    let wasmGlobal = new WasmGlobal(name, localIdent.name, vType, true, null, null, moduleModel);
+                    wasmGlobal.namespaceImport = spec;
+                    this.wasm.globals.push(wasmGlobal);
+                    this.wasm.globalMap[sym.id] = wasmGlobal;
+
+                    // Mark exported functions in target module as reference taken so they are emitted in Wasm element section
+                    let parentNode = moduleModel.getParent(spec);
+                    if (parentNode != null && parentNode is ImportDeclaration) {
+                      let importDecl = parentNode as ImportDeclaration;
+                      let specifier = importDecl.moduleSpecifier.value;
+                      var canonicalPath = specifier;
+                      if (specifier.startsWith("./") || specifier.startsWith("../")) {
+                        let referrer = moduleModel.getParent(importDecl);
+                        if (referrer != null && referrer is Module) {
+                          let mod = referrer as Module;
+                          let dir = dirName(mod.path);
+                          canonicalPath = normalizePath(dir + "/" + specifier);
+                        }
+                      }
+                      
+                      let prog = this.wasm.program as Program;
+                      if (prog.unitsByPath.has(canonicalPath)) {
+                        let targetUnit = prog.unitsByPath[canonicalPath];
+                        let exports = new HashMap<String, Symbol>();
+                        collectValueExports(prog, targetUnit, exports);
+                        
+                        for (let key in exports.keys()) {
+                          if (let (true, exportSym) = exports.get(key)) {
+                            if (this.wasm.functionMap.has(exportSym.id)) {
+                              let f = this.wasm.functionMap[exportSym.id];
+                              f.isReferenceTaken = true;
+                              if (f.closureTrampoline == null) {
+                                let tParams = new Array<ValType>();
+                                tParams.push(new ValTypeEqRef());
+                                for (let p in f.signature.params) {
+                                  tParams.push(p);
+                                }
+                                let tSig = this.wasm.getSignature(tParams, f.signature.returns);
+                                let trampoline = new WasmFunction(tSig, null, f.model);
+                                let fName = if (f.name != null) (f.name as String) else "anonymous";
+                                trampoline.name = fName + "$trampoline";
+                                trampoline.isClosureTrampoline = true;
+                                trampoline.closureTrampolineTarget = f;
+                                trampoline.isReferenceTaken = true;
+                                f.closureTrampoline = trampoline;
+                                this.wasm.addFunction(trampoline);
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
           case ClassDeclaration: {
             let classDecl = stmt as ClassDeclaration;
             let classType = this.getClassType(classDecl, moduleModel) as ClassType;

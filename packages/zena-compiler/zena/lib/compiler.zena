@@ -38,7 +38,7 @@ import { Symbol } from './scope/symbol.zena';
 import { Scope, ScopeKind } from './scope/scope.zena';
 import { ScopeBuilder, ScopeResult, ModuleExports as ScopeModuleExports, UnresolvedName } from './scope/scope-builder.zena';
 import {
-  ImportDeclaration, ImportSpecifier, ExportFromDeclaration,
+  ImportDeclaration, ImportSpecifier, ExportFromDeclaration, ExportAllDeclaration,
   MemberExpression, FieldDefinition, MethodDefinition, ClassDeclaration,
   Identifier, CaseClassParam, Expression, ThisExpression,
   Node, Module, SourceLocation
@@ -421,15 +421,48 @@ export class Compiler {
                 while (k < imports.length) {
                   let spec = imports[k];
                   let importedName = spec.imported.name;
+                  let localName = spec.local.name;
 
                   // Check if the dependency exports this name as a value or type.
-                  if (!depExports.has(importedName)) {
+                  let exp = if (importedName != "*" && depExports.has(importedName)) {
+                    if (let (true, val) = depExports.get(importedName)) { val } else { null }
+                  } else {
+                    null
+                  };
+
+                  if (importedName != "*" && exp == null) {
                     // The imported name doesn't exist in the dependency's exports.
                     // Record as unresolved for later error reporting.
                     result.unresolvedNames.push(new UnresolvedName(importedName, spec));
+                  } else if (exp != null) {
+                    let localSym = result.rootScope.getLocal(localName);
+                    if (localSym != null) {
+                      (localSym as Symbol).importTarget = exp as Symbol;
+                    }
                   }
 
                   k = k + 1;
+                }
+              }
+            }
+          }
+        }
+        case ExportAllDeclaration {moduleSpecifier}: {
+          let specifier = moduleSpecifier.value;
+
+          if (lib.imports.has(specifier)) {
+            let depPath = lib.imports[specifier];
+            let depLib = this.#loader.get(depPath);
+            if (depLib != null) {
+              let dep = depLib as SourceFile;
+              if (dep.scopeResult != null) {
+                let depScope = dep.scopeResult as ScopeResult;
+                let depExports = depScope.exports;
+
+                for (let key in depExports.keys()) {
+                  if (let (true, info) = depExports.get(key)) {
+                    result.exports[key] = info;
+                  }
                 }
               }
             }
@@ -1113,12 +1146,29 @@ let buildReverseDeps = (
             var k = 0;
             while (k < imports.length) {
               let importedName = imports[k].imported.name;
-              // Import names may be values or types; add both prefixes so
-              // we match whichever namespace the export lives in.
-              names.push("v:" + importedName);
-              names.push("t:" + importedName);
+              if (importedName == "*") {
+                names.push("*");
+              } else {
+                names.push("v:" + importedName);
+                names.push("t:" + importedName);
+              }
               k += 1;
             }
+          }
+        }
+        case ExportAllDeclaration {moduleSpecifier}: {
+          let specifier = moduleSpecifier.value;
+          if (file.imports.has(specifier)) {
+            let depPath = file.imports[specifier];
+            if (!reverseDeps.has(depPath)) {
+              reverseDeps[depPath] = new HashMap<String, Array<String>>();
+            }
+            let depMap = reverseDeps[depPath];
+            if (!depMap.has(file.path)) {
+              depMap[file.path] = new Array<String>(4);
+            }
+            let names = depMap[file.path];
+            names.push("*");
           }
         }
         case ExportFromDeclaration {moduleSpecifier, specifiers}: {

@@ -96,6 +96,8 @@ regex.match(pattern, text);
 from 'zena:string' import {String};
 ```
 
+Namespace imports (`import * as x`) define a read-only variable `x` whose type is a structural **`RecordType`** containing all of the value exports of the imported module as properties. They behave as standard record values and can be passed to functions, returned, stored, or destructured.
+
 ### Exports
 
 Mark declarations with `export` to make them available to other modules and the
@@ -1664,11 +1666,13 @@ mixin Syncable on Entity {
 #### Satisfying Constraints and Interface Implementation
 
 A target class satisfies a mixin's `on` constraint if the constraint type is assignable to:
+
 1. The target class's **superclass**.
 2. The target class's **extension `on` type** (if it is an extension class).
 3. Any interface in the target class's **`implements` list**.
 
 This allows classes to implement an interface (e.g. `Iterable<T>`) **via** a mixin that is constrained to that same interface (e.g. `on Iterable<T>`). During type checking, this is resolved cleanly without circular dependency:
+
 1. The class declares `implements Iterable<T>`, which immediately satisfies the mixin's `on Iterable<T>` constraint.
 2. The mixin is applied, injecting the required utility methods into the class.
 3. The compiler validates that the class fully implements all methods in `Iterable<T>`, which succeeds because the mixin provided the required methods.

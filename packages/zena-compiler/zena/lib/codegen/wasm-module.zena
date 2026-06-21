@@ -1,5 +1,5 @@
 import { 
-  Node, Expression, ClassDeclaration, NodeId
+  Node, Expression, ClassDeclaration, NodeId, ImportSpecifier
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId } from '../scope/symbol.zena';
@@ -134,6 +134,10 @@ export class WasmFunction {
   var functionAdaptationSource: FunctionType | null = null;
   var functionAdaptationTarget: FunctionType | null = null;
 
+  var closureTrampoline: WasmFunction | null = null;
+  var isClosureTrampoline: boolean = false;
+  var closureTrampolineTarget: WasmFunction | null = null;
+
   new(this.signature, this.node, this.model);
 }
 
@@ -156,6 +160,7 @@ export class WasmGlobal {
   var initExpr: Expression | null = null;
   var initVTable: VTableInit | null = null;
   var initSingletonStruct: ClassType | null = null;
+  var namespaceImport: ImportSpecifier | null = null;
   model: SemanticModel;
   new(this.name, this.zenaName, this.type, this.isMutable, this.initExpr, this.initVTable, this.model);
 }
@@ -199,6 +204,8 @@ export class WasmModule {
   functions = new Array<WasmFunction>();
   
   globals = new Array<WasmGlobal>();
+
+
 
   /**
    * Maps a Zena symbol ID to its compiled WebAssembly function.

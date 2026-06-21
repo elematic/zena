@@ -12,11 +12,13 @@ import {
   AccessorDeclaration, SetterInfo, AsExpression, IsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral, TaggedTemplateExpression,
   SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction,
-  ThrowExpression, TryExpression, RangeExpression, PipelineExpression, PipePlaceholder
+  ThrowExpression, TryExpression, RangeExpression, PipelineExpression, PipePlaceholder,
+  Module
 } from '../ast.zena';
 import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
-import { Program } from '../program.zena';
+import { Program, CompilationUnit } from '../program.zena';
+import { dirName, normalizePath } from '../module-resolver.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned } from './wasm.zena';
@@ -130,6 +132,67 @@ export class FunctionGenerator {
               this.ctx.wasmFunction.model = originalModel;
               this.ctx.emitter.emitGlobalSet(g.index);
             }
+          } else if (g.namespaceImport != null) {
+            let spec = g.namespaceImport as ImportSpecifier;
+            let moduleModel = g.model;
+            
+            let parentNode = moduleModel.getParent(spec);
+            if (parentNode != null && parentNode is ImportDeclaration) {
+              let importDecl = parentNode as ImportDeclaration;
+              let specifier = importDecl.moduleSpecifier.value;
+              var canonicalPath = specifier;
+              if (specifier.startsWith("./") || specifier.startsWith("../")) {
+                let referrer = moduleModel.getParent(importDecl);
+                if (referrer != null && referrer is Module) {
+                  let mod = referrer as Module;
+                  let dir = dirName(mod.path);
+                  canonicalPath = normalizePath(dir + "/" + specifier);
+                }
+              }
+              
+              let prog = this.ctx.wasm.program as Program;
+              if (prog.unitsByPath.has(canonicalPath)) {
+                let targetUnit = prog.unitsByPath[canonicalPath];
+                let exports = new HashMap<String, Symbol>();
+                collectValueExports(prog, targetUnit, exports);
+                
+                let recordType = moduleModel.getNodeType(spec as Node) as RecordType;
+                let fields = new Array<WasmField>();
+                for (let pair in recordType.properties) {
+                  fields.push(new WasmField(pair.key, typeToValType(this.ctx.wasm, pair.value), false));
+                }
+                sortWasmFields(fields);
+                
+                let dispatchInfo = this.ctx.wasm.getRecordDispatch(moduleModel, fields);
+                let structType = dispatchInfo.concreteType;
+                
+                for (let field in fields) {
+                  if (let (true, sym) = exports.get(field.name as String)) {
+                    if (this.ctx.wasm.functionMap.has(sym.id)) {
+                      let f = this.ctx.wasm.functionMap[sym.id];
+                      f.isReferenceTaken = true;
+                      let closureStruct = this.ctx.wasm.getClosureStruct(f.signature.params, f.signature.returns);
+                      let refTarget = if (f.closureTrampoline != null) (f.closureTrampoline as WasmFunction) else f;
+                      this.ctx.emitter.emitRefFunc(refTarget.index);
+                      this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.eq));
+                      this.ctx.emitter.emitStructNew(closureStruct.index);
+                    } else if (this.ctx.wasm.globalMap.has(sym.id)) {
+                      let targetGlobal = this.ctx.wasm.globalMap[sym.id];
+                      this.ctx.emitter.emitGlobalGet(targetGlobal.index);
+                    } else {
+                      this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
+                    }
+                  } else {
+                    this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
+                  }
+                }
+                
+                this.ctx.emitter.emitStructNew(structType.index);
+                this.ctx.emitter.emitGlobalGet(dispatchInfo.vtableGlobal.index);
+                this.ctx.emitter.emitStructNew(dispatchInfo.fatPtrType.index);
+                this.ctx.emitter.emitGlobalSet(g.index);
+              }
+            }
           }
         }
         
@@ -200,6 +263,8 @@ export class FunctionGenerator {
         this.ctx.emitter.emitCall(target);
       } else if (this.ctx.wasmFunction.isFunctionAdaptation) {
         this.generateFunctionAdaptationBody();
+      } else if (this.ctx.wasmFunction.isClosureTrampoline) {
+        this.generateClosureTrampolineBody();
       } else if (this.ctx.wasmFunction.importWrapperTarget != null) {
         this.generateImportWrapperBody();
       } else if (name == "wasi_write_string_helper") {
@@ -1075,6 +1140,16 @@ export class FunctionGenerator {
     }
   }
 
+  generateClosureTrampolineBody(): void {
+    let target = this.ctx.wasmFunction.closureTrampolineTarget as WasmFunction;
+    var i = 1;
+    while (i < this.ctx.wasmFunction.signature.params.length) {
+      this.ctx.emitter.emitLocalGet(i);
+      i += 1;
+    }
+    this.ctx.emitter.emitCall(target);
+  }
+
   generateCaseClassEqBody(): void {
     let cType = this.ctx.wasmFunction.classType as ClassType;
     let structType = this.ctx.wasmFunction.structType as WasmStruct;
@@ -1830,3 +1905,76 @@ export class FunctionGenerator {
     this.ctx.emitter.emitLocalGet(hashLocal);
   }
 }
+
+export let collectValueExports = (program: Program, unit: CompilationUnit, result: HashMap<String, Symbol>): void => {
+  for (let stmt in unit.ast.body) {
+    match (stmt) {
+      case VariableDeclaration {pattern, exported}: {
+        if (exported && pattern is IdentifierPattern) {
+          let ident = pattern as IdentifierPattern;
+          let sym = unit.model.resolveDeclaration(ident);
+          if (sym != null) {
+            result[ident.name] = sym as Symbol;
+          }
+        }
+      }
+      case ClassDeclaration {name, exported}: {
+        if (exported) {
+          let sym = unit.model.resolveDeclaration(name);
+          if (sym != null) {
+            result[name.name] = sym as Symbol;
+          }
+        }
+      }
+      case EnumDeclaration {name, exported}: {
+        if (exported) {
+          let sym = unit.model.resolveDeclaration(name);
+          if (sym != null) {
+            result[name.name] = sym as Symbol;
+          }
+        }
+      }
+      case DeclareFunction {name, exported}: {
+        if (exported) {
+          let sym = unit.model.resolveDeclaration(name);
+          if (sym != null) {
+            result[name.name] = sym as Symbol;
+          }
+        }
+      }
+      case ExportFromDeclaration {specifiers, moduleSpecifier}: {
+        let specifier = moduleSpecifier.value;
+        var canonicalPath = specifier;
+        if (specifier.startsWith("./") || specifier.startsWith("../")) {
+          let dir = dirName(unit.ast.path);
+          canonicalPath = normalizePath(dir + "/" + specifier);
+        }
+        if (program.unitsByPath.has(canonicalPath)) {
+          let targetUnit = program.unitsByPath[canonicalPath];
+          for (let spec in specifiers) {
+            let importedName = spec.imported.name;
+            let localName = spec.local.name;
+            let targetExports = new HashMap<String, Symbol>();
+            collectValueExports(program, targetUnit, targetExports);
+            if (targetExports.has(importedName)) {
+              result[localName] = targetExports[importedName];
+            }
+          }
+        }
+      }
+      case ExportAllDeclaration {moduleSpecifier}: {
+        let specifier = moduleSpecifier.value;
+        var canonicalPath = specifier;
+        if (specifier.startsWith("./") || specifier.startsWith("../")) {
+          let dir = dirName(unit.ast.path);
+          canonicalPath = normalizePath(dir + "/" + specifier);
+        }
+        if (program.unitsByPath.has(canonicalPath)) {
+          let targetUnit = program.unitsByPath[canonicalPath];
+          collectValueExports(program, targetUnit, result);
+        }
+      }
+      case _: {}
+    }
+  }
+};

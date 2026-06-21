@@ -101,4 +101,3 @@ We need a suite of micro-benchmarks to track performance regressions.
   - This reduces the number of heap allocations and simplifies retrieval (a single `struct.get` offset access on the shared environment, instead of fetching a cell pointer and then dereferencing it).
 - **Complexity**: Moderate. Requires identifying variable sharing sets during capture analysis.
 - **Priority**: Low for Phase 1. Box-per-variable keeps the initial implementation simple, correct, and matching the bootstrap compiler.
-

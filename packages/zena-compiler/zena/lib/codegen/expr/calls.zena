@@ -301,29 +301,12 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             return;
           }
           
-          var isImport = false;
-          var importedName = "";
-          if (symVal.declaration != null && symVal.declaration is ImportSpecifier) {
-            isImport = true;
-            importedName = (symVal.declaration as ImportSpecifier).imported.name;
-          }
-          
-          if (ctx.wasm.functionMap.has(symVal.id)) {
-            let f = ctx.wasm.functionMap[symVal.id];
+          let resolved = symVal.resolveTarget();
+          if (ctx.wasm.functionMap.has(resolved.id)) {
+            let f = ctx.wasm.functionMap[resolved.id];
             generateCallArguments(ctx, call, ft, -1, currentGenExpr);
             ctx.emitter.emitCall(f);
             return;
-          } else if (isImport) {
-            // If we imported the function, check if it's in the functionMap by looking up
-            // the imported symbol from its source module.
-            let importedSymId = resolveImportedSymbolId(ctx, symVal.declaration as ImportSpecifier, ft);
-            if (importedSymId != (-1 as SymbolId) && ctx.wasm.functionMap.has(importedSymId)) {
-              let f = ctx.wasm.functionMap[importedSymId];
-              generateCallArguments(ctx, call, ft, -1, currentGenExpr);
-              ctx.emitter.emitCall(f);
-              return;
-            }
-            throw new Error("Export map missing: " + importedName);
           } else if (ft != null) {
             generateClosureCall(ctx, call, ft as FunctionType, currentGenExpr);
             return;
@@ -598,6 +581,10 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           return;
         }
 
+        if (ft != null) {
+          generateClosureCall(ctx, call, ft as FunctionType, currentGenExpr);
+          return;
+        }
         throw new Error("Unsupported method call on type: " + typeToString(objType));
       }
       case SuperExpression: {
@@ -794,28 +781,27 @@ let findModuleNode = (model: SemanticModel, node: Node): Module | null => {
 };
 
 let findDeclaration = (ctx: FunctionContext, sym: Symbol, expectedType: Type | null): DeclareFunction | null => {
-  let decl = sym.declaration;
+  let resolved = sym.resolveTarget();
+  let decl = resolved.declaration;
   if (decl == null) return null;
-  
-  if (decl is ImportSpecifier) {
-    let spec = decl as ImportSpecifier;
-    return resolveImportedSymbol(ctx, spec, expectedType);
-  }
-  
-  if (decl is DeclareFunction) {
-    let importedName = sym.name;
-    let currentModule = findModuleNode(ctx.wasmFunction.model, ctx.wasmFunction.node);
-    if (currentModule != null) {
+
+  let prog = ctx.wasm.program;
+  if (prog != null && resolved.modulePath != "") {
+    let canonicalPath = resolved.modulePath;
+    if (prog.unitsByPath.has(canonicalPath)) {
+      let targetUnit = prog.unitsByPath[canonicalPath];
+      let importedName = resolved.name;
+      
       var fallback: DeclareFunction | null = null;
-      for (let stmt in (currentModule as Module).body) {
+      for (let stmt in targetUnit.ast.body) {
         match (stmt) {
           case DeclareFunction as df: {
             if (df.name.name == importedName) {
               if (expectedType == null) {
                 return df;
               }
-              let stmtType = getNodeType(ctx, df);
-              if (stmtType != null && matchOverload(stmtType, expectedType)) {
+              let nodeType = targetUnit.model.getNodeType(df);
+              if (nodeType != null && matchOverload(nodeType as Type, expectedType as Type)) {
                 return df;
               }
               fallback = df;
@@ -824,134 +810,33 @@ let findDeclaration = (ctx: FunctionContext, sym: Symbol, expectedType: Type | n
           case _: {}
         }
       }
-      return fallback;
+      if (fallback != null) {
+        return fallback;
+      }
     }
+  }
+
+  if (decl is DeclareFunction) {
+    return decl as DeclareFunction;
   }
   return null;
 };
 
 let resolveImportedSymbol = (ctx: FunctionContext, spec: ImportSpecifier, expectedType: Type | null = null): DeclareFunction | null => {
-  let parentNode = ctx.wasmFunction.model.getParent(spec);
-  if (parentNode == null || !(parentNode is ImportDeclaration)) {
-    return null;
-  }
-  let importDecl = parentNode as ImportDeclaration;
-  let specifier = importDecl.moduleSpecifier.value;
-  
-  var canonicalPath = specifier;
-  if (specifier.startsWith("./") || specifier.startsWith("../")) {
-    let referrer = ctx.wasmFunction.model.getParent(importDecl);
-    if (referrer != null && referrer is Module) {
-      let mod = referrer as Module;
-      let dir = dirName(mod.path);
-      canonicalPath = normalizePath(dir + "/" + specifier);
+  let sym = ctx.wasmFunction.model.resolve(spec as Node);
+  if (sym != null) {
+    let resolved = (sym as Symbol).resolveTarget();
+    if (resolved.declaration != null && resolved.declaration is DeclareFunction) {
+      return resolved.declaration as DeclareFunction;
     }
   }
-  
-  let prog = ctx.wasm.program;
-  if (prog == null) {
-    return null;
-  }
-  
-  if (!prog.unitsByPath.has(canonicalPath)) {
-    return null;
-  }
-  
-  let targetUnit = prog.unitsByPath[canonicalPath];
-  let importedName = spec.imported.name;
-  
-  var fallback: DeclareFunction | null = null;
-  for (let stmt in targetUnit.ast.body) {
-    match (stmt) {
-      case DeclareFunction as df: {
-        if (df.name.name == importedName) {
-          if (expectedType == null) {
-            return df;
-          }
-          let nodeType = targetUnit.model.getNodeType(df);
-          if (nodeType != null && matchOverload(nodeType as Type, expectedType as Type)) {
-            return df;
-          }
-          fallback = df;
-        }
-      }
-      case _: {}
-    }
-  }
-  return fallback;
+  return null;
 };
 
 let resolveImportedSymbolId = (ctx: FunctionContext, spec: ImportSpecifier, expectedType: Type | null = null): SymbolId => {
-  let parentNode = ctx.wasmFunction.model.getParent(spec);
-  if (parentNode == null || !(parentNode is ImportDeclaration)) {
-    return -1 as SymbolId;
-  }
-  let importDecl = parentNode as ImportDeclaration;
-  let specifier = importDecl.moduleSpecifier.value;
-  
-  var canonicalPath = specifier;
-  if (specifier.startsWith("./") || specifier.startsWith("../")) {
-    let referrer = ctx.wasmFunction.model.getParent(importDecl);
-    if (referrer != null && referrer is Module) {
-      let mod = referrer as Module;
-      let dir = dirName(mod.path);
-      canonicalPath = normalizePath(dir + "/" + specifier);
-    }
-  }
-  
-  let prog = ctx.wasm.program;
-  if (prog == null) {
-    return -1 as SymbolId;
-  }
-  
-  if (!prog.unitsByPath.has(canonicalPath)) {
-    return -1 as SymbolId;
-  }
-  
-  let targetUnit = prog.unitsByPath[canonicalPath];
-  let importedName = spec.imported.name;
-  
-  var fallback: Symbol | null = null;
-  for (let stmt in targetUnit.ast.body) {
-    match (stmt) {
-      case DeclareFunction as df: {
-        if (df.name.name == importedName) {
-          let sym = targetUnit.model.resolveDeclaration(df);
-          if (expectedType == null) {
-            return (sym as Symbol).id;
-          }
-          let nodeType = targetUnit.model.getNodeType(df);
-          if (nodeType != null && matchOverload(nodeType as Type, expectedType as Type)) {
-            return (sym as Symbol).id;
-          }
-          fallback = sym;
-        }
-      }
-      case VariableDeclaration as vd: {
-        match (vd.pattern) {
-          case IdentifierPattern {name} as pat: {
-            if (name == importedName) {
-              let sym = targetUnit.model.resolve(pat);
-              if (sym != null) {
-                if (expectedType == null) {
-                  return (sym as Symbol).id;
-                }
-                let nodeType = targetUnit.model.getNodeType(pat);
-                if (nodeType != null && matchOverload(nodeType as Type, expectedType as Type)) {
-                  return (sym as Symbol).id;
-                }
-                fallback = sym;
-              }
-            }
-          }
-          case _: {}
-        }
-      }
-      case _: {}
-    }
-  }
-  if (fallback != null) {
-    return (fallback as Symbol).id;
+  let sym = ctx.wasmFunction.model.resolve(spec as Node);
+  if (sym != null) {
+    return (sym as Symbol).resolveTarget().id;
   }
   return -1 as SymbolId;
 };

@@ -60,7 +60,10 @@ export interface LocalBinding {
 export interface GlobalBinding {
   readonly kind: 'global';
   /** The variable or enum declaration AST node */
-  readonly declaration: VariableDeclaration | EnumDeclaration;
+  readonly declaration:
+    | VariableDeclaration
+    | EnumDeclaration
+    | ImportDeclaration;
   /** The module path where this is declared */
   readonly modulePath: string;
   /** The semantic type of the binding */
@@ -438,7 +441,8 @@ type Declaration =
   | TypeAliasDeclaration
   | TypeParameter
   | EnumDeclaration
-  | SymbolDeclaration;
+  | SymbolDeclaration
+  | ImportDeclaration;
 
 /**
  * Create a ResolvedBinding from symbol information.
@@ -600,13 +604,14 @@ const createValueBinding = (
   if (!declaration) return undefined;
   if (
     declaration.type !== 'VariableDeclaration' &&
-    declaration.type !== 'EnumDeclaration'
+    declaration.type !== 'EnumDeclaration' &&
+    declaration.type !== 'ImportDeclaration'
   ) {
     return undefined;
   }
   return {
     kind: 'global',
-    declaration: declaration as VariableDeclaration | EnumDeclaration,
+    declaration: declaration as any,
     modulePath: modulePath ?? '',
     type,
   };

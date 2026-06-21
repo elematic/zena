@@ -3006,21 +3006,47 @@ mixin Syncable on Entity {
 #### Constraint Satisfaction and Type Checking
 
 A target class satisfies a mixin's `on` constraint if the constrained type is assignable to:
+
 1. The target class's **superclass**.
 2. The target class's **extension `on` type** (if it is an extension class).
 3. Any interface in the target class's **`implements` list**.
 
 This enables a class to implement an interface (e.g. `Iterable<T>`) **via** a mixin that is constrained to that interface (e.g. `on Iterable<T>`). When type checking:
+
 1. The class declares `implements Iterable<T>`, immediately satisfying the mixin's `on` constraint.
 2. The mixin is applied, injecting the required implementation methods.
 3. The compiler validates that the class has implemented all members of the interface, which succeeds because of the injected mixin methods.
 
 ## 8. Modules & Exports
 
+### Imports
+
+Modules bring exported names from other files into scope using the `import` keyword:
+
+```zena
+// Import named bindings
+import { Map, Set } from 'zena:collections';
+
+// Import with alias
+import { StringBuilder as SB } from 'zena:string-builder';
+
+// Import all exports into a namespace
+import * as math from 'zena:math';
+```
+
+#### Namespace Imports
+
+A namespace import (`import * as x`) defines a read-only variable `x` whose type is a structural **`RecordType`** containing all of the value exports of the imported module as properties.
+
+Since namespace variables are compiled as standard structural records:
+
+- They are first-class values that can be passed to functions, returned, or stored in data structures.
+- They can be destructured using record destructuring syntax: `let { add, sub } = math;`.
+
 ### Exports
 
 Top-level declarations (variables, functions, classes) can be exported using the
-`export` keyword. This exposes them to the host environment.
+`export` keyword. This exposes them to other modules or the host environment.
 
 ```zena
 // Export a function
@@ -3030,10 +3056,7 @@ export let add = (a: i32, b: i32) => a + b;
 export class Point {
   x: i32;
   y: i32;
-  new(x: i32, y: i32) {
-    this.x = x;
-    this.y = y;
-  }
+  new(this.x, this.y);
 }
 ```
 
@@ -3053,17 +3076,6 @@ declare function log(val: i32): void;
 
 These declarations map to WebAssembly imports, allowing Zena to call JavaScript
 functions (or other WASM modules).
-
-### Exports
-
-Top-level declarations can be exported using the `export` keyword. This exposes
-them to other modules or the host environment.
-
-```zena
-export let add = (a: i32, b: i32) => a + b;
-export declare function print(s: String): void;
-export class Point { ... }
-```
 
 #### Re-exports
 

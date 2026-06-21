@@ -4477,7 +4477,27 @@ export class Parser {
   #parseImportDeclaration(): ImportDeclaration {
     const startToken = this.#peek();
     if (this.#match(TokenType.Import)) {
-      const imports = this.#parseImportSpecifiers();
+      let imports: ImportSpecifier[];
+      if (this.#check(TokenType.Star)) {
+        const starToken = this.#advance();
+        this.#consume(TokenType.As, "Expected 'as' after '*'.");
+        const local = this.#parseIdentifier();
+        const imported: Identifier = {
+          type: NodeType.Identifier,
+          name: '*',
+          loc: this.#loc(starToken, starToken),
+        };
+        imports = [
+          {
+            type: NodeType.ImportSpecifier,
+            imported,
+            local,
+            loc: this.#loc(starToken, starToken),
+          },
+        ];
+      } else {
+        imports = this.#parseImportSpecifiers();
+      }
       this.#consume(TokenType.From, "Expected 'from'.");
       const moduleSpecifier = this.#parseStringLiteral();
       this.#consume(TokenType.Semi, "Expected ';'.");
@@ -4493,7 +4513,27 @@ export class Parser {
     if (this.#match(TokenType.From)) {
       const moduleSpecifier = this.#parseStringLiteral();
       this.#consume(TokenType.Import, "Expected 'import'.");
-      const imports = this.#parseImportSpecifiers();
+      let imports: ImportSpecifier[];
+      if (this.#check(TokenType.Star)) {
+        const starToken = this.#advance();
+        this.#consume(TokenType.As, "Expected 'as' after '*'.");
+        const local = this.#parseIdentifier();
+        const imported: Identifier = {
+          type: NodeType.Identifier,
+          name: '*',
+          loc: this.#loc(starToken, starToken),
+        };
+        imports = [
+          {
+            type: NodeType.ImportSpecifier,
+            imported,
+            local,
+            loc: this.#loc(starToken, starToken),
+          },
+        ];
+      } else {
+        imports = this.#parseImportSpecifiers();
+      }
       this.#consume(TokenType.Semi, "Expected ';'.");
       const endToken = this.#previous();
       return {

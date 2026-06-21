@@ -17,7 +17,8 @@ export type Declaration =
   | TypeAliasDeclaration
   | TypeParameter
   | EnumDeclaration
-  | SymbolDeclaration;
+  | SymbolDeclaration
+  | ImportDeclaration;
 
 /**
  * Information about a symbol in a scope.

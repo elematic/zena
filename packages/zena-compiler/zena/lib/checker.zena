@@ -3685,93 +3685,122 @@ case _: {
             let importedName = spec.imported.name;
             let localName = spec.local.name;
 
-            // Register type imports (classes, interfaces, etc.)
-            let typeExport = if (let (true, exp) = depMod.get(importedName)) {
-              if (exp.isType()) { exp } else { null }
-            } else { null };
-            if (typeExport != null) {
-              var resolvedType: Type | null = null;
-              if (depModel != null) {
-                let dm = depModel as SemanticModel;
-                resolvedType = dm.getExportType(importedName);
-                if (resolvedType == null) {
-                  resolvedType = dm.getBindingType(typeExport);
+            if (importedName == "*") {
+              // It's a namespace import: import * as ns from 'mod'
+              // We construct a RecordType populated with all value exports of the dependency.
+              let properties = new HashMap<String, Type>();
+              for (let expKey in depMod.keys()) {
+                if (let (true, exp) = depMod.get(expKey)) {
+                  if (exp.isValue()) {
+                    let resolvedValType = if (depModel != null) {
+                      depModel.getBindingType(exp as Symbol)
+                    } else {
+                      null
+                    };
+                    if (resolvedValType != null) {
+                      properties[expKey] = resolvedValType as Type;
+                    } else {
+                      properties[expKey] = new ErrorType();
+                    }
+                  }
                 }
               }
-
-              if (resolvedType != null) {
-                // Use the actual resolved type from the dependency.
-                ctx.declareTypeName(localName, resolvedType);
-                
-                // Bind directly to the local TYPE symbol for this import.
-                let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
-                if (localTypeInfo != null) {
-                  ctx.registerType(localTypeInfo, resolvedType);
+              let recordType = new RecordT(properties, null);
+              
+              // Register it as a value import in the local scope.
+              let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
+              if (localValInfo != null) {
+                ctx.declareBinding(localValInfo, recordType);
+              }
+            } else {
+              // Register type imports (classes, interfaces, etc.)
+              let typeExport = if (let (true, exp) = depMod.get(importedName)) {
+                if (exp.isType()) { exp } else { null }
+              } else { null };
+              if (typeExport != null) {
+                var resolvedType: Type | null = null;
+                if (depModel != null) {
+                  let dm = depModel as SemanticModel;
+                  resolvedType = dm.getExportType(importedName);
+                  if (resolvedType == null) {
+                    resolvedType = dm.getBindingType(typeExport);
+                  }
                 }
-              } else {
-                // Fallback: create stub types from the declaration AST node.
-                // For stdlib types, prefer the prelude type which has full
-                // member definitions (fields, methods, constructors).
-                let decl = typeExport.declaration;
-                if (decl != null) {
+
+                if (resolvedType != null) {
+                  // Use the actual resolved type from the dependency.
+                  ctx.declareTypeName(localName, resolvedType);
+                  
+                  // Bind directly to the local TYPE symbol for this import.
                   let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
-                  match (decl) {
-                    case ClassDeclaration {name}: {
-                      let preludeType = ctx.resolveTypeName(name.name);
-                      if (preludeType != null) {
-                        ctx.declareTypeName(localName, preludeType);
-                        if (localTypeInfo != null) {
-                          ctx.declareBinding(localTypeInfo, preludeType);
+                  if (localTypeInfo != null) {
+                    ctx.registerType(localTypeInfo, resolvedType);
+                  }
+                } else {
+                  // Fallback: create stub types from the declaration AST node.
+                  // For stdlib types, prefer the prelude type which has full
+                  // member definitions (fields, methods, constructors).
+                  let decl = typeExport.declaration;
+                  if (decl != null) {
+                    let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
+                    match (decl) {
+                      case ClassDeclaration {name}: {
+                        let preludeType = ctx.resolveTypeName(name.name);
+                        if (preludeType != null) {
+                          ctx.declareTypeName(localName, preludeType);
+                          if (localTypeInfo != null) {
+                            ctx.declareBinding(localTypeInfo, preludeType);
+                          }
+                        } else {
+                          let ct = new ClassType(ctx.freshTypeId(), name.name);
+                          ctx.declareTypeName(localName, ct);
+                          if (localTypeInfo != null) {
+                            ctx.declareBinding(localTypeInfo, ct);
+                          }
                         }
-                      } else {
+                      }
+                      case InterfaceDeclaration {name}: {
+                        let it = new InterfaceType(ctx.freshTypeId(), name.name);
+                        ctx.declareTypeName(localName, it);
+                        if (localTypeInfo != null) {
+                          ctx.declareBinding(localTypeInfo, it);
+                        }
+                      }
+                      case SealedVariant {name}: {
                         let ct = new ClassType(ctx.freshTypeId(), name.name);
+                        ct.isCaseClass = true;
                         ctx.declareTypeName(localName, ct);
                         if (localTypeInfo != null) {
                           ctx.declareBinding(localTypeInfo, ct);
                         }
                       }
-                    }
-                    case InterfaceDeclaration {name}: {
-                      let it = new InterfaceType(ctx.freshTypeId(), name.name);
-                      ctx.declareTypeName(localName, it);
-                      if (localTypeInfo != null) {
-                        ctx.declareBinding(localTypeInfo, it);
+                      case _: {
+                        ctx.declareTypeName(localName, new ErrorType());
                       }
                     }
-                    case SealedVariant {name}: {
-                      let ct = new ClassType(ctx.freshTypeId(), name.name);
-                      ct.isCaseClass = true;
-                      ctx.declareTypeName(localName, ct);
-                      if (localTypeInfo != null) {
-                        ctx.declareBinding(localTypeInfo, ct);
-                      }
-                    }
-                    case _: {
-                      ctx.declareTypeName(localName, new ErrorType());
-                    }
+                  } else {
+                    ctx.declareTypeName(localName, new ErrorType());
                   }
-                } else {
-                  ctx.declareTypeName(localName, new ErrorType());
                 }
               }
-            }
 
-            // Register value imports (functions, variables).
-            let valueExport = if (let (true, exp) = depMod.get(importedName)) {
-              if (exp.isValue()) { exp } else { null }
-            } else { null };
-            if (valueExport != null) {
-              let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
-              if (localValInfo != null) {
-                let resolvedValType = if (depModel != null) {
-                  depModel.getBindingType(valueExport as Symbol)
-                } else {
-                  null
-                };
-                if (resolvedValType != null) {
-                  ctx.declareBinding(localValInfo, resolvedValType);
-                } else if (typeExport == null) {
-                  ctx.declareBinding(localValInfo, new ErrorType());
+              // Register value imports (functions, variables).
+              let valueExport = if (let (true, exp) = depMod.get(importedName)) {
+                if (exp.isValue()) { exp } else { null }
+              } else { null };
+              if (valueExport != null) {
+                let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
+                if (localValInfo != null) {
+                  let resolvedValType = if (depModel != null) {
+                    depModel.getBindingType(valueExport as Symbol)
+                  } else {
+                    null
+                  };
+                  if (resolvedValType != null) {
+                    ctx.declareBinding(localValInfo, resolvedValType);
+                  } else if (typeExport == null) {
+                    ctx.declareBinding(localValInfo, new ErrorType());
+                  }
                 }
               }
             }

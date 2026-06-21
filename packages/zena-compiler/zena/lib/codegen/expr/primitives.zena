@@ -18,30 +18,23 @@ import { String } from 'zena:string';
 export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void => {
   let sym = ctx.wasmFunction.model.resolve(ident);
   if (sym != null) {
-    if (ctx.localIndices.has(sym.id)) {
-      ctx.emitter.emitLocalGet(ctx.localIndices[sym.id]);
-      if (ctx.isCelled(sym.id)) {
-        let symType = ctx.wasmFunction.model.getBindingType(sym);
+    let resolvedSym = (sym as Symbol).resolveTarget();
+    if (ctx.localIndices.has(resolvedSym.id)) {
+      ctx.emitter.emitLocalGet(ctx.localIndices[resolvedSym.id]);
+      if (ctx.isCelled(resolvedSym.id)) {
+        let symType = ctx.wasmFunction.model.getBindingType(resolvedSym);
         let valType = typeToValType(ctx.wasm, symType);
         let cellStruct = getCellStruct(ctx.wasm, valType);
         ctx.emitter.emitStructGet(cellStruct.index, 0);
       }
       return;
     }
-    if (ctx.wasm.globalMap.has(sym.id)) {
-      ctx.emitter.emitGlobalGet(ctx.wasm.globalMap[sym.id].index);
+    if (ctx.wasm.globalMap.has(resolvedSym.id)) {
+      ctx.emitter.emitGlobalGet(ctx.wasm.globalMap[resolvedSym.id].index);
       return;
     }
-    if ((sym as Symbol).declaration is ImportSpecifier) {
-      let spec = (sym as Symbol).declaration as ImportSpecifier;
-      let importedName = spec.imported.name;
-      if (ctx.wasm.exportGlobalMap.has(importedName as ExportGlobalKey)) {
-        ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[importedName as ExportGlobalKey].index);
-        return;
-      }
-    }
-    if (ctx.wasm.exportGlobalMap.has(sym.name as ExportGlobalKey)) {
-      ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[sym.name as ExportGlobalKey].index);
+    if (ctx.wasm.exportGlobalMap.has(resolvedSym.name as ExportGlobalKey)) {
+      ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[resolvedSym.name as ExportGlobalKey].index);
       return;
     }
   }

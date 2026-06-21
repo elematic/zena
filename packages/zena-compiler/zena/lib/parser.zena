@@ -149,7 +149,17 @@ export class Parser {
   #parseImportDeclaration(): ImportDeclaration {
     let startToken = this.#peek();
     if (this.#match(TokenType.Import)) {
-      let imports = this.#parseImportSpecifiers();
+      let imports = if (this.#check(TokenType.Star)) {
+        let starToken = this.#advance();
+        this.#consume(TokenType.As, "Expected 'as' after '*'.");
+        let local = this.#parseIdentifier();
+        let imported = new Identifier("*", this.#makeLocation(starToken));
+        let arr = new Array<ImportSpecifier>(1);
+        arr.push(new ImportSpecifier(imported, local, this.#makeLocation(starToken)));
+        arr
+      } else {
+        this.#parseImportSpecifiers()
+      };
       this.#consume(TokenType.From, "Expected 'from'");
       let moduleSpecifier = this.#parseStringLiteralNode();
       this.#consume(TokenType.Semi, "Expected ';'");
@@ -159,7 +169,17 @@ export class Parser {
     if (this.#match(TokenType.From)) {
       let moduleSpecifier = this.#parseStringLiteralNode();
       this.#consume(TokenType.Import, "Expected 'import'");
-      let imports = this.#parseImportSpecifiers();
+      let imports = if (this.#check(TokenType.Star)) {
+        let starToken = this.#advance();
+        this.#consume(TokenType.As, "Expected 'as' after '*'.");
+        let local = this.#parseIdentifier();
+        let imported = new Identifier("*", this.#makeLocation(starToken));
+        let arr = new Array<ImportSpecifier>(1);
+        arr.push(new ImportSpecifier(imported, local, this.#makeLocation(starToken)));
+        arr
+      } else {
+        this.#parseImportSpecifiers()
+      };
       this.#consume(TokenType.Semi, "Expected ';'");
       return new ImportDeclaration(moduleSpecifier, imports, this.#makeLocation(startToken));
     }

@@ -185,9 +185,29 @@ export function generateExpression(
     case NodeType.NewExpression:
       generateNewExpression(ctx, expression as NewExpression, body);
       break;
-    case NodeType.MemberExpression:
+    case NodeType.MemberExpression: {
+      const binding = ctx.semanticContext.getResolvedBinding(
+        expression as MemberExpression,
+      );
+      if (
+        binding &&
+        (binding.kind === 'global' || binding.kind === 'function')
+      ) {
+        const resolved = resolveImport(binding);
+        if (
+          generateFromBinding(
+            ctx,
+            resolved,
+            body,
+            (expression as MemberExpression).property.name,
+          )
+        ) {
+          break;
+        }
+      }
       generateMemberExpression(ctx, expression as MemberExpression, body);
       break;
+    }
     case NodeType.ThisExpression:
       generateThisExpression(ctx, expression as ThisExpression, body);
       break;
@@ -3392,6 +3412,26 @@ function generateCallExpression(
 
   if (expr.callee.type === NodeType.MemberExpression) {
     const memberExpr = expr.callee as MemberExpression;
+
+    const nsCalleeBinding = ctx.semanticContext.getResolvedBinding(memberExpr);
+    const resolvedCalleeBinding = nsCalleeBinding
+      ? resolveImport(nsCalleeBinding)
+      : undefined;
+
+    if (resolvedCalleeBinding?.kind === 'function') {
+      const resolved = resolvedCalleeBinding as FunctionBinding;
+      const index = ctx.getFunctionIndexByDecl(resolved.declaration);
+      if (index !== undefined) {
+        const typeIndex = ctx.module.getFunctionTypeIndex(index);
+        const params = ctx.module.getFunctionTypeParams(typeIndex);
+
+        generateCallArguments(ctx, expr, params, 0, -1, body);
+
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(index));
+        return;
+      }
+    }
 
     // Handle symbol method call: obj.:symbol(args)
     if (memberExpr.isSymbolAccess) {

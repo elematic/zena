@@ -149,9 +149,9 @@ This plan tracks all features required for the code generation phase to achieve 
 - [ ] **Startup & Top-Level Statements:**
   - [ ] Dependency-ordered module initialization sequences.
   - [x] WASM start function executing top-level statement blocks (essential for test registrations).
-- [ ] **Modular Exports:**
-  - [ ] Namespace object structures (`import * as alias`).
-  - [ ] Re-exporting wrappers (`export { X } from 'mod'`).
+- [x] **Modular Exports:**
+  - [x] Namespace object structures (`import * as alias` represented as standard GC record/struct values containing exports).
+  - [x] Re-exporting wrappers (`export { X } from 'mod'`).
 
 ### 10. Testing Infrastructure
 

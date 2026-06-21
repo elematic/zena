@@ -3713,6 +3713,34 @@ function checkMemberExpression(
   if (objectType.kind === TypeKind.Record) {
     const recordType = objectType as RecordType;
     const memberName = expr.property.name;
+
+    if (expr.object.type === NodeType.Identifier && ctx.compiler) {
+      const objBinding = ctx.semanticContext.getResolvedBinding(
+        expr.object as Identifier,
+      );
+      if (
+        objBinding &&
+        objBinding.kind === 'global' &&
+        objBinding.declaration.type === NodeType.ImportDeclaration
+      ) {
+        const namespaceModulePath = objBinding.modulePath;
+        if (namespaceModulePath) {
+          const importedModule = ctx.compiler.getModule(namespaceModulePath);
+          if (importedModule) {
+            const valueKey = `value:${memberName}`;
+            const valueSymbol = importedModule.exports?.get(valueKey);
+            if (valueSymbol) {
+              const binding = createBinding(valueSymbol, {isLocal: false});
+              if (binding) {
+                ctx.semanticContext.setResolvedBinding(expr, binding);
+                return wrapResult(valueSymbol.type);
+              }
+            }
+          }
+        }
+      }
+    }
+
     if (recordType.properties.has(memberName)) {
       const fieldType = recordType.properties.get(memberName)!;
 

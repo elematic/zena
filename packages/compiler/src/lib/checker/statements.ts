@@ -1641,6 +1641,19 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
     const importedName = importSpecifier.imported.name;
     const localName = importSpecifier.local.name;
 
+    if (importedName === '*') {
+      const properties = new Map<string, Type>();
+      for (const [key, value] of importedModule.exports!.entries()) {
+        if (key.startsWith('value:')) {
+          const exportName = key.slice('value:'.length);
+          properties.set(exportName, value.type);
+        }
+      }
+      const recordType = ctx.getOrCreateRecordType(properties);
+      ctx.declare(localName, recordType, 'let', decl, importedModule.path);
+      continue;
+    }
+
     const valueExport = importedModule.exports!.get(`value:${importedName}`);
     const typeExport = importedModule.exports!.get(`type:${importedName}`);
     const legacyExport = importedModule.exports!.get(importedName);
