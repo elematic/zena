@@ -1926,7 +1926,18 @@ let substituteTypeParams = (
       res.optionalParameters = ft.optionalParameters;
       res.parameterInitializers = ft.parameterInitializers;
       res.parameterSymbols = ft.parameterSymbols;
-      res.overloads = ft.overloads;
+      if (ft.overloads != null) {
+        let subOvs = new Array<FunctionType>();
+        let ovs = ft.overloads as Array<FunctionType>;
+        for (let ov in ovs) {
+          if (ov == ft) {
+            subOvs.push(res);
+          } else {
+            subOvs.push(substituteTypeParams(typeParams, typeArgs, ov) as FunctionType);
+          }
+        }
+        res.overloads = subOvs;
+      }
       res.isFinal = ft.isFinal;
       res.isAbstract = ft.isAbstract;
       res.typeArguments = ft.typeArguments;
@@ -2018,6 +2029,18 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       newFt.optionalParameters = ft.optionalParameters;
       newFt.parameterInitializers = ft.parameterInitializers;
       newFt.parameterSymbols = ft.parameterSymbols;
+      if (ft.overloads != null) {
+        let subOvs = new Array<FunctionType>();
+        let ovs = ft.overloads as Array<FunctionType>;
+        for (let ov in ovs) {
+          if (ov == ft) {
+            subOvs.push(newFt);
+          } else {
+            subOvs.push(substituteThisType(receiverType, ov) as FunctionType);
+          }
+        }
+        newFt.overloads = subOvs;
+      }
       newFt.isFinal = ft.isFinal;
       newFt.isAbstract = ft.isAbstract;
       return newFt;
@@ -5379,6 +5402,37 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 // Class & Interface Checking
 // ============================================================================
 
+let hasSameSignature = (a: FunctionType, b: FunctionType): boolean => {
+  if (a.parameters.length != b.parameters.length) {
+    return false;
+  }
+  for (var i = 0; i < a.parameters.length; i += 1) {
+    if (!typesEqual(a.parameters[i], b.parameters[i])) {
+      return false;
+    }
+  }
+  return true;
+};
+
+let findMatchingOverload = (
+  method: FunctionType,
+  signature: FunctionType
+): FunctionType | null => {
+  if (hasSameSignature(method, signature)) {
+    return method;
+  }
+  if (method.overloads != null) {
+    let overloads = method.overloads as Array<FunctionType>;
+    for (let overload in overloads) {
+      if (hasSameSignature(overload, signature)) {
+        return overload;
+      }
+    }
+  }
+  return null;
+};
+
+
 /**
  * Register a class declaration's type identity, flags, superclass,
  * case-class params, member signatures (fields, methods, accessors),
@@ -5978,14 +6032,65 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             ovs.push(methodType);
           } else {
             let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
-            classType.members[methodName] = new MethodInfo(
-              methodType,
-              md.isAbstract, // isAbstract
-              md.isStatic,
-              isPrivate,
-              md.isFinal
-            );
-            ownMethodNames.add(methodName);
+            if (!isPrivate && classType.members.has(methodName) && classType.members[methodName] is MethodInfo) {
+              let inheritedMethodInfo = classType.members[methodName] as MethodInfo;
+              let superMethod = inheritedMethodInfo.type as FunctionType;
+              let matchingSuper = findMatchingOverload(superMethod, methodType);
+              if (matchingSuper != null) {
+                if (matchingSuper.isFinal) {
+                  ctx.error(
+                    "Cannot override final method '" + methodName + "'.",
+                    DiagnosticCode.IncompatibleTypes,
+                    md.loc
+                  );
+                }
+
+                let newOverloads = new Array<FunctionType>();
+                if (!hasSameSignature(superMethod, methodType)) {
+                  newOverloads.push(superMethod);
+                }
+                if (superMethod.overloads != null) {
+                  let superOvs = superMethod.overloads as Array<FunctionType>;
+                  for (let overload in superOvs) {
+                    if (!hasSameSignature(overload, methodType)) {
+                      newOverloads.push(overload);
+                    }
+                  }
+                }
+                if (newOverloads.length > 0) {
+                  methodType.overloads = newOverloads;
+                }
+
+                classType.members[methodName] = new MethodInfo(
+                  methodType,
+                  md.isAbstract,
+                  md.isStatic,
+                  isPrivate,
+                  md.isFinal
+                );
+                ownMethodNames.add(methodName);
+              } else {
+                let inheritedMethod = inheritedMethodInfo.type as FunctionType;
+                if (inheritedMethod.overloads == null) {
+                  let ovArray = new Array<FunctionType>();
+                  ovArray.push(inheritedMethod);
+                  inheritedMethod.overloads = ovArray;
+                }
+                let ovs = inheritedMethod.overloads as Array<FunctionType>;
+                ovs.push(methodType);
+
+                ownMethodNames.add(methodName);
+              }
+            } else {
+              classType.members[methodName] = new MethodInfo(
+                methodType,
+                md.isAbstract, // isAbstract
+                md.isStatic,
+                isPrivate,
+                md.isFinal
+              );
+              ownMethodNames.add(methodName);
+            }
           }
         }
       }

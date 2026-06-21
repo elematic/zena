@@ -1,0 +1,101 @@
+// @mode: run
+// @invoke: main
+// @result: 172
+
+class Printer {
+  print(val: i32): i32 {
+    return val * 2;
+  }
+  
+  print(val: f64): i32 {
+    return 100;
+  }
+}
+
+class Calculator {
+  add(a: i32): i32 {
+    return a;
+  }
+  
+  add(a: i32, b: i32): i32 {
+    return a + b;
+  }
+}
+
+class Point {
+  x: i32;
+  y: i32;
+  
+  new(this.x, this.y);
+}
+
+class Formatter {
+  format(val: i32): i32 {
+    return val;
+  }
+  
+  format(val: Point): i32 {
+    return val.x + val.y;
+  }
+}
+
+class Base {
+  process(val: i32): i32 {
+    return val;
+  }
+  
+  process(val: f64): i32 {
+    return 100;
+  }
+}
+
+class Child extends Base {
+  // Override only the i32 version
+  process(val: i32): i32 {
+    return val * 3;
+  }
+}
+
+class VirtualBase {
+  calc(val: i32): i32 {
+    return val;
+  }
+}
+
+class VirtualChild extends VirtualBase {
+  calc(val: i32): i32 {
+    return val * 2;
+  }
+}
+
+let dispatch = (b: VirtualBase): i32 => {
+  return b.calc(10);
+};
+
+export let main = (): i32 => {
+  let p = new Printer();
+  let a = p.print(21);      // i32 version -> 42
+  let b = p.print(3.14);    // f64 version -> 100
+  
+  let c = new Calculator();
+  let d = c.add(10);        // 1-param -> 10
+  let e = c.add(10, 20);    // 2-param -> 30
+  
+  let f = new Formatter();
+  let g = f.format(10);                    // i32 -> 10
+  let h = f.format(new Point(20, 30));     // Point -> 50
+  
+  let child = new Child();
+  let i = child.process(10);      // Child.process -> 30
+  let j = child.process(3.14);    // Base.process -> 100
+  
+  let vBase = new VirtualBase();
+  let vChild = new VirtualChild();
+  let k = dispatch(vBase);        // VirtualBase.calc -> 10
+  let l = dispatch(vChild);       // VirtualChild.calc -> 20
+  
+  // Total sum:
+  // a (42) + b (100) + d (10) + e (30) + g (10) + h (50) + i (30) + j (100) + k (10) + l (20) = 402
+  // 402 - 230 = 172
+  return a + b + d + e + g + h + i + j + k + l - 230;
+};
