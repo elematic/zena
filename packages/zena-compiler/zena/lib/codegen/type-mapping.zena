@@ -102,7 +102,13 @@ export let substituteTypeParamsInCodegen = (
       let newRet = substituteTypeParamsInCodegen(params, args, ft.returnType);
       let newFt = new FunctionType(newParams, ft.parameterNames, newRet);
       newFt.typeParameters = ft.typeParameters;
-      newFt.typeArguments = ft.typeArguments;
+      if (ft.typeArguments != null) {
+        let newArgs = new Array<Type>();
+        for (let arg in (ft.typeArguments as Array<Type>)) {
+          newArgs.push(substituteTypeParamsInCodegen(params, args, arg));
+        }
+        newFt.typeArguments = newArgs;
+      }
       newFt.genericSource = ft.genericSource;
       newFt.parameterInitializers = ft.parameterInitializers;
       newFt.parameterSymbols = ft.parameterSymbols;
@@ -475,7 +481,7 @@ export let substituteTypeParamsInClassContext = (classType: ClassType | null, t:
     for (let a in allArgs) {
       argsStr = argsStr + typeToString(a) + ", ";
     }
-    console.log("DEBUG SUB: ct = " + ct.name + " (id=" + i32ToString(ct.id as i32) + ", ext=" + (if (ct.isExtension) "true" else "false") + ", mixins=" + i32ToString(ct.mixins.length as i32) + ") | t = " + tp.name + " | params = [" + paramsStr + "] | args = [" + argsStr + "] | substituted = " + typeToString(substituted));
+    // console.log("DEBUG SUB: ct = " + ct.name + " (id=" + i32ToString(ct.id as i32) + ", ext=" + (if (ct.isExtension) "true" else "false") + ", mixins=" + i32ToString(ct.mixins.length as i32) + ") | t = " + tp.name + " | params = [" + paramsStr + "] | args = [" + argsStr + "] | substituted = " + typeToString(substituted));
   }
   return mapMixinThisInType(ct, substituted);
 };

@@ -2,12 +2,17 @@ import { FunctionContext } from '../function-context.zena';
 import { CallExpression, Expression, Node } from '../../ast.zena';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
-import { Opcode, ValType, ValTypeI32, ValTypeAnyRef, ValTypeRefNull, ValTypeRef, ValTypeVoid, ValTypeEqRef } from '../wasm.zena';
-import { WasmFunction, WasmStruct } from '../wasm-module.zena';
+import { Opcode, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeRefNull, ValTypeRef, ValTypeVoid, ValTypeEqRef } from '../wasm.zena';
+import { WasmFunction, WasmStruct, WasmModule } from '../wasm-module.zena';
 import { typeToValType, getNodeType, getClassMemberSignature } from '../type-mapping.zena';
 import { Type, baseType, isRefType, isFloatType, isBooleanLike, I32Type, BooleanType, F32Type, F64Type, I64Type, U64Type, ClassType, InterfaceType, U32Type, StringLiteralType, MethodInfo, MemberInfo, instantiateClassType } from '../../types.zena';
-import { getClassKey } from '../codegen-utils.zena';
+import { getClassKey, unwrapAliases } from '../codegen-utils.zena';
 import { Array } from 'zena:array';
+
+let isWasmRefType = (wasm: WasmModule, t: Type): boolean => {
+  let v = typeToValType(wasm, t);
+  return !(v is ValTypeI32 || v is ValTypeI64 || v is ValTypeF32 || v is ValTypeF64 || v is ValTypeVoid);
+};
 
 let getArrayTypeWithFallback = (ctx: FunctionContext, node: Node): Type | null => {
   var t = getNodeType(ctx, node);
@@ -231,8 +236,8 @@ export let generateGlobalIntrinsic = (
     if (leftType == null || rightType == null) {
       throw new Error("Missing type info for eq arguments");
     }
-    let leftBase = baseType(leftType as Type);
-    let rightBase = baseType(rightType as Type);
+    let leftBase = unwrapAliases(leftType as Type);
+    let rightBase = unwrapAliases(rightType as Type);
 
     if ((leftBase is I32Type || leftBase is BooleanType || leftBase is U32Type) &&
         (rightBase is I32Type || rightBase is BooleanType || rightBase is U32Type)) {
@@ -427,7 +432,7 @@ export let generateGlobalIntrinsic = (
     if (argType == null) {
       throw new Error("Missing type info for hash argument");
     }
-    let baseT = baseType(argType as Type);
+    let baseT = unwrapAliases(argType as Type);
 
     // Primitives
     if (baseT is I32Type || baseT is BooleanType || baseT is U32Type) {
@@ -588,10 +593,10 @@ export let generateGlobalIntrinsic = (
     if (leftType == null || rightType == null) {
       throw new Error("Missing type info for equals intrinsic operands");
     }
-    let leftBase = baseType(leftType as Type);
-    let rightBase = baseType(rightType as Type);
+    let leftBase = unwrapAliases(leftType as Type);
+    let rightBase = unwrapAliases(rightType as Type);
 
-    let isRefContext = isRefType(leftBase) || isRefType(rightBase);
+    let isRefContext = isWasmRefType(ctx.wasm, leftBase) || isWasmRefType(ctx.wasm, rightBase);
     let isFloatContext = isFloatType(leftBase) || isFloatType(rightBase);
     let isI64Context = leftBase is I64Type || leftBase is U64Type || rightBase is I64Type || rightBase is U64Type;
 
@@ -840,7 +845,7 @@ export let generateGlobalIntrinsic = (
     if (type == null) {
       throw new Error("Missing type info for hash intrinsic operand");
     }
-    let bType = baseType(type as Type);
+    let bType = unwrapAliases(type as Type);
 
     if (bType is I32Type || bType is U32Type || isBooleanLike(bType)) {
       genExpr(args[0], false);

@@ -181,7 +181,7 @@ export class DiscoveryPass {
 
   populateClassStructAndMethods(ct: ClassType, cd: ClassDeclaration | null, sourceModel: SemanticModel): void {
     let cKey = getClassKey(ct);
-    console.log("POPULATING CLASS: name=" + ct.name + " key=" + (cKey as String) + " super=" + (if (ct.superType != null) (ct.superType as ClassType).name else "null"));
+    // console.log("POPULATING CLASS: name=" + ct.name + " key=" + (cKey as String) + " super=" + (if (ct.superType != null) (ct.superType as ClassType).name else "null"));
     let vst = this.wasm.classVTableStructs[cKey];
     let st = this.wasm.classStructs[cKey];
     
@@ -383,7 +383,7 @@ export class DiscoveryPass {
           let unspecIName = getInterfaceKey(resolvedTgt.genericSource ?? resolvedTgt);
           let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
           this.wasm.usedInterfaceAdaptations[unspecKey] = true;
-          console.log("DISCOVER SPEC ADAPT: resolved=" + classInterfaceKeyToString(getClassInterfaceKey(cName, iName)) + " unspec=" + classInterfaceKeyToString(unspecKey));
+          // console.log("DISCOVER SPEC ADAPT: resolved=" + classInterfaceKeyToString(getClassInterfaceKey(cName, iName)) + " unspec=" + classInterfaceKeyToString(unspecKey));
         }
         let ra = sourceModel.getRecordAdaptation(expr);
         if (ra != null) {
@@ -404,7 +404,7 @@ export class DiscoveryPass {
   }
 
   registerSpecializedClass(ct: ClassType, classDecl: ClassDeclaration | null, sourceModel: SemanticModel): void {
-    console.log("REGISTER SPECIALIZED CLASS: ct=" + ct.name + " id=" + i32ToString(ct.id as i32) + " cKey=" + (getClassKey(ct) as String));
+    // console.log("REGISTER SPECIALIZED CLASS: ct=" + ct.name + " id=" + i32ToString(ct.id as i32) + " cKey=" + (getClassKey(ct) as String));
     let cKey = getClassKey(ct);
     if (this.wasm.classStructs.has(cKey)) {
       return;
@@ -865,13 +865,13 @@ export class DiscoveryPass {
         this.discoverType((t as TypeAliasType).target, model);
       } else if (t is FunctionType) {
          let ft = t as FunctionType;
-         console.log("DEBUG DISCOVER: FunctionType uniqueKey=" + typeStr + " isConcrete=" + (if (isConcrete(ft)) "true" else "false"));
+         // console.log("DEBUG DISCOVER: FunctionType uniqueKey=" + typeStr + " isConcrete=" + (if (isConcrete(ft)) "true" else "false"));
          for (let paramType in ft.parameters) {
             this.discoverType(paramType, model);
          }
          this.discoverType(ft.returnType, model);
          if (isConcrete(ft)) {
-            console.log("DEBUG DISCOVER: Calling getClosureStruct for concrete FunctionType: " + typeStr);
+            // console.log("DEBUG DISCOVER: Calling getClosureStruct for concrete FunctionType: " + typeStr);
             getClosureStruct(this.wasm, ft);
          }
       } else if (t is ClassType) {
@@ -886,7 +886,7 @@ export class DiscoveryPass {
          let cKey = getClassKey(ct);
          if (ct.name == "Box") {
              let lookupId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
-             console.log("DISCOVER BOX: id=" + i32ToString(ct.id as i32) + " cKey=" + (cKey as String) + " lookupId=" + i32ToString(lookupId as i32) + " hasDecls=" + (if (this.classDecls.has(lookupId)) "true" else "false") + " isConcrete=" + (if (isConcrete(ct)) "true" else "false"));
+             // console.log("DISCOVER BOX: id=" + i32ToString(ct.id as i32) + " cKey=" + (cKey as String) + " lookupId=" + i32ToString(lookupId as i32) + " hasDecls=" + (if (this.classDecls.has(lookupId)) "true" else "false") + " isConcrete=" + (if (isConcrete(ct)) "true" else "false"));
           }
           let lookupId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
           if (this.wasm.classStructs.has(cKey)) {
@@ -972,7 +972,7 @@ export class DiscoveryPass {
       isSynthesizedSetter: boolean,
       backingFieldName: String | null,
       model: SemanticModel): void {
-    console.log("  REGISTER METHOD: class=" + cType.name + " method=" + methName);
+    // console.log("  REGISTER METHOD: class=" + cType.name + " method=" + methName);
     var realMethName = methName;
     var methodTypeNode: Type | null = null;
     if (cType != null) {
@@ -1263,11 +1263,11 @@ export class DiscoveryPass {
       }
       tArgStr = tArgStr + "]";
     }
-    console.log("COLLECT IFACE: Class=" + ct.name + " typeParams=" + tParamStr + " typeArgs=" + tArgStr);
+    // console.log("COLLECT IFACE: Class=" + ct.name + " typeParams=" + tParamStr + " typeArgs=" + tArgStr);
 
     for (let iface in ct.implementsList) {
       let resolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, iface) as InterfaceType;
-      console.log("  Resolved implements: " + typeToString(iface) + " -> " + typeToString(resolved));
+      // console.log("  Resolved implements: " + typeToString(iface) + " -> " + typeToString(resolved));
       this.#addInterfaceToTransitiveList(resolved, list, seen);
     }
     
@@ -1518,7 +1518,7 @@ export class DiscoveryPass {
           let classType = this.getClassType(classDecl, moduleModel);
           if (classType is ClassType) {
             let cType = classType as ClassType;
-            console.log("PASS 0 REGISTER CLASS DECL: name=" + cType.name + " id=" + i32ToString(cType.id as i32) + " unit=" + unit.ast.path);
+            // console.log("PASS 0 REGISTER CLASS DECL: name=" + cType.name + " id=" + i32ToString(cType.id as i32) + " unit=" + unit.ast.path);
             this.classDecls[cType.id] = classDecl;
             this.classModels[cType.id] = moduleModel;
             if (cType.isExtension) { return; }
@@ -1807,7 +1807,7 @@ export class DiscoveryPass {
         let nodeType = moduleModel.getNodeType(n);
         if (n is VariableDeclaration) {
           let vd = n as VariableDeclaration;
-          console.log("WALK VariableDeclaration: name=" + match (vd.pattern) { case IdentifierPattern {name}: name case _: "other" } + " type=" + (if (nodeType == null) "null" else typeToString(nodeType as Type)));
+          // console.log("WALK VariableDeclaration: name=" + match (vd.pattern) { case IdentifierPattern {name}: name case _: "other" } + " type=" + (if (nodeType == null) "null" else typeToString(nodeType as Type)));
         }
         if (n is IdentifierPattern) {
           let ip = n as IdentifierPattern;
@@ -1818,7 +1818,7 @@ export class DiscoveryPass {
           } else {
             "other"
           };
-          console.log("WALK IdentifierPattern: name=" + ip.name + " type=" + typeStr);
+          // console.log("WALK IdentifierPattern: name=" + ip.name + " type=" + typeStr);
         }
         this.discoverType(nodeType, moduleModel);
         
@@ -1891,7 +1891,7 @@ export class DiscoveryPass {
             let unspecIName = getInterfaceKey(adapt.target.genericSource ?? adapt.target);
             let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
             this.wasm.usedInterfaceAdaptations[unspecKey] = true;
-            console.log("PASS 1 ADAPT: " + classInterfaceKeyToString(getClassInterfaceKey(cName, iName)) + " unspec=" + classInterfaceKeyToString(unspecKey));
+            // console.log("PASS 1 ADAPT: " + classInterfaceKeyToString(getClassInterfaceKey(cName, iName)) + " unspec=" + classInterfaceKeyToString(unspecKey));
           }
 
           let funcAdaptation = moduleModel.getFunctionAdaptation(expr);
@@ -2026,7 +2026,7 @@ export class DiscoveryPass {
                     let ident = varDecl.pattern as IdentifierPattern;
                     let sym = moduleModel.resolveDeclaration(ident);
                     if (sym != null) {
-                      console.log("REGISTER GENERIC FUNCTION: " + ident.name + " symId=" + i32ToString(sym.id as i32));
+                      // console.log("REGISTER GENERIC FUNCTION: " + ident.name + " symId=" + i32ToString(sym.id as i32));
                       this.wasm.genericFunctions[sym.id] = funcExpr;
                       this.wasm.genericFunctionModels[sym.id] = moduleModel;
                     }
@@ -2534,7 +2534,7 @@ export class DiscoveryPass {
                   if (dec.args.length == 1) {
                     let intrinsicName = dec.args[0].value;
                     this.wasm.intrinsics[decl.id] = intrinsicName;
-                    console.log("REGISTER INTRINSIC: name=" + decl.name.name + " id=" + i32ToString(decl.id as i32) + " intrinsic=" + intrinsicName + " unit=" + unit.ast.path);
+                    // console.log("REGISTER INTRINSIC: name=" + decl.name.name + " id=" + i32ToString(decl.id as i32) + " intrinsic=" + intrinsicName + " unit=" + unit.ast.path);
                     if (intrinsicName == "wasi_write_string") {
                       this.registerWasiInfra(moduleModel);
                     } else if (intrinsicName == "hash") {
@@ -2898,7 +2898,7 @@ export class DiscoveryPass {
             let unspecIName = getInterfaceKey(it.genericSource ?? it);
             let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
              if (this.wasm.usedInterfaceAdaptations.has(unspecKey)) {
-               console.log("PASS 2 GENERATE VTABLE FOR: " + classInterfaceKeyToString(getClassInterfaceKey(cName, iName)) + " (unspec=" + classInterfaceKeyToString(unspecKey) + ")");
+               // console.log("PASS 2 GENERATE VTABLE FOR: " + classInterfaceKeyToString(getClassInterfaceKey(cName, iName)) + " (unspec=" + classInterfaceKeyToString(unspecKey) + ")");
                let key = getClassInterfaceKey(cName, iName);
               // Retrieve the interface's vtable structure definition.
               let vst = this.wasm.interfaceVTableStructs[iName];
@@ -2923,7 +2923,7 @@ export class DiscoveryPass {
                      }currClass = (currClass as ClassType).superType;
                 }
                   if (foundFunc != null) {
-                     console.log("VTABLE OK: Class: " + (cName as String) + " Interface: " + (iName as String) + " Method: " + (field.name as String));
+                     // console.log("VTABLE OK: Class: " + (cName as String) + " Interface: " + (iName as String) + " Method: " + (field.name as String));
                      // Generate a trampoline function to adapt the interface-level call signature
                      // to the specific class method signature.
                      let targetFunc = foundFunc as WasmFunction;
@@ -2934,7 +2934,7 @@ export class DiscoveryPass {
                      this.wasm.functions.push(trampFunc);
                      methods.push(trampFunc);
                   } else {
-                     console.log("VTABLE FAIL: Class: " + (cName as String) + " Interface: " + (iName as String) + " Method: " + (field.name as String));
+                     // console.log("VTABLE FAIL: Class: " + (cName as String) + " Interface: " + (iName as String) + " Method: " + (field.name as String));
                      // Fallback to a placeholder function (index 0) if no implementation was found.
                      methods.push(this.wasm.functions[0]);
                   }
@@ -2958,10 +2958,10 @@ export class DiscoveryPass {
      }
 
     // Also walk the initializers of all registered global variables to discover closures.
-    console.log("STARTING GLOBAL VARIABLES INITIALIZER WALK, globals count = " + i32ToString(this.wasm.globals.length));
+    // console.log("STARTING GLOBAL VARIABLES INITIALIZER WALK, globals count = " + i32ToString(this.wasm.globals.length));
     for (let g in this.wasm.globals) {
       if (g.initExpr != null) {
-        console.log("  WALKING GLOBAL INITIALIZER: " + g.name);
+        // console.log("  WALKING GLOBAL INITIALIZER: " + g.name);
         let initExpr = g.initExpr as Expression;
         walk(initExpr as Node, (n: Node) => true, (n: Node) => {
           if (n is FunctionExpression) {
@@ -2973,23 +2973,23 @@ export class DiscoveryPass {
               }
             }
             if (!isRegistered) {
-              console.log("    REGISTERING CLOSURE FROM GLOBAL INITIALIZER: " + i32ToString(funcExpr.id as i32));
+              // console.log("    REGISTERING CLOSURE FROM GLOBAL INITIALIZER: " + i32ToString(funcExpr.id as i32));
               this.registerClosure(funcExpr, g.model, null);
             }
           }
         });
       }
     }
-    console.log("FINISHED GLOBAL VARIABLES INITIALIZER WALK");
+    // console.log("FINISHED GLOBAL VARIABLES INITIALIZER WALK");
 
     // Pass 2: Walk the AST of registered functions (including newly registered closures)
     // to discover and register nested closures.
     var fIdx = 0;
-    console.log("STARTING PASS 2 CLOSURE DISCOVERY, initial functions count = " + i32ToString(this.wasm.functions.length));
+    // console.log("STARTING PASS 2 CLOSURE DISCOVERY, initial functions count = " + i32ToString(this.wasm.functions.length));
     while (fIdx < this.wasm.functions.length) {
       let f = this.wasm.functions[fIdx];
       let fName = if (f.name != null) (f.name as String) else "null";
-      console.log("  PASS 2 PROCESSING FUNCTION [" + i32ToString(fIdx) + "]: name=" + fName);
+      // console.log("  PASS 2 PROCESSING FUNCTION [" + i32ToString(fIdx) + "]: name=" + fName);
 
       if (f.node != null) {
         let funcNode = f.node as Node;
@@ -3030,7 +3030,7 @@ export class DiscoveryPass {
                 }
               }
               if (!isRegistered) {
-                console.log("    REGISTERING NESTED CLOSURE FOR: " + f.name + " ID: " + i32ToString(funcExpr.id as i32));
+                // console.log("    REGISTERING NESTED CLOSURE FOR: " + f.name + " ID: " + i32ToString(funcExpr.id as i32));
                 this.registerClosure(funcExpr, f.model, f);
               }
             } else if (n is Identifier) {
@@ -3046,9 +3046,15 @@ export class DiscoveryPass {
                     targetSymId = resolveImportedSymbolId(this.program, f.model, symVal.declaration as ImportSpecifier);
                   }
                   
-                  let isSpecialized = ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0;
+                  var resolvedArgs = new Array<Type>();
+                  if (ft.typeArguments != null) {
+                    for (let arg in (ft.typeArguments as Array<Type>)) {
+                      resolvedArgs.push(substituteTypeParamsInFunctionContext(f, arg));
+                    }
+                  }
+                  let isSpecialized = resolvedArgs.length > 0;
                   if (isSpecialized && targetSymId != (-1 as SymbolId) && this.wasm.genericFunctions.has(targetSymId)) {
-                    this.instantiateGenericFunction(targetSymId, ft.typeArguments as Array<Type>);
+                    this.instantiateGenericFunction(targetSymId, resolvedArgs);
                   }
                   
                   let parentNode = f.model.getParent(ident);
@@ -3064,7 +3070,7 @@ export class DiscoveryPass {
                     var targetWasmFunc: WasmFunction | null = null;
                     var keyName = "";
                     if (isSpecialized) {
-                      let specName = getSpecializedName(ident.name, ft.typeArguments as Array<Type>);
+                      let specName = getSpecializedName(ident.name, resolvedArgs);
                       keyName = specName;
                       if (this.wasm.specializedFunctions.has(specName)) {
                         targetWasmFunc = this.wasm.specializedFunctions[specName];
@@ -3123,7 +3129,11 @@ export class DiscoveryPass {
                       if (this.wasm.genericMethods.has(key)) {
                         let methodDef = this.wasm.genericMethods[key];
                         let methodModel = this.wasm.genericMethodModels[key];
-                        this.instantiateGenericMethod(ct, methodDef, methodModel, ft.typeArguments as Array<Type>);
+                        var resolvedArgs = new Array<Type>();
+                        for (let arg in (ft.typeArguments as Array<Type>)) {
+                          resolvedArgs.push(substituteTypeParamsInFunctionContext(f, arg));
+                        }
+                        this.instantiateGenericMethod(ct, methodDef, methodModel, resolvedArgs);
                         foundTemplate = true;
                       }
                       currClass = (currClass as ClassType).superType;
@@ -3137,7 +3147,7 @@ export class DiscoveryPass {
       }
       fIdx += 1;
     }
-    console.log("FINISHED PASS 2 CLOSURE DISCOVERY");
+    // console.log("FINISHED PASS 2 CLOSURE DISCOVERY");
 
 
   }
@@ -3271,7 +3281,7 @@ export class DiscoveryPass {
     }
     
     let specName = getSpecializedName(originalName, typeArgs);
-    console.log("INSTANTIATED GENERIC: specName=" + specName);
+    // console.log("INSTANTIATED GENERIC: specName=" + specName);
     if (this.wasm.specializedFunctions.has(specName)) {
       return this.wasm.specializedFunctions[specName];
     }

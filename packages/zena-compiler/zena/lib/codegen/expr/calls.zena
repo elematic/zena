@@ -6,7 +6,7 @@ import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16 } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization } from '../codegen-utils.zena';
-import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType } from '../type-mapping.zena';
+import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
@@ -220,14 +220,20 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
     }
 
     let calleeType = getNonNullableType(getNodeType(ctx, call.callee) as Type);
-    console.log("CALL CALLEE: " + (if (call.callee is Identifier) (call.callee as Identifier).name else "other") + " type=" + typeToString(calleeType));
+    // console.log("CALL CALLEE: " + (if (call.callee is Identifier) (call.callee as Identifier).name else "other") + " type=" + typeToString(calleeType));
     var ft: FunctionType | null = null;
     if (calleeType is FunctionType) {
       ft = calleeType as FunctionType;
     }
 
     var isDirectCall = false;
-    let isSpecialized = ft != null && ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0;
+    var resolvedArgs = new Array<Type>();
+    if (ft != null && ft.typeArguments != null) {
+      for (let arg in (ft.typeArguments as Array<Type>)) {
+        resolvedArgs.push(substituteTypeParamsInFunctionContext(ctx.wasmFunction, arg));
+      }
+    }
+    let isSpecialized = resolvedArgs.length > 0;
     if (isSpecialized) {
       isDirectCall = true;
     } else {
@@ -309,10 +315,16 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
           
           let resolved = symVal.resolveTarget();
-          let isSpecialized = ft != null && ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0;
+          var resolvedArgsCall = new Array<Type>();
+          if (ft != null && ft.typeArguments != null) {
+            for (let arg in (ft.typeArguments as Array<Type>)) {
+              resolvedArgsCall.push(substituteTypeParamsInFunctionContext(ctx.wasmFunction, arg));
+            }
+          }
+          let isSpecialized = resolvedArgsCall.length > 0;
           if (isSpecialized) {
-            let specName = getSpecializedName(resolved.name, (ft as FunctionType).typeArguments as Array<Type>);
-            console.log("CALL SITE LOOKUP: specName=" + specName + " has=" + (if (ctx.wasm.specializedFunctions.has(specName)) "true" else "false"));
+            let specName = getSpecializedName(resolved.name, resolvedArgsCall);
+            // console.log("CALL SITE LOOKUP: specName=" + specName + " has=" + (if (ctx.wasm.specializedFunctions.has(specName)) "true" else "false"));
             if (ctx.wasm.specializedFunctions.has(specName)) {
               let f = ctx.wasm.specializedFunctions[specName];
               generateCallArguments(ctx, call, ft, -1, currentGenExpr);
@@ -349,7 +361,11 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         
         if (objType is ClassType && ft != null && ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0) {
           let ct = objType as ClassType;
-          let specName = getSpecializedName((getClassKey(ct) as String) + "." + targetName, (ft as FunctionType).typeArguments as Array<Type>);
+          var resolvedArgsMember = new Array<Type>();
+          for (let arg in ((ft as FunctionType).typeArguments as Array<Type>)) {
+            resolvedArgsMember.push(substituteTypeParamsInFunctionContext(ctx.wasmFunction, arg));
+          }
+          let specName = getSpecializedName((getClassKey(ct) as String) + "." + targetName, resolvedArgsMember);
           if (ctx.wasm.specializedFunctions.has(specName)) {
             let f = ctx.wasm.specializedFunctions[specName];
             if (!f.isStatic) {

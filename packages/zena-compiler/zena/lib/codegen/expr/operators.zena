@@ -7,50 +7,56 @@ import { Type, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, RecordType,
 } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
-import { ValType, ValTypeI32, ValTypeAnyRef, ValTypeRef, ValTypeRefNull, ValTypeVoid, ValTypeEqRef, ValTypeStructRef, ValTypeFuncRef, ValTypeExternRef, ValTypeOptRef } from '../wasm.zena';
-import { WasmField, WasmFunction } from '../wasm-module.zena';
-import { getClassKey, getSignatureKey } from '../codegen-utils.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeRef, ValTypeRefNull, ValTypeVoid, ValTypeEqRef, ValTypeStructRef, ValTypeFuncRef, ValTypeExternRef, ValTypeOptRef } from '../wasm.zena';
+import { WasmField, WasmFunction, WasmModule } from '../wasm-module.zena';
+import { getClassKey, getSignatureKey, unwrapAliases } from '../codegen-utils.zena';
 import { typeToValType, getClassMemberSignature, getNodeType } from '../type-mapping.zena';
 import { Array } from 'zena:array';
 
-let isPrimitiveType = (t: Type): boolean => {
-  let b = baseType(t);
-  return isNumericType(b) || isBooleanLike(b);
+let isWasmRefType = (wasm: WasmModule, t: Type): boolean => {
+  let v = typeToValType(wasm, t);
+  return !(v is ValTypeI32 || v is ValTypeI64 || v is ValTypeF32 || v is ValTypeF64 || v is ValTypeVoid);
+};
+
+let isPrimitiveType = (ctx: FunctionContext, t: Type): boolean => {
+  let v = typeToValType(ctx.wasm, t);
+  return v is ValTypeI32 || v is ValTypeI64 || v is ValTypeF32 || v is ValTypeF64;
 };
 
 let emitConversion = (ctx: FunctionContext, source: Type, target: Type): void => {
-  let src = baseType(source);
-  let tgt = baseType(target);
-  if (src is I32Type || src is U32Type || isBooleanLike(src)) {
-    if (tgt is I64Type || tgt is U64Type) {
+  let srcVal = typeToValType(ctx.wasm, source);
+  let tgtVal = typeToValType(ctx.wasm, target);
+  
+  if (srcVal is ValTypeI32) {
+    if (tgtVal is ValTypeI64) {
       ctx.emitter.emitI64ExtendI32S();
-    } else if (tgt is F32Type) {
+    } else if (tgtVal is ValTypeF32) {
       ctx.emitter.emitF32ConvertI32S();
-    } else if (tgt is F64Type) {
+    } else if (tgtVal is ValTypeF64) {
       ctx.emitter.emitF64ConvertI32S();
     }
-  } else if (src is I64Type || src is U64Type) {
-    if (tgt is I32Type || tgt is U32Type) {
+  } else if (srcVal is ValTypeI64) {
+    if (tgtVal is ValTypeI32) {
       ctx.emitter.emitI32WrapI64();
-    } else if (tgt is F32Type) {
+    } else if (tgtVal is ValTypeF32) {
       ctx.emitter.emitF32ConvertI64S();
-    } else if (tgt is F64Type) {
+    } else if (tgtVal is ValTypeF64) {
       ctx.emitter.emitF64ConvertI64S();
     }
-  } else if (src is F32Type) {
-    if (tgt is F64Type) {
+  } else if (srcVal is ValTypeF32) {
+    if (tgtVal is ValTypeF64) {
       ctx.emitter.emitF64PromoteF32();
-    } else if (tgt is I32Type || tgt is U32Type) {
+    } else if (tgtVal is ValTypeI32) {
       ctx.emitter.emitI32TruncSatF32S();
-    } else if (tgt is I64Type || tgt is U64Type) {
+    } else if (tgtVal is ValTypeI64) {
       ctx.emitter.emitI64TruncSatF32S();
     }
-  } else if (src is F64Type) {
-    if (tgt is F32Type) {
+  } else if (srcVal is ValTypeF64) {
+    if (tgtVal is ValTypeF32) {
       ctx.emitter.emitF32DemoteF64();
-    } else if (tgt is I32Type || tgt is U32Type) {
+    } else if (tgtVal is ValTypeI32) {
       ctx.emitter.emitI32TruncSatF64S();
-    } else if (tgt is I64Type || tgt is U64Type) {
+    } else if (tgtVal is ValTypeI64) {
       ctx.emitter.emitI64TruncSatF64S();
     }
   }
@@ -60,7 +66,7 @@ export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression,
   if (un.operator == "-") {
     let rawType = getNodeType(ctx, un);
     if (rawType == null) throw new Error("Missing type info");
-    let nodeType = baseType(rawType);
+    let nodeType = unwrapAliases(rawType);
     if (nodeType is F64Type) {
       ctx.emitter.emitF64Const(0.0);
       genExpr(un.argument, false);
@@ -310,19 +316,19 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     throw new Error("Missing type info in semantic model for binary expression operands");
   }
  
-  let leftBase = baseType(leftType);
-  let rightBase = baseType(rightType);
+  let leftBase = unwrapAliases(leftType);
+  let rightBase = unwrapAliases(rightType);
  
-  let isRefContext = isRefType(leftBase) || isRefType(rightBase);
+  let isRefContext = isWasmRefType(ctx.wasm, leftBase) || isWasmRefType(ctx.wasm, rightBase);
   
   // 2. Check for class overloaded operators (if the operator is overridable)
   // Non-overridable operators: ===, !==
   if (bin.operator != "===" && bin.operator != "!==") {
     if (bin.operator == "==" || bin.operator == "!=") {
-      console.log("DEBUG EQ operator: " + bin.operator +
-                  " | leftBase kind = " + typeToString(leftBase) +
-                  " | rightBase kind = " + typeToString(rightBase) +
-                  " | isRefContext = " + (if (isRefContext) "true" else "false"));
+      // console.log("DEBUG EQ operator: " + bin.operator +
+      //             " | leftBase kind = " + typeToString(leftBase) +
+      //             " | rightBase kind = " + typeToString(rightBase) +
+      //             " | isRefContext = " + (if (isRefContext) "true" else "false"));
     }
     if (leftBase is ClassType) {
       let ct = leftBase as ClassType;
@@ -397,25 +403,27 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
   }
 
   // 3. Built-in (non-overloaded) operations
-  if (isPrimitiveType(leftBase) && isPrimitiveType(rightBase)) {
+  if (isPrimitiveType(ctx, leftBase) && isPrimitiveType(ctx, rightBase)) {
     var targetType: Type = new I32Type();
     if (bin.operator == "/") {
       let overallType = getNodeType(ctx, bin);
-      if (overallType != null && baseType(overallType) is F32Type) {
+      if (overallType != null && unwrapAliases(overallType) is F32Type) {
         targetType = new F32Type();
       } else {
         targetType = new F64Type();
       }
     } else {
-      if (leftBase is F64Type || rightBase is F64Type) {
+      let leftWasmType = typeToValType(ctx.wasm, leftBase);
+      let rightWasmType = typeToValType(ctx.wasm, rightBase);
+      if (leftWasmType is ValTypeF64 || rightWasmType is ValTypeF64) {
         targetType = new F64Type();
-      } else if (leftBase is F32Type || rightBase is F32Type) {
-        if (leftBase is I64Type || leftBase is U64Type || rightBase is I64Type || rightBase is U64Type) {
+      } else if (leftWasmType is ValTypeF32 || rightWasmType is ValTypeF32) {
+        if (leftWasmType is ValTypeI64 || rightWasmType is ValTypeI64) {
           targetType = new F64Type();
         } else {
           targetType = new F32Type();
         }
-      } else if (leftBase is I64Type || leftBase is U64Type || rightBase is I64Type || rightBase is U64Type) {
+      } else if (leftWasmType is ValTypeI64 || rightWasmType is ValTypeI64) {
         targetType = new I64Type();
       } else {
         targetType = new I32Type();
