@@ -342,11 +342,23 @@ export let getSpecializedName = (baseName: String, typeArgs: Array<Type>): Strin
 };
 
 export let getClassKey = (ct: ClassType): ClassKey => {
-  return getTypeKeyForSpecialization(ct) as ClassKey;
+  let cached = ct.classKey;
+  if (cached != null) {
+    return cached as ClassKey;
+  }
+  let key = getTypeKeyForSpecialization(ct) as ClassKey;
+  ct.classKey = key as String;
+  return key;
 };
 
 export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
-  return getTypeKeyForSpecialization(it) as InterfaceKey;
+  let cached = it.interfaceKey;
+  if (cached != null) {
+    return cached as InterfaceKey;
+  }
+  let key = getTypeKeyForSpecialization(it) as InterfaceKey;
+  it.interfaceKey = key as String;
+  return key;
 };
 
 export let getMixinKey = (mt: MixinType): MixinKey => {
@@ -647,5 +659,104 @@ export let unwrapAliases = (t: Type): Type => {
     curr = (curr as TypeAliasType).target;
   }
   return baseType(curr);
+};
+
+export let getTypeUniqueKey = (t: Type): String => {
+  match (t) {
+    case ClassType as ct: {
+      let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
+      let base = ct.name + "_" + i32ToString(baseId as i32);
+      if (ct.typeArguments != null) {
+        let args = ct.typeArguments as Array<Type>;
+        var s = base + "<";
+        var i = 0;
+        while (i < args.length) {
+          if (i > 0) { s = s + ", "; }
+          s = s + getTypeUniqueKey(args[i]);
+          i += 1;
+        }
+        s + ">"
+      } else {
+        base
+      }
+    }
+    case InterfaceType as it: {
+      let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
+      let base = it.name + "_" + i32ToString(baseId as i32);
+      if (it.typeArguments != null) {
+        let args = it.typeArguments as Array<Type>;
+        var s = base + "<";
+        var i = 0;
+        while (i < args.length) {
+          if (i > 0) { s = s + ", "; }
+          s = s + getTypeUniqueKey(args[i]);
+          i += 1;
+        }
+        s + ">"
+      } else {
+        base
+      }
+    }
+    case ArrayType {elementType}: "Array<" + getTypeUniqueKey(elementType) + ">"
+    case TupleType {elementTypes}: {
+      var s = "[";
+      var i = 0;
+      while (i < elementTypes.length) {
+        if (i > 0) { s = s + ", "; }
+        s = s + getTypeUniqueKey(elementTypes[i]);
+        i += 1;
+      }
+      s + "]"
+    }
+    case InlineTupleType {elementTypes}: {
+      var s = "(";
+      var i = 0;
+      while (i < elementTypes.length) {
+        if (i > 0) { s = s + ", "; }
+        s = s + getTypeUniqueKey(elementTypes[i]);
+        i += 1;
+      }
+      s + ")"
+    }
+    case UnionType {types}: {
+      var s = "";
+      var i = 0;
+      while (i < types.length) {
+        if (i > 0) { s = s + " | "; }
+        s = s + getTypeUniqueKey(types[i]);
+        i += 1;
+      }
+      s
+    }
+    case RecordType {properties}: {
+      var s = "{ ";
+      let keys = properties.keys();
+      var first = true;
+      while (let (true, key) = keys.next()) {
+        if (!first) { s = s + ", "; }
+        s = s + key + ": " + getTypeUniqueKey(properties[key]);
+        first = false;
+      }
+      s + " }"
+    }
+    case FunctionType as ft: {
+      var s = "(";
+      var i = 0;
+      while (i < ft.parameters.length) {
+        if (i > 0) { s = s + ", "; }
+        if (ft.parameterNames != null) {
+          let names = ft.parameterNames as Array<String>;
+          if (i < names.length) {
+            s = s + names[i] + ": ";
+          }
+        }
+        s = s + getTypeUniqueKey(ft.parameters[i]);
+        i += 1;
+      }
+      s + ") => " + getTypeUniqueKey(ft.returnType)
+    }
+    case TypeAliasType as a: "alias_" + getTypeUniqueKey(a.target)
+    case _: typeToString(t)
+  }
 };
 

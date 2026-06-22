@@ -47,12 +47,11 @@ export let generateGlobalIntrinsic = (
   if (name == 'wasi_write_string') {
     genExpr(args[0], false); // fd
     genExpr(args[1], false); // string
-    var foundFunc: WasmFunction | null = null;
-    for (let f in ctx.wasm.functions) {
-      if (f.name != null && (f.name as String) == "wasi_write_string_helper") {
-        foundFunc = f;
-      }
-    }
+    let foundFunc = if (ctx.wasm.functionByName.has("wasi_write_string_helper")) {
+      ctx.wasm.functionByName["wasi_write_string_helper"]
+    } else {
+      null
+    };
     if (foundFunc == null) {
       throw new Error("wasi_write_string_helper not found in functions!");
     }
@@ -257,10 +256,10 @@ export let generateGlobalIntrinsic = (
     if ((leftBase is StringLiteralType || (leftBase is ClassType && (leftBase as ClassType).name == "String")) &&
         (rightBase is StringLiteralType || (rightBase is ClassType && (rightBase as ClassType).name == "String"))) {
       var foundFunc: WasmFunction | null = null;
-      for (let f in ctx.wasm.functions) {
-        if (f.classType != null && (f.classType as ClassType).name == "String" && f.methodName != null && (f.methodName as String) == "==") {
-          foundFunc = f;
-        }
+      let stringClassKey = getClassKey(ctx.wasm.stringClass as ClassType) as String;
+      let key = stringClassKey + ".==";
+      if (ctx.wasm.classMethodMap.has(key)) {
+        foundFunc = ctx.wasm.classMethodMap[key];
       }
       if (foundFunc == null) {
         throw new Error("String operator== not found!");
@@ -445,10 +444,8 @@ export let generateGlobalIntrinsic = (
       genExpr(arg, false);
       
       var foundFunc: WasmFunction | null = null;
-      for (let f in ctx.wasm.functions) {
-        if (f.name != null && (f.name as String) == "$stringHash") {
-          foundFunc = f;
-        }
+      if (ctx.wasm.functionByName.has("$stringHash")) {
+        foundFunc = ctx.wasm.functionByName["$stringHash"];
       }
       if (foundFunc == null) {
         throw new Error("$stringHash helper function not found!");
@@ -478,10 +475,9 @@ export let generateGlobalIntrinsic = (
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            for (let f in ctx.wasm.functions) {
-              if (f.classType != null && !f.isStatic && (f.classType as ClassType).id == (currClass as ClassType).id && f.methodName != null && (f.methodName as String) == "hashCode") {
-                foundFunc = f;
-              }
+            let key = (getClassKey(currClass as ClassType) as String) + ".hashCode";
+            if (ctx.wasm.classMethodMap.has(key)) {
+              foundFunc = ctx.wasm.classMethodMap[key];
             }
             currClass = (currClass as ClassType).superType;
           }
@@ -557,10 +553,8 @@ export let generateGlobalIntrinsic = (
       ctx.emitter.emitRefCast(stringStructIdx);
       
       var foundHashFunc: WasmFunction | null = null;
-      for (let f in ctx.wasm.functions) {
-        if (f.name != null && (f.name as String) == "$stringHash") {
-          foundHashFunc = f;
-        }
+      if (ctx.wasm.functionByName.has("$stringHash")) {
+        foundHashFunc = ctx.wasm.functionByName["$stringHash"];
       }
       if (foundHashFunc == null) {
         throw new Error("$stringHash helper function not found!");
@@ -610,11 +604,9 @@ export let generateGlobalIntrinsic = (
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
-          for (let f in ctx.wasm.functions) {
-            if (f.classType != null && !f.isStatic && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == lookupName) {
-              foundFunc = f;
-              break;
-            }
+          let key = (getClassKey(currClass as ClassType) as String) + "." + lookupName;
+          if (ctx.wasm.classMethodMap.has(key)) {
+            foundFunc = ctx.wasm.classMethodMap[key];
           }
           currClass = (currClass as ClassType).superType;
         }
@@ -855,10 +847,8 @@ export let generateGlobalIntrinsic = (
     if (bType is ClassType && (bType as ClassType).name == "String") {
       genExpr(args[0], false);
       var foundFunc: WasmFunction | null = null;
-      for (let f in ctx.wasm.functions) {
-        if (f.name != null && (f.name as String) == "string_hash_helper") {
-          foundFunc = f;
-        }
+      if (ctx.wasm.functionByName.has("string_hash_helper")) {
+        foundFunc = ctx.wasm.functionByName["string_hash_helper"];
       }
       if (foundFunc == null) {
         throw new Error("string_hash_helper not found in functions!");
@@ -876,11 +866,9 @@ export let generateGlobalIntrinsic = (
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
-          for (let f in ctx.wasm.functions) {
-            if (f.classType != null && !f.isStatic && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == lookupName) {
-              foundFunc = f;
-              break;
-            }
+          let key = (getClassKey(currClass as ClassType) as String) + "." + lookupName;
+          if (ctx.wasm.classMethodMap.has(key)) {
+            foundFunc = ctx.wasm.classMethodMap[key];
           }
           currClass = (currClass as ClassType).superType;
         }

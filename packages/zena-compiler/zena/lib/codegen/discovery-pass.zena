@@ -40,7 +40,7 @@ import {
   getClassPrivateFieldKey, getClassVTableName, getClassSingletonName,
   getInterfaceTrampolineName, getClassInterfaceVTableName,
   MixinKey, getMixinKey, classInterfaceKeyToString, getMixinKeyFromSymbol,
-  substituteTypeParams
+  substituteTypeParams, getTypeUniqueKey
 } from './codegen-utils.zena';
 import { 
   typeToValType, getClosureStruct, getCellStruct, getInterfaceMemberSignature, 
@@ -51,104 +51,7 @@ import { StringBuilder } from 'zena:string-builder';
 import { dirName, normalizePath } from '../module-resolver.zena';
 import { collectValueExports } from './function-generator.zena';
 
-let getTypeUniqueKey = (t: Type): String => {
-  match (t) {
-    case ClassType as ct: {
-      let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
-      let base = ct.name + "_" + i32ToString(baseId as i32);
-      if (ct.typeArguments != null) {
-        let args = ct.typeArguments as Array<Type>;
-        var s = base + "<";
-        var i = 0;
-        while (i < args.length) {
-          if (i > 0) { s = s + ", "; }
-          s = s + getTypeUniqueKey(args[i]);
-          i += 1;
-        }
-        s + ">"
-      } else {
-        base
-      }
-    }
-    case InterfaceType as it: {
-      let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
-      let base = it.name + "_" + i32ToString(baseId as i32);
-      if (it.typeArguments != null) {
-        let args = it.typeArguments as Array<Type>;
-        var s = base + "<";
-        var i = 0;
-        while (i < args.length) {
-          if (i > 0) { s = s + ", "; }
-          s = s + getTypeUniqueKey(args[i]);
-          i += 1;
-        }
-        s + ">"
-      } else {
-        base
-      }
-    }
-    case ArrayType {elementType}: "Array<" + getTypeUniqueKey(elementType) + ">"
-    case TupleType {elementTypes}: {
-      var s = "[";
-      var i = 0;
-      while (i < elementTypes.length) {
-        if (i > 0) { s = s + ", "; }
-        s = s + getTypeUniqueKey(elementTypes[i]);
-        i += 1;
-      }
-      s + "]"
-    }
-    case InlineTupleType {elementTypes}: {
-      var s = "(";
-      var i = 0;
-      while (i < elementTypes.length) {
-        if (i > 0) { s = s + ", "; }
-        s = s + getTypeUniqueKey(elementTypes[i]);
-        i += 1;
-      }
-      s + ")"
-    }
-    case UnionType {types}: {
-      var s = "";
-      var i = 0;
-      while (i < types.length) {
-        if (i > 0) { s = s + " | "; }
-        s = s + getTypeUniqueKey(types[i]);
-        i += 1;
-      }
-      s
-    }
-    case RecordType {properties}: {
-      var s = "{ ";
-      let keys = properties.keys();
-      var first = true;
-      while (let (true, key) = keys.next()) {
-        if (!first) { s = s + ", "; }
-        s = s + key + ": " + getTypeUniqueKey(properties[key]);
-        first = false;
-      }
-      s + " }"
-    }
-    case FunctionType as ft: {
-      var s = "(";
-      var i = 0;
-      while (i < ft.parameters.length) {
-        if (i > 0) { s = s + ", "; }
-        if (ft.parameterNames != null) {
-          let names = ft.parameterNames as Array<String>;
-          if (i < names.length) {
-            s = s + names[i] + ": ";
-          }
-        }
-        s = s + getTypeUniqueKey(ft.parameters[i]);
-        i += 1;
-      }
-      s + ") => " + getTypeUniqueKey(ft.returnType)
-    }
-    case TypeAliasType as a: "alias_" + getTypeUniqueKey(a.target)
-    case _: typeToString(t)
-  }
-};
+
 
 
 /**
@@ -676,37 +579,19 @@ export class DiscoveryPass {
 
     // Register implicit constructor for specialized case classes if needed
     if (ct.isCaseClass) {
-      var hasCtor = false;
-      for (let f in this.wasm.functions) {
-        if (f.classType != null && getClassKey(f.classType as ClassType) == cKey && f.methodName != null && (f.methodName as String) == "<constructor>") {
-          hasCtor = true;
-          break;
-        }
-      }
+      let hasCtor = this.wasm.classMethodMap.has((cKey as String) + ".<constructor>");
       if (!hasCtor) {
         this.registerClassMethod(ct, classDecl, "<constructor>", null, false, false, null, sourceModel);
       }
 
-      var hasEq = false;
-      for (let f in this.wasm.functions) {
-        if (f.classType != null && getClassKey(f.classType as ClassType) == cKey && f.methodName != null && (f.methodName as String) == "==") {
-          hasEq = true;
-          break;
-        }
-      }
+      let hasEq = this.wasm.classMethodMap.has((cKey as String) + ".==");
       if (!hasEq) {
         this.registerClassMethod(ct, classDecl, "==", null, false, false, null, sourceModel);
         let eqFunc = this.wasm.functions[this.wasm.functions.length - 1];
         eqFunc.isCaseClassEq = true;
       }
 
-      var hasHash = false;
-      for (let f in this.wasm.functions) {
-        if (f.classType != null && getClassKey(f.classType as ClassType) == cKey && f.methodName != null && (f.methodName as String) == "hashCode") {
-          hasHash = true;
-          break;
-        }
-      }
+      let hasHash = this.wasm.classMethodMap.has((cKey as String) + ".hashCode");
       if (!hasHash) {
         this.registerClassMethod(ct, classDecl, "hashCode", null, false, false, null, sourceModel);
         let hashFunc = this.wasm.functions[this.wasm.functions.length - 1];
@@ -730,12 +615,7 @@ export class DiscoveryPass {
             // Get unspecialized interface key
             let unspecIName = getInterfaceKey(it.genericSource ?? it);
             if (this.wasm.usedInterfaceMembers.has(getInterfaceMemberKey(unspecIName, getterName))) {
-              var hasGetter = false;
-              for (let f in this.wasm.functions) {
-                if (f.classType != null && getClassKey(f.classType as ClassType) == cKey && f.methodName != null && (f.methodName as String) == getterName) {
-                  hasGetter = true;
-                }
-              }
+              let hasGetter = this.wasm.classMethodMap.has((cKey as String) + "." + getterName);
               if (!hasGetter) {
                 this.registerClassMethod(ct, classDecl, getterName, null, true, false, key, sourceModel);
               }
@@ -744,12 +624,7 @@ export class DiscoveryPass {
             if (fi.isMutable) {
               let setterName = "set#" + key;
               if (this.wasm.usedInterfaceMembers.has(getInterfaceMemberKey(unspecIName, setterName))) {
-                var hasSetter = false;
-                for (let f in this.wasm.functions) {
-                  if (f.classType != null && getClassKey(f.classType as ClassType) == cKey && f.methodName != null && (f.methodName as String) == setterName) {
-                    hasSetter = true;
-                  }
-                }
+                let hasSetter = this.wasm.classMethodMap.has((cKey as String) + "." + setterName);
                 if (!hasSetter) {
                   this.registerClassMethod(ct, classDecl, setterName, null, false, true, key, sourceModel);
                 }
@@ -1097,7 +972,6 @@ export class DiscoveryPass {
     }
 
     wasmFunc.isStatic = isStatic;
-    this.wasm.addFunction(wasmFunc);
     let cName = getClassKey(cType) as String;
     wasmFunc.name = cName + "." + realMethName;
     wasmFunc.methodName = realMethName;
@@ -1145,13 +1019,13 @@ export class DiscoveryPass {
         wasmFunc.setterFieldIndex = idx;
       }
     }
+
+    this.wasm.addFunction(wasmFunc);
   }
 
   registerStringHashHelper(model: SemanticModel): void {
-    for (let f in this.wasm.functions) {
-      if (f.name != null && (f.name as String) == "string_hash_helper") {
-        return;
-      }
+    if (this.wasm.functionNames.has("string_hash_helper")) {
+      return;
     }
 
     var stringStruct: WasmStruct | null = null;
@@ -1174,7 +1048,7 @@ export class DiscoveryPass {
     
     let helperFunc = new WasmFunction(helperSig, null, model);
     helperFunc.name = "string_hash_helper";
-    this.wasm.functions.push(helperFunc);
+    this.wasm.addFunction(helperFunc);
   }
 
   registerWasiInfra(model: SemanticModel): void {
@@ -1223,7 +1097,7 @@ export class DiscoveryPass {
     // 5. Create WasmFunction for helper (synthetic, node is null)
     let helperFunc = new WasmFunction(helperSig, null, model);
     helperFunc.name = "wasi_write_string_helper";
-    this.wasm.functions.push(helperFunc);
+    this.wasm.addFunction(helperFunc);
     this.wasm.wasiWriteStringIndex = 1; // dummy placeholder
   }
 
@@ -1912,16 +1786,12 @@ export class DiscoveryPass {
             mapReturnTypeToWasmResults(this.wasm, tgt.returnType, rValTypes);
             let wrapperSig = this.wasm.getSignature(pValTypes, rValTypes);
             
-            var existingWrapper: WasmFunction | null = null;
-            for (let w in this.wasm.functions) {
-              if (w.isFunctionAdaptation &&
-                  w.functionAdaptationSource != null && w.functionAdaptationTarget != null &&
-                  getTypeUniqueKey(w.functionAdaptationSource as Type) == getTypeUniqueKey(src) &&
-                  getTypeUniqueKey(w.functionAdaptationTarget as Type) == getTypeUniqueKey(tgt)) {
-                existingWrapper = w;
-                break;
-              }
-            }
+            let adaptKey = getTypeUniqueKey(src) + "->" + getTypeUniqueKey(tgt);
+            let existingWrapper = if (this.wasm.functionAdaptations.has(adaptKey)) {
+              this.wasm.functionAdaptations[adaptKey]
+            } else {
+              null as WasmFunction
+            };
 
             if (existingWrapper != null) {
               this.wasm.functionAdaptationWrappers[expr] = existingWrapper as WasmFunction;
@@ -1941,6 +1811,7 @@ export class DiscoveryPass {
               wrapperFunc.functionAdaptationTarget = tgt;
               
               this.wasm.addFunction(wrapperFunc);
+              this.wasm.functionAdaptations[adaptKey] = wrapperFunc;
               this.wasm.functionAdaptationWrappers[expr] = wrapperFunc;
             }
             
@@ -2308,12 +2179,7 @@ export class DiscoveryPass {
                       let fi = member as FieldInfo;
                       let getterName = "get#" + key;
                       if (this.wasm.usedInterfaceMembers.has(getInterfaceMemberKey(iName, getterName))) {
-                        var hasGetter = false;
-                        for (let f in this.wasm.functions) {
-                          if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(classType) && f.methodName != null && (f.methodName as String) == getterName) {
-                            hasGetter = true;
-                          }
-                        }
+                        let hasGetter = this.wasm.classMethodMap.has((getClassKey(classType) as String) + "." + getterName);
                         if (!hasGetter) {
                           registerClassMethod(classType, classDecl, getterName, null, true, false, key);
                         }
@@ -2322,12 +2188,7 @@ export class DiscoveryPass {
                       if (fi.isMutable) {
                         let setterName = "set#" + key;
                         if (this.wasm.usedInterfaceMembers.has(getInterfaceMemberKey(iName, setterName))) {
-                          var hasSetter = false;
-                          for (let f in this.wasm.functions) {
-                            if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(classType) && f.methodName != null && (f.methodName as String) == setterName) {
-                              hasSetter = true;
-                            }
-                          }
+                          let hasSetter = this.wasm.classMethodMap.has((getClassKey(classType) as String) + "." + setterName);
                           if (!hasSetter) {
                             registerClassMethod(classType, classDecl, setterName, null, false, true, key);
                           }
@@ -2432,25 +2293,13 @@ export class DiscoveryPass {
               let cKey = getClassKey(cType);
               
               // Register implicit constructor
-              var hasCtor = false;
-              for (let f in this.wasm.functions) {
-                if (f.classType != null && getClassKey(f.classType as ClassType) == cKey && f.methodName != null && (f.methodName as String) == "<constructor>") {
-                  hasCtor = true;
-                  break;
-                }
-              }
+              let hasCtor = this.wasm.classMethodMap.has((cKey as String) + ".<constructor>");
               if (!hasCtor) {
                 this.registerClassMethod(cType, classDecl, "<constructor>", null, false, false, null, moduleModel);
               }
 
               // Register implicit ==
-              var hasEq = false;
-              for (let f in this.wasm.functions) {
-                if (f.classType != null && getClassKey(f.classType as ClassType) == cKey && f.methodName != null && (f.methodName as String) == "==") {
-                  hasEq = true;
-                  break;
-                }
-              }
+              let hasEq = this.wasm.classMethodMap.has((cKey as String) + ".==");
               if (!hasEq) {
                 this.registerClassMethod(cType, classDecl, "==", null, false, false, null, moduleModel);
                 let eqFunc = this.wasm.functions[this.wasm.functions.length - 1];
@@ -2458,13 +2307,7 @@ export class DiscoveryPass {
               }
 
               // Register implicit hashCode
-              var hasHash = false;
-              for (let f in this.wasm.functions) {
-                if (f.classType != null && getClassKey(f.classType as ClassType) == cKey && f.methodName != null && (f.methodName as String) == "hashCode") {
-                  hasHash = true;
-                  break;
-                }
-              }
+              let hasHash = this.wasm.classMethodMap.has((cKey as String) + ".hashCode");
               if (!hasHash) {
                 this.registerClassMethod(cType, classDecl, "hashCode", null, false, false, null, moduleModel);
                 let hashFunc = this.wasm.functions[this.wasm.functions.length - 1];
@@ -2482,25 +2325,13 @@ export class DiscoveryPass {
                     let vKey = getClassKey(vType);
                     
                     // Register implicit constructor for variants
-                    var hasCtor = false;
-                    for (let f in this.wasm.functions) {
-                      if (f.classType != null && getClassKey(f.classType as ClassType) == vKey && f.methodName != null && (f.methodName as String) == "<constructor>") {
-                        hasCtor = true;
-                        break;
-                      }
-                    }
+                    let hasCtor = this.wasm.classMethodMap.has((vKey as String) + ".<constructor>");
                     if (!hasCtor) {
                       this.registerClassMethod(vType, null, "<constructor>", null, false, false, null, moduleModel);
                     }
 
                     // Register implicit == for variants
-                    var hasEq = false;
-                    for (let f in this.wasm.functions) {
-                      if (f.classType != null && getClassKey(f.classType as ClassType) == vKey && f.methodName != null && (f.methodName as String) == "==") {
-                        hasEq = true;
-                        break;
-                      }
-                    }
+                    let hasEq = this.wasm.classMethodMap.has((vKey as String) + ".==");
                     if (!hasEq) {
                       this.registerClassMethod(vType, null, "==", null, false, false, null, moduleModel);
                       let eqFunc = this.wasm.functions[this.wasm.functions.length - 1];
@@ -2508,13 +2339,7 @@ export class DiscoveryPass {
                     }
 
                     // Register implicit hashCode for variants
-                    var hasHash = false;
-                    for (let f in this.wasm.functions) {
-                      if (f.classType != null && getClassKey(f.classType as ClassType) == vKey && f.methodName != null && (f.methodName as String) == "hashCode") {
-                        hasHash = true;
-                        break;
-                      }
-                    }
+                    let hasHash = this.wasm.classMethodMap.has((vKey as String) + ".hashCode");
                     if (!hasHash) {
                       this.registerClassMethod(vType, null, "hashCode", null, false, false, null, moduleModel);
                       let hashFunc = this.wasm.functions[this.wasm.functions.length - 1];
@@ -2587,7 +2412,7 @@ export class DiscoveryPass {
                        let wrapperFunc = new WasmFunction(wrapperSig, decl, moduleModel);
                        wrapperFunc.name = decl.name.name;
                        wrapperFunc.importWrapperTarget = importFunc;
-                       this.wasm.functions.push(wrapperFunc);
+                       this.wasm.addFunction(wrapperFunc);
 
                        this.wasm.functionMap[sym.id] = wrapperFunc;
                      } else {
@@ -2666,13 +2491,7 @@ export class DiscoveryPass {
               }
             }
             if (hasPhysical) {
-              var hasGetter = false;
-              for (let f in this.wasm.functions) {
-                if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(cType) && f.methodName != null && (f.methodName as String) == methName) {
-                  hasGetter = true;
-                  break;
-                }
-              }
+              let hasGetter = this.wasm.classMethodMap.has((getClassKey(cType) as String) + "." + methName);
               if (!hasGetter) {
                 this.registerClassMethod(cType, null, methName, null, true, false, backingName, this.program.units[0].model);
               }
@@ -2706,13 +2525,7 @@ export class DiscoveryPass {
               }
             }
             if (hasPhysical) {
-              var hasSetter = false;
-              for (let f in this.wasm.functions) {
-                if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(cType) && f.methodName != null && (f.methodName as String) == methName) {
-                  hasSetter = true;
-                  break;
-                }
-              }
+              let hasSetter = this.wasm.classMethodMap.has((getClassKey(cType) as String) + "." + methName);
               if (!hasSetter) {
                 this.registerClassMethod(cType, null, methName, null, false, true, backingName, this.program.units[0].model);
               }
@@ -2786,11 +2599,10 @@ export class DiscoveryPass {
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = cType;
           while (currClass != null && foundFunc == null) {
-             for (let f in this.wasm.functions) {
-                if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == field.name) {
-                   foundFunc = f;
-                   break;
-                }
+             let key = (getClassKey(currClass as ClassType) as String) + "." + (field.name as String);
+             if (this.wasm.classMethodMap.has(key)) {
+                foundFunc = this.wasm.classMethodMap[key];
+                break;
              }
              currClass = (currClass as ClassType).superType;
           }
@@ -2913,15 +2725,12 @@ export class DiscoveryPass {
                 
                 // Look up the method in the inheritance hierarchy (traversing up through superclasses).
                  while (currClass != null && foundFunc == null) {
-                    for (let f in this.wasm.functions) {
-                        // Match functions where the class and method name match the current slot.
-                        let isMatch = f.methodName != null && field.name != null && 
-                                      (f.methodName as String) == (field.name as String);
-                        if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && isMatch) {
-                           foundFunc = f;
-                           break;
-                        }
-                     }currClass = (currClass as ClassType).superType;
+                     let key = (getClassKey(currClass as ClassType) as String) + "." + (field.name as String);
+                     if (this.wasm.classMethodMap.has(key)) {
+                        foundFunc = this.wasm.classMethodMap[key];
+                        break;
+                     }
+                     currClass = (currClass as ClassType).superType;
                 }
                   if (foundFunc != null) {
                      // console.log("VTABLE OK: Class: " + (cName as String) + " Interface: " + (iName as String) + " Method: " + (field.name as String));
@@ -2932,7 +2741,7 @@ export class DiscoveryPass {
                      let trampFunc = new WasmFunction(trampSig, null, this.program.units[0].model);
                      trampFunc.name = getInterfaceTrampolineName(cName, iName, field.name);
                      trampFunc.interfaceTrampolineTarget = targetFunc;
-                     this.wasm.functions.push(trampFunc);
+                     this.wasm.addFunction(trampFunc);
                      methods.push(trampFunc);
                   } else {
                      // console.log("VTABLE FAIL: Class: " + (cName as String) + " Interface: " + (iName as String) + " Method: " + (field.name as String));
@@ -3021,14 +2830,9 @@ export class DiscoveryPass {
               let targetClassType = f.classType;
               let targetClassKey = if (targetClassType != null) (getClassKey(targetClassType as ClassType) as String) else "";
               
-              for (let otherF in this.wasm.functions) {
-                if (otherF.node != null && otherF.node.id == funcExpr.id) {
-                  let otherClassType = otherF.classType;
-                  let otherClassKey = if (otherClassType != null) (getClassKey(otherClassType as ClassType) as String) else "";
-                  if (otherClassKey == targetClassKey) {
-                    isRegistered = true;
-                  }
-                }
+              let closureKey = i32ToString(funcExpr.id as i32) + "_" + targetClassKey;
+              if (this.wasm.specializedClosures.has(closureKey)) {
+                isRegistered = true;
               }
               if (!isRegistered) {
                 // console.log("    REGISTERING NESTED CLOSURE FOR: " + f.name + " ID: " + i32ToString(funcExpr.id as i32));

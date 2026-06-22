@@ -21,7 +21,7 @@ import { Program } from '../program.zena';
 
 import { 
   compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey, 
-  CellKey, ClosureKey, ExportKey, ExportGlobalKey
+  CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getTypeUniqueKey
 } from './codegen-utils.zena';
 
 export let sortWasmFields = (fields: Array<WasmField>): void => {
@@ -239,6 +239,12 @@ export class WasmModule {
   classInterfaceVTables = new HashMap<ClassInterfaceKey, WasmGlobal>();
   usedInterfaceAdaptations = new HashMap<ClassInterfaceKey, boolean>();
   usedInterfaceMembers = new HashMap<InterfaceMemberKey, boolean>();
+  classMethodMap = new HashMap<String, WasmFunction>();
+  functionNames = new HashSet<String>();
+  functionByName = new HashMap<String, WasmFunction>();
+  functionAdaptations = new HashMap<String, WasmFunction>();
+  var arrayMethods = new Array<WasmFunction>();
+  mutableCapturedSymbols = new HashSet<SymbolId>();
   
   datas = new Array<ByteBuffer>();
   rawDatas = new Array<ByteBuffer>();
@@ -550,6 +556,23 @@ export class WasmModule {
 
   addFunction(func: WasmFunction): void {
     this.functions.push(func);
+    if (func.name != null) {
+      this.functionNames.add(func.name as String);
+      this.functionByName[func.name as String] = func;
+    }
+    if (func.classType != null && func.methodName != null) {
+      let key = (getClassKey(func.classType as ClassType) as String) + "." + (func.methodName as String);
+      this.classMethodMap[key] = func;
+    }
+    if (func.isFunctionAdaptation && func.functionAdaptationSource != null && func.functionAdaptationTarget != null) {
+      let key = getTypeUniqueKey(func.functionAdaptationSource as Type) + "->" + getTypeUniqueKey(func.functionAdaptationTarget as Type);
+      this.functionAdaptations[key] = func;
+    }
+    if (func.isClosure) {
+      for (let symId in func.mutableCaptures) {
+        this.mutableCapturedSymbols.add(symId);
+      }
+    }
   }
 
   getArray(elementType: ValType, isMutable: boolean): WasmArray {
@@ -647,7 +670,7 @@ export class WasmModule {
     let createSig = this.getSignature(createParams, createReturns);
     let createFunc = new WasmFunction(createSig, null, model);
     createFunc.name = "$stringCreate";
-    this.functions.push(createFunc);
+    this.addFunction(createFunc);
     this.stringCreateFunc = createFunc;
   }
 
@@ -661,7 +684,7 @@ export class WasmModule {
     let setByteSig = this.getSignature(setByteParams, setByteReturns);
     let setByteFunc = new WasmFunction(setByteSig, null, model);
     setByteFunc.name = "$stringSetByte";
-    this.functions.push(setByteFunc);
+    this.addFunction(setByteFunc);
     this.stringSetByteFunc = setByteFunc;
   }
 
@@ -675,7 +698,7 @@ export class WasmModule {
     let getByteSig = this.getSignature(getByteParams, getByteReturns);
     let getByteFunc = new WasmFunction(getByteSig, null, model);
     getByteFunc.name = "$stringGetByte";
-    this.functions.push(getByteFunc);
+    this.addFunction(getByteFunc);
     this.stringGetByteFunc = getByteFunc;
   }
 
@@ -688,7 +711,7 @@ export class WasmModule {
     let getLengthSig = this.getSignature(getLengthParams, getLengthReturns);
     let getLengthFunc = new WasmFunction(getLengthSig, null, model);
     getLengthFunc.name = "$stringGetLength";
-    this.functions.push(getLengthFunc);
+    this.addFunction(getLengthFunc);
     this.stringGetLengthFunc = getLengthFunc;
   }
 
@@ -721,7 +744,7 @@ export class WasmModule {
     let sig = this.getSignature(params, returns);
     let hashFunc = new WasmFunction(sig, null, model);
     hashFunc.name = "$stringHash";
-    this.functions.push(hashFunc);
+    this.addFunction(hashFunc);
     this.stringHashFunc = hashFunc;
   }
   
@@ -732,6 +755,31 @@ export class WasmModule {
    */
   layout(): void {
     this.isLayoutLocked = true;
+    
+    this.functionByName.clear();
+    this.classMethodMap.clear();
+    this.functionAdaptations.clear();
+    this.arrayMethods = new Array<WasmFunction>();
+    for (let func in this.functions) {
+      if (func.name != null) {
+        this.functionNames.add(func.name as String);
+        this.functionByName[func.name as String] = func;
+      }
+      if (func.classType != null && func.methodName != null) {
+        let key = (getClassKey(func.classType as ClassType) as String) + "." + (func.methodName as String);
+        this.classMethodMap[key] = func;
+      }
+      if (func.isFunctionAdaptation && func.functionAdaptationSource != null && func.functionAdaptationTarget != null) {
+        let key = getTypeUniqueKey(func.functionAdaptationSource as Type) + "->" + getTypeUniqueKey(func.functionAdaptationTarget as Type);
+        this.functionAdaptations[key] = func;
+      }
+      if (func.classType != null) {
+        let className = (func.classType as ClassType).name;
+        if (className == "FixedArray" || className == "ImmutableArray") {
+          this.arrayMethods.push(func);
+        }
+      }
+    }
     
     let zone1 = new Array<WasmType>();
     let zone2 = new Array<WasmType>();

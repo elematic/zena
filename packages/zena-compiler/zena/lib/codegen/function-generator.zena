@@ -550,13 +550,12 @@ export class FunctionGenerator {
           
           if (cType != null && cType.superType != null) {
             let st = cType.superType as ClassType;
-            var ctorFunc: WasmFunction | null = null;
-            
-            for (let f in this.ctx.wasm.functions) {
-              if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(st) && f.methodName != null && (f.methodName as String) == "<constructor>") {
-                ctorFunc = f;
-              }
-            }
+            let ctorKey = (getClassKey(st) as String) + ".<constructor>";
+            var ctorFunc: WasmFunction | null = if (this.ctx.wasm.classMethodMap.has(ctorKey)) {
+              this.ctx.wasm.classMethodMap[ctorKey]
+            } else {
+              null
+            };
 
             if (ctorFunc != null) {
               this.ctx.emitter.emitLocalGet(0);
@@ -1266,13 +1265,12 @@ export class FunctionGenerator {
 
     if (cType.superType != null) {
       let st = cType.superType as ClassType;
-      var ctorFunc: WasmFunction | null = null;
-      for (let f in this.ctx.wasm.functions) {
-        if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(st) && f.methodName != null && (f.methodName as String) == "<constructor>") {
-          ctorFunc = f;
-          break;
-        }
-      }
+      let ctorKey = (getClassKey(st) as String) + ".<constructor>";
+      var ctorFunc: WasmFunction | null = if (this.ctx.wasm.classMethodMap.has(ctorKey)) {
+        this.ctx.wasm.classMethodMap[ctorKey]
+      } else {
+        null
+      };
       if (ctorFunc != null) {
         this.ctx.emitter.emitLocalGet(0);
         this.ctx.emitter.emitCall(ctorFunc as WasmFunction);

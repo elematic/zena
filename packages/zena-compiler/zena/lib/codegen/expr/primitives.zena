@@ -216,10 +216,9 @@ export let generateTemplateLiteral = (
   let stringWasmType = new ValTypeRefNull(stringStruct);
 
   var fromPartsFunc: WasmFunction | null = null;
-  for (let f in ctx.wasm.functions) {
-    if (f.classType != null && f.classType == ctx.wasm.stringClass && f.isStatic && f.methodName == "fromParts") {
-      fromPartsFunc = f;
-    }
+  let fromPartsKey = (getClassKey(ctx.wasm.stringClass as ClassType) as String) + ".fromParts";
+  if (ctx.wasm.classMethodMap.has(fromPartsKey)) {
+    fromPartsFunc = ctx.wasm.classMethodMap[fromPartsKey];
   }
   if (fromPartsFunc == null) {
     throw new Error("String.fromParts not found in Wasm functions!");
@@ -239,83 +238,24 @@ export let generateTemplateLiteral = (
     let exprType = ctx.wasmFunction.model.getNodeType(subExpr);
     if (exprType != null) {
       let baseT = baseType(exprType as Type);
-      if (baseT is I32Type) {
-        var foundFunc: WasmFunction | null = null;
-        for (let f in ctx.wasm.functions) {
-          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "i32ToString") {
-            foundFunc = f;
+      if (baseT is I32Type || baseT is U32Type || baseT is I64Type || baseT is U64Type || baseT is F32Type || baseT is F64Type || baseT is BooleanType) {
+        let helperName = match (baseT) {
+          case I32Type: "i32ToString"
+          case U32Type: "u32ToString"
+          case I64Type: "i64ToString"
+          case U64Type: "u64ToString"
+          case F32Type: "f32ToString"
+          case F64Type: "f64ToString"
+          case BooleanType: "boolToString"
+          case _: ""
+        };
+        if (helperName != "") {
+          if (ctx.wasm.functionByName.has(helperName)) {
+            ctx.emitter.emitCall(ctx.wasm.functionByName[helperName]);
+          } else {
+            throw new Error(helperName + " helper function not found in Wasm module!");
           }
         }
-        if (foundFunc == null) {
-          throw new Error("i32ToString helper function not found in Wasm module!");
-        }
-        ctx.emitter.emitCall(foundFunc as WasmFunction);
-      } else if (baseT is F64Type) {
-        var foundFunc: WasmFunction | null = null;
-        for (let f in ctx.wasm.functions) {
-          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "f64ToString") {
-            foundFunc = f;
-          }
-        }
-        if (foundFunc == null) {
-          throw new Error("f64ToString helper function not found in Wasm module!");
-        }
-        ctx.emitter.emitCall(foundFunc as WasmFunction);
-      } else if (baseT is F32Type) {
-        var foundFunc: WasmFunction | null = null;
-        for (let f in ctx.wasm.functions) {
-          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "f32ToString") {
-            foundFunc = f;
-          }
-        }
-        if (foundFunc == null) {
-          throw new Error("f32ToString helper function not found in Wasm module!");
-        }
-        ctx.emitter.emitCall(foundFunc as WasmFunction);
-      } else if (baseT is I64Type) {
-        var foundFunc: WasmFunction | null = null;
-        for (let f in ctx.wasm.functions) {
-          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "i64ToString") {
-            foundFunc = f;
-          }
-        }
-        if (foundFunc == null) {
-          throw new Error("i64ToString helper function not found in Wasm module!");
-        }
-        ctx.emitter.emitCall(foundFunc as WasmFunction);
-      } else if (baseT is U64Type) {
-        var foundFunc: WasmFunction | null = null;
-        for (let f in ctx.wasm.functions) {
-          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "u64ToString") {
-            foundFunc = f;
-          }
-        }
-        if (foundFunc == null) {
-          throw new Error("u64ToString helper function not found in Wasm module!");
-        }
-        ctx.emitter.emitCall(foundFunc as WasmFunction);
-      } else if (baseT is U32Type) {
-        var foundFunc: WasmFunction | null = null;
-        for (let f in ctx.wasm.functions) {
-          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "u32ToString") {
-            foundFunc = f;
-          }
-        }
-        if (foundFunc == null) {
-          throw new Error("u32ToString helper function not found in Wasm module!");
-        }
-        ctx.emitter.emitCall(foundFunc as WasmFunction);
-      } else if (baseT is BooleanType) {
-        var foundFunc: WasmFunction | null = null;
-        for (let f in ctx.wasm.functions) {
-          if (f.classType == null && f.methodName == null && f.name != null && (f.name as String) == "boolToString") {
-            foundFunc = f;
-          }
-        }
-        if (foundFunc == null) {
-          throw new Error("boolToString helper function not found in Wasm module!");
-        }
-        ctx.emitter.emitCall(foundFunc as WasmFunction);
       } else if (baseT is ClassType && (baseT as ClassType).name == "String") {
         // Already a string, do nothing
       } else {

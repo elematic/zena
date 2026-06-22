@@ -244,13 +244,16 @@ let generateMatchPatternCheck = (
       ctx.emitter.emitI32Eq();
     }
     case StringLiteral as str: {
-      var foundFunc: WasmFunction | null = null;
-      for (let f in ctx.wasm.functions) {
-        if (f.classType != null && (f.classType as ClassType).name == "String" && f.methodName != null && (f.methodName as String) == "==") {
-          foundFunc = f;
-          break;
-        }
+      let stringClass = ctx.wasm.stringClass;
+      if (stringClass == null) {
+        throw new Error("String class not found during pattern matching!");
       }
+      let key = (getClassKey(stringClass as ClassType) as String) + ".==";
+      var foundFunc: WasmFunction | null = if (ctx.wasm.classMethodMap.has(key)) {
+        ctx.wasm.classMethodMap[key]
+      } else {
+        null
+      };
       if (foundFunc == null) {
         throw new Error("String operator== not found during pattern matching!");
       }

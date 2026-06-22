@@ -125,8 +125,10 @@ export let generateAssignmentExpression = (
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            for (let f in ctx.wasm.functions) {
-              if (f.classType != null && f.isStatic && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == setterName) {
+            let key = (getClassKey(currClass as ClassType) as String) + "." + setterName;
+            if (ctx.wasm.classMethodMap.has(key)) {
+              let f = ctx.wasm.classMethodMap[key];
+              if (f.isStatic) {
                 foundFunc = f;
               }
             }
@@ -184,10 +186,9 @@ export let generateAssignmentExpression = (
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            for (let f in ctx.wasm.functions) {
-               if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == setterName) {
-                foundFunc = f;
-              }
+            let key = (getClassKey(currClass as ClassType) as String) + "." + setterName;
+            if (ctx.wasm.classMethodMap.has(key)) {
+              foundFunc = ctx.wasm.classMethodMap[key];
             }
             currClass = (currClass as ClassType).superType;
           }
@@ -263,10 +264,9 @@ export let generateAssignmentExpression = (
             var superFunc: WasmFunction | null = null;
             var currClass: ClassType | null = ct; // ct is already the superclass (the type of SuperExpression)
             while (currClass != null && superFunc == null) {
-              for (let f in ctx.wasm.functions) {
-                if (f.classType != null && getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && f.methodName != null && (f.methodName as String) == setterName) {
-                  superFunc = f;
-                }
+              let key = (getClassKey(currClass as ClassType) as String) + "." + setterName;
+              if (ctx.wasm.classMethodMap.has(key)) {
+                superFunc = ctx.wasm.classMethodMap[key];
               }
               currClass = (currClass as ClassType).superType;
             }
@@ -462,22 +462,27 @@ export let generateAssignmentExpression = (
 
             var currClass: ClassType | null = ct;
             while (currClass != null && foundFunc == null) {
-              for (let f in ctx.wasm.functions) {
-                if (f.classType != null && 
-                    getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && 
-                    f.methodName != null && ((f.methodName as String) == lookupName || (f.methodName as String) == "[]=")) {
-                  if (f.intrinsic != null) {
-                    foundFunc = f;
-                  }
+              let classKeyStr = getClassKey(currClass as ClassType) as String;
+              let keyWithSig = classKeyStr + "." + lookupName;
+              let keyWithoutSig = classKeyStr + ".[]=";
+              
+              if (ctx.wasm.classMethodMap.has(keyWithSig)) {
+                let f = ctx.wasm.classMethodMap[keyWithSig];
+                if (f.intrinsic != null) {
+                  foundFunc = f;
+                }
+              }
+              if (foundFunc == null && ctx.wasm.classMethodMap.has(keyWithoutSig)) {
+                let f = ctx.wasm.classMethodMap[keyWithoutSig];
+                if (f.intrinsic != null) {
+                  foundFunc = f;
                 }
               }
               if (foundFunc == null) {
-                for (let f in ctx.wasm.functions) {
-                  if (f.classType != null && 
-                      getClassKey(f.classType as ClassType) == getClassKey(currClass as ClassType) && 
-                      f.methodName != null && ((f.methodName as String) == lookupName || (f.methodName as String) == "[]=")) {
-                    foundFunc = f;
-                  }
+                if (ctx.wasm.classMethodMap.has(keyWithSig)) {
+                  foundFunc = ctx.wasm.classMethodMap[keyWithSig];
+                } else if (ctx.wasm.classMethodMap.has(keyWithoutSig)) {
+                  foundFunc = ctx.wasm.classMethodMap[keyWithoutSig];
                 }
               }
               currClass = (currClass as ClassType).superType;
