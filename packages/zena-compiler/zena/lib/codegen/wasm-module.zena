@@ -247,6 +247,10 @@ export class WasmModule {
   var wasiFdWriteIndex: i32 = -1;
   var wasiWriteStringIndex: i32 = -1;
   var stringHashFunc: WasmFunction | null = null;
+  var stringCreateFunc: WasmFunction | null = null;
+  var stringSetByteFunc: WasmFunction | null = null;
+  var stringGetByteFunc: WasmFunction | null = null;
+  var stringGetLengthFunc: WasmFunction | null = null;
   
   recordDispatchInfos = new Array<RecordDispatchInfo>();
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
@@ -630,7 +634,12 @@ export class WasmModule {
     this.globals.push(payloadGlobal);
     this.exceptionPayload = payloadGlobal;
 
-    // Register $stringCreate helper function (i32) -> externref
+    this.ensureStringCreate(model);
+    this.ensureStringSetByte(model);
+  }
+
+  ensureStringCreate(model: SemanticModel): void {
+    if (this.stringCreateFunc != null) return;
     let createParams = new Array<ValType>();
     createParams.push(new ValTypeI32());
     let createReturns = new Array<ValType>();
@@ -639,8 +648,11 @@ export class WasmModule {
     let createFunc = new WasmFunction(createSig, null, model);
     createFunc.name = "$stringCreate";
     this.functions.push(createFunc);
+    this.stringCreateFunc = createFunc;
+  }
 
-    // Register $stringSetByte helper function (externref, i32, i32) -> void
+  ensureStringSetByte(model: SemanticModel): void {
+    if (this.stringSetByteFunc != null) return;
     let setByteParams = new Array<ValType>();
     setByteParams.push(new ValTypeExternRef());
     setByteParams.push(new ValTypeI32());
@@ -650,6 +662,41 @@ export class WasmModule {
     let setByteFunc = new WasmFunction(setByteSig, null, model);
     setByteFunc.name = "$stringSetByte";
     this.functions.push(setByteFunc);
+    this.stringSetByteFunc = setByteFunc;
+  }
+
+  ensureStringGetByte(model: SemanticModel): void {
+    if (this.stringGetByteFunc != null) return;
+    let getByteParams = new Array<ValType>();
+    getByteParams.push(new ValTypeExternRef());
+    getByteParams.push(new ValTypeI32());
+    let getByteReturns = new Array<ValType>();
+    getByteReturns.push(new ValTypeI32());
+    let getByteSig = this.getSignature(getByteParams, getByteReturns);
+    let getByteFunc = new WasmFunction(getByteSig, null, model);
+    getByteFunc.name = "$stringGetByte";
+    this.functions.push(getByteFunc);
+    this.stringGetByteFunc = getByteFunc;
+  }
+
+  ensureStringGetLength(model: SemanticModel): void {
+    if (this.stringGetLengthFunc != null) return;
+    let getLengthParams = new Array<ValType>();
+    getLengthParams.push(new ValTypeExternRef());
+    let getLengthReturns = new Array<ValType>();
+    getLengthReturns.push(new ValTypeI32());
+    let getLengthSig = this.getSignature(getLengthParams, getLengthReturns);
+    let getLengthFunc = new WasmFunction(getLengthSig, null, model);
+    getLengthFunc.name = "$stringGetLength";
+    this.functions.push(getLengthFunc);
+    this.stringGetLengthFunc = getLengthFunc;
+  }
+
+  ensureStringHelpers(model: SemanticModel): void {
+    this.ensureStringCreate(model);
+    this.ensureStringSetByte(model);
+    this.ensureStringGetByte(model);
+    this.ensureStringGetLength(model);
   }
 
   ensureHashInfra(model: SemanticModel): void {

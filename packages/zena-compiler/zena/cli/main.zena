@@ -43,19 +43,24 @@ class WasiHost implements CompilerHost {
 export let main = (): i32 => {
   let args = getArguments();
   if (args.length < 2) {
-    console.error('Usage: zc <filename> [-o <output_path>] [--test]');
+    console.error('Usage: zc <filename> [-o <output_path>] [-t <target>] [--test]');
     exit(1);
   }
 
   var filename = "";
   var outPath = "zc-out.wasm";
+  var target = "zena-cli";
   var testMode = false;
+
   for (var i = 1; i < args.length; i += 1) {
     if (args[i] == "-o" && i + 1 < args.length) {
       outPath = args[i + 1];
       i += 1;
     } else if (args[i] == "--test") {
       testMode = true;
+    } else if ((args[i] == "-t" || args[i] == "--target") && i + 1 < args.length) {
+      target = args[i + 1];
+      i += 1;
     } else {
       filename = args[i];
     }
@@ -66,10 +71,15 @@ export let main = (): i32 => {
     exit(1);
   }
 
+  if (target != "zena-cli" && target != "host") {
+    console.error("Error: invalid target '" + target + "' (expected 'zena-cli' or 'host')");
+    exit(1);
+  }
+
   let host = new WasiHost(testMode, filename);
   let packages = new HashMap<String, PackageConfig>();
   // We'll hardcode stdlib path mapping for now or assume it will be passed 
-  let options = new CompilerOptions("wasi", "/stdlib", packages);
+  let options = new CompilerOptions(target, "/stdlib", packages);
   let compiler = createCompiler(host, options);
 
   console.log("Compiling " + filename + "...");
@@ -110,13 +120,13 @@ export let main = (): i32 => {
     }
     let program = new Program(units, entryUnit);
     
-    let generator = new BinaryGenerator();
+    let generator = new BinaryGenerator(target);
     let wasmBytes = generator.generate(program).toByteArray();
     writeFileBytes(outPath, wasmBytes);
     
-    // let watGenerator = new WatGenerator();
-    // let watString = watGenerator.generate(program);
-    // writeFile(outPath + ".wat", watString);
+    let watGenerator = new WatGenerator(target);
+    let watString = watGenerator.generate(program);
+    writeFile(outPath + ".wat", watString);
     
     console.log("Success: wrote " + outPath);
   } catch (e) {

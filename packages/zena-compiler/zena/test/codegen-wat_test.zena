@@ -11,8 +11,10 @@ import { Array } from 'zena:array';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import { String } from 'zena:string';
-import { makeCompiler, MockHost } from './test-utils.zena';
-import { checkCompilation } from '../lib/compiler.zena';
+import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
+import { checkCompilation, createCompiler, CompilerOptions } from '../lib/compiler.zena';
+import { HashMap } from 'zena:map';
+import { PackageConfig } from '../lib/module-resolver.zena';
 
 let assertSnapshot = (name: String, content: String): void => {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
@@ -310,6 +312,84 @@ export let tests = suite('WatGenerator', (): void => {
     let result = generator.generate(program);
     
     assertSnapshot('inline_tuple_multi_value_return', result);
+  });
+
+  test('compile console with target host generates JS console imports', (ctx: TestContext): void => {
+    let host = new MockHost();
+    host.addFile("zena:string", "export enum Encoding { WTF8, WTF16 } export class String { #data: ByteArray; #start: i32; #end: i32; #encoding: Encoding; }");
+    host.addFile("zena:array", "export class Array {}");
+    host.addFile("zena:console-interface", "export interface Console { log(message: String): void; }");
+    host.addFile("zena:console-host", "import { Console } from 'zena:console-interface'; @external('console', 'log_string') declare function log_string(s: String, len: i32): void; export class HostConsole implements Console { log(message: String): void { log_string(message, 0); } } export let console = new HostConsole();");
+    host.addFile("zena:console-wasi", "import { Console } from 'zena:console-interface'; @intrinsic('wasi_write_string') declare function wasi_write_string(fd: i32, s: String): void; export class WasiConsole implements Console { log(message: String): void { wasi_write_string(1, message); } } export let console = new WasiConsole();");
+    host.addFile("test.zena", "import { console } from 'zena:console'; export let main = (): void => { console.log('hello'); };");
+
+    let packages = new HashMap<String, PackageConfig>();
+    let options = new CompilerOptions("host", "/stdlib", packages);
+    let compiler = createCompiler(host, options);
+
+    let compResult = compiler.compile("test.zena");
+    let checkRes = checkCompilation(compResult, null, false);
+    equal(errorDiagnostics(checkRes.diagnostics).length, 0);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator("host");
+    let result = generator.generate(program);
+    
+    assertSnapshot('console_target_host', result);
+  });
+
+  test('compile console with target zena-cli generates WASI imports', (ctx: TestContext): void => {
+    let host = new MockHost();
+    host.addFile("zena:string", "export enum Encoding { WTF8, WTF16 } export class String { #data: ByteArray; #start: i32; #end: i32; #encoding: Encoding; }");
+    host.addFile("zena:array", "export class Array {}");
+    host.addFile("zena:console-interface", "export interface Console { log(message: String): void; }");
+    host.addFile("zena:console-host", "import { Console } from 'zena:console-interface'; @external('console', 'log_string') declare function log_string(s: String, len: i32): void; export class HostConsole implements Console { log(message: String): void { log_string(message, 0); } } export let console = new HostConsole();");
+    host.addFile("zena:console-wasi", "import { Console } from 'zena:console-interface'; @intrinsic('wasi_write_string') declare function wasi_write_string(fd: i32, s: String): void; export class WasiConsole implements Console { log(message: String): void { wasi_write_string(1, message); } } export let console = new WasiConsole();");
+    host.addFile("test.zena", "import { console } from 'zena:console'; export let main = (): void => { console.log('hello'); };");
+
+    let packages = new HashMap<String, PackageConfig>();
+    let options = new CompilerOptions("zena-cli", "/stdlib", packages);
+    let compiler = createCompiler(host, options);
+
+    let compResult = compiler.compile("test.zena");
+    let checkRes = checkCompilation(compResult, null, false);
+    equal(errorDiagnostics(checkRes.diagnostics).length, 0);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator("zena-cli");
+    let result = generator.generate(program);
+    
+    assertSnapshot('console_target_zena_cli', result);
   });
 });
 

@@ -277,6 +277,10 @@ export class FunctionGenerator {
         this.generateStringCreate();
       } else if (name == "$stringSetByte") {
         this.generateStringSetByte();
+      } else if (name == "$stringGetByte") {
+        this.generateStringGetByte();
+      } else if (name == "$stringGetLength") {
+        this.generateStringGetLength();
       } else if (name == "$stringHash") {
         this.generateStringHash();
       } else {
@@ -1924,6 +1928,117 @@ export class FunctionGenerator {
 
     // return hash
     this.ctx.emitter.emitLocalGet(hashLocal);
+  }
+
+  generateStringGetByte(): void {
+    var stringStruct: WasmStruct | null = null;
+    let stringClass = this.ctx.wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (this.ctx.wasm.classStructs.has(key)) {
+        stringStruct = this.ctx.wasm.classStructs[key];
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("$stringGetByte: String class struct not found!");
+    }
+    let stringStructIndex = (stringStruct as WasmStruct).index;
+    let byteArrayType = this.ctx.wasm.getByteArrayType();
+    let byteArrayTypeIndex = byteArrayType.index;
+
+    var dataFieldIdx = -1;
+    var startFieldIdx = -1;
+    for (var f = 0; f < (stringStruct as WasmStruct).fields.length; f += 1) {
+      let fieldName = (stringStruct as WasmStruct).fields[f].name;
+      if (fieldName != null) {
+        let nameStr = fieldName as String;
+        if (nameStr.endsWith("::#data")) {
+          dataFieldIdx = f;
+        } else if (nameStr.endsWith("::#start")) {
+          startFieldIdx = f;
+        }
+      }
+    }
+
+    if (dataFieldIdx == -1 || startFieldIdx == -1) {
+      throw new Error("$stringGetByte: String layout fields not found in structure!");
+    }
+
+    let locals = new Array<ValType>();
+    locals.push(new ValTypeRefNull(stringStruct as WasmStruct)); // local 2
+    this.ctx.emitter.emitFunctionLocalsStart(locals);
+
+    let strParam = 0;
+    let indexParam = 1;
+    let strLocal = 2;
+
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitAnyConvertExtern();
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitLocalSet(strLocal);
+
+    this.ctx.emitter.emitLocalGet(strLocal);
+    this.ctx.emitter.emitStructGet(stringStructIndex, dataFieldIdx);
+
+    this.ctx.emitter.emitLocalGet(strLocal);
+    this.ctx.emitter.emitStructGet(stringStructIndex, startFieldIdx);
+    this.ctx.emitter.emitLocalGet(indexParam);
+    this.ctx.emitter.emitI32Add();
+
+    this.ctx.emitter.emitArrayGetU(byteArrayTypeIndex);
+  }
+
+  generateStringGetLength(): void {
+    var stringStruct: WasmStruct | null = null;
+    let stringClass = this.ctx.wasm.stringClass;
+    if (stringClass != null) {
+      let key = getClassKey(stringClass as ClassType);
+      if (this.ctx.wasm.classStructs.has(key)) {
+        stringStruct = this.ctx.wasm.classStructs[key];
+      }
+    }
+    if (stringStruct == null) {
+      throw new Error("$stringGetLength: String class struct not found!");
+    }
+    let stringStructIndex = (stringStruct as WasmStruct).index;
+
+    var startFieldIdx = -1;
+    var endFieldIdx = -1;
+    for (var f = 0; f < (stringStruct as WasmStruct).fields.length; f += 1) {
+      let fieldName = (stringStruct as WasmStruct).fields[f].name;
+      if (fieldName != null) {
+        let nameStr = fieldName as String;
+        if (nameStr.endsWith("::#start")) {
+          startFieldIdx = f;
+        } else if (nameStr.endsWith("::#end")) {
+          endFieldIdx = f;
+        }
+      }
+    }
+
+    if (startFieldIdx == -1 || endFieldIdx == -1) {
+      throw new Error("$stringGetLength: String layout fields not found in structure!");
+    }
+
+    let locals = new Array<ValType>();
+    locals.push(new ValTypeRefNull(stringStruct as WasmStruct)); // local 1
+    this.ctx.emitter.emitFunctionLocalsStart(locals);
+
+    let strParam = 0;
+    let strLocal = 1;
+
+    this.ctx.emitter.emitLocalGet(strParam);
+    this.ctx.emitter.emitAnyConvertExtern();
+    this.ctx.emitter.emitRefCast(stringStructIndex);
+    this.ctx.emitter.emitLocalSet(strLocal);
+
+    this.ctx.emitter.emitLocalGet(strLocal);
+    this.ctx.emitter.emitStructGet(stringStructIndex, endFieldIdx);
+
+    this.ctx.emitter.emitLocalGet(strLocal);
+    this.ctx.emitter.emitStructGet(stringStructIndex, startFieldIdx);
+
+    this.ctx.emitter.emitI32Sub();
   }
 }
 

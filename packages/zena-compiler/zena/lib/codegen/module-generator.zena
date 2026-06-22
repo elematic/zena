@@ -20,8 +20,9 @@ import { ProgramInterface } from '../semantic-model.zena';
 export class ModuleGenerator {
   program: Program;
   emitter: WasmEmitter;
+  target: String;
   
-  new(this.program, this.emitter);
+  new(this.program, this.emitter, this.target = "zena-cli");
 
   generateExpression(expr: Expression, funcComp: FunctionGenerator): void {
     funcComp.generateExpression(expr);
@@ -35,7 +36,7 @@ export class ModuleGenerator {
     wasm.program = this.program;
     let usageAnalyzer = new UsageAnalyzer(this.program);
     let usage = usageAnalyzer.analyze();
-    let pass = new DiscoveryPass(this.program, wasm, usage);
+    let pass = new DiscoveryPass(this.program, wasm, usage, this.target);
     pass.run();
     
     var needsStartFunction = false;
@@ -72,6 +73,9 @@ export class ModuleGenerator {
 
     if (found.length > 0) {
       wasm.ensureExceptionInfra(this.program.units[0].model);
+    }
+    if (wasm.stringClass != null) {
+      wasm.ensureStringHelpers(this.program.units[0].model);
     }
     wasm.layout();
 
@@ -288,7 +292,12 @@ export class ModuleGenerator {
     }
 
     for (let f in wasm.functions) {
-      if (f.name != null && ((f.name as String) == "$stringCreate" || (f.name as String) == "$stringSetByte")) {
+      if (f.name != null && (
+        (f.name as String) == "$stringCreate" ||
+        (f.name as String) == "$stringSetByte" ||
+        (f.name as String) == "$stringGetByte" ||
+        (f.name as String) == "$stringGetLength"
+      )) {
         exports.push(new WasmExport(f.name as String, f));
       }
     }
