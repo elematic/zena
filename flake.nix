@@ -78,6 +78,7 @@
             pkgs.wasmtime
             pkgs.wasm-tools
             pkgs.cloc
+            pkgs.hyperfine
             pkgs.cargo
             pkgs.rustc
             pkgs.rustfmt

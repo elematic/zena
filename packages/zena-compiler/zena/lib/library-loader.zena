@@ -18,6 +18,7 @@ import { Module, Statement, ImportDeclaration, ExportAllDeclaration, ExportFromD
 import { parse } from './parser.zena';
 import { ModuleResolver, ResolvedModule } from './module-resolver.zena';
 import { ScopeResult } from './scope/scope-builder.zena';
+import { performance } from './time.zena';
 
 // ============================================================================
 // Compiler Host
@@ -135,6 +136,8 @@ export class LibraryLoader {
   #host: CompilerHost;
   #resolver: ModuleResolver;
   #cache: HashMap<String, SourceFile>;
+  var loadTime: f64 = 0.0;
+  var parseTime: f64 = 0.0;
 
   new(host: CompilerHost, resolver: ModuleResolver)
     : #host = host, #resolver = resolver, #cache = new HashMap<String, SourceFile>();
@@ -163,8 +166,13 @@ export class LibraryLoader {
     let isStdlib = path.startsWith("zena:");
     let packageName = this.#resolver.findPackageForPath(path);
 
+    let tLoad = performance.start("load");
     let source = this.#host.readFile(path);
+    this.loadTime = this.loadTime + performance.end(tLoad);
+
+    let tParse = performance.start("parse");
     let ast = parse(source, path);
+    this.parseTime = this.parseTime + performance.end(tParse);
 
     // Cache the record BEFORE resolving imports to handle circular imports.
     let record = new SourceFile(path, isStdlib, packageName, source, ast, version ?? "");

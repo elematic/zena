@@ -37,6 +37,10 @@ enum Commands {
         /// Print timing results of compiler phases
         #[arg(long)]
         time: bool,
+
+        /// Disable compiler caching and force rebuild
+        #[arg(long = "no-cache")]
+        no_cache: bool,
     },
     /// Run a compiled Zena source file or WASM file
     Run {
@@ -54,6 +58,10 @@ enum Commands {
         /// Print timing results of compiler phases
         #[arg(long)]
         time: bool,
+
+        /// Disable compiler caching and force rebuild
+        #[arg(long = "no-cache")]
+        no_cache: bool,
 
         /// Arguments to pass to the Wasm program
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -78,12 +86,12 @@ struct MyState {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Build { file, output, time } => build_file(&file, &output, cli.verbose, time),
-        Commands::Run { file, invoke, dirs, time, args } => {
+        Commands::Build { file, output, time, no_cache } => build_file(&file, &output, cli.verbose, time, no_cache),
+        Commands::Run { file, invoke, dirs, time, no_cache, args } => {
             if file.ends_with(".wasm") {
                 run_wasm(&file, &invoke, cli.verbose, &dirs, &args)
             } else {
-                compile_and_run(&file, &invoke, cli.verbose, time, &dirs, &args)
+                compile_and_run(&file, &invoke, cli.verbose, time, no_cache, &dirs, &args)
             }
         }
         Commands::Test { paths, filter } => {
@@ -92,14 +100,14 @@ fn main() -> Result<()> {
     }
 }
 
-fn build_file(file: &str, output: &str, verbose: bool, time: bool) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false)?;
+fn build_file(file: &str, output: &str, verbose: bool, time: bool, no_cache: bool) -> Result<()> {
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache)?;
     std::fs::copy(&cached_wasm_path, output)?;
     Ok(())
 }
 
-fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, dirs: &[String], args: &[String]) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false)?;
+fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache: bool, dirs: &[String], args: &[String]) -> Result<()> {
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache)?;
     run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args)
 }
 
@@ -144,7 +152,14 @@ fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) 
 
 /// Compiles a `.zena` source file by invoking the pre-built self-hosted compiler (`cli.wasm`)
 /// inside a Wasmtime sandbox, returning the path to the cached WebAssembly file.
-fn compile_to_cache(file: &str, verbose: bool, time: bool, test_mode: bool, capture_output: bool) -> Result<std::path::PathBuf> {
+fn compile_to_cache(
+    file: &str,
+    verbose: bool,
+    time: bool,
+    test_mode: bool,
+    capture_output: bool,
+    no_cache: bool,
+) -> Result<std::path::PathBuf> {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -182,17 +197,20 @@ fn compile_to_cache(file: &str, verbose: bool, time: bool, test_mode: bool, capt
     let cached_wasm_name = format!("{}_{:x}.wasm", file_name, hash);
     let cached_wasm_path = cache_dir.join(&cached_wasm_name);
 
-    let needs_compile = if cached_wasm_path.exists() {
+    let needs_compile = if no_cache {
+        true
+    } else if cached_wasm_path.exists() {
         let source_mod = std::fs::metadata(&abs_path).and_then(|m| m.modified()).ok();
+        let compiler_mod = std::fs::metadata(&compiler_wasm).and_then(|m| m.modified()).ok();
         let cached_mod = std::fs::metadata(&cached_wasm_path).and_then(|m| m.modified()).ok();
         if verbose {
             println!(
-                "CACHE CHECK [{}]: source={:?}, cached={:?}",
-                file, source_mod, cached_mod
+                "CACHE CHECK [{}]: source={:?}, compiler={:?}, cached={:?}",
+                file, source_mod, compiler_mod, cached_mod
             );
         }
-        match (source_mod, cached_mod) {
-            (Some(s), Some(ch)) => s > ch,
+        match (source_mod, compiler_mod, cached_mod) {
+            (Some(s), Some(c), Some(ch)) => s > ch || c > ch,
             _ => true,
         }
     } else {
@@ -239,26 +257,26 @@ fn compile_to_cache(file: &str, verbose: bool, time: bool, test_mode: bool, capt
         std::fs::remove_file(&cached_wasm_path).ok();
     }
 
-        let (wasi_stdout, wasi_stderr) = if capture_output {
-            (
-                Some(MemoryOutputPipe::new(1024 * 1024)),
-                Some(MemoryOutputPipe::new(1024 * 1024)),
-            )
-        } else {
-            (None, None)
-        };
+    let (wasi_stdout, wasi_stderr) = if capture_output {
+        (
+            Some(MemoryOutputPipe::new(1024 * 1024)),
+            Some(MemoryOutputPipe::new(1024 * 1024)),
+        )
+    } else {
+        (None, None)
+    };
 
-        let mut wasi_builder = WasiCtxBuilder::new();
-        if let Some(ref out) = wasi_stdout {
-            wasi_builder.stdout(out.clone());
-        } else {
-            wasi_builder.inherit_stdout();
-        }
-        if let Some(ref err) = wasi_stderr {
-            wasi_builder.stderr(err.clone());
-        } else {
-            wasi_builder.inherit_stderr();
-        }
+    let mut wasi_builder = WasiCtxBuilder::new();
+    if let Some(ref out) = wasi_stdout {
+        wasi_builder.stdout(out.clone());
+    } else {
+        wasi_builder.inherit_stdout();
+    }
+    if let Some(ref err) = wasi_stderr {
+        wasi_builder.stderr(err.clone());
+    } else {
+        wasi_builder.inherit_stderr();
+    }
 
         let wasi = wasi_builder
             .inherit_env()
@@ -693,7 +711,7 @@ fn run_single_test(
 ) -> Result<(TestStatus, String, String, Option<String>)> {
     let t_start = std::time::Instant::now();
     // Compile to cache (always capture compiler output during tests to prevent log flooding)
-    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true)?;
+    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true, false)?;
     let t_compile = t_start.elapsed();
 
     let t_load_start = std::time::Instant::now();

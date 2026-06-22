@@ -1,0 +1,51 @@
+import { console } from 'zena:console';
+import { HashMap } from 'zena:map';
+import { Array } from 'zena:growable-array';
+
+sealed class Status {
+  case Active
+  case Inactive
+  case Pending
+}
+
+class User {
+  name: String;
+  status: Status;
+  new(this.name, this.status);
+}
+
+export let main = (): i32 => {
+  let names = new Array<String>();
+  names.push("Alice");
+  names.push("Bob");
+  names.push("Charlie");
+  names.push("Delta");
+
+  let map = new HashMap<String, User>();
+
+  // Iteration, string methods, and map mutation
+  for (let name in names) {
+    if (name.length > 3 && name.startsWith("C")) {
+      map[name] = new User(name, new Active());
+    } else {
+      map[name] = new User(name, new Inactive());
+    }
+  }
+
+  // Get and verify mapping
+  var activeCount = 0;
+  for (let name in names) {
+    if (map.has(name)) {
+      let user = map[name];
+      // Pattern matching
+      match (user.status) {
+        case Active: { activeCount += 1; }
+        case Inactive: {}
+        case Pending: {}
+      }
+    }
+  }
+
+  console.log("Active users: " + i32ToString(activeCount));
+  return activeCount;
+};

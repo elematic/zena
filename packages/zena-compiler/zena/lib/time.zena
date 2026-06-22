@@ -1,0 +1,68 @@
+import { Memory, defaultAllocator } from 'zena:memory';
+import { HashMap } from 'zena:map';
+
+@external("wasi_snapshot_preview1", "clock_time_get")
+declare function __wasi_clock_time_get(
+  clockId: i32,
+  precision: i64,
+  timePtr: i32
+): i32;
+
+let getMonotonicTimeMs = (): f64 => {
+  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
+    // Clock ID 1 is CLOCK_MONOTONIC. Precision 1ns.
+    let res = __wasi_clock_time_get(1, 1 as i64, addr);
+    if (res == 0) {
+      let ns = Memory.default.getI64(addr);
+      defaultAllocator.free(addr);
+      return (ns as f64) / 1000000.0;
+    }
+    defaultAllocator.free(addr);
+  }
+  return 0.0;
+};
+
+class Measure {
+  name: String;
+  startTime: f64;
+  new(this.name, this.startTime);
+}
+
+export class Performance {
+  var #nextId: i32 = 0;
+  #active = new HashMap<i32, Measure>();
+  #measures = new HashMap<String, f64>();
+
+  new();
+
+  start(name: String): i32 {
+    let id = this.#nextId;
+    this.#nextId += 1;
+    this.#active[id] = new Measure(name, getMonotonicTimeMs());
+    return id;
+  }
+
+  end(id: i32): f64 {
+    if (this.#active.has(id)) {
+      let measure = this.#active[id];
+      this.#active.delete(id);
+      let duration = getMonotonicTimeMs() - measure.startTime;
+      let name = measure.name;
+      let prev = if (this.#measures.has(name)) { this.#measures[name] } else { 0.0 };
+      this.#measures[name] = prev + duration;
+      return duration;
+    }
+    return 0.0;
+  }
+
+  getDuration(name: String): f64 {
+    return if (this.#measures.has(name)) { this.#measures[name] } else { 0.0 };
+  }
+
+  clear(): void {
+    this.#active.clear();
+    this.#measures.clear();
+  }
+}
+
+export let performance = new Performance();
