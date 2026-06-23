@@ -1,0 +1,197 @@
+import { Memory, defaultAllocator } from 'zena:memory';
+import { console } from 'zena:console';
+import { StringBuilder } from 'zena:string-builder';
+import { HashMap } from 'zena:map';
+import { newByteArray } from 'zena:byte-array';
+import { String, Encoding } from 'zena:string';
+import { getArguments } from 'zena:cli';
+
+@external("wasi_snapshot_preview1", "clock_time_get")
+declare function __wasi_clock_time_get(
+  clockId: i32,
+  precision: i64,
+  timePtr: i32
+): i32;
+
+let getMonotonicTimeMs = (): f64 => {
+  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
+    // Clock ID 1 is CLOCK_MONOTONIC. Precision 1ns.
+    let res = __wasi_clock_time_get(1, 1 as i64, addr);
+    if (res == 0) {
+      let ns = Memory.default.getI64(addr);
+      defaultAllocator.free(addr);
+      return (ns as f64) / 1000000.0;
+    }
+    defaultAllocator.free(addr);
+  }
+  return 0.0;
+};
+
+let formatFloat = (n: f64): String => {
+  let total = n;
+  let integerPart = total as i32;
+  let fractionPart = ((total - (integerPart as f64)) * 100.0) as i32;
+  let fractionPartAbs = if (fractionPart < 0) -fractionPart else fractionPart;
+  let fracStr = if (fractionPartAbs < 10) "0" + i32ToString(fractionPartAbs) else i32ToString(fractionPartAbs);
+  return i32ToString(integerPart) + "." + fracStr;
+};
+
+let runTest = (name: String, testFunc: () => void, filter: String): void => {
+  if (filter.length > 0 && !name.contains(filter)) {
+    return;
+  }
+  let start = getMonotonicTimeMs();
+  testFunc();
+  let end = getMonotonicTimeMs();
+  console.log(name + ": " + formatFloat(end - start) + " ms");
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  var filter = "";
+  if (args.length > 1) {
+    filter = args[1];
+  }
+
+  console.log("==============================================");
+  console.log("Running Zena String Benchmarks (Wasm GC)...");
+  if (filter.length > 0) {
+    console.log("Filter: " + filter);
+  }
+  console.log("==============================================");
+
+  // 1. Concatenation via +
+  runTest("StringConcatPlus (N=10,000)", () => {
+    var s = "";
+    for (var i = 0; i < 10000; i += 1) {
+      s = s + "a";
+    }
+    if (s.length != 10000) {
+      console.log("Error in length!");
+    }
+  }, filter);
+
+  // 2. Concatenation via StringBuilder (N=10,000)
+  runTest("StringConcatBuilder (N=10,000)", () => {
+    let sb = new StringBuilder();
+    for (var i = 0; i < 10000; i += 1) {
+      sb.append("a");
+    }
+    let s = sb.toString();
+    if (s.length != 10000) {
+      console.log("Error in length!");
+    }
+  }, filter);
+
+  // 2b. Concatenation via StringBuilder (N=100,000)
+  runTest("StringConcatBuilder (N=100,000)", () => {
+    let sb = new StringBuilder();
+    for (var i = 0; i < 100000; i += 1) {
+      sb.append("a");
+    }
+    let s = sb.toString();
+    if (s.length != 100000) {
+      console.log("Error in length!");
+    }
+  }, filter);
+
+  // 2c. Concatenation via StringBuilder (appendByte, N=100,000)
+  runTest("StringConcatBuilderByte (N=100,000)", () => {
+    let sb = new StringBuilder();
+    for (var i = 0; i < 100000; i += 1) {
+      sb.appendByte(97); // 'a'
+    }
+    let s = sb.toString();
+    if (s.length != 100000) {
+      console.log("Error in length!");
+    }
+  }, filter);
+
+  // 2d. Direct ByteArray write (N=100,000)
+  runTest("StringDirectByteArray (N=100,000)", () => {
+    let buf = newByteArray(100000);
+    for (var i = 0; i < 100000; i += 1) {
+      buf[i] = 97;
+    }
+    let s = String.fromByteArray(buf, 0, buf.length, Encoding.WTF8);
+    if (s.length != 100000) {
+      console.log("Error in length!");
+    }
+  }, filter);
+
+  // 3. Slicing
+  runTest("StringSlicing (N=100,000)", () => {
+    var base = "";
+    for (var i = 0; i < 100; i += 1) {
+      base = base + "abcdefghij";
+    }
+    
+    var lenSum = 0;
+    for (var j = 0; j < 100000; j += 1) {
+      let offset = (j % 90) * 10;
+      let s = base.sliceBytes(offset, offset + 10);
+      lenSum = lenSum + s.length;
+    }
+    if (lenSum != 1000000) {
+      console.log("Error in lenSum!");
+    }
+  }, filter);
+
+  // 4. Comparison
+  runTest("StringComparison (N=100,000)", () => {
+    let s1 = "abcdefghijklmnopqrstuvwxyz";
+    let s2 = "abcdefghijklmnopqrstuvwxyz";
+    let s3 = "abcdefghijklmnopqrstuvwxyA";
+    let s4 = "Abcdefghijklmnopqrstuvwxyz";
+    
+    for (var j = 0; j < 100000; j += 1) {
+      let refEq = (s1 == s1);
+      let structEq = (s1 == s2);
+      let diffEnd = (s1 == s3);
+      let diffStart = (s1 == s4);
+    }
+  }, filter);
+
+  // 5. Searching
+  runTest("StringSearch (N=10,000)", () => {
+    var base = "";
+    for (var i = 0; i < 1000; i += 1) {
+      base = base + "abcdefghijklmnopqrstuvwxyz";
+    }
+    let needle = "wxyz";
+    
+    for (var j = 0; j < 10000; j += 1) {
+      let hasNeedle = base.contains(needle);
+      let startsWith = base.startsWith("abc");
+      let endsWith = base.endsWith("xyz");
+    }
+  }, filter);
+
+  // 6. HashMap lookups with String keys
+  runTest("StringMapIndexing (N=10,000)", () => {
+    let map = new HashMap<String, i32>();
+    
+    let keys = new Array<String>();
+    for (var i = 0; i < 1000; i += 1) {
+      let key = "key_" + i32ToString(i);
+      keys.push(key);
+      map[key] = i;
+    }
+    
+    var sum = 0;
+    for (var j = 0; j < 10; j += 1) {
+      for (var k = 0; k < 1000; k += 1) {
+        let key = keys[k];
+        if (map.has(key)) {
+          sum = sum + map[key];
+        }
+      }
+    }
+    if (sum != 499500 * 10) {
+      console.log("Error in sum calculation: " + i32ToString(sum));
+    }
+  }, filter);
+
+  console.log("----------------------------------------------");
+  return 0;
+};

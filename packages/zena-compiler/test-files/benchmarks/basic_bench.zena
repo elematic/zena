@@ -1,0 +1,125 @@
+import { Memory, defaultAllocator } from 'zena:memory';
+import { console } from 'zena:console';
+import { String } from 'zena:string';
+import { getArguments } from 'zena:cli';
+
+@external("wasi_snapshot_preview1", "clock_time_get")
+declare function __wasi_clock_time_get(
+  clockId: i32,
+  precision: i64,
+  timePtr: i32
+): i32;
+
+let getMonotonicTimeMs = (): f64 => {
+  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
+    // Clock ID 1 is CLOCK_MONOTONIC. Precision 1ns.
+    let res = __wasi_clock_time_get(1, 1 as i64, addr);
+    if (res == 0) {
+      let ns = Memory.default.getI64(addr);
+      defaultAllocator.free(addr);
+      return (ns as f64) / 1000000.0;
+    }
+    defaultAllocator.free(addr);
+  }
+  return 0.0;
+};
+
+let formatFloat = (n: f64): String => {
+  let total = n;
+  let integerPart = total as i32;
+  let fractionPart = ((total - (integerPart as f64)) * 100.0) as i32;
+  let fractionPartAbs = if (fractionPart < 0) -fractionPart else fractionPart;
+  let fracStr = if (fractionPartAbs < 10) "0" + i32ToString(fractionPartAbs) else i32ToString(fractionPartAbs);
+  return i32ToString(integerPart) + "." + fracStr;
+};
+
+let runTest = (name: String, testFunc: () => void, filter: String): void => {
+  if (filter.length > 0 && !name.contains(filter)) {
+    return;
+  }
+  // Warm up the JIT compiler
+  testFunc();
+
+  let start = getMonotonicTimeMs();
+  testFunc();
+  let end = getMonotonicTimeMs();
+  console.log(name + ": " + formatFloat(end - start) + " ms");
+};
+
+let fibRecursive = (n: i32): i32 => {
+  if (n <= 1) {
+    return n;
+  }
+  return fibRecursive(n - 1) + fibRecursive(n - 2);
+};
+
+let fibIterative = (n: i32): i32 => {
+  var a = 0;
+  var b = 1;
+  for (var i = 0; i < n; i += 1) {
+    let temp = (a + b) % 1000000;
+    a = b;
+    b = temp;
+  }
+  return a;
+};
+
+let add = (a: i32, b: i32): i32 => a + b;
+
+let testSimpleCall = (n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = add(sum, 1);
+  }
+  return sum;
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  var filter = "";
+  if (args.length > 1) {
+    filter = args[1];
+  }
+
+  console.log("==============================================");
+  console.log("Running Zena Basic Benchmarks (Wasm GC)...");
+  if (filter.length > 0) {
+    console.log("Filter: " + filter);
+  }
+  console.log("==============================================");
+
+  // 1. Recursive Fibonacci (N=35)
+  runTest("FibonacciRecursive35", () => {
+    let res = fibRecursive(35);
+    if (res != 9227465) {
+      console.log("Error in fibRecursive(35): " + i32ToString(res));
+    }
+  }, filter);
+
+  // 2. Recursive Fibonacci (N=40)
+  runTest("FibonacciRecursive40", () => {
+    let res = fibRecursive(40);
+    if (res != 102334155) {
+      console.log("Error in fibRecursive(40): " + i32ToString(res));
+    }
+  }, filter);
+
+  // 3. Iterative Fibonacci (N=10,000,000)
+  runTest("FibonacciIterative (N=10,000,000)", () => {
+    let res = fibIterative(10000000);
+    if (res != 820001) {
+      console.log("Error in fibIterative(10,000,000): " + i32ToString(res));
+    }
+  }, filter);
+
+  // 4. Simple Function Calls (N=10,000,000)
+  runTest("FunctionCallSimple (N=10,000,000)", () => {
+    let res = testSimpleCall(10000000);
+    if (res != 10000000) {
+      console.log("Error in FunctionCallSimple(10,000,000): " + i32ToString(res));
+    }
+  }, filter);
+
+  console.log("----------------------------------------------");
+  return 0;
+};
