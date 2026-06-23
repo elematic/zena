@@ -8154,6 +8154,17 @@ let resolveMemberType = (
       );
       return new ErrorType();
     }
+    case ByteArrayType: {
+      if (propName == "length") {
+        return new I32Type();
+      }
+      ctx.error(
+        "Property '" + propName + "' does not exist on type 'ByteArray'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
     case TypeParameterType {name as tname, constraint}: {
       if (constraint != null) {
         return resolveMemberType(ctx, constraint as Type, propName, loc);
@@ -8281,6 +8292,16 @@ let resolveIndexType = (
         );
       }
       return elementType;
+    }
+    case ByteArrayType: {
+      if (!isIntegerType(indexType)) {
+        ctx.error(
+          "ByteArray index must be an integer, got '" + typeToString(indexType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+      return new I32Type();
     }
     case TupleT {elementTypes}: {
       // Tuple indexing — return specific element type for literal index.

@@ -3661,6 +3661,12 @@ function checkMemberExpression(
     }
   }
 
+  if (objectType.kind === TypeKind.ByteArray) {
+    if (expr.property.name === LENGTH_PROPERTY) {
+      return wrapResult(Types.I32);
+    }
+  }
+
   if (objectType.kind === TypeKind.Array) {
     // Check for extension methods
     // TODO: Support multiple extensions or lookup by type, not just name 'Array'
@@ -4449,7 +4455,9 @@ function checkIndexExpression(
     objectType === Types.String ||
     objectType === ctx.getWellKnownType(Types.String.name);
 
-  if (objectType.kind !== TypeKind.Array && !isString) {
+  const isByteArray = objectType.kind === TypeKind.ByteArray;
+
+  if (objectType.kind !== TypeKind.Array && !isByteArray && !isString) {
     ctx.diagnostics.reportError(
       `Index expression only supported on arrays, strings, or types with [] operator, got ${typeToString(objectType)}`,
       DiagnosticCode.NotIndexable,
@@ -4465,6 +4473,10 @@ function checkIndexExpression(
       ctx.getLocation(expr.loc),
     );
     return Types.Error;
+  }
+
+  if (isByteArray) {
+    return wrapResult(Types.I32);
   }
 
   return wrapResult((objectType as ArrayType).elementType);

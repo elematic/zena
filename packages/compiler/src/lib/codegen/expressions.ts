@@ -3138,14 +3138,15 @@ function generateMemberExpression(
   // Handle array/string length
   if (expr.property.name === 'length') {
     const isString = isStringType(ctx, objectType);
+    const heapTypeIndex = getHeapTypeIndex(ctx, objectType);
+    const isByteArray = heapTypeIndex === ctx.byteArrayTypeIndex;
 
-    if (isString) {
+    if (isString || isByteArray) {
       generateExpression(ctx, expr.object, body);
       body.push(0xfb, GcOpcode.array_len);
       return;
     }
 
-    const heapTypeIndex = getHeapTypeIndex(ctx, objectType);
     const isArray = Array.from(ctx.arrayTypes.values()).includes(heapTypeIndex);
 
     if (isArray) {
@@ -4744,7 +4745,9 @@ function generateAssignmentExpressionInner(
     // Use checker type to determine if this is an array assignment
     const objCheckerType = indexExpr.object.inferredType;
     const isCheckerArray =
-      objCheckerType && objCheckerType.kind === TypeKind.Array;
+      objCheckerType &&
+      (objCheckerType.kind === TypeKind.Array ||
+        objCheckerType.kind === TypeKind.ByteArray);
 
     let arrayTypeIndex = -1;
     if (indexExpr.object.type === NodeType.Identifier) {

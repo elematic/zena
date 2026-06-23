@@ -11,6 +11,7 @@ import {readFile} from 'node:fs/promises';
 import {readFileSync} from 'node:fs';
 import {resolve, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {WASI} from 'node:wasi';
 import {
   createStringReader,
   createStringWriter,
@@ -93,8 +94,14 @@ async function loadLsp(): Promise<LspHandle> {
       }
     },
   };
+  const wasi = new WASI({
+    version: 'preview1',
+    args: [],
+    env: process.env,
+  });
 
   const result = await WebAssembly.instantiate(wasmBuffer, {
+    ...wasi.getImportObject(),
     env: {
       getStackTrace: () => null,
       captureStackTrace: () => null,
@@ -106,6 +113,7 @@ async function loadLsp(): Promise<LspHandle> {
 
   const instance =
     (result as unknown as {instance: WebAssembly.Instance}).instance ?? result;
+  wasi.initialize(instance);
   exports = instance.exports as LspExports;
   writeString = createStringWriter(exports);
   readString = createStringReader(exports);

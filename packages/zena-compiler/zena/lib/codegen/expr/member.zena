@@ -2,7 +2,7 @@ import { FunctionContext } from '../function-context.zena';
 import { Node, Expression, MemberExpression, IndexExpression, EnumDeclaration, NumberLiteral, StringLiteral, SuperExpression, Identifier, ClassDeclaration, ImportSpecifier, getMemberPropertyName } from '../../ast.zena';
 import { Symbol } from '../../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { RecordType, TupleType, ClassType, InterfaceType, ArrayType, typeToString, Type, FunctionType, VoidType, FieldInfo, AnyType } from '../../types.zena';
+import { RecordType, TupleType, ClassType, InterfaceType, ArrayType, typeToString, Type, FunctionType, VoidType, FieldInfo, AnyType, ByteArrayType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
 import { WasmField, WasmFunction, WasmArray } from '../wasm-module.zena';
@@ -25,8 +25,9 @@ let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
 let isArrayType = (t: Type): boolean => {
   return match (t) {
     case ArrayType: true
+    case ByteArrayType: true
     case ClassType as ct: {
-      if (ct.name == "array") {
+      if (ct.name == "array" || ct.name == "ByteArray") {
         true
       } else if (ct.isExtension && ct.onType != null) {
         isArrayType(ct.onType as Type)
@@ -316,14 +317,19 @@ export let generateMemberExpression = (
         ctx.emitter.emitCallRef(sig.index);
       }
       case _: {
-         if (nonNullObjType is ArrayType && expr.property.name == "length") {
+         let isByteArrayLength = match (nonNullObjType) {
+           case ByteArrayType: true
+           case ClassType as ct: ct.name == "ByteArray"
+           case _: false
+         };
+         if ((nonNullObjType is ArrayType || isByteArrayLength) && expr.property.name == "length") {
            genObject();
            ctx.emitter.emitArrayLen();
            return;
          }
          // We still need to evaluate the expression object for other types before failing
          genObject();
-         throw new Error("Codegen for MemberExpression on non-record is not yet implemented.");
+         throw new Error("Codegen for MemberExpression on non-record is not yet implemented. Object type: " + typeToString(nonNullObjType));
       }
     }
   };
