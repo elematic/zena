@@ -10,6 +10,7 @@ import { Iterable } from 'zena:iterator';
 export final class StringBuilder {
   var #chunks: Array<ByteArray>;
   var #currentChunk: ByteArray;
+  var #currentChunkLen: i32;
   var #currentPos: i32;
   var #totalLength: i32;
   #encoding: Encoding;
@@ -21,6 +22,7 @@ export final class StringBuilder {
   new(capacity: i32 = 16)
     : #chunks = new Array<ByteArray>(),
       #currentChunk = __byte_array_new(if (capacity <= 0) 16 else capacity),
+      #currentChunkLen = if (capacity <= 0) 16 else capacity,
       #currentPos = 0,
       #totalLength = 0,
       #encoding = Encoding.WTF8;
@@ -45,7 +47,7 @@ export final class StringBuilder {
         cap = cap + __byte_array_length(this.#chunks[i]);
         i += 1;
       }
-      cap = cap + __byte_array_length(this.#currentChunk);
+      cap = cap + this.#currentChunkLen;
       return cap;
     }
   }
@@ -56,7 +58,7 @@ export final class StringBuilder {
    * Returns the number of bytes that can be written to current chunk.
    */
   #prepareWrite(): i32 {
-    let chunkLen = __byte_array_length(this.#currentChunk);
+    let chunkLen = this.#currentChunkLen;
     if (this.#currentPos >= chunkLen) {
       // Current chunk is full, push to list and allocate new one
       this.#chunks.push(this.#currentChunk);
@@ -65,6 +67,7 @@ export final class StringBuilder {
       // Grow strategy: double the size of the previous chunk
       let newCapacity = chunkLen * 2;
       this.#currentChunk = __byte_array_new(newCapacity);
+      this.#currentChunkLen = newCapacity;
       this.#currentPos = 0;
       return newCapacity;
     }
@@ -80,11 +83,15 @@ export final class StringBuilder {
       return this;
     }
 
-    // Fast path: if entire string fits in current chunk, copy directly
-    let available = this.#prepareWrite();
-    if (len <= available) {
-      s.copyBytesTo(this.#currentChunk, this.#currentPos);
-      this.#currentPos = this.#currentPos + len;
+    let pos = this.#currentPos;
+    let chunkLen = this.#currentChunkLen;
+    if (pos + len <= chunkLen) {
+      if (len == 1) {
+        __byte_array_set(this.#currentChunk, pos, s.getByteAt(0));
+      } else {
+        s.copyBytesTo(this.#currentChunk, pos, 0, len);
+      }
+      this.#currentPos = pos + len;
       return this;
     }
 
@@ -111,6 +118,18 @@ export final class StringBuilder {
    * Appends bytes from a ByteArray range.
    */
   #appendBytesFrom(source: ByteArray, start: i32, end: i32): StringBuilder {
+    let len = end - start;
+    if (len <= 0) {
+      return this;
+    }
+    let pos = this.#currentPos;
+    let chunkLen = this.#currentChunkLen;
+    if (pos + len <= chunkLen) {
+      __byte_array_copy(this.#currentChunk, pos, source, start, len);
+      this.#currentPos = pos + len;
+      return this;
+    }
+
     var i = start;
     while (i < end) {
       this.#prepareWrite();
@@ -125,9 +144,17 @@ export final class StringBuilder {
    * Appends a single byte.
    */
   appendByte(b: i32): StringBuilder {
+    let pos = this.#currentPos;
+    let chunkLen = this.#currentChunkLen;
+    if (pos < chunkLen) {
+      __byte_array_set(this.#currentChunk, pos, b);
+      this.#currentPos = pos + 1;
+      return this;
+    }
+
     this.#prepareWrite();
-    __byte_array_set(this.#currentChunk, this.#currentPos, b);
-    this.#currentPos = this.#currentPos + 1;
+    __byte_array_set(this.#currentChunk, 0, b);
+    this.#currentPos = 1;
     return this;
   }
 
