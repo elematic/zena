@@ -34,3 +34,28 @@ npm test -w @zena-lang/zena-compiler
 # Run only the end-to-end execution tests (Wasmtime sandbox)
 npm run test:execution -w @zena-lang/zena-compiler
 ```
+
+## Benchmarking
+
+We have a micro-benchmarking suite to measure execution speed of Zena code (under `wasmtime` and Node.js) against native JS.
+
+To run the full suite:
+
+```bash
+npm run benchmark -w @zena-lang/zena-compiler
+```
+
+### Filtering and Options
+
+You can pass flags to the benchmark script to select specific suites or filter by test name:
+
+- `--compiler`: Run only compiler compilation tests (comparing self-hosted and bootstrap compiler speeds).
+- `--strings`: Run only the string micro-benchmark suite.
+- `--filter <pattern>` (or `-f <pattern>`): Filter benchmarks to those whose names match the pattern.
+- `--runs <N>` (or `-r <N>`): Number of iterations per benchmark target (defaults to 5).
+
+Example to run only the `StringBuilder` benchmarks:
+
+```bash
+npm run benchmark -w @zena-lang/zena-compiler -- --filter StringBuilder
+```

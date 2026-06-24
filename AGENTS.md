@@ -173,6 +173,18 @@ npm run zena -w @zena-lang/zena-cli -- run main.zena
 
 Self-hosted compiler paths are relative to `packages/zena-cli`.
 
+### Running Benchmarks
+
+We have a micro-benchmarking suite that compares Zena's execution speed (under `wasmtime` and Node.js) with native JS.
+
+To run the benchmarks:
+
+```bash
+npm run benchmark -w @zena-lang/zena-compiler
+```
+
+You can filter benchmarks (e.g. `--filter StringBuilder`) or specify iteration runs (`--runs 1`).
+
 ### Debugging WASM Crashes
 
 When a WASM module crashes with `RuntimeError: illegal cast` or similar traps,

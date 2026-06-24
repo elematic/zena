@@ -101,3 +101,23 @@ We need a suite of micro-benchmarks to track performance regressions.
   - This reduces the number of heap allocations and simplifies retrieval (a single `struct.get` offset access on the shared environment, instead of fetching a cell pointer and then dereferencing it).
 - **Complexity**: Moderate. Requires identifying variable sharing sets during capture analysis.
 - **Priority**: Low for Phase 1. Box-per-variable keeps the initial implementation simple, correct, and matching the bootstrap compiler.
+
+---
+
+## Benchmarking Suite
+
+A micro-benchmark suite has been added under `packages/zena-compiler/test-files/benchmarks/` and `packages/zena-compiler/src/scripts/` to measure compiler code output and runtime execution overhead against native JS:
+
+- **`string_bench.zena` / `string-bench-node.js`**: Measures string concatenation (`+` vs `StringBuilder`), slicing, searching, and HashMap lookup with string keys.
+- **`basic_bench.zena` / `basic-bench-node.js`**: Measures recursive function calls (Fibonacci), iterative loops, and basic function call overhead.
+
+### Key Architectural Findings:
+
+1. **The Inlining Gap & Call Overhead**:
+   - In recursive calls (like recursive Fibonacci), Zena running on Wasmtime is **2x-3x faster** than Node.js (V8 JS). Wasm GC's raw function call and recursion handling has significantly less stack frame setup overhead.
+   - However, in tight loops with simple method calls (like `FunctionCallSimple`), Node.js (V8 JS) performs inlining. V8 JS runs the loop in **5.27 ms**, and Zena on Node.js (with V8 JIT warmup) runs in **3.24 ms** (8x faster than its cold Liftoff execution of **25.29 ms**).
+   - Wasmtime executes the same simple call loop at **12.41 ms** with no inlining, highlighting the cost of raw `call` branch instruction sequences. This makes compile-time **devirtualization** and **inlining** (Tier 1 & Tier 2 optimizations) critical for AOT runtimes.
+
+2. **Standard Library Allocation / Copy Overhead**:
+   - Profiling of `StringBuilder` showed that frequent appends incurred significant overhead from repeated calls to the `__byte_array_length()` compiler intrinsic and standard array copy helpers.
+   - Caching the current chunk length in a private field and adding a single-character fast-path using `__byte_array_set` directly yielded a **33% runtime performance improvement** for string building.
