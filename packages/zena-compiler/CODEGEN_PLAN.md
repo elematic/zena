@@ -175,6 +175,21 @@ This plan tracks all features required for the code generation phase to achieve 
   - [ ] **Hybrid Monomorphization:** Share a single specialization for all reference type arguments (e.g., `Box<anyref>`) to reduce binary size.
   - [ ] **Specialization/Function Sharing:** Share functions and specializations that generate identical Wasm bytecode.
 
+### Self-Hosted Compiler Performance Bottlenecks
+
+The self-hosted compiler (`cli.wasm`) currently exhibits severe performance bottlenecks during cold compilation of modules that import standard library components (compiling `assert_test.zena` cold takes ~47s, compared to 0.24s in the TypeScript bootstrap compiler).
+
+The key performance issues identified are:
+
+1. **Monomorphization Code Explosion:** Zena does not perform auto-boxing of primitives. Instead, it fully monomorphizes/specializes every generic class/interface/method for each combination of type arguments (e.g. `Array<i32>`, `Array<String>`, `Array<TestCase>`). Importing `zena:test` transitively pulls in a large portion of the standard library, resulting in **790+ registered Wasm functions** being compiled even for a small test module.
+2. **Quadratic Function Lookups ($O(N^2)$):** The code generator repeatedly loops over all registered functions (`ctx.wasm.functions`) via linear scans to resolve constructors, final methods, property getters, and helper functions (e.g. `$stringHash`, `$stringEquals`). Across 790+ functions, this linear-lookup overhead scale quadratically, resulting in massive JIT/execution slowdowns.
+3. **Wasmtime JIT Compilation Overhead:** Running a non-optimized WASM GC compiler binary on Wasmtime incurs JIT compilation overhead for the compiler itself as well as for JIT-compiling the resulting 790+ function output Wasm module.
+
+**Next Steps / Required Optimizations:**
+
+- Introduce a hashed lookup map or index for Wasm functions in the code generator to eliminate $O(N)$ linear lookups.
+- Share generic method implementations for all reference types (Hybrid Monomorphization) to minimize the number of specialized functions.
+
 ---
 
 ## Ongoing Maintenance

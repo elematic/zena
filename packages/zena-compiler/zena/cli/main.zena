@@ -14,32 +14,48 @@ import { Array } from 'zena:array';
 import { SemanticModel } from '../lib/semantic-model.zena';
 
 class WasiHost implements CompilerHost {
+  testMode: boolean;
+  entryPath: String;
+  new(this.testMode, this.entryPath);
+
   readFile(path: String): String {
     // console.log("WasiHost reading file: " + path);
     var actualPath = path;
     // If it's a zena: package import, map it to the wasi /stdlib dir
     if (path.startsWith("zena:")) {
       let moduleName = path.sliceBytes(5, path.length);
-      actualPath = `packages/stdlib/zena/${moduleName}.zena`;
+      actualPath = `/stdlib/${moduleName}.zena`;
     }
     // console.log("Actual path: " + actualPath);
-    return readFile(actualPath);
+    let content = readFile(actualPath);
+    if (this.testMode && path == this.entryPath) {
+      if (content.contains("let main") || content.contains("main =") || content.contains("main(")) {
+        return content;
+      }
+      return "import {runAndReport} from 'zena:test';\nimport {console} from 'zena:console';\n" + 
+        content + 
+        "\nexport let main = (): i32 => {\n  return runAndReport(tests, (s: String): void => {\n    console.log(s);\n  });\n};\n";
+    }
+    return content;
   }
 }
 
 export let main = (): i32 => {
   let args = getArguments();
   if (args.length < 2) {
-    console.error('Usage: zc <filename> [-o <output_path>]');
+    console.error('Usage: zc <filename> [-o <output_path>] [--test]');
     exit(1);
   }
 
   var filename = "";
   var outPath = "zc-out.wasm";
+  var testMode = false;
   for (var i = 1; i < args.length; i += 1) {
     if (args[i] == "-o" && i + 1 < args.length) {
       outPath = args[i + 1];
       i += 1;
+    } else if (args[i] == "--test") {
+      testMode = true;
     } else {
       filename = args[i];
     }
@@ -50,7 +66,7 @@ export let main = (): i32 => {
     exit(1);
   }
 
-  let host = new WasiHost();
+  let host = new WasiHost(testMode, filename);
   let packages = new HashMap<String, PackageConfig>();
   // We'll hardcode stdlib path mapping for now or assume it will be passed 
   let options = new CompilerOptions("wasi", "/stdlib", packages);
@@ -83,50 +99,12 @@ export let main = (): i32 => {
     let units = new Array<CompilationUnit>();
     var entryUnit: CompilationUnit | null = null;
     for (let file in compResult.files) {
-      let isSupportedStdlib = file.isStdlib && (
-        file.path == "zena:string" ||
-        file.path == "zena:error" ||
-        file.path == "zena:byte-array" ||
-        file.path == "zena:fixed-array" ||
-        file.path == "zena:immutable-array" ||
-        file.path == "zena:template-strings-array" ||
-        file.path == "zena:string-convert" ||
-        file.path == "zena:math" ||
-        file.path == "zena:array" ||
-        file.path == "zena:growable-array" ||
-        file.path == "zena:growable-array-iterator" ||
-        file.path == "zena:array-iterator" ||
-        file.path == "zena:iterable-utils" ||
-        file.path == "zena:iterator" ||
-        file.path == "zena:range" ||
-        file.path == "zena:sequence" ||
-        file.path == "zena:map" ||
-        file.path == "zena:box" ||
-        file.path == "zena:hashable" ||
-        file.path == "zena:option" ||
-        file.path == "zena:console-interface" ||
-        file.path == "zena:console-wasi" ||
-        file.path == "zena:console-host" ||
-        file.path == "zena:map" ||
-        file.path == "zena:box" ||
-        file.path == "zena:option" ||
-        file.path == "zena:set" ||
-        file.path == "zena:hashable" ||
-        file.path == "zena:test" ||
-        file.path == "zena:assert" ||
-        file.path == "zena:json" ||
-        file.path == "zena:ordered-map" ||
-        file.path == "zena:string-builder" ||
-        file.path == "zena:string-reader"
-      );
-      if (!file.isStdlib || isSupportedStdlib) {
-        let res = checkResults.results[file.path];
-        if (res != null) {
-          let unit = {ast: file.ast, model: res.model};
-          units.push(unit);
-          if (file.ast.path == entryAst.path) {
-            entryUnit = unit;
-          }
+      let res = checkResults.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
         }
       }
     }

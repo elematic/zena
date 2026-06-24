@@ -5,7 +5,7 @@ import { parseI32, parseF64, i32ToString, parseI64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { WasmStruct, WasmFunction, WasmGlobal, WasmSignature, WasmArray } from '../wasm-module.zena';
-import { typeToValType, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults, getValTypeKey } from '../type-mapping.zena';
+import { typeToValType, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults, getValTypeKey, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType, ValTypeEqRef, ValTypeStructRef } from '../wasm.zena';
 import { ClassKey, ExportGlobalKey, ExportKey, getClassKey, getSpecializedName, getSignatureKey } from '../codegen-utils.zena';
 import { String } from 'zena:string';
@@ -39,7 +39,10 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
     }
     
     // Check if the identifier is a function referenced as a value
-    let nodeType = ctx.wasmFunction.model.getNodeType(ident);
+    var nodeType = ctx.wasmFunction.model.getNodeType(ident);
+    if (nodeType != null) {
+      nodeType = substituteTypeParamsInClassContext(ctx.wasmFunction.classType, nodeType as Type);
+    }
     if (nodeType != null && nodeType is FunctionType) {
       let ft = nodeType as FunctionType;
       let isSpecialized = ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0;

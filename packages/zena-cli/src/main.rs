@@ -4,6 +4,9 @@ use directories::ProjectDirs;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use walkdir::WalkDir;
+use rayon::prelude::*;
+use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime::*;
 use wasmtime_wasi::WasiCtxBuilder;
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
@@ -56,6 +59,16 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Run test suites in `.zena` files
+    Test {
+        /// The paths or glob patterns to the test files or directories
+        #[arg(required = true)]
+        paths: Vec<String>,
+
+        /// Filter tests matching a pattern
+        #[arg(short, long)]
+        filter: Option<String>,
+    },
 }
 
 struct MyState {
@@ -73,17 +86,20 @@ fn main() -> Result<()> {
                 compile_and_run(&file, &invoke, cli.verbose, time, &dirs, &args)
             }
         }
+        Commands::Test { paths, filter } => {
+            run_all_tests(&paths, filter.as_deref(), cli.verbose)
+        }
     }
 }
 
 fn build_file(file: &str, output: &str, verbose: bool, time: bool) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose, time)?;
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false)?;
     std::fs::copy(&cached_wasm_path, output)?;
     Ok(())
 }
 
 fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, dirs: &[String], args: &[String]) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose, time)?;
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false)?;
     run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args)
 }
 
@@ -128,7 +144,7 @@ fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) 
 
 /// Compiles a `.zena` source file by invoking the pre-built self-hosted compiler (`cli.wasm`)
 /// inside a Wasmtime sandbox, returning the path to the cached WebAssembly file.
-fn compile_to_cache(file: &str, verbose: bool, time: bool) -> Result<std::path::PathBuf> {
+fn compile_to_cache(file: &str, verbose: bool, time: bool, test_mode: bool, capture_output: bool) -> Result<std::path::PathBuf> {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -141,6 +157,53 @@ fn compile_to_cache(file: &str, verbose: bool, time: bool) -> Result<std::path::
             "Compiler WASM not found at {}. Please build it first.",
             compiler_wasm.display()
         );
+    }
+
+    // Compute deterministic cache path based on absolute file source
+    let abs_path = std::fs::canonicalize(file).context("Failed to resolve file path")?;
+    let rel_path = abs_path
+        .strip_prefix(repo_root)
+        .context("File must be inside the Zena repository for now")?;
+
+    // Create an absolute path into the global user cache directory
+    let proj_dirs =
+        ProjectDirs::from("org", "zena-lang", "zena").context("No home directory found")?;
+    let cache_dir = proj_dirs.cache_dir().join("wasm_objects");
+    std::fs::create_dir_all(&cache_dir)?;
+
+    let mut hasher = DefaultHasher::new();
+    abs_path.hash(&mut hasher);
+    test_mode.hash(&mut hasher);
+    if let Ok(compiler_bytes) = std::fs::read(&compiler_wasm) {
+        compiler_bytes.hash(&mut hasher);
+    }
+    let hash = hasher.finish();
+    let file_name = abs_path.file_stem().unwrap_or_default().to_string_lossy();
+    let cached_wasm_name = format!("{}_{:x}.wasm", file_name, hash);
+    let cached_wasm_path = cache_dir.join(&cached_wasm_name);
+
+    let needs_compile = if cached_wasm_path.exists() {
+        let source_mod = std::fs::metadata(&abs_path).and_then(|m| m.modified()).ok();
+        let cached_mod = std::fs::metadata(&cached_wasm_path).and_then(|m| m.modified()).ok();
+        if verbose {
+            println!(
+                "CACHE CHECK [{}]: source={:?}, cached={:?}",
+                file, source_mod, cached_mod
+            );
+        }
+        match (source_mod, cached_mod) {
+            (Some(s), Some(ch)) => s > ch,
+            _ => true,
+        }
+    } else {
+        if verbose {
+            println!("CACHE CHECK [{}]: cached_wasm_path does not exist: {:?}", file, cached_wasm_path);
+        }
+        true
+    };
+
+    if !needs_compile {
+        return Ok(cached_wasm_path);
     }
 
     let mut config = Config::new();
@@ -159,25 +222,6 @@ fn compile_to_cache(file: &str, verbose: bool, time: bool) -> Result<std::path::
 
     let stdlib_dir = repo_root.join("packages/stdlib/zena");
 
-    // Compute deterministic cache path based on absolute file source
-    let abs_path = std::fs::canonicalize(file).context("Failed to resolve file path")?;
-    let rel_path = abs_path
-        .strip_prefix(repo_root)
-        .context("File must be inside the Zena repository for now")?;
-
-    // Create an absolute path into the global user cache directory
-    let proj_dirs =
-        ProjectDirs::from("org", "zena-lang", "zena").context("No home directory found")?;
-    let cache_dir = proj_dirs.cache_dir().join("wasm_objects");
-    std::fs::create_dir_all(&cache_dir)?;
-
-    let mut hasher = DefaultHasher::new();
-    abs_path.hash(&mut hasher);
-    let hash = hasher.finish();
-    let file_name = abs_path.file_stem().unwrap_or_default().to_string_lossy();
-    let cached_wasm_name = format!("{}_{:x}.wasm", file_name, hash);
-    let cached_wasm_path = cache_dir.join(&cached_wasm_name);
-
     let file_arg = rel_path.to_string_lossy().to_string();
 
     // Pass the actual absolute path to the user's cache directory using the `-o` flag
@@ -187,26 +231,36 @@ fn compile_to_cache(file: &str, verbose: bool, time: bool) -> Result<std::path::
     if time {
         compiler_args.push("--time".to_string());
     }
+    if test_mode {
+        compiler_args.push("--test".to_string());
+    }
 
-    let needs_compile = if cached_wasm_path.exists() {
-        let source_mod = std::fs::metadata(&abs_path).and_then(|m| m.modified()).ok();
-        let compiler_mod = std::fs::metadata(&compiler_wasm).and_then(|m| m.modified()).ok();
-        let cached_mod = std::fs::metadata(&cached_wasm_path).and_then(|m| m.modified()).ok();
-        match (source_mod, compiler_mod, cached_mod) {
-            (Some(s), Some(c), Some(ch)) => s > ch || c > ch,
-            _ => true,
+    if cached_wasm_path.exists() {
+        std::fs::remove_file(&cached_wasm_path).ok();
+    }
+
+        let (wasi_stdout, wasi_stderr) = if capture_output {
+            (
+                Some(MemoryOutputPipe::new(1024 * 1024)),
+                Some(MemoryOutputPipe::new(1024 * 1024)),
+            )
+        } else {
+            (None, None)
+        };
+
+        let mut wasi_builder = WasiCtxBuilder::new();
+        if let Some(ref out) = wasi_stdout {
+            wasi_builder.stdout(out.clone());
+        } else {
+            wasi_builder.inherit_stdout();
         }
-    } else {
-        true
-    };
-
-    if needs_compile {
-        if cached_wasm_path.exists() {
-            std::fs::remove_file(&cached_wasm_path).ok();
+        if let Some(ref err) = wasi_stderr {
+            wasi_builder.stderr(err.clone());
+        } else {
+            wasi_builder.inherit_stderr();
         }
 
-        let wasi = WasiCtxBuilder::new()
-            .inherit_stdio()
+        let wasi = wasi_builder
             .inherit_env()
             .args(&compiler_args)
             .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
@@ -229,13 +283,25 @@ fn compile_to_cache(file: &str, verbose: bool, time: bool) -> Result<std::path::
 
         let mut compiler_results = vec![Val::I32(0); compiler_main.ty(&store).results().len()];
 
-        if verbose {
+        if verbose && !test_mode {
             println!("Compiling {}...", file);
         }
-        if let Err(e) = compiler_main.call(&mut store, &[], &mut compiler_results) {
+        let compiler_res = compiler_main.call(&mut store, &[], &mut compiler_results);
+
+        if let Err(e) = compiler_res {
             eprintln!("Compiler failed with error: {:?}", e);
             if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
                 eprintln!("Wasm Backtrace:\n{}", bt);
+            }
+            if let Some(err_pipe) = wasi_stderr {
+                let bytes = err_pipe.contents();
+                let err_str = String::from_utf8_lossy(&bytes);
+                eprintln!("Compiler Stderr:\n{}", err_str);
+            }
+            if let Some(out_pipe) = wasi_stdout {
+                let bytes = out_pipe.contents();
+                let out_str = String::from_utf8_lossy(&bytes);
+                eprintln!("Compiler Stdout:\n{}", out_str);
             }
             anyhow::bail!("Compilation failed");
         }
@@ -246,7 +312,6 @@ fn compile_to_cache(file: &str, verbose: bool, time: bool) -> Result<std::path::
                 cached_wasm_path.display()
             );
         }
-    }
 
     Ok(cached_wasm_path)
 }
@@ -455,6 +520,294 @@ fn add_stack_trace_helpers(
     )?;
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct TestRunResult {
+    path: String,
+    status: TestStatus,
+    elapsed: std::time::Duration,
+    stdout: String,
+    stderr: String,
+    message: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TestStatus {
+    Pass,
+    Fail,
+    Skip(String),
+}
+
+fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool) -> Result<()> {
+    let mut test_files = Vec::new();
+
+    for path_str in paths {
+        if path_str.contains('*') || path_str.contains('?') || path_str.contains('[') {
+            // Treat as glob pattern
+            match glob::glob(path_str) {
+                Ok(entries) => {
+                    for entry in entries {
+                        if let Ok(p) = entry {
+                            if p.is_file() && p.extension().map_or(false, |ext| ext == "zena") {
+                                test_files.push(p);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    anyhow::bail!("Invalid glob pattern '{}': {}", path_str, e);
+                }
+            }
+        } else {
+            let target_path = Path::new(path_str);
+            if target_path.is_file() {
+                if target_path.extension().map_or(false, |ext| ext == "zena") {
+                    test_files.push(target_path.to_path_buf());
+                }
+            } else if target_path.is_dir() {
+                for entry in WalkDir::new(target_path) {
+                    let entry = entry?;
+                    let p = entry.path();
+                    if p.is_file() {
+                        let filename = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
+                        if filename.ends_with("_test.zena") {
+                            test_files.push(p.to_path_buf());
+                        }
+                    }
+                }
+            } else {
+                anyhow::bail!("Path not found: {}", path_str);
+            }
+        }
+    }
+
+    if let Some(f) = filter {
+        test_files.retain(|p| p.to_string_lossy().contains(f));
+    }
+
+    test_files.sort();
+
+    if test_files.is_empty() {
+        anyhow::bail!("No tests found matching the path/filter.");
+    }
+
+    println!("Running {} tests...", test_files.len());
+
+    let mut config = Config::new();
+    config.wasm_gc(true);
+    config.wasm_function_references(true);
+    config.wasm_exceptions(true);
+    config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+    let engine = Engine::new(&config)?;
+
+    // Sequential warm-up of compiler cwasm to avoid parallel write collisions
+    {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let compiler_wasm = repo_root.join("packages/zena-compiler/zena/out/cli.wasm");
+        if compiler_wasm.exists() {
+            let cwasm_path = compiler_wasm.with_extension("cwasm");
+            let _ = load_or_compile_module(&engine, &compiler_wasm, &cwasm_path)?;
+        }
+    }
+
+    let results: Vec<TestRunResult> = test_files
+        .par_iter()
+        .map(|test_file| {
+            let start = std::time::Instant::now();
+            let res = run_single_test(&engine, test_file, verbose);
+            let elapsed = start.elapsed();
+            match res {
+                Ok((status, stdout, stderr, msg)) => TestRunResult {
+                    path: test_file.to_string_lossy().into_owned(),
+                    status,
+                    elapsed,
+                    stdout,
+                    stderr,
+                    message: msg,
+                },
+                Err(e) => TestRunResult {
+                    path: test_file.to_string_lossy().into_owned(),
+                    status: TestStatus::Fail,
+                    elapsed,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    message: Some(format!("Error: {:?}", e)),
+                },
+            }
+        })
+        .collect();
+
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut skipped = 0;
+
+    for r in &results {
+        match &r.status {
+            TestStatus::Pass => {
+                passed += 1;
+                println!("{}PASS{}  {} ({:?})", "\x1b[32m", "\x1b[0m", r.path, r.elapsed);
+            }
+            TestStatus::Skip(reason) => {
+                skipped += 1;
+                println!("{}SKIP{}  {} ({})", "\x1b[33m", "\x1b[0m", r.path, reason);
+            }
+            TestStatus::Fail => {
+                failed += 1;
+                println!("{}FAIL{}  {} ({:?})", "\x1b[31m", "\x1b[0m", r.path, r.elapsed);
+                if let Some(msg) = &r.message {
+                    println!("      {}", msg);
+                }
+                if !r.stdout.is_empty() {
+                    println!("      --- Stdout ---");
+                    for line in r.stdout.lines() {
+                        println!("      {}", line);
+                    }
+                }
+                if !r.stderr.is_empty() {
+                    println!("      --- Stderr ---");
+                    for line in r.stderr.lines() {
+                        println!("      {}", line);
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\nTest Summary: {} passed, {} failed, {} skipped", passed, failed, skipped);
+    if failed > 0 {
+        anyhow::bail!("Some tests failed");
+    }
+
+    Ok(())
+}
+
+fn run_single_test(
+    engine: &Engine,
+    test_file: &Path,
+    verbose: bool,
+) -> Result<(TestStatus, String, String, Option<String>)> {
+    let t_start = std::time::Instant::now();
+    // Compile to cache (always capture compiler output during tests to prevent log flooding)
+    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true)?;
+    let t_compile = t_start.elapsed();
+
+    let t_load_start = std::time::Instant::now();
+    // Run using wasmtime
+    let wasm_path = Path::new(&cached_wasm_path);
+    let cwasm_path = wasm_path.with_extension("cwasm");
+    let module = load_or_compile_module(engine, wasm_path, &cwasm_path)?;
+    let t_load = t_load_start.elapsed();
+
+    let t_inst_start = std::time::Instant::now();
+    let mut linker: Linker<MyState> = Linker::new(engine);
+    p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
+    add_stack_trace_helpers(&mut linker, engine, &module)?;
+
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let stdlib_dir = repo_root.join("packages/stdlib/zena");
+
+    // Setup in-memory stdout and stderr capture
+    let stdout_pipe = MemoryOutputPipe::new(1024 * 1024);
+    let stderr_pipe = MemoryOutputPipe::new(1024 * 1024);
+
+    let wasi = WasiCtxBuilder::new()
+        .stdout(stdout_pipe.clone())
+        .stderr(stderr_pipe.clone())
+        .inherit_env()
+        .args(&[test_file.to_string_lossy().to_string()])
+        .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
+        .preopened_dir(stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
+        .build_p1();
+
+    let mut store = Store::new(engine, MyState { wasi });
+
+    let instance = match linker.instantiate(&mut store, &module) {
+        Ok(inst) => inst,
+        Err(e) => {
+            let stderr_bytes = stderr_pipe.contents();
+            let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
+            return Ok((
+                TestStatus::Fail,
+                String::new(),
+                stderr_str,
+                Some(format!("Instantiation failed: {:?}", e)),
+            ));
+        }
+    };
+    let t_inst = t_inst_start.elapsed();
+
+    let t_run_start = std::time::Instant::now();
+    let main_export = match instance.get_func(&mut store, "main") {
+        Some(func) => func,
+        None => {
+            return Ok((
+                TestStatus::Fail,
+                String::new(),
+                String::new(),
+                Some("Failed to find `main` export".to_string()),
+            ));
+        }
+    };
+
+    let results_count = main_export.ty(&store).results().len();
+    let mut results = vec![Val::I32(0); results_count];
+
+    let call_res = main_export.call(&mut store, &[], &mut results);
+    let t_run = t_run_start.elapsed();
+
+    if verbose {
+        println!(
+            "TIMING [{}]: compile={:?}, load={:?}, inst={:?}, run={:?}",
+            test_file.display(),
+            t_compile,
+            t_load,
+            t_inst,
+            t_run
+        );
+    }
+
+    let stdout_bytes = stdout_pipe.contents();
+    let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
+
+    let stderr_bytes = stderr_pipe.contents();
+    let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
+
+    if let Err(e) = call_res {
+        let mut msg = format!("Execution failed: {:?}", e);
+        if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
+            msg.push_str(&format!("\nWasm Backtrace:\n{}", bt));
+        }
+        return Ok((TestStatus::Fail, stdout_str, stderr_str, Some(msg)));
+    }
+
+    let returned_zero = if let Some(res) = results.first() {
+        match res {
+            Val::I32(0) => true,
+            _ => false,
+        }
+    } else {
+        true
+    };
+
+    if returned_zero && !stdout_str.contains("FAIL") {
+        Ok((TestStatus::Pass, stdout_str, stderr_str, None))
+    } else {
+        let msg = if !returned_zero {
+            format!("Suite returned non-zero code: {:?}", results.first())
+        } else {
+            "Suite reported failure in output".to_string()
+        };
+        Ok((TestStatus::Fail, stdout_str, stderr_str, Some(msg)))
+    }
 }
 
 #[cfg(test)]
