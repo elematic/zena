@@ -11,7 +11,44 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        nodejs = pkgs.nodejs_25;
+        nodejs = pkgs.nodejs_latest;
+
+        wasmtime =
+          let
+            suffix = {
+              "x86_64-linux" = "x86_64-linux";
+              "aarch64-linux" = "aarch64-linux";
+              "x86_64-darwin" = "x86_64-macos";
+              "aarch64-darwin" = "aarch64-macos";
+            }.${system} or (throw "Unsupported system: ${system}");
+
+            hash = {
+              "x86_64-linux" = "1gypkwyz6mms85psgh33nfq2h68bpnicxjyhp2vdi6nx3qs8dk1a";
+              "aarch64-linux" = "1xpisz5qf2bqscyr2bf1hj43vswlymkwv33jinfmywsygpxx2bwv";
+              "x86_64-darwin" = "0qpp5dxpg0dvqya31br6vg4clam0fncygfn1y65488s7v48q87bq";
+              "aarch64-darwin" = "09fdppfwqr0pzh338r6disvw94848ghcdkciv9f298s2xavdljxb";
+            }.${system} or "";
+          in
+          pkgs.stdenv.mkDerivation rec {
+            pname = "wasmtime";
+            version = "46.0.0";
+
+            src = pkgs.fetchurl {
+              url = "https://github.com/bytecodealliance/wasmtime/releases/download/v${version}/wasmtime-v${version}-${suffix}.tar.xz";
+              sha256 = hash;
+            };
+
+            dontBuild = true;
+            dontConfigure = true;
+
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
+
+            installPhase = ''
+              mkdir -p $out/bin
+              find . -type f -name "wasmtime" -exec cp {} $out/bin/ \;
+              chmod +x $out/bin/wasmtime
+            '';
+          };
 
         zena = pkgs.buildNpmPackage {
           pname = "zena";
@@ -75,7 +112,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = [
             nodejs
-            pkgs.wasmtime
+            wasmtime
             pkgs.wasm-tools
             pkgs.cloc
             pkgs.hyperfine

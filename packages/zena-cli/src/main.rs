@@ -840,7 +840,7 @@ mod tests {
     #[test]
     fn test_stack_trace_capture_and_format() -> Result<()> {
         let mut config = Config::new();
-        config.wasm_backtrace(true);
+        config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
         config.wasm_gc(true);
         let engine = Engine::new(&config)?;
 
