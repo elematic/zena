@@ -290,7 +290,7 @@ if (runStrings) {
   // If any are run, display table
   if (zenaTimes.size > 0 || zenaNodeTimes.size > 0 || nodeTimes.size > 0) {
     console.log('\nString Micro-Benchmark Comparison:');
-    const stringColWidths = [35, 17, 17, 16, 15, 15];
+    const stringColWidths = [40, 17, 17, 16, 15, 15];
     const formatStringRow = (cells: string[]) => {
       return (
         '│ ' +

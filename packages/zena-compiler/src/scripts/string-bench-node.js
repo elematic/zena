@@ -165,6 +165,31 @@ runTest('StringComparison (N=100,000)', () => {
   }
 });
 
+runTest('StringCompareIdentical (N=100,000)', () => {
+  const s1 = 'abcdefghijklmnopqrstuvwxyz';
+  const s2 = s1;
+  for (let j = 0; j < 100000; j++) {
+    const eq = s1 === s2;
+  }
+});
+
+runTest('StringCompareNonIdentical (N=100,000)', () => {
+  const s1 = 'abcdefghijklmnopqrstuvwxyz';
+  const s2 = ['abcdefghijklmnopqrstuvwxy', 'z'].join('');
+  for (let j = 0; j < 100000; j++) {
+    const eq = s1 === s2;
+  }
+});
+
+runTest('StringTemplateLiteral (N=10,000)', () => {
+  const s1 = 'abc';
+  const s2 = 'def';
+  const s3 = 'ghi';
+  for (let j = 0; j < 10000; j++) {
+    const s = `${s1}${s2}${s3}`;
+  }
+});
+
 // 5. Searching
 runTest('StringSearch (N=10,000)', () => {
   let base = '';
