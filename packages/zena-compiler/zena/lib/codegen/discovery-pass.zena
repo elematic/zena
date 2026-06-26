@@ -1023,8 +1023,15 @@ export class DiscoveryPass {
     this.wasm.addFunction(wasmFunc);
   }
 
+  /**
+   * Registers the `string_hash_helper` function in the WasmModule.
+   *
+   * This helper computes the FNV-1a hash of a String's backing byte array.
+   * It is registered during the discovery pass when string hashing is needed
+   * (for example, in hash maps or for hash operations on String).
+   */
   registerStringHashHelper(model: SemanticModel): void {
-    if (this.wasm.functionNames.has("string_hash_helper")) {
+    if (this.wasm.stringHashHelper != null) {
       return;
     }
 
@@ -1049,6 +1056,7 @@ export class DiscoveryPass {
     let helperFunc = new WasmFunction(helperSig, null, model);
     helperFunc.name = "string_hash_helper";
     this.wasm.addFunction(helperFunc);
+    this.wasm.stringHashHelper = helperFunc;
   }
 
   registerWasiInfra(model: SemanticModel): void {
@@ -1098,6 +1106,7 @@ export class DiscoveryPass {
     let helperFunc = new WasmFunction(helperSig, null, model);
     helperFunc.name = "wasi_write_string_helper";
     this.wasm.addFunction(helperFunc);
+    this.wasm.wasiWriteStringHelper = helperFunc;
     this.wasm.wasiWriteStringIndex = 1; // dummy placeholder
   }
 
@@ -1940,6 +1949,16 @@ export class DiscoveryPass {
                       if (varDecl.exported) {
                         this.wasm.exportMap[ident.name as ExportKey] = wasmFunc;
                       }
+                    }
+                    if (unit.ast.path == "zena:string-convert") {
+                      let name = ident.name;
+                      if (name == "i32ToString") { this.wasm.i32ToStringFunc = wasmFunc; }
+                      else if (name == "u32ToString") { this.wasm.u32ToStringFunc = wasmFunc; }
+                      else if (name == "i64ToString") { this.wasm.i64ToStringFunc = wasmFunc; }
+                      else if (name == "u64ToString") { this.wasm.u64ToStringFunc = wasmFunc; }
+                      else if (name == "f32ToString") { this.wasm.f32ToStringFunc = wasmFunc; }
+                      else if (name == "f64ToString") { this.wasm.f64ToStringFunc = wasmFunc; }
+                      else if (name == "boolToString") { this.wasm.boolToStringFunc = wasmFunc; }
                     }
                   }
                 }

@@ -247,8 +247,15 @@ export class WasmModule {
   usedInterfaceAdaptations = new HashMap<ClassInterfaceKey, boolean>();
   usedInterfaceMembers = new HashMap<InterfaceMemberKey, boolean>();
   classMethodMap = new HashMap<String, WasmFunction>();
-  functionNames = new HashSet<String>();
-  functionByName = new HashMap<String, WasmFunction>();
+  var i32ToStringFunc: WasmFunction | null = null;
+  var u32ToStringFunc: WasmFunction | null = null;
+  var i64ToStringFunc: WasmFunction | null = null;
+  var u64ToStringFunc: WasmFunction | null = null;
+  var f32ToStringFunc: WasmFunction | null = null;
+  var f64ToStringFunc: WasmFunction | null = null;
+  var boolToStringFunc: WasmFunction | null = null;
+  var wasiWriteStringHelper: WasmFunction | null = null;
+  var stringHashHelper: WasmFunction | null = null;
   functionAdaptations = new HashMap<String, WasmFunction>();
   var arrayMethods = new Array<WasmFunction>();
   mutableCapturedSymbols = new HashSet<SymbolId>();
@@ -572,10 +579,6 @@ export class WasmModule {
 
   addFunction(func: WasmFunction): void {
     this.functions.push(func);
-    if (func.name != null) {
-      this.functionNames.add(func.name as String);
-      this.functionByName[func.name as String] = func;
-    }
     if (func.classType != null && func.methodName != null) {
       let key = (getClassKey(func.classType as ClassType) as String) + "." + (func.methodName as String);
       this.classMethodMap[key] = func;
@@ -772,15 +775,10 @@ export class WasmModule {
   layout(): void {
     this.isLayoutLocked = true;
     
-    this.functionByName.clear();
     this.classMethodMap.clear();
     this.functionAdaptations.clear();
     this.arrayMethods = new Array<WasmFunction>();
     for (let func in this.functions) {
-      if (func.name != null) {
-        this.functionNames.add(func.name as String);
-        this.functionByName[func.name as String] = func;
-      }
       if (func.classType != null && func.methodName != null) {
         let key = (getClassKey(func.classType as ClassType) as String) + "." + (func.methodName as String);
         this.classMethodMap[key] = func;
