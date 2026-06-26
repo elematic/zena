@@ -5,6 +5,7 @@ import { HashMap } from 'zena:map';
 import { newByteArray } from 'zena:byte-array';
 import { String, Encoding } from 'zena:string';
 import { getArguments } from 'zena:cli';
+import { FixedArray } from 'zena:fixed-array';
 
 @external("wasi_snapshot_preview1", "clock_time_get")
 declare function __wasi_clock_time_get(
@@ -221,6 +222,79 @@ export let main = (): i32 => {
     }
   }, filter);
 
+  // --- Comparative Benchmarks: Concatenating 3 strings with static literals ---
+  let p1 = "classPrefix";
+  let p2 = "memberSuffix";
+  let p3 = "vtable";
+
+  // 1. Chained + operator (N=100,000)
+  runTest("CompareConcatPlus (N=100,000)", () => {
+    let s1 = p1;
+    let s2 = p2;
+    let s3 = p3;
+    for (var j = 0; j < 100000; j += 1) {
+      let s = s1 + "::" + s2 + "_" + s3;
+    }
+  }, filter);
+
+  // 2. Template Literal (N=100,000)
+  runTest("CompareTemplateLiteral (N=100,000)", () => {
+    let s1 = p1;
+    let s2 = p2;
+    let s3 = p3;
+    for (var j = 0; j < 100000; j += 1) {
+      let s = `${s1}::${s2}_${s3}`;
+    }
+  }, filter);
+
+  // 3. StringBuilder append (N=100,000)
+  runTest("CompareStringBuilderNew (N=100,000)", () => {
+    let s1 = p1;
+    let s2 = p2;
+    let s3 = p3;
+    for (var j = 0; j < 100000; j += 1) {
+      let sb = new StringBuilder();
+      sb.append(s1);
+      sb.append("::");
+      sb.append(s2);
+      sb.append("_");
+      sb.append(s3);
+      let s = sb.toString();
+    }
+  }, filter);
+
+  // 4. StringBuilder.fromString (N=100,000)
+  runTest("CompareStringBuilderFromString (N=100,000)", () => {
+    let s1 = p1;
+    let s2 = p2;
+    let s3 = p3;
+    for (var j = 0; j < 100000; j += 1) {
+      let sb = StringBuilder.fromString(s1);
+      sb.append("::");
+      sb.append(s2);
+      sb.append("_");
+      sb.append(s3);
+      let s = sb.toString();
+    }
+  }, filter);
+
+  // 5. String.fromParts (N=100,000)
+  runTest("CompareStringFromParts (N=100,000)", () => {
+    let s1 = p1;
+    let s2 = p2;
+    let s3 = p3;
+    for (var j = 0; j < 100000; j += 1) {
+      let parts = new FixedArray<String>(5, "");
+      parts[0] = s1;
+      parts[1] = "::";
+      parts[2] = s2;
+      parts[3] = "_";
+      parts[4] = s3;
+      let s = String.fromParts(parts as array<String>);
+    }
+  }, filter);
+
   console.log("----------------------------------------------");
   return 0;
 };
+

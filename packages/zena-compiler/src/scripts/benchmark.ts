@@ -344,6 +344,86 @@ if (runStrings) {
       }
     }
     console.log(makeStringSeparator('└', '┴', '┘'));
+
+    // --- Print Dedicated Concatenation Techniques Comparison Table ---
+    const compareKeys = [
+      {key: 'CompareConcatPlus (N=100,000)', name: 'Operator +'},
+      {key: 'CompareTemplateLiteral (N=100,000)', name: 'Template Literal'},
+      {key: 'CompareStringBuilderNew (N=100,000)', name: 'StringBuilder (New)'},
+      {
+        key: 'CompareStringBuilderFromString (N=100,000)',
+        name: 'StringBuilder (from)',
+      },
+      {key: 'CompareStringFromParts (N=100,000)', name: 'String.fromParts'},
+    ];
+
+    const hasComparisons = compareKeys.every(
+      (k) =>
+        zenaTimes.has(k.key) &&
+        zenaNodeTimes.has(k.key) &&
+        nodeTimes.has(k.key),
+    );
+    if (hasComparisons) {
+      console.log('\nConcatenation Techniques Comparison (N=100,000):');
+      const compareColWidths = [24, 17, 17, 16, 20];
+      const formatCompareRow = (cells: string[]) => {
+        return (
+          '│ ' +
+          cells
+            .map((cell, i) => {
+              if (i === 0) {
+                return cell.padEnd(compareColWidths[i]);
+              } else {
+                return cell.padStart(compareColWidths[i]);
+              }
+            })
+            .join(' │ ') +
+          ' │'
+        );
+      };
+      const makeCompareSeparator = (
+        left: string,
+        mid: string,
+        right: string,
+      ) => {
+        return (
+          left +
+          compareColWidths.map((w) => '─'.repeat(w + 2)).join(mid) +
+          right
+        );
+      };
+
+      console.log(makeCompareSeparator('┌', '┬', '┐'));
+      console.log(
+        formatCompareRow([
+          'Technique',
+          'Zena (Wasmtime)',
+          'Zena (Node.js)',
+          'Node.js (JS)',
+          'Speedup vs + (Wt)',
+        ]),
+      );
+      console.log(makeCompareSeparator('├', '┼', '┤'));
+
+      const plusTimeWt = zenaTimes.get('CompareConcatPlus (N=100,000)')!;
+      for (const {key, name} of compareKeys) {
+        const wtTime = zenaTimes.get(key)!;
+        const nodeTime = zenaNodeTimes.get(key)!;
+        const jsTime = nodeTimes.get(key)!;
+        const speedup = `${(plusTimeWt / wtTime).toFixed(2)}x`;
+
+        console.log(
+          formatCompareRow([
+            name,
+            `${wtTime.toFixed(2)} ms`,
+            `${nodeTime.toFixed(2)} ms`,
+            `${jsTime.toFixed(2)} ms`,
+            speedup,
+          ]),
+        );
+      }
+      console.log(makeCompareSeparator('└', '┴', '┘'));
+    }
   } else {
     console.log('\nNo matching string benchmarks were run.');
   }

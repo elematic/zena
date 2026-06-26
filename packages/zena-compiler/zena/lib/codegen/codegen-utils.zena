@@ -12,7 +12,7 @@ import { SemanticModel } from '../semantic-model.zena';
 import { Symbol } from '../scope/symbol.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
-import { Array } from 'zena:array';
+import { Array, FixedArray } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Program, CompilationUnit } from '../program.zena';
 
@@ -237,6 +237,7 @@ export let isConcrete = (t: Type): boolean => {
   };
 };
 
+
 export let getTypeKeyForSpecialization = (type: Type): String => {
   return match (type) {
     case I32Type: "i32"
@@ -252,76 +253,102 @@ export let getTypeKeyForSpecialization = (type: Type): String => {
     case VoidType: "void"
     case ClassType as ct: {
       let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
-      let base = ct.name + "_" + i32ToString(baseId as i32);
+      let base = `${ct.name}_${i32ToString(baseId as i32)}`;
       if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0 && isConcrete(ct)) {
         let args = ct.typeArguments as Array<Type>;
-        var argKeys = "";
+        let parts = new FixedArray<String>(1 + 2 * args.length, "");
+        parts[0] = base;
         var i = 0;
         while (i < args.length) {
-          if (i > 0) { argKeys = argKeys + "_"; }
-          argKeys = argKeys + getTypeKeyForSpecialization(args[i]);
+          parts[1 + 2 * i] = "_";
+          parts[2 + 2 * i] = getTypeKeyForSpecialization(args[i]);
           i += 1;
         }
-        base + "_" + argKeys
+        String.fromParts(parts as array<String>)
       } else {
         base
       }
     }
     case InterfaceType as it: {
       let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
-      let base = it.name + "_" + i32ToString(baseId as i32);
+      let base = `${it.name}_${i32ToString(baseId as i32)}`;
       if (it.typeArguments != null && (it.typeArguments as Array<Type>).length > 0 && isConcrete(it)) {
         let args = it.typeArguments as Array<Type>;
-        var argKeys = "";
+        let parts = new FixedArray<String>(1 + 2 * args.length, "");
+        parts[0] = base;
         var i = 0;
         while (i < args.length) {
-          if (i > 0) { argKeys = argKeys + "_"; }
-          argKeys = argKeys + getTypeKeyForSpecialization(args[i]);
+          parts[1 + 2 * i] = "_";
+          parts[2 + 2 * i] = getTypeKeyForSpecialization(args[i]);
           i += 1;
         }
-        base + "_" + argKeys
+        String.fromParts(parts as array<String>)
       } else {
         base
       }
     }
-    case ArrayType {elementType}: "arr_" + getTypeKeyForSpecialization(elementType)
+    case ArrayType {elementType}: `arr_${getTypeKeyForSpecialization(elementType)}`
     case RecordType as rec: {
-      var sb = "rec";
+      let len = rec.properties.size;
+      let parts = new FixedArray<String>(1 + 4 * len, "");
+      parts[0] = "rec";
       let keys = rec.properties.keys();
+      var i = 0;
       while (let (true, key) = keys.next()) {
-        sb = sb + "_" + key + "_" + getTypeKeyForSpecialization(rec.properties[key]);
+        parts[1 + 4 * i] = "_";
+        parts[2 + 4 * i] = key;
+        parts[3 + 4 * i] = "_";
+        parts[4 + 4 * i] = getTypeKeyForSpecialization(rec.properties[key]);
+        i += 1;
       }
-      sb
+      String.fromParts(parts as array<String>)
     }
     case TupleType {elementTypes}: {
-      var sb = "tup";
-      for (let t in elementTypes) {
-        sb = sb + "_" + getTypeKeyForSpecialization(t);
+      let parts = new FixedArray<String>(1 + 2 * elementTypes.length, "");
+      parts[0] = "tup";
+      var i = 0;
+      while (i < elementTypes.length) {
+        parts[1 + 2 * i] = "_";
+        parts[2 + 2 * i] = getTypeKeyForSpecialization(elementTypes[i]);
+        i += 1;
       }
-      sb
+      String.fromParts(parts as array<String>)
     }
     case InlineTupleType {elementTypes}: {
-      var sb = "itup";
-      for (let t in elementTypes) {
-        sb = sb + "_" + getTypeKeyForSpecialization(t);
+      let parts = new FixedArray<String>(1 + 2 * elementTypes.length, "");
+      parts[0] = "itup";
+      var i = 0;
+      while (i < elementTypes.length) {
+        parts[1 + 2 * i] = "_";
+        parts[2 + 2 * i] = getTypeKeyForSpecialization(elementTypes[i]);
+        i += 1;
       }
-      sb
+      String.fromParts(parts as array<String>)
     }
     case TypeParameterType as tp: tp.name
     case UnionType {types}: {
-      var sb = "union";
-      for (let t in types) {
-        sb = sb + "_" + getTypeKeyForSpecialization(t);
+      let parts = new FixedArray<String>(1 + 2 * types.length, "");
+      parts[0] = "union";
+      var i = 0;
+      while (i < types.length) {
+        parts[1 + 2 * i] = "_";
+        parts[2 + 2 * i] = getTypeKeyForSpecialization(types[i]);
+        i += 1;
       }
-      sb
+      String.fromParts(parts as array<String>)
     }
     case FunctionType as ft: {
-      var sb = "func";
-      for (let p in ft.parameters) {
-        sb = sb + "_" + getTypeKeyForSpecialization(p);
+      let parts = new FixedArray<String>(3 + 2 * ft.parameters.length, "");
+      parts[0] = "func";
+      var i = 0;
+      while (i < ft.parameters.length) {
+        parts[1 + 2 * i] = "_";
+        parts[2 + 2 * i] = getTypeKeyForSpecialization(ft.parameters[i]);
+        i += 1;
       }
-      sb = sb + "_" + getTypeKeyForSpecialization(ft.returnType);
-      sb
+      parts[1 + 2 * ft.parameters.length] = "_";
+      parts[2 + 2 * ft.parameters.length] = getTypeKeyForSpecialization(ft.returnType);
+      String.fromParts(parts as array<String>)
     }
     case TypeAliasType as ta: getTypeKeyForSpecialization(ta.target)
     case NeverType: "never"
@@ -339,11 +366,17 @@ export let getTypeKeyForSpecialization = (type: Type): String => {
 };
 
 export let getSpecializedName = (baseName: String, typeArgs: Array<Type>): String => {
-  var sb = baseName + "_spec";
-  for (let arg in typeArgs) {
-    sb = sb + "_" + getTypeKeyForSpecialization(arg);
+  let len = typeArgs.length;
+  let parts = new FixedArray<String>(2 + 2 * len, "");
+  parts[0] = baseName;
+  parts[1] = "_spec";
+  var i = 0;
+  while (i < len) {
+    parts[2 + 2 * i] = "_";
+    parts[3 + 2 * i] = getTypeKeyForSpecialization(typeArgs[i]);
+    i += 1;
   }
-  return sb;
+  return String.fromParts(parts as array<String>);
 };
 
 export let getClassKey = (ct: ClassType): ClassKey => {
@@ -367,43 +400,43 @@ export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
 };
 
 export let getMixinKey = (mt: MixinType): MixinKey => {
-  return (mt.sourcePath + "::" + mt.name) as MixinKey;
+  return `${mt.sourcePath}::${mt.name}` as MixinKey;
 };
 
 export let getMixinKeyFromSymbol = (model: SemanticModel, sym: Symbol): MixinKey => {
   let mt = model.getBindingType(sym);
   if (mt == null || !(mt is MixinType)) {
-    throw new Error("Symbol is not a mixin: " + sym.name);
+    throw new Error(`Symbol is not a mixin: ${sym.name}`);
   }
   return getMixinKey(mt as MixinType);
 };
 
 export let getClassInterfaceKey = (classKey: ClassKey, interfaceKey: InterfaceKey): ClassInterfaceKey => {
-  return ((classKey as String) + "::" + (interfaceKey as String)) as ClassInterfaceKey;
+  return `${classKey as String}::${interfaceKey as String}` as ClassInterfaceKey;
 };
 
 export let getInterfaceMemberKey = (interfaceKey: InterfaceKey, memberName: String): InterfaceMemberKey => {
-  return ((interfaceKey as String) + "::" + memberName) as InterfaceMemberKey;
+  return `${interfaceKey as String}::${memberName}` as InterfaceMemberKey;
 };
 
 export let getClassPrivateFieldKey = (classKey: ClassKey, fieldName: String): String => {
-  return (classKey as String) + "::" + fieldName;
+  return `${classKey as String}::${fieldName}`;
 };
 
 export let getClassInterfaceVTableName = (cName: ClassKey, iName: InterfaceKey): String => {
-  return (cName as String) + "_" + (iName as String) + "_vtable";
+  return `${cName as String}_${iName as String}_vtable`;
 };
 
 export let getInterfaceTrampolineName = (cName: ClassKey, iName: InterfaceKey, fieldName: String): String => {
-  return (cName as String) + "_" + (iName as String) + "_" + fieldName + "_trampoline";
+  return `${cName as String}_${iName as String}_${fieldName}_trampoline`;
 };
 
 export let getClassVTableName = (cName: ClassKey): String => {
-  return (cName as String) + "_vtable";
+  return `${cName as String}_vtable`;
 };
 
 export let getClassSingletonName = (cName: ClassKey): String => {
-  return (cName as String) + "_singleton";
+  return `${cName as String}_singleton`;
 };
 
 export let classInterfaceKeyToString = (key: ClassInterfaceKey): String => {
@@ -426,10 +459,10 @@ export let getTypeKey = (type: Type): String => {
     case VoidType: "void"
     case ClassType as ct: ct.name
     case InterfaceType as it: it.name
-    case ArrayType {elementType}: "arr_" + getTypeKey(elementType)
+    case ArrayType {elementType}: `arr_${getTypeKey(elementType)}`
     case RecordType: "rec"
-    case TupleType {elementTypes}: "tup" + i32ToString(elementTypes.length)
-    case InlineTupleType {elementTypes}: "tup" + i32ToString(elementTypes.length)
+    case TupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
+    case InlineTupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
     case UnionType: "union"
     case TypeParameterType as tp: tp.name
     case _: "unknown"
@@ -437,14 +470,18 @@ export let getTypeKey = (type: Type): String => {
 };
 
 export let getSignatureKey = (funcType: FunctionType): String => {
-  if (funcType.parameters.length == 0) {
+  let len = funcType.parameters.length;
+  if (len == 0) {
     return "$void";
   }
-  var sb = "";
-  for (let p in funcType.parameters) {
-    sb = sb + "$" + getTypeKey(p);
+  let parts = new FixedArray<String>(2 * len, "");
+  var i = 0;
+  while (i < len) {
+    parts[2 * i] = "$";
+    parts[2 * i + 1] = getTypeKey(funcType.parameters[i]);
+    i += 1;
   }
-  return sb;
+  return String.fromParts(parts as array<String>);
 };
 
 export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: MethodDefinition): FunctionType | null => {
@@ -670,107 +707,191 @@ export let getTypeUniqueKey = (t: Type): String => {
   match (t) {
     case ClassType as ct: {
       let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
-      let base = ct.name + "_" + i32ToString(baseId as i32);
+      let base = `${ct.name}_${i32ToString(baseId as i32)}`;
       if (ct.typeArguments != null) {
         let args = ct.typeArguments as Array<Type>;
-        var s = base + "<";
-        var i = 0;
-        while (i < args.length) {
-          if (i > 0) { s = s + ", "; }
-          s = s + getTypeUniqueKey(args[i]);
-          i += 1;
+        let len = args.length;
+        if (len > 0) {
+          let parts = new FixedArray<String>(2 * len + 2, "");
+          parts[0] = base;
+          parts[1] = "<";
+          parts[2] = getTypeUniqueKey(args[0]);
+          var i = 1;
+          while (i < len) {
+            parts[2 * i + 1] = ", ";
+            parts[2 * i + 2] = getTypeUniqueKey(args[i]);
+            i += 1;
+          }
+          parts[2 * len + 1] = ">";
+          String.fromParts(parts as array<String>)
+        } else {
+          base
         }
-        s + ">"
       } else {
         base
       }
     }
     case InterfaceType as it: {
       let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
-      let base = it.name + "_" + i32ToString(baseId as i32);
+      let base = `${it.name}_${i32ToString(baseId as i32)}`;
       if (it.typeArguments != null) {
         let args = it.typeArguments as Array<Type>;
-        var s = base + "<";
-        var i = 0;
-        while (i < args.length) {
-          if (i > 0) { s = s + ", "; }
-          s = s + getTypeUniqueKey(args[i]);
-          i += 1;
+        let len = args.length;
+        if (len > 0) {
+          let parts = new FixedArray<String>(2 * len + 2, "");
+          parts[0] = base;
+          parts[1] = "<";
+          parts[2] = getTypeUniqueKey(args[0]);
+          var i = 1;
+          while (i < len) {
+            parts[2 * i + 1] = ", ";
+            parts[2 * i + 2] = getTypeUniqueKey(args[i]);
+            i += 1;
+          }
+          parts[2 * len + 1] = ">";
+          String.fromParts(parts as array<String>)
+        } else {
+          base
         }
-        s + ">"
       } else {
         base
       }
     }
-    case ArrayType {elementType}: "Array<" + getTypeUniqueKey(elementType) + ">"
+    case ArrayType {elementType}: `Array<${getTypeUniqueKey(elementType)}>`
     case TupleType {elementTypes}: {
-      var s = "[";
-      var i = 0;
-      while (i < elementTypes.length) {
-        if (i > 0) { s = s + ", "; }
-        s = s + getTypeUniqueKey(elementTypes[i]);
-        i += 1;
+      let len = elementTypes.length;
+      if (len > 0) {
+        let parts = new FixedArray<String>(2 * len + 1, "");
+        parts[0] = "[";
+        parts[1] = getTypeUniqueKey(elementTypes[0]);
+        var i = 1;
+        while (i < len) {
+          parts[2 * i] = ", ";
+          parts[2 * i + 1] = getTypeUniqueKey(elementTypes[i]);
+          i += 1;
+        }
+        parts[2 * len] = "]";
+        String.fromParts(parts as array<String>)
+      } else {
+        "[]"
       }
-      s + "]"
     }
     case InlineTupleType {elementTypes}: {
-      var s = "(";
-      var i = 0;
-      while (i < elementTypes.length) {
-        if (i > 0) { s = s + ", "; }
-        s = s + getTypeUniqueKey(elementTypes[i]);
-        i += 1;
+      let len = elementTypes.length;
+      if (len > 0) {
+        let parts = new FixedArray<String>(2 * len + 1, "");
+        parts[0] = "(";
+        parts[1] = getTypeUniqueKey(elementTypes[0]);
+        var i = 1;
+        while (i < len) {
+          parts[2 * i] = ", ";
+          parts[2 * i + 1] = getTypeUniqueKey(elementTypes[i]);
+          i += 1;
+        }
+        parts[2 * len] = ")";
+        String.fromParts(parts as array<String>)
+      } else {
+        "()"
       }
-      s + ")"
     }
     case UnionType {types}: {
-      var s = "";
-      var i = 0;
-      while (i < types.length) {
-        if (i > 0) { s = s + " | "; }
-        s = s + getTypeUniqueKey(types[i]);
-        i += 1;
+      let len = types.length;
+      if (len > 0) {
+        let parts = new FixedArray<String>(2 * len - 1, "");
+        parts[0] = getTypeUniqueKey(types[0]);
+        var i = 1;
+        while (i < len) {
+          parts[2 * i - 1] = " | ";
+          parts[2 * i] = getTypeUniqueKey(types[i]);
+          i += 1;
+        }
+        String.fromParts(parts as array<String>)
+      } else {
+        ""
       }
-      s
     }
     case RecordType {properties}: {
-      var s = "{ ";
-      let keys = properties.keys();
-      var first = true;
-      while (let (true, key) = keys.next()) {
-        if (!first) { s = s + ", "; }
-        s = s + key + ": " + getTypeUniqueKey(properties[key]);
-        first = false;
+      let len = properties.size;
+      if (len > 0) {
+        let parts = new FixedArray<String>(4 * len + 1, "");
+        parts[0] = "{ ";
+        let keys = properties.keys();
+        var i = 0;
+        while (let (true, key) = keys.next()) {
+          if (i > 0) {
+            parts[4 * i] = ", ";
+            parts[4 * i + 1] = key;
+            parts[4 * i + 2] = ": ";
+            parts[4 * i + 3] = getTypeUniqueKey(properties[key]);
+          } else {
+            parts[1] = key;
+            parts[2] = ": ";
+            parts[3] = getTypeUniqueKey(properties[key]);
+          }
+          i += 1;
+        }
+        parts[4 * len] = " }";
+        String.fromParts(parts as array<String>)
+      } else {
+        "{  }"
       }
-      s + " }"
     }
     case FunctionType as ft: {
-      var s = "(";
+      let paramsLen = ft.parameters.length;
+      
+      // First pass: count parts
+      var numParts = 3; // For "(", ") => ", and returnType
+      if (paramsLen > 0) {
+        numParts = numParts + (paramsLen - 1); // For ", " delimiters
+      }
+      
+      let names = ft.parameterNames;
       var i = 0;
-      while (i < ft.parameters.length) {
-        if (i > 0) { s = s + ", "; }
-        if (ft.parameterNames != null) {
-          let names = ft.parameterNames as Array<String>;
-          if (i < names.length) {
-            s = s + names[i] + ": ";
-          }
+      while (i < paramsLen) {
+        if (names != null && i < (names as Array<String>).length) {
+          numParts = numParts + 2; // For name and ": "
         }
-        s = s + getTypeUniqueKey(ft.parameters[i]);
+        numParts = numParts + 1; // For type key
         i += 1;
       }
-      s + ") => " + getTypeUniqueKey(ft.returnType)
+      
+      // Allocate FixedArray
+      let parts = new FixedArray<String>(numParts, "");
+      parts[0] = "(";
+      
+      // Second pass: fill parts
+      var idx = 1;
+      i = 0;
+      while (i < paramsLen) {
+        if (i > 0) {
+          parts[idx] = ", ";
+          idx += 1;
+        }
+        if (names != null && i < (names as Array<String>).length) {
+          parts[idx] = (names as Array<String>)[i];
+          parts[idx + 1] = ": ";
+          idx += 2;
+        }
+        parts[idx] = getTypeUniqueKey(ft.parameters[i]);
+        idx += 1;
+        i += 1;
+      }
+      parts[idx] = ") => ";
+      parts[idx + 1] = getTypeUniqueKey(ft.returnType);
+      
+      String.fromParts(parts as array<String>)
     }
-    case TypeAliasType as a: "alias_" + getTypeUniqueKey(a.target)
+    case TypeAliasType as a: `alias_${getTypeUniqueKey(a.target)}`
     case _: typeToString(t)
   }
 };
 
 export let getFunctionAdaptationKey = (src: Type, tgt: Type): FunctionAdaptationKey => {
-  return (getTypeUniqueKey(src) + "->" + getTypeUniqueKey(tgt)) as FunctionAdaptationKey;
+  return `${getTypeUniqueKey(src)}->${getTypeUniqueKey(tgt)}` as FunctionAdaptationKey;
 };
 
 export let getClassMethodKey = (classKey: ClassKey, methodName: String): ClassMethodKey => {
-  return ((classKey as String) + "." + methodName) as ClassMethodKey;
+  return `${classKey as String}.${methodName}` as ClassMethodKey;
 };
 
 export let getSpecializedFunctionKey = (baseName: String, typeArgs: Array<Type>): SpecializedFunctionKey => {
@@ -778,11 +899,11 @@ export let getSpecializedFunctionKey = (baseName: String, typeArgs: Array<Type>)
 };
 
 export let getClosureSpecializationKey = (closureId: NodeId, classKey: ClassKey): ClosureSpecializationKey => {
-  return (i32ToString(closureId as i32) + "_" + (classKey as String)) as ClosureSpecializationKey;
+  return `${i32ToString(closureId as i32)}_${classKey as String}` as ClosureSpecializationKey;
 };
 
 export let getFunctionValueWrapperKey = (keyName: String, ft: FunctionType): FunctionValueWrapperKey => {
-  return (keyName + "_wrapper_" + (getSignatureKey(ft) as String)) as FunctionValueWrapperKey;
+  return `${keyName}_wrapper_${getSignatureKey(ft) as String}` as FunctionValueWrapperKey;
 };
 
 

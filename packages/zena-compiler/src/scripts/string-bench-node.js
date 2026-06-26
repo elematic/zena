@@ -231,4 +231,71 @@ runTest('StringMapIndexing (N=10,000)', () => {
   }
 });
 
+// --- Comparative Benchmarks: Concatenating 3 strings with static literals ---
+const p1 = 'classPrefix';
+const p2 = 'memberSuffix';
+const p3 = 'vtable';
+
+// 1. Chained + operator (N=100,000)
+runTest('CompareConcatPlus (N=100,000)', () => {
+  const s1 = p1;
+  const s2 = p2;
+  const s3 = p3;
+  for (let j = 0; j < 100000; j++) {
+    const s = s1 + '::' + s2 + '_' + s3;
+  }
+});
+
+// 2. Template Literal (N=100,000)
+runTest('CompareTemplateLiteral (N=100,000)', () => {
+  const s1 = p1;
+  const s2 = p2;
+  const s3 = p3;
+  for (let j = 0; j < 100000; j++) {
+    const s = `${s1}::${s2}_${s3}`;
+  }
+});
+
+// 3. StringBuilder append (N=100,000)
+runTest('CompareStringBuilderNew (N=100,000)', () => {
+  const s1 = p1;
+  const s2 = p2;
+  const s3 = p3;
+  for (let j = 0; j < 100000; j++) {
+    const arr = [];
+    arr.push(s1);
+    arr.push('::');
+    arr.push(s2);
+    arr.push('_');
+    arr.push(s3);
+    const s = arr.join('');
+  }
+});
+
+// 4. StringBuilder.fromString (N=100,000)
+runTest('CompareStringBuilderFromString (N=100,000)', () => {
+  const s1 = p1;
+  const s2 = p2;
+  const s3 = p3;
+  for (let j = 0; j < 100000; j++) {
+    const arr = [s1];
+    arr.push('::');
+    arr.push(s2);
+    arr.push('_');
+    arr.push(s3);
+    const s = arr.join('');
+  }
+});
+
+// 5. String.fromParts (N=100,000)
+runTest('CompareStringFromParts (N=100,000)', () => {
+  const s1 = p1;
+  const s2 = p2;
+  const s3 = p3;
+  for (let j = 0; j < 100000; j++) {
+    const parts = [s1, '::', s2, '_', s3];
+    const s = parts.join('');
+  }
+});
+
 console.log('----------------------------------------------');
