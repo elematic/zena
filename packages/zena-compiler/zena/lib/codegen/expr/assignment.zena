@@ -5,7 +5,7 @@ import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
 import { WasmFunction, WasmArray, WasmStruct } from '../wasm-module.zena';
-import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen } from '../type-mapping.zena';
 import { ValTypeRefNull, ValTypeRef, ValType } from '../wasm.zena';
 
@@ -126,7 +126,7 @@ export let generateAssignmentExpression = (
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            let key = (getClassKey(currClass as ClassType) as String) + "." + setterName;
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), setterName);
             if (ctx.wasm.classMethodMap.has(key)) {
               let f = ctx.wasm.classMethodMap[key];
               if (f.isStatic) {
@@ -187,7 +187,7 @@ export let generateAssignmentExpression = (
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            let key = (getClassKey(currClass as ClassType) as String) + "." + setterName;
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), setterName);
             if (ctx.wasm.classMethodMap.has(key)) {
               foundFunc = ctx.wasm.classMethodMap[key];
             }
@@ -265,7 +265,7 @@ export let generateAssignmentExpression = (
             var superFunc: WasmFunction | null = null;
             var currClass: ClassType | null = ct; // ct is already the superclass (the type of SuperExpression)
             while (currClass != null && superFunc == null) {
-              let key = (getClassKey(currClass as ClassType) as String) + "." + setterName;
+              let key = getClassMethodKey(getClassKey(currClass as ClassType), setterName);
               if (ctx.wasm.classMethodMap.has(key)) {
                 superFunc = ctx.wasm.classMethodMap[key];
               }
@@ -463,9 +463,9 @@ export let generateAssignmentExpression = (
 
             var currClass: ClassType | null = ct;
             while (currClass != null && foundFunc == null) {
-              let classKeyStr = getClassKey(currClass as ClassType) as String;
-              let keyWithSig = classKeyStr + "." + lookupName;
-              let keyWithoutSig = classKeyStr + ".[]=";
+              let classKey = getClassKey(currClass as ClassType);
+              let keyWithSig = getClassMethodKey(classKey, lookupName);
+              let keyWithoutSig = getClassMethodKey(classKey, "[]=");
               
               if (ctx.wasm.classMethodMap.has(keyWithSig)) {
                 let f = ctx.wasm.classMethodMap[keyWithSig];

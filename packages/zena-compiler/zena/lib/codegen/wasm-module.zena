@@ -22,7 +22,7 @@ import { Program } from '../program.zena';
 import { 
   compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey, 
   CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getTypeUniqueKey,
-  FunctionAdaptationKey, getFunctionAdaptationKey
+  FunctionAdaptationKey, getFunctionAdaptationKey, ClassMethodKey, getClassMethodKey
 } from './codegen-utils.zena';
 
 export let sortWasmFields = (fields: Array<WasmField>): void => {
@@ -247,7 +247,7 @@ export class WasmModule {
   classInterfaceVTables = new HashMap<ClassInterfaceKey, WasmGlobal>();
   usedInterfaceAdaptations = new HashMap<ClassInterfaceKey, boolean>();
   usedInterfaceMembers = new HashMap<InterfaceMemberKey, boolean>();
-  classMethodMap = new HashMap<String, WasmFunction>();
+  classMethodMap = new HashMap<ClassMethodKey, WasmFunction>();
   var i32ToStringFunc: WasmFunction | null = null;
   var u32ToStringFunc: WasmFunction | null = null;
   var i64ToStringFunc: WasmFunction | null = null;
@@ -581,7 +581,7 @@ export class WasmModule {
   addFunction(func: WasmFunction): void {
     this.functions.push(func);
     if (func.classType != null && func.methodName != null) {
-      let key = (getClassKey(func.classType as ClassType) as String) + "." + (func.methodName as String);
+      let key = getClassMethodKey(getClassKey(func.classType as ClassType), func.methodName as String);
       this.classMethodMap[key] = func;
     }
     if (func.isFunctionAdaptation && func.functionAdaptationSource != null && func.functionAdaptationTarget != null) {
@@ -781,7 +781,7 @@ export class WasmModule {
     this.arrayMethods = new Array<WasmFunction>();
     for (let func in this.functions) {
       if (func.classType != null && func.methodName != null) {
-        let key = (getClassKey(func.classType as ClassType) as String) + "." + (func.methodName as String);
+        let key = getClassMethodKey(getClassKey(func.classType as ClassType), func.methodName as String);
         this.classMethodMap[key] = func;
       }
       if (func.isFunctionAdaptation && func.functionAdaptationSource != null && func.functionAdaptationTarget != null) {

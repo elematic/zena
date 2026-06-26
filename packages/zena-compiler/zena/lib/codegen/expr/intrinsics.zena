@@ -6,7 +6,7 @@ import { Opcode, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTyp
 import { WasmFunction, WasmStruct, WasmModule } from '../wasm-module.zena';
 import { typeToValType, getNodeType, getClassMemberSignature } from '../type-mapping.zena';
 import { Type, baseType, isRefType, isFloatType, isBooleanLike, I32Type, BooleanType, F32Type, F64Type, I64Type, U64Type, ClassType, InterfaceType, U32Type, StringLiteralType, MethodInfo, MemberInfo, instantiateClassType } from '../../types.zena';
-import { getClassKey, unwrapAliases } from '../codegen-utils.zena';
+import { getClassKey, unwrapAliases, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { Array } from 'zena:array';
 
 let isWasmRefType = (wasm: WasmModule, t: Type): boolean => {
@@ -252,8 +252,7 @@ export let generateGlobalIntrinsic = (
     if ((leftBase is StringLiteralType || (leftBase is ClassType && (leftBase as ClassType).name == "String")) &&
         (rightBase is StringLiteralType || (rightBase is ClassType && (rightBase as ClassType).name == "String"))) {
       var foundFunc: WasmFunction | null = null;
-      let stringClassKey = getClassKey(ctx.wasm.stringClass as ClassType) as String;
-      let key = stringClassKey + ".==";
+      let key = getClassMethodKey(getClassKey(ctx.wasm.stringClass as ClassType), "==");
       if (ctx.wasm.classMethodMap.has(key)) {
         foundFunc = ctx.wasm.classMethodMap[key];
       }
@@ -468,7 +467,7 @@ export let generateGlobalIntrinsic = (
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            let key = (getClassKey(currClass as ClassType) as String) + ".hashCode";
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), "hashCode");
             if (ctx.wasm.classMethodMap.has(key)) {
               foundFunc = ctx.wasm.classMethodMap[key];
             }
@@ -594,7 +593,7 @@ export let generateGlobalIntrinsic = (
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
-          let key = (getClassKey(currClass as ClassType) as String) + "." + lookupName;
+          let key = getClassMethodKey(getClassKey(currClass as ClassType), lookupName);
           if (ctx.wasm.classMethodMap.has(key)) {
             foundFunc = ctx.wasm.classMethodMap[key];
           }
@@ -853,7 +852,7 @@ export let generateGlobalIntrinsic = (
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
-          let key = (getClassKey(currClass as ClassType) as String) + "." + lookupName;
+          let key = getClassMethodKey(getClassKey(currClass as ClassType), lookupName);
           if (ctx.wasm.classMethodMap.has(key)) {
             foundFunc = ctx.wasm.classMethodMap[key];
           }

@@ -6,7 +6,7 @@ import { RecordType, TupleType, ClassType, InterfaceType, ArrayType, typeToStrin
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
 import { WasmField, WasmFunction, WasmArray } from '../wasm-module.zena';
-import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType } from '../type-mapping.zena';
 import { ValTypeRefNull, ValTypeRef, ValTypeI8, ValTypeVoid, HeapType, heapTypeToSigned, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeEqRef, ValTypeAnyRef, ValTypeStructRef } from '../wasm.zena';
 import { Array } from 'zena:array';
@@ -156,7 +156,7 @@ export let generateMemberExpression = (
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            let key = (getClassKey(currClass as ClassType) as String) + "." + getterName;
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), getterName);
             if (ctx.wasm.classMethodMap.has(key)) {
               let f = ctx.wasm.classMethodMap[key];
               if (f.isStatic) {
@@ -198,7 +198,7 @@ export let generateMemberExpression = (
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            let key = (getClassKey(currClass as ClassType) as String) + "." + getterName;
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), getterName);
             if (ctx.wasm.classMethodMap.has(key)) {
               foundFunc = ctx.wasm.classMethodMap[key];
             }
@@ -479,9 +479,9 @@ export let generateIndexExpression = (
 
             var currClass: ClassType | null = ct;
             while (currClass != null && foundFunc == null) {
-              let classKeyStr = getClassKey(currClass as ClassType) as String;
-              let keyWithSig = classKeyStr + "." + lookupName;
-              let keyWithoutSig = classKeyStr + ".[]";
+              let classKey = getClassKey(currClass as ClassType);
+              let keyWithSig = getClassMethodKey(classKey, lookupName);
+              let keyWithoutSig = getClassMethodKey(classKey, "[]");
               
               if (ctx.wasm.classMethodMap.has(keyWithSig)) {
                 let f = ctx.wasm.classMethodMap[keyWithSig];

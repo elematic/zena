@@ -5,7 +5,7 @@ import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16 } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature } from '../wasm-module.zena';
-import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
@@ -405,7 +405,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = superType;
           while (currClass != null && foundFunc == null) {
-            let key = (getClassKey(currClass as ClassType) as String) + "." + lookupName;
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), lookupName);
             if (ctx.wasm.classMethodMap.has(key)) {
               let f = ctx.wasm.classMethodMap[key];
               if (!f.isStatic) {
@@ -446,7 +446,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            let key = (getClassKey(currClass as ClassType) as String) + "." + lookupName;
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), lookupName);
             if (ctx.wasm.classMethodMap.has(key)) {
               let f = ctx.wasm.classMethodMap[key];
               if (f.isStatic) {
@@ -471,7 +471,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             var foundFunc: WasmFunction | null = null;
             var currClass: ClassType | null = ct;
             while (currClass != null && foundFunc == null) {
-              let key = (getClassKey(currClass as ClassType) as String) + "." + lookupName;
+              let key = getClassMethodKey(getClassKey(currClass as ClassType), lookupName);
               if (ctx.wasm.classMethodMap.has(key)) {
                 foundFunc = ctx.wasm.classMethodMap[key];
               }
@@ -519,7 +519,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = ct;
           while (currClass != null && foundFunc == null) {
-            let key = (getClassKey(currClass as ClassType) as String) + "." + lookupName;
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), lookupName);
             if (ctx.wasm.classMethodMap.has(key)) {
               foundFunc = ctx.wasm.classMethodMap[key];
             }
@@ -660,7 +660,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = superType;
         while (currClass != null && foundFunc == null) {
-          let key = (getClassKey(currClass as ClassType) as String) + "." + lookupName;
+          let key = getClassMethodKey(getClassKey(currClass as ClassType), lookupName);
           if (ctx.wasm.classMethodMap.has(key)) {
             let f = ctx.wasm.classMethodMap[key];
             if (f.isStatic) {
