@@ -102,6 +102,22 @@ We need a suite of micro-benchmarks to track performance regressions.
 - **Complexity**: Moderate. Requires identifying variable sharing sets during capture analysis.
 - **Priority**: Low for Phase 1. Box-per-variable keeps the initial implementation simple, correct, and matching the bootstrap compiler.
 
+### String Operations & Identity Caching
+
+- **Problem**: In Zena, strings are objects on the heap. Evaluating a string literal dynamically allocates a new heap object. In hot loops or recursive lookups, this causes high GC allocation pressure and frequent object header creation. Furthermore, operations like `operator ==` and `hashCode` re-evaluate string bytes repeatedly, even for identical string references or duplicate literals.
+- **Solution**:
+  1.  **String Literal Interning**: During compilation, the compiler tracks all unique string literals. They are defined as WASM global variables initialized exactly once in the start function. In code generation, string literals compile to `global.get $globalIndex`, avoiding heap allocation at runtime. This guarantees duplicate literals point to the same memory reference.
+  2.  **Identity Short-Circuiting**: Update `String.operator ==` in the standard library to check reference equality (`this === other`) first. If they are the same pointer, return `true` immediately.
+  3.  **Hash Code Caching**: Add a `#hashCode` cache field to the `String` class (field index 6). The first time `hashCode()` is evaluated, the compiler computes the FNV-1a hash, clamps any 0 result to 1, and saves it in the cache field. Subsequent calls return the cached value.
+  4.  **Hash Mismatch Short-Circuiting**: In `String.operator ==`, if both strings have a non-zero cached hash code and the hash codes differ, return `false` immediately without comparing bytes.
+  5.  **Zero-Copy StringBuilder**:
+      - To optimize string construction, `StringBuilder` collects segments in chunked `ByteArray` buffers.
+      - `toString()` returns a `String` view directly referencing the builder's active chunk (`#currentChunk`) with no copying or allocation if the builder has not grown beyond its first chunk.
+      - Because a `String` is a sliced view (`start` to `end`) and the builder only ever appends data at `#currentPos` (never overwriting indices prior to `#currentPos`), previously returned `String` views remain completely immutable even when the builder is subsequently appended to.
+      - `clear()` is defined to allocate a new buffer instead of reusing the old one, preventing future writes from overwriting the characters of handed-out strings.
+      - `StringBuilder.fromString(s)` adopts a string's backing `ByteArray` directly (zero-copy) if the string spans the entire array (making it full by definition, ensuring any subsequent writes trigger new chunk allocations).
+- **Results**: String search benchmarks (`StringSearch`) under Wasmtime dropped from **2037.16 ms** to **0.77 ms** (nearly a **2600x** speedup), and map indexing (`StringMapIndexing`) dropped from **19.34 ms** to **3.05 ms** (a **6.3x** speedup). `StringBuilder` string construction benchmarks (`StringConcatBuilder`) dropped from **12.08 ms** to **0.66 ms** (an **18.3x** speedup).
+
 ---
 
 ## Benchmarking Suite

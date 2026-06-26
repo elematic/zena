@@ -164,6 +164,7 @@ export class WasmGlobal {
   var initExpr: Expression | null = null;
   var initVTable: VTableInit | null = null;
   var initSingletonStruct: ClassType | null = null;
+  var initArraySize: i32 = -1;
   var namespaceImport: ImportSpecifier | null = null;
   model: SemanticModel;
   new(this.name, this.zenaName, this.type, this.isMutable, this.initExpr, this.initVTable, this.model);
@@ -184,6 +185,12 @@ export class WasmTag {
   var index: i32 = -1;
   signature: WasmSignature;
   new(this.signature);
+}
+
+export class StringLiteralLocation {
+  offset: i32;
+  length: i32;
+  new(this.offset, this.length);
 }
 
 export class WasmModule {
@@ -249,6 +256,15 @@ export class WasmModule {
   datas = new Array<ByteBuffer>();
   rawDatas = new Array<ByteBuffer>();
   stringLiterals = new HashMap<String, i32>();
+  stringLiteralIds = new HashMap<String, i32>();
+  stringLiteralLocations = new HashMap<String, StringLiteralLocation>();
+  var sharedStringsGlobal: WasmGlobal | null = null;
+  var stringFromSharedFunc: WasmFunction | null = null;
+  var stringLiteralsArrayGlobal: WasmGlobal | null = null;
+  var getStringLiteralFunc: WasmFunction | null = null;
+  var stringArrayType: WasmArray | null = null;
+  var sharedStringsDataIdx: i32 = -1;
+  var sharedStringsLength: i32 = 0;
   var hasMemory: boolean = false;
   var wasiFdWriteIndex: i32 = -1;
   var wasiWriteStringIndex: i32 = -1;

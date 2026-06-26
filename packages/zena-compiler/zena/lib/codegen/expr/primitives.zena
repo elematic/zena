@@ -112,6 +112,13 @@ export let generateBooleanLiteral = (ctx: FunctionContext, expr: BooleanLiteral)
 };
 
 export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): void => {
+  if (ctx.wasm.stringLiteralIds.has(expr.value)) {
+    let id = ctx.wasm.stringLiteralIds[expr.value];
+    ctx.emitter.emitI32Const(id);
+    ctx.emitter.emitCall(ctx.wasm.getStringLiteralFunc as WasmFunction);
+    return;
+  }
+
   let stringClass = ctx.wasm.stringClass;
   if (stringClass == null) {
     throw new Error("String class struct not found during string literal generation!");

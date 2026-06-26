@@ -1,7 +1,8 @@
-import { ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeStructRef } from './wasm.zena';
+import { ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeStructRef, ValTypeRef } from './wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature,
-  WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, WasmTag
+  WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, WasmTag, StringLiteralLocation
 } from './wasm-module.zena';
+import { ByteBuffer } from 'zena:byte-buffer';
 import { DiscoveryPass } from './discovery-pass.zena';
 import { getClassKey } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
@@ -10,7 +11,7 @@ import { Node, VariableDeclaration, IdentifierPattern, Expression, NumberLiteral
 import { String } from 'zena:string';
 import { walk } from '../visitor.zena';
 import { ValType } from './wasm.zena';
-import { parseI32, parseF64, parseI64 } from 'zena:string-convert';
+import { parseI32, parseF64, parseI64, i32ToString } from 'zena:string-convert';
 import { Array } from 'zena:array';
 import { FunctionGenerator } from './function-generator.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
@@ -39,7 +40,134 @@ export class ModuleGenerator {
     let pass = new DiscoveryPass(this.program, wasm, usage, this.target);
     pass.run();
     
-    var needsStartFunction = false;
+    let stringClass = wasm.stringClass;
+    if (stringClass != null) {
+      if (wasm.stringLiterals.size > 0) {
+        wasm.getStringLiteralDataIndex(""); // Ensure empty string is in stringLiterals
+        let stringKey = getClassKey(stringClass as ClassType);
+        let stringStruct = wasm.classStructs[stringKey];
+        let stringType = new ValTypeRefNull(stringStruct);
+
+        // Sort stringLiterals by length descending
+        let sortedStrings = new Array<String>();
+        let litKeys = wasm.stringLiterals.keys();
+        while (let (true, val) = litKeys.next()) {
+          sortedStrings.push(val);
+        }
+        let sortedLen = sortedStrings.length;
+        for (var i = 0; i < sortedLen; i += 1) {
+          var maxIdx = i;
+          for (var j = i + 1; j < sortedLen; j += 1) {
+            if (sortedStrings[j].length > sortedStrings[maxIdx].length) {
+              maxIdx = j;
+            }
+          }
+          if (maxIdx != i) {
+            let temp = sortedStrings[i];
+            sortedStrings[i] = sortedStrings[maxIdx];
+            sortedStrings[maxIdx] = temp;
+          }
+        }
+
+        // Subsequence optimization
+        let accumulatedBytes = new ByteBuffer();
+        for (var idx = 0; idx < sortedStrings.length; idx += 1) {
+          let s = sortedStrings[idx];
+          let sLen = s.length;
+          
+          var foundOffset = -1;
+          if (sLen == 0) {
+            foundOffset = 0;
+          } else {
+            let accumLen = accumulatedBytes.length;
+            for (var i = 0; i <= accumLen - sLen; i += 1) {
+              var match = true;
+              for (var j = 0; j < sLen; j += 1) {
+                if (accumulatedBytes.getByte(i + j) != s.getByteAt(j)) {
+                  match = false;
+                  break;
+                }
+              }
+              if (match) {
+                foundOffset = i;
+                break;
+              }
+            }
+          }
+          
+          if (foundOffset != -1) {
+            wasm.stringLiteralLocations[s] = new StringLiteralLocation(foundOffset, sLen);
+          } else {
+            let offset = accumulatedBytes.length;
+            for (var i = 0; i < sLen; i += 1) {
+              accumulatedBytes.writeByte(s.getByteAt(i));
+            }
+            wasm.stringLiteralLocations[s] = new StringLiteralLocation(offset, sLen);
+          }
+        }
+
+        // Add single concatenated data segment
+        let dataIndex = wasm.addData(accumulatedBytes);
+        wasm.sharedStringsLength = accumulatedBytes.length;
+        wasm.sharedStringsDataIdx = dataIndex;
+
+        // Assign sequential IDs to string literals
+        let astLitKeys = wasm.stringLiterals.keys();
+        var litIdx = 0;
+        while (let (true, val) = astLitKeys.next()) {
+          wasm.stringLiteralIds[val] = litIdx;
+          litIdx += 1;
+        }
+
+        // Add the StringArray type (mutable elements)
+        let stringArrayType = wasm.getArray(stringType, true);
+        wasm.stringArrayType = stringArrayType;
+
+        // Add the immutable string literals array global
+        let arrayValType = new ValTypeRef(stringArrayType);
+        let literalsArrayGlobal = new WasmGlobal("string_literals_array", "string_literals_array", arrayValType, false, null, null, this.program.units[0].model);
+        literalsArrayGlobal.initArraySize = wasm.stringLiterals.size;
+        wasm.globals.push(literalsArrayGlobal);
+        wasm.stringLiteralsArrayGlobal = literalsArrayGlobal;
+
+        // Add the shared strings ByteArray global
+        let byteArrayStruct = wasm.getByteArrayType();
+        let byteArrayType = new ValTypeRefNull(byteArrayStruct);
+
+        let sharedGlobalName = "shared_strings_data";
+        let sharedGlobal = new WasmGlobal(sharedGlobalName, sharedGlobalName, byteArrayType, true, null, null, this.program.units[0].model);
+        wasm.globals.push(sharedGlobal);
+        wasm.sharedStringsGlobal = sharedGlobal;
+
+        // Allocate the stringFromShared helper function WasmSignature and WasmFunction
+        let sigParams = new Array<ValType>();
+        sigParams.push(new ValTypeI32()); // offset
+        sigParams.push(new ValTypeI32()); // length
+        let sigReturns = new Array<ValType>();
+        sigReturns.push(stringType);
+
+        let sig = wasm.getSignature(sigParams, sigReturns);
+        let helperFunc = new WasmFunction(sig, null, this.program.units[0].model);
+        helperFunc.name = "string_from_shared";
+        wasm.addFunction(helperFunc);
+        wasm.stringFromSharedFunc = helperFunc;
+
+        // Allocate the getStringLiteral helper function WasmSignature and WasmFunction
+        let getSigParams = new Array<ValType>();
+        getSigParams.push(new ValTypeI32()); // id
+        let getSigReturns = new Array<ValType>();
+        let nonNullableStringType = new ValTypeRef(stringStruct);
+        getSigReturns.push(nonNullableStringType);
+
+        let getSig = wasm.getSignature(getSigParams, getSigReturns);
+        let getHelperFunc = new WasmFunction(getSig, null, this.program.units[0].model);
+        getHelperFunc.name = "get_string_literal";
+        wasm.addFunction(getHelperFunc);
+        wasm.getStringLiteralFunc = getHelperFunc;
+      }
+    }
+    
+    var needsStartFunction = stringClass != null && wasm.stringLiterals.size > 0;
     for (let g in wasm.globals) {
       if (g.initExpr != null) {
         let isLiteral = match (g.initExpr as Expression) {
@@ -237,6 +365,10 @@ export class ModuleGenerator {
         let vtableGlobal = wasm.classVTableGlobals[cKey];
         this.emitter.emitGlobalGet(vtableGlobal.index);
         this.emitter.emitStructNew(structType.index);
+        emitted = true;
+      } else if (g.initArraySize >= 0) {
+        this.emitter.emitI32Const(g.initArraySize);
+        this.emitter.emitArrayNewDefault((g.type as ValTypeRef).target.index);
         emitted = true;
       }
       

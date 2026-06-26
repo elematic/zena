@@ -2,7 +2,7 @@ import {
   Node, Module, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
   ReturnStatement, ExpressionStatement, Statement, Expression, CallExpression,
-  ImportDeclaration, ImportSpecifier, ClassDeclaration, InterfaceDeclaration, DeclareFunction,
+  ImportDeclaration, ImportSpecifier, ExportAllDeclaration, ExportFromDeclaration, ClassDeclaration, InterfaceDeclaration, DeclareFunction,
   TypeAliasDeclaration, RecordLiteral, MethodDefinition, FieldDefinition,
   AccessorDeclaration, SetterInfo, SuperInitializer, TypeParameter, MixinDeclaration,
   Parameter, TypeAnnotation, Decorator, Pattern, MemberExpression, AssignmentExpression, IndexExpression,
@@ -1699,7 +1699,17 @@ export class DiscoveryPass {
         
         if (n is StringLiteral) {
           let strLit = n as StringLiteral;
-          this.wasm.getStringLiteralDataIndex(strLit.value);
+          var parent = moduleModel.getParent(n);
+          var isModuleSpecifier = false;
+          if (parent != null) {
+            let p = parent as Node;
+            if (p is ImportDeclaration || p is ExportAllDeclaration || p is ExportFromDeclaration) {
+              isModuleSpecifier = true;
+            }
+          }
+          if (!isModuleSpecifier) {
+            this.wasm.getStringLiteralDataIndex(strLit.value);
+          }
         }
         
         if (n is TemplateElement) {

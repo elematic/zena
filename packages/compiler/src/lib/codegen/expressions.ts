@@ -7880,22 +7880,14 @@ function generateRecordFieldFromBinding(
   return true;
 }
 
-function generateStringLiteral(
+export function generateStringLiteralAllocation(
   ctx: CodegenContext,
-  expr: StringLiteral,
+  value: string,
   body: number[],
 ) {
   // Ensure ByteArray type exists (needed for string data storage)
   ctx.ensureByteArrayType();
 
-  // Get the String class info - it must have been defined by now
-  // The String class struct has 6 fields (view-based design):
-  //   0: __vtable (eqref)
-  //   1: __brand_String (ref null $brandType)
-  //   2: String#data (ref $ByteArray)
-  //   3: String#start (i32)
-  //   4: String#end (i32)
-  //   5: String#encoding (i32)
   if (ctx.stringTypeIndex === -1) {
     throw new Error(
       'String class not defined - cannot generate string literal',
@@ -7909,12 +7901,12 @@ function generateStringLiteral(
   }
 
   let dataIndex: number;
-  if (ctx.stringLiterals.has(expr.value)) {
-    dataIndex = ctx.stringLiterals.get(expr.value)!;
+  if (ctx.stringLiterals.has(value)) {
+    dataIndex = ctx.stringLiterals.get(value)!;
   } else {
-    const bytes = new TextEncoder().encode(expr.value);
+    const bytes = new TextEncoder().encode(value);
     dataIndex = ctx.module.addData(bytes);
-    ctx.stringLiterals.set(expr.value, dataIndex);
+    ctx.stringLiterals.set(value, dataIndex);
   }
 
   // Allocate String struct with default values
@@ -7950,9 +7942,7 @@ function generateStringLiteral(
   body.push(Opcode.i32_const, 0); // offset
   body.push(
     Opcode.i32_const,
-    ...WasmModule.encodeSignedLEB128(
-      new TextEncoder().encode(expr.value).length,
-    ),
+    ...WasmModule.encodeSignedLEB128(new TextEncoder().encode(value).length),
   ); // length in bytes (UTF-8)
 
   body.push(0xfb, GcOpcode.array_new_data);
@@ -7981,9 +7971,7 @@ function generateStringLiteral(
   // Set #end field (index 4) to length
   body.push(
     Opcode.i32_const,
-    ...WasmModule.encodeSignedLEB128(
-      new TextEncoder().encode(expr.value).length,
-    ),
+    ...WasmModule.encodeSignedLEB128(new TextEncoder().encode(value).length),
   ); // end = length
   body.push(0xfb, GcOpcode.struct_set);
   body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
@@ -8002,6 +7990,209 @@ function generateStringLiteral(
   // Return the String instance
   body.push(Opcode.local_get);
   body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+}
+
+export function generateStringFromSharedFunction(ctx: CodegenContext): number {
+  ctx.ensureStringType();
+  ctx.ensureByteArrayType();
+
+  const stringType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+  ];
+  // type: [i32 (offset), i32 (length)] -> [ref null $String]
+  const typeIndex = ctx.module.addType(
+    [[ValType.i32], [ValType.i32]],
+    [stringType],
+  );
+
+  const funcIndex = ctx.module.addFunction(typeIndex);
+  ctx.stringFromSharedFunctionIndex = funcIndex;
+
+  ctx.pendingHelperFunctions.push(() => {
+    const body: number[] = [];
+
+    // Params: offset (0), length (1)
+    // Locals: none
+
+    // Get the String class info for vtable setup
+    const stringClassInfo = ctx.getClassInfoByStructIndex(ctx.stringTypeIndex);
+    if (!stringClassInfo) {
+      throw new Error('String class info not found');
+    }
+
+    // field 0: vtable (eqref)
+    if (stringClassInfo.vtableGlobalIndex !== undefined) {
+      body.push(Opcode.global_get);
+      body.push(
+        ...WasmModule.encodeSignedLEB128(stringClassInfo.vtableGlobalIndex),
+      );
+    } else {
+      body.push(Opcode.ref_null, HeapType.none);
+    }
+
+    // field 1: __brand_String (ref null)
+    body.push(Opcode.ref_null, HeapType.none);
+
+    // field 2: #data (ref $ByteArray)
+    body.push(Opcode.global_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.sharedStringsGlobalIndex));
+
+    // field 3: #start (i32) -> offset
+    body.push(Opcode.local_get, 0);
+
+    // field 4: #end (i32) -> offset + length
+    body.push(Opcode.local_get, 0);
+    body.push(Opcode.local_get, 1);
+    body.push(Opcode.i32_add);
+
+    // field 5: #encoding (i32) -> 0 (WTF-8)
+    body.push(Opcode.i32_const, 0);
+
+    // field 6: #hashCode (i32) -> 0 (uncalculated)
+    body.push(Opcode.i32_const, 0);
+
+    // Allocate and initialize the String struct in one instruction
+    body.push(0xfb, GcOpcode.struct_new);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(Opcode.end);
+
+    ctx.module.addCode(funcIndex, [], body);
+  });
+
+  return funcIndex;
+}
+
+export function generateGetStringLiteralFunction(ctx: CodegenContext): number {
+  ctx.ensureStringType();
+
+  const stringType = [
+    ValType.ref,
+    ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+  ];
+
+  // type: [i32 (id)] -> [ref $String]
+  const typeIndex = ctx.module.addType([[ValType.i32]], [stringType]);
+
+  const funcIndex = ctx.module.addFunction(typeIndex);
+  ctx.getStringLiteralFunctionIndex = funcIndex;
+
+  ctx.pendingHelperFunctions.push(() => {
+    const body: number[] = [];
+
+    // Param: id (0)
+    // Locals: str (ref null $String) (1)
+
+    const strLocalType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+    ];
+
+    // Check if the array already contains the string
+    body.push(Opcode.global_get);
+    body.push(
+      ...WasmModule.encodeSignedLEB128(ctx.stringLiteralsArrayGlobalIndex),
+    );
+    body.push(Opcode.local_get, 0); // id
+    body.push(0xfb, GcOpcode.array_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringArrayTypeIndex));
+    body.push(Opcode.local_tee, 1); // store in local 1
+    body.push(Opcode.ref_is_null);
+    body.push(Opcode.if, ValType.void);
+
+    // If null, initialize it
+    const N = ctx.stringLiteralIds.size;
+    if (N === 0) {
+      body.push(Opcode.unreachable);
+    } else if (N === 1) {
+      const firstLiteral = Array.from(ctx.stringLiteralIds.keys())[0];
+      const loc = ctx.stringLiteralLocations.get(firstLiteral)!;
+      body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(loc.offset));
+      body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(loc.length));
+      body.push(Opcode.call);
+      body.push(
+        ...WasmModule.encodeSignedLEB128(ctx.stringFromSharedFunctionIndex),
+      );
+      body.push(Opcode.local_set, 1);
+    } else {
+      const idEntries = Array.from(ctx.stringLiteralIds.entries());
+      for (let i = 0; i < N - 1; i++) {
+        body.push(Opcode.local_get, 0);
+        body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(i));
+        body.push(Opcode.i32_eq);
+        body.push(Opcode.if, ValType.void);
+
+        const loc = ctx.stringLiteralLocations.get(idEntries[i][0])!;
+        body.push(
+          Opcode.i32_const,
+          ...WasmModule.encodeSignedLEB128(loc.offset),
+        );
+        body.push(
+          Opcode.i32_const,
+          ...WasmModule.encodeSignedLEB128(loc.length),
+        );
+        body.push(Opcode.call);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(ctx.stringFromSharedFunctionIndex),
+        );
+        body.push(Opcode.local_set, 1);
+
+        body.push(Opcode.else);
+      }
+      const loc = ctx.stringLiteralLocations.get(idEntries[N - 1][0])!;
+      body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(loc.offset));
+      body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(loc.length));
+      body.push(Opcode.call);
+      body.push(
+        ...WasmModule.encodeSignedLEB128(ctx.stringFromSharedFunctionIndex),
+      );
+      body.push(Opcode.local_set, 1);
+
+      for (let i = 0; i < N - 1; i++) {
+        body.push(Opcode.end);
+      }
+    }
+
+    // Store in array
+    body.push(Opcode.global_get);
+    body.push(
+      ...WasmModule.encodeSignedLEB128(ctx.stringLiteralsArrayGlobalIndex),
+    );
+    body.push(Opcode.local_get, 0); // id
+    body.push(Opcode.local_get, 1); // str
+    body.push(0xfb, GcOpcode.array_set);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringArrayTypeIndex));
+
+    body.push(Opcode.end); // close outer if
+
+    // Return reference
+    body.push(Opcode.local_get, 1);
+    body.push(Opcode.ref_as_non_null);
+    body.push(Opcode.end);
+
+    ctx.module.addCode(funcIndex, [strLocalType], body);
+  });
+
+  return funcIndex;
+}
+
+export function generateStringLiteral(
+  ctx: CodegenContext,
+  expr: StringLiteral,
+  body: number[],
+) {
+  ctx.ensureStringType();
+  const id = ctx.stringLiteralIds.get(expr.value);
+  if (id === undefined) {
+    generateStringLiteralAllocation(ctx, expr.value, body);
+    return;
+  }
+
+  body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(id));
+  body.push(Opcode.call);
+  body.push(
+    ...WasmModule.encodeSignedLEB128(ctx.getStringLiteralFunctionIndex),
+  );
 }
 
 /**
@@ -10304,9 +10495,11 @@ function generateStringHashFunction(ctx: CodegenContext): number {
   //   3: String#start (i32)
   //   4: String#end (i32)
   //   5: String#encoding (i32)
+  //   6: String#hashCode (i32)
   const STRING_DATA_FIELD = 2;
   const STRING_START_FIELD = 3;
   const STRING_END_FIELD = 4;
+  const STRING_HASH_CODE_FIELD = 6;
 
   const stringType = [
     ValType.ref_null,
@@ -10331,6 +10524,19 @@ function generateStringHashFunction(ctx: CodegenContext): number {
 
     // Params: s (0)
     // Locals: data (1), hash (2), i (3), end (4)
+
+    // Check if hashCode is already cached
+    body.push(Opcode.local_get, 0);
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(STRING_HASH_CODE_FIELD);
+
+    body.push(Opcode.local_tee, 2); // store in hash (local 2)
+    body.push(Opcode.i32_const, 0);
+    body.push(Opcode.i32_ne);
+    body.push(Opcode.if, ValType.i32);
+    body.push(Opcode.local_get, 2); // return cached hash
+    body.push(Opcode.else);
 
     // data = s.#data (field 2)
     body.push(Opcode.local_get, 0);
@@ -10397,8 +10603,28 @@ function generateStringHashFunction(ctx: CodegenContext): number {
     body.push(Opcode.end); // end loop
     body.push(Opcode.end); // end block
 
-    // return hash
+    // Prevent 0 hash (since 0 means uncalculated)
     body.push(Opcode.local_get, 2);
+    body.push(Opcode.i32_const, 0);
+    body.push(Opcode.i32_eq);
+    body.push(Opcode.if, ValType.i32);
+    body.push(Opcode.i32_const, 1);
+    body.push(Opcode.else);
+    body.push(Opcode.local_get, 2);
+    body.push(Opcode.end);
+    body.push(Opcode.local_set, 2);
+
+    // Store in cache: s.#hashCode = hash (field index 6)
+    body.push(Opcode.local_get, 0); // s
+    body.push(Opcode.local_get, 2); // hash
+    body.push(0xfb, GcOpcode.struct_set);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(STRING_HASH_CODE_FIELD);
+
+    // Return the calculated hash
+    body.push(Opcode.local_get, 2);
+
+    body.push(Opcode.end); // close outer if-else
     body.push(Opcode.end);
 
     ctx.module.addCode(funcIndex, locals, body);

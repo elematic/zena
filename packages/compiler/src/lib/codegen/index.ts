@@ -32,7 +32,7 @@ import {
   getMemberName,
   mapCheckerTypeToWasmType,
 } from './classes.js';
-import {CodegenContext} from './context.js';
+import {CodegenContext, type FunctionContextState} from './context.js';
 import {registerDeclaredFunction, registerFunction} from './functions.js';
 import {
   generateExpression,
@@ -41,9 +41,12 @@ import {
   generateStringCreateFunction,
   generateStringSetByteFunction,
   inferType,
+  generateStringFromSharedFunction,
+  generateGetStringLiteralFunction,
 } from './expressions.js';
 import {HeapType, Opcode, ValType, ExportDesc, GcOpcode} from '../wasm.js';
 import {WasmModule} from '../emitter.js';
+import {visit, type Visitor} from '../visitor.js';
 
 /**
  * The CodeGenerator class is responsible for traversing the AST and generating
@@ -505,6 +508,147 @@ export class CodeGenerator {
       ensureClassMethodsRegistered(this.#ctx, classInfo);
     }
 
+    // Pre-discover and lay out string literals
+    if (this.#ctx.stringTypeIndex >= 0) {
+      this.#ctx.ensureByteArrayType();
+
+      const self = this;
+      const stringLiteralsSet = new Set<string>();
+      const visitor: Visitor = {
+        beforeVisit(node) {
+          if (
+            node.type === NodeType.ClassDeclaration ||
+            node.type === NodeType.InterfaceDeclaration ||
+            node.type === NodeType.MixinDeclaration ||
+            node.type === NodeType.EnumDeclaration ||
+            node.type === NodeType.VariableDeclaration ||
+            node.type === NodeType.DeclareFunction
+          ) {
+            if (!self.#isUsed(node as any)) {
+              return false;
+            }
+          }
+          if (node.type === NodeType.StringLiteral) {
+            stringLiteralsSet.add((node as any).value);
+          } else if (node.type === NodeType.TemplateElement) {
+            stringLiteralsSet.add((node as any).cooked);
+          }
+          return true;
+        },
+      };
+      for (const mod of this.#ctx.modules) {
+        visit(mod, visitor, undefined);
+      }
+
+      if (stringLiteralsSet.size > 0) {
+        stringLiteralsSet.add('');
+
+        // Lay out string bytes in a single concatenated data segment
+        const encoder = new TextEncoder();
+        const stringBytes = new Map<string, Uint8Array>();
+        for (const s of stringLiteralsSet) {
+          stringBytes.set(s, encoder.encode(s));
+        }
+
+        const sortedStrings = Array.from(stringLiteralsSet).sort(
+          (a, b) => stringBytes.get(b)!.length - stringBytes.get(a)!.length,
+        );
+
+        const accumulatedBytes: number[] = [];
+        for (const s of sortedStrings) {
+          const bytes = stringBytes.get(s)!;
+          let foundOffset = -1;
+          if (bytes.length === 0) {
+            foundOffset = 0;
+          } else {
+            for (let i = 0; i <= accumulatedBytes.length - bytes.length; i++) {
+              let match = true;
+              for (let j = 0; j < bytes.length; j++) {
+                if (accumulatedBytes[i + j] !== bytes[j]) {
+                  match = false;
+                  break;
+                }
+              }
+              if (match) {
+                foundOffset = i;
+                break;
+              }
+            }
+          }
+
+          if (foundOffset !== -1) {
+            this.#ctx.stringLiteralLocations.set(s, {
+              offset: foundOffset,
+              length: bytes.length,
+            });
+          } else {
+            const offset = accumulatedBytes.length;
+            for (const b of bytes) {
+              accumulatedBytes.push(b);
+            }
+            this.#ctx.stringLiteralLocations.set(s, {
+              offset,
+              length: bytes.length,
+            });
+          }
+        }
+
+        // Add the single concatenated data segment
+        const finalDataBytes = new Uint8Array(accumulatedBytes);
+        const dataIndex = this.#ctx.module.addData(finalDataBytes);
+        this.#ctx.sharedStringsLength = finalDataBytes.length;
+        this.#ctx.sharedStringsDataIndex = dataIndex;
+
+        // Assign sequential IDs to string literals
+        let id = 0;
+        for (const s of stringLiteralsSet) {
+          this.#ctx.stringLiteralIds.set(s, id++);
+        }
+
+        // Add the StringArray type (mutable elements)
+        const stringType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(this.#ctx.stringTypeIndex),
+        ];
+        this.#ctx.stringArrayTypeIndex = this.#ctx.module.addArrayType(
+          stringType,
+          true,
+        );
+
+        // Add the immutable string literals array global
+        const stringArrayType = [
+          ValType.ref,
+          ...WasmModule.encodeSignedLEB128(this.#ctx.stringArrayTypeIndex),
+        ];
+        this.#ctx.stringLiteralsArrayGlobalIndex = this.#ctx.module.addGlobal(
+          stringArrayType,
+          false, // immutable global reference
+          [
+            Opcode.i32_const,
+            ...WasmModule.encodeSignedLEB128(stringLiteralsSet.size),
+            0xfb,
+            GcOpcode.array_new_default,
+            ...WasmModule.encodeSignedLEB128(this.#ctx.stringArrayTypeIndex),
+          ],
+        );
+
+        // Add the shared strings ByteArray global
+        const byteArrayType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(this.#ctx.byteArrayTypeIndex),
+        ];
+        this.#ctx.sharedStringsGlobalIndex = this.#ctx.module.addGlobal(
+          byteArrayType,
+          true,
+          [Opcode.ref_null, HeapType.none],
+        );
+
+        // Add the string FromShared and GetStringLiteral helper functions
+        generateStringFromSharedFunction(this.#ctx);
+        generateGetStringLiteralFunction(this.#ctx);
+      }
+    }
+
     // Pass 2: Generate bodies
     this.#ctx.isGeneratingBodies = true;
 
@@ -541,16 +685,22 @@ export class CodeGenerator {
       }
     }
 
-    // Generate start function
-    if (globalInitializers.length > 0) {
-      const typeIndex = this.#ctx.module.addType([], []);
-      const funcIndex = this.#ctx.module.addFunction(typeIndex);
+    // Prepare for start function generation
+    const hasStartFunction =
+      globalInitializers.length > 0 || this.#ctx.sharedStringsGlobalIndex >= 0;
 
-      const body: number[] = [];
+    let startFunctionContext: FunctionContextState | null = null;
+    let startFuncIndex = -1;
+    const globalInitCode: number[] = [];
+
+    if (hasStartFunction) {
+      const typeIndex = this.#ctx.module.addType([], []);
+      startFuncIndex = this.#ctx.module.addFunction(typeIndex);
       this.#ctx.pushFunctionScope();
 
+      // Generate global initializers first to discover any nested string literals
       for (const {index, init, targetType, sourceType} of globalInitializers) {
-        generateExpression(this.#ctx, init, body);
+        generateExpression(this.#ctx, init, globalInitCode);
 
         // Check for interface boxing: target is interface, source is class
         if (
@@ -583,11 +733,11 @@ export class CodeGenerator {
 
               if (implInfo) {
                 // Generate interface boxing: (vtable, object) -> interface struct
-                body.push(
+                globalInitCode.push(
                   Opcode.global_get,
                   ...WasmModule.encodeSignedLEB128(implInfo.vtableGlobalIndex),
                 );
-                body.push(
+                globalInitCode.push(
                   0xfb,
                   GcOpcode.struct_new,
                   ...WasmModule.encodeSignedLEB128(
@@ -599,16 +749,15 @@ export class CodeGenerator {
           }
         }
 
-        body.push(Opcode.global_set);
-        body.push(...WasmModule.encodeSignedLEB128(index));
+        globalInitCode.push(Opcode.global_set);
+        globalInitCode.push(...WasmModule.encodeSignedLEB128(index));
       }
-      body.push(Opcode.end);
 
-      this.#ctx.module.addCode(funcIndex, this.#ctx.extraLocals, body);
-      this.#ctx.module.setStart(funcIndex);
+      // Save the start function context before running deferred generators
+      startFunctionContext = this.#ctx.saveFunctionContext();
     }
 
-    // Execute any body generators added during start function generation (e.g. generic instantiation)
+    // Execute any body generators added during global initialization (e.g. generic instantiation)
     while (
       bodyIndex < this.#ctx.bodyGenerators.length ||
       this.#ctx.pendingHelperFunctions.length > 0
@@ -622,6 +771,50 @@ export class CodeGenerator {
         const gen = this.#ctx.pendingHelperFunctions.shift()!;
         gen();
       }
+    }
+
+    // Now finalize start function if we have one or if we discovered string literals during body generation
+    const finalHasStartFunction =
+      hasStartFunction || this.#ctx.sharedStringsGlobalIndex >= 0;
+
+    if (finalHasStartFunction) {
+      if (startFuncIndex === -1) {
+        const typeIndex = this.#ctx.module.addType([], []);
+        startFuncIndex = this.#ctx.module.addFunction(typeIndex);
+        this.#ctx.pushFunctionScope();
+      } else {
+        // Restore the start function's context to continue generating its body and locals
+        this.#ctx.restoreFunctionContext(startFunctionContext!);
+      }
+
+      const body: number[] = [];
+
+      // Initialize the shared strings backing array
+      if (this.#ctx.sharedStringsGlobalIndex >= 0) {
+        body.push(Opcode.i32_const, 0); // offset
+        body.push(
+          Opcode.i32_const,
+          ...WasmModule.encodeSignedLEB128(this.#ctx.sharedStringsLength),
+        ); // length
+        body.push(0xfb, GcOpcode.array_new_data);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(this.#ctx.byteArrayTypeIndex),
+        );
+        body.push(
+          ...WasmModule.encodeSignedLEB128(this.#ctx.sharedStringsDataIndex),
+        );
+        body.push(Opcode.global_set);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(this.#ctx.sharedStringsGlobalIndex),
+        );
+      }
+
+      // Append global initializers code after all string literals are initialized
+      body.push(...globalInitCode);
+      body.push(Opcode.end);
+
+      this.#ctx.module.addCode(startFuncIndex, this.#ctx.extraLocals, body);
+      this.#ctx.module.setStart(startFuncIndex);
     }
 
     // Check for codegen errors before returning

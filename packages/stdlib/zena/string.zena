@@ -47,6 +47,12 @@ export final class String {
   #start: i32;         // Start offset into #data (inclusive)
   #end: i32;           // End offset into #data (exclusive)
   #encoding: Encoding;
+  /**
+   * Cached hash code. A value of 0 indicates that the hash code has not yet
+   * been computed. If a string's calculated FNV-1a hash is exactly 0, it is
+   * coerced to 1 by the compiler's hash helper to avoid redundant recomputations.
+   */
+  var #hashCode: i32 = 0;
 
   /**
    * Create a new array from a ByteArray.
@@ -291,6 +297,17 @@ export final class String {
   }
 
   /**
+   * Returns the backing ByteArray if the String spans the entire array (i.e. not a slice).
+   * Used for optimization by StringBuilder.
+   */
+  getBackingArrayIfFull(): ByteArray | null {
+    if (this.#start == 0 && this.#end == __byte_array_length(this.#data)) {
+      return this.#data;
+    }
+    return null;
+  }
+
+  /**
    * Concatenates two strings and returns a new string.
    */
   operator +(other: String): String {
@@ -306,8 +323,16 @@ export final class String {
    * Equality operator - compares the bytes in each view.
    */
   operator ==(other: String): boolean {
+    if (this === other) {
+      return true;
+    }
     let length = other.#end - other.#start;
     if (length != this.#end - this.#start) {
+      return false;
+    }
+    let h1 = this.#hashCode;
+    let h2 = other.#hashCode;
+    if (h1 != 0 && h2 != 0 && h1 != h2) {
       return false;
     }
     return this.#regionEquals(other, this.#start, other.#start, length);

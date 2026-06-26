@@ -222,6 +222,18 @@ export class CodegenContext {
   public stringTypeIndex = -1;
   public byteArrayTypeIndex = -1;
   public stringLiterals = new Map<string, number>(); // content -> dataIndex
+  public stringLiteralIds = new Map<string, number>(); // content -> ID (index in array)
+  public stringLiteralsArrayGlobalIndex = -1;
+  public getStringLiteralFunctionIndex = -1;
+  public stringArrayTypeIndex = -1;
+  public sharedStringsGlobalIndex = -1;
+  public stringFromSharedFunctionIndex = -1;
+  public stringLiteralLocations = new Map<
+    string,
+    {offset: number; length: number}
+  >();
+  public sharedStringsLength = 0;
+  public sharedStringsDataIndex = -1;
 
   // Deferred generation
   public pendingFunctionRegistrations: (() => void)[] = [];

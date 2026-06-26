@@ -22,7 +22,7 @@ import { dirName, normalizePath } from '../module-resolver.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned } from './wasm.zena';
-import { WasmField, WasmStruct, WasmSignature, sortWasmFields } from './wasm-module.zena';
+import { WasmField, WasmStruct, WasmSignature, sortWasmFields, WasmGlobal, WasmFunction, WasmModule, WasmArray } from './wasm-module.zena';
 import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters } from './type-mapping.zena';
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
@@ -52,7 +52,6 @@ import { generateBlockStatement } from './stmt/blocks.zena';
 import { generateVariableDeclaration, generatePatternBinding } from './stmt/bindings.zena';
 import { discoverLocalsFromExpr, discoverLocalsFromStmt, discoverLocalsFromPattern } from './locals.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { WasmFunction, WasmModule } from './wasm-module.zena';
 
 /**
  * Manages the generic AST traversal and code generation.
@@ -117,6 +116,16 @@ export class FunctionGenerator {
         this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
         this.ctx.emitter.emitFunctionSignatureStart("__start", this.ctx.wasmFunction.signature.index);
         this.ctx.emitter.emitFunctionLocalsStart(this.ctx.localTypes);
+        
+        if (this.ctx.wasm.sharedStringsGlobal != null) {
+          let byteArrayType = this.ctx.wasm.getByteArrayType();
+          let byteArrayTypeIndex = byteArrayType.index;
+          
+          this.ctx.emitter.emitI32Const(0); // offset
+          this.ctx.emitter.emitI32Const(this.ctx.wasm.sharedStringsLength); // length
+          this.ctx.emitter.emitArrayNewData(byteArrayTypeIndex, this.ctx.wasm.sharedStringsDataIdx);
+          this.ctx.emitter.emitGlobalSet((this.ctx.wasm.sharedStringsGlobal as WasmGlobal).index);
+        }
         
         for (let g in this.ctx.wasm.globals) {
           if (g.initExpr != null) {
@@ -210,12 +219,25 @@ export class FunctionGenerator {
         name = this.ctx.wasmFunction.name as String;
       }
       this.ctx.emitter.emitFunctionSignatureStart(name, this.ctx.wasmFunction.signature.index);
-      this.ctx.emitter.emitFunctionLocalsStart(new Array<ValType>());
+      let helperLocals = new Array<ValType>();
+      if (this.ctx.wasmFunction.name != null && (this.ctx.wasmFunction.name as String) == "get_string_literal") {
+        let stringClass = this.ctx.wasm.stringClass;
+        if (stringClass != null) {
+          let stringKey = getClassKey(stringClass as ClassType);
+          let stringStruct = this.ctx.wasm.classStructs[stringKey];
+          helperLocals.push(new ValTypeRefNull(stringStruct)); // local 1: str
+        }
+      }
+      this.ctx.emitter.emitFunctionLocalsStart(helperLocals);
       
       if (this.ctx.wasmFunction.isCaseClassEq) {
         this.generateCaseClassEqBody();
       } else if (this.ctx.wasmFunction.isCaseClassHash) {
         this.generateCaseClassHashBody();
+      } else if (this.ctx.wasmFunction.name != null && (this.ctx.wasmFunction.name as String) == "string_from_shared") {
+        this.generateStringFromSharedBody();
+      } else if (this.ctx.wasmFunction.name != null && (this.ctx.wasmFunction.name as String) == "get_string_literal") {
+        this.generateGetStringLiteralBody();
       } else if (this.ctx.wasmFunction.methodName != null && (this.ctx.wasmFunction.methodName as String) == "<constructor>" && this.ctx.wasmFunction.classType != null && (this.ctx.wasmFunction.classType as ClassType).isCaseClass) {
         this.generateCaseClassConstructorBody();
       } else if (this.ctx.wasmFunction.getterStruct != null) {
@@ -1174,6 +1196,172 @@ export class FunctionGenerator {
     this.ctx.emitter.emitReturn();
   }
 
+  generateStringFromSharedBody(): void {
+    let wasm = this.ctx.wasm;
+    let stringClass = wasm.stringClass;
+    if (stringClass == null) {
+      throw new Error("String class not found during string_from_shared body generation!");
+    }
+    let stringKey = getClassKey(stringClass as ClassType);
+    let structType = wasm.classStructs[stringKey];
+
+    // Find string field offsets
+    var dataFieldIdx = -1;
+    var startFieldIdx = -1;
+    var endFieldIdx = -1;
+    var encodingFieldIdx = -1;
+    for (var f = 0; f < structType.fields.length; f += 1) {
+      let fieldName = structType.fields[f].name;
+      if (fieldName != null) {
+        let nameStr = fieldName as String;
+        if (nameStr.endsWith("::#data")) {
+          dataFieldIdx = f;
+        } else if (nameStr.endsWith("::#start")) {
+          startFieldIdx = f;
+        } else if (nameStr.endsWith("::#end")) {
+          endFieldIdx = f;
+        } else if (nameStr.endsWith("::#encoding")) {
+          encodingFieldIdx = f;
+        }
+      }
+    }
+    if (dataFieldIdx == -1 || startFieldIdx == -1 || endFieldIdx == -1 || encodingFieldIdx == -1) {
+      throw new Error("String fields not found in struct during string_from_shared body generation!");
+    }
+
+    for (var i = 0; i < structType.fields.length; i += 1) {
+      let field = structType.fields[i];
+      let fieldName = field.name;
+      if (fieldName != null) {
+        let nameStr = fieldName as String;
+        if (nameStr == "<vtable>" || nameStr == "__vtable") {
+          let vtableGlobal = wasm.classVTableGlobals[stringKey as ClassKey];
+          this.ctx.emitter.emitGlobalGet(vtableGlobal.index);
+        } else if (nameStr.startsWith("__brand_")) {
+          this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
+        } else if (i == dataFieldIdx) {
+          this.ctx.emitter.emitGlobalGet((wasm.sharedStringsGlobal as WasmGlobal).index);
+        } else if (i == startFieldIdx) {
+          this.ctx.emitter.emitLocalGet(0);
+        } else if (i == endFieldIdx) {
+          this.ctx.emitter.emitLocalGet(0);
+          this.ctx.emitter.emitLocalGet(1);
+          this.ctx.emitter.emitI32Add();
+        } else if (i == encodingFieldIdx) {
+          this.ctx.emitter.emitI32Const(0);
+        } else if (nameStr.endsWith("::#hashCode")) {
+          this.ctx.emitter.emitI32Const(0);
+        } else {
+          match (field.type) {
+            case ValTypeI32: this.ctx.emitter.emitI32Const(0)
+            case ValTypeI64: this.ctx.emitter.emitI64Const(0 as i64)
+            case ValTypeF32: this.ctx.emitter.emitF32Const(0.0)
+            case ValTypeF64: this.ctx.emitter.emitF64Const(0.0)
+            case _: this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none))
+          }
+        }
+      }
+    }
+
+    this.ctx.emitter.emitStructNew(structType.index);
+  }
+
+  generateGetStringLiteralBody(): void {
+    let wasm = this.ctx.wasm;
+    let arrayType = wasm.stringArrayType as WasmArray;
+    let arrayGlobal = wasm.stringLiteralsArrayGlobal as WasmGlobal;
+    let stringClass = wasm.stringClass;
+    if (stringClass == null) {
+      throw new Error("String class not found during get_string_literal body generation!");
+    }
+    let stringKey = getClassKey(stringClass as ClassType);
+    let stringStruct = wasm.classStructs[stringKey];
+
+    // Check if the array already contains the string
+    this.ctx.emitter.emitGlobalGet(arrayGlobal.index);
+    this.ctx.emitter.emitLocalGet(0); // id
+    this.ctx.emitter.emitArrayGet(arrayType.index);
+    this.ctx.emitter.emitLocalTee(1); // store in local 1
+    this.ctx.emitter.emitRefIsNull();
+    this.ctx.emitter.emitIf(new ValTypeVoid());
+
+    let N = wasm.stringLiteralIds.size;
+    if (N == 0) {
+      this.ctx.emitter.emitUnreachable();
+    } else if (N == 1) {
+      let keys = wasm.stringLiteralIds.keys();
+      if (let (true, firstLiteral) = keys.next()) {
+        let loc = wasm.stringLiteralLocations[firstLiteral];
+        this.ctx.emitter.emitI32Const(loc.offset);
+        this.ctx.emitter.emitI32Const(loc.length);
+        this.ctx.emitter.emitCall(wasm.stringFromSharedFunc as WasmFunction);
+        this.ctx.emitter.emitLocalSet(1);
+      }
+    } else {
+      let idEntries = new Array<String>();
+      let keys = wasm.stringLiteralIds.keys();
+      while (let (true, val) = keys.next()) {
+        idEntries.push(val);
+      }
+      
+      // Sort keys by their assigned ID to ensure we emit branches in ID order 0, 1, 2, ...
+      for (var i = 0; i < N; i += 1) {
+        var minIdx = i;
+        for (var j = i + 1; j < N; j += 1) {
+          let idVal = wasm.stringLiteralIds[idEntries[j]];
+          let minVal = wasm.stringLiteralIds[idEntries[minIdx]];
+          if (idVal < minVal) {
+            minIdx = j;
+          }
+        }
+        if (minIdx != i) {
+          let temp = idEntries[i];
+          idEntries[i] = idEntries[minIdx];
+          idEntries[minIdx] = temp;
+        }
+      }
+
+      for (var i = 0; i < N - 1; i += 1) {
+        this.ctx.emitter.emitLocalGet(0); // id
+        this.ctx.emitter.emitI32Const(i);
+        this.ctx.emitter.emitI32Eq();
+        this.ctx.emitter.emitIf(new ValTypeVoid());
+
+        let loc = wasm.stringLiteralLocations[idEntries[i]];
+        this.ctx.emitter.emitI32Const(loc.offset);
+        this.ctx.emitter.emitI32Const(loc.length);
+        this.ctx.emitter.emitCall(wasm.stringFromSharedFunc as WasmFunction);
+        this.ctx.emitter.emitLocalSet(1);
+
+        this.ctx.emitter.emitElse();
+      }
+
+      // Last branch
+      let loc = wasm.stringLiteralLocations[idEntries[N - 1]];
+      this.ctx.emitter.emitI32Const(loc.offset);
+      this.ctx.emitter.emitI32Const(loc.length);
+      this.ctx.emitter.emitCall(wasm.stringFromSharedFunc as WasmFunction);
+      this.ctx.emitter.emitLocalSet(1);
+
+      // End all the ifs
+      for (var i = 0; i < N - 1; i += 1) {
+        this.ctx.emitter.emitEnd();
+      }
+    }
+
+    // Store the newly instantiated string in the array
+    this.ctx.emitter.emitGlobalGet(arrayGlobal.index);
+    this.ctx.emitter.emitLocalGet(0); // id
+    this.ctx.emitter.emitLocalGet(1); // str
+    this.ctx.emitter.emitArraySet(arrayType.index);
+
+    this.ctx.emitter.emitEnd(); // close outer if
+
+    // Return the non-null reference
+    this.ctx.emitter.emitLocalGet(1);
+    this.ctx.emitter.emitRefCast(stringStruct.index);
+  }
+
   generateCaseClassEqBody(): void {
     let cType = this.ctx.wasmFunction.classType as ClassType;
     let structType = this.ctx.wasmFunction.structType as WasmStruct;
@@ -1838,6 +2026,7 @@ export class FunctionGenerator {
     var dataFieldIdx = -1;
     var startFieldIdx = -1;
     var endFieldIdx = -1;
+    var hashCodeFieldIdx = -1;
     for (var f = 0; f < (stringStruct as WasmStruct).fields.length; f += 1) {
       let fieldName = (stringStruct as WasmStruct).fields[f].name;
       if (fieldName != null) {
@@ -1848,11 +2037,13 @@ export class FunctionGenerator {
           startFieldIdx = f;
         } else if (nameStr.endsWith("::#end")) {
           endFieldIdx = f;
+        } else if (nameStr.endsWith("::#hashCode")) {
+          hashCodeFieldIdx = f;
         }
       }
     }
 
-    if (dataFieldIdx == -1 || startFieldIdx == -1 || endFieldIdx == -1) {
+    if (dataFieldIdx == -1 || startFieldIdx == -1 || endFieldIdx == -1 || hashCodeFieldIdx == -1) {
       throw new Error("$stringHash: String layout fields not found in structure!");
     }
 
@@ -1869,6 +2060,21 @@ export class FunctionGenerator {
     let iLocal = 3;
     let endLocal = 4;
 
+    // Check if hashCode is already cached (s.#hashCode != 0)
+    this.ctx.emitter.emitLocalGet(sParam);
+    this.ctx.emitter.emitStructGet(stringStructIndex, hashCodeFieldIdx);
+    this.ctx.emitter.emitLocalTee(hashLocal);
+    this.ctx.emitter.emitI32Const(0);
+    this.ctx.emitter.emitI32Ne();
+    this.ctx.emitter.emitIf(new ValTypeI32());
+    
+    // If branch: return cached hash
+    this.ctx.emitter.emitLocalGet(hashLocal);
+    
+    this.ctx.emitter.emitElse();
+
+    // Else branch: calculate hash
+    
     // data = s.#data
     this.ctx.emitter.emitLocalGet(sParam);
     this.ctx.emitter.emitStructGet(stringStructIndex, dataFieldIdx);
@@ -1921,11 +2127,29 @@ export class FunctionGenerator {
     this.ctx.emitter.emitLocalSet(iLocal);
 
     this.ctx.emitter.emitBr(0);
-    this.ctx.emitter.emitEnd();
-    this.ctx.emitter.emitEnd();
+    this.ctx.emitter.emitEnd(); // end loop
+    this.ctx.emitter.emitEnd(); // end block
 
-    // return hash
+    // Prevent 0 hash (since 0 means uncalculated)
     this.ctx.emitter.emitLocalGet(hashLocal);
+    this.ctx.emitter.emitI32Const(0);
+    this.ctx.emitter.emitI32Eq();
+    this.ctx.emitter.emitIf(new ValTypeI32());
+    this.ctx.emitter.emitI32Const(1);
+    this.ctx.emitter.emitElse();
+    this.ctx.emitter.emitLocalGet(hashLocal);
+    this.ctx.emitter.emitEnd();
+    this.ctx.emitter.emitLocalSet(hashLocal);
+
+    // Store in cache: s.#hashCode = hash
+    this.ctx.emitter.emitLocalGet(sParam);
+    this.ctx.emitter.emitLocalGet(hashLocal);
+    this.ctx.emitter.emitStructSet(stringStructIndex, hashCodeFieldIdx);
+
+    // Return the calculated hash
+    this.ctx.emitter.emitLocalGet(hashLocal);
+
+    this.ctx.emitter.emitEnd(); // close outer if-else
   }
 
   generateStringGetByte(): void {
