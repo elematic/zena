@@ -41,7 +41,8 @@ import {
   getInterfaceTrampolineName, getClassInterfaceVTableName,
   MixinKey, getMixinKey, classInterfaceKeyToString, getMixinKeyFromSymbol,
   substituteTypeParams, getTypeUniqueKey, FunctionAdaptationKey, getFunctionAdaptationKey,
-  ClassMethodKey, getClassMethodKey
+  ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, getSpecializedFunctionKey,
+  ClosureSpecializationKey, getClosureSpecializationKey, FunctionValueWrapperKey, getFunctionValueWrapperKey
 } from './codegen-utils.zena';
 import { 
   typeToValType, getClosureStruct, getCellStruct, getInterfaceMemberSignature, 
@@ -2134,7 +2135,7 @@ export class DiscoveryPass {
                     }
                     case _: "<unknown>"
                   };
-                  let key = (getClassKey(classType) as String) + "." + methName;
+                  let key = getClassMethodKey(getClassKey(classType), methName);
                   this.wasm.genericMethods[key] = method;
                   this.wasm.genericMethodModels[key] = moduleModel;
                   continue;
@@ -2858,9 +2859,9 @@ export class DiscoveryPass {
               var isRegistered = false;
               
               let targetClassType = f.classType;
-              let targetClassKey = if (targetClassType != null) (getClassKey(targetClassType as ClassType) as String) else "";
+              let targetClassKey = if (targetClassType != null) getClassKey(targetClassType as ClassType) else "" as ClassKey;
               
-              let closureKey = i32ToString(funcExpr.id as i32) + "_" + targetClassKey;
+              let closureKey = getClosureSpecializationKey(funcExpr.id, targetClassKey);
               if (this.wasm.specializedClosures.has(closureKey)) {
                 isRegistered = true;
               }
@@ -2905,10 +2906,10 @@ export class DiscoveryPass {
                     var targetWasmFunc: WasmFunction | null = null;
                     var keyName = "";
                     if (isSpecialized) {
-                      let specName = getSpecializedName(ident.name, resolvedArgs);
-                      keyName = specName;
-                      if (this.wasm.specializedFunctions.has(specName)) {
-                        targetWasmFunc = this.wasm.specializedFunctions[specName];
+                      let specKey = getSpecializedFunctionKey(ident.name, resolvedArgs);
+                      keyName = specKey as String;
+                      if (this.wasm.specializedFunctions.has(specKey)) {
+                        targetWasmFunc = this.wasm.specializedFunctions[specKey];
                       }
                     } else {
                       keyName = i32ToString(symVal.id as i32);
@@ -2928,7 +2929,7 @@ export class DiscoveryPass {
                       }
                       let sig = this.wasm.getSignature(wrapperParams, wrapperReturns);
                       
-                      let wrapperKey = keyName + "_wrapper_" + getSignatureKey(ft);
+                      let wrapperKey = getFunctionValueWrapperKey(keyName, ft);
                       if (!this.wasm.functionValueWrappers.has(wrapperKey)) {
                         let wrapperFunc = new WasmFunction(sig, null as Node, f.model);
                         let targetName = if ((targetWasmFunc as WasmFunction).name != null) (targetWasmFunc as WasmFunction).name as String else "func";
@@ -2960,7 +2961,7 @@ export class DiscoveryPass {
                     var currClass: ClassType | null = ct;
                     while (currClass != null && !foundTemplate) {
                       let baseCt = if ((currClass as ClassType).genericSource != null) (currClass as ClassType).genericSource as ClassType else currClass as ClassType;
-                      let key = (getClassKey(baseCt) as String) + "." + methName;
+                      let key = getClassMethodKey(getClassKey(baseCt), methName);
                       if (this.wasm.genericMethods.has(key)) {
                         let methodDef = this.wasm.genericMethods[key];
                         let methodModel = this.wasm.genericMethodModels[key];
@@ -3018,8 +3019,8 @@ export class DiscoveryPass {
     wasmFunc.isReferenceTaken = true;
     wasmFunc.classType = classType;
     
-    let classKey = if (classType != null) (getClassKey(classType as ClassType) as String) else "";
-    let suffix = if (classKey.length > 0) "_" + classKey else "";
+    let classKey = if (classType != null) getClassKey(classType as ClassType) else "" as ClassKey;
+    let suffix = if ((classKey as String).length > 0) "_" + (classKey as String) else "";
 
     // Generate location-based stable identifier
     let fileBase = sanitizeName(getFileNameBase(getNodeFilePath(model, funcExpr)));
@@ -3094,7 +3095,7 @@ export class DiscoveryPass {
     this.wasm.addFunction(wasmFunc);
     this.wasm.closureFunctions[funcExpr] = wasmFunc;
     
-    let closureKey = i32ToString(funcExpr.id as i32) + "_" + classKey;
+    let closureKey = getClosureSpecializationKey(funcExpr.id, classKey);
     this.wasm.specializedClosures[closureKey] = wasmFunc;
   }
 
@@ -3115,10 +3116,11 @@ export class DiscoveryPass {
       originalName = "generic_func";
     }
     
-    let specName = getSpecializedName(originalName, typeArgs);
+    let specKey = getSpecializedFunctionKey(originalName, typeArgs);
+    let specName = specKey as String;
     // console.log("INSTANTIATED GENERIC: specName=" + specName);
-    if (this.wasm.specializedFunctions.has(specName)) {
-      return this.wasm.specializedFunctions[specName];
+    if (this.wasm.specializedFunctions.has(specKey)) {
+      return this.wasm.specializedFunctions[specKey];
     }
     
     // Resolve the original generic FunctionType
@@ -3146,7 +3148,7 @@ export class DiscoveryPass {
     wasmFunc.name = specName;
     
     // Register it
-    this.wasm.specializedFunctions[specName] = wasmFunc;
+    this.wasm.specializedFunctions[specKey] = wasmFunc;
     this.wasm.addFunction(wasmFunc);
     
     return wasmFunc;
@@ -3164,7 +3166,8 @@ export class DiscoveryPass {
     };
     
     // Check if it's already instantiated
-    let specName = getSpecializedName((getClassKey(cType) as String) + "." + methName, methodTypeArgs);
+    let specKey = getSpecializedFunctionKey((getClassKey(cType) as String) + "." + methName, methodTypeArgs);
+    let specName = specKey as String;
     console.log("DEBUG instantiateGenericMethod: class=" + cType.name + " method=" + methName + " specName=" + specName);
     walk(method as Node, (n: Node) => true, (n: Node) => {
       if (n is Identifier) {
@@ -3173,8 +3176,8 @@ export class DiscoveryPass {
         console.log("  ident: " + ident.name + " node.id=" + i32ToString(ident.id as i32) + " resolved=" + (if (resolvedSym != null) "yes" else "no"));
       }
     });
-    if (this.wasm.specializedFunctions.has(specName)) {
-      return this.wasm.specializedFunctions[specName];
+    if (this.wasm.specializedFunctions.has(specKey)) {
+      return this.wasm.specializedFunctions[specKey];
     }
     
     // Resolve the original generic method signature
@@ -3240,7 +3243,7 @@ export class DiscoveryPass {
     }
     
     // Register it
-    this.wasm.specializedFunctions[specName] = wasmFunc;
+    this.wasm.specializedFunctions[specKey] = wasmFunc;
     this.wasm.addFunction(wasmFunc);
     
     return wasmFunc;

@@ -5,7 +5,7 @@ import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16 } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature } from '../wasm-module.zena';
-import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, getSpecializedFunctionKey } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
@@ -323,10 +323,9 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
           let isSpecialized = resolvedArgsCall.length > 0;
           if (isSpecialized) {
-            let specName = getSpecializedName(resolved.name, resolvedArgsCall);
-            // console.log("CALL SITE LOOKUP: specName=" + specName + " has=" + (if (ctx.wasm.specializedFunctions.has(specName)) "true" else "false"));
-            if (ctx.wasm.specializedFunctions.has(specName)) {
-              let f = ctx.wasm.specializedFunctions[specName];
+            let specKey = getSpecializedFunctionKey(resolved.name, resolvedArgsCall);
+            if (ctx.wasm.specializedFunctions.has(specKey)) {
+              let f = ctx.wasm.specializedFunctions[specKey];
               generateCallArguments(ctx, call, ft, -1, currentGenExpr);
               ctx.emitter.emitCall(f);
               return;
@@ -365,9 +364,9 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           for (let arg in ((ft as FunctionType).typeArguments as Array<Type>)) {
             resolvedArgsMember.push(substituteTypeParamsInFunctionContext(ctx.wasmFunction, arg));
           }
-          let specName = getSpecializedName((getClassKey(ct) as String) + "." + targetName, resolvedArgsMember);
-          if (ctx.wasm.specializedFunctions.has(specName)) {
-            let f = ctx.wasm.specializedFunctions[specName];
+          let specKey = getSpecializedFunctionKey((getClassKey(ct) as String) + "." + targetName, resolvedArgsMember);
+          if (ctx.wasm.specializedFunctions.has(specKey)) {
+            let f = ctx.wasm.specializedFunctions[specKey];
             if (!f.isStatic) {
               currentGenExpr(member.object, false);
             }

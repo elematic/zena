@@ -27,7 +27,7 @@ import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, s
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
   getClassPrivateFieldKey, classInterfaceKeyToString,
-  MixinKey, ClassKey, ClassMethodKey, getClassMethodKey
+  MixinKey, ClassKey, ClassMethodKey, getClassMethodKey, ClosureSpecializationKey, getClosureSpecializationKey
 } from './codegen-utils.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
@@ -1552,8 +1552,8 @@ export class FunctionGenerator {
 
   generateFunctionExpression(fExpr: FunctionExpression): void {
     let classType = this.ctx.wasmFunction.classType;
-    let classKey = if (classType != null) (getClassKey(classType as ClassType) as String) else "";
-    let closureKey = i32ToString(fExpr.id as i32) + "_" + classKey;
+    let classKey = if (classType != null) getClassKey(classType as ClassType) else "" as ClassKey;
+    let closureKey = getClosureSpecializationKey(fExpr.id, classKey);
     if (this.ctx.wasm.specializedClosures.has(closureKey)) {
       let closureFunc = this.ctx.wasm.specializedClosures[closureKey];
       let funcTypeNode = getNodeType(this.ctx, fExpr) as Type;
@@ -1596,7 +1596,7 @@ export class FunctionGenerator {
       // 3. Create closure struct
       this.ctx.emitter.emitStructNew(closureStruct.index);
     } else {
-      throw new Error("Closure function not registered for FunctionExpression: " + i32ToString(fExpr.id as i32) + " with class key: " + classKey);
+      throw new Error("Closure function not registered for FunctionExpression: " + i32ToString(fExpr.id as i32) + " with class key: " + (classKey as String));
     }
   }
   
