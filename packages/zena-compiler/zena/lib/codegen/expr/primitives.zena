@@ -124,7 +124,16 @@ export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): 
     throw new Error("String class struct not found during string literal generation!");
   }
   let stringKey = getClassKey(stringClass as ClassType);
-  let structType = ctx.wasm.classStructs[stringKey];
+  var structTypeOpt: WasmStruct | null = null;
+  var vtableGlobal: WasmGlobal | null = null;
+  if (let (true, stringInfo) = ctx.wasm.classInfos.get(stringKey)) {
+    structTypeOpt = stringInfo.structType;
+    vtableGlobal = stringInfo.vtableGlobal;
+  }
+  if (structTypeOpt == null) {
+    throw new Error("String class struct not found during string literal generation!");
+  }
+  let structType = structTypeOpt as WasmStruct;
   let tempLocal = ctx.allocLocal(new ValTypeRefNull(structType));
 
   // 1. Allocate String struct with default values
@@ -132,11 +141,9 @@ export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): 
   ctx.emitter.emitLocalSet(tempLocal);
 
   // 2. Set vtable (field 0)
-  let hasVTable = ctx.wasm.classVTableGlobals.has(stringKey as ClassKey);
-  if (hasVTable) {
-    let vtableGlobal = ctx.wasm.classVTableGlobals[stringKey as ClassKey];
+  if (vtableGlobal != null) {
     ctx.emitter.emitLocalGet(tempLocal);
-    ctx.emitter.emitGlobalGet(vtableGlobal.index);
+    ctx.emitter.emitGlobalGet((vtableGlobal as WasmGlobal).index);
     ctx.emitter.emitStructSet(structType.index, 0); // vtable is field 0
   }
 
@@ -219,7 +226,14 @@ export let generateTemplateLiteral = (
     throw new Error("String class struct not found during template literal generation!");
   }
   let stringKey = getClassKey(stringClass as ClassType);
-  let stringStruct = ctx.wasm.classStructs[stringKey];
+  var stringStructOpt: WasmStruct | null = null;
+  if (let (true, info) = ctx.wasm.classInfos.get(stringKey)) {
+    stringStructOpt = info.structType;
+  }
+  if (stringStructOpt == null) {
+    throw new Error("String class struct not found during template literal generation!");
+  }
+  let stringStruct = stringStructOpt as WasmStruct;
   let stringWasmType = new ValTypeRefNull(stringStruct);
 
   var fromPartsFunc: WasmFunction | null = null;
@@ -291,7 +305,17 @@ export let generateTaggedTemplateExpression = (
     throw new Error("TemplateStringsArray class struct not found during tagged template literal generation!");
   }
   let tsaKey = getClassKey(tsaClass as ClassType);
-  let tsaStruct = ctx.wasm.classStructs[tsaKey];
+  var tsaStructOpt: WasmStruct | null = null;
+  var tsaVtableGlobalOpt: WasmGlobal | null = null;
+  if (let (true, tsaInfo) = ctx.wasm.classInfos.get(tsaKey)) {
+    tsaStructOpt = tsaInfo.structType;
+    tsaVtableGlobalOpt = tsaInfo.vtableGlobal;
+  }
+  if (tsaStructOpt == null) {
+    throw new Error("TemplateStringsArray class struct not found during tagged template literal generation!");
+  }
+  let tsaStruct = tsaStructOpt as WasmStruct;
+  let tsaVtableGlobal = tsaVtableGlobalOpt;
 
   // 2. Identify String class struct
   let stringClass = ctx.wasm.stringClass;
@@ -299,7 +323,14 @@ export let generateTaggedTemplateExpression = (
     throw new Error("String class struct not found during tagged template literal generation!");
   }
   let stringKey = getClassKey(stringClass as ClassType);
-  let stringStruct = ctx.wasm.classStructs[stringKey];
+  var stringStructOpt: WasmStruct | null = null;
+  if (let (true, stringInfo) = ctx.wasm.classInfos.get(stringKey)) {
+    stringStructOpt = stringInfo.structType;
+  }
+  if (stringStructOpt == null) {
+    throw new Error("String class struct not found during tagged template literal generation!");
+  }
+  let stringStruct = stringStructOpt as WasmStruct;
   let stringWasmType = new ValTypeRefNull(stringStruct);
   let wasmArrayType = ctx.wasm.getArray(stringWasmType, true);
   if (wasmArrayType.index < 0) {
@@ -363,10 +394,8 @@ export let generateTaggedTemplateExpression = (
   ctx.emitter.emitLocalSet(rawLocal);
 
   // Instantiate TSA struct
-  let hasVTable = ctx.wasm.classVTableGlobals.has(tsaKey as ClassKey);
-  if (hasVTable) {
-    let vtableGlobal = ctx.wasm.classVTableGlobals[tsaKey as ClassKey];
-    ctx.emitter.emitGlobalGet(vtableGlobal.index);
+  if (tsaVtableGlobal != null) {
+    ctx.emitter.emitGlobalGet((tsaVtableGlobal as WasmGlobal).index);
   } else {
     ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
   }

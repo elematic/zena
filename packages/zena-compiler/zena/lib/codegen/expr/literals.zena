@@ -2,7 +2,7 @@ import { FunctionContext } from '../function-context.zena';
 import { RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement, ArrayLiteral, Expression, Node, Identifier } from '../../ast.zena';
 import { RecordType, TupleType, InlineTupleType, ArrayType, F64Type, F32Type, Type, ClassType } from '../../types.zena';
 import { ValType, ValTypeRefNull, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeStructRef, ValTypeEqRef, ValTypeAnyRef } from '../wasm.zena';
-import { WasmField, WasmArray, sortWasmFields } from '../wasm-module.zena';
+import { WasmField, WasmArray, sortWasmFields, WasmStruct, WasmGlobal } from '../wasm-module.zena';
 import { typeToValType, getNonNullableType } from '../type-mapping.zena';
 import { getClassKey } from '../codegen-utils.zena';
 import { NodeMap } from '../../node-map.zena';
@@ -207,20 +207,24 @@ export let generateRecordLiteral = (
             if (ct.members.has(key) && !(key.length > 0 && key.sliceBytes(0, 1) == "#")) {
               let localIndex = spreadLocals[spread];
               let ctKey = getClassKey(ct);
-              if (!ctx.wasm.classStructs.has(ctKey)) {
+              var structInfo: WasmStruct | null = null;
+              if (let (true, info) = ctx.wasm.classInfos.get(ctKey)) {
+                structInfo = info.structType;
+              }
+              if (structInfo == null) {
                 throw new Error("Class struct not found: " + ct.name);
               }
-              let structInfo = ctx.wasm.classStructs[ctKey];
+              let structInfoVal = structInfo as WasmStruct;
               var fieldIndex = -1;
-              for (var fIdx = 0; fIdx < structInfo.fields.length; fIdx += 1) {
-                if (structInfo.fields[fIdx].name != null && (structInfo.fields[fIdx].name as String) == key) {
+              for (var fIdx = 0; fIdx < structInfoVal.fields.length; fIdx += 1) {
+                if (structInfoVal.fields[fIdx].name != null && (structInfoVal.fields[fIdx].name as String) == key) {
                   fieldIndex = fIdx;
                 }
               }
               if (fieldIndex != -1) {
                 ctx.emitter.emitLocalGet(localIndex);
-                ctx.emitter.emitRefCast(structInfo.index);
-                ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
+                ctx.emitter.emitRefCast(structInfoVal.index);
+                ctx.emitter.emitStructGet(structInfoVal.index, fieldIndex);
                 found = true;
               }
             }

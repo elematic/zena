@@ -578,7 +578,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
   let rootClass = getMemberRootClass(ct, fieldName);
   let params = new Array<ValType>();
   let rootKey = getClassKey(rootClass);
-  let classStruct = if (wasm.classStructs.has(rootKey)) wasm.classStructs[rootKey] else null;
+  let classStruct = if (let (true, rootInfo) = wasm.classInfos.get(rootKey)) rootInfo.structType else null;
   if (classStruct != null) {
     params.push(new ValTypeRefNull(classStruct as WasmStruct));
   } else {
@@ -735,8 +735,8 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     let stringClass = wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (wasm.classStructs.has(key)) {
-        stringStruct = wasm.classStructs[key];
+      if (let (true, stringInfo) = wasm.classInfos.get(key)) {
+        stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct != null) {
@@ -790,8 +790,8 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     if (ct.isExtension && ct.onType != null) {
       return typeToValType(wasm, ct.onType as Type);
     }
-    if (wasm.classStructs.has(getClassKey(ct))) {
-      new ValTypeRefNull(wasm.classStructs[getClassKey(ct)])
+    if (let (true, ctInfo) = wasm.classInfos.get(getClassKey(ct))) {
+      new ValTypeRefNull(ctInfo.structType)
     } else {
       throw new Error("Class struct not found for: " + ct.name);
     }

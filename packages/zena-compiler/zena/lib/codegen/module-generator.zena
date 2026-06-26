@@ -45,8 +45,14 @@ export class ModuleGenerator {
       if (wasm.stringLiterals.size > 0) {
         wasm.getStringLiteralDataIndex(""); // Ensure empty string is in stringLiterals
         let stringKey = getClassKey(stringClass as ClassType);
-        let stringStruct = wasm.classStructs[stringKey];
-        let stringType = new ValTypeRefNull(stringStruct);
+        var stringStruct: WasmStruct | null = null;
+        if (let (true, stringInfo) = wasm.classInfos.get(stringKey)) {
+          stringStruct = stringInfo.structType;
+        }
+        if (stringStruct == null) {
+          throw new Error("String class struct not found during module compilation!");
+        }
+        let stringType = new ValTypeRefNull(stringStruct as WasmStruct);
 
         // Sort stringLiterals by length descending
         let sortedStrings = new Array<String>();
@@ -361,10 +367,17 @@ export class ModuleGenerator {
       } else if (g.initSingletonStruct != null) {
         let cType = g.initSingletonStruct as ClassType;
         let cKey = getClassKey(cType);
-        let structType = wasm.classStructs[cKey];
-        let vtableGlobal = wasm.classVTableGlobals[cKey];
-        this.emitter.emitGlobalGet(vtableGlobal.index);
-        this.emitter.emitStructNew(structType.index);
+        var structType: WasmStruct | null = null;
+        var vtableGlobal: WasmGlobal | null = null;
+        if (let (true, info) = wasm.classInfos.get(cKey)) {
+          structType = info.structType;
+          vtableGlobal = info.vtableGlobal;
+        }
+        if (structType == null || vtableGlobal == null) {
+          throw new Error("Singleton struct or vtable not found for class: " + cType.name);
+        }
+        this.emitter.emitGlobalGet((vtableGlobal as WasmGlobal).index);
+        this.emitter.emitStructNew((structType as WasmStruct).index);
         emitted = true;
       } else if (g.initArraySize >= 0) {
         this.emitter.emitI32Const(g.initArraySize);

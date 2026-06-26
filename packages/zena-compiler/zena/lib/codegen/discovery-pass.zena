@@ -29,7 +29,7 @@ import { console } from 'zena:console';
 
 import { 
   WasmModule, WasmFunction, WasmStruct, WasmField, WasmSignature, WasmGlobal, 
-  VTableInit, RecordDispatchInfo, WasmArray
+  VTableInit, RecordDispatchInfo, WasmArray, ClassCodegenInfo
 } from './wasm-module.zena';
 import { 
   getClassKey, getInterfaceKey, getSignatureKey, matchOverload, 
@@ -88,8 +88,17 @@ export class DiscoveryPass {
   populateClassStructAndMethods(ct: ClassType, cd: ClassDeclaration | null, sourceModel: SemanticModel): void {
     let cKey = getClassKey(ct);
     // console.log("POPULATING CLASS: name=" + ct.name + " key=" + (cKey as String) + " super=" + (if (ct.superType != null) (ct.superType as ClassType).name else "null"));
-    let vst = this.wasm.classVTableStructs[cKey];
-    let st = this.wasm.classStructs[cKey];
+    var vstOpt: WasmStruct | null = null;
+    var stOpt: WasmStruct | null = null;
+    if (let (true, info) = this.wasm.classInfos.get(cKey)) {
+      stOpt = info.structType;
+      vstOpt = info.vtableStructType;
+    }
+    if (stOpt == null || vstOpt == null) {
+      throw new Error("Class struct or vtable struct not found for class: " + ct.name);
+    }
+    let st = stOpt as WasmStruct;
+    let vst = vstOpt as WasmStruct;
     
     // If already populated, return
     if (st.fields.length > 0) {
@@ -145,9 +154,11 @@ export class DiscoveryPass {
     let fields = new Array<WasmField>();
     if (ct.superType != null) {
       let superKey = getClassKey(ct.superType as ClassType);
-      let superSt = this.wasm.classStructs[superKey];
-      for (let f in superSt.fields) {
-        fields.push(f);
+      if (let (true, superInfo) = this.wasm.classInfos.get(superKey)) {
+        let superSt = superInfo.structType;
+        for (let f in superSt.fields) {
+          fields.push(f);
+        }
       }
     } else {
       var rootVst = vst;
@@ -193,10 +204,12 @@ export class DiscoveryPass {
       var isInherited = false;
       if (ct.superType != null) {
         let superKey = getClassKey(ct.superType as ClassType);
-        let superSt = this.wasm.classStructs[superKey];
-        for (let sf in superSt.fields) {
-          if (sf.name == pair.key) {
-            isInherited = true;
+        if (let (true, superInfo) = this.wasm.classInfos.get(superKey)) {
+          let superSt = superInfo.structType;
+          for (let sf in superSt.fields) {
+            if (sf.name == pair.key) {
+              isInherited = true;
+            }
           }
         }
       }
@@ -312,7 +325,7 @@ export class DiscoveryPass {
   registerSpecializedClass(ct: ClassType, classDecl: ClassDeclaration | null, sourceModel: SemanticModel): void {
     // console.log("REGISTER SPECIALIZED CLASS: ct=" + ct.name + " id=" + i32ToString(ct.id as i32) + " cKey=" + (getClassKey(ct) as String));
     let cKey = getClassKey(ct);
-    if (this.wasm.classStructs.has(cKey)) {
+    if (this.wasm.classInfos.has(cKey)) {
       return;
     }
 
@@ -323,12 +336,13 @@ export class DiscoveryPass {
     let emptyStruct = new WasmStruct(structName, new Array<WasmField>());
     emptyStruct.classType = ct;
     this.wasm.types.push(emptyStruct);
-    this.wasm.classStructs[cKey] = emptyStruct;
+    let info = new ClassCodegenInfo(emptyStruct);
+    this.wasm.classInfos[cKey] = info;
 
     let emptyVTableStruct = new WasmStruct(structName + "_VTable", new Array<WasmField>());
     emptyVTableStruct.classType = ct;
     this.wasm.types.push(emptyVTableStruct);
-    this.wasm.classVTableStructs[cKey] = emptyVTableStruct;
+    info.vtableStructType = emptyVTableStruct;
 
     // 2. Link super types
     if (ct.superType != null) {
@@ -336,11 +350,11 @@ export class DiscoveryPass {
       this.discoverType(superCt, sourceModel);
       
       let superKey = getClassKey(superCt);
-      if (this.wasm.classStructs.has(superKey)) {
-        emptyStruct.superStruct = this.wasm.classStructs[superKey];
-      }
-      if (this.wasm.classVTableStructs.has(superKey)) {
-        emptyVTableStruct.superStruct = this.wasm.classVTableStructs[superKey];
+      if (let (true, superInfo) = this.wasm.classInfos.get(superKey)) {
+        emptyStruct.superStruct = superInfo.structType;
+        if (superInfo.vtableStructType != null) {
+          emptyVTableStruct.superStruct = superInfo.vtableStructType as WasmStruct;
+        }
       }
       
       // Inherit vtable slots (prefix-preserving)
@@ -767,7 +781,7 @@ export class DiscoveryPass {
              // console.log("DISCOVER BOX: id=" + i32ToString(ct.id as i32) + " cKey=" + (cKey as String) + " lookupId=" + i32ToString(lookupId as i32) + " hasDecls=" + (if (this.classDecls.has(lookupId)) "true" else "false") + " isConcrete=" + (if (isConcrete(ct)) "true" else "false"));
           }
           let lookupId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
-          if (this.wasm.classStructs.has(cKey)) {
+          if (this.wasm.classInfos.has(cKey)) {
              return;
           }
         if (ct.name == "String" && ct.sourcePath == "zena:string") {
@@ -929,8 +943,8 @@ export class DiscoveryPass {
       if (cType.isExtension && cType.onType != null) {
         params.push(typeToValType(this.wasm, cType.onType as Type));
       } else {
-        if (this.wasm.classStructs.has(getClassKey(rootClass))) {
-          params.push(new ValTypeRefNull(this.wasm.classStructs[getClassKey(rootClass)]));
+        if (let (true, rootInfo) = this.wasm.classInfos.get(getClassKey(rootClass))) {
+          params.push(new ValTypeRefNull(rootInfo.structType));
         } else {
           params.push(new ValTypeAnyRef());
         }
@@ -980,8 +994,8 @@ export class DiscoveryPass {
     wasmFunc.classDecl = cDecl;
     
     wasmFunc.classType = cType;
-    if (this.wasm.classStructs.has(getClassKey(cType))) {
-        wasmFunc.structType = this.wasm.classStructs[getClassKey(cType)];
+    if (let (true, cInfo) = this.wasm.classInfos.get(getClassKey(cType))) {
+        wasmFunc.structType = cInfo.structType;
     }
 
     if (isSynthesizedGetter && backingFieldName != null) {
@@ -1041,8 +1055,8 @@ export class DiscoveryPass {
     let stringClass = this.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (this.wasm.classStructs.has(key)) {
-        stringStruct = this.wasm.classStructs[key];
+      if (let (true, stringInfo) = this.wasm.classInfos.get(key)) {
+        stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct == null) {
@@ -1090,8 +1104,8 @@ export class DiscoveryPass {
     let stringClass = this.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (this.wasm.classStructs.has(key)) {
-        stringStruct = this.wasm.classStructs[key];
+      if (let (true, stringInfo) = this.wasm.classInfos.get(key)) {
+        stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct == null) {
@@ -1409,30 +1423,34 @@ export class DiscoveryPass {
             this.classModels[cType.id] = moduleModel;
             if (cType.isExtension) { return; }
             let cKey = getClassKey(cType);
-            if (!this.wasm.classStructs.has(cKey)) {
+            if (!this.wasm.classInfos.has(cKey)) {
               let emptyStruct = new WasmStruct(cType.name, new Array<WasmField>());
               emptyStruct.classType = cType;
               this.wasm.types.push(emptyStruct);
-              this.wasm.classStructs[cKey] = emptyStruct;
+              let info = new ClassCodegenInfo(emptyStruct);
+              this.wasm.classInfos[cKey] = info;
+              
               let emptyVTableStruct = new WasmStruct(cType.name + "_VTable", new Array<WasmField>());
               emptyVTableStruct.classType = cType;
               this.wasm.types.push(emptyVTableStruct);
-              this.wasm.classVTableStructs[cKey] = emptyVTableStruct;
+              info.vtableStructType = emptyVTableStruct;
             }
             if (cType.sealedVariants != null) {
               let variants = cType.sealedVariants as Array<ClassType>;
               for (let vType in variants) {
                 if (vType == null) { continue; }
                 let vKey = getClassKey(vType);
-                if (!this.wasm.classStructs.has(vKey)) {
+                if (!this.wasm.classInfos.has(vKey)) {
                   let emptyStruct = new WasmStruct(vType.name, new Array<WasmField>());
                   emptyStruct.classType = vType;
                   this.wasm.types.push(emptyStruct);
-                  this.wasm.classStructs[vKey] = emptyStruct;
+                  let info = new ClassCodegenInfo(emptyStruct);
+                  this.wasm.classInfos[vKey] = info;
+                  
                   let emptyVTableStruct = new WasmStruct(vType.name + "_VTable", new Array<WasmField>());
                   emptyVTableStruct.classType = vType;
                   this.wasm.types.push(emptyVTableStruct);
-                  this.wasm.classVTableStructs[vKey] = emptyVTableStruct;
+                  info.vtableStructType = emptyVTableStruct;
                 }
               }
             }
@@ -1634,16 +1652,15 @@ export class DiscoveryPass {
         let cKey = getClassKey(ct);
         let superKey = getClassKey(superCt);
         
-        if (this.wasm.classStructs.has(cKey) && this.wasm.classStructs.has(superKey)) {
-          let st = this.wasm.classStructs[cKey];
-          let superSt = this.wasm.classStructs[superKey];
-          st.superStruct = superSt;
-        }
-        
-        if (this.wasm.classVTableStructs.has(cKey) && this.wasm.classVTableStructs.has(superKey)) {
-          let vst = this.wasm.classVTableStructs[cKey];
-          let superVst = this.wasm.classVTableStructs[superKey];
-          vst.superStruct = superVst;
+        if (let (true, info) = this.wasm.classInfos.get(cKey)) {
+          if (let (true, superInfo) = this.wasm.classInfos.get(superKey)) {
+            info.structType.superStruct = superInfo.structType;
+            if (info.vtableStructType != null && superInfo.vtableStructType != null) {
+              let vst = info.vtableStructType as WasmStruct;
+              let superVst = superInfo.vtableStructType as WasmStruct;
+              vst.superStruct = superVst;
+            }
+          }
         }
         
         // Inherit vtable slots (prefix-preserving)
@@ -1672,10 +1689,10 @@ export class DiscoveryPass {
     };
 
     let classesToLink = new Array<ClassType>();
-    for (let cPair in this.wasm.classStructs) {
-      let cStruct = cPair.value;
-      if (cStruct.classType != null) {
-        classesToLink.push(cStruct.classType as ClassType);
+    for (let cPair in this.wasm.classInfos) {
+      let info = cPair.value;
+      if (info.structType.classType != null) {
+        classesToLink.push(info.structType.classType as ClassType);
       }
     }
 
@@ -1735,8 +1752,8 @@ export class DiscoveryPass {
             let tsaClass = this.wasm.templateStringsArrayClass;
             if (tsaClass != null) {
               let key = getClassKey(tsaClass as ClassType);
-              if (this.wasm.classStructs.has(key)) {
-                tsaStruct = this.wasm.classStructs[key];
+              if (let (true, tsaInfo) = this.wasm.classInfos.get(key)) {
+                tsaStruct = tsaInfo.structType;
               }
             }
             if (tsaStruct == null) {
@@ -2475,8 +2492,8 @@ export class DiscoveryPass {
     }
 
     // Pass 1.05: Unified recursive class struct and vtable fields population
-    for (let cPair in this.wasm.classStructs) {
-      let ct = cPair.value.classType;
+    for (let cPair in this.wasm.classInfos) {
+      let ct = cPair.value.structType.classType;
       if (ct != null) {
         let ctVal = ct as ClassType;
         let lookupId = if (ctVal.genericSource != null) (ctVal.genericSource as ClassType).id else ctVal.id;
@@ -2487,9 +2504,9 @@ export class DiscoveryPass {
     }
 
     // Pass 1.1: Synthesize physical field getters/setters for virtual/inherited slots
-    for (let cPair in this.wasm.classStructs) {
+    for (let cPair in this.wasm.classInfos) {
       let cName = cPair.key;
-      let cStruct = cPair.value;
+      let cStruct = cPair.value.structType;
       if (cStruct.classType != null) {
         let cType = cStruct.classType as ClassType;
         for (let methName in cType.vtable) {
@@ -2571,8 +2588,8 @@ export class DiscoveryPass {
       if (f.classType != null) {
         let cType = f.classType as ClassType;
         let cKey = getClassKey(cType);
-        if (this.wasm.classStructs.has(cKey)) {
-          let st = this.wasm.classStructs[cKey];
+        if (let (true, info) = this.wasm.classInfos.get(cKey)) {
+          let st = info.structType;
           if (f.methodName != null) {
             let mName = f.methodName as String;
             if (mName.startsWith("get#")) {
@@ -2618,60 +2635,64 @@ export class DiscoveryPass {
     }
 
     // Pass 1.5: Build class vtable globals
-    for (let cPair in this.wasm.classVTableStructs) {
+    for (let cPair in this.wasm.classInfos) {
        let cName = cPair.key;
-       let vst = cPair.value;
-       var methods = new Array<WasmFunction>();
-       let fields = vst.fields;
-       var newFields = new Array<WasmField>();
-       let cType = vst.classType as ClassType;
-       for (var i = 0; i < fields.length; i += 1) {
-          let field = fields[i];
-          var foundFunc: WasmFunction | null = null;
-          var currClass: ClassType | null = cType;
-          while (currClass != null && foundFunc == null) {
-             let key = getClassMethodKey(getClassKey(currClass as ClassType), field.name as String);
-             if (this.wasm.classMethodMap.has(key)) {
-                foundFunc = this.wasm.classMethodMap[key];
-                break;
-             }
-             currClass = (currClass as ClassType).superType;
-          }
-           if (foundFunc != null) {
-               newFields.push(new WasmField(field.name, new ValTypeRef((foundFunc as WasmFunction).signature), false));
-               methods.push(foundFunc);
-           } else {
-             // push dummy? or fail?
-             newFields.push(field);
-             methods.push(this.wasm.functions[0]);
-          }
+       let info = cPair.value;
+        if (info.vtableStructType != null) {
+          let vstVal = info.vtableStructType as WasmStruct;
+         var methods = new Array<WasmFunction>();
+         let fields = vstVal.fields;
+         var newFields = new Array<WasmField>();
+         let cType = vstVal.classType as ClassType;
+         for (var i = 0; i < fields.length; i += 1) {
+            let field = fields[i];
+            var foundFunc: WasmFunction | null = null;
+            var currClass: ClassType | null = cType;
+            while (currClass != null && foundFunc == null) {
+               let key = getClassMethodKey(getClassKey(currClass as ClassType), field.name as String);
+               if (this.wasm.classMethodMap.has(key)) {
+                  foundFunc = this.wasm.classMethodMap[key];
+                  break;
+               }
+               currClass = (currClass as ClassType).superType;
+            }
+             if (foundFunc != null) {
+                 newFields.push(new WasmField(field.name, new ValTypeRef((foundFunc as WasmFunction).signature), false));
+                 methods.push(foundFunc);
+             } else {
+               // push dummy? or fail?
+               newFields.push(field);
+               methods.push(this.wasm.functions[0]);
+            }
+         }
+         while (vstVal.fields.length > 0) {
+            let ignored = vstVal.fields.pop();
+         }
+         for (var fIdx = 0; fIdx < newFields.length; fIdx += 1) {
+            vstVal.fields.push(newFields[fIdx]);
+         }
+         
+         let vtableInit = new VTableInit(vstVal, methods);
+         let vName = getClassVTableName(cName);
+         let vtableGlobal = new WasmGlobal(
+           vName,
+           vName,
+           new ValTypeRef(vstVal),
+           false,
+           null,
+           vtableInit,
+           this.program.units[0].model
+         );
+         this.wasm.globals.push(vtableGlobal);
+         info.vtableGlobal = vtableGlobal;
        }
-       while (vst.fields.length > 0) {
-          let ignored = vst.fields.pop();
-       }
-       for (var fIdx = 0; fIdx < newFields.length; fIdx += 1) {
-          vst.fields.push(newFields[fIdx]);
-       }
-       
-       let vtableInit = new VTableInit(vst, methods);
-       let vName = getClassVTableName(cName);
-       let vtableGlobal = new WasmGlobal(
-         vName,
-         vName,
-         new ValTypeRef(vst),
-         false,
-         null,
-         vtableInit,
-         this.program.units[0].model
-       );
-       this.wasm.globals.push(vtableGlobal);
-       this.wasm.classVTableGlobals[cName] = vtableGlobal;
      }
 
     // Pass 1.25: Allocate singleton globals for unit variants
-    for (let cPair in this.wasm.classStructs) {
+    for (let cPair in this.wasm.classInfos) {
       let cName = cPair.key;
-      let cStruct = cPair.value;
+      let info = cPair.value;
+      let cStruct = info.structType;
       if (cStruct.classType != null) {
         let cType = cStruct.classType as ClassType;
         if (cType.isCaseClass && (cType.constructorType == null || (cType.constructorType as FunctionType).parameters.length == 0)) {
@@ -2688,7 +2709,7 @@ export class DiscoveryPass {
           );
           wasmGlobal.initSingletonStruct = cType;
           this.wasm.globals.push(wasmGlobal);
-          this.wasm.classSingletonGlobals[cName] = wasmGlobal;
+          info.singletonGlobal = wasmGlobal;
         }
       }
     }
@@ -2696,8 +2717,8 @@ export class DiscoveryPass {
     let classes = new Array<ClassType>();
     let seenClassKeys = new HashMap<ClassKey, boolean>();
 
-    for (let cPair in this.wasm.classStructs) {
-       let cStruct = cPair.value;
+    for (let cPair in this.wasm.classInfos) {
+       let cStruct = cPair.value.structType;
        if (cStruct.classType != null) {
           let cType = cStruct.classType as ClassType;
           let cKey = getClassKey(cType);
@@ -3063,8 +3084,8 @@ export class DiscoveryPass {
     if (captureInfo.capturesThis && enclosingClassType != null) {
       let ct = enclosingClassType as ClassType;
       var thisValType: ValType = new ValTypeAnyRef();
-      if (this.wasm.classStructs.has(getClassKey(ct))) {
-        thisValType = new ValTypeRefNull(this.wasm.classStructs[getClassKey(ct)] as WasmStruct);
+      if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) {
+        thisValType = new ValTypeRefNull(info.structType);
       } else {
         thisValType = typeToValType(this.wasm, ct);
       }
@@ -3213,8 +3234,8 @@ export class DiscoveryPass {
       if (cType.isExtension && cType.onType != null) {
         params.push(typeToValType(this.wasm, cType.onType as Type));
       } else {
-        if (this.wasm.classStructs.has(getClassKey(rootClass))) {
-          params.push(new ValTypeRefNull(this.wasm.classStructs[getClassKey(rootClass)]));
+        if (let (true, rootInfo) = this.wasm.classInfos.get(getClassKey(rootClass))) {
+          params.push(new ValTypeRefNull(rootInfo.structType));
         } else {
           params.push(new ValTypeAnyRef());
         }
@@ -3238,8 +3259,8 @@ export class DiscoveryPass {
     let lookupId = if (cType.genericSource != null) (cType.genericSource as ClassType).id else cType.id;
     wasmFunc.classDecl = if (this.classDecls.has(lookupId)) this.classDecls[lookupId] else null as ClassDeclaration;
     wasmFunc.classType = cType;
-    if (this.wasm.classStructs.has(getClassKey(cType))) {
-      wasmFunc.structType = this.wasm.classStructs[getClassKey(cType)];
+    if (let (true, cInfo) = this.wasm.classInfos.get(getClassKey(cType))) {
+      wasmFunc.structType = cInfo.structType;
     }
     
     // Register it

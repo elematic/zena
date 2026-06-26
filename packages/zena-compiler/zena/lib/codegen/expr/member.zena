@@ -5,7 +5,7 @@ import { Error } from 'zena:error';
 import { RecordType, TupleType, ClassType, InterfaceType, ArrayType, typeToString, Type, FunctionType, VoidType, FieldInfo, AnyType, ByteArrayType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
-import { WasmField, WasmFunction, WasmArray } from '../wasm-module.zena';
+import { WasmField, WasmFunction, WasmArray, WasmStruct, WasmGlobal } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType } from '../type-mapping.zena';
 import { ValTypeRefNull, ValTypeRef, ValTypeI8, ValTypeVoid, HeapType, heapTypeToSigned, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeEqRef, ValTypeAnyRef, ValTypeStructRef } from '../wasm.zena';
@@ -225,15 +225,26 @@ export let generateMemberExpression = (
           return;
         }
 
-        if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
+        let ctKey = getClassKey(ct);
+        var structInfoOpt: WasmStruct | null = null;
+        var vtableStructOpt: WasmStruct | null = null;
+        if (let (true, info) = ctx.wasm.classInfos.get(ctKey)) {
+          structInfoOpt = info.structType;
+          vtableStructOpt = info.vtableStructType;
+        }
+        if (structInfoOpt == null) {
           throw new Error("Class struct not found: " + ct.name);
         }
-        let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+        if (vtableStructOpt == null) {
+          throw new Error("Class VTable struct not found for: " + ct.name + " key: " + (ctKey as String));
+        }
+        let structInfo = structInfoOpt as WasmStruct;
+        let vtableStruct = vtableStructOpt as WasmStruct;
         
         var fieldIndex = -1;
         let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
         let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
-          getClassPrivateFieldKey(getClassKey(ct), propName)
+          getClassPrivateFieldKey(ctKey, propName)
         } else {
           propName
         };
@@ -245,11 +256,6 @@ export let generateMemberExpression = (
         }
 
         let getterName = "get#" + propName;
-        let ctKey = getClassKey(ct);
-        if (!ctx.wasm.classVTableStructs.has(ctKey)) {
-          throw new Error("Class VTable struct not found for: " + ct.name + " key: " + (ctKey as String));
-        }
-        let vtableStruct = ctx.wasm.classVTableStructs[ctKey];
         var vtableIndex = -1;
         for (var i = 0; i < vtableStruct.fields.length; i += 1) {
           if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == getterName) {
@@ -555,15 +561,21 @@ export let generateIndexExpression = (
             ctx.emitter.emitCall(f);
             return;
           } else {
-            let ctKey = getClassKey(ct);
-            if (!ctx.wasm.classStructs.has(ctKey)) {
-              throw new Error("Class struct not found for: " + ct.name + " key: " + (ctKey as String));
-            }
-            if (!ctx.wasm.classVTableStructs.has(ctKey)) {
-              throw new Error("Class VTable struct not found for: " + ct.name + " key: " + (ctKey as String));
-            }
-            let structInfo = ctx.wasm.classStructs[ctKey];
-            let vtableStruct = ctx.wasm.classVTableStructs[ctKey];
+             let ctKey = getClassKey(ct);
+             var structInfoOpt: WasmStruct | null = null;
+             var vtableStructOpt: WasmStruct | null = null;
+             if (let (true, info) = ctx.wasm.classInfos.get(ctKey)) {
+               structInfoOpt = info.structType;
+               vtableStructOpt = info.vtableStructType;
+             }
+             if (structInfoOpt == null) {
+               throw new Error("Class struct not found for: " + ct.name + " key: " + (ctKey as String));
+             }
+             if (vtableStructOpt == null) {
+               throw new Error("Class VTable struct not found for: " + ct.name + " key: " + (ctKey as String));
+             }
+             let structInfo = structInfoOpt as WasmStruct;
+             let vtableStruct = vtableStructOpt as WasmStruct;
             let lookupName = f.methodName;
             
             var methodIndex = -1;

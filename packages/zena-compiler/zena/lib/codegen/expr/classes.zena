@@ -3,7 +3,7 @@ import { NewExpression, Expression, RangeExpression } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { ClassType, FunctionType, Type } from '../../types.zena';
-import { WasmField, WasmFunction } from '../wasm-module.zena';
+import { WasmField, WasmFunction, WasmGlobal, WasmStruct } from '../wasm-module.zena';
 import { getClassKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getNodeType } from '../type-mapping.zena';
 import { Array } from 'zena:array';
@@ -17,25 +17,30 @@ export let generateNewExpression = (
   if (nodeType is ClassType) {
     let classType = nodeType as ClassType;
     let cKey = getClassKey(classType);
-    if (ctx.wasm.classSingletonGlobals.has(cKey)) {
-      let singletonGlobal = ctx.wasm.classSingletonGlobals[cKey];
-      ctx.emitter.emitGlobalGet(singletonGlobal.index);
+    var structTypeOpt: WasmStruct | null = null;
+    var singletonGlobal: WasmGlobal | null = null;
+    var vtableGlobal: WasmGlobal | null = null;
+    if (let (true, info) = ctx.wasm.classInfos.get(cKey)) {
+      structTypeOpt = info.structType;
+      singletonGlobal = info.singletonGlobal;
+      vtableGlobal = info.vtableGlobal;
+    }
+    if (singletonGlobal != null) {
+      ctx.emitter.emitGlobalGet((singletonGlobal as WasmGlobal).index);
       return;
     }
-    if (!ctx.wasm.classStructs.has(cKey)) {
+    if (structTypeOpt == null) {
       throw new Error("Class struct not found: " + classType.name);
     }
-    let structType = ctx.wasm.classStructs[cKey];
+    let structType = structTypeOpt as WasmStruct;
     let emptyLocal = ctx.allocLocal(new ValTypeRefNull(structType));
     
     ctx.emitter.emitStructNewDefault(structType.index);
     ctx.emitter.emitLocalSet(emptyLocal);
     
-    let hasVTable = ctx.wasm.classVTableGlobals.has(getClassKey(classType));
-    if (hasVTable) {
-        let vtableGlobal = ctx.wasm.classVTableGlobals[getClassKey(classType)];
+    if (vtableGlobal != null) {
         ctx.emitter.emitLocalGet(emptyLocal);
-        ctx.emitter.emitGlobalGet(vtableGlobal.index);
+        ctx.emitter.emitGlobalGet((vtableGlobal as WasmGlobal).index);
         ctx.emitter.emitStructSet(structType.index, 0);
     }
     
@@ -71,20 +76,24 @@ export let generateRangeExpression = (
     let classType = nodeType as ClassType;
     let className = classType.name;
     let cKey = getClassKey(classType);
-    if (!ctx.wasm.classStructs.has(cKey)) {
+    var structTypeOpt: WasmStruct | null = null;
+    var vtableGlobal: WasmGlobal | null = null;
+    if (let (true, info) = ctx.wasm.classInfos.get(cKey)) {
+      structTypeOpt = info.structType;
+      vtableGlobal = info.vtableGlobal;
+    }
+    if (structTypeOpt == null) {
       throw new Error("Class struct not found: " + classType.name);
     }
-    let structType = ctx.wasm.classStructs[cKey];
+    let structType = structTypeOpt as WasmStruct;
     let emptyLocal = ctx.allocLocal(new ValTypeRefNull(structType));
     
     ctx.emitter.emitStructNewDefault(structType.index);
     ctx.emitter.emitLocalSet(emptyLocal);
     
-    let hasVTable = ctx.wasm.classVTableGlobals.has(getClassKey(classType));
-    if (hasVTable) {
-        let vtableGlobal = ctx.wasm.classVTableGlobals[getClassKey(classType)];
+    if (vtableGlobal != null) {
         ctx.emitter.emitLocalGet(emptyLocal);
-        ctx.emitter.emitGlobalGet(vtableGlobal.index);
+        ctx.emitter.emitGlobalGet((vtableGlobal as WasmGlobal).index);
         ctx.emitter.emitStructSet(structType.index, 0);
     }
     

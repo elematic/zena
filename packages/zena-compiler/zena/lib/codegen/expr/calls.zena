@@ -491,14 +491,20 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
 
           let ctKey = getClassKey(ct);
-          if (!ctx.wasm.classStructs.has(ctKey)) {
+          var structInfoOpt: WasmStruct | null = null;
+          var vtableStructOpt: WasmStruct | null = null;
+          if (let (true, info) = ctx.wasm.classInfos.get(ctKey)) {
+            structInfoOpt = info.structType;
+            vtableStructOpt = info.vtableStructType;
+          }
+          if (structInfoOpt == null) {
             throw new Error("Class struct not found for: " + ct.name + " key: " + (ctKey as String));
           }
-          if (!ctx.wasm.classVTableStructs.has(ctKey)) {
+          if (vtableStructOpt == null) {
             throw new Error("Class VTable struct not found for: " + ct.name + " key: " + (ctKey as String));
           }
-          let structInfo = ctx.wasm.classStructs[ctKey];
-          let vtableStruct = ctx.wasm.classVTableStructs[ctKey];
+          let structInfo = structInfoOpt as WasmStruct;
+          let vtableStruct = vtableStructOpt as WasmStruct;
           
           var methodIndex = -1;
           for (var i = 0; i < vtableStruct.fields.length; i += 1) {

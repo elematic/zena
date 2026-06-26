@@ -126,7 +126,14 @@ let generateMatchPatternCheck = (
         let patType = ctx.wasmFunction.model.getNodeType(pattern);
         if (patType != null && patType is ClassType) {
           let ct = patType as ClassType;
-          let st = ctx.wasm.classStructs[getClassKey(ct)];
+          var stOpt: WasmStruct | null = null;
+          if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
+            stOpt = info.structType;
+          }
+          if (stOpt == null) {
+            throw new Error("Class struct not found: " + ct.name);
+          }
+          let st = stOpt as WasmStruct;
           ctx.emitter.emitLocalGet(discriminantLocal);
           ctx.emitter.emitRefTest(st.index);
         } else {
@@ -139,7 +146,14 @@ let generateMatchPatternCheck = (
     }
     case ClassPattern as cp: {
       let ct = ctx.wasmFunction.model.getNodeType(cp.name) as ClassType;
-      let st = ctx.wasm.classStructs[getClassKey(ct)];
+      var stOpt: WasmStruct | null = null;
+      if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
+        stOpt = info.structType;
+      }
+      if (stOpt == null) {
+        throw new Error("Class struct not found: " + ct.name);
+      }
+      let st = stOpt as WasmStruct;
       
       // 1. Check type
       ctx.emitter.emitLocalGet(discriminantLocal);
@@ -266,25 +280,25 @@ let generateMatchPatternCheck = (
       ctx.emitter.emitRefIsNull();
     }
     case TuplePattern as tp: {
-      var structType: WasmStruct | null = null;
+      var tupleStructType: WasmStruct | null = null;
       match (discriminantType) {
         case ValTypeRef {target}: {
           if (target is WasmStruct) {
-            structType = target as WasmStruct;
+            tupleStructType = target as WasmStruct;
           }
         }
         case ValTypeRefNull {target}: {
           if (target is WasmStruct) {
-            structType = target as WasmStruct;
+            tupleStructType = target as WasmStruct;
           }
         }
         case _: {}
       }
 
-      if (structType == null) {
+      if (tupleStructType == null) {
         ctx.emitter.emitI32Const(0);
       } else {
-        let st = structType as WasmStruct;
+        let st = tupleStructType as WasmStruct;
 
         // 1. Check if null (if nullable)
         var isNullable = false;
@@ -329,25 +343,25 @@ let generateMatchPatternCheck = (
       }
     }
     case RecordPattern as rp: {
-      var structType: WasmStruct | null = null;
+      var recordStructType: WasmStruct | null = null;
       match (discriminantType) {
         case ValTypeRef {target}: {
           if (target is WasmStruct) {
-            structType = target as WasmStruct;
+            recordStructType = target as WasmStruct;
           }
         }
         case ValTypeRefNull {target}: {
           if (target is WasmStruct) {
-            structType = target as WasmStruct;
+            recordStructType = target as WasmStruct;
           }
         }
         case _: {}
       }
 
-      if (structType == null) {
+      if (recordStructType == null) {
         ctx.emitter.emitI32Const(0);
       } else {
-        let st = structType as WasmStruct;
+        let st = recordStructType as WasmStruct;
         
         // Look up RecordDispatchInfo
         var recordInfo: RecordDispatchInfo | null = null;
@@ -495,7 +509,14 @@ let generateMatchPatternBindings = (
     }
     case ClassPattern as cp: {
       let ct = ctx.wasmFunction.model.getNodeType(cp.name) as ClassType;
-      let st = ctx.wasm.classStructs[getClassKey(ct)];
+      var stOpt: WasmStruct | null = null;
+      if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
+        stOpt = info.structType;
+      }
+      if (stOpt == null) {
+        throw new Error("Class struct not found: " + ct.name);
+      }
+      let st = stOpt as WasmStruct;
 
       ctx.emitter.emitLocalGet(discriminantLocal);
       ctx.emitter.emitRefCast(st.index);
@@ -536,23 +557,23 @@ let generateMatchPatternBindings = (
       }
     }
     case TuplePattern as tp: {
-      var structType: WasmStruct | null = null;
+      var tupleStructType: WasmStruct | null = null;
       match (discriminantType) {
         case ValTypeRef {target}: {
           if (target is WasmStruct) {
-            structType = target as WasmStruct;
+            tupleStructType = target as WasmStruct;
           }
         }
         case ValTypeRefNull {target}: {
           if (target is WasmStruct) {
-            structType = target as WasmStruct;
+            tupleStructType = target as WasmStruct;
           }
         }
         case _: {}
       }
 
-      if (structType != null) {
-        let st = structType as WasmStruct;
+      if (tupleStructType != null) {
+        let st = tupleStructType as WasmStruct;
 
         for (var i = 0; i < tp.elements.length; i += 1) {
           let elPattern = tp.elements[i];
@@ -570,23 +591,23 @@ let generateMatchPatternBindings = (
       }
     }
     case RecordPattern as rp: {
-      var structType: WasmStruct | null = null;
+      var recordStructType: WasmStruct | null = null;
       match (discriminantType) {
         case ValTypeRef {target}: {
           if (target is WasmStruct) {
-            structType = target as WasmStruct;
+            recordStructType = target as WasmStruct;
           }
         }
         case ValTypeRefNull {target}: {
           if (target is WasmStruct) {
-            structType = target as WasmStruct;
+            recordStructType = target as WasmStruct;
           }
         }
         case _: {}
       }
 
-      if (structType != null) {
-        let st = structType as WasmStruct;
+      if (recordStructType != null) {
+        let st = recordStructType as WasmStruct;
         
         var recordInfo: RecordDispatchInfo | null = null;
         for (var rdi = 0; rdi < ctx.wasm.recordDispatchInfos.length; rdi += 1) {

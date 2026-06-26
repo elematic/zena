@@ -184,6 +184,14 @@ export class RecordDispatchInfo {
   new(this.fatPtrType, this.vtableType, this.concreteType, this.vtableGlobal, this.fields, this.getterTypes);
 }
 
+export class ClassCodegenInfo {
+  structType: WasmStruct;
+  var vtableStructType: WasmStruct | null = null;
+  var vtableGlobal: WasmGlobal | null = null;
+  var singletonGlobal: WasmGlobal | null = null;
+  new(this.structType);
+}
+
 export class WasmTag {
   var index: i32 = -1;
   signature: WasmSignature;
@@ -240,10 +248,7 @@ export class WasmModule {
   var boxClass: ClassType | null = null;
   exportMap = new HashMap<ExportKey, WasmFunction>();
   exportGlobalMap = new HashMap<ExportGlobalKey, WasmGlobal>();
-  classStructs = new HashMap<ClassKey, WasmStruct>();
-  classVTableStructs = new HashMap<ClassKey, WasmStruct>();
-  classVTableGlobals = new HashMap<ClassKey, WasmGlobal>();
-  classSingletonGlobals = new HashMap<ClassKey, WasmGlobal>();
+  classInfos = new HashMap<ClassKey, ClassCodegenInfo>();
   interfaceStructs = new HashMap<InterfaceKey, WasmStruct>();
   interfaceVTableStructs = new HashMap<InterfaceKey, WasmStruct>();
   classInterfaceVTables = new HashMap<ClassInterfaceKey, WasmGlobal>();
@@ -649,9 +654,9 @@ export class WasmModule {
     }
     
     var errorStruct: WasmStruct | null = null;
-    let keys = this.classStructs.keys();
-    while (let (true, k) = keys.next()) {
-      let s = this.classStructs[k];
+    for (let pair in this.classInfos) {
+      let info = pair.value;
+      let s = info.structType;
       if (s.name != null && (s.name as String) == "Error") {
         errorStruct = s;
       }
@@ -749,9 +754,9 @@ export class WasmModule {
       return;
     }
     var stringStruct: WasmStruct | null = null;
-    let keys = this.classStructs.keys();
-    while (let (true, k) = keys.next()) {
-      let s = this.classStructs[k];
+    for (let pair in this.classInfos) {
+      let info = pair.value;
+      let s = info.structType;
       if (s.name != null && (s.name as String) == "String") {
         stringStruct = s;
       }

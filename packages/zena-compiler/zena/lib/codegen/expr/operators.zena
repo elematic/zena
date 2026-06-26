@@ -8,7 +8,7 @@ import { Type, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, RecordType,
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeRef, ValTypeRefNull, ValTypeVoid, ValTypeEqRef, ValTypeStructRef, ValTypeFuncRef, ValTypeExternRef, ValTypeOptRef } from '../wasm.zena';
-import { WasmField, WasmFunction, WasmModule } from '../wasm-module.zena';
+import { WasmField, WasmFunction, WasmModule, WasmStruct, WasmGlobal } from '../wasm-module.zena';
 import { getClassKey, getSignatureKey, unwrapAliases, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getClassMemberSignature, getNodeType } from '../type-mapping.zena';
 import { Array } from 'zena:array';
@@ -356,8 +356,17 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
             ctx.emitter.emitCall(foundFunc as WasmFunction);
           } else {
             // Dynamic dispatch via vtable
-            let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
-            let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+            var structInfoOpt: WasmStruct | null = null;
+            var vtableStructOpt: WasmStruct | null = null;
+            if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
+              structInfoOpt = info.structType;
+              vtableStructOpt = info.vtableStructType;
+            }
+            if (structInfoOpt == null || vtableStructOpt == null) {
+              throw new Error("Class struct or VTable struct not found for class: " + ct.name);
+            }
+            let structInfo = structInfoOpt as WasmStruct;
+            let vtableStruct = vtableStructOpt as WasmStruct;
             
             var methodIndex = -1;
             for (var i = 0; i < vtableStruct.fields.length; i += 1) {
@@ -593,8 +602,12 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
       // 3. String equality check
       let stringClass = ctx.wasm.stringClass;
       if (stringClass != null) {
-        let stringStruct = ctx.wasm.classStructs[getClassKey(stringClass as ClassType)];
-        if (stringStruct != null) {
+        var stringStructOpt: WasmStruct | null = null;
+        if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(stringClass as ClassType))) {
+          stringStructOpt = info.structType;
+        }
+        if (stringStructOpt != null) {
+          let stringStruct = stringStructOpt as WasmStruct;
           ctx.emitter.emitLocalGet(leftLocal);
           ctx.emitter.emitRefTest(stringStruct.index);
           ctx.emitter.emitLocalGet(rightLocal);
@@ -649,8 +662,12 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
           typeArgs.push(t);
           let concreteBoxType = instantiateClassType(boxClass as ClassType, typeArgs);
           let cKey = getClassKey(concreteBoxType);
-          if (ctx.wasm.classStructs.has(cKey)) {
-            let structType = ctx.wasm.classStructs[cKey];
+          var structTypeOpt: WasmStruct | null = null;
+          if (let (true, info) = ctx.wasm.classInfos.get(cKey)) {
+            structTypeOpt = info.structType;
+          }
+          if (structTypeOpt != null) {
+            let structType = structTypeOpt as WasmStruct;
 
             ctx.emitter.emitLocalGet(leftLocal);
             ctx.emitter.emitRefTest(structType.index);

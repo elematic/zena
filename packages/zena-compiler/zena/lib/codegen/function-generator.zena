@@ -224,8 +224,9 @@ export class FunctionGenerator {
         let stringClass = this.ctx.wasm.stringClass;
         if (stringClass != null) {
           let stringKey = getClassKey(stringClass as ClassType);
-          let stringStruct = this.ctx.wasm.classStructs[stringKey];
-          helperLocals.push(new ValTypeRefNull(stringStruct)); // local 1: str
+          if (let (true, stringInfo) = this.ctx.wasm.classInfos.get(stringKey)) {
+            helperLocals.push(new ValTypeRefNull(stringInfo.structType)); // local 1: str
+          }
         }
       }
       this.ctx.emitter.emitFunctionLocalsStart(helperLocals);
@@ -1203,15 +1204,25 @@ export class FunctionGenerator {
       throw new Error("String class not found during string_from_shared body generation!");
     }
     let stringKey = getClassKey(stringClass as ClassType);
-    let structType = wasm.classStructs[stringKey];
+    var structType: WasmStruct | null = null;
+    var vtableGlobal: WasmGlobal | null = null;
+    if (let (true, info) = wasm.classInfos.get(stringKey)) {
+      structType = info.structType;
+      vtableGlobal = info.vtableGlobal;
+    }
+    if (structType == null || vtableGlobal == null) {
+      throw new Error("String class struct or vtable not found during string_from_shared body generation!");
+    }
+    let structTypeVal = structType as WasmStruct;
+    let vtableGlobalVal = vtableGlobal as WasmGlobal;
 
     // Find string field offsets
     var dataFieldIdx = -1;
     var startFieldIdx = -1;
     var endFieldIdx = -1;
     var encodingFieldIdx = -1;
-    for (var f = 0; f < structType.fields.length; f += 1) {
-      let fieldName = structType.fields[f].name;
+    for (var f = 0; f < structTypeVal.fields.length; f += 1) {
+      let fieldName = structTypeVal.fields[f].name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
         if (nameStr.endsWith("::#data")) {
@@ -1229,13 +1240,13 @@ export class FunctionGenerator {
       throw new Error("String fields not found in struct during string_from_shared body generation!");
     }
 
-    for (var i = 0; i < structType.fields.length; i += 1) {
-      let field = structType.fields[i];
+    for (var i = 0; i < structTypeVal.fields.length; i += 1) {
+      let field = structTypeVal.fields[i];
       let fieldName = field.name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
         if (nameStr == "<vtable>" || nameStr == "__vtable") {
-          let vtableGlobal = wasm.classVTableGlobals[stringKey as ClassKey];
+          let vtableGlobal = vtableGlobalVal;
           this.ctx.emitter.emitGlobalGet(vtableGlobal.index);
         } else if (nameStr.startsWith("__brand_")) {
           this.ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.none));
@@ -1275,7 +1286,14 @@ export class FunctionGenerator {
       throw new Error("String class not found during get_string_literal body generation!");
     }
     let stringKey = getClassKey(stringClass as ClassType);
-    let stringStruct = wasm.classStructs[stringKey];
+    var stringStructOpt: WasmStruct | null = null;
+    if (let (true, stringInfo) = wasm.classInfos.get(stringKey)) {
+      stringStructOpt = stringInfo.structType;
+    }
+    if (stringStructOpt == null) {
+      throw new Error("String class struct not found during get_string_literal body generation!");
+    }
+    let stringStruct = stringStructOpt as WasmStruct;
 
     // Check if the array already contains the string
     this.ctx.emitter.emitGlobalGet(arrayGlobal.index);
@@ -1605,8 +1623,8 @@ export class FunctionGenerator {
     let stringClass = this.ctx.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (this.ctx.wasm.classStructs.has(key)) {
-        stringStruct = this.ctx.wasm.classStructs[key];
+      if (let (true, stringInfo) = this.ctx.wasm.classInfos.get(key)) {
+        stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct == null) {
@@ -1760,8 +1778,8 @@ export class FunctionGenerator {
     let stringClass = this.ctx.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (this.ctx.wasm.classStructs.has(key)) {
-        stringStruct = this.ctx.wasm.classStructs[key];
+      if (let (true, stringInfo) = this.ctx.wasm.classInfos.get(key)) {
+        stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct == null) {
@@ -1871,17 +1889,21 @@ export class FunctionGenerator {
   }
 
   generateStringCreate(): void {
-    var stringStruct: WasmStruct | null = null;
+    var stringStructOpt: WasmStruct | null = null;
+    var vtableGlobalOpt: WasmGlobal | null = null;
     let stringClass = this.ctx.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (this.ctx.wasm.classStructs.has(key)) {
-        stringStruct = this.ctx.wasm.classStructs[key];
+      if (let (true, stringInfo) = this.ctx.wasm.classInfos.get(key)) {
+        stringStructOpt = stringInfo.structType;
+        vtableGlobalOpt = stringInfo.vtableGlobal;
       }
     }
-    if (stringStruct == null) {
-      throw new Error("$stringCreate: String class struct not found!");
+    if (stringStructOpt == null || vtableGlobalOpt == null) {
+      throw new Error("$stringCreate: String class struct or vtable not found!");
     }
+    let stringStruct = stringStructOpt as WasmStruct;
+    let vtableGlobal = vtableGlobalOpt as WasmGlobal;
     let stringStructIndex = (stringStruct as WasmStruct).index;
     let byteArrayType = this.ctx.wasm.getByteArrayType();
     let byteArrayTypeIndex = byteArrayType.index;
@@ -1920,8 +1942,6 @@ export class FunctionGenerator {
     this.ctx.emitter.emitStructNewDefault(stringStructIndex);
     this.ctx.emitter.emitLocalTee(stringLocal);
 
-    let stringKey = getClassKey((stringStruct as WasmStruct).classType as ClassType);
-    let vtableGlobal = this.ctx.wasm.classVTableGlobals[stringKey as ClassKey];
     this.ctx.emitter.emitGlobalGet(vtableGlobal.index);
     this.ctx.emitter.emitStructSet(stringStructIndex, 0);
 
@@ -1951,8 +1971,8 @@ export class FunctionGenerator {
     let stringClass = this.ctx.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (this.ctx.wasm.classStructs.has(key)) {
-        stringStruct = this.ctx.wasm.classStructs[key];
+      if (let (true, stringInfo) = this.ctx.wasm.classInfos.get(key)) {
+        stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct == null) {
@@ -2012,8 +2032,8 @@ export class FunctionGenerator {
     let stringClass = this.ctx.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (this.ctx.wasm.classStructs.has(key)) {
-        stringStruct = this.ctx.wasm.classStructs[key];
+      if (let (true, stringInfo) = this.ctx.wasm.classInfos.get(key)) {
+        stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct == null) {
@@ -2157,8 +2177,8 @@ export class FunctionGenerator {
     let stringClass = this.ctx.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (this.ctx.wasm.classStructs.has(key)) {
-        stringStruct = this.ctx.wasm.classStructs[key];
+      if (let (true, stringInfo) = this.ctx.wasm.classInfos.get(key)) {
+        stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct == null) {
@@ -2215,8 +2235,8 @@ export class FunctionGenerator {
     let stringClass = this.ctx.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (this.ctx.wasm.classStructs.has(key)) {
-        stringStruct = this.ctx.wasm.classStructs[key];
+      if (let (true, stringInfo) = this.ctx.wasm.classInfos.get(key)) {
+        stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct == null) {

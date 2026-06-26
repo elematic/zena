@@ -311,8 +311,12 @@ export let generateGlobalIntrinsic = (
     // 3. String equality check
     let stringClass = ctx.wasm.stringClass;
     if (stringClass != null) {
-      let stringStruct = ctx.wasm.classStructs[getClassKey(stringClass as ClassType)];
-      if (stringStruct != null) {
+      var stringStructOpt: WasmStruct | null = null;
+      if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(stringClass as ClassType))) {
+        stringStructOpt = info.structType;
+      }
+      if (stringStructOpt != null) {
+        let stringStruct = stringStructOpt as WasmStruct;
         ctx.emitter.emitLocalGet(leftLocal);
         ctx.emitter.emitRefTest(stringStruct.index);
         ctx.emitter.emitLocalGet(rightLocal);
@@ -367,8 +371,12 @@ export let generateGlobalIntrinsic = (
         typeArgs.push(t);
         let concreteBoxType = instantiateClassType(boxClass as ClassType, typeArgs);
         let cKey = getClassKey(concreteBoxType);
-        if (ctx.wasm.classStructs.has(cKey)) {
-          let structType = ctx.wasm.classStructs[cKey];
+        var structTypeOpt: WasmStruct | null = null;
+        if (let (true, info) = ctx.wasm.classInfos.get(cKey)) {
+          structTypeOpt = info.structType;
+        }
+        if (structTypeOpt != null) {
+          let structType = structTypeOpt as WasmStruct;
 
           ctx.emitter.emitLocalGet(leftLocal);
           ctx.emitter.emitRefTest(structType.index);
@@ -479,8 +487,17 @@ export let generateGlobalIntrinsic = (
           ctx.emitter.emitCall(foundFunc as WasmFunction);
         } else {
           // Dynamic dispatch via vtable
-          let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
-          let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+          var structInfoOpt: WasmStruct | null = null;
+          var vtableStructOpt: WasmStruct | null = null;
+          if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
+            structInfoOpt = info.structType;
+            vtableStructOpt = info.vtableStructType;
+          }
+          if (structInfoOpt == null || vtableStructOpt == null) {
+            throw new Error("Class struct or VTable struct not found for class: " + ct.name);
+          }
+          let structInfo = structInfoOpt as WasmStruct;
+          let vtableStruct = vtableStructOpt as WasmStruct;
           
           var methodIndex = -1;
           for (var i = 0; i < vtableStruct.fields.length; i += 1) {
@@ -529,8 +546,8 @@ export let generateGlobalIntrinsic = (
     let stringClass = ctx.wasm.stringClass;
     if (stringClass != null) {
       let key = getClassKey(stringClass as ClassType);
-      if (ctx.wasm.classStructs.has(key)) {
-        stringStruct = ctx.wasm.classStructs[key];
+      if (let (true, info) = ctx.wasm.classInfos.get(key)) {
+        stringStruct = info.structType;
       }
     }
     
@@ -604,8 +621,17 @@ export let generateGlobalIntrinsic = (
           if (ct.isFinal) {
             ctx.emitter.emitCall(foundFunc as WasmFunction);
           } else {
-            let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
-            let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+            var structInfoOpt: WasmStruct | null = null;
+            var vtableStructOpt: WasmStruct | null = null;
+            if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
+              structInfoOpt = info.structType;
+              vtableStructOpt = info.vtableStructType;
+            }
+            if (structInfoOpt == null || vtableStructOpt == null) {
+              throw new Error("Class struct or VTable struct not found for class: " + ct.name);
+            }
+            let structInfo = structInfoOpt as WasmStruct;
+            let vtableStruct = vtableStructOpt as WasmStruct;
             
             var methodIndex = -1;
             for (var i = 0; i < vtableStruct.fields.length; i += 1) {
@@ -689,8 +715,12 @@ export let generateGlobalIntrinsic = (
       // 3. String equality check
       let stringClass = ctx.wasm.stringClass;
       if (stringClass != null) {
-        let stringStruct = ctx.wasm.classStructs[getClassKey(stringClass as ClassType)];
-        if (stringStruct != null) {
+        var stringStructOpt: WasmStruct | null = null;
+        if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(stringClass as ClassType))) {
+          stringStructOpt = info.structType;
+        }
+        if (stringStructOpt != null) {
+          let stringStruct = stringStructOpt as WasmStruct;
           ctx.emitter.emitLocalGet(leftLocal);
           ctx.emitter.emitRefTest(stringStruct.index);
           ctx.emitter.emitLocalGet(rightLocal);
@@ -745,8 +775,12 @@ export let generateGlobalIntrinsic = (
           typeArgs.push(t);
           let concreteBoxType = instantiateClassType(boxClass as ClassType, typeArgs);
           let cKey = getClassKey(concreteBoxType);
-          if (ctx.wasm.classStructs.has(cKey)) {
-            let structType = ctx.wasm.classStructs[cKey];
+          var structTypeOpt: WasmStruct | null = null;
+          if (let (true, info) = ctx.wasm.classInfos.get(cKey)) {
+            structTypeOpt = info.structType;
+          }
+          if (structTypeOpt != null) {
+            let structType = structTypeOpt as WasmStruct;
 
             ctx.emitter.emitLocalGet(leftLocal);
             ctx.emitter.emitRefTest(structType.index);
@@ -863,8 +897,17 @@ export let generateGlobalIntrinsic = (
           if (ct.isFinal) {
             ctx.emitter.emitCall(foundFunc as WasmFunction);
           } else {
-            let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
-            let vtableStruct = ctx.wasm.classVTableStructs[getClassKey(ct)];
+            var structInfoOpt: WasmStruct | null = null;
+            var vtableStructOpt: WasmStruct | null = null;
+            if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
+              structInfoOpt = info.structType;
+              vtableStructOpt = info.vtableStructType;
+            }
+            if (structInfoOpt == null || vtableStructOpt == null) {
+              throw new Error("Class struct or VTable struct not found for class: " + ct.name);
+            }
+            let structInfo = structInfoOpt as WasmStruct;
+            let vtableStruct = vtableStructOpt as WasmStruct;
             
             var methodIndex = -1;
             for (var i = 0; i < vtableStruct.fields.length; i += 1) {

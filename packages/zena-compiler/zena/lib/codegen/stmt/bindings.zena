@@ -12,7 +12,7 @@ import {
   RecordType, TupleType, ClassType 
 } from '../../types.zena';
 import { Array } from 'zena:array';
-import { RecordDispatchInfo, WasmField, sortWasmFields } from '../wasm-module.zena';
+import { RecordDispatchInfo, WasmField, sortWasmFields, WasmStruct } from '../wasm-module.zena';
 import { getClassKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
 import { i32ToString } from 'zena:string-convert';
 import { ValTypeRefNull, ValTypeRef, ValType, ValTypeAnyRef } from '../wasm.zena';
@@ -216,10 +216,15 @@ export let generatePatternBinding = (
         }
       } else if (t is ClassType) {
         let ct = t as ClassType;
-        if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
+        let ctKey = getClassKey(ct);
+        var structInfoOpt: WasmStruct | null = null;
+        if (let (true, info) = ctx.wasm.classInfos.get(ctKey)) {
+          structInfoOpt = info.structType;
+        }
+        if (structInfoOpt == null) {
           throw new Error("Class struct not found: " + ct.name);
         }
-        let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+        let structInfo = structInfoOpt as WasmStruct;
         
         let tempLocal = ctx.allocLocal(typeToValTypeWithSub(ctx.wasm, ct, ctx.wasmFunction));
         loadValue();
@@ -283,10 +288,15 @@ export let generatePatternBinding = (
     case ClassPattern as cp: {
       if (t is ClassType) {
         let ct = t as ClassType;
-        if (!ctx.wasm.classStructs.has(getClassKey(ct))) {
+        let ctKey = getClassKey(ct);
+        var structInfoOpt: WasmStruct | null = null;
+        if (let (true, info) = ctx.wasm.classInfos.get(ctKey)) {
+          structInfoOpt = info.structType;
+        }
+        if (structInfoOpt == null) {
           throw new Error("Class struct not found: " + ct.name);
         }
-        let structInfo = ctx.wasm.classStructs[getClassKey(ct)];
+        let structInfo = structInfoOpt as WasmStruct;
         
         let tempLocal = ctx.allocLocal(typeToValTypeWithSub(ctx.wasm, ct, ctx.wasmFunction));
         loadValue();
