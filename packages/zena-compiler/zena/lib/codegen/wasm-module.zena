@@ -21,7 +21,8 @@ import { Program } from '../program.zena';
 
 import { 
   compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey, 
-  CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getTypeUniqueKey
+  CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getTypeUniqueKey,
+  FunctionAdaptationKey, getFunctionAdaptationKey
 } from './codegen-utils.zena';
 
 export let sortWasmFields = (fields: Array<WasmField>): void => {
@@ -256,7 +257,7 @@ export class WasmModule {
   var boolToStringFunc: WasmFunction | null = null;
   var wasiWriteStringHelper: WasmFunction | null = null;
   var stringHashHelper: WasmFunction | null = null;
-  functionAdaptations = new HashMap<String, WasmFunction>();
+  functionAdaptations = new HashMap<FunctionAdaptationKey, WasmFunction>();
   var arrayMethods = new Array<WasmFunction>();
   mutableCapturedSymbols = new HashSet<SymbolId>();
   
@@ -584,7 +585,7 @@ export class WasmModule {
       this.classMethodMap[key] = func;
     }
     if (func.isFunctionAdaptation && func.functionAdaptationSource != null && func.functionAdaptationTarget != null) {
-      let key = getTypeUniqueKey(func.functionAdaptationSource as Type) + "->" + getTypeUniqueKey(func.functionAdaptationTarget as Type);
+      let key = getFunctionAdaptationKey(func.functionAdaptationSource as Type, func.functionAdaptationTarget as Type);
       this.functionAdaptations[key] = func;
     }
     if (func.isClosure) {
@@ -784,7 +785,7 @@ export class WasmModule {
         this.classMethodMap[key] = func;
       }
       if (func.isFunctionAdaptation && func.functionAdaptationSource != null && func.functionAdaptationTarget != null) {
-        let key = getTypeUniqueKey(func.functionAdaptationSource as Type) + "->" + getTypeUniqueKey(func.functionAdaptationTarget as Type);
+        let key = getFunctionAdaptationKey(func.functionAdaptationSource as Type, func.functionAdaptationTarget as Type);
         this.functionAdaptations[key] = func;
       }
       if (func.classType != null) {
