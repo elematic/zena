@@ -795,7 +795,7 @@ class CheckerContext {
         let isPrelude = this.filePath.startsWith("zena:");
         if (isPrelude) {
           if (let (true, stub) = this.#sharedState.preludeTypes.get(cd.name.name)) {
-            match (stub as Type) {
+            match (stub) {
               case ClassType as pt: { typeId = pt.id; }
               case _: {}
             }
@@ -831,7 +831,7 @@ class CheckerContext {
         let isPrelude = this.filePath.startsWith("zena:");
         if (isPrelude) {
           if (let (true, stub) = this.#sharedState.preludeTypes.get(id.name.name)) {
-            match (stub as Type) {
+            match (stub) {
               case InterfaceType as pt: { typeId = pt.id; }
               case _: {}
             }
@@ -3794,7 +3794,7 @@ case _: {
                 if (let (true, exp) = depMod.get(expKey)) {
                   if (exp.isValue()) {
                     let resolvedValType = if (depModel != null) {
-                      depModel.getBindingType(exp as Symbol)
+                      depModel.getBindingType(exp)
                     } else {
                       null
                     };
@@ -4184,18 +4184,18 @@ let patternCanMatchType = (ctx: CheckerContext, pattern: Node, t: Type): boolean
       return literalPatternCanMatchType(value, t);
     }
     case AssignmentPattern {left}: {
-      return patternCanMatchType(ctx, left as Node, t);
+      return patternCanMatchType(ctx, left, t);
     }
     case AsPattern {pattern as inner}: {
-      return patternCanMatchType(ctx, inner as Node, t);
+      return patternCanMatchType(ctx, inner, t);
     }
     case LogicalPattern {operator, left, right}: {
       if (operator == "|") {
-        return patternCanMatchType(ctx, left as Node, t)
-          || patternCanMatchType(ctx, right as Node, t);
+        return patternCanMatchType(ctx, left, t)
+          || patternCanMatchType(ctx, right, t);
       }
-      return patternCanMatchType(ctx, left as Node, t)
-        && patternCanMatchType(ctx, right as Node, t);
+      return patternCanMatchType(ctx, left, t)
+        && patternCanMatchType(ctx, right, t);
     }
     case TuplePattern {elements}: {
       match (t) {
@@ -7359,7 +7359,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
     let onTypeId = md.on as TypeAnnotation;
     let onResolved = resolveTypeAnnotation(ctx, onTypeId);
     if (onResolved != null) {
-      match (onResolved as Type) {
+      match (onResolved) {
         case ClassType as onClass: {
           mixinType.onType = onClass;
         }
@@ -7368,7 +7368,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
         }
         case _: {
           ctx.error(
-            "Mixin 'on' type must be a class or interface, got '" + typeToString(onResolved as Type) + "'.",
+            "Mixin 'on' type must be a class or interface, got '" + typeToString(onResolved) + "'.",
             DiagnosticCode.TypeMismatch,
             md.loc
           );

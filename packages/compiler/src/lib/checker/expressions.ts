@@ -1598,8 +1598,13 @@ function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
   const sourceType = checkExpression(ctx, expr.expression);
   const targetType = resolveTypeAnnotation(ctx, expr.typeAnnotation);
 
+  const path = getExpressionPath(expr.expression, ctx);
+  const isNarrowed = path ? ctx.getNarrowedType(path) !== undefined : false;
+
   if (
     ctx.compiler?.options.warnUnnecessaryCasts &&
+    !isNarrowed &&
+    expr.expression.type !== NodeType.ThisExpression &&
     typesEqual(sourceType, targetType)
   ) {
     ctx.diagnostics.reportWarning(

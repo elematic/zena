@@ -70,7 +70,7 @@ let failed = false;
 
 try {
   execSync(
-    `node --stack-size=4096 "${cliPath}" build "${wrapperPath}" --target wasi -g -l -o "${wasmFile}"`,
+    `node --stack-size=4096 "${cliPath}" build "${wrapperPath}" --target wasi -g -l -o "${wasmFile}" --warn-unnecessary-casts --warnings-as-errors`,
     {
       stdio: 'inherit', // Show compiler output so we see errors immediately
       cwd: repoRoot,
@@ -87,7 +87,7 @@ const syntaxWasm = join(outDir, 'test', 'portable_syntax.wasm');
 try {
   console.log('Building portable syntax tests...');
   execSync(
-    `node --stack-size=4096 "${cliPath}" build "${syntaxSrc}" --target wasi -g -l -o "${syntaxWasm}"`,
+    `node --stack-size=4096 "${cliPath}" build "${syntaxSrc}" --target wasi -g -l -o "${syntaxWasm}" --warn-unnecessary-casts --warnings-as-errors`,
     {
       stdio: 'inherit',
       cwd: repoRoot,
@@ -104,7 +104,7 @@ const semanticsWasm = join(outDir, 'test', 'portable_semantics.wasm');
 try {
   console.log('Building portable semantics tests...');
   execSync(
-    `node --stack-size=4096 "${cliPath}" build "${semanticsSrc}" --target wasi -g -l -o "${semanticsWasm}"`,
+    `node --stack-size=4096 "${cliPath}" build "${semanticsSrc}" --target wasi -g -l -o "${semanticsWasm}" --warn-unnecessary-casts --warnings-as-errors`,
     {
       stdio: 'inherit',
       cwd: repoRoot,

@@ -53,12 +53,14 @@ Commands:
   help     Show this help message
 
 Options:
-  -o, --output <file>   Output file path (for build command)
-  -t, --target <target> Compilation target: 'host' (default) or 'wasi'
-  -g, --debug           Include debug info (function names in WASM name section)
-  --dce                 Enable dead code elimination
-  -v, --verbose         Verbose output (for test command)
-  -h, --help            Show help
+  -o, --output <file>      Output file path (for build command)
+  -t, --target <target>    Compilation target: 'host' (default) or 'wasi'
+  -g, --debug              Include debug info (function names in WASM name section)
+  --dce                    Enable dead code elimination
+  --warn-unnecessary-casts Warn on unnecessary type casts
+  --warnings-as-errors     Treat warnings as errors
+  -v, --verbose            Verbose output (for test command)
+  -h, --help               Show help
 
 Targets:
   host    Output core WASM-GC with custom console imports (for @zena-lang/runtime)
@@ -127,6 +129,8 @@ const buildCommand = async (
   debug: boolean = false,
   dce: boolean = false,
   emitLocations: boolean = false,
+  warnUnnecessaryCasts: boolean = false,
+  warningsAsErrors: boolean = false,
 ): Promise<number> => {
   if (files.length === 0) {
     console.error('Error: No input files specified');
@@ -134,7 +138,11 @@ const buildCommand = async (
   }
 
   const host = createHost(target);
-  const compiler = new Compiler(host, {target, emitLocations});
+  const compiler = new Compiler(host, {
+    target,
+    emitLocations,
+    warnUnnecessaryCasts,
+  });
 
   // For now, assume first file is entry point
   const entryPoint = resolve(process.cwd(), files[0]);
@@ -149,7 +157,11 @@ const buildCommand = async (
       if (mod.diagnostics.length > 0) {
         printErrors(mod.diagnostics, mod.source);
         if (
-          mod.diagnostics.some((d) => d.severity === DiagnosticSeverity.Error)
+          mod.diagnostics.some(
+            (d) =>
+              d.severity === DiagnosticSeverity.Error ||
+              (warningsAsErrors && d.severity === DiagnosticSeverity.Warning),
+          )
         ) {
           hasErrors = true;
         }
@@ -192,14 +204,18 @@ const buildCommand = async (
   }
 };
 
-const checkCommand = async (files: string[]): Promise<number> => {
+const checkCommand = async (
+  files: string[],
+  warnUnnecessaryCasts: boolean = false,
+  warningsAsErrors: boolean = false,
+): Promise<number> => {
   if (files.length === 0) {
     console.error('Error: No input files specified');
     return 1;
   }
 
   const host = createHost('host');
-  const compiler = new Compiler(host);
+  const compiler = new Compiler(host, {warnUnnecessaryCasts});
 
   // For now, assume first file is entry point
   const entryPoint = resolve(process.cwd(), files[0]);
@@ -212,7 +228,11 @@ const checkCommand = async (files: string[]): Promise<number> => {
       if (mod.diagnostics.length > 0) {
         printErrors(mod.diagnostics, mod.source);
         if (
-          mod.diagnostics.some((d) => d.severity === DiagnosticSeverity.Error)
+          mod.diagnostics.some(
+            (d) =>
+              d.severity === DiagnosticSeverity.Error ||
+              (warningsAsErrors && d.severity === DiagnosticSeverity.Warning),
+          )
         ) {
           hasErrors = true;
         }
@@ -231,6 +251,8 @@ const runCommand = async (
   target: Target = 'host',
   emitLocations: boolean = false,
   debug: boolean = false,
+  warnUnnecessaryCasts: boolean = false,
+  warningsAsErrors: boolean = false,
 ): Promise<number> => {
   if (files.length === 0) {
     console.error('Error: No input files specified');
@@ -245,7 +267,11 @@ const runCommand = async (
   }
 
   const host = createHost(target);
-  const compiler = new Compiler(host, {target, emitLocations});
+  const compiler = new Compiler(host, {
+    target,
+    emitLocations,
+    warnUnnecessaryCasts,
+  });
   const entryPoint = resolve(process.cwd(), files[0]);
 
   try {
@@ -256,7 +282,11 @@ const runCommand = async (
       if (mod.diagnostics.length > 0) {
         printErrors(mod.diagnostics, mod.source);
         if (
-          mod.diagnostics.some((d) => d.severity === DiagnosticSeverity.Error)
+          mod.diagnostics.some(
+            (d) =>
+              d.severity === DiagnosticSeverity.Error ||
+              (warningsAsErrors && d.severity === DiagnosticSeverity.Warning),
+          )
         ) {
           hasErrors = true;
         }
@@ -315,6 +345,8 @@ export const main = async (args: string[]): Promise<number> => {
       debug: {type: 'boolean', short: 'g', default: false},
       dce: {type: 'boolean', default: false},
       'emit-locations': {type: 'boolean', short: 'l', default: false},
+      'warn-unnecessary-casts': {type: 'boolean', default: false},
+      'warnings-as-errors': {type: 'boolean', default: false},
       verbose: {type: 'boolean', short: 'v', default: false},
     },
     allowPositionals: true,
@@ -346,11 +378,24 @@ export const main = async (args: string[]): Promise<number> => {
         values.debug,
         values.dce,
         values['emit-locations'],
+        values['warn-unnecessary-casts'],
+        values['warnings-as-errors'],
       );
     case 'check':
-      return checkCommand(files);
+      return checkCommand(
+        files,
+        values['warn-unnecessary-casts'],
+        values['warnings-as-errors'],
+      );
     case 'run':
-      return runCommand(files, target, values['emit-locations'], values.debug);
+      return runCommand(
+        files,
+        target,
+        values['emit-locations'],
+        values.debug,
+        values['warn-unnecessary-casts'],
+        values['warnings-as-errors'],
+      );
     case 'test':
       return testCommand(files, {
         verbose: values.verbose,
