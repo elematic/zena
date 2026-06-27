@@ -343,6 +343,8 @@ export class CodegenContext {
   // With type interning in the checker, identical instantiations share the
   // same ClassType object, so we can use a WeakMap for O(1) lookup.
   readonly #classInfo = new WeakMap<ClassType, ClassInfo>();
+  // Lazily populated subclass hierarchy index for devirtualization
+  readonly #subclassesOf = new Map<ClassInfo, ClassInfo[]>();
 
   // Extension class lookup: onType (checker Type) -> ClassInfo[]
   // Maps the type being extended to all extension classes that extend it.
@@ -1253,6 +1255,42 @@ export class CodegenContext {
    */
   public getAllClassInfos(): IterableIterator<ClassInfo> {
     return this.#structIndexToClassInfo.values();
+  }
+
+  /**
+   * Get all transitive subclasses of a given class.
+   * Lazily builds the subclasses map if not already populated.
+   */
+  public getTransitiveSubclasses(classInfo: ClassInfo): ClassInfo[] {
+    if (this.#subclassesOf.size === 0 && this.getClassCount() > 0) {
+      for (const info of this.getAllClassInfos()) {
+        if (info.superClassType) {
+          const superInfo = this.getClassInfo(info.superClassType);
+          if (superInfo) {
+            let list = this.#subclassesOf.get(superInfo);
+            if (!list) {
+              list = [];
+              this.#subclassesOf.set(superInfo, list);
+            }
+            list.push(info);
+          }
+        }
+      }
+    }
+
+    const result: ClassInfo[] = [];
+    const queue = [classInfo];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const subs = this.#subclassesOf.get(current) || [];
+      for (const sub of subs) {
+        if (!result.includes(sub)) {
+          result.push(sub);
+          queue.push(sub);
+        }
+      }
+    }
+    return result;
   }
 
   /**

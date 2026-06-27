@@ -125,15 +125,28 @@ let runClosureBenchmark = (closure: (sum: i32) => i32, n: i32): i32 => {
 };
 
 class BaseClass {
-  x: i32;
-  new(this.x);
-  getValue(): i32 { return this.x; }
+  new();
+  getValue(): i32 { return 1; }
+}
+
+class SubClassOfBase extends BaseClass {
+  new() : super() {}
+  getValue(): i32 { return 2; }
+}
+
+class BaseClassWithOverride {
+  new();
+  getValue(): i32 { return 1; }
+}
+
+class SubClassWithOverride extends BaseClassWithOverride {
+  new() : super() {}
+  getValue(): i32 { return 2; }
 }
 
 final class FinalClass {
-  x: i32;
-  new(this.x);
-  getValue(): i32 { return this.x; }
+  new();
+  getValue(): i32 { return 1; }
 }
 
 class CastContainer {
@@ -224,7 +237,24 @@ let runDevirtNoInferBenchmark = (obj: BaseClass, n: i32): i32 => {
 };
 
 let runDevirtInferBenchmark = (n: i32): i32 => {
-  let obj = new BaseClass(1);
+  let obj = new BaseClass();
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
+
+let runDevirtNoInferOverrideBenchmark = (obj: BaseClassWithOverride, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
+
+let runDevirtInferOverrideBenchmark = (n: i32): i32 => {
+  let obj = new SubClassWithOverride();
   var sum = 0;
   for (var i = 0; i < n; i += 1) {
     sum = sum + obj.getValue();
@@ -352,8 +382,8 @@ export let main = (): i32 => {
   }, filter);
 
   // 7. Devirtualization Benchmarks (N=10,000,000)
-  let baseObj = new BaseClass(1);
-  let finalObj = new FinalClass(1);
+  let baseObj = new BaseClass();
+  let finalObj = new FinalClass();
   runTest("DevirtNoInferCall (N=10,000,000)", () => {
     let res = runDevirtNoInferBenchmark(baseObj, 10000000);
     if (res != 10000000) {
@@ -365,6 +395,21 @@ export let main = (): i32 => {
     let res = runDevirtInferBenchmark(10000000);
     if (res != 10000000) {
       console.log("Error in DevirtInferCall: " + i32ToString(res));
+    }
+  }, filter);
+
+  let overrideObj = new SubClassWithOverride();
+  runTest("DevirtNoInferOverrideCall (N=10,000,000)", () => {
+    let res = runDevirtNoInferOverrideBenchmark(overrideObj, 10000000);
+    if (res != 20000000) {
+      console.log("Error in DevirtNoInferOverrideCall: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("DevirtInferOverrideCall (N=10,000,000)", () => {
+    let res = runDevirtInferOverrideBenchmark(10000000);
+    if (res != 20000000) {
+      console.log("Error in DevirtInferOverrideCall: " + i32ToString(res));
     }
   }, filter);
 

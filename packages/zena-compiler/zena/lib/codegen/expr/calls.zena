@@ -1,10 +1,10 @@
-import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration, getMemberPropertyName } from '../../ast.zena';
+import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration, getMemberPropertyName, NewExpression } from '../../ast.zena';
 import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, UnionType, TypeParameterType, typeToString, isVoidOrNeverType, instantiateClassType, isRefType, baseType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16 } from '../wasm.zena';
-import { WasmFunction, WasmStruct, WasmSignature } from '../wasm-module.zena';
+import { WasmFunction, WasmStruct, WasmSignature, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, getSpecializedFunctionKey } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
 import { Error } from 'zena:error';
@@ -490,6 +490,20 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             return;
           }
 
+          var receiverCt = ct;
+          var isConcrete = false;
+          if (member.object is NewExpression) {
+            receiverCt = ct;
+            isConcrete = true;
+          } else if (member.object is Identifier) {
+            let identObj = member.object as Identifier;
+            let sym = ctx.wasmFunction.model.resolve(identObj);
+            if (sym != null && ctx.localConcreteClassTypes.has(sym.id)) {
+              receiverCt = ctx.localConcreteClassTypes[sym.id];
+              isConcrete = true;
+            }
+          }
+
           let ctKey = getClassKey(ct);
           var structInfoOpt: WasmStruct | null = null;
           var vtableStructOpt: WasmStruct | null = null;
@@ -522,13 +536,58 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
           
           var foundFunc: WasmFunction | null = null;
-          var currClass: ClassType | null = ct;
+          var currClass: ClassType | null = receiverCt;
           while (currClass != null && foundFunc == null) {
             let key = getClassMethodKey(getClassKey(currClass as ClassType), lookupName);
             if (ctx.wasm.classMethodMap.has(key)) {
               foundFunc = ctx.wasm.classMethodMap[key];
             }
             currClass = (currClass as ClassType).superType;
+          }
+
+          let receiverCtKey = getClassKey(receiverCt);
+          var receiverInfo: ClassCodegenInfo | null = null;
+          if (let (true, info) = ctx.wasm.classInfos.get(receiverCtKey)) {
+            receiverInfo = info;
+          }
+
+          var canDevirtualize = false;
+          if (foundFunc != null && receiverInfo != null) {
+            let f = foundFunc as WasmFunction;
+            if (f.node != null) {
+              let nodeType = getNodeType(ctx, f.node as Node);
+              var isMethodFinal = false;
+              if (nodeType is FunctionType) {
+                isMethodFinal = (nodeType as FunctionType).isFinal;
+              }
+
+              if (isMethodFinal || receiverCt.isFinal || isConcrete) {
+                canDevirtualize = true;
+              } else {
+                let subclasses = new Array<ClassCodegenInfo>();
+                (receiverInfo as ClassCodegenInfo).getTransitiveSubclasses(subclasses);
+                var hasOverride = false;
+                for (let sub in subclasses) {
+                  var subFunc: WasmFunction | null = null;
+                  var subCurr: ClassType | null = sub.structType.classType;
+                  while (subCurr != null && subFunc == null) {
+                    let key = getClassMethodKey(getClassKey(subCurr as ClassType), lookupName);
+                    if (ctx.wasm.classMethodMap.has(key)) {
+                      subFunc = ctx.wasm.classMethodMap[key];
+                    }
+                    subCurr = (subCurr as ClassType).superType;
+                  }
+                  
+                  if (subFunc != null && (subFunc as WasmFunction).index != f.index) {
+                    hasOverride = true;
+                    break;
+                  }
+                }
+                if (!hasOverride) {
+                  canDevirtualize = true;
+                }
+              }
+            }
           }
 
           let sig = if (foundFunc != null) (foundFunc as WasmFunction).signature else getClassMemberSignature(ctx.wasm, ct, targetName);
@@ -540,14 +599,18 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           
           generateCallArguments(ctx, call, ft, scratchLocal, currentGenExpr);
           
-          ctx.emitter.emitLocalGet(scratchLocal);
-          ctx.emitter.emitRefCast(structInfo.index);
-          ctx.emitter.emitStructGet(structInfo.index, 0); 
-          ctx.emitter.emitRefCast(vtableStruct.index);
-          ctx.emitter.emitStructGet(vtableStruct.index, methodIndex); 
+          if (canDevirtualize) {
+            ctx.emitter.emitCall(foundFunc as WasmFunction);
+          } else {
+            ctx.emitter.emitLocalGet(scratchLocal);
+            ctx.emitter.emitRefCast(structInfo.index);
+            ctx.emitter.emitStructGet(structInfo.index, 0); 
+            ctx.emitter.emitRefCast(vtableStruct.index);
+            ctx.emitter.emitStructGet(vtableStruct.index, methodIndex); 
 
-          ctx.emitter.emitRefCast(sigIndex);
-          ctx.emitter.emitCallRef(sigIndex);
+            ctx.emitter.emitRefCast(sigIndex);
+            ctx.emitter.emitCallRef(sigIndex);
+          }
           return;
         }
         

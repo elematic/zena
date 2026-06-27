@@ -170,4 +170,5 @@ export interface LocalInfo {
   unboxedType?: number[];
   // For closure cells (mutual recursion): the local holds a cell struct, not a Box<T>
   isCelled?: boolean;
+  concreteClassType?: ClassType;
 }

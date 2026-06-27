@@ -170,20 +170,32 @@ const runClosureBenchmark = (closure, n) => {
 };
 
 class BaseClass {
-  constructor(x) {
-    this.x = x;
-  }
   getValue() {
-    return this.x;
+    return 1;
+  }
+}
+
+class SubClassOfBase extends BaseClass {
+  getValue() {
+    return 2;
+  }
+}
+
+class BaseClassWithOverride {
+  getValue() {
+    return 1;
+  }
+}
+
+class SubClassWithOverride extends BaseClassWithOverride {
+  getValue() {
+    return 2;
   }
 }
 
 class FinalClass {
-  constructor(x) {
-    this.x = x;
-  }
   getValue() {
-    return this.x;
+    return 1;
   }
 }
 
@@ -272,7 +284,24 @@ const runDevirtNoInferBenchmark = (obj, n) => {
 };
 
 const runDevirtInferBenchmark = (n) => {
-  const obj = new BaseClass(1);
+  const obj = new BaseClass();
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
+
+const runDevirtNoInferOverrideBenchmark = (obj, n) => {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
+
+const runDevirtInferOverrideBenchmark = (n) => {
+  const obj = new SubClassWithOverride();
   let sum = 0;
   for (let i = 0; i < n; i++) {
     sum = sum + obj.getValue();
@@ -393,8 +422,8 @@ runTest('CastWithCastAccess (N=10,000,000)', () => {
 });
 
 // 7. Devirtualization Benchmarks (N=10,000,000)
-const baseObj = new BaseClass(1);
-const finalObj = new FinalClass(1);
+const baseObj = new BaseClass();
+const finalObj = new FinalClass();
 runTest('DevirtNoInferCall (N=10,000,000)', () => {
   const res = runDevirtNoInferBenchmark(baseObj, 10000000);
   if (res !== 10000000) {
@@ -406,6 +435,21 @@ runTest('DevirtInferCall (N=10,000,000)', () => {
   const res = runDevirtInferBenchmark(10000000);
   if (res !== 10000000) {
     console.log('Error in DevirtInferCall: ' + res);
+  }
+});
+
+const overrideObj = new SubClassWithOverride();
+runTest('DevirtNoInferOverrideCall (N=10,000,000)', () => {
+  const res = runDevirtNoInferOverrideBenchmark(overrideObj, 10000000);
+  if (res !== 20000000) {
+    console.log('Error in DevirtNoInferOverrideCall: ' + res);
+  }
+});
+
+runTest('DevirtInferOverrideCall (N=10,000,000)', () => {
+  const res = runDevirtInferOverrideBenchmark(10000000);
+  if (res !== 20000000) {
+    console.log('Error in DevirtInferOverrideCall: ' + res);
   }
 });
 

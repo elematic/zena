@@ -3858,24 +3858,69 @@ function generateCallExpression(
       );
     }
 
-    let methodInfo = foundClass.methods.get(methodName);
+    let isConcrete = false;
+    let receiverClassInfo = foundClass;
+    if (memberExpr.object.type === NodeType.NewExpression) {
+      if (memberExpr.object.inferredType?.kind === TypeKind.Class) {
+        const concreteClassInfo = ctx.getClassInfo(
+          memberExpr.object.inferredType as ClassType,
+        );
+        if (concreteClassInfo) {
+          receiverClassInfo = concreteClassInfo;
+          isConcrete = true;
+        }
+      }
+    } else if (memberExpr.object.type === NodeType.Identifier) {
+      const local = ctx.getLocal((memberExpr.object as Identifier).name);
+      if (local?.concreteClassType) {
+        const concreteClassInfo = ctx.getClassInfo(local.concreteClassType);
+        if (concreteClassInfo) {
+          receiverClassInfo = concreteClassInfo;
+          isConcrete = true;
+        }
+      }
+    }
+
+    let lookupClass = receiverClassInfo;
+    let lookupKey = methodName;
+    let methodInfo = lookupClass.methods.get(methodName);
 
     // If not found, check for overloaded method with mangled name
     if (methodInfo === undefined && expr.resolvedFunctionType) {
       const resolvedFunc = expr.resolvedFunctionType as FunctionType;
       if (resolvedFunc.kind === TypeKind.Function) {
         const mangledName = methodName + getSignatureKey(resolvedFunc);
-        methodInfo = foundClass.methods.get(mangledName);
+        methodInfo = lookupClass.methods.get(mangledName);
+        if (methodInfo !== undefined) {
+          lookupKey = mangledName;
+        }
+      }
+    }
+
+    if (methodInfo === undefined && lookupClass !== foundClass) {
+      // Fallback to static class type
+      lookupClass = foundClass;
+      lookupKey = methodName;
+      methodInfo = lookupClass.methods.get(methodName);
+      if (methodInfo === undefined && expr.resolvedFunctionType) {
+        const resolvedFunc = expr.resolvedFunctionType as FunctionType;
+        if (resolvedFunc.kind === TypeKind.Function) {
+          const mangledName = methodName + getSignatureKey(resolvedFunc);
+          methodInfo = lookupClass.methods.get(mangledName);
+          if (methodInfo !== undefined) {
+            lookupKey = mangledName;
+          }
+        }
       }
     }
 
     if (methodInfo === undefined) {
       // Check if it's a generic method call
-      const originalClassName = foundClass.originalName || foundClass.name;
+      const originalClassName = lookupClass.originalName || lookupClass.name;
       let genericKey = `${originalClassName}.${methodName}`;
 
-      if (!ctx.genericMethods.has(genericKey) && foundClass.originalName) {
-        genericKey = `${foundClass.name}.${methodName}`;
+      if (!ctx.genericMethods.has(genericKey) && lookupClass.originalName) {
+        genericKey = `${lookupClass.name}.${methodName}`;
       }
 
       if (ctx.genericMethods.has(genericKey)) {
@@ -3885,10 +3930,52 @@ function generateCallExpression(
         if (checkerTypeArgs && checkerTypeArgs.length > 0) {
           methodInfo = instantiateGenericMethod(
             ctx,
+            lookupClass,
+            methodName,
+            checkerTypeArgs,
+          );
+        }
+      }
+    }
+
+    if (methodInfo === undefined && lookupClass !== foundClass) {
+      // Fallback generic method lookup
+      const originalClassName = foundClass.originalName || foundClass.name;
+      let genericKey = `${originalClassName}.${methodName}`;
+
+      if (!ctx.genericMethods.has(genericKey) && foundClass.originalName) {
+        genericKey = `${foundClass.name}.${methodName}`;
+      }
+
+      if (ctx.genericMethods.has(genericKey)) {
+        const checkerTypeArgs = expr.inferredTypeArguments;
+        if (checkerTypeArgs && checkerTypeArgs.length > 0) {
+          methodInfo = instantiateGenericMethod(
+            ctx,
             foundClass,
             methodName,
             checkerTypeArgs,
           );
+        }
+      }
+    }
+
+    let canDevirtualize = false;
+    if (methodInfo && methodInfo.index !== -1) {
+      if (methodInfo.isFinal || lookupClass.isFinal || isConcrete) {
+        canDevirtualize = true;
+      } else {
+        const subclasses = ctx.getTransitiveSubclasses(lookupClass);
+        let hasOverride = false;
+        for (const sub of subclasses) {
+          const subMethod = sub.methods.get(lookupKey);
+          if (subMethod && subMethod.index !== methodInfo.index) {
+            hasOverride = true;
+            break;
+          }
+        }
+        if (!hasOverride) {
+          canDevirtualize = true;
         }
       }
     }
@@ -4082,8 +4169,7 @@ function generateCallExpression(
     if (
       vtableIndex !== -1 &&
       foundClass.vtableTypeIndex !== undefined &&
-      !methodInfo.isFinal &&
-      !foundClass.isFinal
+      !canDevirtualize
     ) {
       // Dynamic Dispatch
       generateExpression(ctx, memberExpr.object, body);

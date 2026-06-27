@@ -1337,6 +1337,26 @@ export function generateLocalVariableDeclaration(
       const index = ctx.declareLocal(decl.pattern.name, type, decl);
       body.push(Opcode.local_set);
       body.push(...WasmModule.encodeSignedLEB128(index));
+
+      if (decl.kind === 'let') {
+        let concreteClassType: ClassType | undefined = undefined;
+        if (decl.init.type === NodeType.NewExpression) {
+          if (decl.init.inferredType?.kind === TypeKind.Class) {
+            concreteClassType = decl.init.inferredType as ClassType;
+          }
+        } else if (decl.init.type === NodeType.Identifier) {
+          const initLocal = ctx.getLocal((decl.init as Identifier).name);
+          if (initLocal?.concreteClassType) {
+            concreteClassType = initLocal.concreteClassType;
+          }
+        }
+        if (concreteClassType) {
+          const local = ctx.getLocal(decl.pattern.name);
+          if (local) {
+            local.concreteClassType = concreteClassType;
+          }
+        }
+      }
     }
   } else {
     generatePatternBinding(ctx, decl.pattern, type, body);

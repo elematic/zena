@@ -98,10 +98,12 @@ suite('CodeGenerator - Final Modifier', () => {
       class Widget {
         final getValue(): i32 { return 42; }
       }
-      
+      class SubWidget extends Widget {
+        // cannot override final method
+      }
+      let callVal = (w: Widget): i32 => w.getValue() + w.getValue() + w.getValue() + w.getValue() + w.getValue();
       export let main = (): i32 => {
-        let w = new Widget();
-        return w.getValue();
+        return callVal(new Widget());
       };
     `;
     const bytesFinal = compileToWasm(source1);
@@ -111,10 +113,12 @@ suite('CodeGenerator - Final Modifier', () => {
       class Widget {
         getValue(): i32 { return 42; }
       }
-      
+      class SubWidget extends Widget {
+        getValue(): i32 { return 43; }
+      }
+      let callVal = (w: Widget): i32 => w.getValue() + w.getValue() + w.getValue() + w.getValue() + w.getValue();
       export let main = (): i32 => {
-        let w = new Widget();
-        return w.getValue();
+        return callVal(new Widget());
       };
     `;
     const bytesNonFinal = compileToWasm(source2);
@@ -146,10 +150,9 @@ suite('CodeGenerator - Final Modifier', () => {
       final class Widget {
         getValue(): i32 { return 42; }
       }
-      
+      let callVal = (w: Widget): i32 => w.getValue() + w.getValue() + w.getValue() + w.getValue() + w.getValue();
       export let main = (): i32 => {
-        let w = new Widget();
-        return w.getValue();
+        return callVal(new Widget());
       };
     `;
     const bytesFinalClass = compileToWasm(source1);
@@ -159,10 +162,12 @@ suite('CodeGenerator - Final Modifier', () => {
       class Widget {
         getValue(): i32 { return 42; }
       }
-      
+      class SubWidget extends Widget {
+        getValue(): i32 { return 43; }
+      }
+      let callVal = (w: Widget): i32 => w.getValue() + w.getValue() + w.getValue() + w.getValue() + w.getValue();
       export let main = (): i32 => {
-        let w = new Widget();
-        return w.getValue();
+        return callVal(new Widget());
       };
     `;
     const bytesNonFinalClass = compileToWasm(source2);

@@ -3,7 +3,7 @@ import { Symbol } from '../../scope/symbol.zena';
 import { 
   VariableDeclaration, Expression, IdentifierPattern, TuplePattern, RecordPattern, 
   AssignmentPattern, AsPattern, BindingPattern, BindingProperty, Node, Identifier,
-  ClassPattern
+  ClassPattern, NewExpression
 } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
 import { typeToValType, typeToValTypeWithSub, getCellStruct } from '../type-mapping.zena';
@@ -375,5 +375,27 @@ export let generateVariableDeclaration = (
       genExpr(initExpr, false);
     };
     generatePatternBinding(ctx, stmt.pattern, initType, loadInit);
+
+    if (stmt.kind == "let" && stmt.pattern is IdentifierPattern) {
+      let identPat = stmt.pattern as IdentifierPattern;
+      let sym = ctx.wasmFunction.model.resolveDeclaration(identPat);
+      if (sym != null) {
+        var concreteType: ClassType | null = null;
+        if (initExpr is NewExpression) {
+          if (initType is ClassType) {
+            concreteType = initType as ClassType;
+          }
+        } else if (initExpr is Identifier) {
+          let initIdent = initExpr as Identifier;
+          let initSym = ctx.wasmFunction.model.resolve(initIdent);
+          if (initSym != null && ctx.localConcreteClassTypes.has(initSym.id)) {
+            concreteType = ctx.localConcreteClassTypes[initSym.id];
+          }
+        }
+        if (concreteType != null) {
+          ctx.localConcreteClassTypes[sym.id] = concreteType as ClassType;
+        }
+      }
+    }
   }
 };

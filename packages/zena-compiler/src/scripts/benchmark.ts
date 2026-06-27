@@ -601,6 +601,14 @@ if (runBasic) {
             name: 'Dynamic (devirtualizable)',
           },
           {
+            key: 'DevirtNoInferOverrideCall (N=10,000,000)',
+            name: 'Override Dynamic (non-devirt)',
+          },
+          {
+            key: 'DevirtInferOverrideCall (N=10,000,000)',
+            name: 'Override Dynamic (devirtualized)',
+          },
+          {
             key: 'DevirtStaticCall (N=10,000,000)',
             name: 'Static (devirtualized)',
           },
