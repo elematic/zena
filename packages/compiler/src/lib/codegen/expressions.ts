@@ -5179,6 +5179,87 @@ function generateAssignmentExpressionInner(
       const setterName = getSetterName(fieldName);
       const methodInfo = foundClass.methods.get(setterName);
       if (methodInfo) {
+        // Traverse up to find the root-most class in the hierarchy that has this field
+        let fieldDeclaringClass = foundClass;
+        while (fieldDeclaringClass.superClassType) {
+          const superInfo = ctx.getClassInfo(fieldDeclaringClass.superClassType);
+          if (superInfo && superInfo.fields.has(fieldName)) {
+            fieldDeclaringClass = superInfo;
+          } else {
+            break;
+          }
+        }
+
+        const defaultSetterIndex = fieldDeclaringClass.methods.get(setterName)?.index;
+
+        // Check if the setter is overridden by any subclasses OR by foundClass itself
+        const subclasses = ctx.getTransitiveSubclasses(foundClass);
+        let hasOverride = methodInfo.index !== defaultSetterIndex;
+        if (!hasOverride) {
+          for (const sub of subclasses) {
+            const subMethod = sub.methods.get(setterName);
+            if (subMethod && subMethod.index !== methodInfo.index) {
+              hasOverride = true;
+              break;
+            }
+          }
+        }
+
+        if (!hasOverride && foundClass.fields.has(fieldName) && memberExpr.object.type !== NodeType.SuperExpression) {
+          // Direct field assignment - struct.set
+          generateExpression(ctx, memberExpr.object, body);
+
+          // Cast if object is erased ref or a supertype
+          let needsCast =
+            objectType.length === 1 &&
+            (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
+
+          if (
+            !needsCast &&
+            objectType.length > 1 &&
+            (objectType[0] === ValType.ref_null || objectType[0] === ValType.ref)
+          ) {
+            const srcIndex = decodeTypeIndex(objectType);
+            if (srcIndex !== foundClass.structTypeIndex) {
+              needsCast = true;
+            }
+          }
+
+          if (needsCast) {
+            body.push(0xfb, GcOpcode.ref_cast_null);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+            );
+          }
+
+          generateExpression(ctx, expr.value, body);
+
+          const fieldInfo = foundClass.fields.get(fieldName)!;
+          const valueType = inferType(ctx, expr.value);
+          if (
+            isErasedRefType(fieldInfo.type) &&
+            valueType.length === 1 &&
+            (valueType[0] === ValType.i32 ||
+              valueType[0] === ValType.i64 ||
+              valueType[0] === ValType.f32 ||
+              valueType[0] === ValType.f64)
+          ) {
+            boxPrimitive(ctx, valueType, body, expr.value.inferredType);
+          }
+
+          const tempVal = ctx.declareLocal('$$temp_field_set', fieldInfo.type);
+          body.push(Opcode.local_tee);
+          body.push(...WasmModule.encodeSignedLEB128(tempVal));
+
+          body.push(0xfb, GcOpcode.struct_set);
+          body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
+          body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(tempVal));
+          return;
+        }
+
         // Check if we can use static dispatch (final class, final method, or extension, or super)
         const useStaticDispatch =
           foundClass.isFinal ||
@@ -6865,6 +6946,67 @@ function generateFieldFromBinding(
     const getterName = getGetterName(fieldName);
     const methodInfo = classInfo.methods.get(getterName);
     if (methodInfo) {
+      // Traverse up to find the root-most class in the hierarchy that has this field
+      let fieldDeclaringClass = classInfo;
+      while (fieldDeclaringClass.superClassType) {
+        const superInfo = ctx.getClassInfo(fieldDeclaringClass.superClassType);
+        if (superInfo && superInfo.fields.has(fieldName)) {
+          fieldDeclaringClass = superInfo;
+        } else {
+          break;
+        }
+      }
+
+      const defaultGetterIndex = fieldDeclaringClass.methods.get(getterName)?.index;
+
+      // Check if the getter method is overridden by any subclasses OR by classInfo itself
+      const subclasses = ctx.getTransitiveSubclasses(classInfo);
+      let hasOverride = methodInfo.index !== defaultGetterIndex;
+      if (!hasOverride) {
+        for (const sub of subclasses) {
+          const subMethod = sub.methods.get(getterName);
+          if (subMethod && subMethod.index !== methodInfo.index) {
+            hasOverride = true;
+            break;
+          }
+        }
+      }
+
+      if (!hasOverride && classInfo.fields.has(fieldName) && objectExpr.type !== NodeType.SuperExpression) {
+        // Direct field access - struct.get
+        generateExpression(ctx, objectExpr, body);
+
+        // Cast if object is erased ref or a supertype
+        const objectType = inferType(ctx, objectExpr);
+        let needsCast =
+          objectType.length === 1 &&
+          (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
+
+        if (
+          !needsCast &&
+          objectType.length > 1 &&
+          (objectType[0] === ValType.ref_null || objectType[0] === ValType.ref)
+        ) {
+          const srcIndex = decodeTypeIndex(objectType);
+          if (srcIndex !== classInfo.structTypeIndex) {
+            needsCast = true;
+          }
+        }
+
+        if (needsCast) {
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+        }
+
+        const fieldInfo = classInfo.fields.get(fieldName)!;
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+        return true;
+      }
+
       // Use getter with appropriate dispatch
       // Determine static vs dynamic dispatch: final class, final method (field), or extension, or super
       const useStaticDispatch =

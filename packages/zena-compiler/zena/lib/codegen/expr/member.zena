@@ -5,7 +5,7 @@ import { Error } from 'zena:error';
 import { RecordType, TupleType, ClassType, InterfaceType, ArrayType, typeToString, Type, FunctionType, VoidType, FieldInfo, AnyType, ByteArrayType } from '../../types.zena';
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
-import { WasmField, WasmFunction, WasmArray, WasmStruct, WasmGlobal } from '../wasm-module.zena';
+import { WasmField, WasmFunction, WasmArray, WasmStruct, WasmGlobal, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType } from '../type-mapping.zena';
 import { ValTypeRefNull, ValTypeRef, ValTypeI8, ValTypeVoid, HeapType, heapTypeToSigned, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeEqRef, ValTypeAnyRef, ValTypeStructRef } from '../wasm.zena';
@@ -228,9 +228,11 @@ export let generateMemberExpression = (
         let ctKey = getClassKey(ct);
         var structInfoOpt: WasmStruct | null = null;
         var vtableStructOpt: WasmStruct | null = null;
+        var classInfoOpt: ClassCodegenInfo | null = null;
         if (let (true, info) = ctx.wasm.classInfos.get(ctKey)) {
           structInfoOpt = info.structType;
           vtableStructOpt = info.vtableStructType;
+          classInfoOpt = info;
         }
         if (structInfoOpt == null) {
           throw new Error("Class struct not found: " + ct.name);
@@ -261,6 +263,50 @@ export let generateMemberExpression = (
           if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == getterName) {
             vtableIndex = i;
           }
+        }
+
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = ct;
+        while (currClass != null && foundFunc == null) {
+          let key = getClassMethodKey(getClassKey(currClass as ClassType), getterName);
+          if (ctx.wasm.classMethodMap.has(key)) {
+            foundFunc = ctx.wasm.classMethodMap[key];
+          }
+          currClass = (currClass as ClassType).superType;
+        }
+
+        let hasOverride = if (foundFunc != null) {
+          true
+        } else {
+          // Check if any subclass has a custom getter
+          var subHasOverride = false;
+          if (classInfoOpt != null) {
+            let subclasses = new Array<ClassCodegenInfo>();
+            (classInfoOpt as ClassCodegenInfo).getTransitiveSubclasses(subclasses);
+            for (let sub in subclasses) {
+              var subFunc: WasmFunction | null = null;
+              var subCurr: ClassType | null = sub.structType.classType;
+              while (subCurr != null && subFunc == null) {
+                let subKey = getClassMethodKey(getClassKey(subCurr as ClassType), getterName);
+                if (ctx.wasm.classMethodMap.has(subKey)) {
+                  subFunc = ctx.wasm.classMethodMap[subKey];
+                }
+                subCurr = (subCurr as ClassType).superType;
+              }
+              if (subFunc != null) {
+                subHasOverride = true;
+                break;
+              }
+            }
+          }
+          subHasOverride
+        };
+
+        if (fieldIndex != -1 && !hasOverride && !(expr.object is SuperExpression)) {
+          genObject();
+          ctx.emitter.emitRefCast(structInfo.index);
+          ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
+          return;
         }
         
         if (vtableIndex != -1) {
