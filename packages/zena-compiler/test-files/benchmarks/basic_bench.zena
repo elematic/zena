@@ -160,6 +160,54 @@ class DirectContainer {
   new(this.value);
 }
 
+class BaseClassWithField {
+  value: i32;
+  new(this.value);
+}
+
+class SubClassWithField extends BaseClassWithField {
+  new(v: i32) : super(v) {}
+}
+
+final class FinalClassWithField {
+  value: i32;
+  new(this.value);
+}
+
+class ClassWithFinalField {
+  final value: i32;
+  new(this.value);
+}
+
+class EffectivelyFinalClassWithField {
+  value: i32;
+  new(this.value);
+}
+
+class BaseClassWithMutableField {
+  var value: i32;
+  new(this.value);
+}
+
+class SubClassWithMutableField extends BaseClassWithMutableField {
+  new(v: i32) : super(v) {}
+}
+
+final class FinalClassWithMutableField {
+  var value: i32;
+  new(this.value);
+}
+
+class ClassWithFinalMutableField {
+  final var value: i32;
+  new(this.value);
+}
+
+class EffectivelyFinalClassWithMutableField {
+  var value: i32;
+  new(this.value);
+}
+
 final class CustomCollectionIterator implements Iterator<i32> {
   #array: FixedArray<i32>;
   var #index: i32;
@@ -320,6 +368,81 @@ let runStaticCallBenchmark = (obj: FinalClass, n: i32): i32 => {
     sum = sum + obj.getValue();
   }
   return sum;
+};
+
+let runFieldAccessVirtualBenchmark = (obj: BaseClassWithField, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + obj.value;
+  }
+  return sum;
+};
+
+let runFieldAccessDevirtFinalBenchmark = (obj: FinalClassWithField, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + obj.value;
+  }
+  return sum;
+};
+
+let runFieldAccessDevirtFinalFieldBenchmark = (obj: ClassWithFinalField, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + obj.value;
+  }
+  return sum;
+};
+
+let runFieldAccessDevirtEffectivelyFinalBenchmark = (obj: EffectivelyFinalClassWithField, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + obj.value;
+  }
+  return sum;
+};
+
+type Point2D = {x: i32, y: i32};
+type Point3D = {x: i32, y: i32, z: i32};
+
+let runRecordFieldAccessNoAdaptBenchmark = (p: Point2D, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + p.x;
+  }
+  return sum;
+};
+
+let runRecordFieldAccessAdaptBenchmark = (p: Point2D, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + p.x;
+  }
+  return sum;
+};
+
+let runFieldAssignVirtualBenchmark = (obj: BaseClassWithMutableField, n: i32): void => {
+  for (var i = 0; i < n; i += 1) {
+    obj.value = i;
+  }
+};
+
+let runFieldAssignDevirtFinalBenchmark = (obj: FinalClassWithMutableField, n: i32): void => {
+  for (var i = 0; i < n; i += 1) {
+    obj.value = i;
+  }
+};
+
+let runFieldAssignDevirtFinalFieldBenchmark = (obj: ClassWithFinalMutableField, n: i32): void => {
+  for (var i = 0; i < n; i += 1) {
+    obj.value = i;
+  }
+};
+
+let runFieldAssignDevirtEffectivelyFinalBenchmark = (obj: EffectivelyFinalClassWithMutableField, n: i32): void => {
+  for (var i = 0; i < n; i += 1) {
+    obj.value = i;
+  }
 };
 
 export let main = (): i32 => {
@@ -538,6 +661,90 @@ export let main = (): i32 => {
     let res = runStaticCallBenchmark(finalObj, 10000000);
     if (res != 10000000) {
       console.log("Error in DevirtStaticCall: " + i32ToString(res));
+    }
+  }, filter);
+
+  // 8. Field Access Benchmarks (N=10,000,000)
+  let subWithField = new SubClassWithField(1);
+  let finalWithField = new FinalClassWithField(1);
+  let finalFieldObj = new ClassWithFinalField(1);
+  let effFinalWithField = new EffectivelyFinalClassWithField(1);
+  let p2d: Point2D = {x: 1, y: 2};
+  let p3d: Point3D = {x: 1, y: 2, z: 3};
+
+  runTest("FieldAccessVirtual (N=10,000,000)", () => {
+    let res = runFieldAccessVirtualBenchmark(subWithField, 10000000);
+    if (res != 10000000) {
+      console.log("Error in FieldAccessVirtual: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("FieldAccessDevirtFinal (N=10,000,000)", () => {
+    let res = runFieldAccessDevirtFinalBenchmark(finalWithField, 10000000);
+    if (res != 10000000) {
+      console.log("Error in FieldAccessDevirtFinal: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("FieldAccessDevirtFinalField (N=10,000,000)", () => {
+    let res = runFieldAccessDevirtFinalFieldBenchmark(finalFieldObj, 10000000);
+    if (res != 10000000) {
+      console.log("Error in FieldAccessDevirtFinalField: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("FieldAccessDevirtEffectivelyFinal (N=10,000,000)", () => {
+    let res = runFieldAccessDevirtEffectivelyFinalBenchmark(effFinalWithField, 10000000);
+    if (res != 10000000) {
+      console.log("Error in FieldAccessDevirtEffectivelyFinal: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("FieldAccessRecordNoAdapt (N=10,000,000)", () => {
+    let res = runRecordFieldAccessNoAdaptBenchmark(p2d, 10000000);
+    if (res != 10000000) {
+      console.log("Error in FieldAccessRecordNoAdapt: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("FieldAccessRecordAdapt (N=10,000,000)", () => {
+    let res = runRecordFieldAccessAdaptBenchmark(p3d, 10000000);
+    if (res != 10000000) {
+      console.log("Error in FieldAccessRecordAdapt: " + i32ToString(res));
+    }
+  }, filter);
+
+  // 9. Field Assignment Benchmarks (N=10,000,000)
+  let subWithMutableField = new SubClassWithMutableField(0);
+  let finalWithMutableField = new FinalClassWithMutableField(0);
+  let finalMutableFieldObj = new ClassWithFinalMutableField(0);
+  let effFinalWithMutableField = new EffectivelyFinalClassWithMutableField(0);
+
+  runTest("FieldAssignVirtual (N=10,000,000)", () => {
+    runFieldAssignVirtualBenchmark(subWithMutableField, 10000000);
+    if (subWithMutableField.value != 9999999) {
+      console.log("Error in FieldAssignVirtual: " + i32ToString(subWithMutableField.value));
+    }
+  }, filter);
+
+  runTest("FieldAssignDevirtFinal (N=10,000,000)", () => {
+    runFieldAssignDevirtFinalBenchmark(finalWithMutableField, 10000000);
+    if (finalWithMutableField.value != 9999999) {
+      console.log("Error in FieldAssignDevirtFinal: " + i32ToString(finalWithMutableField.value));
+    }
+  }, filter);
+
+  runTest("FieldAssignDevirtFinalField (N=10,000,000)", () => {
+    runFieldAssignDevirtFinalFieldBenchmark(finalMutableFieldObj, 10000000);
+    if (finalMutableFieldObj.value != 9999999) {
+      console.log("Error in FieldAssignDevirtFinalField: " + i32ToString(finalMutableFieldObj.value));
+    }
+  }, filter);
+
+  runTest("FieldAssignDevirtEffectivelyFinal (N=10,000,000)", () => {
+    runFieldAssignDevirtEffectivelyFinalBenchmark(effFinalWithMutableField, 10000000);
+    if (effFinalWithMutableField.value != 9999999) {
+      console.log("Error in FieldAssignDevirtEffectivelyFinal: " + i32ToString(effFinalWithMutableField.value));
     }
   }, filter);
 

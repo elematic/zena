@@ -611,6 +611,56 @@ if (runBasic) {
         ],
       },
       {
+        title: 'Field Access (N=10,000,000)',
+        cases: [
+          {
+            key: 'FieldAccessVirtual (N=10,000,000)',
+            name: 'Virtual Dispatch',
+          },
+          {
+            key: 'FieldAccessDevirtFinal (N=10,000,000)',
+            name: 'Devirtualized (Final Class)',
+          },
+          {
+            key: 'FieldAccessDevirtFinalField (N=10,000,000)',
+            name: 'Devirtualized (Final Field)',
+          },
+          {
+            key: 'FieldAccessDevirtEffectivelyFinal (N=10,000,000)',
+            name: 'Devirtualized (Effectively Final)',
+          },
+          {
+            key: 'FieldAccessRecordNoAdapt (N=10,000,000)',
+            name: 'Record (No Adaptation)',
+          },
+          {
+            key: 'FieldAccessRecordAdapt (N=10,000,000)',
+            name: 'Record (Adaptation)',
+          },
+        ],
+      },
+      {
+        title: 'Field Assignment (N=10,000,000)',
+        cases: [
+          {
+            key: 'FieldAssignVirtual (N=10,000,000)',
+            name: 'Virtual Dispatch',
+          },
+          {
+            key: 'FieldAssignDevirtFinal (N=10,000,000)',
+            name: 'Devirtualized (Final Class)',
+          },
+          {
+            key: 'FieldAssignDevirtFinalField (N=10,000,000)',
+            name: 'Devirtualized (Final Field)',
+          },
+          {
+            key: 'FieldAssignDevirtEffectivelyFinal (N=10,000,000)',
+            name: 'Devirtualized (Effectively Final)',
+          },
+        ],
+      },
+      {
         title: 'Method Devirtualization (N=10,000,000)',
         cases: [
           {
