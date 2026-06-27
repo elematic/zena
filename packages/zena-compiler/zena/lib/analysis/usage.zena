@@ -1,14 +1,15 @@
 import { Program, CompilationUnit } from '../program.zena';
 import { Module, VariableDeclaration, IdentifierPattern, Identifier,
   ImportDeclaration, ImportSpecifier, Node, FunctionExpression, Parameter, CallExpression,
-  ClassDeclaration, DeclareFunction, NewExpression, SealedVariant
+  ClassDeclaration, DeclareFunction, NewExpression, SealedVariant, TemplateLiteral
 } from '../ast.zena';
 import { walkEnter } from '../visitor.zena';
 import { HashSet } from 'zena:set';
 import { HashMap } from 'zena:map';
 import { Symbol } from '../scope/symbol.zena';
 import { SemanticModel } from '../semantic-model.zena';
-import { ClassType } from '../types.zena';
+import { Type, ClassType, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, BooleanType, baseType } from '../types.zena';
+import { i32ToString } from 'zena:string-convert';
 
 export class UsageAnalysisResult {
   usedDeclarations = new HashSet<Node>();
@@ -105,9 +106,69 @@ export class UsageAnalyzer {
     }
   }
 
+  markStdlibExportUsed(modulePath: String, exportName: String): void {
+    if (!this.program.unitsByPath.has(modulePath)) {
+      return;
+    }
+    let unit = this.program.unitsByPath[modulePath];
+    for (let stmt in unit.ast.body) {
+      match (stmt) {
+        case DeclareFunction as df: {
+          if (df.name.name == exportName) {
+            let sym = unit.model.resolveDeclaration(df);
+            if (sym != null) {
+              this.markUsed(df, unit.model, unit.ast);
+            }
+          }
+        }
+        case VariableDeclaration as vd: {
+          if (vd.pattern is IdentifierPattern) {
+            let pat = vd.pattern as IdentifierPattern;
+            if (pat.name == exportName) {
+              let sym = unit.model.resolve(pat);
+              if (sym != null) {
+                this.markUsed(pat, unit.model, unit.ast);
+                this.markUsed(vd, unit.model, unit.ast);
+              }
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+  }
+
   visitNodeWithReferences(root: Node, model: SemanticModel, mod: Module): void {
     walkEnter(root, (node: Node): void => {
       match (node) {
+        case TemplateLiteral as tl: {
+          let totalParts = tl.quasis.length + tl.expressions.length;
+          if (totalParts >= 2 && totalParts <= 5) {
+            let concatName = "__concat" + i32ToString(totalParts);
+            this.markStdlibExportUsed("zena:string", concatName);
+          }
+          for (let subExpr in tl.expressions) {
+            let exprType = model.getNodeType(subExpr);
+            if (exprType != null) {
+              let baseT = baseType(exprType as Type);
+              if (baseT is I32Type || baseT is U32Type || baseT is I64Type || baseT is U64Type || baseT is F32Type || baseT is F64Type || baseT is BooleanType) {
+                let helperName = match (baseT) {
+                  case I32Type: "i32ToString"
+                  case U32Type: "u32ToString"
+                  case I64Type: "i64ToString"
+                  case U64Type: "u64ToString"
+                  case F32Type: "f32ToString"
+                  case F64Type: "f64ToString"
+                  case BooleanType: "boolToString"
+                  case _: ""
+                };
+                if (helperName != "") {
+                  this.markStdlibExportUsed("zena:string-convert", helperName);
+                }
+              }
+            }
+          }
+        }
         case CallExpression: {
           let call = node as CallExpression;
           if (call.callee is Identifier) {

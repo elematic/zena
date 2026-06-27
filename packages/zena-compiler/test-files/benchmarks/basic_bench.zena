@@ -2,6 +2,8 @@ import { Memory, defaultAllocator } from 'zena:memory';
 import { console } from 'zena:console';
 import { String } from 'zena:string';
 import { getArguments } from 'zena:cli';
+import { Iterator, Iterable } from 'zena:iterator';
+import { IterableUtils } from 'zena:iterable-utils';
 
 @external("wasi_snapshot_preview1", "clock_time_get")
 declare function __wasi_clock_time_get(
@@ -74,6 +76,170 @@ let testSimpleCall = (n: i32): i32 => {
   return sum;
 };
 
+let addNoInline = (a: i32, b: i32): i32 => {
+  if (a < -1000000) {
+    var x = a;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    x = x + 1; x = x + 1; x = x + 1; x = x + 1; x = x + 1;
+    return x;
+  }
+  return a + b;
+};
+
+let testNoInlineCall = (n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = addNoInline(sum, 1);
+  }
+  return sum;
+};
+
+let makeClosure = (offset: i32): (x: i32) => i32 => {
+  return (x: i32): i32 => x + offset;
+};
+
+let runClosureBenchmark = (closure: (sum: i32) => i32, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = closure(sum);
+  }
+  return sum;
+};
+
+class BaseClass {
+  x: i32;
+  new(this.x);
+  getValue(): i32 { return this.x; }
+}
+
+final class FinalClass {
+  x: i32;
+  new(this.x);
+  getValue(): i32 { return this.x; }
+}
+
+class CastContainer {
+  value: any;
+  new(this.value);
+}
+
+class DirectContainer {
+  value: String;
+  new(this.value);
+}
+
+final class CustomCollectionIterator implements Iterator<i32> {
+  #array: FixedArray<i32>;
+  var #index: i32;
+
+  new(arr: FixedArray<i32>) : #array = arr, #index = 0;
+
+  next(): inline (true, i32) | inline (false, _) {
+    if (this.#index < this.#array.length) {
+      let value = this.#array[this.#index];
+      this.#index += 1;
+      return (true, value);
+    }
+    return (false, _);
+  }
+}
+
+final class CustomCollection with IterableUtils<i32> implements Iterable<i32> {
+  #array: FixedArray<i32>;
+
+  new(arr: FixedArray<i32>) : #array = arr;
+
+  :Iterable.iterator(): Iterator<i32> {
+    return new CustomCollectionIterator(this.#array);
+  }
+}
+
+let runForLoopBenchmark = (arr: FixedArray<i32>): i32 => {
+  var sum = 0;
+  let len = arr.length;
+  for (var i = 0; i < len; i += 1) {
+    sum = sum + arr[i];
+  }
+  return sum;
+};
+
+let runForInArrayBenchmark = (arr: FixedArray<i32>): i32 => {
+  var sum = 0;
+  for (let x in arr) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+let runForInCustomBenchmark = (coll: CustomCollection): i32 => {
+  var sum = 0;
+  for (let x in coll) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+let runDirectAccessBenchmark = (container: DirectContainer, n: i32): i32 => {
+  var lenSum = 0;
+  for (var i = 0; i < n; i += 1) {
+    let s = container.value;
+    lenSum = lenSum + s.length;
+  }
+  return lenSum;
+};
+
+let runCastAccessBenchmark = (container: CastContainer, n: i32): i32 => {
+  var lenSum = 0;
+  for (var i = 0; i < n; i += 1) {
+    let s = container.value as String;
+    lenSum = lenSum + s.length;
+  }
+  return lenSum;
+};
+
+let runDevirtNoInferBenchmark = (obj: BaseClass, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
+
+let runDevirtInferBenchmark = (n: i32): i32 => {
+  let obj = new BaseClass(1);
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
+
+let runStaticCallBenchmark = (obj: FinalClass, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
+
 export let main = (): i32 => {
   let args = getArguments();
   var filter = "";
@@ -112,11 +278,100 @@ export let main = (): i32 => {
     }
   }, filter);
 
-  // 4. Simple Function Calls (N=10,000,000)
+  // 4. Function Call Benchmarks (N=10,000,000)
+  let closure = makeClosure(1);
   runTest("FunctionCallSimple (N=10,000,000)", () => {
     let res = testSimpleCall(10000000);
     if (res != 10000000) {
       console.log("Error in FunctionCallSimple(10,000,000): " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("FunctionCallNoInline (N=10,000,000)", () => {
+    let res = testNoInlineCall(10000000);
+    if (res != 10000000) {
+      console.log("Error in FunctionCallNoInline(10,000,000): " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("FunctionCallClosure (N=10,000,000)", () => {
+    let res = runClosureBenchmark(closure, 10000000);
+    if (res != 10000000) {
+      console.log("Error in FunctionCallClosure(10,000,000): " + i32ToString(res));
+    }
+  }, filter);
+
+  // 5. Loop Iteration Benchmarks (N=10,000 x 1,000)
+  let arr = new FixedArray<i32>(1000, 1);
+  let customColl = new CustomCollection(arr);
+  runTest("LoopForLoop (N=10,000,000)", () => {
+    var sum = 0;
+    for (var i = 0; i < 10000; i += 1) {
+      sum = sum + runForLoopBenchmark(arr);
+    }
+    if (sum != 10000000) {
+      console.log("Error in LoopForLoop: " + i32ToString(sum));
+    }
+  }, filter);
+
+  runTest("LoopForInArray (N=10,000,000)", () => {
+    var sum = 0;
+    for (var i = 0; i < 10000; i += 1) {
+      sum = sum + runForInArrayBenchmark(arr);
+    }
+    if (sum != 10000000) {
+      console.log("Error in LoopForInArray: " + i32ToString(sum));
+    }
+  }, filter);
+
+  runTest("LoopForInCustom (N=10,000,000)", () => {
+    var sum = 0;
+    for (var i = 0; i < 10000; i += 1) {
+      sum = sum + runForInCustomBenchmark(customColl);
+    }
+    if (sum != 10000000) {
+      console.log("Error in LoopForInCustom: " + i32ToString(sum));
+    }
+  }, filter);
+
+  // 6. Cast Benchmarks (N=10,000,000)
+  let directCont = new DirectContainer("hello");
+  let castCont = new CastContainer("hello");
+  runTest("CastDirectAccess (N=10,000,000)", () => {
+    let res = runDirectAccessBenchmark(directCont, 10000000);
+    if (res != 50000000) {
+      console.log("Error in CastDirectAccess: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("CastWithCastAccess (N=10,000,000)", () => {
+    let res = runCastAccessBenchmark(castCont, 10000000);
+    if (res != 50000000) {
+      console.log("Error in CastWithCastAccess: " + i32ToString(res));
+    }
+  }, filter);
+
+  // 7. Devirtualization Benchmarks (N=10,000,000)
+  let baseObj = new BaseClass(1);
+  let finalObj = new FinalClass(1);
+  runTest("DevirtNoInferCall (N=10,000,000)", () => {
+    let res = runDevirtNoInferBenchmark(baseObj, 10000000);
+    if (res != 10000000) {
+      console.log("Error in DevirtNoInferCall: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("DevirtInferCall (N=10,000,000)", () => {
+    let res = runDevirtInferBenchmark(10000000);
+    if (res != 10000000) {
+      console.log("Error in DevirtInferCall: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("DevirtStaticCall (N=10,000,000)", () => {
+    let res = runStaticCallBenchmark(finalObj, 10000000);
+    if (res != 10000000) {
+      console.log("Error in DevirtStaticCall: " + i32ToString(res));
     }
   }, filter);
 

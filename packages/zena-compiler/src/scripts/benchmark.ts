@@ -516,61 +516,144 @@ if (runBasic) {
 
   // If any are run, display table
   if (zenaTimes.size > 0 || zenaNodeTimes.size > 0 || nodeTimes.size > 0) {
-    console.log('\nBasic Micro-Benchmark Comparison:');
-    const stringColWidths = [35, 17, 17, 16, 15, 15];
-    const formatStringRow = (cells: string[]) => {
+    const colWidths = [42, 17, 17, 16, 15, 15];
+    const formatRow = (cells: string[]) => {
       return (
         '│ ' +
         cells
           .map((cell, i) => {
             if (i === 0) {
-              return cell.padEnd(stringColWidths[i]);
+              return cell.padEnd(colWidths[i]);
             } else {
-              return cell.padStart(stringColWidths[i]);
+              return cell.padStart(colWidths[i]);
             }
           })
           .join(' │ ') +
         ' │'
       );
     };
-    const makeStringSeparator = (left: string, mid: string, right: string) => {
-      return (
-        left + stringColWidths.map((w) => '─'.repeat(w + 2)).join(mid) + right
-      );
+    const makeSeparator = (left: string, mid: string, right: string) => {
+      return left + colWidths.map((w) => '─'.repeat(w + 2)).join(mid) + right;
     };
 
-    console.log(makeStringSeparator('┌', '┬', '┐'));
-    console.log(
-      formatStringRow([
-        'Test Case',
-        'Zena (Wasmtime)',
-        'Zena (Node.js)',
-        'Node.js (JS)',
-        'Ratio (Wt/JS)',
-        'Ratio (Node/JS)',
-      ]),
-    );
-    console.log(makeStringSeparator('├', '┼', '┤'));
+    const categories = [
+      {
+        title: 'Control Flow & Recursion',
+        cases: [
+          {key: 'FibonacciRecursive35', name: 'Fibonacci Recursive (N=35)'},
+          {key: 'FibonacciRecursive40', name: 'Fibonacci Recursive (N=40)'},
+          {
+            key: 'FibonacciIterative (N=10,000,000)',
+            name: 'Fibonacci Iterative (N=10M)',
+          },
+        ],
+      },
+      {
+        title: 'Direct & Indirect Function Calls (N=10,000,000)',
+        cases: [
+          {
+            key: 'FunctionCallSimple (N=10,000,000)',
+            name: 'Direct Call (simple/inlinable)',
+          },
+          {
+            key: 'FunctionCallNoInline (N=10,000,000)',
+            name: 'Direct Call (non-inlinable)',
+          },
+          {
+            key: 'FunctionCallClosure (N=10,000,000)',
+            name: 'Indirect Closure Call',
+          },
+        ],
+      },
+      {
+        title: 'Looping & Iteration (N=10,000,000 elements)',
+        cases: [
+          {key: 'LoopForLoop (N=10,000,000)', name: 'C-style index for-loop'},
+          {
+            key: 'LoopForInArray (N=10,000,000)',
+            name: 'for-in loop over array',
+          },
+          {
+            key: 'LoopForInCustom (N=10,000,000)',
+            name: 'for-in loop over custom collection',
+          },
+        ],
+      },
+      {
+        title: 'Type Casting (N=10,000,000)',
+        cases: [
+          {key: 'CastDirectAccess (N=10,000,000)', name: 'Direct Field Access'},
+          {
+            key: 'CastWithCastAccess (N=10,000,000)',
+            name: 'Cast Field Access (as String)',
+          },
+        ],
+      },
+      {
+        title: 'Method Devirtualization (N=10,000,000)',
+        cases: [
+          {
+            key: 'DevirtNoInferCall (N=10,000,000)',
+            name: 'Dynamic (non-devirtualizable)',
+          },
+          {
+            key: 'DevirtInferCall (N=10,000,000)',
+            name: 'Dynamic (devirtualizable)',
+          },
+          {
+            key: 'DevirtStaticCall (N=10,000,000)',
+            name: 'Static (devirtualized)',
+          },
+        ],
+      },
+    ];
 
-    for (const [name, zenaTime] of zenaTimes.entries()) {
-      const zenaNodeTime = zenaNodeTimes.get(name);
-      const nodeTime = nodeTimes.get(name);
-      if (nodeTime !== undefined && zenaNodeTime !== undefined) {
-        const wtRatio = `${(zenaTime / nodeTime).toFixed(2)}x`;
-        const nodeRatio = `${(zenaNodeTime / nodeTime).toFixed(2)}x`;
-        console.log(
-          formatStringRow([
-            name,
-            `${zenaTime.toFixed(2)} ms`,
-            `${zenaNodeTime.toFixed(2)} ms`,
-            `${nodeTime.toFixed(2)} ms`,
-            wtRatio,
-            nodeRatio,
-          ]),
-        );
+    for (const cat of categories) {
+      // Check if any case in this category was run
+      const matchingCases = cat.cases.filter((c) => zenaTimes.has(c.key));
+      if (matchingCases.length === 0) {
+        continue;
       }
+
+      console.log(`\nCategory: ${cat.title}`);
+      console.log(makeSeparator('┌', '┬', '┐'));
+      console.log(
+        formatRow([
+          'Test Case',
+          'Zena (Wasmtime)',
+          'Zena (Node)',
+          'JS (Node)',
+          'Ratio (Wt/JS)',
+          'Ratio (Node/JS)',
+        ]),
+      );
+      console.log(makeSeparator('├', '┼', '┤'));
+
+      for (const c of cat.cases) {
+        const zenaTime = zenaTimes.get(c.key);
+        const zenaNodeTime = zenaNodeTimes.get(c.key);
+        const nodeTime = nodeTimes.get(c.key);
+        if (
+          zenaTime !== undefined &&
+          zenaNodeTime !== undefined &&
+          nodeTime !== undefined
+        ) {
+          const wtRatio = `${(zenaTime / nodeTime).toFixed(2)}x`;
+          const nodeRatio = `${(zenaNodeTime / nodeTime).toFixed(2)}x`;
+          console.log(
+            formatRow([
+              c.name,
+              `${zenaTime.toFixed(2)} ms`,
+              `${zenaNodeTime.toFixed(2)} ms`,
+              `${nodeTime.toFixed(2)} ms`,
+              wtRatio,
+              nodeRatio,
+            ]),
+          );
+        }
+      }
+      console.log(makeSeparator('└', '┴', '┘'));
     }
-    console.log(makeStringSeparator('└', '┴', '┘'));
   } else {
     console.log('\nNo matching basic benchmarks were run.');
   }

@@ -260,20 +260,23 @@ export let generateTemplateLiteral = (
     if (exprType != null) {
       let baseT = baseType(exprType as Type);
       if (baseT is I32Type || baseT is U32Type || baseT is I64Type || baseT is U64Type || baseT is F32Type || baseT is F64Type || baseT is BooleanType) {
-        let helperFunc = match (baseT) {
-          case I32Type: ctx.wasm.i32ToStringFunc
-          case U32Type: ctx.wasm.u32ToStringFunc
-          case I64Type: ctx.wasm.i64ToStringFunc
-          case U64Type: ctx.wasm.u64ToStringFunc
-          case F32Type: ctx.wasm.f32ToStringFunc
-          case F64Type: ctx.wasm.f64ToStringFunc
-          case BooleanType: ctx.wasm.boolToStringFunc
-          case _: null as WasmFunction
+        let helperName = match (baseT) {
+          case I32Type: "i32ToString"
+          case U32Type: "u32ToString"
+          case I64Type: "i64ToString"
+          case U64Type: "u64ToString"
+          case F32Type: "f32ToString"
+          case F64Type: "f64ToString"
+          case BooleanType: "boolToString"
+          case _: ""
         };
-        if (helperFunc != null) {
-          ctx.emitter.emitCall(helperFunc as WasmFunction);
-        } else {
-          throw new Error("Helper function not found for type: " + typeToString(baseT));
+        if (helperName != "") {
+          let helperFunc = ctx.wasm.getStdlibFunc("zena:string-convert", helperName);
+          if (helperFunc != null) {
+            ctx.emitter.emitCall(helperFunc as WasmFunction);
+          } else {
+            throw new Error(helperName + " helper function not found in Wasm module!");
+          }
         }
       } else if (baseT is ClassType && (baseT as ClassType).name == "String") {
         // Already a string, do nothing
@@ -289,6 +292,14 @@ export let generateTemplateLiteral = (
   generateStringLiteral(ctx, lastQuasiLit);
 
   // 3. Create the array<String> with all parts and call String.fromParts
+  if (totalParts >= 2 && totalParts <= 5) {
+    let concatName = "__concat" + i32ToString(totalParts);
+    let concatFunc = ctx.wasm.getStdlibFunc("zena:string", concatName);
+    if (concatFunc != null) {
+      ctx.emitter.emitCall(concatFunc as WasmFunction);
+      return;
+    }
+  }
   let wasmArrayType = ctx.wasm.getArray(stringWasmType, true);
   ctx.emitter.emitArrayNewFixed(wasmArrayType.index, totalParts);
   ctx.emitter.emitCall(fromPartsFunc as WasmFunction);

@@ -42,6 +42,251 @@ const testSimpleCall = (n) => {
   }
   return sum;
 };
+const addNoInline = (a, b) => {
+  if (a < -1000000) {
+    let x = a;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    x = x + 1;
+    return x;
+  }
+  return a + b;
+};
+
+const testNoInlineCall = (n) => {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum = addNoInline(sum, 1);
+  }
+  return sum;
+};
+const makeClosure = (offset) => {
+  return (x) => x + offset;
+};
+
+const runClosureBenchmark = (closure, n) => {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum = closure(sum);
+  }
+  return sum;
+};
+
+class BaseClass {
+  constructor(x) {
+    this.x = x;
+  }
+  getValue() {
+    return this.x;
+  }
+}
+
+class FinalClass {
+  constructor(x) {
+    this.x = x;
+  }
+  getValue() {
+    return this.x;
+  }
+}
+
+class CastContainer {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
+class DirectContainer {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
+class CustomCollection {
+  constructor(arr) {
+    this.arr = arr;
+  }
+  [Symbol.iterator]() {
+    let index = 0;
+    const arr = this.arr;
+    const len = arr.length;
+    return {
+      next() {
+        if (index < len) {
+          const value = arr[index];
+          index++;
+          return {done: false, value: value};
+        }
+        return {done: true, value: undefined};
+      },
+    };
+  }
+}
+
+const runForLoopBenchmark = (arr) => {
+  let sum = 0;
+  const len = arr.length;
+  for (let i = 0; i < len; i++) {
+    sum = sum + arr[i];
+  }
+  return sum;
+};
+
+const runForOfArrayBenchmark = (arr) => {
+  let sum = 0;
+  for (const x of arr) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+const runForOfCustomBenchmark = (coll) => {
+  let sum = 0;
+  for (const x of coll) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+const runDirectAccessBenchmark = (container, n) => {
+  let lenSum = 0;
+  for (let i = 0; i < n; i++) {
+    const s = container.value;
+    lenSum = lenSum + s.length;
+  }
+  return lenSum;
+};
+
+const runCastAccessBenchmark = (container, n) => {
+  let lenSum = 0;
+  for (let i = 0; i < n; i++) {
+    const s = container.value;
+    lenSum = lenSum + s.length;
+  }
+  return lenSum;
+};
+
+const runDevirtNoInferBenchmark = (obj, n) => {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
+
+const runDevirtInferBenchmark = (n) => {
+  const obj = new BaseClass(1);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
+
+const runStaticCallBenchmark = (obj, n) => {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum = sum + obj.getValue();
+  }
+  return sum;
+};
 
 console.log('==============================================');
 console.log('Running Node.js Basic Benchmarks (V8)...');
@@ -74,11 +319,100 @@ runTest('FibonacciIterative (N=10,000,000)', () => {
   }
 });
 
-// 4. Simple Function Calls (N=10,000,000)
+// 4. Function Call Benchmarks (N=10,000,000)
+const closure = makeClosure(1);
 runTest('FunctionCallSimple (N=10,000,000)', () => {
   const res = testSimpleCall(10000000);
   if (res !== 10000000) {
     console.log('Error in FunctionCallSimple(10,000,000): ' + res);
+  }
+});
+
+runTest('FunctionCallNoInline (N=10,000,000)', () => {
+  const res = testNoInlineCall(10000000);
+  if (res !== 10000000) {
+    console.log('Error in FunctionCallNoInline(10,000,000): ' + res);
+  }
+});
+
+runTest('FunctionCallClosure (N=10,000,000)', () => {
+  const res = runClosureBenchmark(closure, 10000000);
+  if (res !== 10000000) {
+    console.log('Error in FunctionCallClosure(10,000,000): ' + res);
+  }
+});
+
+// 5. Loop Iteration Benchmarks (N=10,000 x 1,000)
+const arr = new Array(1000).fill(1);
+const customColl = new CustomCollection(arr);
+runTest('LoopForLoop (N=10,000,000)', () => {
+  let sum = 0;
+  for (let i = 0; i < 10000; i++) {
+    sum = sum + runForLoopBenchmark(arr);
+  }
+  if (sum !== 10000000) {
+    console.log('Error in LoopForLoop: ' + sum);
+  }
+});
+
+runTest('LoopForInArray (N=10,000,000)', () => {
+  let sum = 0;
+  for (let i = 0; i < 10000; i++) {
+    sum = sum + runForOfArrayBenchmark(arr);
+  }
+  if (sum !== 10000000) {
+    console.log('Error in LoopForInArray: ' + sum);
+  }
+});
+
+runTest('LoopForInCustom (N=10,000,000)', () => {
+  let sum = 0;
+  for (let i = 0; i < 10000; i++) {
+    sum = sum + runForOfCustomBenchmark(customColl);
+  }
+  if (sum !== 10000000) {
+    console.log('Error in LoopForInCustom: ' + sum);
+  }
+});
+
+// 6. Cast Benchmarks (N=10,000,000)
+const directCont = new DirectContainer('hello');
+const castCont = new CastContainer('hello');
+runTest('CastDirectAccess (N=10,000,000)', () => {
+  const res = runDirectAccessBenchmark(directCont, 10000000);
+  if (res !== 50000000) {
+    console.log('Error in CastDirectAccess: ' + res);
+  }
+});
+
+runTest('CastWithCastAccess (N=10,000,000)', () => {
+  const res = runCastAccessBenchmark(castCont, 10000000);
+  if (res !== 50000000) {
+    console.log('Error in CastWithCastAccess: ' + res);
+  }
+});
+
+// 7. Devirtualization Benchmarks (N=10,000,000)
+const baseObj = new BaseClass(1);
+const finalObj = new FinalClass(1);
+runTest('DevirtNoInferCall (N=10,000,000)', () => {
+  const res = runDevirtNoInferBenchmark(baseObj, 10000000);
+  if (res !== 10000000) {
+    console.log('Error in DevirtNoInferCall: ' + res);
+  }
+});
+
+runTest('DevirtInferCall (N=10,000,000)', () => {
+  const res = runDevirtInferBenchmark(10000000);
+  if (res !== 10000000) {
+    console.log('Error in DevirtInferCall: ' + res);
+  }
+});
+
+runTest('DevirtStaticCall (N=10,000,000)', () => {
+  const res = runStaticCallBenchmark(finalObj, 10000000);
+  if (res !== 10000000) {
+    console.log('Error in DevirtStaticCall: ' + res);
   }
 });
 

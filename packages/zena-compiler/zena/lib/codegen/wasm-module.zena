@@ -1,8 +1,9 @@
 import { 
-  Node, Expression, ClassDeclaration, NodeId, ImportSpecifier, FunctionExpression, MethodDefinition
+  Node, Expression, ClassDeclaration, NodeId, ImportSpecifier, FunctionExpression, MethodDefinition,
+  DeclareFunction, VariableDeclaration, IdentifierPattern
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
-import { SymbolId } from '../scope/symbol.zena';
+import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { 
   ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef, 
@@ -266,6 +267,48 @@ export class WasmModule {
   var stringHashHelper: WasmFunction | null = null;
   functionAdaptations = new HashMap<FunctionAdaptationKey, WasmFunction>();
   var arrayMethods = new Array<WasmFunction>();
+  
+  #stdlibFuncCache = new HashMap<String, WasmFunction>();
+
+  getStdlibFunc(moduleName: String, exportName: String): WasmFunction | null {
+    let key = moduleName + "::" + exportName;
+    if (this.#stdlibFuncCache.has(key)) {
+      return this.#stdlibFuncCache[key];
+    }
+    let prog = this.program;
+    if (prog == null) { return null; }
+    if (!prog.unitsByPath.has(moduleName)) { return null; }
+    let unit = prog.unitsByPath[moduleName];
+    for (let stmt in unit.ast.body) {
+      match (stmt) {
+        case DeclareFunction as df: {
+          if (df.name.name == exportName) {
+            let sym = unit.model.resolveDeclaration(df);
+            if (sym != null && this.functionMap.has((sym as Symbol).id)) {
+              let f = this.functionMap[(sym as Symbol).id];
+              this.#stdlibFuncCache[key] = f;
+              return f;
+            }
+          }
+        }
+        case VariableDeclaration as vd: {
+          if (vd.pattern is IdentifierPattern) {
+            let pat = vd.pattern as IdentifierPattern;
+            if (pat.name == exportName) {
+              let sym = unit.model.resolve(pat);
+              if (sym != null && this.functionMap.has((sym as Symbol).id)) {
+                let f = this.functionMap[(sym as Symbol).id];
+                this.#stdlibFuncCache[key] = f;
+                return f;
+              }
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+    return null;
+  }
   mutableCapturedSymbols = new HashSet<SymbolId>();
   
   datas = new Array<ByteBuffer>();
