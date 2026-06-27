@@ -36,6 +36,8 @@ import {
   getSymbolMemberName,
   isErasedRefType,
   mapCheckerTypeToWasmType,
+  getCanonicalClassType,
+  manglePrivateName,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import type {ClassInfo} from './types.js';
@@ -570,8 +572,202 @@ function generateForInStatement(
   const elementType = stmt.elementType;
   const iteratorSymbol = stmt.iteratorSymbol;
 
-  if (!iterableType || !iteratorType || !elementType) {
+  if (!iterableType || !elementType) {
     throw new Error('for-in statement missing type information from checker');
+  }
+
+  // Check if we can optimize this as a direct array loop
+  let arrayLoopKind: 'FixedArray' | 'Array' | null = null;
+  if (iterableType.kind === TypeKind.Array) {
+    arrayLoopKind = 'FixedArray';
+  } else if (iterableType.kind === TypeKind.Class) {
+    const canonical = getCanonicalClassType(iterableType as ClassType);
+    if (
+      canonical.name === 'FixedArray' ||
+      canonical.name === 'ImmutableArray'
+    ) {
+      arrayLoopKind = 'FixedArray';
+    } else if (canonical.name === 'Array') {
+      arrayLoopKind = 'Array';
+    }
+  }
+
+  if (arrayLoopKind === 'FixedArray') {
+    // 1. Generate array expression and store in a local
+    generateExpression(ctx, stmt.iterable, body);
+    const arrWasmType = mapCheckerTypeToWasmType(ctx, iterableType);
+    const arrLocal = ctx.declareLocal('$$for_in_arr', arrWasmType);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(arrLocal));
+
+    // 2. Get array length and store in local
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(arrLocal));
+    body.push(0xfb, GcOpcode.array_len);
+    const lenLocal = ctx.declareLocal('$$for_in_len', [ValType.i32]);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(lenLocal));
+
+    // 3. Initialize index local to 0
+    const idxLocal = ctx.declareLocal('$$for_in_idx', [ValType.i32]);
+    body.push(Opcode.i32_const, 0);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(idxLocal));
+
+    // 4. Generate loop structure
+    body.push(Opcode.block); // $break
+    body.push(ValType.void);
+
+    body.push(Opcode.loop); // $loop_start
+    body.push(ValType.void);
+
+    // Check condition: idx >= len -> break
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(idxLocal));
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(lenLocal));
+    body.push(Opcode.i32_ge_s);
+    body.push(Opcode.br_if);
+    body.push(...WasmModule.encodeSignedLEB128(1)); // break to $break (depth 1)
+
+    body.push(Opcode.block); // $continue_target
+    body.push(ValType.void);
+
+    // Get element type WASM index for array.get
+    const elemWasmType = mapCheckerTypeToWasmType(ctx, elementType);
+    const arrayTypeIndex = ctx.getArrayTypeIndex(elemWasmType);
+
+    // Read element: array.get arrayTypeIndex
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(arrLocal));
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(idxLocal));
+    body.push(0xfb, GcOpcode.array_get);
+    body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+
+    // Bind element value via pattern
+    ctx.enterForLoop();
+    ctx.pushScope();
+
+    generatePatternBinding(ctx, stmt.pattern, elemWasmType, body);
+
+    // Generate loop body
+    generateFunctionStatement(ctx, stmt.body, body);
+
+    ctx.popScope();
+    ctx.exitLoop();
+
+    body.push(Opcode.end); // end $continue_target
+
+    // Increment index
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(idxLocal));
+    body.push(Opcode.i32_const, 1);
+    body.push(Opcode.i32_add);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(idxLocal));
+
+    // Continue
+    body.push(Opcode.br);
+    body.push(...WasmModule.encodeSignedLEB128(0));
+
+    body.push(Opcode.end); // end loop
+    body.push(Opcode.end); // end block
+    return;
+  }
+
+  if (arrayLoopKind === 'Array') {
+    // Make sure Array class is instantiated
+    mapCheckerTypeToWasmType(ctx, iterableType);
+    const classType = iterableType as ClassType;
+    const classInfo = ctx.getClassInfo(classType);
+    if (!classInfo) {
+      throw new Error(`for-in: ClassInfo for Array not found`);
+    }
+
+    const bufferFieldName = manglePrivateName(classInfo, '#buffer');
+    const lengthFieldName = manglePrivateName(classInfo, '#length');
+    const bufferField = classInfo.fields.get(bufferFieldName);
+    const lengthField = classInfo.fields.get(lengthFieldName);
+    if (!bufferField || !lengthField) {
+      throw new Error(`for-in: fields #buffer or #length not found on Array`);
+    }
+
+    // 1. Generate Array expression and store in local
+    generateExpression(ctx, stmt.iterable, body);
+    const arrWasmType = mapCheckerTypeToWasmType(ctx, iterableType);
+    const arrLocal = ctx.declareLocal('$$for_in_arr', arrWasmType);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(arrLocal));
+
+    // 2. Read #length field and store in local
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(arrLocal));
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(lengthField.index));
+    const lenLocal = ctx.declareLocal('$$for_in_len', [ValType.i32]);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(lenLocal));
+
+    // 3. Read #buffer field and store in local
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(arrLocal));
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(bufferField.index));
+    const bufLocal = ctx.declareLocal('$$for_in_buf', bufferField.type);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(bufLocal));
+
+    // 4. Initialize index local to 0
+    const idxLocal = ctx.declareLocal('$$for_in_idx', [ValType.i32]);
+    body.push(Opcode.i32_const, 0);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(idxLocal));
+
+    // 5. Generate loop structure
+    body.push(Opcode.block); // $break
+    body.push(ValType.void);
+
+    body.push(Opcode.loop); // $loop_start
+    body.push(ValType.void);
+
+    // Check condition: idx >= len -> break
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(idxLocal));
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(lenLocal));
+    body.push(Opcode.i32_ge_s);
+    body.push(Opcode.br_if);
+    body.push(...WasmModule.encodeSignedLEB128(1));
+
+    body.push(Opcode.block); // $continue_target
+    body.push(ValType.void);
+
+    // Read element: array.get arrayTypeIndex
+    const arrayTypeIndex = decodeTypeIndex(bufferField.type);
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(bufLocal));
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(idxLocal));
+    body.push(0xfb, GcOpcode.array_get);
+    body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+
+    // Bind element value via pattern
+    ctx.enterForLoop();
+    ctx.pushScope();
+
+    const elemWasmType = mapCheckerTypeToWasmType(ctx, elementType);
+    generatePatternBinding(ctx, stmt.pattern, elemWasmType, body);
+
+    // Generate loop body
+    generateFunctionStatement(ctx, stmt.body, body);
+
+    ctx.popScope();
+    ctx.exitLoop();
+
+    body.push(Opcode.end); // end $continue_target
+
+    // Increment index
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(idxLocal));
+    body.push(Opcode.i32_const, 1);
+    body.push(Opcode.i32_add);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(idxLocal));
+
+    // Continue
+    body.push(Opcode.br);
+    body.push(...WasmModule.encodeSignedLEB128(0));
+
+    body.push(Opcode.end); // end loop
+    body.push(Opcode.end); // end block
+    return;
+  }
+
+  if (!iteratorType) {
+    throw new Error(
+      'for-in statement missing iterator type information from checker',
+    );
   }
 
   // 1. Generate iterable expression and optionally call .:Iterable.iterator()

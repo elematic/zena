@@ -569,13 +569,34 @@ if (runBasic) {
         title: 'Looping & Iteration (N=10,000,000 elements)',
         cases: [
           {key: 'LoopForLoop (N=10,000,000)', name: 'C-style index for-loop'},
+          {key: 'LoopWhileArray (N=10,000,000)', name: 'while-loop / array'},
           {
             key: 'LoopForInArray (N=10,000,000)',
-            name: 'for-in loop over array',
+            name: 'for-in / array',
+          },
+          {
+            key: 'LoopForInArrayInterface (N=10,000,000)',
+            name: 'for-in / array (interface)',
+          },
+          {
+            key: 'LoopForInGrowableArray (N=10,000,000)',
+            name: 'for-in / growable array',
+          },
+          {
+            key: 'LoopForInGrowableArrayInterface (N=10,000,000)',
+            name: 'for-in / growable array (interface)',
+          },
+          {
+            key: 'LoopForInImmutableArray (N=10,000,000)',
+            name: 'for-in / immutable array',
+          },
+          {
+            key: 'LoopForInImmutableArrayInterface (N=10,000,000)',
+            name: 'for-in / immutable array (interface)',
           },
           {
             key: 'LoopForInCustom (N=10,000,000)',
-            name: 'for-in loop over custom collection',
+            name: 'for-in / custom collection',
           },
         ],
       },

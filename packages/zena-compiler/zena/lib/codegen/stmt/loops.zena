@@ -1,4 +1,5 @@
 import { ValTypeVoid, ValTypeRefNull, ValTypeRef, ValTypeStructRef, ValTypeI32, ValTypeAnyRef } from '../wasm.zena';
+import { WasmArray } from '../wasm-module.zena';
 import { Error } from 'zena:error';
 import { 
   Node, BreakStatement, ContinueStatement, WhileStatement, ForStatement, Statement, Expression,
@@ -10,7 +11,7 @@ import { FunctionContext } from '../function-context.zena';
 import { typeToValType, getInterfaceMemberSignature, substituteTypeParamsInCodegen, typeToValTypeWithSub, getNodeType, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
 import { 
   getInterfaceKey, getInterfaceMemberKey, getClassKey, getClassInterfaceKey,
-  classInterfaceKeyToString, InterfaceKey
+  classInterfaceKeyToString, InterfaceKey, getClassPrivateFieldKey
 } from '../codegen-utils.zena';
 import { Program, CompilationUnit } from '../../program.zena';
 import { Array } from 'zena:array';
@@ -363,6 +364,221 @@ export let generateForInStatement = (
         throw new Error("Mixin synthetic class type found but wasmFunction has no classType");
       }
     }
+  }
+
+  var isFixedArray = false;
+  var isArray = false;
+
+  if (resolvedIterableType is ClassType) {
+    let ct = resolvedIterableType as ClassType;
+    var canonical = ct;
+    while (canonical.genericSource != null) {
+      canonical = canonical.genericSource as ClassType;
+    }
+    if (canonical.name == "FixedArray" || canonical.name == "ImmutableArray") {
+      isFixedArray = true;
+    } else if (canonical.name == "Array") {
+      isArray = true;
+    }
+  }
+
+  if (isFixedArray) {
+    var elementType: Type | null = null;
+    match (resolvedIterableType) {
+      case ClassType as ct: {
+        if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
+          elementType = (ct.typeArguments as Array<Type>)[0];
+        }
+      }
+      case _: {}
+    }
+    if (elementType == null) {
+      throw new Error("for-in: element type not found for FixedArray");
+    }
+
+    genExpr(stmt.iterable, false);
+
+    let arrWasmType = typeToValTypeWithSub(ctx.wasm, resolvedIterableType, ctx.wasmFunction);
+    let arrLocal = ctx.allocLocal(arrWasmType);
+    ctx.emitter.emitLocalSet(arrLocal);
+
+    ctx.emitter.emitLocalGet(arrLocal);
+    ctx.emitter.emitArrayLen();
+    let lenLocal = ctx.allocLocal(new ValTypeI32());
+    ctx.emitter.emitLocalSet(lenLocal);
+
+    let idxLocal = ctx.allocLocal(new ValTypeI32());
+    ctx.emitter.emitI32Const(0);
+    ctx.emitter.emitLocalSet(idxLocal);
+
+    ctx.emitter.emitBlock(new ValTypeVoid()); // $break
+    ctx.emitter.emitLoop(new ValTypeVoid()); // $loop_start
+
+    ctx.emitter.emitLocalGet(idxLocal);
+    ctx.emitter.emitLocalGet(lenLocal);
+    ctx.emitter.emitI32GeS();
+    ctx.emitter.emitBrIf(1);
+
+    ctx.emitter.emitBlock(new ValTypeVoid()); // $continue_target
+
+    let valType = typeToValTypeWithSub(ctx.wasm, resolvedIterableType, ctx.wasmFunction);
+    let wasmArray = match (valType) {
+      case ValTypeRefNull as refNull: {
+        refNull.target as WasmArray
+      }
+      case ValTypeRef as refVal: {
+        refVal.target as WasmArray
+      }
+      case _: {
+        throw new Error("Expected array type for FixedArray/array looping");
+      }
+    };
+
+    let loopElemType = elementType as Type;
+    let loadElem = (): void => {
+      ctx.emitter.emitLocalGet(arrLocal);
+      ctx.emitter.emitLocalGet(idxLocal);
+      ctx.emitter.emitArrayGet(wasmArray.index);
+    };
+
+    var patternNode = stmt.pattern;
+    if (patternNode is BindingPattern) {
+      patternNode = (patternNode as BindingPattern).pattern;
+    }
+    genPatternBinding(ctx, patternNode as Node, loopElemType, loadElem);
+
+    let wasReachable = ctx.isReachable;
+    ctx.enterForLoop();
+    genStmt(stmt.body);
+    ctx.exitLoop();
+
+    ctx.isReachable = wasReachable;
+
+    ctx.emitter.emitEnd(); // end $continue_target
+
+    ctx.emitter.emitLocalGet(idxLocal);
+    ctx.emitter.emitI32Const(1);
+    ctx.emitter.emitI32Add();
+    ctx.emitter.emitLocalSet(idxLocal);
+
+    ctx.emitter.emitBr(0);
+    ctx.emitter.emitEnd(); // end $loop_start
+    ctx.emitter.emitEnd(); // end $break
+    return;
+  }
+
+  if (isArray) {
+    let ctVar = resolvedIterableType as ClassType;
+    let cKey = getClassKey(ctVar);
+    if (!ctx.wasm.classInfos.has(cKey)) {
+      throw new Error("for-in: ClassInfo for Array not found");
+    }
+    let info = ctx.wasm.classInfos[cKey];
+
+    let bufferMangledName = getClassPrivateFieldKey(cKey, "#buffer");
+    let lengthMangledName = getClassPrivateFieldKey(cKey, "#length");
+    var bufferFieldIndex = -1;
+    var lengthFieldIndex = -1;
+    var bufferFieldType: ValType | null = null;
+    
+    let structType = info.structType;
+    for (var i = 0; i < structType.fields.length; i += 1) {
+      let f = structType.fields[i];
+      if (f.name != null) {
+        let fName = f.name as String;
+        if (fName == bufferMangledName) {
+          bufferFieldIndex = i;
+          bufferFieldType = f.type;
+        } else if (fName == lengthMangledName) {
+          lengthFieldIndex = i;
+        }
+      }
+    }
+
+    if (bufferFieldIndex == -1 || lengthFieldIndex == -1) {
+      throw new Error("for-in: fields #buffer or #length not found on Array");
+    }
+
+    var elementType: Type | null = null;
+    if (ctVar.typeArguments != null && (ctVar.typeArguments as Array<Type>).length > 0) {
+      elementType = (ctVar.typeArguments as Array<Type>)[0];
+    }
+    if (elementType == null) {
+      throw new Error("for-in: element type not found for Array");
+    }
+
+    let wasmArray = match (bufferFieldType as ValType) {
+      case ValTypeRefNull as refNull: {
+        refNull.target as WasmArray
+      }
+      case ValTypeRef as refVal: {
+        refVal.target as WasmArray
+      }
+      case _: {
+        throw new Error("Expected array type for Array::#buffer");
+      }
+    };
+
+    genExpr(stmt.iterable, false);
+    let arrWasmType = typeToValTypeWithSub(ctx.wasm, resolvedIterableType, ctx.wasmFunction);
+    let arrLocal = ctx.allocLocal(arrWasmType);
+    ctx.emitter.emitLocalSet(arrLocal);
+
+    ctx.emitter.emitLocalGet(arrLocal);
+    ctx.emitter.emitStructGet(structType.index, lengthFieldIndex);
+    let lenLocal = ctx.allocLocal(new ValTypeI32());
+    ctx.emitter.emitLocalSet(lenLocal);
+
+    ctx.emitter.emitLocalGet(arrLocal);
+    ctx.emitter.emitStructGet(structType.index, bufferFieldIndex);
+    let bufLocal = ctx.allocLocal(bufferFieldType as ValType);
+    ctx.emitter.emitLocalSet(bufLocal);
+
+    let idxLocal = ctx.allocLocal(new ValTypeI32());
+    ctx.emitter.emitI32Const(0);
+    ctx.emitter.emitLocalSet(idxLocal);
+
+    ctx.emitter.emitBlock(new ValTypeVoid()); // $break
+    ctx.emitter.emitLoop(new ValTypeVoid()); // $loop_start
+
+    ctx.emitter.emitLocalGet(idxLocal);
+    ctx.emitter.emitLocalGet(lenLocal);
+    ctx.emitter.emitI32GeS();
+    ctx.emitter.emitBrIf(1);
+
+    ctx.emitter.emitBlock(new ValTypeVoid()); // $continue_target
+
+    let loopElemType = elementType as Type;
+    let loadElem = (): void => {
+      ctx.emitter.emitLocalGet(bufLocal);
+      ctx.emitter.emitLocalGet(idxLocal);
+      ctx.emitter.emitArrayGet(wasmArray.index);
+    };
+
+    var patternNode = stmt.pattern;
+    if (patternNode is BindingPattern) {
+      patternNode = (patternNode as BindingPattern).pattern;
+    }
+    genPatternBinding(ctx, patternNode as Node, loopElemType, loadElem);
+
+    let wasReachable = ctx.isReachable;
+    ctx.enterForLoop();
+    genStmt(stmt.body);
+    ctx.exitLoop();
+
+    ctx.isReachable = wasReachable;
+
+    ctx.emitter.emitEnd(); // end $continue_target
+
+    ctx.emitter.emitLocalGet(idxLocal);
+    ctx.emitter.emitI32Const(1);
+    ctx.emitter.emitI32Add();
+    ctx.emitter.emitLocalSet(idxLocal);
+
+    ctx.emitter.emitBr(0);
+    ctx.emitter.emitEnd(); // end $loop_start
+    ctx.emitter.emitEnd(); // end $break
+    return;
   }
 
   let iteratorIface = findPreludeInterface(ctx, "Iterator");

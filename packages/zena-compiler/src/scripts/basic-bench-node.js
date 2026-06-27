@@ -249,6 +249,57 @@ const runForOfArrayBenchmark = (arr) => {
   return sum;
 };
 
+const runWhileArrayBenchmark = (arr) => {
+  let sum = 0;
+  const len = arr.length;
+  let i = 0;
+  while (i < len) {
+    sum = sum + arr[i];
+    i++;
+  }
+  return sum;
+};
+
+const runForOfArrayInterfaceBenchmark = (arr) => {
+  let sum = 0;
+  for (const x of arr) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+const runForOfGrowableArrayBenchmark = (arr) => {
+  let sum = 0;
+  for (const x of arr) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+const runForOfGrowableArrayInterfaceBenchmark = (arr) => {
+  let sum = 0;
+  for (const x of arr) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+const runForOfImmutableArrayBenchmark = (arr) => {
+  let sum = 0;
+  for (const x of arr) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+const runForOfImmutableArrayInterfaceBenchmark = (arr) => {
+  let sum = 0;
+  for (const x of arr) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
 const runForOfCustomBenchmark = (coll) => {
   let sum = 0;
   for (const x of coll) {
@@ -373,7 +424,9 @@ runTest('FunctionCallClosure (N=10,000,000)', () => {
 
 // 5. Loop Iteration Benchmarks (N=10,000 x 1,000)
 const arr = new Array(1000).fill(1);
+const growableArr = new Array(1000).fill(1);
 const customColl = new CustomCollection(arr);
+const immutableArr = arr;
 runTest('LoopForLoop (N=10,000,000)', () => {
   let sum = 0;
   for (let i = 0; i < 10000; i++) {
@@ -384,6 +437,16 @@ runTest('LoopForLoop (N=10,000,000)', () => {
   }
 });
 
+runTest('LoopWhileArray (N=10,000,000)', () => {
+  let sum = 0;
+  for (let i = 0; i < 10000; i++) {
+    sum = sum + runWhileArrayBenchmark(arr);
+  }
+  if (sum !== 10000000) {
+    console.log('Error in LoopWhileArray: ' + sum);
+  }
+});
+
 runTest('LoopForInArray (N=10,000,000)', () => {
   let sum = 0;
   for (let i = 0; i < 10000; i++) {
@@ -391,6 +454,56 @@ runTest('LoopForInArray (N=10,000,000)', () => {
   }
   if (sum !== 10000000) {
     console.log('Error in LoopForInArray: ' + sum);
+  }
+});
+
+runTest('LoopForInArrayInterface (N=10,000,000)', () => {
+  let sum = 0;
+  for (let i = 0; i < 10000; i++) {
+    sum = sum + runForOfArrayInterfaceBenchmark(arr);
+  }
+  if (sum !== 10000000) {
+    console.log('Error in LoopForInArrayInterface: ' + sum);
+  }
+});
+
+runTest('LoopForInGrowableArray (N=10,000,000)', () => {
+  let sum = 0;
+  for (let i = 0; i < 10000; i++) {
+    sum = sum + runForOfGrowableArrayBenchmark(growableArr);
+  }
+  if (sum !== 10000000) {
+    console.log('Error in LoopForInGrowableArray: ' + sum);
+  }
+});
+
+runTest('LoopForInGrowableArrayInterface (N=10,000,000)', () => {
+  let sum = 0;
+  for (let i = 0; i < 10000; i++) {
+    sum = sum + runForOfGrowableArrayInterfaceBenchmark(growableArr);
+  }
+  if (sum !== 10000000) {
+    console.log('Error in LoopForInGrowableArrayInterface: ' + sum);
+  }
+});
+
+runTest('LoopForInImmutableArray (N=10,000,000)', () => {
+  let sum = 0;
+  for (let i = 0; i < 10000; i++) {
+    sum = sum + runForOfImmutableArrayBenchmark(immutableArr);
+  }
+  if (sum !== 10000000) {
+    console.log('Error in LoopForInImmutableArray: ' + sum);
+  }
+});
+
+runTest('LoopForInImmutableArrayInterface (N=10,000,000)', () => {
+  let sum = 0;
+  for (let i = 0; i < 10000; i++) {
+    sum = sum + runForOfImmutableArrayInterfaceBenchmark(immutableArr);
+  }
+  if (sum !== 10000000) {
+    console.log('Error in LoopForInImmutableArrayInterface: ' + sum);
   }
 });
 

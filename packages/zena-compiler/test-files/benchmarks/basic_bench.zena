@@ -4,6 +4,7 @@ import { String } from 'zena:string';
 import { getArguments } from 'zena:cli';
 import { Iterator, Iterable } from 'zena:iterator';
 import { IterableUtils } from 'zena:iterable-utils';
+import { ImmutableArray } from 'zena:immutable-array';
 
 @external("wasi_snapshot_preview1", "clock_time_get")
 declare function __wasi_clock_time_get(
@@ -202,6 +203,57 @@ let runForInArrayBenchmark = (arr: FixedArray<i32>): i32 => {
   return sum;
 };
 
+let runWhileArrayBenchmark = (arr: FixedArray<i32>): i32 => {
+  var sum = 0;
+  let len = arr.length;
+  var i = 0;
+  while (i < len) {
+    sum = sum + arr[i];
+    i += 1;
+  }
+  return sum;
+};
+
+let runForInArrayInterfaceBenchmark = (iterable: Iterable<i32>): i32 => {
+  var sum = 0;
+  for (let x in iterable) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+let runForInGrowableArrayBenchmark = (arr: Array<i32>): i32 => {
+  var sum = 0;
+  for (let x in arr) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+let runForInGrowableArrayInterfaceBenchmark = (iterable: Iterable<i32>): i32 => {
+  var sum = 0;
+  for (let x in iterable) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+let runForInImmutableArrayBenchmark = (arr: ImmutableArray<i32>): i32 => {
+  var sum = 0;
+  for (let x in arr) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
+let runForInImmutableArrayInterfaceBenchmark = (iterable: Iterable<i32>): i32 => {
+  var sum = 0;
+  for (let x in iterable) {
+    sum = sum + x;
+  }
+  return sum;
+};
+
 let runForInCustomBenchmark = (coll: CustomCollection): i32 => {
   var sum = 0;
   for (let x in coll) {
@@ -333,7 +385,13 @@ export let main = (): i32 => {
 
   // 5. Loop Iteration Benchmarks (N=10,000 x 1,000)
   let arr = new FixedArray<i32>(1000, 1);
+  let growableArr = new Array<i32>(1000);
+  for (var i = 0; i < 1000; i += 1) {
+    growableArr.push(1);
+  }
   let customColl = new CustomCollection(arr);
+  let immutableArr = arr as ImmutableArray<i32>;
+  
   runTest("LoopForLoop (N=10,000,000)", () => {
     var sum = 0;
     for (var i = 0; i < 10000; i += 1) {
@@ -344,6 +402,16 @@ export let main = (): i32 => {
     }
   }, filter);
 
+  runTest("LoopWhileArray (N=10,000,000)", () => {
+    var sum = 0;
+    for (var i = 0; i < 10000; i += 1) {
+      sum = sum + runWhileArrayBenchmark(arr);
+    }
+    if (sum != 10000000) {
+      console.log("Error in LoopWhileArray: " + i32ToString(sum));
+    }
+  }, filter);
+
   runTest("LoopForInArray (N=10,000,000)", () => {
     var sum = 0;
     for (var i = 0; i < 10000; i += 1) {
@@ -351,6 +419,59 @@ export let main = (): i32 => {
     }
     if (sum != 10000000) {
       console.log("Error in LoopForInArray: " + i32ToString(sum));
+    }
+  }, filter);
+
+  runTest("LoopForInArrayInterface (N=10,000,000)", () => {
+    var sum = 0;
+    let iterable: Iterable<i32> = arr;
+    for (var i = 0; i < 10000; i += 1) {
+      sum = sum + runForInArrayInterfaceBenchmark(iterable);
+    }
+    if (sum != 10000000) {
+      console.log("Error in LoopForInArrayInterface: " + i32ToString(sum));
+    }
+  }, filter);
+
+  runTest("LoopForInGrowableArray (N=10,000,000)", () => {
+    var sum = 0;
+    for (var i = 0; i < 10000; i += 1) {
+      sum = sum + runForInGrowableArrayBenchmark(growableArr);
+    }
+    if (sum != 10000000) {
+      console.log("Error in LoopForInGrowableArray: " + i32ToString(sum));
+    }
+  }, filter);
+
+  runTest("LoopForInGrowableArrayInterface (N=10,000,000)", () => {
+    var sum = 0;
+    let iterable: Iterable<i32> = growableArr;
+    for (var i = 0; i < 10000; i += 1) {
+      sum = sum + runForInGrowableArrayInterfaceBenchmark(iterable);
+    }
+    if (sum != 10000000) {
+      console.log("Error in LoopForInGrowableArrayInterface: " + i32ToString(sum));
+    }
+  }, filter);
+
+  runTest("LoopForInImmutableArray (N=10,000,000)", () => {
+    var sum = 0;
+    for (var i = 0; i < 10000; i += 1) {
+      sum = sum + runForInImmutableArrayBenchmark(immutableArr);
+    }
+    if (sum != 10000000) {
+      console.log("Error in LoopForInImmutableArray: " + i32ToString(sum));
+    }
+  }, filter);
+
+  runTest("LoopForInImmutableArrayInterface (N=10,000,000)", () => {
+    var sum = 0;
+    let iterable: Iterable<i32> = immutableArr;
+    for (var i = 0; i < 10000; i += 1) {
+      sum = sum + runForInImmutableArrayInterfaceBenchmark(iterable);
+    }
+    if (sum != 10000000) {
+      console.log("Error in LoopForInImmutableArrayInterface: " + i32ToString(sum));
     }
   }, filter);
 
