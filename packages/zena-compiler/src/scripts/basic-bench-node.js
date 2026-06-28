@@ -735,7 +735,10 @@ runTest('FieldAccessDevirtFinalField (N=10,000,000)', () => {
 });
 
 runTest('FieldAccessDevirtEffectivelyFinal (N=10,000,000)', () => {
-  const res = runFieldAccessDevirtEffectivelyFinalBenchmark(effFinalWithField, 10000000);
+  const res = runFieldAccessDevirtEffectivelyFinalBenchmark(
+    effFinalWithField,
+    10000000,
+  );
   if (res !== 10000000) {
     console.log('Error in FieldAccessDevirtEffectivelyFinal: ' + res);
   }
@@ -771,21 +774,135 @@ runTest('FieldAssignVirtual (N=10,000,000)', () => {
 runTest('FieldAssignDevirtFinal (N=10,000,000)', () => {
   runFieldAssignDevirtFinalBenchmark(finalWithMutableField, 10000000);
   if (finalWithMutableField.value !== 9999999) {
-    console.log('Error in FieldAssignDevirtFinal: ' + finalWithMutableField.value);
+    console.log(
+      'Error in FieldAssignDevirtFinal: ' + finalWithMutableField.value,
+    );
   }
 });
 
 runTest('FieldAssignDevirtFinalField (N=10,000,000)', () => {
   runFieldAssignDevirtFinalFieldBenchmark(finalMutableFieldObj, 10000000);
   if (finalMutableFieldObj.value !== 9999999) {
-    console.log('Error in FieldAssignDevirtFinalField: ' + finalMutableFieldObj.value);
+    console.log(
+      'Error in FieldAssignDevirtFinalField: ' + finalMutableFieldObj.value,
+    );
   }
 });
 
 runTest('FieldAssignDevirtEffectivelyFinal (N=10,000,000)', () => {
-  runFieldAssignDevirtEffectivelyFinalBenchmark(effFinalWithMutableField, 10000000);
+  runFieldAssignDevirtEffectivelyFinalBenchmark(
+    effFinalWithMutableField,
+    10000000,
+  );
   if (effFinalWithMutableField.value !== 9999999) {
-    console.log('Error in FieldAssignDevirtEffectivelyFinal: ' + effFinalWithMutableField.value);
+    console.log(
+      'Error in FieldAssignDevirtEffectivelyFinal: ' +
+        effFinalWithMutableField.value,
+    );
+  }
+});
+
+// 10. Pattern Matching vs is/else Benchmarks (N=10,000,000)
+class IdentifierName {
+  constructor(name) {
+    this.name = name;
+  }
+}
+class SymbolName {
+  constructor(symbolRef) {
+    this.symbolRef = symbolRef;
+  }
+}
+class FallbackName {}
+
+const runMatchSingleBenchmark = (obj, n) => {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    let val;
+    if (obj instanceof SubClassOfBase) {
+      val = 2;
+    } else {
+      val = 1;
+    }
+    sum += val;
+  }
+  return sum;
+};
+
+const runIfSingleBenchmark = (obj, n) => {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    let val;
+    if (obj instanceof SubClassOfBase) {
+      val = 2;
+    } else {
+      val = 1;
+    }
+    sum += val;
+  }
+  return sum;
+};
+
+const runMatch3CaseBenchmark = (nameNode, n) => {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    let val;
+    if (nameNode instanceof IdentifierName) {
+      val = nameNode.name.length;
+    } else if (nameNode instanceof SymbolName) {
+      val = nameNode.symbolRef.getValue();
+    } else {
+      val = 0;
+    }
+    sum += val;
+  }
+  return sum;
+};
+
+const runIf3CaseBenchmark = (nameNode, n) => {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    let val;
+    if (nameNode instanceof IdentifierName) {
+      val = nameNode.name.length;
+    } else if (nameNode instanceof SymbolName) {
+      val = nameNode.symbolRef.getValue();
+    } else {
+      val = 0;
+    }
+    sum += val;
+  }
+  return sum;
+};
+
+const subClassObj = new SubClassOfBase();
+const nameNode = new IdentifierName('abc');
+
+runTest('MatchSingle (N=10,000,000)', () => {
+  const res = runMatchSingleBenchmark(subClassObj, 10000000);
+  if (res !== 20000000) {
+    console.log('Error in MatchSingle: ' + res);
+  }
+});
+
+runTest('IfSingle (N=10,000,000)', () => {
+  const res = runIfSingleBenchmark(subClassObj, 10000000);
+  if (res !== 20000000) {
+    console.log('Error in IfSingle: ' + res);
+  }
+});
+
+runTest('Match3Case (N=10,000,000)', () => {
+  const res = runMatch3CaseBenchmark(nameNode, 10000000);
+  if (res !== 30000000) {
+    console.log('Error in Match3Case: ' + res);
+  }
+});
+
+runTest('If3Case (N=10,000,000)', () => {
+  const res = runIf3CaseBenchmark(nameNode, 10000000);
+  if (res !== 30000000) {
+    console.log('Error in If3Case: ' + res);
   }
 });
 

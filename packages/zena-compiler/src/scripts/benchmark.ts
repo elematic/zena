@@ -685,6 +685,18 @@ if (runBasic) {
           },
         ],
       },
+      {
+        title: 'Pattern Matching vs is/else (N=10,000,000)',
+        cases: [
+          {key: 'MatchSingle (N=10,000,000)', name: 'match (single case)'},
+          {key: 'IfSingle (N=10,000,000)', name: 'is check with if/else'},
+          {key: 'Match3Case (N=10,000,000)', name: 'match (3 cases)'},
+          {
+            key: 'If3Case (N=10,000,000)',
+            name: 'is checks with if/else (3 cases)',
+          },
+        ],
+      },
     ];
 
     for (const cat of categories) {

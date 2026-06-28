@@ -445,6 +445,61 @@ let runFieldAssignDevirtEffectivelyFinalBenchmark = (obj: EffectivelyFinalClassW
   }
 };
 
+sealed class PropertyName {
+  case IdentifierName(name: String)
+  case SymbolName(symbolRef: BaseClass)
+  case FallbackName()
+}
+
+let runMatchSingleBenchmark = (obj: BaseClass, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    let val = match (obj) {
+      case SubClassOfBase: 2
+      case _: 1
+    };
+    sum = sum + val;
+  }
+  return sum;
+};
+
+let runIfSingleBenchmark = (obj: BaseClass, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    let val = if (obj is SubClassOfBase) 2 else 1;
+    sum = sum + val;
+  }
+  return sum;
+};
+
+let runMatch3CaseBenchmark = (nameNode: PropertyName, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    let val = match (nameNode) {
+      case IdentifierName {name}: name.length
+      case SymbolName {symbolRef}: symbolRef.getValue()
+      case _: 0
+    };
+    sum = sum + val;
+  }
+  return sum;
+};
+
+let runIf3CaseBenchmark = (nameNode: PropertyName, n: i32): i32 => {
+  var sum = 0;
+  for (var i = 0; i < n; i += 1) {
+    let val = if (nameNode is IdentifierName) {
+      (nameNode as IdentifierName).name.length
+    } else if (nameNode is SymbolName) {
+      (nameNode as SymbolName).symbolRef.getValue()
+    } else {
+      0
+    };
+    sum = sum + val;
+  }
+  return sum;
+};
+
 export let main = (): i32 => {
   let args = getArguments();
   var filter = "";
@@ -745,6 +800,38 @@ export let main = (): i32 => {
     runFieldAssignDevirtEffectivelyFinalBenchmark(effFinalWithMutableField, 10000000);
     if (effFinalWithMutableField.value != 9999999) {
       console.log("Error in FieldAssignDevirtEffectivelyFinal: " + i32ToString(effFinalWithMutableField.value));
+    }
+  }, filter);
+
+  // 10. Pattern Matching vs is/else Benchmarks (N=10,000,000)
+  let subClassObj = new SubClassOfBase();
+  let nameNode: PropertyName = new IdentifierName("abc");
+  
+  runTest("MatchSingle (N=10,000,000)", () => {
+    let res = runMatchSingleBenchmark(subClassObj, 10000000);
+    if (res != 20000000) {
+      console.log("Error in MatchSingle: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("IfSingle (N=10,000,000)", () => {
+    let res = runIfSingleBenchmark(subClassObj, 10000000);
+    if (res != 20000000) {
+      console.log("Error in IfSingle: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("Match3Case (N=10,000,000)", () => {
+    let res = runMatch3CaseBenchmark(nameNode, 10000000);
+    if (res != 30000000) {
+      console.log("Error in Match3Case: " + i32ToString(res));
+    }
+  }, filter);
+
+  runTest("If3Case (N=10,000,000)", () => {
+    let res = runIf3CaseBenchmark(nameNode, 10000000);
+    if (res != 30000000) {
+      console.log("Error in If3Case: " + i32ToString(res));
     }
   }, filter);
 
