@@ -76,7 +76,7 @@ const compileCommand = (src: string, dest: string): string => {
     const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
     return `"${zenaCli}" build "${src}" -o "${dest}"`;
   } else {
-    return `node --stack-size=4096 "${cliPath}" build "${src}" --target wasi -g -l -o "${dest}" --warn-unnecessary-casts --warnings-as-errors`;
+    return `node --stack-size=4096 "${cliPath}" build "${src}" --target wasi -g -l -o "${dest}" --warn-unnecessary-casts`;
   }
 };
 

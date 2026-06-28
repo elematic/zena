@@ -1,16 +1,34 @@
 // @mode: check
 // @warnUnnecessaryCasts: true
 
-// @warning: never read
-let foo = (x: i32) => {
+export let foo = (x: i32) => {
   // @warning: Unnecessary cast: expression is already of type 'i32'.
   let y = x as i32;
   return y;
 };
 
 // Also verify that it doesn't warn for actual casts
-// @warning: never read
-let bar = (x: i32) => {
+export let bar = (x: i32) => {
   let y = x as i64;
   return y;
+};
+
+class C {
+  val: C;
+  new(this.val);
+}
+
+export let testNarrowedCast = (x: C | null, obj: {field: C | null}): C | null => {
+  if (x != null) {
+    // @warning: Unnecessary cast: expression is already of type 'C'.
+    let y = x as C;
+    return y;
+  }
+  
+  if (obj.field != null) {
+    // No warning should be issued for member path casts because they aren't auto-casted
+    let z = obj.field as C;
+    return z;
+  }
+  return null;
 };

@@ -1,12 +1,13 @@
 import { Node, Identifier, NumberLiteral, BooleanLiteral, StringLiteral, ImportSpecifier, TemplateLiteral, Expression, TaggedTemplateExpression } from '../../ast.zena';
-import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType, I64Type, U64Type, U32Type, BooleanType, ArrayType, FunctionType, VoidType, AnyRefType } from '../../types.zena';
+// import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType, I64Type, U64Type, U32Type, BooleanType, ArrayType, FunctionType, VoidType, AnyRefType } from '../../types.zena';
+import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType, I64Type, U64Type, U32Type, BooleanType, AnyRefType, ArrayType, FunctionType, VoidType, InterfaceType, TypeAliasType, RecordType, NullType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { parseI32, parseF64, i32ToString, parseI64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { WasmStruct, WasmFunction, WasmGlobal, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { typeToValType, typeToValTypeWithSub, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults, getValTypeKey, substituteTypeParamsInClassContext } from '../type-mapping.zena';
-import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType, ValTypeEqRef, ValTypeStructRef, valTypeEquals } from '../wasm.zena';
+import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType, ValTypeEqRef, ValTypeStructRef, valTypeEquals, WasmType, valTypeToOpcode } from '../wasm.zena';
 import { ClassKey, ExportGlobalKey, ExportKey, getClassKey, getSpecializedName, getSignatureKey, ClassMethodKey, getClassMethodKey, FunctionValueWrapperKey, getFunctionValueWrapperKey } from '../codegen-utils.zena';
 import { String } from 'zena:string';
 
@@ -15,42 +16,40 @@ import { String } from 'zena:string';
 // expression along with literals, its code generation handles scope resolution,
 // locals, and globals, which is semantically distinct from emitting static
 // primitives.
-let castIdentifierIfNeeded = (ctx: FunctionContext, ident: Identifier, resolvedSym: Symbol): void => {
-  if (ctx.ignoreCasts) {
-    return;
+let wasmTypesEqual = (a: WasmType, b: WasmType): boolean => a.index == b.index;
+
+let valTypesEqual = (a: ValType, b: ValType): boolean => match (a) {
+  case ValTypeRef {target as ta}: match (b) {
+    case ValTypeRef {target as tb}: wasmTypesEqual(ta, tb)
+    case _: false
   }
-  let unionCalleeType = ctx.wasmFunction.model.getUnionCallCalleeType(ident);
-  if (unionCalleeType != null) {
-    return;
+  case ValTypeRefNull {target as ta}: match (b) {
+    case ValTypeRefNull {target as tb}: wasmTypesEqual(ta, tb)
+    case _: false
   }
-  let symType = ctx.wasmFunction.model.getBindingType(resolvedSym);
+  case _: valTypeToOpcode(a) == valTypeToOpcode(b)
+};
+
+let typesRepresentSameZenaType = (a: Type, b: Type): boolean => typeToString(a) == typeToString(b);
+
+let emitAutoCast = (ctx: FunctionContext, ident: Identifier, resolvedSym: Symbol): void => {
   let nodeType = ctx.wasmFunction.model.getNodeType(ident);
-  if (symType != null && nodeType != null) {
-    var initWasmType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
-    if (ctx.wasm.globalMap.has(resolvedSym.id)) {
-      initWasmType = ctx.wasm.globalMap[resolvedSym.id].type;
-    } else if (ctx.wasm.exportGlobalMap.has(resolvedSym.name as ExportGlobalKey)) {
-      initWasmType = ctx.wasm.exportGlobalMap[resolvedSym.name as ExportGlobalKey].type;
-    }
-    let targetWasmType = typeToValTypeWithSub(ctx.wasm, nodeType as Type, ctx.wasmFunction);
-    let isTargetRef = match (targetWasmType) {
-      case ValTypeRef: true
-      case ValTypeRefNull: true
-      case ValTypeStructRef: true
-      case _: false
-    };
-    if (isTargetRef && !valTypeEquals(initWasmType, targetWasmType)) {
-      let targetIdx = match (targetWasmType) {
-        case ValTypeRefNull as trn: trn.target.index
-        case ValTypeRef as tr: tr.target.index
-        case ValTypeStructRef: heapTypeToSigned(HeapType.struct)
-        case _: -1
-      };
-      if (targetIdx != -1) {
-        match (targetWasmType) {
-          case ValTypeRef: ctx.emitter.emitRefCast(targetIdx)
-          case _: ctx.emitter.emitRefCastNull(targetIdx)
+  let bindingType = ctx.wasmFunction.model.getBindingType(resolvedSym);
+  if (nodeType != null && bindingType != null) {
+    let nt = nodeType as Type;
+    let bt = bindingType as Type;
+    if (!(nt is ClassType) && !(nt is InterfaceType)) { return; }
+    let ntWasm = typeToValType(ctx.wasm, nt);
+    let btWasm = typeToValType(ctx.wasm, bt);
+    if (!typesRepresentSameZenaType(nt, bt) && !valTypesEqual(ntWasm, btWasm)) {
+      match (ntWasm) {
+        case ValTypeRefNull {target}: {
+          ctx.emitter.emitRefCastNull(target.index);
         }
+        case ValTypeRef {target}: {
+          ctx.emitter.emitRefCast(target.index);
+        }
+        case _: {}
       }
     }
   }
@@ -70,18 +69,18 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
         let cellStruct = getCellStruct(ctx.wasm, valType);
         ctx.emitter.emitStructGet(cellStruct.index, 0);
       }
-      castIdentifierIfNeeded(ctx, ident, rSym);
+      emitAutoCast(ctx, ident, rSym);
       return;
     }
     if (ctx.wasm.globalMap.has(rSym.id)) {
       ctx.emitter.emitGlobalGet(ctx.wasm.globalMap[rSym.id].index);
-      castIdentifierIfNeeded(ctx, ident, rSym);
+      emitAutoCast(ctx, ident, rSym);
       return;
     }
     let exportKey = rSym.name as ExportGlobalKey;
     if (ctx.wasm.exportGlobalMap.has(exportKey)) {
       ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[exportKey].index);
-      castIdentifierIfNeeded(ctx, ident, rSym);
+      emitAutoCast(ctx, ident, rSym);
       return;
     }
     

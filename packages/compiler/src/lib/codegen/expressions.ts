@@ -78,6 +78,7 @@ import {
   ValType,
 } from '../wasm.js';
 import {analyzeCaptures} from './captures.js';
+import {typeToString} from '../checker/types.js';
 
 const BOX_VALUE_FIELD = 'value';
 const HASH_CODE_METHOD = 'hashCode';
@@ -1274,6 +1275,37 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
     // Fallback to name-based lookup for compiler-synthesized/unbound nodes
     const local = ctx.getLocal(ident.name);
     if (local) {
+      // If the identifier is auto-casted, return the casted type
+      if (
+        ident.inferredType &&
+        (ident.inferredType.kind === TypeKind.Class ||
+          ident.inferredType.kind === TypeKind.Interface)
+      ) {
+        const binding = ctx.semanticContext.getResolvedBinding(ident);
+        if (
+          binding &&
+          (binding.kind === 'local' || binding.kind === 'global')
+        ) {
+          const inferredWasmType = mapCheckerTypeToWasmType(
+            ctx,
+            ident.inferredType,
+          );
+          const currentWasmType =
+            local.isBoxed || local.isCelled ? local.unboxedType : local.type;
+          if (
+            currentWasmType &&
+            inferredWasmType &&
+            !typesRepresentSameZenaType(binding.type, ident.inferredType) &&
+            !typesAreEqual(currentWasmType, inferredWasmType) &&
+            inferredWasmType.length > 1 &&
+            (inferredWasmType[0] === ValType.ref ||
+              inferredWasmType[0] === ValType.ref_null)
+          ) {
+            return inferredWasmType;
+          }
+        }
+      }
+
       // For celled locals (mutual recursion), the actual value type is
       // unboxedType because generateFromBinding reads from the cell
       if (local.isCelled && local.unboxedType) {
@@ -6941,6 +6973,56 @@ function generateBooleanLiteral(
   body.push(...WasmModule.encodeSignedLEB128(expr.value ? 1 : 0));
 }
 
+function typesRepresentSameZenaType(a: Type, b: Type): boolean {
+  return typeToString(a) === typeToString(b);
+}
+
+function emitAutoCast(
+  ctx: CodegenContext,
+  expr: Identifier,
+  binding: ResolvedBinding | undefined,
+  body: number[],
+) {
+  if (
+    expr.inferredType &&
+    (expr.inferredType.kind === TypeKind.Class ||
+      expr.inferredType.kind === TypeKind.Interface) &&
+    binding &&
+    (binding.kind === 'local' || binding.kind === 'global')
+  ) {
+    const inferredWasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+    let currentWasmType: number[] | undefined;
+    if (binding.kind === 'local') {
+      const local = ctx.getLocal(expr.name);
+      if (local) {
+        currentWasmType =
+          local.isBoxed || local.isCelled ? local.unboxedType : local.type;
+      }
+    } else {
+      const global = ctx.getGlobal(expr.name);
+      if (global) {
+        currentWasmType = global.type;
+      }
+    }
+    if (
+      currentWasmType &&
+      inferredWasmType &&
+      !typesRepresentSameZenaType(binding.type, expr.inferredType) &&
+      !typesAreEqual(currentWasmType, inferredWasmType) &&
+      inferredWasmType.length > 1 &&
+      (inferredWasmType[0] === ValType.ref ||
+        inferredWasmType[0] === ValType.ref_null)
+    ) {
+      if (inferredWasmType[0] === ValType.ref_null) {
+        body.push(0xfb, GcOpcode.ref_cast_null);
+      } else {
+        body.push(0xfb, GcOpcode.ref_cast);
+      }
+      body.push(...inferredWasmType.slice(1));
+    }
+  }
+}
+
 function generateIdentifier(
   ctx: CodegenContext,
   expr: Identifier,
@@ -6952,6 +7034,7 @@ function generateIdentifier(
     // Resolve imports to their actual target (e.g., imported enum -> original enum declaration)
     const resolved = resolveImport(binding);
     if (generateFromBinding(ctx, resolved, body, expr)) {
+      emitAutoCast(ctx, expr, resolved, body);
       return;
     }
   }
@@ -6961,6 +7044,7 @@ function generateIdentifier(
   if (local !== undefined) {
     body.push(Opcode.local_get);
     body.push(...WasmModule.encodeSignedLEB128(local.index));
+    emitAutoCast(ctx, expr, undefined, body);
     return;
   }
 

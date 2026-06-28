@@ -1686,9 +1686,14 @@ function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
   const path = getExpressionPath(expr.expression, ctx);
   const isNarrowed = path ? ctx.getNarrowedType(path) !== undefined : false;
 
+  const isAutoCasted =
+    expr.expression.type === NodeType.Identifier &&
+    (targetType.kind === TypeKind.Class ||
+      targetType.kind === TypeKind.Interface);
+
   if (
     ctx.compiler?.options.warnUnnecessaryCasts &&
-    !isNarrowed &&
+    (!isNarrowed || isAutoCasted) &&
     expr.expression.type !== NodeType.ThisExpression &&
     typesEqual(sourceType, targetType)
   ) {

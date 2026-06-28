@@ -1225,6 +1225,29 @@ final class CheckerContext {
     return null;
   }
 
+  isExpressionNarrowed(expr: Expression): boolean {
+    let key = getMemberPathKey(this, expr);
+    if (key == null) { return false; }
+    
+    match (expr) {
+      case Identifier: {
+        let sym = this.model.resolve(expr);
+        if (sym == null) { return false; }
+        let si = sym as Symbol;
+        var i = this.#narrowings.length - 1;
+        while (i >= 0) {
+          if (this.#narrowings[i].has(si.id)) { return true; }
+          i -= 1;
+        }
+        if (this.resolveNarrowedMemberPath(key as String) != null) { return true; }
+        return false;
+      }
+      case _: {
+        return this.resolveNarrowedMemberPath(key as String) != null;
+      }
+    }
+  }
+
   // --- Scope result access ---
 
   scopeResult: ScopeResult {
@@ -5759,7 +5782,14 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case AsExpression {expression, typeAnnotation, loc}: {
     let sourceType = checkExpression(ctx, expression, null);
     let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
-    if (ctx.warnUnnecessaryCasts && typesEqual(sourceType, targetType)) {
+    let isNarrowed = ctx.isExpressionNarrowed(expression);
+    let isAutoCasted = if (expression is Identifier) {
+      targetType is ClassType || targetType is InterfaceType
+    } else {
+      false
+    };
+    let warnCast = (!isNarrowed || isAutoCasted) && !(expression is ThisExpression);
+    if (ctx.warnUnnecessaryCasts && warnCast && typesEqual(sourceType, targetType)) {
       ctx.warning("Unnecessary cast: expression is already of type '" + typeToString(targetType) + "'.", DiagnosticCode.UnnecessaryCast, loc);
     }
     if (targetType is UnionT) {

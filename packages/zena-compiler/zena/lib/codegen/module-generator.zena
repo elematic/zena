@@ -117,7 +117,7 @@ export final class ModuleGenerator {
     if (stringClass != null) {
       if (wasm.stringLiterals.size > 0) {
         wasm.registerStringLiteral(""); // Ensure empty string is in stringLiterals
-        let stringKey = getClassKey(stringClass as ClassType);
+        let stringKey = getClassKey(stringClass);
         var stringStruct: WasmStruct | null = null;
         if (let (true, stringInfo) = wasm.classInfos.get(stringKey)) {
           stringStruct = stringInfo.structType;
@@ -125,7 +125,7 @@ export final class ModuleGenerator {
         if (stringStruct == null) {
           throw new Error("String class struct not found during module compilation!");
         }
-        let stringType = new ValTypeRefNull(stringStruct as WasmStruct);
+        let stringType = new ValTypeRefNull(stringStruct);
 
         // Sort stringLiterals by length descending
         let sortedStrings = new Array<String>();
@@ -380,7 +380,7 @@ export final class ModuleGenerator {
     let emitTypeAtIndex = (idx: i32): void => {
       let t = wasm.types[idx];
       if (t is WasmSignature) {
-        let sig = t as WasmSignature;
+        let sig = t;
         this.emitter.emitFunctionTypeStart(idx);
         
         this.emitter.emitFunctionTypeParamsStart(sig.params.length);
@@ -395,7 +395,7 @@ export final class ModuleGenerator {
         
         this.emitter.emitFunctionTypeEnd();
       } else if (t is WasmStruct) {
-        let st = t as WasmStruct;
+        let st = t;
         let superIdx =
           if (st.superStruct != null) (st.superStruct as WasmStruct).index 
           else -1;
@@ -408,7 +408,7 @@ export final class ModuleGenerator {
         
         this.emitter.emitStructTypeEnd();
       } else if (t is WasmArray) {
-        let arr = t as WasmArray;
+        let arr = t;
         this.emitter.emitArrayType(idx, arr.elementType, arr.isMutable);
       }
     };
@@ -584,9 +584,8 @@ export final class ModuleGenerator {
       let model = (entryPoint as CompilationUnit).model;
       for (let stmt in entryMod.body) {
         if (stmt is VariableDeclaration) {
-          let varDecl = stmt as VariableDeclaration;
-          if (varDecl.exported && varDecl.pattern is IdentifierPattern) {
-            let ident = varDecl.pattern as IdentifierPattern;
+          if (stmt.exported && stmt.pattern is IdentifierPattern) {
+            let ident = stmt.pattern as IdentifierPattern;
             let sym = model.resolveDeclaration(ident);
             if (sym != null) {
               if (wasm.functionMap.has(sym.id)) {
