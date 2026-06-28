@@ -738,6 +738,18 @@ function generateAsExpression(
   // inferredType is T, but the actual local storage type is still the wider type).
   const sourceWasmType = inferType(ctx, expr.expression);
 
+  // If target is nullable and source is non-nullable, and the type index is the same, this is a safe coercion, no instruction needed.
+  if (
+    sourceWasmType &&
+    sourceWasmType.length > 1 &&
+    targetWasmType.length > 1 &&
+    sourceWasmType[0] === ValType.ref &&
+    targetWasmType[0] === ValType.ref_null &&
+    typesAreEqual(sourceWasmType.slice(1), targetWasmType.slice(1))
+  ) {
+    return;
+  }
+
   // No-op cast: same WASM representation
   if (typesAreEqual(sourceWasmType, targetWasmType)) {
     return;
@@ -931,6 +943,10 @@ function generateAsExpression(
     // ref.cast_null
     body.push(0xfb, GcOpcode.ref_cast_null);
     // The rest of targetWasmType is the LEB128 encoded type index
+    body.push(...targetWasmType.slice(1));
+  } else if (targetWasmType.length > 1 && targetWasmType[0] === ValType.ref) {
+    // ref.cast
+    body.push(0xfb, GcOpcode.ref_cast);
     body.push(...targetWasmType.slice(1));
   }
 }
@@ -1199,6 +1215,65 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
     }
     const global = ctx.getGlobal(ident.name);
     if (global) return global.type;
+  }
+
+  if (expr.type === NodeType.MemberExpression) {
+    const mem = expr as MemberExpression;
+    const binding = ctx.semanticContext.getResolvedBinding(mem);
+    if (binding && !mem.optional) {
+      if (binding.kind === 'field') {
+        const fieldBinding = binding as FieldBinding;
+        if (
+          !fieldBinding.isStatic &&
+          fieldBinding.classType.kind === TypeKind.Class
+        ) {
+          const classType = fieldBinding.classType as ClassType;
+          const fieldName = mem.property.name;
+          const fieldInfo = classType.fields.get(fieldName);
+          if (fieldInfo) {
+            let fieldType = fieldInfo;
+            if (
+              classType.typeParameters &&
+              classType.typeArguments &&
+              ctx.checkerContext
+            ) {
+              const typeArgsMap = new Map<string, Type>();
+              for (let i = 0; i < classType.typeParameters.length; i++) {
+                typeArgsMap.set(
+                  classType.typeParameters[i].name,
+                  classType.typeArguments[i],
+                );
+              }
+              fieldType = ctx.checkerContext.substituteTypeParams(
+                fieldType,
+                typeArgsMap,
+              );
+            }
+            if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+              fieldType = ctx.checkerContext.substituteTypeParams(
+                fieldType,
+                ctx.currentTypeArguments,
+              );
+            }
+            return mapCheckerTypeToWasmType(ctx, fieldType);
+          }
+        }
+      } else if (binding.kind === 'record-field') {
+        const recordBinding = binding as RecordFieldBinding;
+        const fieldName = mem.property.name;
+        const propType = recordBinding.recordType.properties.get(fieldName);
+        if (propType) {
+          let fieldType = propType;
+          if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+            fieldType = ctx.checkerContext.substituteTypeParams(
+              fieldType,
+              ctx.currentTypeArguments,
+            );
+          }
+          return mapCheckerTypeToWasmType(ctx, fieldType);
+        }
+      }
+    }
   }
 
   // Handle synthesized super() calls which are not visited by the checker

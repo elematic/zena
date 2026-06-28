@@ -194,10 +194,8 @@ import {
 import {
   checkPattern,
   checkStatement,
-  extractNarrowingFromCondition,
-  extractInverseNarrowingFromCondition,
-  extractAllInverseNarrowingsFromCondition,
-  extractAllNarrowingsFromCondition,
+  isExpressionPathImmutable,
+  getNarrowedTypesFromCondition,
   predeclareFunction,
 } from './statements.js';
 
@@ -392,6 +390,20 @@ function checkExpressionInternal(
   }
 }
 
+function getNarrowedTypeFromPattern(pattern: any): Type | null {
+  if (!pattern) return null;
+  if (pattern.type === NodeType.ClassPattern) {
+    return pattern.inferredType || null;
+  }
+  if (pattern.type === NodeType.AsPattern) {
+    return getNarrowedTypeFromPattern(pattern.pattern);
+  }
+  if (pattern.type === NodeType.Identifier) {
+    return pattern.inferredType || null;
+  }
+  return null;
+}
+
 function checkMatchExpression(
   ctx: CheckerContext,
   expr: MatchExpression,
@@ -402,9 +414,24 @@ function checkMatchExpression(
   const matchedTypes: Type[] = [];
   let remainingType = discriminantType;
 
+  const discriminantPath = getExpressionPath(expr.discriminant, ctx);
+  const discriminantSymbol = discriminantPath
+    ? ctx.resolveValueInfo(discriminantPath.split('.')[0])
+    : undefined;
+  const isImmutable =
+    expr.discriminant.type === NodeType.Identifier ||
+    isExpressionPathImmutable(ctx, expr.discriminant);
+
   for (const c of expr.cases) {
     ctx.enterScope();
     checkMatchPattern(ctx, c.pattern, discriminantType, 'let', remainingType);
+
+    if (discriminantPath && isImmutable) {
+      const narrowedType = getNarrowedTypeFromPattern(c.pattern);
+      if (narrowedType) {
+        ctx.narrowType(discriminantPath, narrowedType, discriminantSymbol);
+      }
+    }
 
     // Check for unreachable code
     if (remainingType.kind === TypeKind.Never) {
@@ -532,12 +559,12 @@ function checkIfExpression(
   }
 
   // Extract narrowing information from the condition
-  const narrowing = extractNarrowingFromCondition(ctx, expr.test);
+  const narrowings = getNarrowedTypesFromCondition(ctx, expr.test, true);
 
   // Check the consequent branch with narrowing applied
   ctx.enterScope();
-  if (narrowing) {
-    ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+  for (const [path, type] of narrowings) {
+    ctx.narrowType(path, type);
   }
   const consequentType = checkIfBranch(ctx, expr.consequent, expectedType);
   ctx.exitScope();
@@ -548,13 +575,14 @@ function checkIfExpression(
   }
 
   // Check the alternate branch with inverse narrowing applied
-  const inverseNarrowing = extractInverseNarrowingFromCondition(ctx, expr.test);
+  const inverseNarrowings = getNarrowedTypesFromCondition(
+    ctx,
+    expr.test,
+    false,
+  );
   ctx.enterScope();
-  if (inverseNarrowing) {
-    ctx.narrowType(
-      inverseNarrowing.variableName,
-      inverseNarrowing.narrowedType,
-    );
+  for (const [path, type] of inverseNarrowings) {
+    ctx.narrowType(path, type);
   }
   const alternateType = checkIfBranch(ctx, expr.alternate, expectedType);
   ctx.exitScope();
@@ -1332,7 +1360,7 @@ function isTypeCompatibleWithLiteral(
   return false;
 }
 
-function createUnionType(types: Type[], ctx?: CheckerContext): Type {
+export function createUnionType(types: Type[], ctx?: CheckerContext): Type {
   if (types.length === 0) return Types.Void;
   if (types.length === 1) return types[0];
 
@@ -2727,12 +2755,12 @@ function checkBinaryExpression(
   if (expr.operator === '&&') {
     left = checkExpression(ctx, expr.left);
     // Extract all narrowings from left operand (handles chained && expressions)
-    const narrowings = extractAllNarrowingsFromCondition(ctx, expr.left);
-    if (narrowings.length > 0) {
+    const narrowings = getNarrowedTypesFromCondition(ctx, expr.left, true);
+    if (narrowings.size > 0) {
       // Enter a temporary scope to apply all narrowings for the right operand only
       ctx.enterScope();
-      for (const narrowing of narrowings) {
-        ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+      for (const [path, type] of narrowings) {
+        ctx.narrowType(path, type);
       }
       right = checkExpression(ctx, expr.right);
       ctx.exitScope();
@@ -2743,11 +2771,11 @@ function checkBinaryExpression(
     // Special handling for || operator: apply INVERSE narrowing from left to right
     // For `x == null || x.foo`, if the right side runs, we know x == null was false
     left = checkExpression(ctx, expr.left);
-    const narrowings = extractAllInverseNarrowingsFromCondition(ctx, expr.left);
-    if (narrowings.length > 0) {
+    const narrowings = getNarrowedTypesFromCondition(ctx, expr.left, false);
+    if (narrowings.size > 0) {
       ctx.enterScope();
-      for (const narrowing of narrowings) {
-        ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+      for (const [path, type] of narrowings) {
+        ctx.narrowType(path, type);
       }
       right = checkExpression(ctx, expr.right);
       ctx.exitScope();

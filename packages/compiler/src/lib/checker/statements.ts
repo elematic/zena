@@ -41,6 +41,7 @@ import {
   type NamedTypeAnnotation,
   type TypeParameter,
   type InlineTuplePattern,
+  type UnaryExpression,
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
@@ -77,6 +78,7 @@ import {
   checkExpression,
   checkMatchPattern,
   getCompileTimeNumericValue,
+  createUnionType,
 } from './expressions.js';
 import {
   instantiateGenericClass,
@@ -227,13 +229,14 @@ const getExpressionPath = (
  * @param expr - The expression to check (MemberExpression or IndexExpression)
  * @returns true if the path is immutable
  */
-const isExpressionPathImmutable = (
+export const isExpressionPathImmutable = (
   ctx: CheckerContext,
   expr: Expression,
 ): boolean => {
   if (expr.type === NodeType.MemberExpression) {
     const memberExpr = expr as MemberExpression;
-    const objectType = checkExpression(ctx, memberExpr.object);
+    const objectType =
+      memberExpr.object.inferredType ?? checkExpression(ctx, memberExpr.object);
     const fieldName = memberExpr.property.name;
 
     // Handle ClassType - check if the field is immutable (declared with `let`)
@@ -398,177 +401,184 @@ const findMatchingOverload = (
  * - `x is T` -> narrows x to T (true branch)
  * - `obj.field !== null` -> narrows obj.field if field is immutable
  */
-export const extractNarrowingFromCondition = (
+export function getNarrowedTypesFromCondition(
   ctx: CheckerContext,
   condition: Expression,
-): TypeNarrowing | null => {
-  // Handle `x is T` pattern
+  truthValue: boolean,
+): Map<string, Type> {
+  const result = new Map<string, Type>();
+
+  const getPathType = (path: string, expr: Expression): Type => {
+    if (expr.type === NodeType.Identifier) {
+      return ctx.resolveValue((expr as Identifier).name) ?? Types.Error;
+    }
+    return expr.inferredType ?? checkExpression(ctx, expr);
+  };
+
   if (condition.type === NodeType.IsExpression) {
     const isExpr = condition as IsExpression;
-    if (isExpr.expression.type !== NodeType.Identifier) {
-      return null;
+    const expr = isExpr.expression;
+    let path: string | null = null;
+    if (expr.type === NodeType.Identifier) {
+      path = (expr as Identifier).name;
+    } else if (
+      expr.type === NodeType.MemberExpression ||
+      expr.type === NodeType.IndexExpression
+    ) {
+      if (isExpressionPathImmutable(ctx, expr)) {
+        path = getExpressionPath(expr, ctx);
+      }
     }
-    const identifier = isExpr.expression as Identifier;
-    const targetType = resolveTypeAnnotation(ctx, isExpr.typeAnnotation);
-    return {variableName: identifier.name, narrowedType: targetType};
+    if (path) {
+      const targetType = resolveTypeAnnotation(ctx, isExpr.typeAnnotation);
+      if (truthValue) {
+        result.set(path, targetType);
+      } else {
+        const originalType = getPathType(path, expr);
+        const narrowedType = subtractTypeFromUnion(originalType, targetType);
+        if (narrowedType !== originalType) {
+          result.set(path, narrowedType);
+        }
+      }
+    }
+    return result;
   }
 
-  if (condition.type !== NodeType.BinaryExpression) {
-    return null;
+  if (condition.type === NodeType.UnaryExpression) {
+    const unary = condition as UnaryExpression;
+    if (unary.operator === '!') {
+      return getNarrowedTypesFromCondition(ctx, unary.argument, !truthValue);
+    }
   }
 
-  const binary = condition as BinaryExpression;
-  const op = binary.operator;
-
-  // Handle && by extracting narrowing from the left operand
-  // For `a && b`, the narrowing from `a` is applied when checking `b`
-  // This enables chained narrowing like `x != null && x.y != null`
-  if (op === '&&') {
-    return extractNarrowingFromCondition(ctx, binary.left);
-  }
-
-  // Handle !== and != (not equal to null)
-  if (op === '!==' || op === '!=') {
-    const target = extractNullComparisonTarget(ctx, binary);
-    if (!target) return null;
-
-    const {path, originalType} = target;
-
-    // Narrow by removing null
-    const narrowedType = subtractTypeFromUnion(originalType, Types.Null);
-    if (narrowedType === originalType) return null;
-
-    return {variableName: path, narrowedType};
-  }
-
-  // Handle === and == (equal to null)
-  if (op === '===' || op === '==') {
-    const target = extractNullComparisonTarget(ctx, binary);
-    if (!target) return null;
-
-    // In the true branch of `x == null`, x is null
-    return {variableName: target.path, narrowedType: Types.Null};
-  }
-
-  return null;
-};
-
-/**
- * Extract all type narrowings from a condition expression, including
- * all narrowings from chained && expressions.
- *
- * For `a && b && c`, this collects narrowings from all three parts.
- * This is used when checking the right side of && to apply all
- * accumulated narrowings from the left side.
- */
-export const extractAllNarrowingsFromCondition = (
-  ctx: CheckerContext,
-  condition: Expression,
-): TypeNarrowing[] => {
-  const narrowings: TypeNarrowing[] = [];
-  collectNarrowings(ctx, condition, narrowings);
-  return narrowings;
-};
-
-/**
- * Helper to recursively collect all narrowings from a condition.
- * Uses a scope to apply accumulated narrowings when processing
- * the right side of && expressions.
- */
-const collectNarrowings = (
-  ctx: CheckerContext,
-  condition: Expression,
-  narrowings: TypeNarrowing[],
-): void => {
-  // For && expressions, collect from both sides
   if (condition.type === NodeType.BinaryExpression) {
     const binary = condition as BinaryExpression;
-    if (binary.operator === '&&') {
-      // First collect narrowings from the left side
-      collectNarrowings(ctx, binary.left, narrowings);
+    const op = binary.operator;
 
-      // For the right side, we need to apply all collected narrowings so far
-      // to correctly resolve types (e.g., for `outer != null && outer.inner != null`)
-      if (narrowings.length > 0) {
+    if (op === '&&') {
+      if (truthValue) {
+        const leftNarrowings = getNarrowedTypesFromCondition(
+          ctx,
+          binary.left,
+          true,
+        );
+
         ctx.enterScope();
-        for (const n of narrowings) {
-          ctx.narrowType(n.variableName, n.narrowedType);
+        for (const [path, type] of leftNarrowings) {
+          ctx.narrowType(path, type);
         }
-        collectNarrowings(ctx, binary.right, narrowings);
+        const rightNarrowings = getNarrowedTypesFromCondition(
+          ctx,
+          binary.right,
+          true,
+        );
         ctx.exitScope();
+
+        const merged = new Map(leftNarrowings);
+        for (const [path, type] of rightNarrowings) {
+          merged.set(path, type);
+        }
+        return merged;
       } else {
-        collectNarrowings(ctx, binary.right, narrowings);
+        const leftNarrowings = getNarrowedTypesFromCondition(
+          ctx,
+          binary.left,
+          false,
+        );
+        const rightNarrowings = getNarrowedTypesFromCondition(
+          ctx,
+          binary.right,
+          false,
+        );
+        const merged = new Map<string, Type>();
+        for (const [path, leftType] of leftNarrowings) {
+          if (rightNarrowings.has(path)) {
+            const rightType = rightNarrowings.get(path)!;
+            merged.set(path, createUnionType([leftType, rightType], ctx));
+          }
+        }
+        return merged;
       }
-      return;
+    }
+
+    if (op === '||') {
+      if (truthValue) {
+        const leftNarrowings = getNarrowedTypesFromCondition(
+          ctx,
+          binary.left,
+          true,
+        );
+
+        const leftFalseNarrowings = getNarrowedTypesFromCondition(
+          ctx,
+          binary.left,
+          false,
+        );
+        ctx.enterScope();
+        for (const [path, type] of leftFalseNarrowings) {
+          ctx.narrowType(path, type);
+        }
+        const rightNarrowings = getNarrowedTypesFromCondition(
+          ctx,
+          binary.right,
+          true,
+        );
+        ctx.exitScope();
+
+        const merged = new Map<string, Type>();
+        for (const [path, leftType] of leftNarrowings) {
+          if (rightNarrowings.has(path)) {
+            const rightType = rightNarrowings.get(path)!;
+            merged.set(path, createUnionType([leftType, rightType], ctx));
+          }
+        }
+        return merged;
+      } else {
+        const leftNarrowings = getNarrowedTypesFromCondition(
+          ctx,
+          binary.left,
+          false,
+        );
+
+        ctx.enterScope();
+        for (const [path, type] of leftNarrowings) {
+          ctx.narrowType(path, type);
+        }
+        const rightNarrowings = getNarrowedTypesFromCondition(
+          ctx,
+          binary.right,
+          false,
+        );
+        ctx.exitScope();
+
+        const merged = new Map(leftNarrowings);
+        for (const [path, type] of rightNarrowings) {
+          merged.set(path, type);
+        }
+        return merged;
+      }
+    }
+
+    if (op === '===' || op === '==' || op === '!==' || op === '!=') {
+      const target = extractNullComparisonTarget(ctx, binary);
+      if (target) {
+        const {path, originalType} = target;
+        const isNotEqual = op === '!==' || op === '!=';
+        const shouldBeNull = isNotEqual ? !truthValue : truthValue;
+        if (shouldBeNull) {
+          result.set(path, Types.Null);
+        } else {
+          const narrowedType = subtractTypeFromUnion(originalType, Types.Null);
+          if (narrowedType !== originalType) {
+            result.set(path, narrowedType);
+          }
+        }
+      }
     }
   }
 
-  // For non-&& conditions, extract the single narrowing
-  const narrowing = extractNarrowingFromCondition(ctx, condition);
-  if (narrowing) {
-    narrowings.push(narrowing);
-  }
-};
-
-/**
- * Extract all inverse type narrowings from a condition expression,
- * including all narrowings from chained || expressions.
- *
- * For `a || b || c`, this collects inverse narrowings from all three parts.
- * This is used when checking the right side of || to apply the inverse
- * narrowings from the left side.
- *
- * Example: `data == null || data.foo` - when evaluating `data.foo`,
- * we know `data == null` was false, so `data` is not null.
- */
-export const extractAllInverseNarrowingsFromCondition = (
-  ctx: CheckerContext,
-  condition: Expression,
-): TypeNarrowing[] => {
-  const narrowings: TypeNarrowing[] = [];
-  collectInverseNarrowings(ctx, condition, narrowings);
-  return narrowings;
-};
-
-/**
- * Helper to recursively collect all inverse narrowings from a condition.
- * Uses a scope to apply accumulated narrowings when processing
- * the right side of || expressions.
- */
-const collectInverseNarrowings = (
-  ctx: CheckerContext,
-  condition: Expression,
-  narrowings: TypeNarrowing[],
-): void => {
-  // For || expressions, collect from both sides
-  if (condition.type === NodeType.BinaryExpression) {
-    const binary = condition as BinaryExpression;
-    if (binary.operator === '||') {
-      // First collect inverse narrowings from the left side
-      collectInverseNarrowings(ctx, binary.left, narrowings);
-
-      // For the right side, we need to apply all collected narrowings so far
-      // to correctly resolve types
-      if (narrowings.length > 0) {
-        ctx.enterScope();
-        for (const n of narrowings) {
-          ctx.narrowType(n.variableName, n.narrowedType);
-        }
-        collectInverseNarrowings(ctx, binary.right, narrowings);
-        ctx.exitScope();
-      } else {
-        collectInverseNarrowings(ctx, binary.right, narrowings);
-      }
-      return;
-    }
-  }
-
-  // For non-|| conditions, extract the single inverse narrowing
-  const narrowing = extractInverseNarrowingFromCondition(ctx, condition);
-  if (narrowing) {
-    narrowings.push(narrowing);
-  }
-};
+  return result;
+}
 
 /**
  * Result of extracting a null comparison target.
@@ -621,7 +631,8 @@ const extractNullComparisonTarget = (
     const path = tempPath;
     if (!path) return null;
 
-    const originalType = checkExpression(ctx, targetExpr);
+    const originalType =
+      targetExpr.inferredType ?? checkExpression(ctx, targetExpr);
     return {path, originalType};
   }
 
@@ -637,65 +648,9 @@ const extractNullComparisonTarget = (
     const path = getExpressionPath(targetExpr, ctx);
     if (!path) return null;
 
-    const originalType = checkExpression(ctx, targetExpr);
+    const originalType =
+      targetExpr.inferredType ?? checkExpression(ctx, targetExpr);
     return {path, originalType};
-  }
-
-  return null;
-};
-
-/**
- * Extract the inverse narrowing from a condition.
- * This is used for the else branch.
- *
- * - `x !== null` else branch -> x is null
- * - `x === null` else branch -> x is non-null
- * - `x is T` else branch -> x with T subtracted (if union)
- * - `obj.field !== null` else branch -> obj.field is null (if field is immutable)
- */
-export const extractInverseNarrowingFromCondition = (
-  ctx: CheckerContext,
-  condition: Expression,
-): TypeNarrowing | null => {
-  // Handle `x is T` pattern - in else branch, we know x is NOT T
-  if (condition.type === NodeType.IsExpression) {
-    const isExpr = condition as IsExpression;
-    if (isExpr.expression.type !== NodeType.Identifier) {
-      return null;
-    }
-    const identifier = isExpr.expression as Identifier;
-    const variableName = identifier.name;
-    const originalType = ctx.resolveValue(variableName);
-    if (!originalType) return null;
-
-    const targetType = resolveTypeAnnotation(ctx, isExpr.typeAnnotation);
-    const narrowedType = subtractTypeFromUnion(originalType, targetType);
-    if (narrowedType === originalType) return null;
-
-    return {variableName, narrowedType};
-  }
-
-  if (condition.type !== NodeType.BinaryExpression) {
-    return null;
-  }
-
-  const binary = condition as BinaryExpression;
-  const op = binary.operator;
-
-  const target = extractNullComparisonTarget(ctx, binary);
-  if (!target) return null;
-
-  // For !== and !=, the else branch means IS null
-  if (op === '!==' || op === '!=') {
-    return {variableName: target.path, narrowedType: Types.Null};
-  }
-
-  // For === and ==, the else branch means NOT null
-  if (op === '===' || op === '==') {
-    const narrowedType = subtractTypeFromUnion(target.originalType, Types.Null);
-    if (narrowedType === target.originalType) return null;
-
-    return {variableName: target.path, narrowedType};
   }
 
   return null;
@@ -1791,28 +1746,26 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
   }
 
   // Extract narrowing information from the condition
-  const narrowing = extractNarrowingFromCondition(ctx, stmt.test);
+  const narrowings = getNarrowedTypesFromCondition(ctx, stmt.test, true);
 
   // Check the consequent branch with narrowing applied
   ctx.enterScope();
-  if (narrowing) {
-    ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+  for (const [path, type] of narrowings) {
+    ctx.narrowType(path, type);
   }
   checkStatement(ctx, stmt.consequent);
   ctx.exitScope();
 
   // Check the alternate branch with inverse narrowing applied
   if (stmt.alternate) {
-    const inverseNarrowing = extractInverseNarrowingFromCondition(
+    const inverseNarrowings = getNarrowedTypesFromCondition(
       ctx,
       stmt.test,
+      false,
     );
     ctx.enterScope();
-    if (inverseNarrowing) {
-      ctx.narrowType(
-        inverseNarrowing.variableName,
-        inverseNarrowing.narrowedType,
-      );
+    for (const [path, type] of inverseNarrowings) {
+      ctx.narrowType(path, type);
     }
     checkStatement(ctx, stmt.alternate);
     ctx.exitScope();
@@ -1823,18 +1776,22 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
   // there is no else branch, the inverse narrowing holds for subsequent
   // code in the same scope.
   if (!stmt.alternate && branchDefinitelyExits(stmt.consequent)) {
-    const allInverse = extractAllInverseNarrowingsFromCondition(ctx, stmt.test);
-    for (const n of allInverse) {
-      ctx.narrowType(n.variableName, n.narrowedType);
+    const inverseNarrowings = getNarrowedTypesFromCondition(
+      ctx,
+      stmt.test,
+      false,
+    );
+    for (const [path, type] of inverseNarrowings) {
+      ctx.narrowType(path, type);
     }
   }
 
   // If the alternate always exits, the regular narrowing holds for
   // subsequent code.
   if (stmt.alternate && branchDefinitelyExits(stmt.alternate)) {
-    const allNarrowings = extractAllNarrowingsFromCondition(ctx, stmt.test);
-    for (const n of allNarrowings) {
-      ctx.narrowType(n.variableName, n.narrowedType);
+    const narrowings = getNarrowedTypesFromCondition(ctx, stmt.test, true);
+    for (const [path, type] of narrowings) {
+      ctx.narrowType(path, type);
     }
   }
 
@@ -1843,18 +1800,15 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
   // Both paths guarantee non-null: the false branch means x was already
   // non-null, and the true branch assigned a (non-null) value to x.
   if (!stmt.alternate && !branchDefinitelyExits(stmt.consequent)) {
-    const inverseNarrowing = extractInverseNarrowingFromCondition(
+    const inverseNarrowings = getNarrowedTypesFromCondition(
       ctx,
       stmt.test,
+      false,
     );
-    if (
-      inverseNarrowing &&
-      bodyAssignsToVariable(stmt.consequent, inverseNarrowing.variableName)
-    ) {
-      ctx.narrowType(
-        inverseNarrowing.variableName,
-        inverseNarrowing.narrowedType,
-      );
+    for (const [path, type] of inverseNarrowings) {
+      if (bodyAssignsToVariable(stmt.consequent, path)) {
+        ctx.narrowType(path, type);
+      }
     }
   }
 }
@@ -1881,12 +1835,12 @@ function checkWhileStatement(ctx: CheckerContext, stmt: WhileStatement) {
     );
   }
 
-  const narrowing = extractNarrowingFromCondition(ctx, stmt.test);
+  const narrowings = getNarrowedTypesFromCondition(ctx, stmt.test, true);
 
   ctx.enterLoop();
   ctx.enterScope();
-  if (narrowing) {
-    ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+  for (const [path, type] of narrowings) {
+    ctx.narrowType(path, type);
   }
   checkStatement(ctx, stmt.body);
   ctx.exitScope();
@@ -1906,6 +1860,7 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
   }
 
   // Check test
+  let narrowings = new Map<string, Type>();
   if (stmt.test) {
     const testType = checkExpression(ctx, stmt.test);
     if (!isBooleanType(testType) && testType.kind !== TypeKind.Error) {
@@ -1915,6 +1870,7 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
         ctx.getLocation(stmt.test.loc),
       );
     }
+    narrowings = getNarrowedTypesFromCondition(ctx, stmt.test, true);
   }
 
   // Check update
@@ -1924,7 +1880,12 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
 
   // Check body
   ctx.enterLoop();
+  ctx.enterScope();
+  for (const [path, type] of narrowings) {
+    ctx.narrowType(path, type);
+  }
   checkStatement(ctx, stmt.body);
+  ctx.exitScope();
   ctx.exitLoop();
 
   ctx.exitScope();

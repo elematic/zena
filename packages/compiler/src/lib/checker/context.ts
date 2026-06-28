@@ -33,10 +33,15 @@ export type {Declaration, SymbolInfo} from '../ast.js';
  * Per-library state that gets reset when switching modules.
  * This is separate from the global type interning state.
  */
+interface Narrowing {
+  type: Type;
+  symbol?: SymbolInfo;
+}
+
 interface LibraryState {
   scopes: Map<string, SymbolInfo>[];
   diagnostics: DiagnosticBag;
-  narrowedTypes: Map<string, Type>[];
+  narrowedTypes: Map<string, Narrowing>[];
   classStack: (ClassType | null)[];
   interfaceStack: (InterfaceType | null)[];
   currentFunctionReturnType: Type | null;
@@ -335,11 +340,13 @@ export class CheckerContext {
    * Narrow a variable's type in the current scope.
    * This is used for control flow-based type narrowing (e.g., after null checks).
    */
-  narrowType(name: string, type: Type) {
+  narrowType(name: string, type: Type, symbol?: SymbolInfo) {
     const narrowings =
       this.#lib.narrowedTypes[this.#lib.narrowedTypes.length - 1];
     if (narrowings) {
-      narrowings.set(name, type);
+      const rootName = name.split('.')[0];
+      const resolvedSymbol = symbol ?? this.resolveValueInfo(rootName);
+      narrowings.set(name, {type, symbol: resolvedSymbol});
     }
   }
 
@@ -347,11 +354,19 @@ export class CheckerContext {
    * Get the narrowed type for a variable, if any.
    */
   getNarrowedType(name: string): Type | undefined {
+    const rootName = name.split('.')[0];
+    const currentSymbol = this.resolveValueInfo(rootName);
+
     // Check from innermost scope outward
     for (let i = this.#lib.narrowedTypes.length - 1; i >= 0; i--) {
       const narrowings = this.#lib.narrowedTypes[i];
       if (narrowings.has(name)) {
-        return narrowings.get(name);
+        const entry = narrowings.get(name)!;
+        // If the variable has been shadowed by a different symbol declaration, ignore
+        if (entry.symbol !== currentSymbol) {
+          continue;
+        }
+        return entry.type;
       }
     }
     return undefined;

@@ -13,9 +13,9 @@ import {
   SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction,
   ThrowExpression, TryExpression, RangeExpression, PipelineExpression, PipePlaceholder,
-  Module
+  Module, getMemberPropertyName
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType, isVoidOrNeverType } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType, isVoidOrNeverType, FieldInfo } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
@@ -23,7 +23,7 @@ import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned } from './wasm.zena';
 import { WasmField, WasmStruct, WasmSignature, sortWasmFields, WasmGlobal, WasmFunction, WasmModule, WasmArray } from './wasm-module.zena';
-import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters } from './type-mapping.zena';
+import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters, getNonNullableType, getInterfaceTypeParameters } from './type-mapping.zena';
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
   getClassPrivateFieldKey, classInterfaceKeyToString,
@@ -853,7 +853,7 @@ export class FunctionGenerator {
         if (!handledLiteral) {
           this.generateExpression(asExpr.expression);
           
-          let rawSourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
+           let rawSourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
           var sourceType = rawSourceType;
           if (asExpr.expression is Identifier) {
             let sym = this.ctx.wasmFunction.model.resolve(asExpr.expression as Identifier);
@@ -863,7 +863,36 @@ export class FunctionGenerator {
                 sourceType = bType;
               }
             }
+          } else if (asExpr.expression is MemberExpression) {
+            let mem = asExpr.expression as MemberExpression;
+            if (!mem.optional) {
+              let objType = this.ctx.wasmFunction.model.getNodeType(mem.object);
+              if (objType != null) {
+              let nonNullObjType = getNonNullableType(objType as Type);
+              let propName = getMemberPropertyName(mem.isSymbolAccess, mem.property.name);
+              match (nonNullObjType) {
+                case ClassType as ct: {
+                  let fType = getClassFieldType(this.ctx.wasm, ct, propName);
+                  if (fType != null) {
+                    sourceType = fType as Type;
+                  }
+                }
+                case RecordType as rt: {
+                  if (rt.properties.has(propName)) {
+                    sourceType = rt.properties[propName];
+                  }
+                }
+                case InterfaceType as it: {
+                  let fType = getInterfaceFieldType(this.ctx.wasm, it, propName);
+                  if (fType != null) {
+                    sourceType = fType as Type;
+                  }
+                }
+                case _: {}
+              }
+            }
           }
+        }
           
           let sourceWasmType = typeToValTypeWithSub(this.ctx.wasm, sourceType, this.ctx.wasmFunction);
           
@@ -876,22 +905,22 @@ export class FunctionGenerator {
               match (sourceWasmType) {
                 case ValTypeRefNull as sourceRefNull: {
                   if (sourceRefNull.target.index != targetIdx) {
-                    this.ctx.emitter.emitRefCast(targetIdx);
+                    this.ctx.emitter.emitRefCastNull(targetIdx);
                   }
                 }
                 case ValTypeRef as sourceRef: {
                   if (sourceRef.target.index != targetIdx) {
-                    this.ctx.emitter.emitRefCast(targetIdx);
+                    this.ctx.emitter.emitRefCastNull(targetIdx);
                   }
                 }
                 case ValTypeAnyRef: {
-                  this.ctx.emitter.emitRefCast(targetIdx);
+                  this.ctx.emitter.emitRefCastNull(targetIdx);
                 }
                 case ValTypeEqRef: {
-                  this.ctx.emitter.emitRefCast(targetIdx);
+                  this.ctx.emitter.emitRefCastNull(targetIdx);
                 }
                 case ValTypeStructRef: {
-                  this.ctx.emitter.emitRefCast(targetIdx);
+                  this.ctx.emitter.emitRefCastNull(targetIdx);
                 }
                 case _: {
                   throw new Error("Unsupported ref_null cast in self-hosted compiler: " + typeToString(sourceType) + " to " + typeToString(targetType));
@@ -907,9 +936,7 @@ export class FunctionGenerator {
                   }
                 }
                 case ValTypeRefNull as sourceRefNull: {
-                  if (sourceRefNull.target.index != targetIdx) {
-                    this.ctx.emitter.emitRefCast(targetIdx);
-                  }
+                  this.ctx.emitter.emitRefCast(targetIdx);
                 }
                 case ValTypeAnyRef: {
                   this.ctx.emitter.emitRefCast(targetIdx);
@@ -2355,4 +2382,49 @@ export let collectValueExports = (program: Program, unit: CompilationUnit, resul
       case _: {}
     }
   }
+};
+
+let getClassFieldType = (wasm: WasmModule, ct: ClassType, propName: String): Type | null => {
+  if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
+    let fi = ct.members[propName] as FieldInfo;
+    let ctParams = getClassTypeParameters(ct);
+    return substituteTypeParamsInCodegen(ctParams, ct.typeArguments, fi.type);
+  }
+  let getterName = "get#" + propName;
+  if (ct.members.has(getterName)) {
+    let mi = ct.members[getterName];
+    if (mi.type is FunctionType) {
+      let ft = mi.type as FunctionType;
+      let ctParams = getClassTypeParameters(ct);
+      return substituteTypeParamsInCodegen(ctParams, ct.typeArguments, ft.returnType);
+    }
+  }
+  if (ct.superType != null) {
+    return getClassFieldType(wasm, ct.superType as ClassType, propName);
+  }
+  return null;
+};
+
+let getInterfaceFieldType = (wasm: WasmModule, it: InterfaceType, propName: String): Type | null => {
+  if (it.members.has(propName) && it.members[propName] is FieldInfo) {
+    let fi = it.members[propName] as FieldInfo;
+    let itParams = getInterfaceTypeParameters(it);
+    return substituteTypeParamsInCodegen(itParams, it.typeArguments, fi.type);
+  }
+  let getterName = "get#" + propName;
+  if (it.members.has(getterName)) {
+    let mi = it.members[getterName];
+    if (mi.type is FunctionType) {
+      let ft = mi.type as FunctionType;
+      let itParams = getInterfaceTypeParameters(it);
+      return substituteTypeParamsInCodegen(itParams, it.typeArguments, ft.returnType);
+    }
+  }
+  for (let parent in it.extendsList) {
+    let parentType = getInterfaceFieldType(wasm, parent, propName);
+    if (parentType != null) {
+      return parentType;
+    }
+  }
+  return null;
 };
