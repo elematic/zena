@@ -173,19 +173,22 @@ async function run() {
 
         const child = spawn(zenaCli, ['build', file, '-o', wasmOut], {
           cwd: repoRoot,
-          stdio: ['ignore', 'ignore', 'pipe'],
+          stdio: ['ignore', 'pipe', 'pipe'],
         });
 
-        let stderr = '';
+        let output = '';
+        child.stdout?.on('data', (data) => {
+          output += data.toString();
+        });
         child.stderr?.on('data', (data) => {
-          stderr += data.toString();
+          output += data.toString();
         });
 
         child.on('close', (code) => {
           activeCount--;
           if (code !== 0) {
             failedCompile = true;
-            compileErrorMsg = `Compilation failed for ${relPath}:\n${stderr}`;
+            compileErrorMsg = `Compilation failed for ${relPath}:\n${output}`;
             reject(new Error(compileErrorMsg));
             return;
           }
