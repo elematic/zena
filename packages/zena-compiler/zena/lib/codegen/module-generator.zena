@@ -17,6 +17,7 @@ import { FunctionGenerator } from './function-generator.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
 import { UsageAnalyzer } from '../analysis/usage.zena';
 import { ProgramInterface } from '../semantic-model.zena';
+import { performance } from '../time.zena';
 
 export class ModuleGenerator {
   program: Program;
@@ -35,11 +36,17 @@ export class ModuleGenerator {
     }
     let wasm = new WasmModule();
     wasm.program = this.program;
+    let tUsage = performance.start("codegen-usage");
     let usageAnalyzer = new UsageAnalyzer(this.program);
     let usage = usageAnalyzer.analyze();
+    performance.end(tUsage);
+    
+    let tDiscovery = performance.start("codegen-discovery");
     let pass = new DiscoveryPass(this.program, wasm, usage, this.target);
     pass.run();
+    performance.end(tDiscovery);
     
+    let tLayout = performance.start("codegen-layout");
     let stringClass = wasm.stringClass;
     if (stringClass != null) {
       if (wasm.stringLiterals.size > 0) {
@@ -212,7 +219,9 @@ export class ModuleGenerator {
       wasm.ensureStringHelpers(this.program.units[0].model);
     }
     wasm.layout();
+    performance.end(tLayout);
 
+    let tEmitOther = performance.start("codegen-emit-other");
     this.emitter.emitModuleStart();
     var recBlockStart = -1;
     for (var j = 0; j < wasm.types.length; j += 1) {
@@ -501,17 +510,22 @@ export class ModuleGenerator {
       this.emitter.emitDataCountSection(wasm.datas.length);
     }
     
+    performance.end(tEmitOther);
+    let tEmitCode = performance.start("codegen-emit-code");
     this.emitter.emitCodeSectionStart(wasm.functions.length);
     for (let wasmFunc in wasm.functions) {
        let funcCompiler = new FunctionGenerator(wasm, this.emitter, wasmFunc);
        funcCompiler.generate();
     }
     this.emitter.emitCodeSectionEnd();
+    performance.end(tEmitCode);
 
+    let tEmitOther2 = performance.start("codegen-emit-other");
     if (wasm.datas.length > 0) {
       this.emitter.emitDataSection(wasm.datas, wasm.rawDatas);
     }
     
     this.emitter.emitModuleEnd();
+    performance.end(tEmitOther2);
   }
 }

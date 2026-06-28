@@ -103,6 +103,11 @@ if (runCompiler && targets.length > 0) {
     let totalScope = 0;
     let totalCheck = 0;
     let totalCodegen = 0;
+    let totalUsage = 0;
+    let totalDiscovery = 0;
+    let totalLayout = 0;
+    let totalEmitCode = 0;
+    let totalEmitOther = 0;
     let totalTime = 0;
 
     for (let i = 0; i < ITERATIONS; i++) {
@@ -127,6 +132,16 @@ if (runCompiler && targets.length > 0) {
           totalCheck += parseFloat(line.split(':')[1].trim());
         } else if (line.startsWith('Codegen:')) {
           totalCodegen += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Usage:')) {
+          totalUsage += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Discovery:')) {
+          totalDiscovery += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Layout:')) {
+          totalLayout += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Emit Code:')) {
+          totalEmitCode += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Emit Other:')) {
+          totalEmitOther += parseFloat(line.split(':')[1].trim());
         } else if (line.startsWith('Total:')) {
           totalTime += parseFloat(line.split(':')[1].trim());
         }
@@ -138,6 +153,11 @@ if (runCompiler && targets.length > 0) {
     const scope = totalScope / ITERATIONS;
     const check = totalCheck / ITERATIONS;
     const codegen = totalCodegen / ITERATIONS;
+    const usage = totalUsage / ITERATIONS;
+    const discovery = totalDiscovery / ITERATIONS;
+    const layout = totalLayout / ITERATIONS;
+    const emitCode = totalEmitCode / ITERATIONS;
+    const emitOther = totalEmitOther / ITERATIONS;
     const meanTotalTime = totalTime / ITERATIONS;
 
     // --- Print Results ---
@@ -192,6 +212,11 @@ if (runCompiler && targets.length > 0) {
       console.log(`  Scope:       ${scope.toFixed(2).padStart(8)} ms`);
       console.log(`  Check:       ${check.toFixed(2).padStart(8)} ms`);
       console.log(`  Codegen:     ${codegen.toFixed(2).padStart(8)} ms`);
+      console.log(`    Usage:     ${usage.toFixed(2).padStart(8)} ms`);
+      console.log(`    Discovery: ${discovery.toFixed(2).padStart(8)} ms`);
+      console.log(`    Layout:    ${layout.toFixed(2).padStart(8)} ms`);
+      console.log(`    Emit Code: ${emitCode.toFixed(2).padStart(8)} ms`);
+      console.log(`    Emit Other:${emitOther.toFixed(2).padStart(8)} ms`);
       console.log(`  -----------------------------`);
       console.log(`  Total Phase: ${meanTotalTime.toFixed(2).padStart(8)} ms`);
     }
