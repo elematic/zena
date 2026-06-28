@@ -41,6 +41,8 @@ import {
   type InlineTupleLiteral,
   type LetPatternCondition,
   type InlineTuplePattern,
+  type BindingPattern,
+  type MatchCase,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {
@@ -5257,7 +5259,9 @@ function generateAssignmentExpressionInner(
         // Traverse up to find the root-most class in the hierarchy that has this field
         let fieldDeclaringClass = foundClass;
         while (fieldDeclaringClass.superClassType) {
-          const superInfo = ctx.getClassInfo(fieldDeclaringClass.superClassType);
+          const superInfo = ctx.getClassInfo(
+            fieldDeclaringClass.superClassType,
+          );
           if (superInfo && superInfo.fields.has(fieldName)) {
             fieldDeclaringClass = superInfo;
           } else {
@@ -5265,7 +5269,8 @@ function generateAssignmentExpressionInner(
           }
         }
 
-        const defaultSetterIndex = fieldDeclaringClass.methods.get(setterName)?.index;
+        const defaultSetterIndex =
+          fieldDeclaringClass.methods.get(setterName)?.index;
 
         // Check if the setter is overridden by any subclasses OR by foundClass itself
         const subclasses = ctx.getTransitiveSubclasses(foundClass);
@@ -5280,19 +5285,25 @@ function generateAssignmentExpressionInner(
           }
         }
 
-        if (!hasOverride && foundClass.fields.has(fieldName) && memberExpr.object.type !== NodeType.SuperExpression) {
+        if (
+          !hasOverride &&
+          foundClass.fields.has(fieldName) &&
+          memberExpr.object.type !== NodeType.SuperExpression
+        ) {
           // Direct field assignment - struct.set
           generateExpression(ctx, memberExpr.object, body);
 
           // Cast if object is erased ref or a supertype
           let needsCast =
             objectType.length === 1 &&
-            (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
+            (objectType[0] === ValType.anyref ||
+              objectType[0] === ValType.eqref);
 
           if (
             !needsCast &&
             objectType.length > 1 &&
-            (objectType[0] === ValType.ref_null || objectType[0] === ValType.ref)
+            (objectType[0] === ValType.ref_null ||
+              objectType[0] === ValType.ref)
           ) {
             const srcIndex = decodeTypeIndex(objectType);
             if (srcIndex !== foundClass.structTypeIndex) {
@@ -5327,7 +5338,9 @@ function generateAssignmentExpressionInner(
           body.push(...WasmModule.encodeSignedLEB128(tempVal));
 
           body.push(0xfb, GcOpcode.struct_set);
-          body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
+          body.push(
+            ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+          );
           body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
 
           body.push(Opcode.local_get);
@@ -7032,7 +7045,8 @@ function generateFieldFromBinding(
         }
       }
 
-      const defaultGetterIndex = fieldDeclaringClass.methods.get(getterName)?.index;
+      const defaultGetterIndex =
+        fieldDeclaringClass.methods.get(getterName)?.index;
 
       // Check if the getter method is overridden by any subclasses OR by classInfo itself
       const subclasses = ctx.getTransitiveSubclasses(classInfo);
@@ -7047,7 +7061,11 @@ function generateFieldFromBinding(
         }
       }
 
-      if (!hasOverride && classInfo.fields.has(fieldName) && objectExpr.type !== NodeType.SuperExpression) {
+      if (
+        !hasOverride &&
+        classInfo.fields.has(fieldName) &&
+        objectExpr.type !== NodeType.SuperExpression
+      ) {
         // Direct field access - struct.get
         generateExpression(ctx, objectExpr, body);
 
@@ -12203,6 +12221,148 @@ export function isAdaptable(
   return false;
 }
 
+function getClassTypeOfPattern(pattern: Pattern): ClassType | null {
+  if (pattern.type === NodeType.Identifier) {
+    const inferred = (pattern as any).inferredType;
+    if (inferred && inferred.kind === TypeKind.Class) {
+      return inferred as ClassType;
+    }
+  } else if (pattern.type === NodeType.ClassPattern) {
+    const inferred = (pattern as ClassPattern).inferredType;
+    if (inferred && inferred.kind === TypeKind.Class) {
+      return inferred as ClassType;
+    }
+  } else if (pattern.type === NodeType.AsPattern) {
+    return getClassTypeOfPattern((pattern as AsPattern).pattern);
+  } else if (pattern.type === NodeType.BindingPattern) {
+    return getClassTypeOfPattern((pattern as BindingPattern).pattern);
+  }
+  return null;
+}
+
+function getInheritancePath(
+  classType: ClassType,
+  baseType: ClassType,
+): ClassType[] {
+  const path: ClassType[] = [];
+  let curr: ClassType | null = classType;
+  while (curr && curr.name !== baseType.name) {
+    path.unshift(curr);
+    curr = curr.superType || null;
+  }
+  return path;
+}
+
+interface CaseGroup {
+  parentType: ClassType | null;
+  cases: MatchCase[];
+}
+
+function partitionCases(
+  cases: MatchCase[],
+  discriminantClass: ClassType,
+): CaseGroup[] {
+  const groups: CaseGroup[] = [];
+  let currentGroupParent: ClassType | null = null;
+  let currentGroupCases: MatchCase[] = [];
+
+  const flushGroup = () => {
+    if (currentGroupCases.length > 0) {
+      if (currentGroupParent && currentGroupCases.length >= 3) {
+        groups.push({parentType: currentGroupParent, cases: currentGroupCases});
+      } else {
+        for (const c of currentGroupCases) {
+          groups.push({parentType: null, cases: [c]});
+        }
+      }
+      currentGroupCases = [];
+      currentGroupParent = null;
+    }
+  };
+
+  for (const c of cases) {
+    const classType = getClassTypeOfPattern(c.pattern);
+    if (!classType) {
+      flushGroup();
+      groups.push({parentType: null, cases: [c]});
+      continue;
+    }
+
+    const path = getInheritancePath(classType, discriminantClass);
+    if (path.length >= 2) {
+      const parent = path[0];
+      if (currentGroupParent && currentGroupParent.name === parent.name) {
+        currentGroupCases.push(c);
+      } else {
+        flushGroup();
+        currentGroupParent = parent;
+        currentGroupCases = [c];
+      }
+    } else {
+      flushGroup();
+      groups.push({parentType: null, cases: [c]});
+    }
+  }
+
+  flushGroup();
+  return groups;
+}
+
+function generateCase(
+  ctx: CodegenContext,
+  c: MatchCase,
+  tempDiscriminant: number,
+  discriminantType: number[],
+  body: number[],
+  resultType: number[],
+  matchDoneDepth: number,
+) {
+  // Block for this case (exit if pattern fails or guard fails)
+  body.push(Opcode.block, ValType.void);
+
+  // 1. Check Pattern
+  generateMatchPatternCheck(
+    ctx,
+    c.pattern,
+    tempDiscriminant,
+    discriminantType,
+    body,
+  );
+
+  // If 0 (false), break to next case (end of this block)
+  body.push(Opcode.i32_eqz);
+  body.push(Opcode.br_if, 0);
+
+  // 2. Bind Variables (in a new scope so pattern bindings don't leak)
+  ctx.pushScope();
+  generateMatchPatternBindings(
+    ctx,
+    c.pattern,
+    tempDiscriminant,
+    discriminantType,
+    body,
+  );
+
+  // 3. Check Guard (if exists)
+  if (c.guard) {
+    generateExpression(ctx, c.guard, body);
+    // If 0 (false), break to next case
+    body.push(Opcode.i32_eqz);
+    body.push(Opcode.br_if, 0);
+  }
+
+  // 4. Execute Body
+  const matchExpectsVoid = resultType.length === 0;
+  generateMatchCaseBody(ctx, c.body, body, matchExpectsVoid);
+
+  ctx.popScope();
+
+  // 5. Break to match done
+  body.push(Opcode.br, matchDoneDepth);
+
+  body.push(Opcode.end); // End case block
+}
+
 function generateMatchExpression(
   ctx: CodegenContext,
   expr: MatchExpression,
@@ -12243,64 +12403,80 @@ function generateMatchExpression(
   }
 
   // Block for the entire match expression (exit when a case succeeds)
-  // Note: addType takes array-of-arrays for results, so empty resultType means []
   const matchResults = resultType.length > 0 ? [resultType] : [];
   const matchDoneBlockTypeIndex = ctx.module.addType([], matchResults);
   body.push(Opcode.block);
   body.push(...WasmModule.encodeSignedLEB128(matchDoneBlockTypeIndex));
 
-  for (let i = 0; i < expr.cases.length; i++) {
-    const c = expr.cases[i];
+  // Determine if we can optimize class-based matching
+  let discriminantClass: ClassType | null = null;
+  const checkerDiscriminantType = expr.discriminant.inferredType;
+  if (
+    checkerDiscriminantType &&
+    checkerDiscriminantType.kind === TypeKind.Class
+  ) {
+    discriminantClass = checkerDiscriminantType as ClassType;
+  }
 
-    // Block for this case (exit if pattern fails or guard fails)
+  const groups = discriminantClass
+    ? partitionCases(expr.cases, discriminantClass)
+    : expr.cases.map((c) => ({parentType: null, cases: [c]}));
+
+  const nestedGroups = groups.filter((g) => g.parentType !== null);
+  const K = nestedGroups.length;
+
+  // Push group blocks in reverse order
+  for (let i = K - 1; i >= 0; i--) {
     body.push(Opcode.block, ValType.void);
+  }
 
-    // 1. Check Pattern
-    generateMatchPatternCheck(
-      ctx,
-      c.pattern,
-      tempDiscriminant,
-      discriminantType,
-      body,
-    );
+  let activeGroupIndex = 0;
+  for (const group of groups) {
+    if (group.parentType !== null) {
+      const classInfo = ctx.getClassInfo(group.parentType);
+      if (!classInfo) {
+        throw new Error(
+          `ClassInfo not found for group parent ${group.parentType.name}`,
+        );
+      }
 
-    // If 0 (false), break to next case (end of this block)
-    body.push(Opcode.i32_eqz);
-    body.push(Opcode.br_if, 0);
-
-    // 2. Bind Variables (in a new scope so pattern bindings don't leak)
-    ctx.pushScope();
-    generateMatchPatternBindings(
-      ctx,
-      c.pattern,
-      tempDiscriminant,
-      discriminantType,
-      body,
-    );
-
-    // 3. Check Guard (if exists)
-    if (c.guard) {
-      generateExpression(ctx, c.guard, body);
-      // If 0 (false), break to next case
+      // Check group parent base class
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(tempDiscriminant),
+      );
+      body.push(0xfb, GcOpcode.ref_test);
+      body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
       body.push(Opcode.i32_eqz);
-      body.push(Opcode.br_if, 0);
+      body.push(Opcode.br_if, 0); // Jumps to the end of the current group's block
+
+      for (const c of group.cases) {
+        generateCase(
+          ctx,
+          c,
+          tempDiscriminant,
+          discriminantType,
+          body,
+          resultType,
+          K - activeGroupIndex + 1,
+        );
+      }
+
+      body.push(Opcode.end); // Close group block
+      activeGroupIndex += 1;
+    } else {
+      for (const c of group.cases) {
+        generateCase(
+          ctx,
+          c,
+          tempDiscriminant,
+          discriminantType,
+          body,
+          resultType,
+          K - activeGroupIndex + 1,
+        );
+      }
     }
-
-    // 4. Execute Body
-    // When match result is void (resultType.length === 0), generate body as statement
-    const matchExpectsVoid = resultType.length === 0;
-    generateMatchCaseBody(ctx, c.body, body, matchExpectsVoid);
-
-    ctx.popScope();
-
-    // 5. Break to match done
-    // We are inside:
-    // match_done (depth 1 relative to here)
-    //   case_block (depth 0)
-    // So br 1 breaks out of match_done.
-    body.push(Opcode.br, 1);
-
-    body.push(Opcode.end); // End case block
   }
 
   // If we get here, no case matched
