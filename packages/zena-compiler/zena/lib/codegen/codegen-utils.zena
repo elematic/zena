@@ -704,186 +704,194 @@ export let unwrapAliases = (t: Type): Type => {
 };
 
 export let getTypeUniqueKey = (t: Type): String => {
-  match (t) {
-    case ClassType as ct: {
-      let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
-      let base = `${ct.name}_${i32ToString(baseId)}`;
-      if (ct.typeArguments != null) {
-        let args = ct.typeArguments as Array<Type>;
-        let len = args.length;
-        if (len > 0) {
-          let parts = new FixedArray<String>(2 * len + 2, "");
-          parts[0] = base;
-          parts[1] = "<";
-          parts[2] = getTypeUniqueKey(args[0]);
-          var i = 1;
-          while (i < len) {
-            parts[2 * i + 1] = ", ";
-            parts[2 * i + 2] = getTypeUniqueKey(args[i]);
-            i += 1;
-          }
-          parts[2 * len + 1] = ">";
-          String.fromParts(parts as array<String>)
-        } else {
-          base
-        }
-      } else {
-        base
-      }
-    }
-    case InterfaceType as it: {
-      let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
-      let base = `${it.name}_${i32ToString(baseId)}`;
-      if (it.typeArguments != null) {
-        let args = it.typeArguments as Array<Type>;
-        let len = args.length;
-        if (len > 0) {
-          let parts = new FixedArray<String>(2 * len + 2, "");
-          parts[0] = base;
-          parts[1] = "<";
-          parts[2] = getTypeUniqueKey(args[0]);
-          var i = 1;
-          while (i < len) {
-            parts[2 * i + 1] = ", ";
-            parts[2 * i + 2] = getTypeUniqueKey(args[i]);
-            i += 1;
-          }
-          parts[2 * len + 1] = ">";
-          String.fromParts(parts as array<String>)
-        } else {
-          base
-        }
-      } else {
-        base
-      }
-    }
-    case ArrayType {elementType}: `Array<${getTypeUniqueKey(elementType)}>`
-    case TupleType {elementTypes}: {
-      let len = elementTypes.length;
-      if (len > 0) {
-        let parts = new FixedArray<String>(2 * len + 1, "");
-        parts[0] = "[";
-        parts[1] = getTypeUniqueKey(elementTypes[0]);
-        var i = 1;
-        while (i < len) {
-          parts[2 * i] = ", ";
-          parts[2 * i + 1] = getTypeUniqueKey(elementTypes[i]);
-          i += 1;
-        }
-        parts[2 * len] = "]";
-        String.fromParts(parts as array<String>)
-      } else {
-        "[]"
-      }
-    }
-    case InlineTupleType {elementTypes}: {
-      let len = elementTypes.length;
-      if (len > 0) {
-        let parts = new FixedArray<String>(2 * len + 1, "");
-        parts[0] = "(";
-        parts[1] = getTypeUniqueKey(elementTypes[0]);
-        var i = 1;
-        while (i < len) {
-          parts[2 * i] = ", ";
-          parts[2 * i + 1] = getTypeUniqueKey(elementTypes[i]);
-          i += 1;
-        }
-        parts[2 * len] = ")";
-        String.fromParts(parts as array<String>)
-      } else {
-        "()"
-      }
-    }
-    case UnionType {types}: {
-      let len = types.length;
-      if (len > 0) {
-        let parts = new FixedArray<String>(2 * len - 1, "");
-        parts[0] = getTypeUniqueKey(types[0]);
-        var i = 1;
-        while (i < len) {
-          parts[2 * i - 1] = " | ";
-          parts[2 * i] = getTypeUniqueKey(types[i]);
-          i += 1;
-        }
-        String.fromParts(parts as array<String>)
-      } else {
-        ""
-      }
-    }
-    case RecordType {properties}: {
-      let len = properties.size;
-      if (len > 0) {
-        let parts = new FixedArray<String>(4 * len + 1, "");
-        parts[0] = "{ ";
-        let keys = properties.keys();
-        var i = 0;
-        while (let (true, key) = keys.next()) {
-          if (i > 0) {
-            parts[4 * i] = ", ";
-            parts[4 * i + 1] = key;
-            parts[4 * i + 2] = ": ";
-            parts[4 * i + 3] = getTypeUniqueKey(properties[key]);
-          } else {
-            parts[1] = key;
-            parts[2] = ": ";
-            parts[3] = getTypeUniqueKey(properties[key]);
-          }
-          i += 1;
-        }
-        parts[4 * len] = " }";
-        String.fromParts(parts as array<String>)
-      } else {
-        "{  }"
-      }
-    }
-    case FunctionType as ft: {
-      let paramsLen = ft.parameters.length;
-      
-      // First pass: count parts
-      var numParts = 3; // For "(", ") => ", and returnType
-      if (paramsLen > 0) {
-        numParts = numParts + (paramsLen - 1); // For ", " delimiters
-      }
-      
-      let names = ft.parameterNames;
-      var i = 0;
-      while (i < paramsLen) {
-        if (names != null && i < (names as Array<String>).length) {
-          numParts = numParts + 2; // For name and ": "
-        }
-        numParts = numParts + 1; // For type key
-        i += 1;
-      }
-      
-      // Allocate FixedArray
-      let parts = new FixedArray<String>(numParts, "");
-      parts[0] = "(";
-      
-      // Second pass: fill parts
-      var idx = 1;
-      i = 0;
-      while (i < paramsLen) {
-        if (i > 0) {
-          parts[idx] = ", ";
-          idx += 1;
-        }
-        if (names != null && i < (names as Array<String>).length) {
-          parts[idx] = (names as Array<String>)[i];
-          parts[idx + 1] = ": ";
-          idx += 2;
-        }
-        parts[idx] = getTypeUniqueKey(ft.parameters[i]);
-        idx += 1;
-        i += 1;
-      }
-      parts[idx] = ") => ";
-      parts[idx + 1] = getTypeUniqueKey(ft.returnType);
-      
-      String.fromParts(parts as array<String>)
-    }
-    case TypeAliasType as a: `alias_${getTypeUniqueKey(a.target)}`
-    case _: typeToString(t)
+  let cached = t.uniqueKeyCache;
+  if (cached != null) {
+    return cached as String;
   }
+  let key = getTypeUniqueKeyRaw(t);
+  t.uniqueKeyCache = key;
+  return key;
+};
+
+let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
+  case ClassType as ct: {
+    let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
+    let base = `${ct.name}_${i32ToString(baseId)}`;
+    if (ct.typeArguments != null) {
+      let args = ct.typeArguments as Array<Type>;
+      let len = args.length;
+      if (len > 0) {
+        let parts = new FixedArray<String>(2 * len + 2, "");
+        parts[0] = base;
+        parts[1] = "<";
+        parts[2] = getTypeUniqueKey(args[0]);
+        var i = 1;
+        while (i < len) {
+          parts[2 * i + 1] = ", ";
+          parts[2 * i + 2] = getTypeUniqueKey(args[i]);
+          i += 1;
+        }
+        parts[2 * len + 1] = ">";
+        String.fromParts(parts as array<String>)
+      } else {
+        base
+      }
+    } else {
+      base
+    }
+  }
+  case InterfaceType as it: {
+    let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
+    let base = `${it.name}_${i32ToString(baseId)}`;
+    if (it.typeArguments != null) {
+      let args = it.typeArguments as Array<Type>;
+      let len = args.length;
+      if (len > 0) {
+        let parts = new FixedArray<String>(2 * len + 2, "");
+        parts[0] = base;
+        parts[1] = "<";
+        parts[2] = getTypeUniqueKey(args[0]);
+        var i = 1;
+        while (i < len) {
+          parts[2 * i + 1] = ", ";
+          parts[2 * i + 2] = getTypeUniqueKey(args[i]);
+          i += 1;
+        }
+        parts[2 * len + 1] = ">";
+        String.fromParts(parts as array<String>)
+      } else {
+        base
+      }
+    } else {
+      base
+    }
+  }
+  case ArrayType {elementType}: `Array<${getTypeUniqueKey(elementType)}>`
+  case TupleType {elementTypes}: {
+    let len = elementTypes.length;
+    if (len > 0) {
+      let parts = new FixedArray<String>(2 * len + 1, "");
+      parts[0] = "[";
+      parts[1] = getTypeUniqueKey(elementTypes[0]);
+      var i = 1;
+      while (i < len) {
+        parts[2 * i] = ", ";
+        parts[2 * i + 1] = getTypeUniqueKey(elementTypes[i]);
+        i += 1;
+      }
+      parts[2 * len] = "]";
+      String.fromParts(parts as array<String>)
+    } else {
+      "[]"
+    }
+  }
+  case InlineTupleType {elementTypes}: {
+    let len = elementTypes.length;
+    if (len > 0) {
+      let parts = new FixedArray<String>(2 * len + 1, "");
+      parts[0] = "(";
+      parts[1] = getTypeUniqueKey(elementTypes[0]);
+      var i = 1;
+      while (i < len) {
+        parts[2 * i] = ", ";
+        parts[2 * i + 1] = getTypeUniqueKey(elementTypes[i]);
+        i += 1;
+      }
+      parts[2 * len] = ")";
+      String.fromParts(parts as array<String>)
+    } else {
+      "()"
+    }
+  }
+  case UnionType {types}: {
+    let len = types.length;
+    if (len > 0) {
+      let parts = new FixedArray<String>(2 * len - 1, "");
+      parts[0] = getTypeUniqueKey(types[0]);
+      var i = 1;
+      while (i < len) {
+        parts[2 * i - 1] = " | ";
+        parts[2 * i] = getTypeUniqueKey(types[i]);
+        i += 1;
+      }
+      String.fromParts(parts as array<String>)
+    } else {
+      ""
+    }
+  }
+  case RecordType {properties}: {
+    let len = properties.size;
+    if (len > 0) {
+      let parts = new FixedArray<String>(4 * len + 1, "");
+      parts[0] = "{ ";
+      let keys = properties.keys();
+      var i = 0;
+      while (let (true, key) = keys.next()) {
+        if (i > 0) {
+          parts[4 * i] = ", ";
+          parts[4 * i + 1] = key;
+          parts[4 * i + 2] = ": ";
+          parts[4 * i + 3] = getTypeUniqueKey(properties[key]);
+        } else {
+          parts[1] = key;
+          parts[2] = ": ";
+          parts[3] = getTypeUniqueKey(properties[key]);
+        }
+        i += 1;
+      }
+      parts[4 * len] = " }";
+      String.fromParts(parts as array<String>)
+    } else {
+      "{  }"
+    }
+  }
+  case FunctionType as ft: {
+    let paramsLen = ft.parameters.length;
+    
+    // First pass: count parts
+    var numParts = 3; // For "(", ") => ", and returnType
+    if (paramsLen > 0) {
+      numParts = numParts + (paramsLen - 1); // For ", " delimiters
+    }
+    
+    let names = ft.parameterNames;
+    var i = 0;
+    while (i < paramsLen) {
+      if (names != null && i < (names as Array<String>).length) {
+        numParts = numParts + 2; // For name and ": "
+      }
+      numParts = numParts + 1; // For type key
+      i += 1;
+    }
+    
+    // Allocate FixedArray
+    let parts = new FixedArray<String>(numParts, "");
+    parts[0] = "(";
+    
+    // Second pass: fill parts
+    var idx = 1;
+    i = 0;
+    while (i < paramsLen) {
+      if (i > 0) {
+        parts[idx] = ", ";
+        idx += 1;
+      }
+      if (names != null && i < (names as Array<String>).length) {
+        parts[idx] = (names as Array<String>)[i];
+        parts[idx + 1] = ": ";
+        idx += 2;
+      }
+      parts[idx] = getTypeUniqueKey(ft.parameters[i]);
+      idx += 1;
+      i += 1;
+    }
+    parts[idx] = ") => ";
+    parts[idx + 1] = getTypeUniqueKey(ft.returnType);
+    
+    String.fromParts(parts as array<String>)
+  }
+  case TypeAliasType as a: `alias_${getTypeUniqueKey(a.target)}`
+  case _: typeToString(t)
 };
 
 export let getFunctionAdaptationKey = (src: Type, tgt: Type): FunctionAdaptationKey => {
@@ -905,5 +913,3 @@ export let getClosureSpecializationKey = (closureId: NodeId, classKey: ClassKey)
 export let getFunctionValueWrapperKey = (keyName: String, ft: FunctionType): FunctionValueWrapperKey => {
   return `${keyName}_wrapper_${getSignatureKey(ft)}` as FunctionValueWrapperKey;
 };
-
-
