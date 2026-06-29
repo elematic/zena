@@ -229,6 +229,11 @@ fn compile_to_cache(
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+    if std::env::var("ZENA_PROFILE").is_ok() {
+        config.profiler(wasmtime::ProfilingStrategy::PerfMap);
+    } else {
+        config.native_unwind_info(false);
+    }
 
     let engine = Engine::new(&config)?;
     let cwasm_path = compiler_wasm.with_extension("cwasm");
@@ -340,6 +345,11 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+    if std::env::var("ZENA_PROFILE").is_ok() {
+        config.profiler(wasmtime::ProfilingStrategy::PerfMap);
+    } else {
+        config.native_unwind_info(false);
+    }
 
     let engine = Engine::new(&config)?;
     let wasm_path = Path::new(file);
@@ -617,6 +627,11 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool) -> Resul
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+    if std::env::var("ZENA_PROFILE").is_ok() {
+        config.profiler(wasmtime::ProfilingStrategy::PerfMap);
+    } else {
+        config.native_unwind_info(false);
+    }
     let engine = Engine::new(&config)?;
 
     // Sequential warm-up of compiler cwasm to avoid parallel write collisions
