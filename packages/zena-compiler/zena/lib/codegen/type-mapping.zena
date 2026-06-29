@@ -40,55 +40,91 @@ export let substituteTypeParamsInCodegen = (
   typeArgs: Array<Type> | null,
   t: Type
 ): Type => {
+  if (typeParams == null || typeArgs == null || typeParams.length == 0 || typeArgs.length == 0) {
+    return t;
+  }
   let params = typeParams;
   let args = typeArgs;
   return match (t) {
     case TypeParameterType as tp: {
-      if (params != null && args != null) {
-        let paramsVal = params as Array<TypeParameterType>;
-        let argsVal = args as Array<Type>;
-        var found: Type | null = null;
-        for (var i = 0; i < paramsVal.length; i += 1) {
-          if (paramsVal[i].name == tp.name && i < argsVal.length) {
-            found = argsVal[i];
-            break;
-          }
+      var found: Type | null = null;
+      for (var i = 0; i < params.length; i += 1) {
+        if (params[i].name == tp.name && i < args.length) {
+          found = args[i];
+          break;
         }
-        if (found != null) {
-          return found as Type;
-        }
+      }
+      if (found != null) {
+        return found as Type;
       }
       t
     }
     case ArrayType {elementType}: {
-      new ArrayType(substituteTypeParamsInCodegen(params, args, elementType))
+      let sub = substituteTypeParamsInCodegen(params, args, elementType);
+      if (sub == elementType) {
+        return t;
+      }
+      new ArrayType(sub)
     }
     case TupleType {elementTypes}: {
       let newElems = new Array<Type>();
+      var elemsChanged = false;
       for (let el in elementTypes) {
-        newElems.push(substituteTypeParamsInCodegen(params, args, el));
+        let sub = substituteTypeParamsInCodegen(params, args, el);
+        newElems.push(sub);
+        if (sub != el) {
+          elemsChanged = true;
+        }
+      }
+      if (!elemsChanged) {
+        return t;
       }
       new TupleType(newElems)
     }
     case InlineTupleType {elementTypes}: {
       let newElems = new Array<Type>();
+      var elemsChanged = false;
       for (let el in elementTypes) {
-        newElems.push(substituteTypeParamsInCodegen(params, args, el));
+        let sub = substituteTypeParamsInCodegen(params, args, el);
+        newElems.push(sub);
+        if (sub != el) {
+          elemsChanged = true;
+        }
+      }
+      if (!elemsChanged) {
+        return t;
       }
       new InlineTupleType(newElems)
     }
     case UnionType {types}: {
       let newTypes = new Array<Type>();
+      var typesChanged = false;
       for (let ut in types) {
-        newTypes.push(substituteTypeParamsInCodegen(params, args, ut));
+        let sub = substituteTypeParamsInCodegen(params, args, ut);
+        newTypes.push(sub);
+        if (sub != ut) {
+          typesChanged = true;
+        }
+      }
+      if (!typesChanged) {
+        return t;
       }
       new UnionType(newTypes)
     }
     case RecordType as rec: {
+      var propsChanged = false;
       let newProps = new HashMap<String, Type>();
       let keys = rec.properties.keys();
       while (let (true, key) = keys.next()) {
-        newProps[key] = substituteTypeParamsInCodegen(params, args, rec.properties[key]);
+        let original = rec.properties[key];
+        let sub = substituteTypeParamsInCodegen(params, args, original);
+        newProps[key] = sub;
+        if (sub != original) {
+          propsChanged = true;
+        }
+      }
+      if (!propsChanged) {
+        return rec;
       }
       let newRec = new RecordType(newProps, rec.optionalProperties);
       newRec.enumDeclaration = rec.enumDeclaration;
@@ -96,19 +132,37 @@ export let substituteTypeParamsInCodegen = (
     }
     case FunctionType as ft: {
       let newParams = new Array<Type>();
+      var paramsChanged = false;
       for (let p in ft.parameters) {
-        newParams.push(substituteTypeParamsInCodegen(params, args, p));
+        let sub = substituteTypeParamsInCodegen(params, args, p);
+        newParams.push(sub);
+        if (sub != p) {
+          paramsChanged = true;
+        }
       }
       let newRet = substituteTypeParamsInCodegen(params, args, ft.returnType);
+      var retChanged = newRet != ft.returnType;
+      
+      var argsChanged = false;
+      var newArgs: Array<Type> | null = null;
+      if (ft.typeArguments != null) {
+        newArgs = new Array<Type>();
+        for (let arg in (ft.typeArguments as Array<Type>)) {
+          let sub = substituteTypeParamsInCodegen(params, args, arg);
+          (newArgs as Array<Type>).push(sub);
+          if (sub != arg) {
+            argsChanged = true;
+          }
+        }
+      }
+      
+      if (!paramsChanged && !retChanged && !argsChanged) {
+        return ft;
+      }
+      
       let newFt = new FunctionType(newParams, ft.parameterNames, newRet);
       newFt.typeParameters = ft.typeParameters;
-      if (ft.typeArguments != null) {
-        let newArgs = new Array<Type>();
-        for (let arg in (ft.typeArguments as Array<Type>)) {
-          newArgs.push(substituteTypeParamsInCodegen(params, args, arg));
-        }
-        newFt.typeArguments = newArgs;
-      }
+      newFt.typeArguments = newArgs;
       newFt.genericSource = ft.genericSource;
       newFt.parameterInitializers = ft.parameterInitializers;
       newFt.parameterSymbols = ft.parameterSymbols;
@@ -135,8 +189,16 @@ export let substituteTypeParamsInCodegen = (
       }
       if (hasArgs && ctArgsVal.length > 0) {
         let newArgs = new Array<Type>();
+        var argsChanged = false;
         for (let arg in ctArgsVal) {
-          newArgs.push(substituteTypeParamsInCodegen(params, args, arg));
+          let sub = substituteTypeParamsInCodegen(params, args, arg);
+          newArgs.push(sub);
+          if (sub != arg) {
+            argsChanged = true;
+          }
+        }
+        if (!argsChanged && ct.typeArguments != null) {
+          return ct;
         }
         let inst = new ClassType(ct.id, ct.name);
         inst.typeParameters = ctParams;
@@ -152,13 +214,11 @@ export let substituteTypeParamsInCodegen = (
             combinedArgs.push(a);
           }
         }
-        if (params != null && args != null) {
-          for (let p in (params as Array<TypeParameterType>)) {
-            combinedParams.push(p);
-          }
-          for (let a in (args as Array<Type>)) {
-            combinedArgs.push(a);
-          }
+        for (let p in params) {
+          combinedParams.push(p);
+        }
+        for (let a in args) {
+          combinedArgs.push(a);
         }
 
         if (ct.superType != null) {
@@ -225,8 +285,16 @@ export let substituteTypeParamsInCodegen = (
       }
       if (hasArgs && itArgsVal.length > 0) {
         let newArgs = new Array<Type>();
+        var argsChanged = false;
         for (let arg in itArgsVal) {
-          newArgs.push(substituteTypeParamsInCodegen(params, args, arg));
+          let sub = substituteTypeParamsInCodegen(params, args, arg);
+          newArgs.push(sub);
+          if (sub != arg) {
+            argsChanged = true;
+          }
+        }
+        if (!argsChanged && it.typeArguments != null) {
+          return it;
         }
         let inst = new InterfaceType(it.id, it.name);
         inst.typeParameters = itParams;
@@ -242,13 +310,11 @@ export let substituteTypeParamsInCodegen = (
             combinedArgs.push(a);
           }
         }
-        if (params != null && args != null) {
-          for (let p in (params as Array<TypeParameterType>)) {
-            combinedParams.push(p);
-          }
-          for (let a in (args as Array<Type>)) {
-            combinedArgs.push(a);
-          }
+        for (let p in params) {
+          combinedParams.push(p);
+        }
+        for (let a in args) {
+          combinedArgs.push(a);
         }
         let newExtends = new Array<InterfaceType>();
         for (let ext in it.extendsList) {
@@ -295,13 +361,11 @@ export let substituteTypeParamsInCodegen = (
             combinedArgs.push(a);
           }
         }
-        if (params != null && args != null) {
-          for (let p in (params as Array<TypeParameterType>)) {
-            combinedParams.push(p);
-          }
-          for (let a in (args as Array<Type>)) {
-            combinedArgs.push(a);
-          }
+        for (let p in params) {
+          combinedParams.push(p);
+        }
+        for (let a in args) {
+          combinedArgs.push(a);
         }
         if (mt.onType != null) {
           inst.onType = substituteTypeParamsInCodegen(combinedParams, combinedArgs, mt.onType as Type);

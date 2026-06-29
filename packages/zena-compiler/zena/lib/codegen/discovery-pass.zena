@@ -1268,18 +1268,23 @@ export final class DiscoveryPass {
         let cType = classType as ClassType;
         if (cType.isExtension) { continue; }
 
+        // Track vtable slot names in a local HashSet for O(1) deduplication while
+        // appending new class members to `cType.vtable`. This local set is not
+        // stored because layout and emission phases only need the finalized ordered
+        // list in `cType.vtable` to calculate index offsets (using `indexOf`).
+        let vtableSet = new HashSet<String>();
+        for (let existing in cType.vtable) {
+          vtableSet.add(existing);
+        }
+
         if (cType.isCaseClass) {
-          var hasEq = false;
-          var hasHash = false;
-          for (let existing in cType.vtable) {
-            if (existing == "==") { hasEq = true; }
-            if (existing == "hashCode") { hasHash = true; }
-          }
-          if (!hasEq) {
+          if (!vtableSet.has("==")) {
             cType.vtable.push("==");
+            vtableSet.add("==");
           }
-          if (!hasHash) {
+          if (!vtableSet.has("hashCode")) {
             cType.vtable.push("hashCode");
+            vtableSet.add("hashCode");
           }
         }
 
@@ -1325,12 +1330,9 @@ export final class DiscoveryPass {
                 }
               }
               
-              var found = false;
-              for (let existing in cType.vtable) {
-                if (existing == vtableMethName) { found = true; }
-              }
-              if (!found && methName != "<constructor>") {
+              if (!vtableSet.has(vtableMethName) && methName != "<constructor>") {
                 cType.vtable.push(vtableMethName);
+                vtableSet.add(vtableMethName);
               }
             }
           } else if (ms is AccessorDeclaration) {
@@ -1348,19 +1350,17 @@ export final class DiscoveryPass {
             if (accName != "") {
               if (acc.getter != null) {
                 let getterName = "get#" + accName;
-                var found = false;
-                for (let existing in cType.vtable) {
-                  if (existing == getterName) { found = true; break; }
+                if (!vtableSet.has(getterName)) {
+                  cType.vtable.push(getterName);
+                  vtableSet.add(getterName);
                 }
-                if (!found) { cType.vtable.push(getterName); }
               }
               if (acc.setter != null) {
                 let setterName = "set#" + accName;
-                var found = false;
-                for (let existing in cType.vtable) {
-                  if (existing == setterName) { found = true; break; }
+                if (!vtableSet.has(setterName)) {
+                  cType.vtable.push(setterName);
+                  vtableSet.add(setterName);
                 }
-                if (!found) { cType.vtable.push(setterName); }
               }
             }
           } else if (ms is FieldDefinition) {
@@ -1377,29 +1377,22 @@ export final class DiscoveryPass {
             };
             if (fd.setterName != null && fieldName != "") {
               let getterName = "get#" + fieldName;
-              var found = false;
-              for (let existing in cType.vtable) {
-                if (existing == getterName) { found = true; break; }
+              if (!vtableSet.has(getterName)) {
+                cType.vtable.push(getterName);
+                vtableSet.add(getterName);
               }
-              if (!found) { cType.vtable.push(getterName); }
             }
             if (fd.isAbstract && fieldName != "") {
               let getterName = "get#" + fieldName;
-              var found = false;
-              for (let existing in cType.vtable) {
-                if (existing == getterName) { found = true; break; }
-              }
-              if (!found) {
+              if (!vtableSet.has(getterName)) {
                 cType.vtable.push(getterName);
+                vtableSet.add(getterName);
               }
               if (fd.mutability != null && fd.mutability == "var") {
                 let setterName = "set#" + fieldName;
-                var foundS = false;
-                for (let existing in cType.vtable) {
-                  if (existing == setterName) { foundS = true; break; }
-                }
-                if (!foundS) {
+                if (!vtableSet.has(setterName)) {
                   cType.vtable.push(setterName);
+                  vtableSet.add(setterName);
                 }
               }
             }
@@ -1439,16 +1432,15 @@ export final class DiscoveryPass {
         // Inherit vtable slots (prefix-preserving)
         if (superCt.vtable != null) {
           let newVTable = new Array<String>();
+          let seen = new HashSet<String>();
           for (let methName in superCt.vtable) {
             newVTable.push(methName);
+            seen.add(methName);
           }
           for (let methName in ct.vtable) {
-            var hasMeth = false;
-            for (let existing in newVTable) {
-              if (existing == methName) { hasMeth = true; break; }
-            }
-            if (!hasMeth) {
+            if (!seen.has(methName)) {
               newVTable.push(methName);
+              seen.add(methName);
             }
           }
           while (ct.vtable.length > 0) {
@@ -1479,7 +1471,12 @@ export final class DiscoveryPass {
       let mod = unit.ast;
       let moduleModel = unit.model;
       
-      walk(mod as Node, (n: Node) => true, (n: Node) => {
+      walk(mod as Node, (n: Node) => {
+        if (n is TypeAnnotation || n is InterfaceDeclaration || n is TypeAliasDeclaration || n is ImportDeclaration || n is ExportAllDeclaration || n is ExportFromDeclaration) {
+          return false;
+        }
+        return true;
+      }, (n: Node) => {
         if (n is Expression || n is Pattern || n is VariableDeclaration || n is Parameter) {
           let nodeType = moduleModel.getNodeType(n);
           this.discoverType(nodeType, moduleModel);
