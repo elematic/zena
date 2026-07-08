@@ -8,7 +8,7 @@ For the current progress and roadmap of codegen, see [CODEGEN_PLAN.md](CODEGEN_P
 Code generation separates logical AST traversal from target text/binary
 emission:
 
-- **`wasm-module.zena`**: `WasmModule` and `DiscoveryPass`. Resolves and stores
+- **`discovery.zena`**: `Discovery` pass. Resolves and stores
   target Wasm indices for AST elements.
 - **`module-generator.zena`**: `ModuleGenerator`. Iterates over `WasmModule`
   fields and calls section hooks on `WasmEmitter`.
