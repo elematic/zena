@@ -36,11 +36,12 @@
  */
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
 import {
   Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, UnionType
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
-import { Node, NodeId, SourceLocation } from './ast.zena';
+import { Node, NodeId, SourceLocation, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, Identifier } from './ast.zena';
 import { Symbol, SymbolId } from './scope/symbol.zena';
 import { SymbolMap } from './scope/scope-builder.zena';
 import { NodeMap } from './node-map.zena';
@@ -365,6 +366,10 @@ export final class SemanticModel {
 
   // --- Reference and declaration maps ---
 
+  symbols: SymbolMap | null {
+    get { return this.#symbols; }
+  }
+
   /**
    * Attach the scope analysis maps.
    */
@@ -413,6 +418,13 @@ export final class SemanticModel {
       return null;
     }
     return (this.#symbols as SymbolMap).getByNode(node);
+  }
+
+  resolveByOffset(offset: i32): Symbol | null {
+    if (this.#symbols == null) {
+      return null;
+    }
+    return (this.#symbols as SymbolMap).getByOffset(offset);
   }
 
   resolve(node: Node): Symbol | null {
@@ -486,6 +498,13 @@ export final class SemanticModel {
     return null;
   }
 
+  getBindingTypeById(id: SymbolId): Type | null {
+    if (this.#bindingTypes.has(id)) {
+      return this.#bindingTypes[id];
+    }
+    return null;
+  }
+
   getBindingType(info: Symbol): Type | null {
     let t = this.getBindingTypeDirect(info);
     if (t != null) return t;
@@ -533,4 +552,133 @@ export final class SemanticModel {
   nodeTypes: NodeMap<Type> {
     get { return this.#nodeTypes; }
   }
+
+  #symbolDependencies = new HashMap<SymbolId, SymbolDependencies>();
+  #nodeDependencies = new HashMap<i32, SymbolDependencies>();
+  symbolNames = new HashMap<SymbolId, String>();
+
+  #declaredClasses = new Array<SymbolId>();
+  #declaredInterfaces = new Array<SymbolId>();
+  #declaredMixins = new Array<SymbolId>();
+  #declaredEnums = new Array<SymbolId>();
+  #declaredGlobals = new Array<SymbolId>();
+
+  #classDeclarations = new HashMap<SymbolId, ClassDeclaration>();
+  #interfaceDeclarations = new HashMap<SymbolId, InterfaceDeclaration>();
+  #mixinDeclarations = new HashMap<SymbolId, MixinDeclaration>();
+  #enumDeclarations = new HashMap<SymbolId, EnumDeclaration>();
+  #globalDeclarations = new HashMap<SymbolId, Node>();
+
+  symbolDependencies: HashMap<SymbolId, SymbolDependencies> {
+    get { return this.#symbolDependencies; }
+  }
+
+  nodeDependencies: HashMap<i32, SymbolDependencies> {
+    get { return this.#nodeDependencies; }
+  }
+
+  declaredClasses: Array<SymbolId> {
+    get { return this.#declaredClasses; }
+  }
+
+  declaredInterfaces: Array<SymbolId> {
+    get { return this.#declaredInterfaces; }
+  }
+
+  declaredMixins: Array<SymbolId> {
+    get { return this.#declaredMixins; }
+  }
+
+  declaredEnums: Array<SymbolId> {
+    get { return this.#declaredEnums; }
+  }
+
+  declaredGlobals: Array<SymbolId> {
+    get { return this.#declaredGlobals; }
+  }
+
+  classDeclarations: HashMap<SymbolId, ClassDeclaration> {
+    get { return this.#classDeclarations; }
+  }
+
+  interfaceDeclarations: HashMap<SymbolId, InterfaceDeclaration> {
+    get { return this.#interfaceDeclarations; }
+  }
+
+  mixinDeclarations: HashMap<SymbolId, MixinDeclaration> {
+    get { return this.#mixinDeclarations; }
+  }
+
+  enumDeclarations: HashMap<SymbolId, EnumDeclaration> {
+    get { return this.#enumDeclarations; }
+  }
+
+  globalDeclarations: HashMap<SymbolId, Node> {
+    get { return this.#globalDeclarations; }
+  }
+
+  addDeclaredClass(id: SymbolId, cd: ClassDeclaration): void {
+    this.#classDeclarations[id] = cd;
+    this.#declaredClasses.push(id);
+  }
+
+  addDeclaredInterface(id: SymbolId, idDec: InterfaceDeclaration): void {
+    this.#interfaceDeclarations[id] = idDec;
+    this.#declaredInterfaces.push(id);
+  }
+
+  addDeclaredMixin(id: SymbolId, md: MixinDeclaration): void {
+    this.#mixinDeclarations[id] = md;
+    this.#declaredMixins.push(id);
+  }
+
+  addDeclaredEnum(id: SymbolId, ed: EnumDeclaration): void {
+    this.#enumDeclarations[id] = ed;
+    this.#declaredEnums.push(id);
+  }
+
+  addDeclaredGlobal(id: SymbolId, node: Node): void {
+    this.#globalDeclarations[id] = node;
+    this.#declaredGlobals.push(id);
+  }
+
+  setSymbolDependencies(id: SymbolId, deps: SymbolDependencies): void {
+    this.#symbolDependencies[id] = deps;
+  }
+
+  setNodeDependencies(id: i32, deps: SymbolDependencies): void {
+    this.#nodeDependencies[id] = deps;
+  }
+}
+
+export final class ClosureDependency {
+  id: i32;
+  node: Node;
+  capturesThis: boolean;
+  captures: Array<SymbolId>;
+  mutableCaptures: HashSet<SymbolId>;
+  dependencies: SymbolDependencies;
+
+  new(this.id, this.node, this.capturesThis, this.captures, this.mutableCaptures, this.dependencies);
+}
+
+export final class FunctionAdaptationDependency {
+  node: Node;
+  source: FunctionType;
+  target: FunctionType;
+
+  new(this.node, this.source, this.target);
+}
+
+export final class SymbolDependencies {
+  referencedSymbols = new HashSet<SymbolId>();
+  referencedClassMethods = new HashSet<String>(); // Format: ClassSymbolId.methodName
+  referencedInterfaceMembers = new HashSet<String>(); // Format: InterfaceSymbolId.memberName
+  usedInterfaceAdaptations = new HashSet<String>(); // Format: ClassSymbolId::InterfaceSymbolId
+  referencedTypes = new HashSet<Type>();
+  stringLiterals = new HashSet<String>();
+  closures = new Array<ClosureDependency>();
+  functionAdaptations = new Array<FunctionAdaptationDependency>();
+
+  new();
 }

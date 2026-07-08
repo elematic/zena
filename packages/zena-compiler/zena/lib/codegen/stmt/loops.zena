@@ -1,5 +1,5 @@
 import { ValTypeVoid, ValTypeRefNull, ValTypeRef, ValTypeStructRef, ValTypeI32, ValTypeAnyRef } from '../wasm.zena';
-import { WasmArray } from '../wasm-module.zena';
+import { WasmArray, WasmGlobal } from '../wasm-module.zena';
 import { Error } from 'zena:error';
 import { 
   Node, BreakStatement, ContinueStatement, WhileStatement, ForStatement, Statement, Expression,
@@ -630,10 +630,11 @@ export let generateForInStatement = (
       let iName = getInterfaceKey(it);
       
       let key = getClassInterfaceKey(cName, iName);
-      if (!ctx.wasm.classInterfaceVTables.has(key)) {
+      let vtableGlobalOpt = ctx.wasm.getClassInterfaceVTable(key);
+      if (vtableGlobalOpt == null) {
         throw new Error("Interface vtable global not found for " + classInterfaceKeyToString(key));
       }
-      let vtableGlobal = ctx.wasm.classInterfaceVTables[key];
+      let vtableGlobal = vtableGlobalOpt as WasmGlobal;
       
       ctx.emitter.emitGlobalGet(vtableGlobal.index);
       
@@ -684,10 +685,11 @@ export let generateForInStatement = (
       let cName = getClassKey(ct);
       let iName = getInterfaceKey(iteratorType);
       let key = getClassInterfaceKey(cName, iName);
-      if (!ctx.wasm.classInterfaceVTables.has(key)) {
+      let vtableGlobalOpt = ctx.wasm.getClassInterfaceVTable(key);
+      if (vtableGlobalOpt == null) {
         throw new Error("Interface vtable global not found for " + classInterfaceKeyToString(key));
       }
-      let vtableGlobal = ctx.wasm.classInterfaceVTables[key];
+      let vtableGlobal = vtableGlobalOpt as WasmGlobal;
       ctx.emitter.emitGlobalGet(vtableGlobal.index);
       
       let fatPtrStruct = ctx.wasm.interfaceStructs[iName];

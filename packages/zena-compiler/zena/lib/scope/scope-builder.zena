@@ -73,6 +73,10 @@ export final class SymbolMap {
     #byNode = new NodeMap<Symbol>();
     #byOffset = new HashMap<i32, Symbol>();
 
+    byNode: NodeMap<Symbol> {
+      get { return this.#byNode; }
+    }
+
     /**
      * Record a resolved reference or declaration.
      */
@@ -375,9 +379,10 @@ export final class ScopeBuilder {
       }
       case DeclareFunction {name, exported}: {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
-        this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
+        let sym = this.#current.getLocal(name.name) as Symbol;
+        this.#symbols.record(stmt, sym);
         if (exported) {
-          this.#exports[name.name] = new Symbol(name.name, stmt, this.#modulePath);
+          this.#exports[name.name] = sym;
         }
       }
       case SymbolDeclaration {name, exported}: {
@@ -385,9 +390,10 @@ export final class ScopeBuilder {
         // should probably unify it into a helper method like
         // `declareAndRecord(name, stmt)`.
         this.#current.declare(name.name, false, stmt, this.#modulePath);
-        this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
+        let sym = this.#current.getLocal(name.name) as Symbol;
+        this.#symbols.record(stmt, sym);
         if (exported) {
-          this.#exports[name.name] = new Symbol(name.name, stmt, this.#modulePath);
+          this.#exports[name.name] = sym;
         }
       }
       case _: {}

@@ -13,7 +13,7 @@ import { Array } from 'zena:array';
 
 let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
   let t = ctx.wasmFunction.model.getNodeType(node);
-  if (t == null) { return null as Type; }
+  if (t == null) { return null; }
   let ct = ctx.wasmFunction.classType;
   if (ct != null) {
     return substituteTypeParamsInCodegen(getClassTypeParameters(ct as ClassType), (ct as ClassType).typeArguments, t);
@@ -265,6 +265,21 @@ export let generateMemberExpression = (
           }
         }
 
+        var fieldDeclaringClass = ct;
+        var curr: ClassType | null = ct;
+        while (curr != null) {
+          if (curr.members.has(propName) && curr.members[propName] is FieldInfo) {
+            fieldDeclaringClass = curr;
+          }
+          curr = curr.superType;
+        }
+
+        let defaultGetterKey = getClassMethodKey(getClassKey(fieldDeclaringClass), getterName);
+        var defaultGetter: WasmFunction | null = null;
+        if (ctx.wasm.classMethodMap.has(defaultGetterKey)) {
+          defaultGetter = ctx.wasm.classMethodMap[defaultGetterKey];
+        }
+
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
@@ -275,11 +290,13 @@ export let generateMemberExpression = (
           currClass = (currClass as ClassType).superType;
         }
 
-        let hasOverride = if (foundFunc != null) {
-          true
-        } else {
-          // Check if any subclass has a custom getter
-          var subHasOverride = false;
+        let resolvedGetter = foundFunc;
+        var hasOverride = false;
+        if (resolvedGetter != null && defaultGetter != null && resolvedGetter != defaultGetter) {
+          hasOverride = true;
+        }
+
+        if (!hasOverride) {
           if (classInfoOpt != null) {
             let subclasses = new Array<ClassCodegenInfo>();
             (classInfoOpt as ClassCodegenInfo).getTransitiveSubclasses(subclasses);
@@ -293,20 +310,44 @@ export let generateMemberExpression = (
                 }
                 subCurr = (subCurr as ClassType).superType;
               }
-              if (subFunc != null) {
-                subHasOverride = true;
+              if (subFunc != null && subFunc != resolvedGetter) {
+                hasOverride = true;
                 break;
               }
             }
           }
-          subHasOverride
-        };
+        }
 
         if (fieldIndex != -1 && !hasOverride && !(expr.object is SuperExpression)) {
           genObject();
           ctx.emitter.emitRefCast(structInfo.index);
           ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
           return;
+        }
+
+        if (expr.object is SuperExpression) {
+          if (ctx.wasmFunction.classType == null) {
+            throw new Error("Super property access outside of class");
+          }
+          let currentClass = ctx.wasmFunction.classType as ClassType;
+          if (currentClass.superType == null) {
+            throw new Error("Super property access in class without superType: " + currentClass.name);
+          }
+          let superType = currentClass.superType as ClassType;
+          var foundSuperGetter: WasmFunction | null = null;
+          var currClass: ClassType | null = superType;
+          while (currClass != null && foundSuperGetter == null) {
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), getterName);
+            if (ctx.wasm.classMethodMap.has(key)) {
+              foundSuperGetter = ctx.wasm.classMethodMap[key];
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+          if (foundSuperGetter != null) {
+            genObject();
+            ctx.emitter.emitCall(foundSuperGetter as WasmFunction);
+            return;
+          }
         }
         
         if (vtableIndex != -1) {

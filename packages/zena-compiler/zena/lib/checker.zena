@@ -45,8 +45,10 @@
  */
 
 import { isValidIntrinsic } from './intrinsics.zena';
+import { console } from 'zena:console';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { analyzeCaptures } from './analysis/capture.zena';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
 import { parseI32, i32ToString } from 'zena:string-convert';
@@ -100,7 +102,7 @@ import {
   numericTypeName, isBooleanLike, baseType,
   promoteNumeric, typeToString
 } from './types.zena';
-import { SemanticModel, InterfaceAdaptation } from './semantic-model.zena';
+import { SemanticModel, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
@@ -228,6 +230,67 @@ final class CheckerContext {
    * `$` placeholder resolves to the top of this stack.
    */
   #pipelineStack = new Array<Type>();
+
+  #referrerStack = new Array<String>();
+  #referrerSymbolStack = new Array<SymbolId>();
+  #referrerNodeStack = new Array<i32>();
+  #dependencyStack = new Array<SymbolDependencies>();
+
+  enterSymbolReferrer(symId: SymbolId): void {
+    this.#referrerStack.push("sym");
+    this.#referrerSymbolStack.push(symId);
+    this.#dependencyStack.push(new SymbolDependencies());
+  }
+
+  exitSymbolReferrer(symId: SymbolId): void {
+    if (this.#referrerStack.length > 0) {
+      this.#referrerStack.pop();
+      this.#referrerSymbolStack.pop();
+      let deps = this.#dependencyStack.pop();
+      this.model.setSymbolDependencies(symId, deps);
+
+    }
+  }
+
+  enterNodeReferrer(nodeId: i32): void {
+    this.#referrerStack.push("node");
+    this.#referrerNodeStack.push(nodeId);
+    this.#dependencyStack.push(new SymbolDependencies());
+  }
+
+  exitNodeReferrer(nodeId: i32): void {
+    if (this.#referrerStack.length > 0) {
+      this.#referrerStack.pop();
+      this.#referrerNodeStack.pop();
+      let deps = this.#dependencyStack.pop();
+      this.model.setNodeDependencies(nodeId, deps);
+    }
+  }
+
+  currentDependencies(): SymbolDependencies | null {
+    if (this.#dependencyStack.length > 0) {
+      return this.#dependencyStack[this.#dependencyStack.length - 1];
+    }
+    return null;
+  }
+
+  referrerStack: Array<String> {
+    get { return this.#referrerStack; }
+  }
+
+  enterClosureReferrer(): void {
+    this.#dependencyStack.push(new SymbolDependencies());
+  }
+
+  exitClosureReferrer(fe: FunctionExpression, capturesThis: boolean, captures: Array<SymbolId>, mutableCaptures: HashSet<SymbolId>): void {
+    if (this.#dependencyStack.length > 1) {
+      let deps = this.#dependencyStack.pop();
+      let parentDeps = this.#dependencyStack[this.#dependencyStack.length - 1];
+      let clDep = new ClosureDependency(fe.id as i32, fe as Node, capturesThis, captures, mutableCaptures, deps);
+      parentDeps.closures.push(clDep);
+      this.model.setNodeDependencies(fe.id as i32, deps);
+    }
+  }
 
   /**
    * The scope result from name resolution (for reference lookups).
@@ -374,6 +437,16 @@ final class CheckerContext {
     let info = this.model.resolve(node);
     if (info == null) { return null; }
     let si = info as Symbol;
+    this.model.symbolNames[si.id] = si.name;
+    let resolvedSym = si.resolveTarget();
+    this.model.symbolNames[resolvedSym.id] = resolvedSym.name;
+
+    let deps = this.currentDependencies();
+    if (deps != null) {
+      if (resolvedSym.modulePath.length > 0) {
+        deps.referencedSymbols.add(resolvedSym.id);
+      }
+    }
 
     var i = this.#narrowings.length - 1;
     while (i >= 0) {
@@ -463,7 +536,12 @@ final class CheckerContext {
    */
   lazyResolveFunction(si: Symbol, funcNode: Node): Type | null {
     match (funcNode) {
-      case FunctionExpression {typeParameters, params, returnType, body, loc}: {
+      case FunctionExpression as fe: {
+        let typeParameters = fe.typeParameters;
+        let params = fe.params;
+        let returnType = fe.returnType;
+        let body = fe.body;
+        let loc = fe.loc;
         // Check for cycle — if we're already resolving this symbol,
         // it's a recursive reference.
         if (this.#resolving.has(si.id)) {
@@ -490,7 +568,7 @@ final class CheckerContext {
           this.resolveFunctionFromAnnotations(typeParameters, params, returnType as TypeAnnotation, si)
         } else {
           // No return type annotation — eagerly check the function body.
-          checkFunctionExpression(this, typeParameters, params, null, body, loc, null)
+          checkFunctionExpression(this, fe, null)
         };
 
         // Store result so subsequent references find it immediately.
@@ -801,16 +879,22 @@ final class CheckerContext {
     match (node) {
       case ClassDeclaration as cd: {
         var typeId = this.freshTypeId();
-        let isPrelude = this.filePath.startsWith("zena:");
-        if (isPrelude) {
-          if (let (true, stub) = this.#sharedState.preludeTypes.get(cd.name.name)) {
-            match (stub) {
-              case ClassType as pt: { typeId = pt.id; }
-              case _: {}
+        let sym = this.model.resolve(cd);
+        if (sym != null) {
+          typeId = (sym as Symbol).id as i32;
+        } else {
+          let isPrelude = this.filePath.startsWith("zena:");
+          if (isPrelude) {
+            if (let (true, stub) = this.#sharedState.preludeTypes.get(cd.name.name)) {
+              match (stub) {
+                case ClassType as pt: { typeId = pt.id; }
+                case _: {}
+              }
             }
           }
         }
         let ct = new ClassType(typeId, cd.name.name);
+        let isPrelude = this.filePath.startsWith("zena:");
         if (isPrelude) { this.#sharedState.preludeTypes[cd.name.name] = ct; }
         ct.isFinal = cd.isFinal;
         ct.isAbstract = cd.isAbstract;
@@ -837,16 +921,22 @@ final class CheckerContext {
       }
       case InterfaceDeclaration as id: {
         var typeId = this.freshTypeId();
-        let isPrelude = this.filePath.startsWith("zena:");
-        if (isPrelude) {
-          if (let (true, stub) = this.#sharedState.preludeTypes.get(id.name.name)) {
-            match (stub) {
-              case InterfaceType as pt: { typeId = pt.id; }
-              case _: {}
+        let sym = this.model.resolve(id);
+        if (sym != null) {
+          typeId = (sym as Symbol).id as i32;
+        } else {
+          let isPrelude = this.filePath.startsWith("zena:");
+          if (isPrelude) {
+            if (let (true, stub) = this.#sharedState.preludeTypes.get(id.name.name)) {
+              match (stub) {
+                case InterfaceType as pt: { typeId = pt.id; }
+                case _: {}
+              }
             }
           }
         }
         let it = new InterfaceType(typeId, id.name.name);
+        let isPrelude = this.filePath.startsWith("zena:");
         if (isPrelude) { this.#sharedState.preludeTypes[id.name.name] = it; }
         return it;
       }
@@ -856,7 +946,12 @@ final class CheckerContext {
         return mt;
       }
       case SealedVariant as sv: {
-        let ct = new ClassType(this.freshTypeId(), sv.name.name);
+        var typeId = this.freshTypeId();
+        let sym = this.model.resolve(sv);
+        if (sym != null) {
+          typeId = (sym as Symbol).id as i32;
+        }
+        let ct = new ClassType(typeId, sv.name.name);
         ct.isCaseClass = true;
         ct.isFinal = true;
         return ct;
@@ -1184,6 +1279,37 @@ export final class CheckResult(
   diagnostics: Array<Diagnostic>
 )
 
+let collectPatternSymbols = (ctx: CheckerContext, pattern: Pattern, symbols: Array<Symbol>): void => {
+  match (pattern) {
+    case IdentifierPattern as ip: {
+      let sym = ctx.model.resolveDeclaration(ip);
+      if (sym != null) {
+        symbols.push(sym as Symbol);
+      }
+    }
+    case RecordPattern {properties}: {
+      for (let prop in properties) {
+        collectPatternSymbols(ctx, prop.value as Pattern, symbols);
+      }
+    }
+    case TuplePattern {elements}: {
+      for (let el in elements) {
+        if (el != null && el is Pattern) {
+          collectPatternSymbols(ctx, el as Pattern, symbols);
+        }
+      }
+    }
+    case AsPattern {pattern as inner, name}: {
+      let sym = ctx.model.resolveDeclaration(name);
+      if (sym != null) {
+        symbols.push(sym as Symbol);
+      }
+      collectPatternSymbols(ctx, inner as Pattern, symbols);
+    }
+    case _: {}
+  }
+};
+
 /**
  * Check a module AST and produce type information.
  *
@@ -1205,6 +1331,7 @@ export let checkModule = (
   sharedState: SharedCheckerState | null = null,
   warnUnnecessaryCasts: boolean = false
 ): CheckResult => {
+  console.log("CHECK MODULE: " + ast.path);
   let state = if (sharedState != null) sharedState as SharedCheckerState else new SharedCheckerState();
   let ctx = new CheckerContext(state, ast.path, scopeResult, depExports, depModels, emitLocations, warnUnnecessaryCasts);
 
@@ -1307,6 +1434,21 @@ export let checkModule = (
       case ExportAllDeclaration {}: {}
       case ExportFromDeclaration {}: {}
       // Everything else: variable declarations, expression statements, etc.
+      case VariableDeclaration as vd: {
+        let syms = new Array<Symbol>();
+        collectPatternSymbols(ctx, vd.pattern, syms);
+        if (syms.length > 0) {
+          for (let s in syms) {
+            ctx.model.addDeclaredGlobal(s.id, vd);
+          }
+          let primarySymId = syms[0].id;
+          ctx.enterSymbolReferrer(primarySymId);
+          checkStatement(ctx, vd);
+          ctx.exitSymbolReferrer(primarySymId);
+        } else {
+          checkStatement(ctx, vd);
+        }
+      }
       case _: { checkStatement(ctx, stmt); }
     }
   }
@@ -2422,11 +2564,22 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
 
   if (sourceType is ClassType && effectiveTarget is InterfaceType) {
     ctx.model.setInterfaceAdaptation(node, sourceType as ClassType, effectiveTarget as InterfaceType);
+    let deps = ctx.currentDependencies();
+    if (deps != null) {
+      let classSymId = (sourceType as ClassType).id as SymbolId;
+      let ifaceSymId = (effectiveTarget as InterfaceType).id as SymbolId;
+      let key = i32ToString(classSymId as i32) + "::" + i32ToString(ifaceSymId as i32);
+      deps.usedInterfaceAdaptations.add(key);
+    }
   } else if (sourceType is FunctionType && effectiveTarget is FunctionType) {
     let src = sourceType as FunctionType;
     let tgt = effectiveTarget as FunctionType;
     if (!typesEqual(src, tgt)) {
       ctx.model.setFunctionAdaptation(node, src, tgt);
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        deps.functionAdaptations.push(new FunctionAdaptationDependency(node, src, tgt));
+      }
     }
   }
 };
@@ -4797,6 +4950,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
                 );
                 return new ErrorType();
               }
+            } else {
+              let deps = ctx.currentDependencies();
+              if (deps != null) {
+                let classSymId = (ct.genericSource ?? ct).id as SymbolId;
+                deps.referencedSymbols.add(classSymId);
+                deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".[]=");
+              }
             }
           }
           case InterfaceType as it: {
@@ -4808,6 +4968,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
                   loc
                 );
                 return new ErrorType();
+              }
+            } else {
+              let deps = ctx.currentDependencies();
+              if (deps != null) {
+                let ifaceSymId = (it.genericSource ?? it).id as SymbolId;
+                deps.referencedSymbols.add(ifaceSymId);
+                deps.referencedInterfaceMembers.add(i32ToString(ifaceSymId as i32) + ".[]=");
               }
             }
           }
@@ -4989,8 +5156,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
   // --- Functions ---
 
-  case FunctionExpression {typeParameters, params, returnType, body, loc}: {
-    checkFunctionExpression(ctx, typeParameters, params, returnType, body, loc, expectedType)
+  case FunctionExpression as fe: {
+    checkFunctionExpression(ctx, fe, expectedType)
   }
 
   case CallExpression as call: {
@@ -5387,7 +5554,19 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       checkExpression(ctx, subExpr, null);
     }
     let stringType = ctx.resolveTypeName("String");
-    if (stringType != null) { return stringType as Type; }
+    if (stringType != null) {
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        if (stringType is ClassType) {
+          let stringCt = stringType as ClassType;
+          let classSymId = (stringCt.genericSource ?? stringCt).id as SymbolId;
+          let sDeps = deps as SymbolDependencies;
+          sDeps.referencedSymbols.add(classSymId);
+          sDeps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".fromParts");
+        }
+      }
+      return stringType as Type;
+    }
     ctx.error(
       "Built-in type 'String' is not available. Ensure the standard prelude is loaded.",
       DiagnosticCode.SymbolNotFound,
@@ -5912,6 +6091,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   let classInfo = ctx.model.resolveDeclaration(cd);
   if (classInfo != null) {
     ctx.declareBinding(classInfo as Symbol, classType);
+    ctx.model.addDeclaredClass((classInfo as Symbol).id, cd);
   }
 
   // Enter class context for body checking.
@@ -6590,6 +6770,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
     match (member) {
       case FieldDefinition as fd: {
         if (fd.value != null) {
+          ctx.enterNodeReferrer(fd.id as i32);
           let fieldName = match (fd.name) {
             case Identifier {name}: name
           case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
@@ -6661,11 +6842,13 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               ctx.model.setNodeType(fd.value as Expression, instantiatedVal);
             }
           }
+          ctx.exitNodeReferrer(fd.id as i32);
         }
         fieldIndex = fieldIndex + 1;
       }
       case MethodDefinition as md: {
         if (md.body != null) {
+          ctx.enterNodeReferrer(md.id as i32);
           let methodName = match (md.name) {
             case Identifier {name}: name
             case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
@@ -6693,6 +6876,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               checkMethodBody(ctx, classType, methodType, md);
             }
           }
+          ctx.exitNodeReferrer(md.id as i32);
         }
       }
       case AccessorDeclaration as acc: {
@@ -6709,6 +6893,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
 
         // Check getter body.
         if (acc.getter != null) {
+          ctx.enterNodeReferrer(acc.id as i32);
           let getterBlock = acc.getter as BlockStatement;
           ctx.enterScope();
           let prevReturnType = ctx.returnType;
@@ -6720,12 +6905,14 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
           }
           ctx.setReturnType(prevReturnType);
           ctx.exitScope();
+          ctx.exitNodeReferrer(acc.id as i32);
         }
 
         // Check setter body.
         if (acc.setter != null) {
           match (acc.setter as Node) {
             case SetterInfo as si: {
+              ctx.enterNodeReferrer(si.id as i32);
               ctx.enterScope();
               let paramInfo = ctx.model.resolveDeclaration(si.param);
               if (paramInfo != null) {
@@ -6735,6 +6922,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
                 checkStatement(ctx, stmt);
               }
               ctx.exitScope();
+              ctx.exitNodeReferrer(si.id as i32);
             }
             case _: {}
           }
@@ -7036,6 +7224,7 @@ let checkMethodSignature = (
   if (hasInitializers) {
     ft.parameterInitializers = initializers;
   }
+  ctx.model.setNodeType(md, ft);
   ctx.exitScope();
   return ft;
 };
@@ -7323,6 +7512,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   let ifaceInfo = ctx.model.resolveDeclaration(id);
   if (ifaceInfo != null) {
     ctx.declareBinding(ifaceInfo as Symbol, ifaceType);
+    ctx.model.addDeclaredInterface((ifaceInfo as Symbol).id, id);
   }
 
   ctx.exitScope();
@@ -7442,6 +7632,7 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
   let info = ctx.model.resolveDeclaration(ed);
   if (info != null) {
     ctx.declareBinding(info, enumValueType);
+    ctx.model.addDeclaredEnum(info.id, ed);
   }
 };
 
@@ -7695,6 +7886,14 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
   ctx.exitInterface();
 
+  // Register mixin type early so it's available in model during body checking.
+  ctx.declareTypeName(mixinName, mixinType);
+  let info = ctx.model.resolveDeclaration(md);
+  if (info != null) {
+    ctx.declareBinding(info as Symbol, mixinType);
+    ctx.model.addDeclaredMixin((info as Symbol).id, md);
+  }
+
   // 2. Check bodies
   ctx.enterClass(thisType);
 
@@ -7714,7 +7913,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
          };
          if (methodName != "<constructor>" && methDef.body != null && mixinType.members.has(methodName)) {
            if (let (true, methodTypeInfo) = mixinType.members.get(methodName)) {
+             ctx.enterNodeReferrer(methDef.id as i32);
              checkMethodBody(ctx, thisType, methodTypeInfo.type as FunctionType, methDef);
+             ctx.exitNodeReferrer(methDef.id as i32);
            }
          }
       }
@@ -7724,13 +7925,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
 
   ctx.exitClass();
-
-  // Register mixin type.
-  ctx.declareTypeName(mixinName, mixinType);
-  let info = ctx.model.resolveDeclaration(md);
-  if (info != null) {
-    ctx.declareBinding(info as Symbol, mixinType);
-  }
 
   ctx.exitScope();
 };
@@ -7842,6 +8036,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   // Declare in value namespace.
   let info = ctx.model.resolveDeclaration(df);
   if (info != null) {
+    ctx.model.addDeclaredGlobal((info as Symbol).id, df);
     let existingType = ctx.model.getBindingType(info as Symbol);
     if (existingType != null && existingType is FunctionType) {
       let existingFunc = existingType as FunctionType;
@@ -7932,6 +8127,13 @@ let checkNewExpression = (
 
       // Resolve constructor.
       let ctorType = instantiated.constructorType;
+      if (ctorType != null) {
+        let deps = ctx.currentDependencies();
+        if (deps != null) {
+          deps.referencedTypes.add(instantiated as Type);
+          deps.referencedClassMethods.add(i32ToString((ct.genericSource ?? ct).id) + ".<constructor>");
+        }
+      }
       if (ctorType == null) {
         // No explicit constructor — must have zero args.
         if (args.length > 0) {
@@ -8099,6 +8301,7 @@ let checkMemberExpression = (
   ctx.model.setStaticAccess(expr, isStatic);
 
   let propName = getMemberPropertyName(isSymbolAccess, property.name);
+
   let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
   let narrowedPathType = if (pathKey != null) {
     ctx.resolveNarrowedMemberPath(pathKey as String)
@@ -8182,6 +8385,48 @@ let resolveMemberType = (
 ): Type => {
   match (objectType) {
     case ClassType as ct: {
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        var classSymId = (ct.genericSource ?? ct).id as SymbolId;
+        if (ct.name.length >= 5 && ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
+          let mixinName = ct.name.sliceBytes(0, ct.name.length - 5);
+          var foundId = -1 as SymbolId;
+          let mixinKeys = ctx.model.mixinDeclarations.keys();
+          while (let (true, k) = mixinKeys.next()) {
+            let decl = ctx.model.mixinDeclarations[k];
+            if (decl.name.name == mixinName) {
+              foundId = k;
+              break;
+            }
+          }
+          if (foundId as i32 != -1) {
+            classSymId = foundId;
+          } else {
+            let classKeys = ctx.model.classDeclarations.keys();
+            while (let (true, k) = classKeys.next()) {
+              let decl = ctx.model.classDeclarations[k];
+              if (decl.name.name == mixinName) {
+                foundId = k;
+                break;
+              }
+            }
+            if (foundId as i32 != -1) {
+              classSymId = foundId;
+            }
+          }
+        }
+        deps.referencedSymbols.add(classSymId);
+        if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
+          deps.referencedClassMethods.add(i32ToString(classSymId as i32) + "." + propName);
+        } else if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
+          let fi = ct.members[propName] as FieldInfo;
+          if (ct.isExtension || fi.isAbstract) {
+            deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".get#" + propName);
+          }
+        } else if (ct.members.has("get#" + propName)) {
+          deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".get#" + propName);
+        }
+      }
       // Check fields first.
       if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
         let fieldType = ct.members[propName].type;
@@ -8211,6 +8456,22 @@ let resolveMemberType = (
       return new ErrorType();
     }
     case InterfaceType as it: {
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        let ifaceSymId = (it.genericSource ?? it).id as SymbolId;
+        deps.referencedSymbols.add(ifaceSymId);
+        if (it.members.has(propName) && it.members[propName] is MethodInfo) {
+          deps.referencedInterfaceMembers.add(i32ToString(ifaceSymId as i32) + "." + propName);
+        } else if (it.members.has(propName) && it.members[propName] is FieldInfo) {
+          deps.referencedInterfaceMembers.add(i32ToString(ifaceSymId as i32) + ".get#" + propName);
+          let fi = it.members[propName] as FieldInfo;
+          if (fi.isMutable) {
+            deps.referencedInterfaceMembers.add(i32ToString(ifaceSymId as i32) + ".set#" + propName);
+          }
+        } else if (it.members.has("get#" + propName)) {
+          deps.referencedInterfaceMembers.add(i32ToString(ifaceSymId as i32) + ".get#" + propName);
+        }
+      }
       if (it.members.has(propName) && it.members[propName] is FieldInfo) {
         let fieldType = it.members[propName].type;
         let subField = substituteTypeParams(it.typeParameters, it.typeArguments, fieldType);
@@ -8256,6 +8517,22 @@ let resolveMemberType = (
       if (faType != null) {
         match (faType as Type) {
           case ClassType as faCt: {
+            let classSymId = (faCt.genericSource ?? faCt).id as SymbolId;
+            let deps = ctx.currentDependencies();
+            if (deps != null) {
+              deps.referencedSymbols.add(classSymId);
+              if (faCt.members.has(propName) && faCt.members[propName] is MethodInfo) {
+                deps.referencedClassMethods.add(i32ToString(classSymId as i32) + "." + propName);
+              } else if (faCt.members.has(propName) && faCt.members[propName] is FieldInfo) {
+                let fi = faCt.members[propName] as FieldInfo;
+                if (faCt.isExtension || fi.isAbstract) {
+                  deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".get#" + propName);
+                }
+              } else if (faCt.members.has("get#" + propName)) {
+                deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".get#" + propName);
+              }
+            }
+
             // Build type arguments [elementType] for substitution.
             let typeArgs = new Array<Type>();
             typeArgs.push(elementType);
@@ -8455,6 +8732,12 @@ let resolveIndexType = (
     case ClassType as ct: {
       // Check for operator [] method.
       if (ct.members.has("[]")) {
+        let deps = ctx.currentDependencies();
+        if (deps != null) {
+          let classSymId = (ct.genericSource ?? ct).id as SymbolId;
+          deps.referencedSymbols.add(classSymId);
+          deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".[]");
+        }
         let opMethodInfo = ct.members["[]"];
         let baseMethod = opMethodInfo.type as FunctionType;
         let candidates = new Array<FunctionType>();
@@ -8597,6 +8880,12 @@ let checkBinaryExpression = (
       match (leftType) {
         case ClassType as ct: {
           if (ct.members.has(operator)) {
+            let deps = ctx.currentDependencies();
+            if (deps != null) {
+              let classSymId = (ct.genericSource ?? ct).id as SymbolId;
+              deps.referencedSymbols.add(classSymId);
+              deps.referencedClassMethods.add(i32ToString(classSymId as i32) + "." + operator);
+            }
             let methodInfo = ct.members[operator];
             let method = methodInfo.type as FunctionType;
             if (method.parameters.length != 1) {
@@ -9456,13 +9745,21 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
 
 let checkFunctionExpression = (
   ctx: CheckerContext,
-  typeParameters: Array<TypeParameter> | null,
-  params: Array<Parameter>,
-  returnTypeAnn: TypeAnnotation | null,
-  body: Node,
-  loc: SourceLocation | null,
+  fe: FunctionExpression,
   expectedType: Type | null
 ): Type => {
+  let typeParameters = fe.typeParameters;
+  let params = fe.params;
+  let returnTypeAnn = fe.returnType;
+  let body = fe.body;
+  let loc = fe.loc;
+
+  let isClosure = !(ctx.referrerStack.length == 1 && ctx.referrerStack[0] == "sym");
+  if (isClosure) {
+    ctx.enterClosureReferrer();
+  }
+  ctx.referrerStack.push("func");
+
   ctx.enterScope();
 
   // Register type parameters in the type scope.
@@ -9661,7 +9958,6 @@ let checkFunctionExpression = (
         retType = bodyType;
       }
     }
-    case _: {}
   }
 
   ctx.setReturnType(prevReturnType);
@@ -9713,6 +10009,15 @@ let checkFunctionExpression = (
   if (hasInitializers) {
     fnType.parameterInitializers = initializers;
   }
+  if (isClosure) {
+    let captureInfo = analyzeCaptures(fe, ctx.model);
+    let capSyms = new Array<SymbolId>();
+    for (let c in captureInfo.captures) {
+      capSyms.push(c.id);
+    }
+    ctx.exitClosureReferrer(fe, captureInfo.capturesThis, capSyms, captureInfo.mutableCaptures);
+  }
+  let ignored = ctx.referrerStack.pop();
   return fnType;
 };
 

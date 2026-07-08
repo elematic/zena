@@ -3,21 +3,25 @@ import { WasmModule, WasmFunction, WasmSignature,
   WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, WasmTag, StringLiteralLocation
 } from './wasm-module.zena';
 import { ByteBuffer } from 'zena:byte-buffer';
-import { DiscoveryPass } from './discovery-pass.zena';
-import { getClassKey } from './codegen-utils.zena';
+import { Discovery, findImplementingField } from './discovery.zena';
+import { getClassKey, getInterfaceKey, getInterfaceMemberKey } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
-import { Node, VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral, ThrowExpression, TryExpression } from '../ast.zena';
+import { Node, VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral, ThrowExpression, TryExpression, DeclareFunction, FunctionExpression, EnumDeclaration, ImportSpecifier, ImportDeclaration, Module, AccessorDeclaration, SetterInfo } from '../ast.zena';
+import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { String } from 'zena:string';
-import { walk } from '../visitor.zena';
+import { walk, walkEnter } from '../visitor.zena';
 import { ValType } from './wasm.zena';
 import { parseI32, parseF64, parseI64, i32ToString } from 'zena:string-convert';
 import { Array } from 'zena:array';
+import { HashSet } from 'zena:set';
 import { FunctionGenerator } from './function-generator.zena';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { UsageAnalyzer } from '../analysis/usage.zena';
 import { ProgramInterface } from '../semantic-model.zena';
 import { performance } from '../time.zena';
+import { dirName, normalizePath } from '../module-resolver.zena';
+import { HashMap } from 'zena:map';
+import { collectValueExports } from './function-generator.zena';
 
 export final class ModuleGenerator {
   program: Program;
@@ -36,15 +40,169 @@ export final class ModuleGenerator {
     }
     let wasm = new WasmModule();
     wasm.program = this.program;
-    let tUsage = performance.start("codegen-usage");
-    let usageAnalyzer = new UsageAnalyzer(this.program);
-    let usage = usageAnalyzer.analyze();
-    performance.end(tUsage);
-    
+
+
     let tDiscovery = performance.start("codegen-discovery");
-    let pass = new DiscoveryPass(this.program, wasm, usage, this.target);
+    let pass = new Discovery(this.program, wasm, this.target);
     pass.run();
     performance.end(tDiscovery);
+
+    // dead code elimination: filter wasm.functions to only reached ones,
+    // plus any functions referenced by vtables to keep vtable slots valid.
+    let vtableFuncs = new HashSet<WasmFunction>();
+    for (let g in wasm.globals) {
+      if (g.initVTable != null) {
+        let vtableInit = g.initVTable as VTableInit;
+        for (let func in vtableInit.funcs) {
+          vtableFuncs.add(func);
+        }
+      }
+    }
+
+    var hasGlobalDecls = false;
+    for (let u in this.program.units) {
+      let gKeys = u.model.globalDeclarations.keys();
+      if (let (true, firstKey) = gKeys.next()) {
+        hasGlobalDecls = true;
+      }
+    }
+
+    let filteredFunctions = new Array<WasmFunction>();
+    for (let f in wasm.functions) {
+      if (!hasGlobalDecls) {
+        f.isReached = true;
+        filteredFunctions.push(f);
+        continue;
+      }
+      if (f.classType != null) {
+        let cName = getClassKey(f.classType as ClassType) as String;
+        if (!pass.instantiatedSpecializedClasses.has(cName)) {
+          f.isReached = false;
+          continue;
+        }
+      }
+      var reached = false;
+      if (f.node == null) {
+        if ((f.getterStruct != null || f.setterStruct != null) && f.methodName != null && f.classType != null) {
+          let backingName = f.methodName as String;
+          let propName = backingName.sliceBytes(4, backingName.length);
+          let cType = f.classType as ClassType;
+          let fd = findImplementingField(cType, propName, pass.program);
+          if (fd != null && pass.reachedMembers.has((fd as Node).id as i32)) {
+            reached = true;
+          } else {
+            let allIfaces = pass.collectAllImplementedInterfaces(cType);
+            for (let iface in allIfaces) {
+              let unspecIName = getInterfaceKey(iface.genericSource ?? iface);
+              let key = getInterfaceMemberKey(unspecIName, backingName);
+              if (pass.wasm.usedInterfaceMembers.has(key)) {
+                reached = true;
+                break;
+              }
+            }
+          }
+        } else {
+          reached = true;
+        }
+      } else {
+        let nodeVal = f.node as Node;
+        let nodeId = nodeVal.id as i32;
+        var isSetterReached = false;
+        if (nodeVal is SetterInfo) {
+          let parent = f.model.getParent(nodeVal);
+          if (parent != null && parent is AccessorDeclaration) {
+            isSetterReached = pass.reachedMembers.has((parent as Node).id as i32);
+          }
+        }
+        if (pass.reachedMembers.has(nodeId) || isSetterReached) {
+          reached = true;
+        } else {
+          var symIdToUse = -1 as SymbolId;
+          let funcKeys = wasm.functionMap.keys();
+          while (let (true, k) = funcKeys.next()) {
+            if (wasm.functionMap[k] == f) {
+              symIdToUse = k;
+              break;
+            }
+          }
+          if ((symIdToUse as i32) == -1) {
+            if (nodeVal is FunctionExpression) {
+              var curr = nodeVal as Node;
+              while (true) {
+                let parent = f.model.getParent(curr);
+                if (parent == null) { break; }
+                if (parent is VariableDeclaration) {
+                  let vd = parent as VariableDeclaration;
+                  if (vd.pattern is IdentifierPattern) {
+                    let ident = vd.pattern as IdentifierPattern;
+                    let parentSym = f.model.resolveDeclaration(ident);
+                    if (parentSym != null) {
+                      symIdToUse = parentSym.id;
+                    }
+                  }
+                  break;
+                } else if (parent is DeclareFunction) {
+                  let df = parent as DeclareFunction;
+                  let parentSym = f.model.resolveDeclaration(df);
+                  if (parentSym != null) {
+                    symIdToUse = parentSym.id;
+                  }
+                  break;
+                }
+                curr = parent as Node;
+              }
+            }
+          }
+          if ((symIdToUse as i32) == -1) {
+            let sym = f.model.resolveDeclaration(nodeVal);
+            if (sym != null) {
+              symIdToUse = sym.id;
+            } else {
+              let sym2 = f.model.resolve(nodeVal);
+              if (sym2 != null) {
+                symIdToUse = sym2.id;
+              }
+            }
+          }
+          if ((symIdToUse as i32) != -1 && pass.reachedGlobals.has(symIdToUse)) {
+            reached = true;
+          }
+        }
+      }
+      f.isReached = reached;
+
+      if (reached || vtableFuncs.has(f)) {
+        filteredFunctions.push(f);
+      }
+    }
+    wasm.functions = filteredFunctions;
+
+    // Pre-discover all string literals inside reached function bodies so that they are registered in wasm.datas BEFORE layouts and sections are emitted
+    for (let u in this.program.units) {
+      let moduleNode = u.ast;
+      for (let stmt in moduleNode.body) {
+        if (stmt is EnumDeclaration) {
+          let ed = stmt as EnumDeclaration;
+          for (let member in ed.members) {
+            if (member.initializer != null && member.initializer is StringLiteral) {
+              let sl = member.initializer as StringLiteral;
+              wasm.getStringLiteralDataIndex(sl.value);
+            }
+          }
+        }
+      }
+    }
+
+    for (let wasmFunc in wasm.functions) {
+      if (wasmFunc.node != null) {
+        walkEnter(wasmFunc.node as Node, (node: Node): void => {
+          if (node is StringLiteral) {
+            let sl = node as StringLiteral;
+            wasm.getStringLiteralDataIndex(sl.value);
+          }
+        });
+      }
+    }
     
     let tLayout = performance.start("codegen-layout");
     let stringClass = wasm.stringClass;
@@ -218,6 +376,57 @@ export final class ModuleGenerator {
     if (wasm.stringClass != null) {
       wasm.ensureStringHelpers(this.program.units[0].model);
     }
+    // Pre-discover functions whose references are taken by namespace imports
+    for (let g in wasm.globals) {
+      if (g.namespaceImport != null) {
+        let spec = g.namespaceImport as ImportSpecifier;
+        let moduleModel = g.model;
+        let parentNode = moduleModel.getParent(spec);
+        if (parentNode != null && parentNode is ImportDeclaration) {
+          let importDecl = parentNode as ImportDeclaration;
+          let specifier = importDecl.moduleSpecifier.value;
+          var canonicalPath = specifier;
+          if (specifier.startsWith("./") || specifier.startsWith("../")) {
+            let referrer = moduleModel.getParent(importDecl);
+            if (referrer != null && referrer is Module) {
+              let mod = referrer as Module;
+              let dir = dirName(mod.path);
+              canonicalPath = normalizePath(dir + "/" + specifier);
+            }
+          }
+          if (this.program.unitsByPath.has(canonicalPath)) {
+            let targetUnit = this.program.unitsByPath[canonicalPath];
+            let exports = new HashMap<String, Symbol>();
+            collectValueExports(this.program, targetUnit, exports);
+            let expKeys = exports.keys();
+            while (let (true, k) = expKeys.next()) {
+              let sym = exports[k];
+              if (wasm.functionMap.has(sym.id)) {
+                let f = wasm.functionMap[sym.id];
+                f.isReferenceTaken = true;
+                if (f.closureTrampoline == null) {
+                  let tParams = new Array<ValType>();
+                  tParams.push(new ValTypeStructRef());
+                  for (let p in f.signature.params) {
+                    tParams.push(p);
+                  }
+                  let tSig = wasm.getSignature(tParams, f.signature.returns);
+                  let trampoline = new WasmFunction(tSig, null, f.model);
+                  let fName = if (f.name != null) (f.name as String) else "anonymous";
+                  trampoline.name = fName + "$trampoline";
+                  trampoline.isClosureTrampoline = true;
+                  trampoline.closureTrampolineTarget = f;
+                  trampoline.isReferenceTaken = true;
+                  f.closureTrampoline = trampoline;
+                  wasm.addFunction(trampoline);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     wasm.layout();
     performance.end(tLayout);
 
@@ -369,6 +578,9 @@ export final class ModuleGenerator {
       } else if (g.initVTable != null) {
         let vtableInit = g.initVTable as VTableInit;
         for (let func in vtableInit.funcs) {
+          if (func.index == -1) {
+            console.log("DIAGNOSTIC VTABLE INIT ERROR: func.name=" + (if (func.name == null) "null" else func.name as String) + " has index -1");
+          }
           this.emitter.emitRefFunc(func.index);
         }
         this.emitter.emitStructNew(vtableInit.structType.index);
@@ -438,6 +650,17 @@ export final class ModuleGenerator {
               if (wasm.functionMap.has(sym.id)) {
                 let wasmFunc = wasm.functionMap[sym.id];
                  exports.push(new WasmExport(ident.name, wasmFunc));
+              }
+            }
+          }
+        } else if (stmt is DeclareFunction) {
+          let df = stmt as DeclareFunction;
+          if (df.exported) {
+            let sym = model.resolveDeclaration(df);
+            if (sym != null) {
+              if (wasm.functionMap.has(sym.id)) {
+                let wasmFunc = wasm.functionMap[sym.id];
+                exports.push(new WasmExport(df.name.name, wasmFunc));
               }
             }
           }
@@ -513,10 +736,10 @@ export final class ModuleGenerator {
     performance.end(tEmitOther);
     let tEmitCode = performance.start("codegen-emit-code");
     this.emitter.emitCodeSectionStart(wasm.functions.length);
-    for (let wasmFunc in wasm.functions) {
-       let funcCompiler = new FunctionGenerator(wasm, this.emitter, wasmFunc);
-       funcCompiler.generate();
-    }
+     for (let wasmFunc in wasm.functions) {
+        let funcCompiler = new FunctionGenerator(wasm, this.emitter, wasmFunc);
+        funcCompiler.generate();
+     }
     this.emitter.emitCodeSectionEnd();
     performance.end(tEmitCode);
 
@@ -524,7 +747,7 @@ export final class ModuleGenerator {
     if (wasm.datas.length > 0) {
       this.emitter.emitDataSection(wasm.datas, wasm.rawDatas);
     }
-    
+
     this.emitter.emitModuleEnd();
     performance.end(tEmitOther2);
   }

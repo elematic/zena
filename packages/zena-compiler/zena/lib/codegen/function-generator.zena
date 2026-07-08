@@ -27,7 +27,7 @@ import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, s
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
   getClassPrivateFieldKey, classInterfaceKeyToString,
-  MixinKey, ClassKey, ClassMethodKey, getClassMethodKey, ClosureSpecializationKey, getClosureSpecializationKey
+  MixinKey, ClassKey, ClassMethodKey, getClassMethodKey, ClosureSpecializationKey, getClosureSpecializationKey, getMemberRootClass
 } from './codegen-utils.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
@@ -214,6 +214,7 @@ export final class FunctionGenerator {
       // getters for VTables). We generate their Wasm bytecodes directly here
       // rather than traversing a user-written AST body.
       this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
+      console.log("SYNTHETIC HELPER: name=" + (if (this.ctx.wasmFunction.name != null) (this.ctx.wasmFunction.name as String) else "null") + " eq=" + (if (this.ctx.wasmFunction.isCaseClassEq) "true" else "false") + " hash=" + (if (this.ctx.wasmFunction.isCaseClassHash) "true" else "false"));
       var name = "func" + i32ToString(this.ctx.wasmFunction.index);
       if (this.ctx.wasmFunction.name != null) {
         name = this.ctx.wasmFunction.name as String;
@@ -239,21 +240,37 @@ export final class FunctionGenerator {
         this.generateStringFromSharedBody();
       } else if (this.ctx.wasmFunction.name != null && (this.ctx.wasmFunction.name as String) == "get_string_literal") {
         this.generateGetStringLiteralBody();
-      } else if (this.ctx.wasmFunction.methodName != null && (this.ctx.wasmFunction.methodName as String) == "<constructor>" && this.ctx.wasmFunction.classType != null && (this.ctx.wasmFunction.classType as ClassType).isCaseClass) {
-        this.generateCaseClassConstructorBody();
+      } else if (this.ctx.wasmFunction.methodName != null && (this.ctx.wasmFunction.methodName as String) == "<constructor>") {
+        if (this.ctx.wasmFunction.classType != null && (this.ctx.wasmFunction.classType as ClassType).isCaseClass) {
+          this.generateCaseClassConstructorBody();
+        } else {
+          this.generateDefaultConstructorBody();
+        }
       } else if (this.ctx.wasmFunction.getterStruct != null) {
         let st = this.ctx.wasmFunction.getterStruct as WasmStruct;
-        this.ctx.emitter.emitLocalGet(0);
-        this.ctx.emitter.emitRefCast(st.index);
-        this.ctx.emitter.emitStructGet(st.index, this.ctx.wasmFunction.getterFieldIndex);
+        if (this.ctx.wasmFunction.getterFieldIndex == -1) {
+          this.ctx.emitter.emitUnreachable();
+        } else {
+          this.ctx.emitter.emitLocalGet(0);
+          this.ctx.emitter.emitRefCast(st.index);
+          this.ctx.emitter.emitStructGet(st.index, this.ctx.wasmFunction.getterFieldIndex);
+        }
       } else if (this.ctx.wasmFunction.setterStruct != null) {
         let st = this.ctx.wasmFunction.setterStruct as WasmStruct;
-        this.ctx.emitter.emitLocalGet(0);
-        this.ctx.emitter.emitRefCast(st.index);
-        this.ctx.emitter.emitLocalGet(1);
-        this.ctx.emitter.emitStructSet(st.index, this.ctx.wasmFunction.setterFieldIndex);
+        if (this.ctx.wasmFunction.setterFieldIndex == -1) {
+          this.ctx.emitter.emitUnreachable();
+        } else {
+          this.ctx.emitter.emitLocalGet(0);
+          this.ctx.emitter.emitRefCast(st.index);
+          this.ctx.emitter.emitLocalGet(1);
+          this.ctx.emitter.emitStructSet(st.index, this.ctx.wasmFunction.setterFieldIndex);
+        }
       } else if (this.ctx.wasmFunction.interfaceTrampolineTarget != null) {
         let target = this.ctx.wasmFunction.interfaceTrampolineTarget as WasmFunction;
+        if (target.index == -1) {
+          this.ctx.emitter.emitUnreachable();
+          return;
+        }
         this.ctx.emitter.emitLocalGet(0);
         let receiverType = target.signature.params[0];
         match (receiverType) {
@@ -316,6 +333,20 @@ export final class FunctionGenerator {
     }
     
     let bodyNode = this.ctx.wasmFunction.node;
+    if (bodyNode != null && !this.ctx.wasmFunction.isReached) {
+      this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
+      var name = "func" + i32ToString(this.ctx.wasmFunction.index);
+      if (this.ctx.wasmFunction.name != null) {
+        name = this.ctx.wasmFunction.name as String;
+      }
+      this.ctx.emitter.emitFunctionSignatureStart(name, this.ctx.wasmFunction.signature.index);
+      let helperLocals = new Array<ValType>();
+      this.ctx.emitter.emitFunctionLocalsStart(helperLocals);
+      this.ctx.emitter.emitUnreachable();
+      this.ctx.emitter.emitFunctionEnd();
+      this.ctx.emitter.emitFunctionCodeEnd(this.ctx.wasmFunction);
+      return;
+    }
 
     var params: Array<Parameter> | null = null;
     var body: Node | null = null;
@@ -376,6 +407,22 @@ export final class FunctionGenerator {
       }
     }
 
+    // Cast "this" to subclass type if overriding a method from a superclass
+    if (this.ctx.wasmFunction.classType != null &&
+        !this.ctx.wasmFunction.isStatic &&
+        this.ctx.wasmFunction.methodName != null &&
+        this.ctx.wasmFunction.methodName != "<constructor>") {
+      let cType = this.ctx.wasmFunction.classType as ClassType;
+      let rootClass = getMemberRootClass(cType, this.ctx.wasmFunction.methodName as String);
+      if (cType != rootClass) {
+        let classKey = getClassKey(cType);
+        if (let (true, classInfo) = this.ctx.wasm.classInfos.get(classKey)) {
+          let thisLocalIdx = this.ctx.allocLocal(new ValTypeRefNull(classInfo.structType));
+          this.ctx.thisLocalIndex = thisLocalIdx;
+        }
+      }
+    }
+
     this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
     var name = "func" + i32ToString(this.ctx.wasmFunction.index);
     if (this.ctx.wasmFunction.name != null) {
@@ -385,6 +432,23 @@ export final class FunctionGenerator {
     
     
     this.ctx.emitter.emitFunctionLocalsStart(this.ctx.localTypes);
+
+    if (this.ctx.thisLocalIndex >= 0 &&
+        this.ctx.wasmFunction.classType != null &&
+        !this.ctx.wasmFunction.isStatic &&
+        this.ctx.wasmFunction.methodName != null &&
+        this.ctx.wasmFunction.methodName != "<constructor>") {
+      let cType = this.ctx.wasmFunction.classType as ClassType;
+      let rootClass = getMemberRootClass(cType, this.ctx.wasmFunction.methodName as String);
+      if (cType != rootClass) {
+        let classKey = getClassKey(cType);
+        if (let (true, classInfo) = this.ctx.wasm.classInfos.get(classKey)) {
+          this.ctx.emitter.emitLocalGet(0);
+          this.ctx.emitter.emitRefCast(classInfo.structType.index);
+          this.ctx.emitter.emitLocalSet(this.ctx.thisLocalIndex);
+        }
+      }
+    }
     
     if (params != null) {
       for (var i = 0; i < params.length; i += 1) {
@@ -462,7 +526,7 @@ export final class FunctionGenerator {
         let structType = this.ctx.wasmFunction.structType;
         if (structType != null) {
           let classDecl = this.ctx.wasmFunction.classDecl;
-          if (classDecl != null) {
+          if (classDecl != null && classDecl is ClassDeclaration) {
             let cd = classDecl as ClassDeclaration;
             let mixinFields = new Array<FieldDefinition>();
             let seenMixins = new HashMap<MixinKey, boolean>();
@@ -1088,10 +1152,11 @@ export final class FunctionGenerator {
       let iName = getInterfaceKey(tgtType);
       
       let key = getClassInterfaceKey(cName, iName);
-      if (!this.ctx.wasm.classInterfaceVTables.has(key)) {
+      let vtableGlobalOpt = this.ctx.wasm.getClassInterfaceVTable(key);
+      if (vtableGlobalOpt == null) {
         throw new Error("Interface vtable global not found for " + classInterfaceKeyToString(key));
       }
-      let vtableGlobal = this.ctx.wasm.classInterfaceVTables[key];
+      let vtableGlobal = vtableGlobalOpt as WasmGlobal;
       
       this.ctx.emitter.emitGlobalGet(vtableGlobal.index);
       
@@ -1428,6 +1493,7 @@ export final class FunctionGenerator {
         if (f.name == "<vtable>") { continue; }
 
         this.ctx.emitter.emitLocalGet(0);
+        this.ctx.emitter.emitRefCast(structType.index);
         this.ctx.emitter.emitStructGet(structType.index, fi);
 
         this.ctx.emitter.emitLocalGet(1);
@@ -1471,6 +1537,7 @@ export final class FunctionGenerator {
         }
 
         this.ctx.emitter.emitLocalGet(0);
+        this.ctx.emitter.emitRefCast(structType.index);
         this.ctx.emitter.emitStructGet(structType.index, fi);
 
         let ft = f.type;
@@ -1490,6 +1557,81 @@ export final class FunctionGenerator {
     }
 
     this.ctx.emitter.emitReturn();
+  }
+
+  generateDefaultConstructorBody(): void {
+    let classType = this.ctx.wasmFunction.classType as ClassType;
+    let structType = this.ctx.wasmFunction.structType;
+    if (structType == null) {
+      return;
+    }
+    
+    // 1. Call super constructor if subclass
+    if (classType.superType != null) {
+      let superType = classType.superType as ClassType;
+      let ctorKey = getClassMethodKey(getClassKey(superType), "<constructor>");
+      if (this.ctx.wasm.classMethodMap.has(ctorKey)) {
+        let superCtor = this.ctx.wasm.classMethodMap[ctorKey];
+        this.ctx.emitter.emitLocalGet(0);
+        var pi = 1;
+        while (pi < superCtor.signature.params.length) {
+          this.ctx.emitter.emitLocalGet(pi);
+          pi += 1;
+        }
+        this.ctx.emitter.emitCall(superCtor);
+      }
+    }
+    
+    // 2. Initialize fields with default values
+    let classDecl = this.ctx.wasmFunction.classDecl;
+    if (classDecl != null && classDecl is ClassDeclaration) {
+      let cd = classDecl as ClassDeclaration;
+      let mixinFields = new Array<FieldDefinition>();
+      let seenMixins = new HashMap<MixinKey, boolean>();
+      collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
+
+      let allFields = new Array<FieldDefinition>();
+      for (let member in cd.body) {
+        if (member is FieldDefinition) {
+          allFields.push(member as FieldDefinition);
+        }
+      }
+      for (let fd in mixinFields) {
+        allFields.push(fd);
+      }
+
+      for (let fd in allFields) {
+        if (fd.value != null && !fd.isStatic) {
+          let fieldName = match (fd.name) {
+            case Identifier {name}: name
+            case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+              case Identifier {name}: name
+              case MemberExpression {property}: property.name
+              case _: "<symbol>"
+            }
+            case _: ""
+          };
+          if (fieldName != "") {
+            let lookupName = if (fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#") {
+              getClassPrivateFieldKey(getClassKey(classType), fieldName)
+            } else {
+              fieldName
+            };
+            var fieldIndex = -1;
+            for (var i = 0; i < structType.fields.length; i += 1) {
+              if (structType.fields[i].name != null && (structType.fields[i].name as String) == lookupName) {
+                fieldIndex = i;
+              }
+            }
+            if (fieldIndex != -1) {
+              this.ctx.emitter.emitLocalGet(0);
+              this.generateExpression(fd.value as Expression);
+              this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
+            }
+          }
+        }
+      }
+    }
   }
 
   generateCaseClassConstructorBody(): void {
@@ -1541,7 +1683,7 @@ export final class FunctionGenerator {
     }
     
     let classDecl = this.ctx.wasmFunction.classDecl;
-    if (classDecl != null) {
+    if (classDecl != null && classDecl is ClassDeclaration) {
       let cd = classDecl as ClassDeclaration;
       let mixinFields = new Array<FieldDefinition>();
       let seenMixins = new HashMap<MixinKey, boolean>();
@@ -1599,8 +1741,16 @@ export final class FunctionGenerator {
     let classType = this.ctx.wasmFunction.classType;
     let classKey = if (classType != null) getClassKey(classType as ClassType) else "" as ClassKey;
     let closureKey = getClosureSpecializationKey(fExpr.id, classKey);
+
+    var closureFuncOpt: WasmFunction | null = null;
     if (this.ctx.wasm.specializedClosures.has(closureKey)) {
-      let closureFunc = this.ctx.wasm.specializedClosures[closureKey];
+      closureFuncOpt = this.ctx.wasm.specializedClosures[closureKey];
+    } else if (this.ctx.wasm.closureFunctions.has(fExpr)) {
+      closureFuncOpt = this.ctx.wasm.closureFunctions[fExpr];
+    }
+
+    if (closureFuncOpt != null) {
+      let closureFunc = closureFuncOpt as WasmFunction;
       let funcTypeNode = getNodeType(this.ctx, fExpr) as Type;
       let closureStruct = getClosureStruct(this.ctx.wasm, funcTypeNode);
 

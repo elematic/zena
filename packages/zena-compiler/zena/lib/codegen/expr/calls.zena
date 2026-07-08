@@ -90,7 +90,6 @@ let generateClosureCall = (
 ): void => {
   let closureStruct = getClosureStruct(ctx.wasm, ftVal);
   
-  // 1. Evaluate callee (closure struct)
   genExpr(call.callee, false);
   let closureLocal = ctx.allocLocal(new ValTypeRefNull(closureStruct));
   ctx.emitter.emitLocalSet(closureLocal);
@@ -138,7 +137,12 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
 
   var hasEnteredOptionalIf = false;
 
-  let generateNonNullCall = (currentGenExpr: (e: Expression, discardValue: boolean) => void): void => {
+  let generateNonNullCall = (origGenExpr: (e: Expression, discardValue: boolean) => void): void => {
+    var isDirectCall = false;
+    var ft: FunctionType | null = null;
+    let currentGenExpr = (e: Expression, discardValue: boolean): void => {
+      origGenExpr(e, discardValue);
+    };
     let unionCalleeType = ctx.wasmFunction.model.getUnionCallCalleeType(call.callee);
     if (unionCalleeType != null) {
       let ut = unionCalleeType as UnionType;
@@ -221,12 +225,12 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
 
     let calleeType = getNonNullableType(getNodeType(ctx, call.callee) as Type);
     // console.log("CALL CALLEE: " + (if (call.callee is Identifier) (call.callee as Identifier).name else "other") + " type=" + typeToString(calleeType));
-    var ft: FunctionType | null = null;
+    ft = null;
     if (calleeType is FunctionType) {
       ft = calleeType as FunctionType;
     }
 
-    var isDirectCall = false;
+    isDirectCall = false;
     var resolvedArgs = new Array<Type>();
     if (ft != null && ft.typeArguments != null) {
       for (let arg in (ft.typeArguments as Array<Type>)) {
@@ -240,17 +244,17 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       match (call.callee) {
         case Identifier: {
           let ident = call.callee as Identifier;
-          let sym = ctx.wasmFunction.model.resolve(ident);
-          if (sym != null) {
-            let targetDecl = findDeclaration(ctx, sym as Symbol, ft);
-            if (ctx.wasm.functionMap.has((sym as Symbol).id) || 
-                (targetDecl != null && ctx.wasm.intrinsics.has((targetDecl as DeclareFunction).id)) || 
-                (sym as Symbol).declaration is ImportSpecifier) {
-              isDirectCall = true;
-            }
+          if (isArrayIntrinsic(ident.name)) {
+            isDirectCall = true;
           } else {
-            if (isArrayIntrinsic(ident.name)) {
-              isDirectCall = true;
+            let sym = ctx.wasmFunction.model.resolve(ident);
+            if (sym != null) {
+              let targetDecl = findDeclaration(ctx, sym as Symbol, ft);
+              if (ctx.wasm.functionMap.has((sym as Symbol).id) || 
+                  (targetDecl != null && ctx.wasm.intrinsics.has((targetDecl as DeclareFunction).id)) || 
+                  (sym as Symbol).declaration is ImportSpecifier) {
+                isDirectCall = true;
+              }
             }
           }
         }
@@ -295,6 +299,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       return;
     }
 
+
     match (call.callee) {
       case Identifier: {
         let ident = call.callee as Identifier;
@@ -302,7 +307,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         if (sym != null) {
           let symVal = sym as Symbol;
           let decl = findDeclaration(ctx, symVal, ft);
-          
+
           if (decl != null && ctx.wasm.intrinsics.has((decl as DeclareFunction).id)) {
             let intrinsicName = ctx.wasm.intrinsics[(decl as DeclareFunction).id];
             generateGlobalIntrinsic(ctx, intrinsicName, call, currentGenExpr);
@@ -460,7 +465,12 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             ctx.emitter.emitCall(foundFunc as WasmFunction);
             return;
           }
-          throw new Error("Could not find static method: " + targetName + " on class: " + ct.name);
+          var debugInfo = "";
+          let keys = ctx.wasm.classMethodMap.keys();
+          while (let (true, k) = keys.next()) {
+            debugInfo = debugInfo + ", mapKey=" + (k as String);
+          }
+          throw new Error("Could not find static method: " + lookupName + " on class: " + ct.name + ", classKey=" + (getClassKey(ct) as String) + debugInfo);
         }
 
         if (objType is ClassType) {
@@ -675,10 +685,17 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
               let fClass = f.classType as ClassType;
               let className = fClass.name;
               if (className == "FixedArray" || className == "ImmutableArray") {
-                if (fClass.typeArguments != null && (fClass.typeArguments as Array<Type>).length > 0) {
-                  let fTypeArg = (fClass.typeArguments as Array<Type>)[0];
-                  if (getTypeKeyForSpecialization(elemType as Type) == getTypeKeyForSpecialization(fTypeArg)) {
+                let isGenericElem = elemType is TypeParameterType;
+                if (isGenericElem) {
+                  if (fClass.typeArguments == null || (fClass.typeArguments as Array<Type>).length == 0) {
                     foundFunc = f;
+                  }
+                } else {
+                  if (fClass.typeArguments != null && (fClass.typeArguments as Array<Type>).length > 0) {
+                    let fTypeArg = (fClass.typeArguments as Array<Type>)[0];
+                    if (getTypeKeyForSpecialization(elemType as Type) == getTypeKeyForSpecialization(fTypeArg)) {
+                      foundFunc = f;
+                    }
                   }
                 }
               }
@@ -686,7 +703,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
           
           if (foundFunc == null) {
-            throw new Error("Could not find extension function for array method call: " + targetName + " for element type " + typeToString(elemType as Type));
+            throw new Error("Could not find extension function for array method call: " + targetName + " for element type " + typeToString(elemType as Type) + " in function " + ctx.wasmFunction.name);
           }
 
           let f = foundFunc as WasmFunction;
@@ -900,6 +917,8 @@ let findDeclaration = (ctx: FunctionContext, sym: Symbol, expectedType: Type | n
   let resolved = sym.resolveTarget();
   let decl = resolved.declaration;
   if (decl == null) return null;
+
+
 
   let prog = ctx.wasm.program;
   if (prog != null && resolved.modulePath != "") {

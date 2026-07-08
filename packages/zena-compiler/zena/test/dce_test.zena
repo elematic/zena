@@ -6,33 +6,53 @@ import { SemanticModel } from '../lib/semantic-model.zena';
 import { Module } from '../lib/ast.zena';
 import { Array } from 'zena:array';
 import { Program, CompilationUnit } from '../lib/program.zena';
+import { MockHost } from './test-utils.zena';
+import { checkCompilation, createCompiler, CompilerOptions } from '../lib/compiler.zena';
+import { HashMap } from 'zena:map';
+import { PackageConfig } from '../lib/module-resolver.zena';
+import { ByteBuffer } from 'zena:byte-buffer';
+
+let compileToBinary = (source: String): ByteBuffer => {
+  let host = new MockHost();
+  host.addFile("zena:string", "export enum Encoding { WTF8, WTF16 } export class String { #data: ByteArray; #start: i32; #end: i32; #encoding: Encoding; }");
+  host.addFile("zena:array", "export class Array {}");
+  host.addFile("test.zena", source);
+
+  let packages = new HashMap<String, PackageConfig>();
+  let options = new CompilerOptions("host", "/stdlib", packages);
+  let compiler = createCompiler(host, options);
+
+  let compResult = compiler.compile("test.zena");
+  let checkRes = checkCompilation(compResult, null, false);
+  
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  
+  for (let file in compResult.files) {
+    let res = checkRes.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+  
+  let program = new Program(units, entryUnit);
+  let generator = new BinaryGenerator("host");
+  return generator.generate(program);
+};
 
 export let tests = suite('Dead Code Elimination', (): void => {
   test('binary is smaller when unused functions are eliminated', (ctx: TestContext): void => {
-    // Program 1: Only main
     let source1 = 'export let main = (): i32 => { return 42; };';
-    let ast1 = parse(source1, 'test1.zena');
-    let model1 = new SemanticModel(); 
-    let unit1 = {ast: ast1, model: model1};
-    let units1 = new Array<CompilationUnit>();
-    units1.push(unit1);
-    let program1 = new Program(units1, unit1);
-    let generator1 = new BinaryGenerator();
-    let binary1 = generator1.generate(program1);
+    let binary1 = compileToBinary(source1);
 
-    // Program 2: main + unused function
     let source2 = 'export let main = (): i32 => { return 42; }; let unused = (): i32 => { return 100; };';
-    let ast2 = parse(source2, 'test2.zena');
-    let model2 = new SemanticModel(); 
-    let unit2 = {ast: ast2, model: model2};
-    let units2 = new Array<CompilationUnit>();
-    units2.push(unit2);
-    let program2 = new Program(units2, unit2);
-    let generator2 = new BinaryGenerator();
-    let binary2 = generator2.generate(program2);
+    let binary2 = compileToBinary(source2);
 
-    // The binaries should be the exact same size because `unused` should be
-    // eliminated
     isTrue(binary1.length == binary2.length);
   });
 });

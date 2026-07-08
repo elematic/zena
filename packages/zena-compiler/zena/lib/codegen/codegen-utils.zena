@@ -1,5 +1,5 @@
 import { 
-  Node, MethodDefinition, FieldDefinition, AccessorDeclaration, MixinDeclaration, TypeAnnotation, NodeId
+  Node, MethodDefinition, FieldDefinition, AccessorDeclaration, MixinDeclaration, TypeAnnotation, NodeId, Identifier
 } from '../ast.zena';
 import { 
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, BooleanType, BoolLiteralType, 
@@ -15,6 +15,7 @@ import { i32ToString } from "zena:string-convert";
 import { Array, FixedArray } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Program, CompilationUnit } from '../program.zena';
+import { console } from "zena:console";
 
 // TODO: Add string comparison to the stdlib and use that instead.
 export let compareStrings = (a: String, b: String): i32 => {
@@ -325,7 +326,7 @@ export let getTypeKeyForSpecialization = (type: Type): String => {
       }
       String.fromParts(parts as array<String>)
     }
-    case TypeParameterType as tp: tp.name
+    case TypeParameterType as tp: "any"
     case UnionType {types}: {
       let parts = new FixedArray<String>(1 + 2 * types.length, "");
       parts[0] = "union";
@@ -464,7 +465,7 @@ export let getTypeKey = (type: Type): String => {
     case TupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
     case InlineTupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
     case UnionType: "union"
-    case TypeParameterType as tp: tp.name
+    case TypeParameterType as tp: "any"
     case _: "unknown"
   };
 };
@@ -503,6 +504,19 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
     }
   }
 
+  let methName = match (mDef.name) {
+    case Identifier {name}: name
+    case _: ""
+  };
+
+  console.log("DEBUG matchOverload: methName=" + methName + " paramTypes=" + i32ToString(paramTypes.length) + " ft.params=" + i32ToString(ft.parameters.length));
+  for (var pi = 0; pi < paramTypes.length; pi += 1) {
+    console.log("  paramType[" + i32ToString(pi) + "]=" + typeToString(paramTypes[pi]));
+  }
+  for (var pi = 0; pi < ft.parameters.length; pi += 1) {
+    console.log("  ft.param[" + i32ToString(pi) + "]=" + typeToString(ft.parameters[pi]));
+  }
+
   // Check if main function type matches
   if (ft.parameters.length == paramTypes.length) {
     var match = true;
@@ -512,12 +526,17 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
       }
     }
     if (match) {
+      console.log("  MATCHED MAIN!");
       return ft;
     }
   }
   
   let ovs = ft.overloads as Array<FunctionType>;
   for (let ov in ovs) {
+    console.log("  checking overload with params=" + i32ToString(ov.parameters.length));
+    for (var pi = 0; pi < ov.parameters.length; pi += 1) {
+      console.log("    ov.param[" + i32ToString(pi) + "]=" + typeToString(ov.parameters[pi]));
+    }
     if (ov.parameters.length == paramTypes.length) {
       var match = true;
       for (var pi = 0; pi < paramTypes.length; pi += 1) {
@@ -526,10 +545,12 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
         }
       }
       if (match) {
+        console.log("  MATCHED OVERLOAD!");
         return ov;
       }
     }
   }
+  console.log("  NO MATCH FOUND!");
   return null;
 };
 

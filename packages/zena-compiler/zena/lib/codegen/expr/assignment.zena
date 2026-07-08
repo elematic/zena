@@ -1,5 +1,5 @@
 import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression, ClassDeclaration, ImportSpecifier, IndexExpression, getMemberPropertyName } from '../../ast.zena';
-import { Type, F64Type, F32Type, ClassType, InterfaceType, ArrayType, typeToString, FunctionType, VoidType, ByteArrayType } from '../../types.zena';
+import { Type, F64Type, F32Type, ClassType, InterfaceType, ArrayType, typeToString, FunctionType, VoidType, ByteArrayType, FieldInfo } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
@@ -11,7 +11,7 @@ import { ValTypeRefNull, ValTypeRef, ValType } from '../wasm.zena';
 
 let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
   let t = ctx.wasmFunction.model.getNodeType(node);
-  if (t == null) { return null as Type; }
+  if (t == null) { return null; }
   let ct = ctx.wasmFunction.classType;
   if (ct != null) {
     return substituteTypeParamsInCodegen((ct as ClassType).typeParameters, (ct as ClassType).typeArguments, t);
@@ -262,6 +262,21 @@ export let generateAssignmentExpression = (
           }
         }
 
+        var fieldDeclaringClass = ct;
+        var curr: ClassType | null = ct;
+        while (curr != null) {
+          if (curr.members.has(propName) && curr.members[propName] is FieldInfo) {
+            fieldDeclaringClass = curr;
+          }
+          curr = curr.superType;
+        }
+
+        let defaultSetterKey = getClassMethodKey(getClassKey(fieldDeclaringClass), setterName);
+        var defaultSetter: WasmFunction | null = null;
+        if (ctx.wasm.classMethodMap.has(defaultSetterKey)) {
+          defaultSetter = ctx.wasm.classMethodMap[defaultSetterKey];
+        }
+
         var foundFunc: WasmFunction | null = null;
         var currClass: ClassType | null = ct;
         while (currClass != null && foundFunc == null) {
@@ -272,11 +287,13 @@ export let generateAssignmentExpression = (
           currClass = (currClass as ClassType).superType;
         }
 
-        let hasOverride = if (foundFunc != null) {
-          true
-        } else {
-          // Check if any subclass has a custom setter
-          var subHasOverride = false;
+        let resolvedSetter = foundFunc;
+        var hasOverride = false;
+        if (resolvedSetter != null && defaultSetter != null && resolvedSetter != defaultSetter) {
+          hasOverride = true;
+        }
+
+        if (!hasOverride) {
           if (classInfoOpt != null) {
             let subclasses = new Array<ClassCodegenInfo>();
             (classInfoOpt as ClassCodegenInfo).getTransitiveSubclasses(subclasses);
@@ -290,14 +307,13 @@ export let generateAssignmentExpression = (
                 }
                 subCurr = (subCurr as ClassType).superType;
               }
-              if (subFunc != null) {
-                subHasOverride = true;
+              if (subFunc != null && subFunc != resolvedSetter) {
+                hasOverride = true;
                 break;
               }
             }
           }
-          subHasOverride
-        };
+        }
 
         if (fieldIndex != -1 && !hasOverride && !(memExpr.object is SuperExpression)) {
           // Evaluate object first (the struct reference we're setting on)

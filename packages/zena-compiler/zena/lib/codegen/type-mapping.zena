@@ -571,7 +571,7 @@ export let substituteTypeParamsInFunctionContext = (wasmFunction: WasmFunction |
 
 export let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
   let t = ctx.wasmFunction.model.getNodeType(node);
-  if (t == null) { return null as Type; }
+  if (t == null) { return null; }
   let ct = ctx.wasmFunction.classType;
   if (t is ThisType && ct != null) {
     return ct;
@@ -768,6 +768,8 @@ export let getClosureStruct = (wasm: WasmModule, ftVal: any): WasmStruct => {
     return wasm.closureStructs[key];
   }
 
+
+
   let fields = new Array<WasmField>();
   fields.push(new WasmField("func", new ValTypeRef(implSig), false));
   fields.push(new WasmField("ctx", new ValTypeStructRef(), false));
@@ -857,7 +859,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     if (let (true, ctInfo) = wasm.classInfos.get(getClassKey(ct))) {
       new ValTypeRefNull(ctInfo.structType)
     } else {
-      throw new Error("Class struct not found for: " + ct.name);
+      new ValTypeStructRef()
     }
   }
   case InterfaceType as it: {
@@ -865,7 +867,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
     if (wasm.interfaceStructs.has(key)) {
       new ValTypeRefNull(wasm.interfaceStructs[key])
     } else {
-      throw new Error("Interface fat pointer type not generated during discovery pass! Key: " + (key as String) + " Name: " + it.name);
+      new ValTypeStructRef()
     }
   }
   case ArrayType as at: {
