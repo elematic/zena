@@ -3,7 +3,7 @@ import { WasmModule, WasmFunction, WasmSignature,
   WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, WasmTag, StringLiteralLocation
 } from './wasm-module.zena';
 import { ByteBuffer } from 'zena:byte-buffer';
-import { Discovery, findImplementingField } from './discovery.zena';
+import { Discovery } from './discovery.zena';
 import { getClassKey, getInterfaceKey, getInterfaceMemberKey } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -47,135 +47,7 @@ export final class ModuleGenerator {
     pass.run();
     performance.end(tDiscovery);
 
-    // dead code elimination: filter wasm.functions to only reached ones,
-    // plus any functions referenced by vtables to keep vtable slots valid.
-    let vtableFuncs = new HashSet<WasmFunction>();
-    for (let g in wasm.globals) {
-      if (g.initVTable != null) {
-        let vtableInit = g.initVTable as VTableInit;
-        for (let func in vtableInit.funcs) {
-          vtableFuncs.add(func);
-        }
-      }
-    }
 
-    var hasGlobalDecls = false;
-    for (let u in this.program.units) {
-      let gKeys = u.model.globalDeclarations.keys();
-      if (let (true, firstKey) = gKeys.next()) {
-        hasGlobalDecls = true;
-      }
-    }
-
-    let filteredFunctions = new Array<WasmFunction>();
-    for (let f in wasm.functions) {
-      if (!hasGlobalDecls) {
-        f.isReached = true;
-        filteredFunctions.push(f);
-        continue;
-      }
-      if (f.classType != null) {
-        let cName = getClassKey(f.classType as ClassType) as String;
-        if (!pass.instantiatedSpecializedClasses.has(cName)) {
-          f.isReached = false;
-          continue;
-        }
-      }
-      var reached = false;
-      if (f.node == null) {
-        if ((f.getterStruct != null || f.setterStruct != null) && f.methodName != null && f.classType != null) {
-          let backingName = f.methodName as String;
-          let propName = backingName.sliceBytes(4, backingName.length);
-          let cType = f.classType as ClassType;
-          let fd = findImplementingField(cType, propName, pass.program);
-          if (fd != null && pass.reachedMembers.has((fd as Node).id as i32)) {
-            reached = true;
-          } else {
-            let allIfaces = pass.collectAllImplementedInterfaces(cType);
-            for (let iface in allIfaces) {
-              let unspecIName = getInterfaceKey(iface.genericSource ?? iface);
-              let key = getInterfaceMemberKey(unspecIName, backingName);
-              if (pass.wasm.usedInterfaceMembers.has(key)) {
-                reached = true;
-                break;
-              }
-            }
-          }
-        } else {
-          reached = true;
-        }
-      } else {
-        let nodeVal = f.node as Node;
-        let nodeId = nodeVal.id as i32;
-        var isSetterReached = false;
-        if (nodeVal is SetterInfo) {
-          let parent = f.model.getParent(nodeVal);
-          if (parent != null && parent is AccessorDeclaration) {
-            isSetterReached = pass.reachedMembers.has((parent as Node).id as i32);
-          }
-        }
-        if (pass.reachedMembers.has(nodeId) || isSetterReached) {
-          reached = true;
-        } else {
-          var symIdToUse = -1 as SymbolId;
-          let funcKeys = wasm.functionMap.keys();
-          while (let (true, k) = funcKeys.next()) {
-            if (wasm.functionMap[k] == f) {
-              symIdToUse = k;
-              break;
-            }
-          }
-          if ((symIdToUse as i32) == -1) {
-            if (nodeVal is FunctionExpression) {
-              var curr = nodeVal as Node;
-              while (true) {
-                let parent = f.model.getParent(curr);
-                if (parent == null) { break; }
-                if (parent is VariableDeclaration) {
-                  let vd = parent as VariableDeclaration;
-                  if (vd.pattern is IdentifierPattern) {
-                    let ident = vd.pattern as IdentifierPattern;
-                    let parentSym = f.model.resolveDeclaration(ident);
-                    if (parentSym != null) {
-                      symIdToUse = parentSym.id;
-                    }
-                  }
-                  break;
-                } else if (parent is DeclareFunction) {
-                  let df = parent as DeclareFunction;
-                  let parentSym = f.model.resolveDeclaration(df);
-                  if (parentSym != null) {
-                    symIdToUse = parentSym.id;
-                  }
-                  break;
-                }
-                curr = parent as Node;
-              }
-            }
-          }
-          if ((symIdToUse as i32) == -1) {
-            let sym = f.model.resolveDeclaration(nodeVal);
-            if (sym != null) {
-              symIdToUse = sym.id;
-            } else {
-              let sym2 = f.model.resolve(nodeVal);
-              if (sym2 != null) {
-                symIdToUse = sym2.id;
-              }
-            }
-          }
-          if ((symIdToUse as i32) != -1 && pass.reachedGlobals.has(symIdToUse)) {
-            reached = true;
-          }
-        }
-      }
-      f.isReached = reached;
-
-      if (reached || vtableFuncs.has(f)) {
-        filteredFunctions.push(f);
-      }
-    }
-    wasm.functions = filteredFunctions;
 
     // Pre-discover all string literals inside reached function bodies so that they are registered in wasm.datas BEFORE layouts and sections are emitted
     for (let u in this.program.units) {
@@ -579,7 +451,7 @@ export final class ModuleGenerator {
         let vtableInit = g.initVTable as VTableInit;
         for (let func in vtableInit.funcs) {
           if (func.index == -1) {
-            console.log("DIAGNOSTIC VTABLE INIT ERROR: func.name=" + (if (func.name == null) "null" else func.name as String) + " has index -1");
+            throw new Error("DIAGNOSTIC VTABLE INIT ERROR: func.name=" + (if (func.name == null) "null" else func.name as String) + " has index -1");
           }
           this.emitter.emitRefFunc(func.index);
         }

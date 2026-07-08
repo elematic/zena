@@ -253,8 +253,12 @@ export let getTypeKeyForSpecialization = (type: Type): String => {
     case NullType: "null"
     case VoidType: "void"
     case ClassType as ct: {
-      let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
-      let base = `${ct.name}_${i32ToString(baseId)}`;
+      let base = if (ct.sourcePath != "") {
+        ct.sourcePath + "::" + ct.name
+      } else {
+        let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
+        `${ct.name}_${i32ToString(baseId)}`
+      };
       if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0 && isConcrete(ct)) {
         let args = ct.typeArguments as Array<Type>;
         let parts = new FixedArray<String>(1 + 2 * args.length, "");
@@ -271,8 +275,12 @@ export let getTypeKeyForSpecialization = (type: Type): String => {
       }
     }
     case InterfaceType as it: {
-      let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
-      let base = `${it.name}_${i32ToString(baseId)}`;
+      let base = if (it.sourcePath != "") {
+        it.sourcePath + "::" + it.name
+      } else {
+        let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
+        `${it.name}_${i32ToString(baseId)}`
+      };
       if (it.typeArguments != null && (it.typeArguments as Array<Type>).length > 0 && isConcrete(it)) {
         let args = it.typeArguments as Array<Type>;
         let parts = new FixedArray<String>(1 + 2 * args.length, "");
@@ -509,14 +517,6 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
     case _: ""
   };
 
-  console.log("DEBUG matchOverload: methName=" + methName + " paramTypes=" + i32ToString(paramTypes.length) + " ft.params=" + i32ToString(ft.parameters.length));
-  for (var pi = 0; pi < paramTypes.length; pi += 1) {
-    console.log("  paramType[" + i32ToString(pi) + "]=" + typeToString(paramTypes[pi]));
-  }
-  for (var pi = 0; pi < ft.parameters.length; pi += 1) {
-    console.log("  ft.param[" + i32ToString(pi) + "]=" + typeToString(ft.parameters[pi]));
-  }
-
   // Check if main function type matches
   if (ft.parameters.length == paramTypes.length) {
     var match = true;
@@ -526,17 +526,12 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
       }
     }
     if (match) {
-      console.log("  MATCHED MAIN!");
       return ft;
     }
   }
   
   let ovs = ft.overloads as Array<FunctionType>;
   for (let ov in ovs) {
-    console.log("  checking overload with params=" + i32ToString(ov.parameters.length));
-    for (var pi = 0; pi < ov.parameters.length; pi += 1) {
-      console.log("    ov.param[" + i32ToString(pi) + "]=" + typeToString(ov.parameters[pi]));
-    }
     if (ov.parameters.length == paramTypes.length) {
       var match = true;
       for (var pi = 0; pi < paramTypes.length; pi += 1) {
@@ -545,12 +540,10 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
         }
       }
       if (match) {
-        console.log("  MATCHED OVERLOAD!");
         return ov;
       }
     }
   }
-  console.log("  NO MATCH FOUND!");
   return null;
 };
 

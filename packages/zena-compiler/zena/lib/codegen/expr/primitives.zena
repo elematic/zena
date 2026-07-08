@@ -40,16 +40,6 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
     
     // Check if the identifier is a function referenced as a value
     var nodeType = ctx.wasmFunction.model.getNodeType(ident);
-    if (ident.name == "identity") {
-      let symVal = sym as Symbol;
-      console.log("DEBUG: generateIdentifier identity. symId=" + i32ToString(symVal.id as i32) + " name=" + symVal.name);
-      console.log("  nodeType is null: " + (if (nodeType == null) "true" else "false"));
-      if (nodeType != null) {
-        console.log("  nodeType: " + typeToString(nodeType as Type));
-        let subType = substituteTypeParamsInClassContext(ctx.wasmFunction.classType, nodeType as Type);
-        console.log("  substituted nodeType: " + typeToString(subType));
-      }
-    }
     if (nodeType != null) {
       nodeType = substituteTypeParamsInClassContext(ctx.wasmFunction.classType, nodeType as Type);
     }
@@ -75,14 +65,6 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
       let sig = ctx.wasm.getSignature(wrapperParams, wrapperReturns);
       
       let wrapperKey = getFunctionValueWrapperKey(keyName, ft);
-      if (ident.name == "identity") {
-        console.log("  Searching wrapperKey: " + (wrapperKey as String));
-        console.log("  All registered wrapper keys:");
-        let keys = ctx.wasm.functionValueWrappers.keys();
-        while (let (true, k) = keys.next()) {
-          console.log("    " + (k as String));
-        }
-      }
       if (ctx.wasm.functionValueWrappers.has(wrapperKey)) {
         let wrapperFunc = ctx.wasm.functionValueWrappers[wrapperKey];
         let closureStruct = getClosureStruct(ctx.wasm, ft);
@@ -361,17 +343,6 @@ export let generateTaggedTemplateExpression = (
   let stringStruct = stringStructOpt as WasmStruct;
   let stringWasmType = new ValTypeRefNull(stringStruct);
   let wasmArrayType = ctx.wasm.getArray(stringWasmType, true);
-  if (wasmArrayType.index < 0) {
-    console.log("DEBUG: wasmArrayType index is < 0!");
-    console.log("DEBUG: stringStruct name=" + (if (stringStruct.name == null) "null" else stringStruct.name as String) + " index=" + i32ToString(stringStruct.index));
-    console.log("DEBUG: wasm.types length=" + i32ToString(ctx.wasm.types.length));
-    for (let t in ctx.wasm.types) {
-      if (t is WasmArray) {
-        let wa = t as WasmArray;
-        console.log("DEBUG: found WasmArray with elem=" + getValTypeKey(wa.elementType) + " index=" + i32ToString(wa.index));
-      }
-    }
-  }
   let stringsArrayTypeIndex = wasmArrayType.index;
 
   // 3. Find TemplateStringsArray field indexes

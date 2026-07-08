@@ -15,6 +15,7 @@ import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation, createCompiler, CompilerOptions } from '../lib/compiler.zena';
 import { HashMap } from 'zena:map';
 import { PackageConfig } from '../lib/module-resolver.zena';
+import { getEnv } from 'zena:cli';
 
 let assertSnapshot = (name: String, content: String): void => {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
@@ -22,7 +23,10 @@ let assertSnapshot = (name: String, content: String): void => {
     mkdir(snapDir);
   }
   let snapFile = snapDir + '/' + name + '.snap';
-  if (exists(snapFile)) {
+  if (getEnv("UPDATE_SNAPSHOTS") != null) {
+    writeFile(snapFile, content);
+    equal(content, content);
+  } else if (exists(snapFile)) {
     let expected = readFile(snapFile);
     equal(content, expected);
   } else {
@@ -31,106 +35,54 @@ let assertSnapshot = (name: String, content: String): void => {
   }
 };
 
+let compileAndGenerateWat = (source: String): String => {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+  
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile("test.zena");
+  let checkRes = checkCompilation(compResult, null, false);
+  
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+  
+  let program = new Program(units, entryUnit);
+  let generator = new WatGenerator();
+  return generator.generate(program);
+};
+
 export let tests = suite('WatGenerator', (): void => {
   test('main returns i32 with block statement', (ctx: TestContext): void => {
-    let source = 'export let main = (): i32 => { return 42; };';
-    let ast = parse(source, 'test.zena');
-    let scopeBuilder = new ScopeBuilder('test.zena');
-    let scopeResult = scopeBuilder.build(ast);
-    let model = new SemanticModel(); 
-    model.setSymbols(scopeResult.symbols);
-
-    let modules = new Array<Module>();
-    modules.push(ast);
-    
-    let entryPoint = ast;
-    
-    let unit = {ast: ast, model: model};
-    let units = new Array<CompilationUnit>();
-    units.push(unit);
-    let program = new Program(units, unit);
-
-    let generator = new WatGenerator();
-    let result = generator.generate(program);
-    
+    let result = compileAndGenerateWat('export let main = (): i32 => { return 42; };');
     assertSnapshot('main_returns_i32_block', result);
   });
 
   test('main returns i32 with expression body', (ctx: TestContext): void => {
-    let source = 'export let main = (): i32 => 42;';
-    let ast = parse(source, 'test.zena');
-    let scopeBuilder = new ScopeBuilder('test.zena');
-    let scopeResult = scopeBuilder.build(ast);
-    let model = new SemanticModel(); 
-    model.setSymbols(scopeResult.symbols);
-
-    let modules = new Array<Module>();
-    modules.push(ast);
-    
-    let entryPoint = ast;
-    
-    let unit = {ast: ast, model: model};
-    let units = new Array<CompilationUnit>();
-    units.push(unit);
-    let program = new Program(units, unit);
-
-    let generator = new WatGenerator();
-    let result = generator.generate(program);
-    
+    let result = compileAndGenerateWat('export let main = (): i32 => 42;');
     assertSnapshot('main_returns_i32_expr', result);
   });
 
   test('main returns 1 + 2', (ctx: TestContext): void => {
-    let source = 'export let main = (): i32 => 1 + 2;';
-    let ast = parse(source, 'test.zena');
-    let scopeBuilder = new ScopeBuilder('test.zena');
-    let scopeResult = scopeBuilder.build(ast);
-    let model = new SemanticModel(); 
-    model.setSymbols(scopeResult.symbols);
-  
-    let modules = new Array<Module>();
-    let varDecl = ast.body[0] as VariableDeclaration;
-    let fnExp = varDecl.init as FunctionExpression;
-    let binExp = fnExp.body as BinaryExpression;
-    model.setNodeType(binExp, new I32Type());
-    model.setNodeType(binExp.left, new I32Type());
-    model.setNodeType(binExp.right, new I32Type());
-    
-    modules.push(ast);
-    let entryPoint = ast;
-    
-    let unit = {ast: ast, model: model};
-    let units = new Array<CompilationUnit>();
-    units.push(unit);
-    let program = new Program(units, unit);
-  
-    let generator = new WatGenerator();
-    let result = generator.generate(program);
-    
+    let result = compileAndGenerateWat('export let main = (): i32 => 1 + 2;');
     assertSnapshot('main_returns_1_plus_2', result);
   });
 
   test('multiple exported functions', (ctx: TestContext): void => {
-    let source = 'export let foo = (): i32 => 1; export let bar = (): i32 => 2;';
-    let ast = parse(source, 'test.zena');
-    let scopeBuilder = new ScopeBuilder('test.zena');
-    let scopeResult = scopeBuilder.build(ast);
-    let model = new SemanticModel(); 
-    model.setSymbols(scopeResult.symbols);
-
-    let modules = new Array<Module>();
-    modules.push(ast);
-    
-    let entryPoint = ast;
-    
-    let unit = {ast: ast, model: model};
-    let units = new Array<CompilationUnit>();
-    units.push(unit);
-    let program = new Program(units, unit);
-
-    let generator = new WatGenerator();
-    let result = generator.generate(program);
-    
+    let result = compileAndGenerateWat('export let foo = (): i32 => 1; export let bar = (): i32 => 2;');
     assertSnapshot('multiple_exported_functions', result);
   });
 
