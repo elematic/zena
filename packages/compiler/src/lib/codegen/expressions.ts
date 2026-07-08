@@ -1201,6 +1201,29 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
 
   if (expr.type === NodeType.Identifier) {
     const ident = expr as Identifier;
+    const binding = ctx.semanticContext.getResolvedBinding(ident);
+    if (binding) {
+      if (binding.kind === 'local') {
+        const local = ctx.getLocalByDecl(binding.declaration);
+        if (local) {
+          if (local.isCelled && local.unboxedType) {
+            return local.unboxedType;
+          }
+          if (local.isBoxed && local.unboxedType) {
+            return local.unboxedType;
+          }
+          return local.type;
+        }
+      } else if (binding.kind === 'global') {
+        const index = ctx.getGlobalIndexByDecl(binding.declaration);
+        if (index !== undefined) {
+          const global = ctx.getGlobalByIndex(index);
+          if (global) return global.type;
+        }
+      }
+    }
+
+    // Fallback to name-based lookup for compiler-synthesized/unbound nodes
     const local = ctx.getLocal(ident.name);
     if (local) {
       // For celled locals (mutual recursion), the actual value type is
@@ -13372,7 +13395,7 @@ function generateMatchPatternBindings(
     if (existing !== undefined && typesAreEqual(existing.type, bindingType)) {
       localIndex = existing.index;
     } else {
-      localIndex = ctx.declareLocal(asPattern.name.name, bindingType);
+      localIndex = ctx.declareLocal(asPattern.name.name, bindingType, asPattern.name);
     }
 
     body.push(
@@ -13459,7 +13482,7 @@ function generateMatchPatternBindings(
       ) {
         localIndex = existing.index;
       } else {
-        localIndex = ctx.declareLocal(pattern.name, discriminantType);
+        localIndex = ctx.declareLocal(pattern.name, discriminantType, pattern);
       }
 
       body.push(

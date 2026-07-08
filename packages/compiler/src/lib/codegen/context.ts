@@ -43,6 +43,7 @@ export interface FunctionContextState {
   extraLocals: number[][];
   nextLocalIndex: number;
   thisLocalIndex: number;
+  localIndices: Map<Node, number>;
 }
 
 /**
@@ -374,7 +375,7 @@ export class CodegenContext {
   // This includes function parameters and block-scoped variables.
   // Note: Indices are function-scoped, so the same declaration may have
   // different indices in different function contexts (e.g., closures).
-  readonly #localIndices = new WeakMap<Node, number>();
+  #localIndices = new Map<Node, number>();
 
   // Map global variable declarations to their WASM global indices.
   readonly #globalIndices = new WeakMap<Node, number>();
@@ -879,6 +880,7 @@ export class CodegenContext {
     this.#extraLocals = [];
     this.#nextLocalIndex = paramCount;
     this.#thisLocalIndex = 0;
+    this.#localIndices = new Map();
   }
 
   /**
@@ -892,6 +894,7 @@ export class CodegenContext {
       extraLocals: this.#extraLocals,
       nextLocalIndex: this.#nextLocalIndex,
       thisLocalIndex: this.#thisLocalIndex,
+      localIndices: new Map(this.#localIndices),
     };
   }
 
@@ -903,6 +906,7 @@ export class CodegenContext {
     this.#extraLocals = state.extraLocals;
     this.#nextLocalIndex = state.nextLocalIndex;
     this.#thisLocalIndex = state.thisLocalIndex;
+    this.#localIndices = new Map(state.localIndices);
   }
 
   public popScope() {
@@ -1816,6 +1820,19 @@ export class CodegenContext {
    */
   public getLocalIndexByDecl(decl: Node): number | undefined {
     return this.#localIndices.get(decl);
+  }
+
+  public getLocalByDecl(decl: Node): LocalInfo | undefined {
+    const index = this.getLocalIndexByDecl(decl);
+    if (index === undefined) return undefined;
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      for (const info of this.scopes[i].values()) {
+        if (info.index === index) {
+          return info;
+        }
+      }
+    }
+    return undefined;
   }
 
   /**
