@@ -13,7 +13,7 @@ import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { parseF64, parseI64 } from 'zena:string-convert';
 import { WasmStruct, RecordDispatchInfo, WasmFunction } from '../wasm-module.zena';
-import { generateStringLiteral } from './primitives.zena';
+import { generateStringLiteral, parseI64OrU64Literal } from './primitives.zena';
 
 export let generateMatchExpression = (
   ctx: FunctionContext,
@@ -226,14 +226,14 @@ let generateMatchPatternCheck = (
     case NumberLiteral as num: {
       ctx.emitter.emitLocalGet(discriminantLocal);
       if (discriminantType is ValTypeI32) {
-        if (let (true, parseVal) = parseI64(num.raw)) {
+        if (let (true, parseVal) = parseI64OrU64Literal(num.raw)) {
           ctx.emitter.emitI32Const(parseVal as i32);
         } else {
           ctx.emitter.emitI32Const(0);
         }
         ctx.emitter.emitI32Eq();
       } else if (discriminantType is ValTypeI64) {
-        if (let (true, parseVal) = parseI64(num.raw)) {
+        if (let (true, parseVal) = parseI64OrU64Literal(num.raw)) {
           ctx.emitter.emitI64Const(parseVal);
         } else {
           ctx.emitter.emitI64Const(0 as i64);

@@ -19,7 +19,8 @@ console.log('Building WASI tests with self-hosted compiler...');
 const assertTests = await glob(join(testsDir, 'assert/*_test.zena'));
 const testTests = await glob(join(testsDir, 'test/*_test.zena'));
 const byteBufferTests = await glob(join(testsDir, 'byte-buffer/*_test.zena'));
-const allTestFiles = [...assertTests, ...testTests, ...byteBufferTests];
+const mathTests = await glob(join(testsDir, 'math/*_test.zena'));
+const allTestFiles = [...assertTests, ...testTests, ...byteBufferTests, ...mathTests];
 
 const filesToCompile = [];
 const cliWasm = join(

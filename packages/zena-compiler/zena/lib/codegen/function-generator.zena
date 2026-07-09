@@ -37,7 +37,7 @@ import { HashMap } from 'zena:map';
 import { parseI32, parseF64, parseI64 } from 'zena:string-convert';
 import { walkEnter } from '../visitor.zena';
 import { FunctionContext } from './function-context.zena';
-import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral, generateTemplateLiteral, generateTaggedTemplateExpression } from './expr/primitives.zena';
+import { generateIdentifier, generateNumberLiteral, generateBooleanLiteral, generateStringLiteral, generateTemplateLiteral, generateTaggedTemplateExpression, parseI64OrU64Literal } from './expr/primitives.zena';
 import { generateUnaryExpression, generateBinaryExpression } from './expr/operators.zena';
 import { generateCallExpression } from './expr/calls.zena';
 import { generateAssignmentExpression } from './expr/assignment.zena';
@@ -883,7 +883,7 @@ export final class FunctionGenerator {
         if (targetWasmType is ValTypeI64) {
           if (asExpr.expression is NumberLiteral) {
             let lit = asExpr.expression as NumberLiteral;
-            if (let (true, val) = parseI64(lit.raw)) {
+            if (let (true, val) = parseI64OrU64Literal(lit.raw)) {
               this.ctx.emitter.emitI64Const(val);
               handledLiteral = true;
             }
@@ -891,7 +891,7 @@ export final class FunctionGenerator {
             let unary = asExpr.expression as UnaryExpression;
             if (unary.operator == "-" && unary.argument is NumberLiteral) {
               let lit = unary.argument as NumberLiteral;
-              if (let (true, val) = parseI64("-" + lit.raw)) {
+              if (let (true, val) = parseI64OrU64Literal("-" + lit.raw)) {
                 this.ctx.emitter.emitI64Const(val);
                 handledLiteral = true;
               }
