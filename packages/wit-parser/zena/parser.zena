@@ -12,6 +12,7 @@
 import {String} from 'zena:string';
 import {StringBuilder} from 'zena:string-builder';
 import {Option} from 'zena:option';
+import {parseI32} from 'zena:string-convert';
 import {TokenType, Span, Token} from './token.zena';
 import {Lexer, LexError} from './lexer.zena';
 
@@ -209,6 +210,7 @@ export class Type {
   
   // For List, Option, Future, Stream (inner type)
   var inner: Type | null = null;
+  var fixedLength = -1;
   
   // For Result (ok and err types, both optional)
   var okType: Type | null = null;
@@ -1146,14 +1148,20 @@ export class Parser {
       this.#advance();
       this.#expect(TokenType.LessThan);
       let inner = this.#parseType();
+      var len = -1;
       // Optional: fixed size (e.g., list<u32, 4>)
       if (this.#eat(TokenType.Comma)) {
         // Parse size - must be an integer literal
         let sizeToken = this.#expect(TokenType.Integer);
-        // For now we ignore the size in the AST, but parse it for compatibility
+        let sizeText = this.#source.sliceBytes(sizeToken.span.start, sizeToken.span.end);
+        if (let (true, val) = parseI32(sizeText)) {
+          len = val;
+        }
       }
       let endToken = this.#expect(TokenType.GreaterThan);
-      return Type.list(inner, new Span(token.span.start, endToken.span.end));
+      let t = Type.list(inner, new Span(token.span.start, endToken.span.end));
+      t.fixedLength = len;
+      return t;
     }
     
     // option<T>

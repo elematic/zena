@@ -10,7 +10,7 @@ import {Array} from 'zena:growable-array';
 import {HashMap} from 'zena:map';
 import {Option, Some, some, none} from 'zena:option';
 import {i32ToString} from 'zena:string-convert';
-import {Ast, AstItem, AstItemTag, PackageName, NestedPackage, Id} from './parser.zena';
+import {Ast, AstItem, AstItemTag, PackageName, NestedPackage, Id, Use, UseName, UsePath, UsePathTag, Include} from './parser.zena';
 import {InterfaceDef, InterfaceItem, InterfaceItemTag} from './parser.zena';
 import {WorldDef, WorldItem, WorldItemTag, ExternKind, ExternKindTag, Import, Export} from './parser.zena';
 import {TypeDef, TypeDefTag, Type, TypeTag, NamedFunc, Func, Param, Field} from './parser.zena';
@@ -56,6 +56,45 @@ class TypeRef {
   }
 }
 
+/** Represents owners of types - can be an interface or a world. */
+class TypeOwner {
+  isWorld: boolean;
+  index: i32;
+
+  new(isWorld: boolean, index: i32) : isWorld = isWorld, index = index;
+
+  static fromInterface(index: i32): TypeOwner {
+    return new TypeOwner(false, index);
+  }
+
+  static fromWorld(index: i32): TypeOwner {
+    return new TypeOwner(true, index);
+  }
+}
+
+/** Represents a scope type element - either a type definition or a use alias. */
+class ScopeTypeElement {
+  var isTypeDef: boolean;
+  var typeDef: TypeDef | null = null;
+  var usePath: UsePath | null = null;
+  var useName: UseName | null = null;
+
+  new(isTypeDef: boolean) : isTypeDef = isTypeDef;
+
+  static fromTd(td: TypeDef): ScopeTypeElement {
+    let e = new ScopeTypeElement(true);
+    e.typeDef = td;
+    return e;
+  }
+
+  static fromUse(path: UsePath, name: UseName): ScopeTypeElement {
+    let e = new ScopeTypeElement(false);
+    e.usePath = path;
+    e.useName = name;
+    return e;
+  }
+}
+
 /** Field in a record type. */
 class RecordField {
   var name: String;
@@ -84,10 +123,10 @@ class EnumCase {
 class TypeEntry {
   var name: String | null;
   var kind: TypeKind;
-  var owner: Option<i32>;
+  var owner: Option<TypeOwner>;
   var docs: Docs | null;
 
-  new(name: String | null, kind: TypeKind, owner: Option<i32>, docs: Docs | null) : name = name, kind = kind, owner = owner, docs = docs;
+  new(name: String | null, kind: TypeKind, owner: Option<TypeOwner>, docs: Docs | null) : name = name, kind = kind, owner = owner, docs = docs;
 }
 
 /** The kind object for a type entry. */
@@ -104,6 +143,7 @@ class TypeKind {
   // For handle types (borrow/own)
   var borrowIndex = -1;
   var ownIndex = -1;
+  var listLength = -1;
 
   new(tag: String) : tag = tag;
 }
@@ -134,6 +174,8 @@ class SerializeContext {
   // Track which type indices are resources (for bare resource name -> own<resource> conversion)
   var resourceTypeIndices = new HashMap<i32, i32>();
   var currentPackageIndex = 0;
+  var currentInterfaceName: String | null = null;
+  var currentWorldName: String | null = null;
 
   registerInterface(iface: InterfaceDef): i32 {
     let index = this.interfaces.length;
@@ -208,12 +250,32 @@ class SerializeContext {
     if (t.tag == TypeTag.Name) {
       let id = t.name as Id;
       let name = normalizeId(id.name);
-      if (let (true, idx) = this.typeIndices.get(name)) {
-        // If it's a resource, return own<resource> instead
-        if (this.resourceTypeIndices.has(idx)) {
-          return TypeRef.idx(this.getOwnType(idx));
+      
+      var foundIdx = -1;
+      if (this.currentInterfaceName != null) {
+        let key = "interface:" + (this.currentInterfaceName as String) + "/" + name;
+        if (let (true, idx) = this.typeIndices.get(key)) {
+          foundIdx = idx;
         }
-        return TypeRef.idx(idx);
+      }
+      if (foundIdx < 0 && this.currentWorldName != null) {
+        let key = "world:" + (this.currentWorldName as String) + "/" + name;
+        if (let (true, idx) = this.typeIndices.get(key)) {
+          foundIdx = idx;
+        }
+      }
+      if (foundIdx < 0) {
+        if (let (true, idx) = this.typeIndices.get(name)) {
+          foundIdx = idx;
+        }
+      }
+      
+      if (foundIdx >= 0) {
+        // If it's a resource, return own<resource> instead
+        if (this.resourceTypeIndices.has(foundIdx)) {
+          return TypeRef.idx(this.getOwnType(foundIdx));
+        }
+        return TypeRef.idx(foundIdx);
       }
       return TypeRef.str(name);
     }
@@ -241,9 +303,29 @@ class SerializeContext {
     if (t.tag == TypeTag.Name) {
       let id = t.name as Id;
       let name = normalizeId(id.name);
+      
+      var foundIdx = -1;
+      if (this.currentInterfaceName != null) {
+        let key = "interface:" + (this.currentInterfaceName as String) + "/" + name;
+        if (let (true, idx) = this.typeIndices.get(key)) {
+          foundIdx = idx;
+        }
+      }
+      if (foundIdx < 0 && this.currentWorldName != null) {
+        let key = "world:" + (this.currentWorldName as String) + "/" + name;
+        if (let (true, idx) = this.typeIndices.get(key)) {
+          foundIdx = idx;
+        }
+      }
+      if (foundIdx < 0) {
+        if (let (true, idx) = this.typeIndices.get(name)) {
+          foundIdx = idx;
+        }
+      }
+      
       // Check if it's a user-defined type
-      if (let (true, idx) = this.typeIndices.get(name)) {
-        return TypeRef.idx(idx);
+      if (foundIdx >= 0) {
+        return TypeRef.idx(foundIdx);
       }
       // Not a registered type - return as string (shouldn't happen for valid WIT)
       return TypeRef.str(name);
@@ -302,10 +384,18 @@ class SerializeContext {
       return this.getOrCreateAnonType(key, kind);
     } else if (t.tag == TypeTag.List) {
       let innerRef = this.getTypeRef(t.inner as Type);
-      let key = "list:" + this.typeRefToKey(innerRef);
-      let kind = new TypeKind("list");
-      kind.inner = innerRef;
-      return this.getOrCreateAnonType(key, kind);
+      if (t.fixedLength >= 0) {
+        let key = "fixed-length-list:" + this.typeRefToKey(innerRef) + ":" + i32ToString(t.fixedLength);
+        let kind = new TypeKind("fixed-length-list");
+        kind.inner = innerRef;
+        kind.listLength = t.fixedLength;
+        return this.getOrCreateAnonType(key, kind);
+      } else {
+        let key = "list:" + this.typeRefToKey(innerRef);
+        let kind = new TypeKind("list");
+        kind.inner = innerRef;
+        return this.getOrCreateAnonType(key, kind);
+      }
     } else if (t.tag == TypeTag.Future) {
       var key = "future:";
       let kind = new TypeKind("future");
@@ -378,6 +468,444 @@ class SerializeContext {
 // ============================================================================
 // Helper Functions (defined before use)
 // ============================================================================
+
+let getUsePathInterfaceName = (path: UsePath): String => {
+  if (path.tag == UsePathTag.Id) {
+    return normalizeId((path.id as Id).name);
+  }
+  let pkg = path.packageId as PackageName;
+  let name = (path.name as Id).name;
+  return normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name) + "/" + normalizeId(name);
+};
+
+let collectTypeDeps = (t: Type, deps: Array<String>): void => {
+  if (t.tag == TypeTag.Name) {
+    let id = t.name as Id;
+    deps.push(normalizeId(id.name));
+  } else if (t.tag == TypeTag.Tuple) {
+    let types = t.types as Array<Type>;
+    var idx = 0;
+    while (idx < types.length) {
+      collectTypeDeps(types[idx], deps);
+      idx = idx + 1;
+    }
+  } else if (t.tag == TypeTag.Result) {
+    if (t.okType != null) {
+      collectTypeDeps(t.okType as Type, deps);
+    }
+    if (t.errType != null) {
+      collectTypeDeps(t.errType as Type, deps);
+    }
+  } else if (t.tag == TypeTag.Option || t.tag == TypeTag.List ||
+             t.tag == TypeTag.Future || t.tag == TypeTag.Stream ||
+             t.tag == TypeTag.Own || t.tag == TypeTag.Borrow) {
+    if (t.inner != null) {
+      collectTypeDeps(t.inner as Type, deps);
+    }
+  }
+};
+
+let collectTypeDefDeps = (td: TypeDef, deps: Array<String>): void => {
+  if (td.tag == TypeDefTag.Record) {
+    let fields = td.fields as Array<Field>;
+    var idx = 0;
+    while (idx < fields.length) {
+      collectTypeDeps(fields[idx].type, deps);
+      idx = idx + 1;
+    }
+  } else if (td.tag == TypeDefTag.Alias) {
+    collectTypeDeps(td.aliasType as Type, deps);
+  } else if (td.tag == TypeDefTag.Variant) {
+    let cases = td.cases as Array<Case>;
+    var idx = 0;
+    while (idx < cases.length) {
+      let c = cases[idx];
+      if (c.type != null) {
+        collectTypeDeps(c.type as Type, deps);
+      }
+      idx = idx + 1;
+    }
+  }
+};
+
+let collectInterfaceDeps = (iface: InterfaceDef, deps: Array<String>): void => {
+  var idx = 0;
+  while (idx < iface.items.length) {
+    let item = iface.items[idx];
+    if (item.tag == InterfaceItemTag.Use) {
+      let u = item.use as Use;
+      if (u.from.tag == UsePathTag.Id) {
+        deps.push(normalizeId((u.from.id as Id).name));
+      }
+    }
+    idx = idx + 1;
+  }
+};
+
+let sortInterfaces = (interfaces: Array<InterfaceDef>): Array<InterfaceDef> => {
+  let sorted = new Array<InterfaceDef>();
+  let visited = new HashMap<String, i32>();
+  
+  let ifaceMap = new HashMap<String, InterfaceDef>();
+  var idx = 0;
+  while (idx < interfaces.length) {
+    let iface = interfaces[idx];
+    ifaceMap[normalizeId(iface.name.name)] = iface;
+    idx = idx + 1;
+  }
+  
+  let visit = (name: String): void => {
+    if (let (true, status) = visited.get(name)) {
+      if (status == 1 || status == 2) {
+        return;
+      }
+    }
+    
+    if (let (true, iface) = ifaceMap.get(name)) {
+      visited[name] = 1;
+      
+      let deps = new Array<String>();
+      collectInterfaceDeps(iface as InterfaceDef, deps);
+      
+      var dIdx = 0;
+      while (dIdx < deps.length) {
+        let dep = deps[dIdx];
+        if (ifaceMap.has(dep)) {
+          visit(dep);
+        }
+        dIdx = dIdx + 1;
+      }
+      
+      visited[name] = 2;
+      sorted.push(iface as InterfaceDef);
+    }
+  };
+  
+  idx = 0;
+  while (idx < interfaces.length) {
+    let iface = interfaces[idx];
+    let name = normalizeId(iface.name.name);
+    visit(name);
+    idx = idx + 1;
+  }
+  
+  return sorted;
+};
+
+let collectWorldDeps = (world: WorldDef, deps: Array<String>): void => {
+  var idx = 0;
+  while (idx < world.items.length) {
+    let item = world.items[idx];
+    if (item.tag == WorldItemTag.Include) {
+      let inc = item.include as Include;
+      if (inc.from.tag == UsePathTag.Id) {
+        deps.push(normalizeId((inc.from.id as Id).name));
+      }
+    }
+    idx = idx + 1;
+  }
+};
+
+let sortWorlds = (worlds: Array<WorldDef>): Array<WorldDef> => {
+  let sorted = new Array<WorldDef>();
+  let visited = new HashMap<String, i32>();
+  
+  let worldMap = new HashMap<String, WorldDef>();
+  var idx = 0;
+  while (idx < worlds.length) {
+    let world = worlds[idx];
+    worldMap[normalizeId(world.name.name)] = world;
+    idx = idx + 1;
+  }
+  
+  let visit = (name: String): void => {
+    if (let (true, status) = visited.get(name)) {
+      if (status == 1 || status == 2) {
+        return;
+      }
+    }
+    
+    if (let (true, world) = worldMap.get(name)) {
+      visited[name] = 1;
+      
+      let deps = new Array<String>();
+      collectWorldDeps(world as WorldDef, deps);
+      
+      var dIdx = 0;
+      while (dIdx < deps.length) {
+        let dep = deps[dIdx];
+        if (worldMap.has(dep)) {
+          visit(dep);
+        }
+        dIdx = dIdx + 1;
+      }
+      
+      visited[name] = 2;
+      sorted.push(world as WorldDef);
+    }
+  };
+  
+  idx = 0;
+  while (idx < worlds.length) {
+    let world = worlds[idx];
+    let name = normalizeId(world.name.name);
+    visit(name);
+    idx = idx + 1;
+  }
+  
+  return sorted;
+};
+
+let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceIdx: i32): void => {
+  let siblingTypes = new HashMap<String, ScopeTypeElement>();
+  let ifaceName = normalizeId(iface.name.name);
+  
+  var idx = 0;
+  while (idx < iface.items.length) {
+    let item = iface.items[idx];
+    if (item.tag == InterfaceItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      siblingTypes[normalizeId(td.name.name)] = ScopeTypeElement.fromTd(td);
+    } else if (item.tag == InterfaceItemTag.Use) {
+      let u = item.use as Use;
+      var j = 0;
+      while (j < u.names.length) {
+        let un = u.names[j];
+        let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
+        siblingTypes[localName] = ScopeTypeElement.fromUse(u.from, un);
+        j = j + 1;
+      }
+    }
+    idx = idx + 1;
+  }
+
+  let visited = new HashMap<String, i32>();
+  let registeredIndices = new HashMap<String, i32>();
+
+  let ensureRegistered = (name: String): i32 => {
+    let normName = normalizeId(name);
+    if (let (true, status) = visited.get(normName)) {
+      if (status == 2) {
+        if (let (true, registeredIdx) = registeredIndices.get(normName)) {
+          return registeredIdx;
+        }
+        return -1;
+      }
+      if (status == 1) {
+        return -1;
+      }
+    }
+
+    if (let (true, elemObj) = siblingTypes.get(normName)) {
+      visited[normName] = 1;
+      let elem = elemObj as ScopeTypeElement;
+      
+      var typeIdx = -1;
+      if (elem.isTypeDef) {
+        let td = elem.typeDef as TypeDef;
+        let deps = new Array<String>();
+        collectTypeDefDeps(td, deps);
+
+        var dIdx = 0;
+        while (dIdx < deps.length) {
+          let dep = deps[dIdx];
+          if (siblingTypes.has(dep)) {
+            ensureRegistered(dep);
+          }
+          dIdx = dIdx + 1;
+        }
+
+        typeIdx = registerTypeDef(ctx, td, TypeOwner.fromInterface(ifaceIdx));
+      } else {
+        let srcIfaceName = getUsePathInterfaceName(elem.usePath as UsePath);
+        let srcTypeName = normalizeId((elem.useName as UseName).name.name);
+        
+        var srcIdx = -1;
+        let lookupKey = "interface:" + srcIfaceName + "/" + srcTypeName;
+        if (let (true, sIdx) = ctx.typeIndices.get(lookupKey)) {
+          srcIdx = sIdx;
+        } else {
+          if (let (true, sIdx) = ctx.typeIndices.get(srcTypeName)) {
+            srcIdx = sIdx;
+          }
+        }
+        
+        if (srcIdx >= 0) {
+          let kind = new TypeKind("type");
+          kind.inner = TypeRef.idx(srcIdx);
+          
+          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromInterface(ifaceIdx)), null);
+          typeIdx = ctx.registerType(entry);
+        }
+      }
+
+      if (typeIdx >= 0) {
+        registeredIndices[normName] = typeIdx;
+        ctx.typeIndices["interface:" + ifaceName + "/" + normName] = typeIdx;
+      }
+      
+      visited[normName] = 2;
+      return typeIdx;
+    }
+
+    return -1;
+  };
+
+  idx = 0;
+  while (idx < iface.items.length) {
+    let item = iface.items[idx];
+    if (item.tag == InterfaceItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      ensureRegistered(normalizeId(td.name.name));
+    } else if (item.tag == InterfaceItemTag.Use) {
+      let u = item.use as Use;
+      var j = 0;
+      while (j < u.names.length) {
+        let un = u.names[j];
+        let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
+        ensureRegistered(localName);
+        j = j + 1;
+      }
+    }
+    idx = idx + 1;
+  }
+};
+
+let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32): void => {
+  let siblingTypes = new HashMap<String, ScopeTypeElement>();
+  let worldName = normalizeId(world.name.name);
+  
+  var idx = 0;
+  while (idx < world.items.length) {
+    let item = world.items[idx];
+    if (item.tag == WorldItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      siblingTypes[normalizeId(td.name.name)] = ScopeTypeElement.fromTd(td);
+    } else if (item.tag == WorldItemTag.Use) {
+      let u = item.use as Use;
+      var j = 0;
+      while (j < u.names.length) {
+        let un = u.names[j];
+        let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
+        siblingTypes[localName] = ScopeTypeElement.fromUse(u.from, un);
+        j = j + 1;
+      }
+    }
+    idx = idx + 1;
+  }
+
+  let visited = new HashMap<String, i32>();
+  let registeredIndices = new HashMap<String, i32>();
+
+  let ensureRegistered = (name: String): i32 => {
+    let normName = normalizeId(name);
+    if (let (true, status) = visited.get(normName)) {
+      if (status == 2) {
+        if (let (true, registeredIdx) = registeredIndices.get(normName)) {
+          return registeredIdx;
+        }
+        return -1;
+      }
+      if (status == 1) {
+        return -1;
+      }
+    }
+
+    if (let (true, elemObj) = siblingTypes.get(normName)) {
+      visited[normName] = 1;
+      let elem = elemObj as ScopeTypeElement;
+      
+      var typeIdx = -1;
+      if (elem.isTypeDef) {
+        let td = elem.typeDef as TypeDef;
+        let deps = new Array<String>();
+        collectTypeDefDeps(td, deps);
+
+        var dIdx = 0;
+        while (dIdx < deps.length) {
+          let dep = deps[dIdx];
+          if (siblingTypes.has(dep)) {
+            ensureRegistered(dep);
+          }
+          dIdx = dIdx + 1;
+        }
+
+        typeIdx = registerTypeDef(ctx, td, TypeOwner.fromWorld(worldIdx));
+      } else {
+        let srcIfaceName = getUsePathInterfaceName(elem.usePath as UsePath);
+        let srcTypeName = normalizeId((elem.useName as UseName).name.name);
+        
+        var srcIdx = -1;
+        let lookupKey = "interface:" + srcIfaceName + "/" + srcTypeName;
+        if (let (true, sIdx) = ctx.typeIndices.get(lookupKey)) {
+          srcIdx = sIdx;
+        } else {
+          if (let (true, sIdx) = ctx.typeIndices.get(srcTypeName)) {
+            srcIdx = sIdx;
+          }
+        }
+        
+        if (srcIdx >= 0) {
+          let kind = new TypeKind("type");
+          kind.inner = TypeRef.idx(srcIdx);
+          
+          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromWorld(worldIdx)), null);
+          typeIdx = ctx.registerType(entry);
+        }
+      }
+
+      if (typeIdx >= 0) {
+        registeredIndices[normName] = typeIdx;
+        ctx.typeIndices["world:" + worldName + "/" + normName] = typeIdx;
+      }
+      
+      visited[normName] = 2;
+      return typeIdx;
+    }
+
+    return -1;
+  };
+
+  idx = 0;
+  while (idx < world.items.length) {
+    let item = world.items[idx];
+    if (item.tag == WorldItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      ensureRegistered(normalizeId(td.name.name));
+    } else if (item.tag == WorldItemTag.Use) {
+      let u = item.use as Use;
+      var j = 0;
+      while (j < u.names.length) {
+        let un = u.names[j];
+        let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
+        ensureRegistered(localName);
+        j = j + 1;
+      }
+    }
+    idx = idx + 1;
+  }
+};
+
+let registerAllTypes = (ctx: SerializeContext): void => {
+  var iIdx = 0;
+  while (iIdx < ctx.interfaces.length) {
+    ctx.currentInterfaceName = normalizeId(ctx.interfaces[iIdx].name.name);
+    ctx.currentWorldName = null;
+    registerInterfaceTypes(ctx, ctx.interfaces[iIdx], iIdx);
+    iIdx = iIdx + 1;
+  }
+
+  var wIdx = 0;
+  while (wIdx < ctx.worlds.length) {
+    ctx.currentInterfaceName = null;
+    ctx.currentWorldName = normalizeId(ctx.worlds[wIdx].name.name);
+    registerWorldTypes(ctx, ctx.worlds[wIdx], wIdx);
+    wIdx = wIdx + 1;
+  }
+  
+  ctx.currentInterfaceName = null;
+  ctx.currentWorldName = null;
+};
 
 let formatPackageName = (name: PackageName | null): String => {
   if (name == null) { return ""; }
@@ -495,9 +1023,16 @@ let buildTypeKind = (ctx: SerializeContext, t: Type): TypeKind => {
     kind.inner = ctx.getTypeRef(t.inner as Type);
     return kind;
   } else if (t.tag == TypeTag.List) {
-    let kind = new TypeKind("list");
-    kind.inner = ctx.getTypeRef(t.inner as Type);
-    return kind;
+    if (t.fixedLength >= 0) {
+      let kind = new TypeKind("fixed-length-list");
+      kind.inner = ctx.getTypeRef(t.inner as Type);
+      kind.listLength = t.fixedLength;
+      return kind;
+    } else {
+      let kind = new TypeKind("list");
+      kind.inner = ctx.getTypeRef(t.inner as Type);
+      return kind;
+    }
   } else if (t.tag == TypeTag.Result) {
     let kind = new TypeKind("result");
     if (t.okType != null) {
@@ -540,7 +1075,7 @@ let buildTypeKind = (ctx: SerializeContext, t: Type): TypeKind => {
   }
 };
 
-let registerTypeDef = (ctx: SerializeContext, td: TypeDef, ownerInterface: i32): i32 => {
+let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i32 => {
   var kind = new TypeKind(typeDefTagToString(td.tag));
   
   if (td.tag == TypeDefTag.Record) {
@@ -602,7 +1137,7 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, ownerInterface: i32):
   if (td.docs.contents != null) {
     docs = td.docs;
   }
-  let entry = new TypeEntry(normalizeId(td.name.name), kind, some(ownerInterface), docs);
+  let entry = new TypeEntry(normalizeId(td.name.name), kind, some(owner), docs);
   let typeIdx = ctx.registerType(entry);
   
   // Track resources for bare name -> own<resource> conversion
@@ -802,6 +1337,11 @@ let serializeTypeKind = (b: JsonBuilder, kind: TypeKind): void => {
   } else if (kind.tag == "list") {
     b.key("list");
     serializeTypeRef(b, kind.inner as TypeRef);
+  } else if (kind.tag == "fixed-length-list") {
+    b.key("fixed-length-list").beginArray();
+    serializeTypeRef(b, kind.inner as TypeRef);
+    b.i32(kind.listLength);
+    b.endArray();
   } else if (kind.tag == "future") {
     b.key("future");
     if (kind.inner != null) {
@@ -851,7 +1391,9 @@ let serializeTypeKind = (b: JsonBuilder, kind: TypeKind): void => {
       let flags = kind.flagValues as Array<String>;
       var idx = 0;
       while (idx < flags.length) {
-        b.string(flags[idx]);
+        b.beginObject();
+        b.key("name").string(flags[idx]);
+        b.endObject();
         idx = idx + 1;
       }
     }
@@ -907,9 +1449,14 @@ let serializeTypeEntry = (b: JsonBuilder, entry: TypeEntry): void => {
   b.key("kind");
   serializeTypeKind(b, entry.kind);
   
-  if (entry.owner is Some<i32>) {
+  if (entry.owner is Some<TypeOwner>) {
+    let o = (entry.owner as Some<TypeOwner>).value;
     b.key("owner").beginObject();
-    b.key("interface").i32((entry.owner as Some<i32>).value);
+    if (o.isWorld) {
+      b.key("world").i32(o.index);
+    } else {
+      b.key("interface").i32(o.index);
+    }
     b.endObject();
   } else {
     b.key("owner").nullValue();
@@ -986,8 +1533,12 @@ let serializeExternKind = (b: JsonBuilder, ctx: SerializeContext, kind: ExternKi
 };
 
 let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, index: i32): void => {
+  let worldName = normalizeId(world.name.name);
+  ctx.currentInterfaceName = null;
+  ctx.currentWorldName = worldName;
+  
   b.beginObject();
-  b.key("name").string(normalizeId(world.name.name));
+  b.key("name").string(worldName);
   
   // Serialize imports
   b.key("imports").beginObject();
@@ -1049,8 +1600,12 @@ let serializePackage = (b: JsonBuilder, pkg: PackageEntry): void => {
 };
 
 let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: InterfaceDef, index: i32): void => {
+  let ifaceName = normalizeId(iface.name.name);
+  ctx.currentInterfaceName = ifaceName;
+  ctx.currentWorldName = null;
+  
   b.beginObject();
-  b.key("name").string(normalizeId(iface.name.name));
+  b.key("name").string(ifaceName);
   
   b.key("types").beginObject();
   var idx = 0;
@@ -1058,8 +1613,23 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
-      let typeIdx = registerTypeDef(ctx, td, index);
-      b.key(normalizeId(td.name.name)).i32(typeIdx);
+      let name = normalizeId(td.name.name);
+      let key = "interface:" + ifaceName + "/" + name;
+      if (let (true, typeIdx) = ctx.typeIndices.get(key)) {
+        b.key(name).i32(typeIdx);
+      }
+    } else if (item.tag == InterfaceItemTag.Use) {
+      let u = item.use as Use;
+      var j = 0;
+      while (j < u.names.length) {
+        let un = u.names[j];
+        let name = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
+        let key = "interface:" + ifaceName + "/" + name;
+        if (let (true, typeIdx) = ctx.typeIndices.get(key)) {
+          b.key(name).i32(typeIdx);
+        }
+        j = j + 1;
+      }
     }
     idx = idx + 1;
   }
@@ -1123,19 +1693,37 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
   ctx.packages.push(pkg);
   ctx.currentPackageIndex = 0;
   
+  let rawInterfaces = new Array<InterfaceDef>();
+  let rawWorlds = new Array<WorldDef>();
+  
   var idx = 0;
   while (idx < ast.items.length) {
     let item = ast.items[idx];
     if (item.tag == AstItemTag.Interface) {
-      let iface = item.interfaceDef as InterfaceDef;
-      let ifaceIdx = ctx.registerInterface(iface);
-      pkg.interfaces[normalizeId(iface.name.name)] = ifaceIdx;
+      rawInterfaces.push(item.interfaceDef as InterfaceDef);
     } else if (item.tag == AstItemTag.World) {
-      let world = item.worldDef as WorldDef;
-      let worldIdx = ctx.registerWorld(world);
-      pkg.worlds[normalizeId(world.name.name)] = worldIdx;
+      rawWorlds.push(item.worldDef as WorldDef);
     }
     idx = idx + 1;
+  }
+  
+  let sortedInterfaces = sortInterfaces(rawInterfaces);
+  let sortedWorlds = sortWorlds(rawWorlds);
+  
+  var i = 0;
+  while (i < sortedInterfaces.length) {
+    let iface = sortedInterfaces[i];
+    let ifaceIdx = ctx.registerInterface(iface);
+    pkg.interfaces[normalizeId(iface.name.name)] = ifaceIdx;
+    i = i + 1;
+  }
+  
+  var w = 0;
+  while (w < sortedWorlds.length) {
+    let world = sortedWorlds[w];
+    let worldIdx = ctx.registerWorld(world);
+    pkg.worlds[normalizeId(world.name.name)] = worldIdx;
+    w = w + 1;
   }
 };
 
@@ -1149,6 +1737,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
 export let serializeAstToJson = (ast: Ast): String => {
   let ctx = new SerializeContext();
   collectFromAst(ctx, ast);
+  registerAllTypes(ctx);
   
   let b = new JsonBuilder();
   b.beginObject();

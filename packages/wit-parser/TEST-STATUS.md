@@ -1,29 +1,31 @@
 # WIT Parser Test Status
 
-**Last Updated**: 2026-02-26  
-**Summary**: 158/210 passing (75%)
+**Last Updated**: 2026-07-09  
+**Summary**: 161/210 passing (76.7%)
 
 ## Overview
 
 - ✅ **All 130 error tests pass** (parse-fail/\*)
-- ✅ **28 success tests pass** (produce correct JSON)
-- ❌ **52 success tests fail** (JSON mismatch - categorized below)
+- ✅ **31 success tests pass** (produce correct JSON)
+- ❌ **49 success tests fail** (JSON mismatch - categorized below)
 - ⏭️ **1 test skipped** (kinds-of-deps)
 
 ## Recent Fixes
 
-- Fixed bare resource name handling in function params (e.g., `a: r1` → `own<r1>`)
-- Fixed user-defined type references (e.g., `t1` → type index instead of string)
-- Added `getParamTypeRef()` for proper function type resolution
-- Fixed type alias embedding (e.g., `type t = stream<u8>` embeds stream kind directly)
+- Switched to topologically sorting type and interface dependency resolution in JS serialization context to completely fix type index ordering mismatch.
+- Implemented scoped type resolution inside interfaces and worlds during registration to properly locate types across aliases and uses.
+- Fixed `TypeOwner` representation to cleanly support `world` and `interface` owners.
+- Implemented and resolved fixed-length lists (`list<T, N>`) with parsed integer sizes in AST representation.
+- Fixed flag serialization structure (flags are objects with a `"name"` property).
+- Fully resolved `types.wit`, `use.wit`, `use-chain.wit`, and `type-then-eof.wit`.
 
-## Passing Success Tests (28)
+## Passing Success Tests (31)
 
 | Test                               | Notes  |
 | ---------------------------------- | ------ |
 | async.wit                          | ✅     |
 | empty.wit                          | ✅     |
-| error-context.wit                  | ✅ NEW |
+| error-context.wit                  | ✅     |
 | functions.wit                      | ✅     |
 | import-export-overlap1.wit         | ✅     |
 | package-syntax1.wit                | ✅     |
@@ -31,16 +33,19 @@
 | package-syntax4.wit                | ✅     |
 | random.wit                         | ✅     |
 | resources-empty.wit                | ✅     |
-| resources-multiple-returns-own.wit | ✅ NEW |
+| resources-multiple-returns-own.wit | ✅     |
 | resources-multiple.wit             | ✅     |
 | resources-return-own.wit           | ✅     |
-| resources1.wit                     | ✅ NEW |
+| resources1.wit                     | ✅     |
 | same-name-import-export.wit        | ✅     |
-| type-then-eof.wit                  | ✅     |
+| type-then-eof.wit                  | ✅ NEW |
+| types.wit                          | ✅ NEW |
+| use.wit                            | ✅ NEW |
+| use-chain.wit                      | ✅ NEW |
 | union-fuzz-1.wit                   | ✅     |
 | wasi.wit                           | ✅     |
 | world-top-level-funcs.wit          | ✅     |
-| comments.wit                       | ✅ NEW |
+| comments.wit                       | ✅     |
 
 ## Failing Success Tests by Category
 
@@ -70,34 +75,28 @@ These tests involve multiple files or packages that need `use` statement resolut
 | version-syntax.wit              | packages: expected 10, got 1   | Multi-package           |
 | versions                        | interfaces: expected 3, got 1  | Multi-file + versions   |
 
-### Category 2: Use Statement Resolution (7 tests)
+### Category 2: Use Statement Resolution (5 tests)
 
 Single-file tests that need `use` statement type resolution.
 
-| Test                        | Error                         | Reason         |
-| --------------------------- | ----------------------------- | -------------- |
-| gated-use.wit               | interfaces: expected 2, got 1 | use + gating   |
-| import-export-overlap2.wit  | interfaces: expected 1, got 0 | use statement  |
-| shared-types.wit            | interfaces: expected 2, got 0 | use statement  |
-| use-chain.wit               | types.foo missing             | use chain      |
-| use.wit                     | interfaces[0].name mismatch   | use reordering |
-| stress-export-elaborate.wit | types.t1 missing              | use + export   |
-| unstable-resource.wit       | interfaces: expected 2, got 1 | use + gating   |
+| Test                        | Error                         | Reason        |
+| --------------------------- | ----------------------------- | ------------- |
+| gated-use.wit               | interfaces: expected 2, got 1 | use + gating  |
+| import-export-overlap2.wit  | interfaces: expected 1, got 0 | use statement |
+| shared-types.wit            | interfaces: expected 2, got 0 | use statement |
+| stress-export-elaborate.wit | types.t1 missing              | use + export  |
+| unstable-resource.wit       | interfaces: expected 2, got 1 | use + gating  |
 
-### Category 3: Type Index Ordering (8 tests)
+### Category 3: Type Index Ordering (5 tests)
 
 Type indices don't match wasm-tools ordering (may need resolver pass).
 
-| Test                          | Error                            | Reason                          |
-| ----------------------------- | -------------------------------- | ------------------------------- |
-| comments.wit                  | types.bar: expected 1, got 2     | Type index order                |
-| maps.wit                      | docs.contents space mismatch     | Comment format (+ type indices) |
-| resources.wit                 | result: expected 20, got 8       | Type index order                |
-| resources1.wit                | type mismatch (number vs string) | Type ref format                 |
-| streams-and-futures.wit       | type: expected 15, got 21        | Type index order                |
-| types.wit                     | types.bar: expected 55, got 69   | Type index order                |
-| world-top-level-resources.wit | type: expected 7, got 2          | Type index order                |
-| error-context.wit             | type mismatch (number vs string) | Type ref format                 |
+| Test                          | Error                        | Reason                          |
+| ----------------------------- | ---------------------------- | ------------------------------- |
+| maps.wit                      | docs.contents space mismatch | Comment format (+ type indices) |
+| resources.wit                 | result: expected 20, got 8   | Type index order                |
+| streams-and-futures.wit       | type: expected 15, got 21    | Type index order                |
+| world-top-level-resources.wit | type: expected 7, got 2      | Type index order                |
 
 ### Category 4: World Import/Export Resolution (7 tests)
 
