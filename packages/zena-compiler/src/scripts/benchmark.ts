@@ -67,6 +67,7 @@ if (filter) {
 const bootstrapCli = join(repoRoot, 'packages', 'cli', 'lib', 'cli.js');
 const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 const runWasiNode = join(pkgDir, 'scripts', 'run-wasi-node.js');
+const runCompilerNode = join(pkgDir, 'scripts', 'run-compiler-node.js');
 
 if (runCompiler && targets.length > 0) {
   console.log('==================================================');
@@ -103,7 +104,6 @@ if (runCompiler && targets.length > 0) {
     let totalScope = 0;
     let totalCheck = 0;
     let totalCodegen = 0;
-    let totalUsage = 0;
     let totalDiscovery = 0;
     let totalLayout = 0;
     let totalEmitCode = 0;
@@ -132,8 +132,6 @@ if (runCompiler && targets.length > 0) {
           totalCheck += parseFloat(line.split(':')[1].trim());
         } else if (line.startsWith('Codegen:')) {
           totalCodegen += parseFloat(line.split(':')[1].trim());
-        } else if (line.trim().startsWith('Usage:')) {
-          totalUsage += parseFloat(line.split(':')[1].trim());
         } else if (line.trim().startsWith('Discovery:')) {
           totalDiscovery += parseFloat(line.split(':')[1].trim());
         } else if (line.trim().startsWith('Layout:')) {
@@ -153,17 +151,76 @@ if (runCompiler && targets.length > 0) {
     const scope = totalScope / ITERATIONS;
     const check = totalCheck / ITERATIONS;
     const codegen = totalCodegen / ITERATIONS;
-    const usage = totalUsage / ITERATIONS;
     const discovery = totalDiscovery / ITERATIONS;
     const layout = totalLayout / ITERATIONS;
     const emitCode = totalEmitCode / ITERATIONS;
     const emitOther = totalEmitOther / ITERATIONS;
     const meanTotalTime = totalTime / ITERATIONS;
 
+    // --- Benchmark Self-Hosted Compiler in Node.js & Capture Timings ---
+    const selfNodeTimes: number[] = [];
+    let totalNodeFileLoad = 0;
+    let totalNodePureParse = 0;
+    let totalNodeScope = 0;
+    let totalNodeCheck = 0;
+    let totalNodeCodegen = 0;
+    let totalNodeDiscovery = 0;
+    let totalNodeLayout = 0;
+    let totalNodeEmitCode = 0;
+    let totalNodeEmitOther = 0;
+    let totalNodeTime = 0;
+
+    for (let i = 0; i < ITERATIONS; i++) {
+      const t0 = performance.now();
+      const output = execSync(
+        `node --experimental-wasi-unstable-preview1 "${runCompilerNode}" "${target.path}" -o "${selfOutWasm}" --time`,
+        {cwd: repoRoot, encoding: 'utf-8', stdio: 'pipe'},
+      );
+      const t1 = performance.now();
+      selfNodeTimes.push(t1 - t0);
+
+      // Parse timing lines like "File Load:  XX.XX ms"
+      const lines = output.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('File Load:')) {
+          totalNodeFileLoad += parseFloat(line.split(':')[1].trim());
+        } else if (line.startsWith('Pure Parse:')) {
+          totalNodePureParse += parseFloat(line.split(':')[1].trim());
+        } else if (line.startsWith('Scope:')) {
+          totalNodeScope += parseFloat(line.split(':')[1].trim());
+        } else if (line.startsWith('Check:')) {
+          totalNodeCheck += parseFloat(line.split(':')[1].trim());
+        } else if (line.startsWith('Codegen:')) {
+          totalNodeCodegen += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Discovery:')) {
+          totalNodeDiscovery += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Layout:')) {
+          totalNodeLayout += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Emit Code:')) {
+          totalNodeEmitCode += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Emit Other:')) {
+          totalNodeEmitOther += parseFloat(line.split(':')[1].trim());
+        } else if (line.startsWith('Total:')) {
+          totalNodeTime += parseFloat(line.split(':')[1].trim());
+        }
+      }
+    }
+    const selfNodeMean = selfNodeTimes.reduce((a, b) => a + b, 0) / ITERATIONS;
+    const nodeFileLoad = totalNodeFileLoad / ITERATIONS;
+    const nodePureParse = totalNodePureParse / ITERATIONS;
+    const nodeScope = totalNodeScope / ITERATIONS;
+    const nodeCheck = totalNodeCheck / ITERATIONS;
+    const nodeCodegen = totalNodeCodegen / ITERATIONS;
+    const nodeDiscovery = totalNodeDiscovery / ITERATIONS;
+    const nodeLayout = totalNodeLayout / ITERATIONS;
+    const nodeEmitCode = totalNodeEmitCode / ITERATIONS;
+    const nodeEmitOther = totalNodeEmitOther / ITERATIONS;
+    const meanNodeTotalTime = totalNodeTime / ITERATIONS;
+
     // --- Print Results ---
     console.log(`\nBenchmark Results for ${target.name}:`);
 
-    const colWidths = [23, 20, 22, 18];
+    const colWidths = [23, 20, 22, 20, 16, 18];
     const formatRow = (cells: string[]) => {
       return (
         '│ ' +
@@ -187,9 +244,11 @@ if (runCompiler && targets.length > 0) {
     console.log(
       formatRow([
         'Metric',
-        'Bootstrap Compiler',
-        'Self-Hosted Compiler',
-        'Ratio (Self/Boot)',
+        'Bootstrap (Node)',
+        'Self-Hosted (Wasmtime)',
+        'Self-Hosted (Node)',
+        'Ratio (Wt/Boot)',
+        'Ratio (Node/Boot)',
       ]),
     );
     console.log(makeSeparator('├', '┼', '┤'));
@@ -198,27 +257,127 @@ if (runCompiler && targets.length > 0) {
         'Mean Compilation Time',
         `${bootMean.toFixed(2)} ms`,
         `${selfMean.toFixed(2)} ms`,
+        `${selfNodeMean.toFixed(2)} ms`,
         `${(selfMean / bootMean).toFixed(2)}x`,
+        `${(selfNodeMean / bootMean).toFixed(2)}x`,
       ]),
     );
     console.log(makeSeparator('└', '┴', '┘'));
 
-    if (meanTotalTime > 0) {
+    if (meanTotalTime > 0 || meanNodeTotalTime > 0) {
       console.log(
-        `\nSelf-Hosted Internal Timing Breakdown (Mean of ${ITERATIONS} Runs):`,
+        `\nSelf-Hosted Internal Phase Breakdown (Mean of ${ITERATIONS} Runs):`,
       );
-      console.log(`  File Load:   ${fileLoad.toFixed(2).padStart(8)} ms`);
-      console.log(`  Pure Parse:  ${pureParse.toFixed(2).padStart(8)} ms`);
-      console.log(`  Scope:       ${scope.toFixed(2).padStart(8)} ms`);
-      console.log(`  Check:       ${check.toFixed(2).padStart(8)} ms`);
-      console.log(`  Codegen:     ${codegen.toFixed(2).padStart(8)} ms`);
-      console.log(`    Usage:     ${usage.toFixed(2).padStart(8)} ms`);
-      console.log(`    Discovery: ${discovery.toFixed(2).padStart(8)} ms`);
-      console.log(`    Layout:    ${layout.toFixed(2).padStart(8)} ms`);
-      console.log(`    Emit Code: ${emitCode.toFixed(2).padStart(8)} ms`);
-      console.log(`    Emit Other:${emitOther.toFixed(2).padStart(8)} ms`);
-      console.log(`  -----------------------------`);
-      console.log(`  Total Phase: ${meanTotalTime.toFixed(2).padStart(8)} ms`);
+      const breakdownColWidths = [23, 22, 22];
+      const formatBreakdownRow = (cells: string[]) => {
+        return (
+          '│ ' +
+          cells
+            .map((cell, i) => {
+              if (i === 0) {
+                return cell.padEnd(breakdownColWidths[i]);
+              } else {
+                return cell.padStart(breakdownColWidths[i]);
+              }
+            })
+            .join(' │ ') +
+          ' │'
+        );
+      };
+      const makeBreakdownSeparator = (
+        left: string,
+        mid: string,
+        right: string,
+      ) => {
+        return (
+          left +
+          breakdownColWidths.map((w) => '─'.repeat(w + 2)).join(mid) +
+          right
+        );
+      };
+
+      console.log(makeBreakdownSeparator('┌', '┬', '┐'));
+      console.log(
+        formatBreakdownRow([
+          'Phase',
+          'Wasmtime Execution',
+          'Node.js Execution',
+        ]),
+      );
+      console.log(makeBreakdownSeparator('├', '┼', '┤'));
+      console.log(
+        formatBreakdownRow([
+          'File Load',
+          `${fileLoad.toFixed(2)} ms`,
+          `${nodeFileLoad.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          'Pure Parse',
+          `${pureParse.toFixed(2)} ms`,
+          `${nodePureParse.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          'Scope',
+          `${scope.toFixed(2)} ms`,
+          `${nodeScope.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          'Check',
+          `${check.toFixed(2)} ms`,
+          `${nodeCheck.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          'Codegen',
+          `${codegen.toFixed(2)} ms`,
+          `${nodeCodegen.toFixed(2)} ms`,
+        ]),
+      );
+
+      console.log(
+        formatBreakdownRow([
+          '  Discovery',
+          `${discovery.toFixed(2)} ms`,
+          `${nodeDiscovery.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          '  Layout',
+          `${layout.toFixed(2)} ms`,
+          `${nodeLayout.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          '  Emit Code',
+          `${emitCode.toFixed(2)} ms`,
+          `${nodeEmitCode.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          '  Emit Other',
+          `${emitOther.toFixed(2)} ms`,
+          `${nodeEmitOther.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(makeBreakdownSeparator('├', '┼', '┤'));
+      console.log(
+        formatBreakdownRow([
+          'Total Phase Time',
+          `${meanTotalTime.toFixed(2)} ms`,
+          `${meanNodeTotalTime.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(makeBreakdownSeparator('└', '┴', '┘'));
     }
     console.log('\n--------------------------------------------------\n');
   }
