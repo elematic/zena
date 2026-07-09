@@ -18,6 +18,22 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { generatePatternBinding } from './bindings.zena';
 import { generateLetPatternCheck } from './control-flow.zena';
+import { walk } from '../../visitor.zena';
+
+let hasBreakTargetingLoop = (body: Statement): boolean => {
+  var foundBreak = false;
+  walk(body, (n: Node): boolean => {
+    if (n is BreakStatement) {
+      foundBreak = true;
+      return false;
+    }
+    if (n is WhileStatement || n is ForStatement || n is ForInStatement) {
+      return false;
+    }
+    return true;
+  }, (n: Node): void => {});
+  return foundBreak;
+};
 
 export let generateBreakStatement = (ctx: FunctionContext, stmt: BreakStatement): void => {
   let n = ctx.loopStack.length;
@@ -123,13 +139,21 @@ export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement,
     }
   }
 
-  ctx.emitter.emitBlock(new ValTypeVoid());
+  let isConstantTrue = if (stmt.test != null && stmt.test is BooleanLiteral) (stmt.test as BooleanLiteral).value else false;
+  let hasBreak = hasBreakTargetingLoop(stmt.body);
+  let needsOuterBlock = !isConstantTrue || hasBreak;
+
+  if (needsOuterBlock) {
+    ctx.emitter.emitBlock(new ValTypeVoid());
+  }
   ctx.emitter.emitLoop(new ValTypeVoid());
   
-  genExpr(stmt.test as Expression, false);
-  ctx.emitter.emitI32Const(0);
-  ctx.emitter.emitI32Eq();
-  ctx.emitter.emitBrIf(1);
+  if (!isConstantTrue) {
+    genExpr(stmt.test as Expression, false);
+    ctx.emitter.emitI32Const(0);
+    ctx.emitter.emitI32Eq();
+    ctx.emitter.emitBrIf(1);
+  }
   
   let wasReachable = ctx.isReachable;
   ctx.enterLoop();
@@ -139,9 +163,16 @@ export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement,
   ctx.isReachable = wasReachable;
   ctx.emitter.emitBr(0);
   ctx.emitter.emitEnd();
-  ctx.emitter.emitEnd();
+  if (needsOuterBlock) {
+    ctx.emitter.emitEnd();
+  }
   
-  ctx.isReachable = wasReachable;
+  if (isConstantTrue && !hasBreak) {
+    ctx.emitter.emitUnreachable();
+    ctx.isReachable = false;
+  } else {
+    ctx.isReachable = wasReachable;
+  }
 };
 
 export let generateForStatement = (ctx: FunctionContext, stmt: ForStatement, genExpr: (e: Expression, discardValue: boolean) => void, genStmt: (s: Statement) => void): void => {
