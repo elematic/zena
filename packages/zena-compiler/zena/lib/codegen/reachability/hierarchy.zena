@@ -1,0 +1,412 @@
+import { Program } from '../../program.zena';
+import { ClassType, FunctionType, MixinType, InterfaceType } from '../../types.zena';
+import { Node, MethodDefinition, FieldDefinition, AccessorDeclaration, TypeAnnotation, MixinDeclaration, Identifier, SymbolPropertyName, MemberExpression } from '../../ast.zena';
+import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
+import { Array } from 'zena:array';
+import { String } from 'zena:string';
+import { i32ToString } from 'zena:string-convert';
+import { SymbolId, Symbol } from '../../scope/symbol.zena';
+import { SemanticModel } from '../../semantic-model.zena';
+import { getClassKey, collectMixinMembers, findMixinDeclaration, MixinKey, getSignatureKey, InterfaceKey, getInterfaceKey } from '../codegen-utils.zena';
+import { getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInCodegen } from '../type-mapping.zena';
+import { WasmModule } from '../wasm-module.zena';
+
+/**
+ * ClassHierarchyAnalysis (CHA) manages caching and lookups for class hierarchies,
+ * dynamic method overrides, field/accessor inheritance, and subclass relationships.
+ */
+export final class ClassHierarchyAnalysis {
+  program: Program;
+  instantiatedSpecializedClasses: HashSet<String>;
+  wasm: WasmModule;
+
+  implementingMethodCache = new HashMap<String, MethodDefinition>();
+  implementingMethodNulls = new HashSet<String>();
+  implementingMethodsCache = new HashMap<String, Array<MethodDefinition>>();
+  implementingFieldCache = new HashMap<String, FieldDefinition>();
+  implementingFieldNulls = new HashSet<String>();
+  implementingAccessorCache = new HashMap<String, AccessorDeclaration>();
+  implementingAccessorNulls = new HashSet<String>();
+  subclassRelationCache = new HashMap<String, boolean>();
+  subclassCache = new HashMap<SymbolId, Array<ClassType>>();
+  var lastSubclassCacheVersion = -1;
+  classDeclTypeCache = new HashMap<i32, ClassType>();
+
+  new(this.program, this.instantiatedSpecializedClasses, this.wasm);
+
+  findImplementingMethod(cType: ClassType, mName: String): MethodDefinition | null {
+    let key = (getClassKey(cType) as String) + "." + mName;
+    if (this.implementingMethodNulls.has(key)) {
+      return null;
+    }
+    if (let (true, cached) = this.implementingMethodCache.get(key)) {
+      return cached;
+    }
+
+    var curr: ClassType | null = cType;
+    while (curr != null) {
+      let ct = curr as ClassType;
+      let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+      for (let unit in this.program.units) {
+        let model = unit.model;
+        if (model.classDeclarations.has(lookupId)) {
+          let cd = model.classDeclarations[lookupId];
+          let mixinMembers = new Array<Node>();
+          let seenMixins = new HashMap<MixinKey, boolean>();
+          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
+          
+          let allMembers = new Array<Node>();
+          for (let member in cd.body) {
+            allMembers.push(member);
+          }
+          for (let member in mixinMembers) {
+            allMembers.push(member);
+          }
+          
+          for (let member in allMembers) {
+            if (member is MethodDefinition) {
+              let md = member as MethodDefinition;
+              if (md.isAbstract) { continue; }
+              let name = getMethodName(md);
+              if (matchMemberName(name, mName)) {
+                this.implementingMethodCache[key] = md;
+                return md;
+              }
+            }
+          }
+        }
+      }
+      curr = ct.superType;
+    }
+    this.implementingMethodNulls.add(key);
+    return null;
+  }
+
+  findImplementingMethods(cType: ClassType, mName: String): Array<MethodDefinition> {
+    let key = (getClassKey(cType) as String) + "." + mName;
+    if (let (true, cached) = this.implementingMethodsCache.get(key)) {
+      return cached;
+    }
+
+    let methods = new Array<MethodDefinition>();
+    let seenSigs = new HashSet<String>();
+    var curr: ClassType | null = cType;
+    while (curr != null) {
+      let ct = curr as ClassType;
+      let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+      for (let unit in this.program.units) {
+        let model = unit.model;
+        if (model.classDeclarations.has(lookupId)) {
+          let cd = model.classDeclarations[lookupId];
+
+          let mixinMembers = new Array<Node>();
+          let seenMixins = new HashMap<MixinKey, boolean>();
+          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
+          
+          let allMembers = new Array<Node>();
+          for (let member in cd.body) {
+            allMembers.push(member);
+          }
+          for (let member in mixinMembers) {
+            allMembers.push(member);
+          }
+          
+          for (let member in allMembers) {
+            if (member is MethodDefinition) {
+              let md = member as MethodDefinition;
+              if (md.isAbstract) { continue; }
+              let name = getMethodName(md);
+              if (matchMemberName(name, mName)) {
+                let mType = model.getNodeType(md);
+                if (mType != null && mType is FunctionType) {
+                  let ft = mType as FunctionType;
+                  let sigKey = getSignatureKey(ft);
+                  if (!seenSigs.has(sigKey)) {
+                    methods.push(md);
+                    seenSigs.add(sigKey);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      curr = ct.superType;
+    }
+    this.implementingMethodsCache[key] = methods;
+    return methods;
+  }
+
+  findImplementingField(cType: ClassType, fName: String): FieldDefinition | null {
+    let key = (getClassKey(cType) as String) + "." + fName;
+    if (this.implementingFieldNulls.has(key)) {
+      return null;
+    }
+    if (let (true, cached) = this.implementingFieldCache.get(key)) {
+      return cached;
+    }
+
+    var curr: ClassType | null = cType;
+    while (curr != null) {
+      let ct = curr as ClassType;
+      let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+      for (let unit in this.program.units) {
+        let model = unit.model;
+        if (model.classDeclarations.has(lookupId)) {
+          let cd = model.classDeclarations[lookupId];
+          let mixinMembers = new Array<Node>();
+          let seenMixins = new HashMap<MixinKey, boolean>();
+          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
+          
+          let allMembers = new Array<Node>();
+          for (let member in cd.body) {
+            allMembers.push(member);
+          }
+          for (let member in mixinMembers) {
+            allMembers.push(member);
+          }
+          
+          for (let member in allMembers) {
+            if (member is FieldDefinition) {
+              let fd = member as FieldDefinition;
+              if (fd.isAbstract) { continue; }
+              let name = match (fd.name) {
+                case Identifier {name}: name
+                case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                  case Identifier {name}: name
+                  case MemberExpression {property}: property.name
+                  case _: "<symbol>"
+                }
+                case _: ""
+              };
+              if (matchMemberName(name, fName)) {
+                this.implementingFieldCache[key] = fd;
+                return fd;
+              }
+            }
+          }
+        }
+      }
+      curr = ct.superType;
+    }
+    this.implementingFieldNulls.add(key);
+    return null;
+  }
+
+  findImplementingAccessor(cType: ClassType, accName: String): AccessorDeclaration | null {
+    let key = (getClassKey(cType) as String) + "." + accName;
+    if (this.implementingAccessorNulls.has(key)) {
+      return null;
+    }
+    if (let (true, cached) = this.implementingAccessorCache.get(key)) {
+      return cached;
+    }
+
+    var curr: ClassType | null = cType;
+    while (curr != null) {
+      let ct = curr as ClassType;
+      let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+      for (let unit in this.program.units) {
+        let model = unit.model;
+        if (model.classDeclarations.has(lookupId)) {
+          let cd = model.classDeclarations[lookupId];
+          let mixinMembers = new Array<Node>();
+          let seenMixins = new HashMap<MixinKey, boolean>();
+          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
+          
+          let allMembers = new Array<Node>();
+          for (let member in cd.body) {
+            allMembers.push(member);
+          }
+          for (let member in mixinMembers) {
+            allMembers.push(member);
+          }
+          
+          for (let member in allMembers) {
+            if (member is AccessorDeclaration) {
+              let acc = member as AccessorDeclaration;
+              let name = getAccessorName(acc);
+              if (accName.length > 4 && acc.getter != null && accName.sliceBytes(0, 4) == "get#") {
+                let targetProp = accName.sliceBytes(4, accName.length);
+                if (matchMemberName(name, targetProp)) {
+                  this.implementingAccessorCache[key] = acc;
+                  return acc;
+                }
+              }
+              if (accName.length > 4 && acc.setter != null && accName.sliceBytes(0, 4) == "set#") {
+                let targetProp = accName.sliceBytes(4, accName.length);
+                if (matchMemberName(name, targetProp)) {
+                  this.implementingAccessorCache[key] = acc;
+                  return acc;
+                }
+              }
+            }
+          }
+        }
+      }
+      curr = ct.superType;
+    }
+    this.implementingAccessorNulls.add(key);
+    return null;
+  }
+
+  isSubclassOf(ct: ClassType, baseType: ClassType): boolean {
+    let key = i32ToString(ct.id) + "<:" + i32ToString(baseType.id);
+    if (let (true, cached) = this.subclassRelationCache.get(key)) {
+      return cached;
+    }
+    
+    let res = this.isSubclassOfDirect(ct, baseType);
+    this.subclassRelationCache[key] = res;
+    return res;
+  }
+
+  isSubclassOfDirect(ct: ClassType, baseType: ClassType): boolean {
+    var curr: ClassType | null = ct;
+    while (curr != null) {
+      let currVal = curr as ClassType;
+      if (currVal.id == baseType.id) return true;
+      if (currVal.genericSource != null && (currVal.genericSource as ClassType).id == baseType.id) return true;
+      
+      // Check mixins
+      let lookupId = (if (currVal.genericSource != null) (currVal.genericSource as ClassType).id else currVal.id) as SymbolId;
+      for (let unit in this.program.units) {
+        let model = unit.model;
+        if (model.classDeclarations.has(lookupId)) {
+          let cd = model.classDeclarations[lookupId];
+          let seenIds = new HashMap<SymbolId, boolean>();
+          collectMixinSymbolIds(this.program, model, cd.mixins, seenIds);
+          
+          if (seenIds.has(baseType.id as SymbolId)) {
+            return true;
+          }
+        }
+      }
+      
+      curr = currVal.superType;
+    }
+    return false;
+  }
+
+  findInstantiatedSubclasses(baseType: ClassType): Array<ClassType> {
+    if (this.lastSubclassCacheVersion != this.instantiatedSpecializedClasses.size) {
+      this.subclassCache.clear();
+      this.lastSubclassCacheVersion = this.instantiatedSpecializedClasses.size;
+    }
+    let baseSymId = baseType.id as SymbolId;
+    if (let (true, cachedList) = this.subclassCache.get(baseSymId)) {
+      return cachedList;
+    }
+
+    let list = new Array<ClassType>();
+    let keys = this.wasm.classInfos.keys();
+    while (let (true, k) = keys.next()) {
+      let info = this.wasm.classInfos[k];
+      let ct = info.structType.classType;
+      if (ct != null) {
+        let classType = ct as ClassType;
+        if (this.isSubclassOf(classType, baseType)) {
+          list.push(classType);
+        }
+      }
+    }
+    this.subclassCache[baseSymId] = list;
+    return list;
+  }
+
+  collectAllImplementedInterfaces(ct: ClassType): Array<InterfaceType> {
+    let list = new Array<InterfaceType>();
+    let seen = new HashMap<InterfaceKey, boolean>();
+    
+    let ctParams = getClassTypeParameters(ct);
+    for (let iface in ct.implementsList) {
+      let resolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, iface) as InterfaceType;
+      this.addInterfaceToTransitiveList(resolved, list, seen);
+    }
+    
+    var curr = ct.superType;
+    while (curr != null) {
+      let superCt = curr as ClassType;
+      let superCtParams = getClassTypeParameters(superCt);
+      for (let iface in superCt.implementsList) {
+        let resolved = substituteTypeParamsInCodegen(superCtParams, superCt.typeArguments, iface) as InterfaceType;
+        this.addInterfaceToTransitiveList(resolved, list, seen);
+      }
+      curr = superCt.superType;
+    }
+    
+    return list;
+  }
+
+  addInterfaceToTransitiveList(it: InterfaceType, list: Array<InterfaceType>, seen: HashMap<InterfaceKey, boolean>): void {
+    let key = getInterfaceKey(it);
+    if (!seen.has(key)) {
+      seen[key] = true;
+      list.push(it);
+      for (let ext in it.extendsList) {
+        let resolvedExt = substituteTypeParamsInCodegen(getInterfaceTypeParameters(it), it.typeArguments, ext) as InterfaceType;
+        this.addInterfaceToTransitiveList(resolvedExt, list, seen);
+      }
+    }
+  }
+}
+
+let matchMemberName = (name: String, target: String): boolean => {
+  if (name == target) {
+    return true;
+  }
+  if (name.length > 0 && name.sliceBytes(0, 1) == ":") {
+    return name.sliceBytes(1, name.length) == target;
+  }
+  return false;
+};
+
+let getMethodName = (md: MethodDefinition): String => {
+  return match (md.name) {
+    case Identifier {name}: name
+    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+      case Identifier {name}: name
+      case MemberExpression {property}: property.name
+      case _: "<symbol>"
+    }
+    case _: ""
+  };
+};
+
+let getAccessorName = (acc: AccessorDeclaration): String => {
+  return match (acc.name) {
+    case Identifier {name}: name
+    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+      case Identifier {name}: name
+      case MemberExpression {property}: property.name
+      case _: "<symbol>"
+    }
+    case _: ""
+  };
+};
+
+let collectMixinSymbolIds = (
+  program: Program,
+  model: SemanticModel,
+  mixinAnns: Array<TypeAnnotation> | null,
+  seenIds: HashMap<SymbolId, boolean>
+): void => {
+  if (mixinAnns == null) { return; }
+  for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
+    let sym = model.resolve(ann);
+    if (sym != null) {
+      let id = (sym as Symbol).id;
+      if (!seenIds.has(id)) {
+        seenIds[id] = true;
+        let mt = model.getBindingType(sym as Symbol);
+        if (mt != null && mt is MixinType) {
+          let md = findMixinDeclaration(program, mt as MixinType);
+          if (md != null) {
+            collectMixinSymbolIds(program, model, (md as MixinDeclaration).mixins, seenIds);
+          }
+        }
+      }
+    }
+  }
+};

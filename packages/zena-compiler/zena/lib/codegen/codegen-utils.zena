@@ -169,7 +169,10 @@ export let isConcrete = (t: Type): boolean => {
     case NeverType: false
     case ThisType: false
     case ClassType as ct: {
-      if (ct.typeArguments != null) {
+      if (ct.typeParameters != null && (ct.typeParameters as Array<TypeParameterType>).length > 0) {
+        if (ct.typeArguments == null) {
+          return false;
+        }
         let args = ct.typeArguments as Array<Type>;
         var i = 0;
         var concrete = true;
@@ -183,7 +186,10 @@ export let isConcrete = (t: Type): boolean => {
       }
     }
     case InterfaceType as it: {
-      if (it.typeArguments != null) {
+      if (it.typeParameters != null && (it.typeParameters as Array<TypeParameterType>).length > 0) {
+        if (it.typeArguments == null) {
+          return false;
+        }
         let args = it.typeArguments as Array<Type>;
         var i = 0;
         var concrete = true;
@@ -518,9 +524,14 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
   };
 
   // Check if main function type matches
+  console.log("matchOverload checking main type: methName=" + methName + " ft=" + typeToString(ft) + ", mDef param length=" + i32ToString(paramTypes.length));
+  for (let pt in paramTypes) {
+    console.log("mDef paramType: " + typeToString(pt));
+  }
   if (ft.parameters.length == paramTypes.length) {
     var match = true;
     for (var pi = 0; pi < paramTypes.length; pi += 1) {
+      console.log("Comparing param " + i32ToString(pi) + ": ft=" + typeToString(ft.parameters[pi]) + ", paramType=" + typeToString(paramTypes[pi]));
       if (typeToString(ft.parameters[pi]) != typeToString(paramTypes[pi])) {
         match = false;
       }
@@ -532,9 +543,11 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
   
   let ovs = ft.overloads as Array<FunctionType>;
   for (let ov in ovs) {
+    console.log("matchOverload checking overload: ov=" + typeToString(ov));
     if (ov.parameters.length == paramTypes.length) {
       var match = true;
       for (var pi = 0; pi < paramTypes.length; pi += 1) {
+        console.log("Comparing overload param " + i32ToString(pi) + ": ov=" + typeToString(ov.parameters[pi]) + ", paramType=" + typeToString(paramTypes[pi]));
         if (typeToString(ov.parameters[pi]) != typeToString(paramTypes[pi])) {
           match = false;
         }

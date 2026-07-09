@@ -5341,20 +5341,8 @@ function generateAssignmentExpressionInner(
             );
           }
 
-          generateExpression(ctx, expr.value, body);
-
           const fieldInfo = foundClass.fields.get(fieldName)!;
-          const valueType = inferType(ctx, expr.value);
-          if (
-            isErasedRefType(fieldInfo.type) &&
-            valueType.length === 1 &&
-            (valueType[0] === ValType.i32 ||
-              valueType[0] === ValType.i64 ||
-              valueType[0] === ValType.f32 ||
-              valueType[0] === ValType.f64)
-          ) {
-            boxPrimitive(ctx, valueType, body, expr.value.inferredType);
-          }
+          generateAdaptedArgument(ctx, expr.value, fieldInfo.type, body);
 
           const tempVal = ctx.declareLocal('$$temp_field_set', fieldInfo.type);
           body.push(Opcode.local_tee);
@@ -5381,9 +5369,16 @@ function generateAssignmentExpressionInner(
         if (useStaticDispatch) {
           // Static dispatch - direct call
           generateExpression(ctx, memberExpr.object, body);
-          generateExpression(ctx, expr.value, body);
-          const valueType = inferType(ctx, expr.value);
-          const tempVal = ctx.declareLocal('$$temp_val', valueType);
+          generateAdaptedArgument(
+            ctx,
+            expr.value,
+            methodInfo.paramTypes[1],
+            body,
+          );
+          const tempVal = ctx.declareLocal(
+            '$$temp_val',
+            methodInfo.paramTypes[1],
+          );
           body.push(
             Opcode.local_tee,
             ...WasmModule.encodeSignedLEB128(tempVal),
@@ -5404,10 +5399,16 @@ function generateAssignmentExpressionInner(
         const tempObj = ctx.declareLocal('$$temp_obj', objectType);
         body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempObj));
 
-        generateExpression(ctx, expr.value, body);
-        // Infer type of value to declare temp local correctly
-        const valueType = inferType(ctx, expr.value);
-        const tempVal = ctx.declareLocal('$$temp_val', valueType);
+        generateAdaptedArgument(
+          ctx,
+          expr.value,
+          methodInfo.paramTypes[1],
+          body,
+        );
+        const tempVal = ctx.declareLocal(
+          '$$temp_val',
+          methodInfo.paramTypes[1],
+        );
         body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempVal));
 
         // Call setter
@@ -5489,19 +5490,7 @@ function generateAssignmentExpressionInner(
     }
 
     generateExpression(ctx, memberExpr.object, body);
-    generateExpression(ctx, expr.value, body);
-
-    const valueType = inferType(ctx, expr.value);
-    if (
-      isErasedRefType(fieldInfo.type) &&
-      valueType.length === 1 &&
-      (valueType[0] === ValType.i32 ||
-        valueType[0] === ValType.i64 ||
-        valueType[0] === ValType.f32 ||
-        valueType[0] === ValType.f64)
-    ) {
-      boxPrimitive(ctx, valueType, body, expr.value.inferredType);
-    }
+    generateAdaptedArgument(ctx, expr.value, fieldInfo.type, body);
 
     const tempVal = ctx.declareLocal('$$temp_field_set', fieldInfo.type);
     body.push(Opcode.local_tee);
@@ -5563,19 +5552,7 @@ function generateAssignmentExpressionInner(
         // Stack: [value] (from the original local.tee)
       } else {
         // Normal local assignment
-        generateExpression(ctx, expr.value, body);
-
-        const valueType = inferType(ctx, expr.value);
-        if (
-          isErasedRefType(local.type) &&
-          valueType.length === 1 &&
-          (valueType[0] === ValType.i32 ||
-            valueType[0] === ValType.i64 ||
-            valueType[0] === ValType.f32 ||
-            valueType[0] === ValType.f64)
-        ) {
-          boxPrimitive(ctx, valueType, body, expr.value.inferredType);
-        }
+        generateAdaptedArgument(ctx, expr.value, local.type, body);
 
         // Assignment is an expression that evaluates to the assigned value.
         // So we use local.tee to set the local and keep the value on the stack.
@@ -5584,8 +5561,6 @@ function generateAssignmentExpressionInner(
       }
     } else {
       // Use binding-based lookup for global assignment
-      generateExpression(ctx, expr.value, body);
-
       const binding = ctx.semanticContext.getResolvedBinding(expr.left);
       if (!binding) {
         throw new Error(`Unknown identifier: ${expr.left.name}`);
@@ -5601,19 +5576,9 @@ function generateAssignmentExpressionInner(
       // Get WASM type from the binding's semantic type
       const globalWasmType = mapCheckerTypeToWasmType(ctx, resolved.type);
 
-      const valueType = inferType(ctx, expr.value);
-      if (
-        isErasedRefType(globalWasmType) &&
-        valueType.length === 1 &&
-        (valueType[0] === ValType.i32 ||
-          valueType[0] === ValType.i64 ||
-          valueType[0] === ValType.f32 ||
-          valueType[0] === ValType.f64)
-      ) {
-        boxPrimitive(ctx, valueType, body, expr.value.inferredType);
-      }
+      generateAdaptedArgument(ctx, expr.value, globalWasmType, body);
 
-      const temp = ctx.declareLocal('$$temp_global_assign', valueType);
+      const temp = ctx.declareLocal('$$temp_global_assign', globalWasmType);
       body.push(Opcode.local_tee);
       body.push(...WasmModule.encodeSignedLEB128(temp));
       body.push(Opcode.global_set);
@@ -13395,7 +13360,11 @@ function generateMatchPatternBindings(
     if (existing !== undefined && typesAreEqual(existing.type, bindingType)) {
       localIndex = existing.index;
     } else {
-      localIndex = ctx.declareLocal(asPattern.name.name, bindingType, asPattern.name);
+      localIndex = ctx.declareLocal(
+        asPattern.name.name,
+        bindingType,
+        asPattern.name,
+      );
     }
 
     body.push(

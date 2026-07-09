@@ -6,7 +6,7 @@ import { RecordType, TupleType, ClassType, InterfaceType, ArrayType, typeToStrin
 import { generateNumberLiteral, generateStringLiteral } from './primitives.zena';
 import { parseI32, i32ToString } from 'zena:string-convert';
 import { WasmField, WasmFunction, WasmArray, WasmStruct, WasmGlobal, ClassCodegenInfo } from '../wasm-module.zena';
-import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey, isConcrete } from '../codegen-utils.zena';
 import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType } from '../type-mapping.zena';
 import { ValTypeRefNull, ValTypeRef, ValTypeI8, ValTypeVoid, HeapType, heapTypeToSigned, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeEqRef, ValTypeAnyRef, ValTypeStructRef } from '../wasm.zena';
 import { Array } from 'zena:array';
@@ -206,6 +206,26 @@ export let generateMemberExpression = (
           }
 
           if (foundFunc == null) {
+            let hasArgs = ct.typeArguments != null;
+            let argsLen = if (ct.typeArguments != null) (ct.typeArguments as Array<Type>).length else -1;
+            let concreteStr = if (isConcrete(ct)) "true" else "false";
+            let hasGenSrc = ct.genericSource != null;
+            let classKeyStr = if (ct.classKey != null) (ct.classKey as String) else "null";
+            console.log("DEBUG EXTENSION GETTER NOT FOUND: getterName = " + getterName + ", ct.name = " + ct.name + ", getClassKey(ct) = " + (getClassKey(ct) as String) + ", hasArgs=" + (if (hasArgs) "true" else "false") + ", argsLen=" + i32ToString(argsLen) + ", isConcrete=" + concreteStr + ", hasGenSrc=" + (if (hasGenSrc) "true" else "false") + ", classKey=" + classKeyStr);
+            if (ct.typeArguments != null) {
+              let args = ct.typeArguments as Array<Type>;
+              var i = 0;
+              while (i < args.length) {
+                console.log("  arg[" + i32ToString(i) + "] = " + typeToString(args[i]) + ", isConcrete=" + (if (isConcrete(args[i])) "true" else "false"));
+                i += 1;
+              }
+            }
+            let keys = ctx.wasm.classMethodMap.keys();
+            while (let (true, k) = keys.next()) {
+              if ((k as String).contains(getterName)) {
+                console.log("  classMethodMap contains: " + (k as String));
+              }
+            }
             throw new Error("Could not find extension getter: " + getterName);
           }
 

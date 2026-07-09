@@ -1,0 +1,124 @@
+import { Program } from '../../program.zena';
+import { WasmModule, WasmFunction, WasmStruct } from '../wasm-module.zena';
+import { SemanticModel } from '../../semantic-model.zena';
+import { Type, ClassType, InterfaceType, FunctionType } from '../../types.zena';
+import { Node, InterfaceDeclaration, ImportDeclaration, VariableDeclaration, DeclareFunction } from '../../ast.zena';
+import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
+import { Array } from 'zena:array';
+import { String } from 'zena:string';
+import { SymbolId } from '../../scope/symbol.zena';
+import { ValType, WasmType } from '../wasm.zena';
+import { MixinKey } from '../codegen-utils.zena';
+import { ClassHierarchyAnalysis } from './hierarchy.zena';
+
+/**
+ * Referrer tracks the source and context of why a particular node or member
+ * was reached, allowing for detailed RTA dependency graphs.
+ */
+export class Referrer {
+  isSymbol: boolean;
+  symId: SymbolId;
+  nodeId: i32;
+  model: SemanticModel;
+  classType: ClassType | null;
+  isReachable: boolean;
+
+  new(this.isSymbol, this.symId, this.nodeId, this.model, this.classType = null, this.isReachable = true);
+}
+
+/**
+ * ClassInterfacePair holds a combination of a class and an interface it implements.
+ */
+export class ClassInterfacePair {
+  classType: ClassType;
+  interfaceType: InterfaceType;
+  new(this.classType, this.interfaceType);
+}
+
+/**
+ * SpecializerInterface defines the monomorphization subsystem contract.
+ */
+export interface SpecializerInterface {
+  instantiateClassType(classType: ClassType, model: SemanticModel): void;
+  instantiateGenericFunction(targetSymId: SymbolId, args: Array<Type>): WasmFunction;
+  registerSpecializedClass(ct: ClassType, classDecl: Node | null, model: SemanticModel): void;
+  registerSpecializedInterface(it: InterfaceType, ifaceDecl: InterfaceDeclaration | null, sourceModel: SemanticModel): void;
+  registerClassMethod(
+    cType: ClassType,
+    cDecl: Node | null,
+    methName: String,
+    methodNode: Node | null,
+    isSynthesizedGetter: boolean,
+    isSynthesizedSetter: boolean,
+    backingFieldName: String | null,
+    model: SemanticModel
+  ): WasmFunction;
+  populateClassStructAndMethods(ct: ClassType, cd: Node | null, sourceModel: SemanticModel): void;
+}
+
+/**
+ * TypeLowererInterface defines the WebAssembly type-mapping subsystem contract.
+ */
+export interface TypeLowererInterface {
+  discoverType(t: Type | null, model: SemanticModel): void;
+}
+
+/**
+ * ReachabilityVisitorInterface defines the AST-visitation subsystem contract.
+ */
+export interface ReachabilityVisitorInterface {
+  discoverNodeTypes(root: Node, model: SemanticModel, resolveType: (t: Type) => Type): void;
+  discoverImportDeclaration(importDecl: ImportDeclaration, moduleModel: SemanticModel): void;
+  discoverVariableDeclaration(symId: SymbolId, varDecl: VariableDeclaration, moduleModel: SemanticModel): void;
+  discoverDeclareFunction(decl: DeclareFunction, moduleModel: SemanticModel): void;
+}
+
+/**
+ * ReachabilityContext defines the interface for the central compilation state coordinator,
+ * allowing child visitors and specializers to query and update the work queues without
+ * introducing circular module imports.
+ */
+export interface ReachabilityContext {
+  isRtaActive: boolean;
+  instantiatedSpecializedClasses: HashSet<String>;
+  instantiatedClasses: HashSet<SymbolId>;
+  specializedClassTypes: HashMap<SymbolId, Array<ClassType>>;
+  reachedClassMembers: HashMap<SymbolId, HashSet<i32>>;
+  reachedReachableClassMembers: HashMap<SymbolId, HashSet<i32>>;
+  currentReachable: boolean;
+  classDecls: HashMap<SymbolId, Node>;
+  classModels: HashMap<SymbolId, SemanticModel>;
+  interfaceDecls: HashMap<SymbolId, InterfaceDeclaration>;
+  interfaceModels: HashMap<SymbolId, SemanticModel>;
+  program: Program;
+  wasm: WasmModule;
+  symbolIdToModel: HashMap<SymbolId, SemanticModel>;
+  symbolIdToDecl: HashMap<SymbolId, Node>;
+  symbolIdToTargetId: HashMap<SymbolId, SymbolId>;
+  nodeIdToNode: HashMap<i32, Node>;
+  nodeIdToModel: HashMap<i32, SemanticModel>;
+  reachedGlobals: HashSet<SymbolId>;
+  reachedMembers: HashSet<i32>;
+  reachedFunctionsSet: HashSet<WasmFunction>;
+  specializedInterfaces: Array<InterfaceType>;
+  mixinToClasses: HashMap<MixinKey, Array<ClassType>>;
+  cha: ClassHierarchyAnalysis;
+  specializer: SpecializerInterface;
+  typeLowerer: TypeLowererInterface;
+  visitor: ReachabilityVisitorInterface;
+  discoveredTypes: HashSet<String>;
+  instantiatedClassesByInterface: HashMap<SymbolId, Array<ClassInterfacePair>>;
+  referencedInterfaceMembersById: HashMap<SymbolId, Array<String>>;
+  referencedReachableInterfaceMembers: HashSet<String>;
+
+  queueReferrer(ref: Referrer): void;
+  markFunctionReached(func: WasmFunction): void;
+  markTypeReached(t: WasmType | null): void;
+  getClassModel(ct: ClassType): SemanticModel;
+  getClassDeclType(classDecl: Node, model: SemanticModel): ClassType | null;
+  findPreludeClass(name: String): ClassType | null;
+  findPreludeInterface(name: String): InterfaceType | null;
+  getNodeModel(node: Node, defaultModel: SemanticModel): SemanticModel;
+  addReferencedInterfaceMember(ifaceStr: String): void;
+}
