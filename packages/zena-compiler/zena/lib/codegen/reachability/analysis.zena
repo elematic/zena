@@ -1251,6 +1251,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // 5. Record reached closures
     for (let closureDep in deps.closures) {
       let funcExpr = closureDep.node as FunctionExpression;
+      let classKey = if (classType != null) getClassKey(classType as ClassType) else "" as ClassKey;
+      let closureKey = getClosureSpecializationKey(funcExpr.id, classKey);
+
+      if (this.wasm.specializedClosures.has(closureKey)) {
+        let existingFunc = this.wasm.specializedClosures[closureKey];
+        if (this.currentReachable) {
+          this.markFunctionReached(existingFunc);
+        }
+        this.queueReferrer(new Referrer(false, -1 as SymbolId, funcExpr.id as i32, model, classType, this.currentReachable));
+        continue;
+      }
       
       let rawFuncTypeNode = model.getNodeType(funcExpr);
       let funcTypeNode = if (classType != null && ctParams != null) {
@@ -1279,7 +1290,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       wasmFunc.isReferenceTaken = true;
       wasmFunc.classType = classType;
       
-      let classKey = if (classType != null) getClassKey(classType as ClassType) else "" as ClassKey;
       let suffix = if ((classKey as String).length > 0) "_" + (classKey as String) else "";
 
       let fileBase = sanitizeName(getFileNameBase(getNodeFilePath(model, funcExpr)));
@@ -1366,7 +1376,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
       this.wasm.closureFunctions[funcExpr] = wasmFunc;
       
-      let closureKey = getClosureSpecializationKey(funcExpr.id, classKey);
       this.wasm.specializedClosures[closureKey] = wasmFunc;
 
       this.queueReferrer(new Referrer(false, -1 as SymbolId, funcExpr.id as i32, model, classType, this.currentReachable));
