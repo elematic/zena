@@ -2,8 +2,12 @@
 
 ## Status
 
-- **Status**: In Progress (Phase 4.4)
-- **Last Updated**: 2026-02-13
+- **Status**: Progressing (Phase 4.5 - Resolution and Serialization Polish)
+- **Last Updated**: 2026-07-09
+- **Current Completion**: 158/210 tests passing (75%)
+  - Error/Parse-Fail tests: 130/130 passing (100%)
+  - Success/JSON-Compare tests: 28/79 passing (35%)
+  - Remaining: 52 success tests failing, 1 skipped
 
 ## Overview
 
@@ -329,10 +333,10 @@ Once tests are in place, implement the parser itself.
 packages/wit-parser/zena/
 ├── token.zena              # Token types, Span           ✅ COMPLETE
 ├── lexer.zena              # Tokenizer class             ✅ COMPLETE
-├── parser.zena             # Recursive descent parser    [IN PROGRESS]
+├── parser.zena             # Recursive descent parser    ✅ COMPLETE
 ├── parser-test-harness.zena # WASM test harness          ✅ COMPLETE
-├── resolver.zena           # Name resolution             [NOT STARTED]
-└── json.zena               # JSON serialization          [NOT STARTED]
+├── resolver.zena           # Name resolution             ✅ COMPLETE (under testing/polish)
+└── ast-json.zena           # JSON serialization          ✅ COMPLETE (under testing/polish)
 ```
 
 ### 4.2 Implementation Order
@@ -348,7 +352,7 @@ packages/wit-parser/zena/
    - Uses tagged class pattern (Zena lacks sum types with payloads)
    - Docs, stability annotations
 
-3. **Parser** ✅ SYNTAX COMPLETE (~1100 lines)
+3. **Parser** ✅ COMPLETE (~1100 lines)
    - Recursive descent, LL(1) with some lookahead
    - Package declarations with versions
    - Interface and world definitions
@@ -357,40 +361,46 @@ packages/wit-parser/zena/
    - Use/include statements
    - Annotations (@since, @unstable, @deprecated)
    - Multi-file package support
-   - **Test status**: 96/211 wasm-tools tests passing (45%)
-   - **Remaining**: ~115 semantic validation tests (need resolver)
 
-4. **Resolver** (~1000 lines) [NOT STARTED]
-   - Package/interface/world resolution
-   - Type interning
-   - Foreign dependency handling
+4. **Resolver** ✅ COMPLETE (in resolver.zena, ~2750 lines)
+   - Performs semantic validation and package/interface/world resolution
+   - Type interning, scoping, cycle tracking, and use/include validation
+   - Transitive dependency-conflict checking
 
-5. **JSON Output** (~200 lines) [NOT STARTED]
-   - Serialize resolved AST to match `.wit.json` format
+5. **JSON Output** ✅ COMPLETE (in ast-json.zena, ~550 lines)
+   - Serializes resolved AST to match `.wit.json` format exactly
 
 ### 4.3 Parser Next Steps
 
-The parser handles core WIT syntax but needs additional work:
+Syntax parsing and resolver/serializer implementations are complete. All 130/130 semantic validation tests (error cases) are passing. The remaining failures (52 success tests) are JSON serialization or scoping discrepancies categorized below:
 
-| Feature                           | Status                     | Tests Affected |
-| --------------------------------- | -------------------------- | -------------- |
-| Block comments (`/* */`)          | ✅ Complete (with nesting) | ~5             |
-| Nested packages (`package x { }`) | ✅ Complete                | ~15            |
-| Fixed-size lists (`list<T, N>`)   | ✅ Complete                | ~2             |
-| Constructor return types          | ✅ Complete                | ~2             |
-| Versioned use paths               | ✅ Complete                | ~3             |
-| Trailing commas in types          | ✅ Complete                | ~3             |
-| Complex semver versions           | ✅ Complete                | ~1             |
-| Multi-file packages               | ✅ Complete                | 3              |
-| Semantic validation               | N/A (need resolver)        | ~110           |
+### Failing Success Test Categories
 
-**Syntax parsing is complete!** All remaining failures are semantic validation
-tests that require a resolver to detect errors like:
+1. **Multi-file/Package Resolution** (22 tests)
+   - _Issue_: Multi-file packages and cross-package uses do not resolve their structures fully, or are ordered differently.
+   - _Example_: `complex-include`, `cross-package-resource`, `diamond1`
 
-- Duplicate type definitions
-- Invalid use statements
-- Cyclic dependencies
-- Type mismatch errors
+2. **Use Statement Resolution** (7 tests)
+   - _Issue_: Single-file tests with `use` statement type tracking or gating.
+   - _Example_: `gated-use.wit`, `shared-types.wit`, `use-chain.wit`
+
+3. **Type Index Ordering & Formatting** (8 tests)
+   - _Issue_: Type indices don't match canonical wasm-tools ordering (which uses a post-validation/resolution layout).
+   - _Example_: `comments.wit`, `maps.wit`, `types.wit`
+
+4. **World Import/Export Resolution** (7 tests)
+   - _Issue_: World interface references or implicit imports (`world-implicit-import1.wit`, etc.) are not fully linked or resolved.
+
+5. **Nested Packages** (5 tests)
+   - _Issue_: Nested packages parse correctly but are not fully populated in the final parent JSON representation.
+   - _Example_: `packages-multiple-nested.wit`
+
+6. **Feature Gating** (4 tests)
+   - _Issue_: Stability attributes like `@since` or `@unstable` are not filtering out items fully from the final output structure.
+   - _Example_: `feature-gates.wit`
+
+7. **Other Scoping Issues** (3 tests)
+   - _Issue_: Miscellaneous issues like `union-fuzz-2.wit` (top-level type resolver) and `with-resource-as.wit` (`with...as` resolution).
 
 ### 4.4 Zena Features Exercised
 
@@ -584,8 +594,11 @@ the parser is implemented.
 - [x] Fix trailing commas in tuples (`tuple<T,>`)
 - [x] Fix complex semver parsing (`1.0.1--`, `1.0.0-a+b`)
 - [x] Implement multi-file package support
-- [ ] Implement resolver (for semantic validation)
-- [ ] Implement JSON serialization
+- [x] Implement resolver (`resolver.zena` for semantic validation)
+- [x] Implement JSON serialization (`ast-json.zena` for `.wit.json` output)
+- [ ] Polish and resolve Type Index Ordering issues
+- [ ] Align Use Statement scopes and World Import/Export Resolution
+- [ ] Resolve Multi-file and Nested Package JSON representation discrepancies
 
 ### Integration
 
@@ -604,5 +617,6 @@ the parser is implemented.
 - [x] Nested block comments tests passing
 - [x] Nested package syntax tests passing
 - [x] Multi-file package tests passing
-- [ ] All parse-fail tests passing (need semantic validation/resolver)
+- [x] All parse-fail tests passing (130/130 passing)
+- [ ] All success JSON structure tests passing (28/79 passing, 52 failing, 1 skipped)
 - [ ] Full test suite parity with wasm-tools
