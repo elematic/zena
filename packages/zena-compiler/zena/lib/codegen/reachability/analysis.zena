@@ -2,8 +2,8 @@ import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
-import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo } from '../../types.zena';
-import { Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, TaggedTemplateExpression, TemplateElement, SourceLocation, Expression, ThrowExpression, TryExpression, Module, ImportSpecifier, Identifier, SymbolPropertyName, MemberExpression } from '../../ast.zena';
+import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, isVoidOrNeverType, typeToString } from '../../types.zena';
+import { Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, TaggedTemplateExpression, TemplateElement, SourceLocation, Expression, ThrowExpression, TryExpression, Module, ImportSpecifier, Identifier, SymbolPropertyName, MemberExpression, CallExpression } from '../../ast.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
@@ -11,7 +11,7 @@ import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString, parseI32 } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete } from '../codegen-utils.zena';
-import { typeToValType, getClosureStruct, getInterfaceMemberSignature, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct } from '../type-mapping.zena';
+import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct } from '../type-mapping.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeEqRef, ValTypeExternRef } from '../wasm.zena';
 import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair } from './context.zena';
@@ -955,8 +955,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let unspecIName = getInterfaceKey(iface.genericSource ?? iface);
         let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
         
+        let key = getClassInterfaceKey(cName, iName);
         if (this.wasm.usedInterfaceAdaptations.has(unspecKey)) {
-          let key = getClassInterfaceKey(cName, iName);
           if (this.wasm.classInterfaceVTables.has(key)) {
             continue;
           }
@@ -1390,14 +1390,63 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.typeLowerer.discoverType(src, model);
       this.typeLowerer.discoverType(tgt, model);
       
-      let pValTypes = new Array<ValType>();
-      pValTypes.push(new ValTypeStructRef()); // ctx
-      for (let p in tgt.parameters) {
-        pValTypes.push(typeToValType(this.wasm, p));
+      var expectedWasmSig: WasmSignature | null = null;
+      var resolvedTargetStruct: WasmStruct | null = null;
+      
+      let parent = model.getParent(expr);
+      if (parent != null && parent is CallExpression) {
+        let call = parent as CallExpression;
+        var argIdx = -1;
+        for (var idx = 0; idx < call.args.length; idx += 1) {
+          if (call.args[idx] == expr) {
+            argIdx = idx;
+            break;
+          }
+        }
+        if (argIdx >= 0 && call.callee is MemberExpression) {
+          let mem = call.callee as MemberExpression;
+          let calleeType = model.getNodeType(mem);
+          if (calleeType != null && calleeType is FunctionType) {
+            let ft = calleeType as FunctionType;
+            if (argIdx < ft.parameters.length) {
+              let paramType = ft.parameters[argIdx];
+              if (paramType is FunctionType) {
+                let paramFt = paramType as FunctionType;
+                resolvedTargetStruct = getClosureStruct(this.wasm, paramFt);
+                
+                let paramValTypes = new Array<ValType>();
+                paramValTypes.push(new ValTypeStructRef()); // context
+                for (let p in paramFt.parameters) {
+                  paramValTypes.push(typeToValType(this.wasm, p));
+                }
+                let returnValTypes = new Array<ValType>();
+                if (!isVoidOrNeverType(paramFt.returnType)) {
+                  returnValTypes.push(typeToValType(this.wasm, paramFt.returnType));
+                }
+                expectedWasmSig = this.wasm.getSignature(paramValTypes, returnValTypes);
+              }
+            }
+          }
+        }
       }
-      let rValTypes = new Array<ValType>();
-      mapReturnTypeToWasmResults(this.wasm, tgt.returnType, rValTypes);
-      let wrapperSig = this.wasm.getSignature(pValTypes, rValTypes);
+
+      let wrapperSig = if (expectedWasmSig != null) {
+        expectedWasmSig as WasmSignature
+      } else {
+        let pValTypes = new Array<ValType>();
+        pValTypes.push(new ValTypeStructRef()); // ctx
+        for (let p in tgt.parameters) {
+          pValTypes.push(typeToValType(this.wasm, p));
+        }
+        let rValTypes = new Array<ValType>();
+        mapReturnTypeToWasmResults(this.wasm, tgt.returnType, rValTypes);
+        this.wasm.getSignature(pValTypes, rValTypes)
+      };
+
+      let actualClosureStruct = getClosureStruct(this.wasm, src);
+      if (resolvedTargetStruct == null) {
+        resolvedTargetStruct = getClosureStruct(this.wasm, tgt);
+      }
       
       let adaptKey = getFunctionAdaptationKey(src, tgt);
       let existingWrapper = if (this.wasm.functionAdaptations.has(adaptKey)) {
@@ -1407,6 +1456,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       };
 
       if (existingWrapper != null) {
+        existingWrapper.functionAdaptationResolvedSourceStruct = actualClosureStruct;
+        existingWrapper.functionAdaptationResolvedTargetStruct = resolvedTargetStruct;
         this.wasm.functionAdaptationWrappers[expr] = existingWrapper;
         this.markFunctionReached(existingWrapper);
       } else {
@@ -1423,15 +1474,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         wrapperFunc.isReferenceTaken = true;
         wrapperFunc.functionAdaptationSource = src;
         wrapperFunc.functionAdaptationTarget = tgt;
+        wrapperFunc.functionAdaptationResolvedSourceStruct = actualClosureStruct;
+        wrapperFunc.functionAdaptationResolvedTargetStruct = resolvedTargetStruct;
         
         this.wasm.addFunction(wrapperFunc);
         this.markFunctionReached(wrapperFunc);
         this.wasm.functionAdaptations[adaptKey] = wrapperFunc;
         this.wasm.functionAdaptationWrappers[expr] = wrapperFunc;
       }
-      
-      let srcClosure = getClosureStruct(this.wasm, src);
-      let tgtClosure = getClosureStruct(this.wasm, tgt);
     }
 
     // 7. Record string literals

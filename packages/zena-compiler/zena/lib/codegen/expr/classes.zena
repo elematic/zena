@@ -5,7 +5,7 @@ import { Error } from 'zena:error';
 import { ClassType, FunctionType, Type } from '../../types.zena';
 import { WasmField, WasmFunction, WasmGlobal, WasmStruct } from '../wasm-module.zena';
 import { getClassKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
-import { typeToValType, getNodeType } from '../type-mapping.zena';
+import { typeToValType, getNodeType, eraseTypeParameters } from '../type-mapping.zena';
 import { Array } from 'zena:array';
 import { console } from 'zena:console';
 
@@ -14,9 +14,26 @@ export let generateNewExpression = (
   expr: NewExpression,
   genExpr: (e: Expression, discardValue: boolean) => void
 ): void => {
-  let nodeType = getNodeType(ctx, expr);
-  if (nodeType is ClassType) {
-    let classType = nodeType as ClassType;
+  let rawNodeType = getNodeType(ctx, expr);
+  if (rawNodeType is ClassType) {
+    let classType = eraseTypeParameters(rawNodeType as ClassType) as ClassType;
+    if (classType.isExtension) {
+      let ctorKey = getClassMethodKey(getClassKey(classType), "<constructor>");
+      var ctorFunc: WasmFunction | null = if (ctx.wasm.classMethodMap.has(ctorKey)) {
+        ctx.wasm.classMethodMap[ctorKey]
+      } else {
+        null
+      };
+      if (ctorFunc != null) {
+        for (let arg in expr.args) {
+          genExpr(arg, false);
+        }
+        ctx.emitter.emitCall(ctorFunc as WasmFunction);
+        return;
+      }
+      throw new Error("Extension class missing constructor");
+    }
+
     let cKey = getClassKey(classType);
     var structTypeOpt: WasmStruct | null = null;
     var singletonGlobal: WasmGlobal | null = null;

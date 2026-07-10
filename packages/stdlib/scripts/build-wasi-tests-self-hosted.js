@@ -20,7 +20,16 @@ const assertTests = await glob(join(testsDir, 'assert/*_test.zena'));
 const testTests = await glob(join(testsDir, 'test/*_test.zena'));
 const byteBufferTests = await glob(join(testsDir, 'byte-buffer/*_test.zena'));
 const mathTests = await glob(join(testsDir, 'math/*_test.zena'));
-const allTestFiles = [...assertTests, ...testTests, ...byteBufferTests, ...mathTests];
+const fixedArrayTests = await glob(join(testsDir, 'fixed_array/*_test.zena'));
+const arrayTests = await glob(join(testsDir, 'array/*_test.zena'));
+const allTestFiles = [
+  ...assertTests,
+  ...testTests,
+  ...byteBufferTests,
+  ...mathTests,
+  ...fixedArrayTests,
+  ...arrayTests,
+];
 
 const filesToCompile = [];
 const cliWasm = join(

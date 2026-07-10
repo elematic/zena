@@ -6,7 +6,7 @@ import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16 } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, getSpecializedFunctionKey } from '../codegen-utils.zena';
-import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext, eraseTypeParameters } from '../type-mapping.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
@@ -269,7 +269,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
     }
 
     if (!isDirectCall && ft != null) {
-      let fType = ft as FunctionType;
+      let fType = substituteTypeParamsInFunctionContext(ctx.wasmFunction, ft as Type) as FunctionType;
       let paramValTypes = new Array<ValType>();
       paramValTypes.push(new ValTypeStructRef()); // context
       for (let p in fType.parameters) {
@@ -360,7 +360,8 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       }
       case MemberExpression: {
         let member = call.callee as MemberExpression;
-        let objType = getNonNullableType(getNodeType(ctx, member.object) as Type);
+        let rawObjType = getNonNullableType(getNodeType(ctx, member.object) as Type);
+        let objType = eraseTypeParameters(rawObjType);
         let targetName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
         
         if (objType is ClassType && ft != null && ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0) {
@@ -431,13 +432,23 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         }
         
         var lookupName = targetName;
+        var methodTypeArgs: Array<Type> | null = null;
         if (objType is ClassType) {
           let ct = objType as ClassType;
           if (ct.members.has(targetName)) {
             let mInfo = ct.members[targetName];
             if (mInfo.type is FunctionType) {
               let baseFt = mInfo.type as FunctionType;
-              if (baseFt.overloads != null && ft != null) {
+              if (baseFt.typeParameters != null && (baseFt.typeParameters as Array<TypeParameterType>).length > 0) {
+                if (ft != null && ft.typeArguments != null) {
+                  methodTypeArgs = ft.typeArguments as Array<Type>;
+                  let resolvedArgsCall = new Array<Type>();
+                  for (let arg in methodTypeArgs as Array<Type>) {
+                    resolvedArgsCall.push(substituteTypeParamsInFunctionContext(ctx.wasmFunction, arg));
+                  }
+                  lookupName = getSpecializedFunctionKey(targetName, resolvedArgsCall) as String;
+                }
+              } else if (baseFt.overloads != null && ft != null) {
                 lookupName = targetName + getSignatureKey(ft as FunctionType);
               }
             }
@@ -538,6 +549,23 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
           
           if (methodIndex == -1) {
+            if (methodTypeArgs != null) {
+              var foundFunc: WasmFunction | null = null;
+              var currClass: ClassType | null = receiverCt;
+              while (currClass != null && foundFunc == null) {
+                let key = getClassMethodKey(getClassKey(currClass as ClassType), lookupName);
+                if (ctx.wasm.classMethodMap.has(key)) {
+                  foundFunc = ctx.wasm.classMethodMap[key];
+                }
+                currClass = (currClass as ClassType).superType;
+              }
+              if (foundFunc != null) {
+                currentGenExpr(member.object, false);
+                generateCallArguments(ctx, call, ft, -1, currentGenExpr);
+                ctx.emitter.emitCall(foundFunc as WasmFunction);
+                return;
+              }
+            }
             if (ft != null) {
               generateClosureCall(ctx, call, ft as FunctionType, currentGenExpr);
               return;
@@ -780,9 +808,9 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
   if (call.optional) {
     genExpr(call.callee, false);
 
-    let calleeType = ctx.wasmFunction.model.getNodeType(call.callee);
+    let calleeType = getNodeType(ctx, call.callee);
     if (calleeType == null) throw new Error("Missing callee type info in semantic model");
-    let calleeValType = typeToValType(ctx.wasm, calleeType);
+    let calleeValType = typeToValTypeWithSub(ctx.wasm, calleeType as Type, ctx.wasmFunction);
     let calleeLocal = ctx.allocLocal(calleeValType);
     ctx.emitter.emitLocalSet(calleeLocal);
 
@@ -790,9 +818,9 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
     ctx.emitter.emitRefIsNull();
     ctx.emitter.emitI32Eqz();
 
-    let overallType = ctx.wasmFunction.model.getNodeType(call);
+    let overallType = getNodeType(ctx, call);
     if (overallType == null) throw new Error("Missing call expression type info in semantic model");
-    let overallValType = typeToValType(ctx.wasm, overallType);
+    let overallValType = typeToValTypeWithSub(ctx.wasm, overallType as Type, ctx.wasmFunction);
 
     ctx.emitter.emitIf(overallValType);
     ctx.enterBlockStructure();

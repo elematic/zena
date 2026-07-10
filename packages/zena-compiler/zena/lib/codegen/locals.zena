@@ -1,5 +1,5 @@
 import { ValTypeI32, ValTypeRefNull } from './wasm.zena';
-import { typeToValType, getCellStruct, getNodeType } from './type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, getCellStruct, getNodeType } from './type-mapping.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern, LetPatternCondition,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, BlockStatement,
@@ -61,7 +61,7 @@ export let discoverLocalsFromExpr = (ctx: FunctionContext, expr: Expression, dis
               let symId = symbols[i];
               if (symId != (-1 as SymbolId) && !ctx.localIndices.has(symId)) {
                 let paramType = ft.parameters[i];
-                var vType = typeToValType(ctx.wasm, paramType);
+                var vType = typeToValTypeWithSub(ctx.wasm, paramType, ctx.wasmFunction);
                 let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
                 ctx.localIndices[symId] = index;
                 ctx.localTypes.push(vType);
@@ -239,7 +239,7 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
           }
           var vType: ValType = new ValTypeI32();
           if (varType != null && !(varType is ErrorType)) {
-            vType = typeToValType(ctx.wasm, varType as Type);
+            vType = typeToValTypeWithSub(ctx.wasm, varType as Type, ctx.wasmFunction);
           }
           if (ctx.isCelled(sym.id)) {
             let cellStruct = getCellStruct(ctx.wasm, vType);
@@ -264,7 +264,7 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
           }
           var vType: ValType = new ValTypeI32();
           if (varType != null && !(varType is ErrorType)) {
-            vType = typeToValType(ctx.wasm, varType as Type);
+            vType = typeToValTypeWithSub(ctx.wasm, varType as Type, ctx.wasmFunction);
           }
           if (ctx.isCelled(sym.id)) {
             let cellStruct = getCellStruct(ctx.wasm, vType);
@@ -288,7 +288,7 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
         }
         var vType: ValType = new ValTypeI32();
         if (varType != null && !(varType is ErrorType)) {
-          vType = typeToValType(ctx.wasm, varType as Type);
+          vType = typeToValTypeWithSub(ctx.wasm, varType as Type, ctx.wasmFunction);
         }
         if (ctx.isCelled(sym.id)) {
           let cellStruct = getCellStruct(ctx.wasm, vType);

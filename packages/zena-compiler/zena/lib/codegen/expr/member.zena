@@ -7,20 +7,9 @@ import { generateNumberLiteral, generateStringLiteral } from './primitives.zena'
 import { parseI32, i32ToString } from 'zena:string-convert';
 import { WasmField, WasmFunction, WasmArray, WasmStruct, WasmGlobal, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey, isConcrete } from '../codegen-utils.zena';
-import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType } from '../type-mapping.zena';
+import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType, getNodeType, eraseTypeParameters } from '../type-mapping.zena';
 import { ValTypeRefNull, ValTypeRef, ValTypeI8, ValTypeVoid, HeapType, heapTypeToSigned, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeEqRef, ValTypeAnyRef, ValTypeStructRef } from '../wasm.zena';
 import { Array } from 'zena:array';
-
-let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
-  let t = ctx.wasmFunction.model.getNodeType(node);
-  if (t == null) { return null; }
-  let ct = ctx.wasmFunction.classType;
-  if (ct != null) {
-    return substituteTypeParamsInCodegen(getClassTypeParameters(ct as ClassType), (ct as ClassType).typeArguments, t);
-  } else {
-    return substituteTypeParamsInCodegen(null, null, t);
-  }
-};
 
 let isArrayType = (t: Type): boolean => {
   return match (t) {
@@ -141,11 +130,12 @@ export let generateMemberExpression = (
         ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
       }
       case ClassType as ctVar: {
-        let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
+        let rawCt = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
           ctx.wasmFunction.classType as ClassType
         } else {
           ctVar
         };
+        let ct = eraseTypeParameters(rawCt) as ClassType;
         let isStaticAccess = ctx.wasmFunction.model.isStaticAccess(expr);
 
         if (isStaticAccess) {
@@ -578,11 +568,12 @@ export let generateIndexExpression = (
         var foundFunc: WasmFunction | null = null;
         match (nonNullObjType) {
           case ClassType as ctVar: {
-            let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
+            let rawCt = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
               ctx.wasmFunction.classType as ClassType
             } else {
               ctVar
             };
+            let ct = eraseTypeParameters(rawCt) as ClassType;
             let indexType = getNodeType(ctx, expr.index);
             if (indexType == null) throw new Error("Index type not found in semantic model!");
             let params = new Array<Type>();

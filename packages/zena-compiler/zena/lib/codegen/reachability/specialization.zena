@@ -119,7 +119,7 @@ export final class Specializer implements SpecializerInterface {
         }
       }
 
-      if (!hasExplicitCtor) {
+      if (!hasExplicitCtor && !classType.isExtension) {
         let cKey = getClassKey(classType);
         let hasCtor = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "<constructor>"));
         if (!hasCtor) {
@@ -145,13 +145,13 @@ export final class Specializer implements SpecializerInterface {
     } else if (classDecl != null && classDecl is SealedVariant) {
       let cKey = getClassKey(classType);
       let hasCtor = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "<constructor>"));
-      if (!hasCtor) {
+      if (!hasCtor && !classType.isExtension) {
         this.registerClassMethod(classType, null, "<constructor>", null, false, false, null, model);
       }
     } else {
       let cKey = getClassKey(classType);
       let hasCtor = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "<constructor>"));
-      if (!hasCtor) {
+      if (!hasCtor && !classType.isExtension) {
         this.registerClassMethod(classType, null, "<constructor>", null, false, false, null, model);
       }
     }
@@ -617,10 +617,12 @@ export final class Specializer implements SpecializerInterface {
       isSynthesizedGetter: boolean,
       isSynthesizedSetter: boolean,
       backingFieldName: String | null,
-      model: SemanticModel): WasmFunction {
+      model: SemanticModel,
+      methodTypeArgs: Array<Type> | null = null): WasmFunction {
 
     var realMethName = methName;
     var methodTypeNode: Type | null = null;
+    var origMethodFt: FunctionType | null = null;
     if (cType != null) {
       if (methName == "<constructor>") {
         methodTypeNode = cType.constructorType;
@@ -646,16 +648,34 @@ export final class Specializer implements SpecializerInterface {
         } else {
           var baseName = methName;
           var sigKey = "";
-          var dollarIdx = -1;
-          for (var idx = 0; idx < methName.length; idx += 1) {
-            if (methName.getByteAt(idx) == 36) {
-              dollarIdx = idx;
-              break;
+          var specIdx = -1;
+          if (methName.length >= 6) {
+            for (var idx = 0; idx <= methName.length - 6; idx += 1) {
+              if (methName.getByteAt(idx) == 95 && // '_'
+                  methName.getByteAt(idx + 1) == 115 && // 's'
+                  methName.getByteAt(idx + 2) == 112 && // 'p'
+                  methName.getByteAt(idx + 3) == 101 && // 'e'
+                  methName.getByteAt(idx + 4) == 99 && // 'c'
+                  methName.getByteAt(idx + 5) == 95) { // '_'
+                specIdx = idx;
+                break;
+              }
             }
           }
-          if (dollarIdx >= 0 && !methName.startsWith("get#") && !methName.startsWith("set#")) {
-            baseName = methName.sliceBytes(0, dollarIdx);
-            sigKey = methName.sliceBytes(dollarIdx, methName.length);
+          if (specIdx >= 0) {
+            baseName = methName.sliceBytes(0, specIdx);
+          } else {
+            var dollarIdx = -1;
+            for (var idx = 0; idx < methName.length; idx += 1) {
+              if (methName.getByteAt(idx) == 36) {
+                dollarIdx = idx;
+                break;
+              }
+            }
+            if (dollarIdx >= 0 && !methName.startsWith("get#") && !methName.startsWith("set#")) {
+              baseName = methName.sliceBytes(0, dollarIdx);
+              sigKey = methName.sliceBytes(dollarIdx, methName.length);
+            }
           }
 
           var currClass: ClassType | null = cType;
@@ -665,7 +685,9 @@ export final class Specializer implements SpecializerInterface {
                 let mInfo = currClass.members[baseName];
                 if (mInfo.type is FunctionType) {
                   let ft = mInfo.type as FunctionType;
-                  if (getSignatureKey(ft) == sigKey) {
+                  if (specIdx >= 0) {
+                    methodTypeNode = ft;
+                  } else if (getSignatureKey(ft) == sigKey) {
                     methodTypeNode = ft;
                   } else if (ft.overloads != null) {
                     let ovs = ft.overloads as Array<FunctionType>;
@@ -754,8 +776,18 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
+    if (methodTypeNode != null && methodTypeNode is FunctionType) {
+      origMethodFt = methodTypeNode as FunctionType;
+    }
+
     if (methodTypeNode != null && cType != null) {
       methodTypeNode = substituteTypeParamsInCodegen(getClassTypeParameters(cType), cType.typeArguments, methodTypeNode as Type);
+      if (methodTypeArgs != null && methodTypeNode is FunctionType) {
+        let fType = methodTypeNode as FunctionType;
+        if (fType.typeParameters != null) {
+          methodTypeNode = substituteTypeParamsInCodegen(fType.typeParameters as Array<TypeParameterType>, methodTypeArgs, methodTypeNode as Type);
+        }
+      }
     }
     if (methodTypeNode != null) {
       this.pass.typeLowerer.discoverType(methodTypeNode as Type, model);
@@ -779,13 +811,16 @@ export final class Specializer implements SpecializerInterface {
     }
 
     if (!isStatic) {
-      if (cType.isExtension && cType.onType != null) {
-        params.push(typeToValType(this.pass.wasm, cType.onType as Type));
-      } else {
-        if (let (true, rootInfo) = this.pass.wasm.classInfos.get(getClassKey(rootClass))) {
-          params.push(new ValTypeRefNull(rootInfo.structType));
+      let isExtCtor = methName == "<constructor>" && cType.isExtension;
+      if (!isExtCtor) {
+        if (cType.isExtension && cType.onType != null) {
+          params.push(typeToValType(this.pass.wasm, cType.onType as Type));
         } else {
-          params.push(new ValTypeAnyRef());
+          if (let (true, rootInfo) = this.pass.wasm.classInfos.get(getClassKey(rootClass))) {
+            params.push(new ValTypeRefNull(rootInfo.structType));
+          } else {
+            params.push(new ValTypeAnyRef());
+          }
         }
       }
     }
@@ -796,15 +831,23 @@ export final class Specializer implements SpecializerInterface {
       }
       if (methName != "<constructor>") {
         mapReturnTypeToWasmResults(this.pass.wasm, fType.returnType, returns);
+      } else if (cType.isExtension && cType.onType != null) {
+        returns.push(typeToValType(this.pass.wasm, cType.onType as Type));
       }
     } else {
       if (methName != "<constructor>") {
         returns.push(new ValTypeI32());
+      } else if (cType.isExtension && cType.onType != null) {
+        returns.push(typeToValType(this.pass.wasm, cType.onType as Type));
       }
     }
     
     let sig = this.pass.wasm.getSignature(params, returns);
     let wasmFunc = new WasmFunction(sig, methodNode, model);
+    if (origMethodFt != null && origMethodFt.typeParameters != null) {
+      wasmFunc.typeParameters = origMethodFt.typeParameters;
+      wasmFunc.typeArguments = methodTypeArgs;
+    }
 
     var decs: Array<Decorator> | null = null;
     if (methodNode != null) {
@@ -1129,7 +1172,7 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
-    if (cdDecl != null || ct.isCaseClass || (cd != null && cd is SealedVariant)) {
+    if ((cdDecl != null || ct.isCaseClass || (cd != null && cd is SealedVariant)) && !ct.isExtension) {
       let hasCtor = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "<constructor>"));
       if (!hasCtor) {
         this.registerClassMethod(ct, cd, "<constructor>", null, false, false, null, sourceModel);
@@ -1288,6 +1331,15 @@ export final class Specializer implements SpecializerInterface {
     this.pass.markFunctionReached(wasmFunc);
     
     return wasmFunc;
+  }
+
+  instantiateGenericMethod(ct: ClassType, cd: Node | null, methName: String, methodNode: Node, typeArgs: Array<Type>, model: SemanticModel): WasmFunction {
+    let specKey = getSpecializedFunctionKey(methName, typeArgs) as String;
+    let registeredKey = getClassMethodKey(getClassKey(ct), specKey);
+    if (this.pass.wasm.classMethodMap.has(registeredKey)) {
+      return this.pass.wasm.classMethodMap[registeredKey];
+    }
+    return this.registerClassMethod(ct, cd, specKey, methodNode, false, false, null, model, typeArgs);
   }
 }
 

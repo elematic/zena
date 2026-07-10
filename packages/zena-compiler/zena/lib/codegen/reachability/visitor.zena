@@ -12,7 +12,7 @@ import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters } from '../type-mapping.zena';
+import { typeToValType, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters } from '../type-mapping.zena';
 import { collectValueExports } from '../function-generator.zena';
 import { dirName, normalizePath } from '../../module-resolver.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -27,9 +27,10 @@ export final class TypeLowerer implements TypeLowererInterface {
 
   new(this.pass);
 
-  discoverType(t: Type | null, model: SemanticModel): void {
-    if (t == null) { return; }
-    let typeStr = getTypeUniqueKey(t as Type);
+  discoverType(rawT: Type | null, model: SemanticModel): void {
+    if (rawT == null) { return; }
+    let t = eraseTypeParameters(rawT as Type);
+    let typeStr = getTypeUniqueKey(t);
     if (this.pass.discoveredTypes.has(typeStr)) {
       return;
     }
@@ -141,7 +142,8 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
       
       if (ct.isExtension && ct.onType != null) {
-        this.discoverType(ct.onType, model);
+        let subOn = substituteTypeParamsInClassContext(ct, ct.onType as Type);
+        this.discoverType(subOn, model);
       }
       for (let pair in ct.members) {
         if (pair.value is FieldInfo) {
@@ -489,17 +491,39 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             let targetModel = this.pass.getClassModel(ct);
             
             var isMethod = false;
+            var isGenericMethod = false;
+            var methodTypeArgs: Array<Type> | null = null;
             if (ct.members.has(propName)) {
               let mi = ct.members[propName];
               if (mi is MethodInfo) {
                 isMethod = true;
+                let methodInfoVal = mi as MethodInfo;
+                if (methodInfoVal.type is FunctionType) {
+                  let ft = methodInfoVal.type as FunctionType;
+                  if (ft.typeParameters != null && (ft.typeParameters as Array<TypeParameterType>).length > 0) {
+                    isGenericMethod = true;
+                    let nodeTypeRaw = model.getNodeType(mem);
+                    if (nodeTypeRaw != null && nodeTypeRaw is FunctionType) {
+                      let nodeFt = nodeTypeRaw as FunctionType;
+                      if (nodeFt.typeArguments != null) {
+                        methodTypeArgs = nodeFt.typeArguments as Array<Type>;
+                      }
+                    }
+                  }
+                }
               }
             }
             
             let resolvedName = if (isMethod) propName else "get#" + propName;
             let mds = this.pass.cha.findImplementingMethods(ct, resolvedName);
             for (let md in mds) {
-              this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), ct, this.pass.currentReachable));
+              if (isGenericMethod && methodTypeArgs != null) {
+                let unspecCdId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+                let cd = if (let (true, decl) = this.pass.classDecls.get(unspecCdId)) decl else null;
+                this.pass.specializer.instantiateGenericMethod(ct, cd, propName, md as Node, methodTypeArgs as Array<Type>, this.pass.getNodeModel(md as Node, targetModel));
+              } else {
+                this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), ct, this.pass.currentReachable));
+              }
             }
             if (!isMethod) {
               let fd = this.pass.cha.findImplementingField(ct, propName);

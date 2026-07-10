@@ -19,7 +19,12 @@ const outDir = join(testsDir, 'out');
 const cliPath = join(pkgDir, '..', 'cli', 'lib', 'cli.js');
 
 // Files/patterns that need wasmtime (--target wasi)
-const wasiPatterns = ['fs/**/*.zena', 'memory_test.zena'];
+const wasiPatterns = [
+  'fs/**/*.zena',
+  'memory_test.zena',
+  'fixed_array/**/*.__runner__.zena',
+  'array/**/*.__runner__.zena',
+];
 
 console.log('Building WASI tests...');
 console.log('');

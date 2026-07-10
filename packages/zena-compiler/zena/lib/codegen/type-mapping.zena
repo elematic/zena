@@ -639,8 +639,122 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
   }
 };
 
+export let eraseTypeParameters = (t: Type): Type => {
+  return match (t) {
+    case TypeParameterType: new AnyRefType()
+    case ArrayType {elementType}: {
+      let sub = eraseTypeParameters(elementType);
+      if (sub == elementType) { return t; }
+      new ArrayType(sub)
+    }
+    case ClassType as ct: {
+      if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
+        let args = ct.typeArguments as Array<Type>;
+        let newArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in args) {
+          let sub = eraseTypeParameters(arg);
+          if (sub != arg) { changed = true; }
+          newArgs.push(sub);
+        }
+        if (!changed) { return t; }
+        let inst = new ClassType(ct.id, ct.name);
+        inst.typeArguments = newArgs;
+        if (ct.superType != null) {
+          inst.superType = eraseTypeParameters(ct.superType as Type) as ClassType;
+        }
+        inst.members = ct.members;
+        inst.typeParameters = ct.typeParameters;
+        inst.isExtension = ct.isExtension;
+        if (ct.isExtension && ct.onType != null) {
+          inst.onType = eraseTypeParameters(ct.onType as Type);
+        }
+        inst.genericSource = ct.genericSource ?? ct;
+        inst.sourcePath = ct.sourcePath;
+        for (let impl in ct.implementsList) {
+          inst.implementsList.push(eraseTypeParameters(impl) as InterfaceType);
+        }
+        for (let m in ct.mixins) {
+          inst.mixins.push(eraseTypeParameters(m) as MixinType);
+        }
+        for (let vt in ct.vtable) {
+          inst.vtable.push(vt);
+        }
+        inst.fieldSetterNames = ct.fieldSetterNames;
+        inst.isFinal = ct.isFinal;
+        inst.isCaseClass = ct.isCaseClass;
+        inst.isAbstract = ct.isAbstract;
+        inst.isSealed = ct.isSealed;
+        inst.sealedVariants = ct.sealedVariants;
+        inst.declaredFields = ct.declaredFields;
+        inst.forwardVariantNames = ct.forwardVariantNames;
+        inst.constructorType = if (ct.constructorType != null) {
+          let ctor = ct.constructorType as FunctionType;
+          let newParams = new Array<Type>();
+          for (let p in ctor.parameters) {
+            newParams.push(eraseTypeParameters(p));
+          }
+          let newFt = new FunctionType(newParams, ctor.parameterNames, eraseTypeParameters(ctor.returnType));
+          newFt.parameterInitializers = ctor.parameterInitializers;
+          newFt.parameterSymbols = ctor.parameterSymbols;
+          newFt.optionalParameters = ctor.optionalParameters;
+          newFt
+        } else {
+          null
+        };
+        inst as Type
+      } else {
+        t as Type
+      }
+    }
+    case InterfaceType as it: {
+      if (it.typeArguments != null && (it.typeArguments as Array<Type>).length > 0) {
+        let args = it.typeArguments as Array<Type>;
+        let newArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in args) {
+          let sub = eraseTypeParameters(arg);
+          if (sub != arg) { changed = true; }
+          newArgs.push(sub);
+        }
+        if (!changed) { return t; }
+        let inst = new InterfaceType(it.id, it.name);
+        inst.typeArguments = newArgs;
+        inst.members = it.members;
+        inst.typeParameters = it.typeParameters;
+        inst.genericSource = it.genericSource ?? it;
+        inst.sourcePath = it.sourcePath;
+        for (let ext in it.extendsList) {
+          inst.extendsList.push(eraseTypeParameters(ext) as InterfaceType);
+        }
+        inst as Type
+      } else {
+        t as Type
+      }
+    }
+    case FunctionType as ft: {
+      let newParams = new Array<Type>();
+      var changed = false;
+      for (let p in ft.parameters) {
+        let sub = eraseTypeParameters(p);
+        if (sub != p) { changed = true; }
+        newParams.push(sub);
+      }
+      let newRet = eraseTypeParameters(ft.returnType);
+      if (newRet != ft.returnType) { changed = true; }
+      if (!changed) { return t; }
+      let inst = new FunctionType(newParams, ft.parameterNames, newRet);
+      inst.typeParameters = ft.typeParameters;
+      inst.typeArguments = ft.typeArguments;
+      inst
+    }
+    case _: t
+  };
+};
+
 export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName: String): WasmSignature => {
-  let rootClass = getMemberRootClass(ct, fieldName);
+  let erasedCt = eraseTypeParameters(ct) as ClassType;
+  let rootClass = getMemberRootClass(erasedCt, fieldName);
   let params = new Array<ValType>();
   let rootKey = getClassKey(rootClass);
   let classStruct = if (let (true, rootInfo) = wasm.classInfos.get(rootKey)) rootInfo.structType else null;
@@ -793,8 +907,10 @@ export let getCellStruct = (wasm: WasmModule, valType: ValType): WasmStruct => {
   return st;
 };
 
-export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
-  case TypeAliasType as a: typeToValType(wasm, a.target)
+export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
+  let erasedT = eraseTypeParameters(t);
+  return match (erasedT) {
+    case TypeAliasType as a: typeToValType(wasm, a.target)
   case BoolLiteralType: new ValTypeI32()
   case NumLiteralType as num: typeToValType(wasm, baseType(num))
   case StringLiteralType: {
@@ -855,7 +971,8 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
       return new ValTypeRefNull(wasm.getByteArrayType());
     }
     if (ct.isExtension && ct.onType != null) {
-      return typeToValType(wasm, ct.onType as Type);
+      let subOn = substituteTypeParamsInClassContext(ct, ct.onType as Type);
+      return typeToValType(wasm, subOn);
     }
     if (let (true, ctInfo) = wasm.classInfos.get(getClassKey(ct))) {
       new ValTypeRefNull(ctInfo.structType)
@@ -966,6 +1083,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => match (t) {
   case _: {
     throw new Error("typeToValType: unsupported type: " + typeToString(t));
   }
+  };
 };
 
 export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: Array<ValType>): void => {
@@ -1149,7 +1267,10 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
           inst.isFinal = resolvedCt.isFinal;
           inst.isCaseClass = resolvedCt.isCaseClass;
           inst.isAbstract = resolvedCt.isAbstract;
-          inst.isExtension = resolvedCt.isExtension;
+           inst.isExtension = resolvedCt.isExtension;
+          if (resolvedCt.isExtension && resolvedCt.onType != null) {
+            inst.onType = mapMixinThisInType(ct, resolvedCt.onType as Type);
+          }
           inst.isSealed = resolvedCt.isSealed;
           inst.sourcePath = resolvedCt.sourcePath;
           inst.sealedVariants = resolvedCt.sealedVariants;

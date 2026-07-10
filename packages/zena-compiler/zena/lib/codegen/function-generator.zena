@@ -378,7 +378,13 @@ export final class FunctionGenerator {
       var offset = 0;
       if (bodyNode is MethodDefinition || bodyNode is AccessorDeclaration || bodyNode is SetterInfo) {
         if (!this.ctx.wasmFunction.isStatic) {
-          offset = 1;
+          let isExtCtor = this.ctx.wasmFunction.methodName != null &&
+                          (this.ctx.wasmFunction.methodName as String) == "<constructor>" &&
+                          this.ctx.wasmFunction.classType != null &&
+                          (this.ctx.wasmFunction.classType as ClassType).isExtension;
+          if (!isExtCtor) {
+            offset = 1;
+          }
         }
       } else if (this.ctx.wasmFunction.isClosure) {
         offset = 1;
@@ -420,6 +426,17 @@ export final class FunctionGenerator {
           let thisLocalIdx = this.ctx.allocLocal(new ValTypeRefNull(classInfo.structType));
           this.ctx.thisLocalIndex = thisLocalIdx;
         }
+      }
+    }
+    
+    // Setup "this" local for extension class constructors
+    if (this.ctx.wasmFunction.classType != null &&
+        this.ctx.wasmFunction.methodName != null &&
+        (this.ctx.wasmFunction.methodName as String) == "<constructor>") {
+      let cType = this.ctx.wasmFunction.classType as ClassType;
+      if (cType.isExtension && cType.onType != null) {
+        let thisLocalIdx = this.ctx.allocLocal(typeToValType(this.ctx.wasm, cType.onType as Type));
+        this.ctx.thisLocalIndex = thisLocalIdx;
       }
     }
 
@@ -635,7 +652,13 @@ export final class FunctionGenerator {
           let si = mDef.superInitializer as SuperInitializer;
           let cType = this.ctx.wasmFunction.classType;
           
-          if (cType != null && cType.superType != null) {
+          if (cType != null && cType.isExtension) {
+            if (si.args.length != 1) {
+              throw new Error("Extension super call expects 1 argument");
+            }
+            this.generateExpression(si.args[0]);
+            this.ctx.emitter.emitLocalSet(this.ctx.thisLocalIndex);
+          } else if (cType != null && cType.superType != null) {
             let st = cType.superType as ClassType;
             let ctorKey = getClassMethodKey(getClassKey(st), "<constructor>");
             var ctorFunc: WasmFunction | null = if (this.ctx.wasm.classMethodMap.has(ctorKey)) {
@@ -675,10 +698,26 @@ export final class FunctionGenerator {
         case BlockStatement as blk: {
           this.generateStatement(blk as Statement);
           if (this.ctx.wasmFunction.signature.returns.length > 0) {
-            if (this.ctx.isReachable) {
-              throw new Error("Function '" + name + "' misses a return statement");
-            } else if (this.ctx.needsUnreachable) {
-              this.ctx.emitter.emitUnreachable();
+            let isExtCtor = this.ctx.wasmFunction.methodName != null &&
+                            (this.ctx.wasmFunction.methodName as String) == "<constructor>" &&
+                            this.ctx.wasmFunction.classType != null &&
+                            (this.ctx.wasmFunction.classType as ClassType).isExtension;
+            if (isExtCtor) {
+              if (this.ctx.isReachable) {
+                if (this.ctx.thisLocalIndex >= 0) {
+                  this.ctx.emitter.emitLocalGet(this.ctx.thisLocalIndex);
+                } else {
+                  this.ctx.emitter.emitLocalGet(0);
+                }
+                this.ctx.emitter.emitReturn();
+                this.ctx.isReachable = false;
+              }
+            } else {
+              if (this.ctx.isReachable) {
+                throw new Error("Function '" + name + "' misses a return statement");
+              } else if (this.ctx.needsUnreachable) {
+                this.ctx.emitter.emitUnreachable();
+              }
             }
           }
         }
@@ -1171,8 +1210,8 @@ export final class FunctionGenerator {
         let src = funcAdaptation.source;
         let tgt = funcAdaptation.target;
         
-        let actualClosureStruct = getClosureStruct(this.ctx.wasm, src);
-        let expectedClosureStruct = getClosureStruct(this.ctx.wasm, tgt);
+        let actualClosureStruct = wrapperFunc.functionAdaptationResolvedSourceStruct ?? getClosureStruct(this.ctx.wasm, src);
+        let expectedClosureStruct = wrapperFunc.functionAdaptationResolvedTargetStruct ?? getClosureStruct(this.ctx.wasm, tgt);
         
         let actualLocal = this.ctx.getStructScratchLocal(actualClosureStruct);
         this.ctx.emitter.emitRefCast(actualClosureStruct.index);
@@ -1199,7 +1238,7 @@ export final class FunctionGenerator {
     let actualFt = this.ctx.wasmFunction.functionAdaptationSource as FunctionType;
     let expectedFt = this.ctx.wasmFunction.functionAdaptationTarget as FunctionType;
     
-    let actualClosureStruct = getClosureStruct(this.ctx.wasm, actualFt);
+    let actualClosureStruct = this.ctx.wasmFunction.functionAdaptationResolvedSourceStruct ?? getClosureStruct(this.ctx.wasm, actualFt);
     
     // 1. Load context (param 0)
     this.ctx.emitter.emitLocalGet(0);
