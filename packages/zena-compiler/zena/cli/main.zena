@@ -4,7 +4,8 @@ import { readFile, writeFileBytes, writeFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
-import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
+import { i32ToString } from 'zena:string-convert';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { HashMap } from 'zena:map';
@@ -99,7 +100,12 @@ export let main = (): i32 => {
     var hasError = false;
     for (let diag in diagnostics) {
       if (diag.severity == DiagnosticSeverity.Error) {
-        console.error("Error: " + diag.message);
+        if (diag.location != null) {
+          let loc = diag.location as SourceSpan;
+          console.error(loc.file + ":" + i32ToString(loc.line + 1) + ":" + i32ToString(loc.column + 1) + " - Error: " + diag.message);
+        } else {
+          console.error("Error: " + diag.message);
+        }
         hasError = true;
       }
     }

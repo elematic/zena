@@ -141,7 +141,8 @@ fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) 
 
     match unsafe { Module::deserialize_file(engine, cwasm_path) } {
         Ok(m) => Ok(m),
-        Err(_) => {
+        Err(e) => {
+            eprintln!("WARNING: deserialization of cwasm failed: {:?}", e);
             let wasm_bytes = std::fs::read(wasm_path)?;
             Module::new(engine, &wasm_bytes)
                 .map_err(anyhow::Error::from)

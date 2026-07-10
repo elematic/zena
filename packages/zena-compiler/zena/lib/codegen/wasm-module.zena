@@ -268,6 +268,7 @@ export class WasmModule {
   usedInterfaceAdaptations = new HashMap<ClassInterfaceKey, boolean>();
   usedInterfaceMembers = new HashMap<InterfaceMemberKey, boolean>();
   classMethodMap = new HashMap<ClassMethodKey, WasmFunction>();
+  classMethods = new HashMap<String, Array<WasmFunction>>();
   var i32ToStringFunc: WasmFunction | null = null;
   var u32ToStringFunc: WasmFunction | null = null;
   var i64ToStringFunc: WasmFunction | null = null;
@@ -711,6 +712,11 @@ export class WasmModule {
     if (func.classType != null && func.methodName != null) {
       let key = getClassMethodKey(getClassKey(func.classType as ClassType), func.methodName as String);
       this.classMethodMap[key] = func;
+      let cKey = getClassKey(func.classType as ClassType) as String;
+      if (!this.classMethods.has(cKey)) {
+        this.classMethods[cKey] = new Array<WasmFunction>();
+      }
+      this.classMethods[cKey].push(func);
     }
     if (func.isFunctionAdaptation && func.functionAdaptationSource != null && func.functionAdaptationTarget != null) {
       let key = getFunctionAdaptationKey(func.functionAdaptationSource as Type, func.functionAdaptationTarget as Type);
@@ -919,12 +925,18 @@ export class WasmModule {
     this.isLayoutLocked = true;
     
     this.classMethodMap.clear();
+    this.classMethods.clear();
     this.functionAdaptations.clear();
     this.arrayMethods = new Array<WasmFunction>();
     for (let func in this.functions) {
       if (func.classType != null && func.methodName != null) {
         let key = getClassMethodKey(getClassKey(func.classType as ClassType), func.methodName as String);
         this.classMethodMap[key] = func;
+        let cKey = getClassKey(func.classType as ClassType) as String;
+        if (!this.classMethods.has(cKey)) {
+          this.classMethods[cKey] = new Array<WasmFunction>();
+        }
+        this.classMethods[cKey].push(func);
       }
       if (func.isFunctionAdaptation && func.functionAdaptationSource != null && func.functionAdaptationTarget != null) {
         let key = getFunctionAdaptationKey(func.functionAdaptationSource as Type, func.functionAdaptationTarget as Type);

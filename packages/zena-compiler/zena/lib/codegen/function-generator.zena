@@ -15,7 +15,7 @@ import {
   ThrowExpression, TryExpression, RangeExpression, PipelineExpression, PipePlaceholder,
   Module, getMemberPropertyName
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType, isVoidOrNeverType, FieldInfo } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType, isVoidOrNeverType, FieldInfo, instantiateClassType } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
@@ -97,7 +97,7 @@ export final class FunctionGenerator {
   }
 
   generate(): void {
-    console.log("Compiling function: " + (if (this.ctx.wasmFunction.name != null) this.ctx.wasmFunction.name as String else "<null>"));
+    // console.log("Compiling function: " + (if (this.ctx.wasmFunction.name != null) this.ctx.wasmFunction.name as String else "<null>"));
     if (this.ctx.wasmFunction.importWrapperTarget != null) {
       this.ctx.emitter.emitFunctionCodeStart(this.ctx.wasmFunction);
       var name = "func" + i32ToString(this.ctx.wasmFunction.index);
@@ -220,17 +220,43 @@ export final class FunctionGenerator {
         name = this.ctx.wasmFunction.name as String;
       }
       this.ctx.emitter.emitFunctionSignatureStart(name, this.ctx.wasmFunction.signature.index);
-      let helperLocals = new Array<ValType>();
       if (this.ctx.wasmFunction.name != null && (this.ctx.wasmFunction.name as String) == "get_string_literal") {
         let stringClass = this.ctx.wasm.stringClass;
         if (stringClass != null) {
           let stringKey = getClassKey(stringClass as ClassType);
           if (let (true, stringInfo) = this.ctx.wasm.classInfos.get(stringKey)) {
-            helperLocals.push(new ValTypeRefNull(stringInfo.structType)); // local 1: str
+            this.ctx.allocLocal(new ValTypeRefNull(stringInfo.structType)); // local 1: str
           }
         }
       }
-      this.ctx.emitter.emitFunctionLocalsStart(helperLocals);
+      
+      if (this.ctx.wasmFunction.methodName != null && (this.ctx.wasmFunction.methodName as String) == "<constructor>") {
+        let classType = this.ctx.wasmFunction.classType as ClassType;
+        let classDecl = this.ctx.wasmFunction.classDecl;
+        if (classDecl != null && classDecl is ClassDeclaration) {
+          let cd = classDecl as ClassDeclaration;
+          let mixinFields = new Array<FieldDefinition>();
+          let seenMixins = new HashMap<MixinKey, boolean>();
+          collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
+
+          let allFields = new Array<FieldDefinition>();
+          for (let member in cd.body) {
+            if (member is FieldDefinition) {
+              allFields.push(member as FieldDefinition);
+            }
+          }
+          for (let fd in mixinFields) {
+            allFields.push(fd);
+          }
+
+          for (let fd in allFields) {
+            if (fd.value != null && !fd.isStatic) {
+              this.discoverLocalsFromExpr(fd.value as Expression);
+            }
+          }
+        }
+      }
+      this.ctx.emitter.emitFunctionLocalsStart(this.ctx.localTypes);
       
       if (this.ctx.wasmFunction.isCaseClassEq) {
         this.generateCaseClassEqBody();
@@ -998,14 +1024,36 @@ export final class FunctionGenerator {
         }
           
           let sourceWasmType = typeToValTypeWithSub(this.ctx.wasm, sourceType, this.ctx.wasmFunction);
+          var currentSourceWasmType = sourceWasmType;
+          let isTargetPrimitive = targetWasmType is ValTypeI32 || targetWasmType is ValTypeI64 || targetWasmType is ValTypeF32 || targetWasmType is ValTypeF64;
+          let isSourcePrimitive = currentSourceWasmType is ValTypeI32 || currentSourceWasmType is ValTypeI64 || currentSourceWasmType is ValTypeF32 || currentSourceWasmType is ValTypeF64;
+          if (isTargetPrimitive && !isSourcePrimitive) {
+            let boxClass = this.ctx.wasm.boxClass;
+            if (boxClass != null) {
+              let typeArgs = new Array<Type>();
+              typeArgs.push(targetType);
+              let concreteBoxType = instantiateClassType(boxClass as ClassType, typeArgs);
+              let cKey = getClassKey(concreteBoxType);
+              var structTypeOpt: WasmStruct | null = null;
+              if (let (true, info) = this.ctx.wasm.classInfos.get(cKey)) {
+                structTypeOpt = info.structType;
+              }
+              if (structTypeOpt != null) {
+                let structType = structTypeOpt as WasmStruct;
+                this.ctx.emitter.emitRefCast(structType.index);
+                this.ctx.emitter.emitStructGet(structType.index, 1);
+                currentSourceWasmType = targetWasmType;
+              }
+            }
+          }
           
-          if (valTypeEquals(sourceWasmType, targetWasmType)) {
+          if (valTypeEquals(currentSourceWasmType, targetWasmType)) {
             // No-op identity cast
           } else {
             match (targetWasmType) {
             case ValTypeRefNull as targetRefNull: {
               let targetIdx = targetRefNull.target.index;
-              match (sourceWasmType) {
+              match (currentSourceWasmType) {
                 case ValTypeRefNull as sourceRefNull: {
                   if (sourceRefNull.target.index != targetIdx) {
                     this.ctx.emitter.emitRefCastNull(targetIdx);
@@ -1032,7 +1080,7 @@ export final class FunctionGenerator {
             }
             case ValTypeRef as targetRef: {
               let targetIdx = targetRef.target.index;
-              match (sourceWasmType) {
+              match (currentSourceWasmType) {
                 case ValTypeRef as sourceRef: {
                   if (sourceRef.target.index != targetIdx) {
                     this.ctx.emitter.emitRefCast(targetIdx);
@@ -1056,7 +1104,7 @@ export final class FunctionGenerator {
               }
             }
             case ValTypeI64: {
-              match (sourceWasmType) {
+              match (currentSourceWasmType) {
                 case ValTypeI32: {
                   this.ctx.emitter.emitI64ExtendI32S();
                 }
@@ -1072,7 +1120,7 @@ export final class FunctionGenerator {
               }
             }
             case ValTypeI32: {
-              match (sourceWasmType) {
+              match (currentSourceWasmType) {
                 case ValTypeI64: {
                   this.ctx.emitter.emitI32WrapI64();
                 }
@@ -1088,7 +1136,7 @@ export final class FunctionGenerator {
               }
             }
             case ValTypeF64: {
-              match (sourceWasmType) {
+              match (currentSourceWasmType) {
                 case ValTypeI32: {
                   this.ctx.emitter.emitF64ConvertI32S();
                 }
@@ -1104,7 +1152,7 @@ export final class FunctionGenerator {
               }
             }
             case ValTypeF32: {
-              match (sourceWasmType) {
+              match (currentSourceWasmType) {
                 case ValTypeI32: {
                   this.ctx.emitter.emitF32ConvertI32S();
                 }

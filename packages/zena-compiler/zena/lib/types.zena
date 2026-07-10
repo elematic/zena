@@ -348,6 +348,9 @@ let substituteInType = (
         inst.isExtension = ct.isExtension;
         inst.isSealed = ct.isSealed;
         inst.sealedVariants = ct.sealedVariants;
+        inst.declaredFields = ct.declaredFields;
+        inst.forwardVariantNames = ct.forwardVariantNames;
+        inst.members = ct.members;
         if (ct.onType != null) {
           inst.onType = substituteInType(ct.onType, combinedParams, combinedArgs);
         }
@@ -407,6 +410,7 @@ let substituteInType = (
         }
         inst.extendsList = newExtends;
         inst.members = it.members;
+        inst.sourcePath = it.sourcePath;
         inst
       } else {
         it
@@ -494,11 +498,17 @@ export let instantiateClassType = (
   result.typeParameters = source.typeParameters;
   result.typeArguments = typeArguments;
   result.genericSource = source;
-  result.superType = source.superType;
-  // Copy implementsList entries (field is immutable, so push from source).
+  result.superType = if (source.superType != null) {
+    let subSuper = substituteInType(source.superType as Type, source.typeParameters, typeArguments);
+    (subSuper ?? source.superType) as ClassType
+  } else {
+    null
+  };
+  // Copy and substitute implementsList entries
   var i = 0;
   while (i < source.implementsList.length) {
-    result.implementsList.push(source.implementsList[i]);
+    let subImpl = substituteInType(source.implementsList[i] as Type, source.typeParameters, typeArguments);
+    result.implementsList.push((subImpl ?? source.implementsList[i]) as InterfaceType);
     i += 1;
   }
   // Copy and substitute mixins list

@@ -35,10 +35,8 @@ export final class Specializer implements SpecializerInterface {
     }
     this.pass.instantiatedSpecializedClasses.add(cKey);
 
-    let methKeys = this.pass.wasm.classMethodMap.keys();
-    while (let (true, key) = methKeys.next()) {
-      let func = this.pass.wasm.classMethodMap[key];
-      if (func.classType != null && getClassKey(func.classType as ClassType) as String == cKey) {
+    if (let (true, funcs) = this.pass.wasm.classMethods.get(cKey)) {
+      for (let func in funcs) {
         if (!this.pass.reachedFunctionsSet.has(func)) {
           this.pass.wasm.addFunction(func);
           this.pass.markFunctionReached(func);
@@ -965,6 +963,11 @@ export final class Specializer implements SpecializerInterface {
     }
 
     this.pass.wasm.classMethodMap[registeredKey] = wasmFunc;
+    let cKey = getClassKey(cType) as String;
+    if (!this.pass.wasm.classMethods.has(cKey)) {
+      this.pass.wasm.classMethods[cKey] = new Array<WasmFunction>();
+    }
+    this.pass.wasm.classMethods[cKey].push(wasmFunc);
     return wasmFunc;
   }
 

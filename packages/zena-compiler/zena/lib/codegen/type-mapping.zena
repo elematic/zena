@@ -21,6 +21,7 @@ import {
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { HashMap } from 'zena:map';
+import { OrderedMap } from 'zena:ordered-map';
 import { Array } from 'zena:array';
 import { 
   getMemberRootClass, getClassKey, getInterfaceKey, ClassKey, InterfaceKey, 
@@ -536,18 +537,6 @@ export let substituteTypeParamsInClassContext = (classType: ClassType | null, t:
   addClassTransitiveMixins(ct, allParams, allArgs, seenMixins);
   
   let substituted = substituteTypeParamsInCodegen(allParams, allArgs, t);
-  if (t is TypeParameterType) {
-    let tp = t as TypeParameterType;
-    var paramsStr = "";
-    for (let p in allParams) {
-      paramsStr = paramsStr + p.name + ", ";
-    }
-    var argsStr = "";
-    for (let a in allArgs) {
-      argsStr = argsStr + typeToString(a) + ", ";
-    }
-    // console.log("DEBUG SUB: ct = " + ct.name + " (id=" + i32ToString(ct.id as i32) + ", ext=" + (if (ct.isExtension) "true" else "false") + ", mixins=" + i32ToString(ct.mixins.length as i32) + ") | t = " + tp.name + " | params = [" + paramsStr + "] | args = [" + argsStr + "] | substituted = " + typeToString(substituted));
-  }
   return mapMixinThisInType(ct, substituted);
 };
 
@@ -748,6 +737,80 @@ export let eraseTypeParameters = (t: Type): Type => {
       inst.typeArguments = ft.typeArguments;
       inst
     }
+    case MixinType as mt: {
+      if (mt.typeArguments != null && (mt.typeArguments as Array<Type>).length > 0) {
+        let args = mt.typeArguments as Array<Type>;
+        let newArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in args) {
+          let sub = eraseTypeParameters(arg);
+          if (sub != arg) { changed = true; }
+          newArgs.push(sub);
+        }
+        if (!changed) { return t; }
+        let inst = new MixinType(mt.name);
+        inst.typeParameters = mt.typeParameters;
+        inst.typeArguments = newArgs;
+        inst.genericSource = mt.genericSource ?? mt;
+        inst.onType = mt.onType;
+        inst.members = mt.members;
+        inst.sourcePath = mt.sourcePath;
+        for (let composed in mt.mixins) {
+          inst.mixins.push(eraseTypeParameters(composed) as MixinType);
+        }
+        inst as Type
+      } else {
+        t as Type
+      }
+    }
+    case UnionType {types}: {
+      let newTypes = new Array<Type>();
+      var changed = false;
+      for (let subT in types) {
+        let sub = eraseTypeParameters(subT);
+        if (sub != subT) { changed = true; }
+        newTypes.push(sub);
+      }
+      if (!changed) { return t; }
+      new UnionType(newTypes)
+    }
+    case TupleType {elementTypes}: {
+      let newElems = new Array<Type>();
+      var changed = false;
+      for (let subT in elementTypes) {
+        let sub = eraseTypeParameters(subT);
+        if (sub != subT) { changed = true; }
+        newElems.push(sub);
+      }
+      if (!changed) { return t; }
+      new TupleType(newElems)
+    }
+    case InlineTupleType {elementTypes}: {
+      let newElems = new Array<Type>();
+      var changed = false;
+      for (let subT in elementTypes) {
+        let sub = eraseTypeParameters(subT);
+        if (sub != subT) { changed = true; }
+        newElems.push(sub);
+      }
+      if (!changed) { return t; }
+      new InlineTupleType(newElems)
+    }
+    case RecordType as rec: {
+      let newProps = new HashMap<String, Type>();
+      var changed = false;
+      let keys = rec.properties.keys();
+      while (let (true, key) = keys.next()) {
+        let propType = rec.properties[key];
+        let sub = eraseTypeParameters(propType);
+        if (sub != propType) { changed = true; }
+        newProps[key] = sub;
+      }
+      if (!changed) { return t; }
+      let newRec = new RecordType(newProps, rec.optionalProperties);
+      newRec.enumDeclaration = rec.enumDeclaration;
+      newRec
+    }
     case _: t
   };
 };
@@ -769,12 +832,12 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
   if (fieldName.startsWith("get#")) {
     let propName = fieldName.sliceBytes(4, fieldName.length);
     var fieldType: Type = new VoidType();
-    if (ct.members.has(propName)) {
-      fieldType = substituteTypeParamsInClassContext(ct, ct.members[propName].type);
-    } else if (ct.members.has(fieldName)) {
-      let mi = ct.members[fieldName] as MethodInfo;
+    if (erasedCt.members.has(propName)) {
+      fieldType = substituteTypeParamsInClassContext(erasedCt, erasedCt.members[propName].type);
+    } else if (erasedCt.members.has(fieldName)) {
+      let mi = erasedCt.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      let resolvedFt = substituteTypeParamsInClassContext(ct, ft) as FunctionType;
+      let resolvedFt = substituteTypeParamsInClassContext(erasedCt, ft) as FunctionType;
       fieldType = resolvedFt.returnType;
     }
     returns.push(typeToValType(wasm, fieldType));
@@ -782,22 +845,22 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
   } else if (fieldName.startsWith("set#")) {
     let propName = fieldName.sliceBytes(4, fieldName.length);
     var fieldType: Type = new VoidType();
-    if (ct.members.has(propName)) {
-      fieldType = substituteTypeParamsInClassContext(ct, ct.members[propName].type);
-    } else if (ct.members.has(fieldName)) {
-      let mi = ct.members[fieldName] as MethodInfo;
+    if (erasedCt.members.has(propName)) {
+      fieldType = substituteTypeParamsInClassContext(erasedCt, erasedCt.members[propName].type);
+    } else if (erasedCt.members.has(fieldName)) {
+      let mi = erasedCt.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      let resolvedFt = substituteTypeParamsInClassContext(ct, ft) as FunctionType;
+      let resolvedFt = substituteTypeParamsInClassContext(erasedCt, ft) as FunctionType;
       fieldType = resolvedFt.parameters[0];
     }
     params.push(typeToValType(wasm, fieldType));
     return wasm.getSignature(params, returns);
   } else {
     var ft: FunctionType | null = null;
-    if (ct.members.has(fieldName)) {
-      let mi = ct.members[fieldName] as MethodInfo;
+    if (erasedCt.members.has(fieldName)) {
+      let mi = erasedCt.members[fieldName] as MethodInfo;
       let rawFt = mi.type as FunctionType;
-      ft = substituteTypeParamsInClassContext(ct, rawFt) as FunctionType;
+      ft = substituteTypeParamsInClassContext(erasedCt, rawFt) as FunctionType;
     }
     if (ft != null) {
       let fType = ft as FunctionType;
