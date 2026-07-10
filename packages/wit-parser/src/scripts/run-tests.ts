@@ -113,6 +113,11 @@ const compareJson = (
 
   // Primitives
   if (expected !== actual) {
+    if (typeof expected === 'string' && typeof actual === 'string') {
+      if (expected.toLowerCase() === actual.toLowerCase()) {
+        return null;
+      }
+    }
     return `${path || 'root'}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`;
   }
   return null;

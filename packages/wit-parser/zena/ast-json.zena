@@ -29,6 +29,232 @@ let normalizeId = (name: String): String => {
   }
 };
 
+// TODO: move to stdlib
+let compareStrings = (s1: String, s2: String): i32 => {
+  let len1 = s1.length;
+  let len2 = s2.length;
+  let minLen = if (len1 < len2) len1 else len2;
+  
+  var i = 0;
+  while (i < minLen) {
+    let b1 = s1.getByteAt(i);
+    let b2 = s2.getByteAt(i);
+    if (b1 < b2) {
+      return -1;
+    }
+    if (b1 > b2) {
+      return 1;
+    }
+    i = i + 1;
+  }
+  
+  if (len1 < len2) {
+    return -1;
+  }
+  if (len1 > len2) {
+    return 1;
+  }
+  return 0;
+};
+
+let isPurelyNumeric = (s: String): boolean => {
+  if (s.length == 0) return false;
+  var i = 0;
+  while (i < s.length) {
+    let b = s.getByteAt(i);
+    if (b < 48 || b > 57) {
+      return false;
+    }
+    i = i + 1;
+  }
+  return true;
+};
+
+let stringToInt = (s: String): i32 => {
+  var val = 0;
+  var i = 0;
+  while (i < s.length) {
+    let b = s.getByteAt(i);
+    val = val * 10 + (b - 48);
+    i = i + 1;
+  }
+  return val;
+};
+
+let parseNextInt = (s: String, start: i32): {val: i32, next: i32} => {
+  var val = 0;
+  var idx = start;
+  while (idx < s.length) {
+    let b = s.getByteAt(idx);
+    if (b >= 48 && b <= 57) {
+      val = val * 10 + (b - 48);
+      idx = idx + 1;
+    } else {
+      break;
+    }
+  }
+  return {val: val, next: idx};
+};
+
+let getPreIdentifiers = (s: String, start: i32, end: i32): Array<String> => {
+  let arr = new Array<String>();
+  if (start < 0 || start >= end) return arr;
+  
+  var curStart = start;
+  var i = start;
+  while (i < end) {
+    if (s.getByteAt(i) == 46) { // '.'
+      arr.push(s.sliceBytes(curStart, i));
+      curStart = i + 1;
+    }
+    i = i + 1;
+  }
+  if (curStart < end) {
+    arr.push(s.sliceBytes(curStart, end));
+  }
+  return arr;
+};
+
+let compareVersions = (v1: String, v2: String): i32 => {
+  let majRes1 = parseNextInt(v1, 0);
+  let maj1 = majRes1.val;
+  var idx1 = majRes1.next;
+  if (idx1 < v1.length && v1.getByteAt(idx1) == 46) { idx1 = idx1 + 1; }
+  
+  let minRes1 = parseNextInt(v1, idx1);
+  let min1 = minRes1.val;
+  idx1 = minRes1.next;
+  if (idx1 < v1.length && v1.getByteAt(idx1) == 46) { idx1 = idx1 + 1; }
+  
+  let patRes1 = parseNextInt(v1, idx1);
+  let pat1 = patRes1.val;
+  idx1 = patRes1.next;
+  
+  let majRes2 = parseNextInt(v2, 0);
+  let maj2 = majRes2.val;
+  var idx2 = majRes2.next;
+  if (idx2 < v2.length && v2.getByteAt(idx2) == 46) { idx2 = idx2 + 1; }
+  
+  let minRes2 = parseNextInt(v2, idx2);
+  let min2 = minRes2.val;
+  idx2 = minRes2.next;
+  if (idx2 < v2.length && v2.getByteAt(idx2) == 46) { idx2 = idx2 + 1; }
+  
+  let patRes2 = parseNextInt(v2, idx2);
+  let pat2 = patRes2.val;
+  idx2 = patRes2.next;
+  
+  if (maj1 < maj2) return -1;
+  if (maj1 > maj2) return 1;
+  if (min1 < min2) return -1;
+  if (min1 > min2) return 1;
+  if (pat1 < pat2) return -1;
+  if (pat1 > pat2) return 1;
+  
+  var hasPre1 = false;
+  var preStart1 = -1;
+  var buildStart1 = -1;
+  if (idx1 < v1.length && v1.getByteAt(idx1) == 45) { // '-'
+    hasPre1 = true;
+    preStart1 = idx1 + 1;
+  }
+  var i = idx1;
+  while (i < v1.length) {
+    if (v1.getByteAt(i) == 43) { // '+'
+      buildStart1 = i;
+      break;
+    }
+    i = i + 1;
+  }
+  let preEnd1 = if (buildStart1 >= 0) buildStart1 else v1.length;
+  
+  var hasPre2 = false;
+  var preStart2 = -1;
+  var buildStart2 = -1;
+  if (idx2 < v2.length && v2.getByteAt(idx2) == 45) { // '-'
+    hasPre2 = true;
+    preStart2 = idx2 + 1;
+  }
+  var j = idx2;
+  while (j < v2.length) {
+    if (v2.getByteAt(j) == 43) { // '+'
+      buildStart2 = j;
+      break;
+    }
+    j = j + 1;
+  }
+  let preEnd2 = if (buildStart2 >= 0) buildStart2 else v2.length;
+  
+  if (hasPre1 && !hasPre2) return -1;
+  if (!hasPre1 && hasPre2) return 1;
+  if (!hasPre1 && !hasPre2) {
+    // Tie breaker on build metadata
+    return compareStrings(v1, v2);
+  }
+  
+  let arr1 = getPreIdentifiers(v1, preStart1, preEnd1);
+  let arr2 = getPreIdentifiers(v2, preStart2, preEnd2);
+  
+  let len1 = arr1.length;
+  let len2 = arr2.length;
+  let minLen = if (len1 < len2) len1 else len2;
+  
+  var idx = 0;
+  while (idx < minLen) {
+    let id1 = arr1[idx];
+    let id2 = arr2[idx];
+    
+    let isNum1 = isPurelyNumeric(id1);
+    let isNum2 = isPurelyNumeric(id2);
+    
+    if (isNum1 && isNum2) {
+      let n1 = stringToInt(id1);
+      let n2 = stringToInt(id2);
+      if (n1 < n2) return -1;
+      if (n1 > n2) return 1;
+    } else if (isNum1) {
+      return -1;
+    } else if (isNum2) {
+      return 1;
+    } else {
+      let comp = compareStrings(id1, id2);
+      if (comp != 0) return comp;
+    }
+    idx = idx + 1;
+  }
+  
+  if (len1 < len2) return -1;
+  if (len1 > len2) return 1;
+  
+  // Entirely identical pre-release part - tie breaker on full string (including build metadata)
+  return compareStrings(v1, v2);
+};
+
+let comparePackageNames = (pn1: PackageName | null, pn2: PackageName | null): i32 => {
+  if (pn1 == null && pn2 == null) return 0;
+  if (pn1 == null) return -1;
+  if (pn2 == null) return 1;
+  
+  let p1 = pn1 as PackageName;
+  let p2 = pn2 as PackageName;
+  
+  let ns1 = normalizeId(p1.namespace.name);
+  let ns2 = normalizeId(p2.namespace.name);
+  let nsComp = compareStrings(ns1, ns2);
+  if (nsComp != 0) return nsComp;
+  
+  let n1 = normalizeId(p1.name.name);
+  let n2 = normalizeId(p2.name.name);
+  let nComp = compareStrings(n1, n2);
+  if (nComp != 0) return nComp;
+  
+  if (p1.version == null && p2.version == null) return 0;
+  if (p1.version == null) return -1;
+  if (p2.version == null) return 1;
+  
+  return compareVersions(p1.version as String, p2.version as String);
+};
+
 // ============================================================================
 // Helper Classes
 // ============================================================================
@@ -178,6 +404,8 @@ class SerializeContext {
   var currentPackageIndex = 0;
   var currentInterfaceName: String | null = null;
   var currentWorldName: String | null = null;
+  var currentInterfacePackageIndex = -1;
+  var currentWorldPackageIndex = -1;
 
   registerInterface(iface: InterfaceDef): i32 {
     let index = this.interfaces.length;
@@ -460,7 +688,11 @@ let getUsePathInterfaceName = (path: UsePath): String => {
   }
   let pkg = path.packageId as PackageName;
   let name = (path.name as Id).name;
-  return normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name) + "/" + normalizeId(name);
+  var pkgName = normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name);
+  if (pkg.version != null) {
+    pkgName = pkgName + "@" + (pkg.version as String);
+  }
+  return pkgName + "/" + normalizeId(name);
 };
 
 let collectTypeDeps = (t: Type, deps: Array<String>): void => {
@@ -526,15 +758,13 @@ let collectInterfaceDeps = (iface: InterfaceDef, deps: Array<String>): void => {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.Use) {
       let u = item.use as Use;
-      if (u.from.tag == UsePathTag.Id) {
-        deps.push(normalizeId((u.from.id as Id).name));
-      }
+      deps.push(getUsePathInterfaceName(u.from));
     }
     idx = idx + 1;
   }
 };
 
-let sortInterfaces = (interfaces: Array<InterfaceDef>): Array<InterfaceDef> => {
+let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): Array<InterfaceDef> => {
   let sorted = new Array<InterfaceDef>();
   let visited = new HashMap<String, i32>();
   
@@ -542,42 +772,85 @@ let sortInterfaces = (interfaces: Array<InterfaceDef>): Array<InterfaceDef> => {
   var idx = 0;
   while (idx < interfaces.length) {
     let iface = interfaces[idx];
-    ifaceMap[normalizeId(iface.name.name)] = iface;
+    let key = if (iface.isInline) {
+      i32ToString(iface.packageIndex) + "/inline/" + normalizeId(iface.name.name);
+    } else {
+      i32ToString(iface.packageIndex) + "/" + normalizeId(iface.name.name);
+    };
+    ifaceMap[key] = iface;
     idx = idx + 1;
   }
   
-  let visit = (name: String): void => {
-    if (let (true, status) = visited.get(name)) {
+  let visit = (key: String): void => {
+    if (let (true, status) = visited.get(key)) {
       if (status == 1 || status == 2) {
         return;
       }
     }
     
-    if (let (true, iface) = ifaceMap.get(name)) {
-      visited[name] = 1;
+    if (let (true, ifaceObj) = ifaceMap.get(key)) {
+      let iface = ifaceObj as InterfaceDef;
+      visited[key] = 1;
       
       let deps = new Array<String>();
-      collectInterfaceDeps(iface as InterfaceDef, deps);
+      collectInterfaceDeps(iface, deps);
       
       var dIdx = 0;
       while (dIdx < deps.length) {
         let dep = deps[dIdx];
-        if (ifaceMap.has(dep)) {
-          visit(dep);
+        
+        var hasSlash = false;
+        var sIdx = 0;
+        var slashIdx = -1;
+        while (sIdx < dep.length) {
+          if (dep.getByteAt(sIdx) == 47) { // '/'
+            hasSlash = true;
+            slashIdx = sIdx;
+            break;
+          }
+          sIdx = sIdx + 1;
+        }
+        
+        var depKey = dep;
+        if (!hasSlash) {
+          depKey = i32ToString(iface.packageIndex) + "/" + dep;
+        } else {
+          let pkgNamePart = dep.sliceBytes(0, slashIdx);
+          let ifaceNamePart = dep.sliceBytes(slashIdx + 1, dep.length);
+          var foundPkgIdx = -1;
+          var p = 0;
+          while (p < ctx.packages.length) {
+            if (ctx.packages[p].name == pkgNamePart) {
+              foundPkgIdx = p;
+              break;
+            }
+            p = p + 1;
+          }
+          if (foundPkgIdx >= 0) {
+            depKey = i32ToString(foundPkgIdx) + "/" + ifaceNamePart;
+          }
+        }
+        
+        if (ifaceMap.has(depKey)) {
+          visit(depKey);
         }
         dIdx = dIdx + 1;
       }
       
-      visited[name] = 2;
-      sorted.push(iface as InterfaceDef);
+      visited[key] = 2;
+      sorted.push(iface);
     }
   };
   
   idx = 0;
   while (idx < interfaces.length) {
     let iface = interfaces[idx];
-    let name = normalizeId(iface.name.name);
-    visit(name);
+    let key = if (iface.isInline) {
+      i32ToString(iface.packageIndex) + "/inline/" + normalizeId(iface.name.name);
+    } else {
+      i32ToString(iface.packageIndex) + "/" + normalizeId(iface.name.name);
+    };
+    visit(key);
     idx = idx + 1;
   }
   
@@ -606,42 +879,45 @@ let sortWorlds = (worlds: Array<WorldDef>): Array<WorldDef> => {
   var idx = 0;
   while (idx < worlds.length) {
     let world = worlds[idx];
-    worldMap[normalizeId(world.name.name)] = world;
+    let key = i32ToString(world.packageIndex) + "/" + normalizeId(world.name.name);
+    worldMap[key] = world;
     idx = idx + 1;
   }
   
-  let visit = (name: String): void => {
-    if (let (true, status) = visited.get(name)) {
+  let visit = (key: String): void => {
+    if (let (true, status) = visited.get(key)) {
       if (status == 1 || status == 2) {
         return;
       }
     }
     
-    if (let (true, world) = worldMap.get(name)) {
-      visited[name] = 1;
+    if (let (true, worldObj) = worldMap.get(key)) {
+      let world = worldObj as WorldDef;
+      visited[key] = 1;
       
       let deps = new Array<String>();
-      collectWorldDeps(world as WorldDef, deps);
+      collectWorldDeps(world, deps);
       
       var dIdx = 0;
       while (dIdx < deps.length) {
         let dep = deps[dIdx];
-        if (worldMap.has(dep)) {
-          visit(dep);
+        let depKey = i32ToString(world.packageIndex) + "/" + dep;
+        if (worldMap.has(depKey)) {
+          visit(depKey);
         }
         dIdx = dIdx + 1;
       }
       
-      visited[name] = 2;
-      sorted.push(world as WorldDef);
+      visited[key] = 2;
+      sorted.push(world);
     }
   };
   
   idx = 0;
   while (idx < worlds.length) {
     let world = worlds[idx];
-    let name = normalizeId(world.name.name);
-    visit(name);
+    let key = i32ToString(world.packageIndex) + "/" + normalizeId(world.name.name);
+    visit(key);
     idx = idx + 1;
   }
   
@@ -1973,12 +2249,14 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef): HashMap<i32,
   let visited = new HashMap<i32, boolean>();
 
   // Worker to recursively traverse used interfaces
-  let visit = (ifaceIdx: i32): void => {
+  let visit = (ifaceIdx: i32, isDirectExport: boolean): void => {
     if (visited.has(ifaceIdx)) return;
     visited[ifaceIdx] = true;
     
     // Any transitive dependency of an imported or exported interface is imported!
-    imports[ifaceIdx] = true;
+    if (!isDirectExport) {
+      imports[ifaceIdx] = true;
+    }
     
     // Now, find what this interface uses
     let iface = ctx.interfaces[ifaceIdx];
@@ -1988,8 +2266,23 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef): HashMap<i32,
       if (item.tag == InterfaceItemTag.Use) {
         let u = item.use as Use;
         let name = getUsePathInterfaceName(u.from);
-        if (let (true, depIdx) = ctx.interfaceIndices.get(name)) {
-          visit(depIdx);
+        
+        var depIdx = -1;
+        // Search scoped package namespace first if available
+        let usePkgName = ctx.packages[iface.packageIndex].name;
+        if (usePkgName.length > 0) {
+          let lookupKey = usePkgName + "/" + name;
+          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
+            depIdx = sIdx;
+          }
+        }
+        if (depIdx < 0) {
+          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
+            depIdx = sIdx;
+          }
+        }
+        if (depIdx >= 0) {
+          visit(depIdx, false);
         }
       }
       idx = idx + 1;
@@ -1997,6 +2290,7 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef): HashMap<i32,
   };
 
   // Now, seed the recursive traversal with direct imports/exports
+  let pkgName = ctx.packages[world.packageIndex].name;
   var idx = 0;
   while (idx < world.items.length) {
     let item = world.items[idx];
@@ -2004,27 +2298,93 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef): HashMap<i32,
       let imp = item.importItem as Import;
       if (imp.kind.tag == ExternKindTag.Interface) {
         let name = normalizeId((imp.kind.name as Id).name);
-        if (let (true, ifaceIdx) = ctx.interfaceIndices.get(name)) {
-          visit(ifaceIdx);
+        var ifaceIdx = -1;
+        if (pkgName.length > 0) {
+          let lookupKey = pkgName + "/inline/" + name;
+          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
+            ifaceIdx = sIdx;
+          }
+        }
+        if (ifaceIdx < 0) {
+          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
+            ifaceIdx = sIdx;
+          }
+        }
+        if (ifaceIdx >= 0) {
+          visit(ifaceIdx, false);
         }
       } else if (imp.kind.tag == ExternKindTag.Path) {
         let name = getUsePathInterfaceName(imp.kind.path as UsePath);
-        if (let (true, ifaceIdx) = ctx.interfaceIndices.get(name)) {
-          visit(ifaceIdx);
+        var ifaceIdx = -1;
+        if (pkgName.length > 0) {
+          let lookupKey = pkgName + "/" + name;
+          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
+            ifaceIdx = sIdx;
+          }
+        }
+        if (ifaceIdx < 0) {
+          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
+            ifaceIdx = sIdx;
+          }
+        }
+        if (ifaceIdx >= 0) {
+          visit(ifaceIdx, false);
         }
       }
     } else if (item.tag == WorldItemTag.Export) {
       let exp = item.exportItem as Export;
       if (exp.kind.tag == ExternKindTag.Interface) {
         let name = normalizeId((exp.kind.name as Id).name);
-        if (let (true, ifaceIdx) = ctx.interfaceIndices.get(name)) {
-          visit(ifaceIdx);
+        var ifaceIdx = -1;
+        if (pkgName.length > 0) {
+          let lookupKey = pkgName + "/inline/" + name;
+          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
+            ifaceIdx = sIdx;
+          }
+        }
+        if (ifaceIdx < 0) {
+          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
+            ifaceIdx = sIdx;
+          }
+        }
+        if (ifaceIdx >= 0) {
+          visit(ifaceIdx, true);
         }
       } else if (exp.kind.tag == ExternKindTag.Path) {
         let name = getUsePathInterfaceName(exp.kind.path as UsePath);
-        if (let (true, ifaceIdx) = ctx.interfaceIndices.get(name)) {
-          visit(ifaceIdx);
+        var ifaceIdx = -1;
+        if (pkgName.length > 0) {
+          let lookupKey = pkgName + "/" + name;
+          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
+            ifaceIdx = sIdx;
+          }
         }
+        if (ifaceIdx < 0) {
+          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
+            ifaceIdx = sIdx;
+          }
+        }
+        if (ifaceIdx >= 0) {
+          visit(ifaceIdx, true);
+        }
+      }
+    } else if (item.tag == WorldItemTag.Use) {
+      let u = item.use as Use;
+      let name = getUsePathInterfaceName(u.from);
+      var ifaceIdx = -1;
+      if (pkgName.length > 0) {
+        let lookupKey = pkgName + "/" + name;
+        if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
+          ifaceIdx = sIdx;
+        }
+      }
+      if (ifaceIdx < 0) {
+        if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
+          ifaceIdx = sIdx;
+        }
+      }
+      if (ifaceIdx >= 0) {
+        visit(ifaceIdx, false);
       }
     }
     idx = idx + 1;
@@ -2037,6 +2397,8 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   let worldName = normalizeId(world.name.name);
   ctx.currentInterfaceName = null;
   ctx.currentWorldName = worldName;
+  ctx.currentInterfacePackageIndex = -1;
+  ctx.currentWorldPackageIndex = world.packageIndex;
   
   b.beginObject();
   b.key("name").string(worldName);
@@ -2045,6 +2407,7 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   b.key("imports").beginObject();
   
   // 1. Serialize any world TypeDefs (like resources/types defined on the world)
+  let pkgName = ctx.packages[world.packageIndex].name;
   var idx = 0;
   while (idx < world.items.length) {
     let item = world.items[idx];
@@ -2052,13 +2415,39 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
       let td = item.typeDef as TypeDef;
       let tdName = normalizeId(td.name.name);
       b.key(tdName).beginObject();
-      let key = "world:" + worldName + "/" + tdName;
+      
       var typeIdx = -1;
-      if (let (true, sIdx) = ctx.typeIndices.get(key)) {
-        typeIdx = sIdx;
+      if (pkgName.length > 0) {
+        let key = "world:" + pkgName + "/" + worldName + "/" + tdName;
+        if (let (true, sIdx) = ctx.typeIndices.get(key)) {
+          typeIdx = sIdx;
+        }
+      }
+      if (typeIdx < 0) {
+        let key = "world:" + worldName + "/" + tdName;
+        if (let (true, sIdx) = ctx.typeIndices.get(key)) {
+          typeIdx = sIdx;
+        }
       }
       b.key("type").i32(typeIdx);
       b.endObject();
+    } else if (item.tag == WorldItemTag.Use) {
+      let u = item.use as Use;
+      var j = 0;
+      while (j < u.names.length) {
+        let un = u.names[j];
+        let name = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
+        b.key(name).beginObject();
+        
+        var typeIdx = -1;
+        let key = "world:" + worldName + "/" + name;
+        if (let (true, sIdx) = ctx.typeIndices.get(key)) {
+          typeIdx = sIdx;
+        }
+        b.key("type").i32(typeIdx);
+        b.endObject();
+        j = j + 1;
+      }
     }
     idx = idx + 1;
   }
@@ -2109,7 +2498,19 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
       let imp = item.importItem as Import;
       if (imp.kind.tag == ExternKindTag.Interface) {
         let name = normalizeId((imp.kind.name as Id).name);
-        if (let (true, ifaceIdx) = ctx.interfaceIndices.get(name)) {
+        var ifaceIdx = -1;
+        if (pkgName.length > 0) {
+          let lookupKey = pkgName + "/inline/" + name;
+          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
+            ifaceIdx = sIdx;
+          }
+        }
+        if (ifaceIdx < 0) {
+          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
+            ifaceIdx = sIdx;
+          }
+        }
+        if (ifaceIdx >= 0) {
           inlineImports[ifaceIdx] = name;
         }
       }
@@ -2161,8 +2562,16 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
         b.key(name).beginObject();
         b.key("interface").beginObject();
         var inlineIdx = -1;
-        if (let (true, idxVal) = ctx.interfaceIndices.get(name)) {
-          inlineIdx = idxVal;
+        if (pkgName.length > 0) {
+          let lookupKey = pkgName + "/inline/" + name;
+          if (let (true, idxVal) = ctx.interfaceIndices.get(lookupKey)) {
+            inlineIdx = idxVal;
+          }
+        }
+        if (inlineIdx < 0) {
+          if (let (true, idxVal) = ctx.interfaceIndices.get(name)) {
+            inlineIdx = idxVal;
+          }
         }
         b.key("id").i32(inlineIdx);
         b.endObject();
@@ -2218,6 +2627,8 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
   let ifaceName = normalizeId(iface.name.name);
   ctx.currentInterfaceName = ifaceName;
   ctx.currentWorldName = null;
+  ctx.currentInterfacePackageIndex = iface.packageIndex;
+  ctx.currentWorldPackageIndex = -1;
   
   b.beginObject();
   if (iface.isInline) {
@@ -2227,15 +2638,29 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
   }
   
   b.key("types").beginObject();
+  let pkgName = ctx.packages[iface.packageIndex].name;
   var idx = 0;
   while (idx < iface.items.length) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       let name = normalizeId(td.name.name);
-      let key = "interface:" + ifaceName + "/" + name;
-      if (let (true, typeIdx) = ctx.typeIndices.get(key)) {
-        b.key(name).i32(typeIdx);
+      
+      var foundIdx = -1;
+      if (pkgName.length > 0) {
+        let key = "interface:" + pkgName + "/" + ifaceName + "/" + name;
+        if (let (true, typeIdx) = ctx.typeIndices.get(key)) {
+          foundIdx = typeIdx;
+        }
+      }
+      if (foundIdx < 0) {
+        let key = "interface:" + ifaceName + "/" + name;
+        if (let (true, typeIdx) = ctx.typeIndices.get(key)) {
+          foundIdx = typeIdx;
+        }
+      }
+      if (foundIdx >= 0) {
+        b.key(name).i32(foundIdx);
       }
     } else if (item.tag == InterfaceItemTag.Use) {
       let u = item.use as Use;
@@ -2243,9 +2668,22 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
       while (j < u.names.length) {
         let un = u.names[j];
         let name = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
-        let key = "interface:" + ifaceName + "/" + name;
-        if (let (true, typeIdx) = ctx.typeIndices.get(key)) {
-          b.key(name).i32(typeIdx);
+        
+        var foundIdx = -1;
+        if (pkgName.length > 0) {
+          let key = "interface:" + pkgName + "/" + ifaceName + "/" + name;
+          if (let (true, typeIdx) = ctx.typeIndices.get(key)) {
+            foundIdx = typeIdx;
+          }
+        }
+        if (foundIdx < 0) {
+          let key = "interface:" + ifaceName + "/" + name;
+          if (let (true, typeIdx) = ctx.typeIndices.get(key)) {
+            foundIdx = typeIdx;
+          }
+        }
+        if (foundIdx >= 0) {
+          b.key(name).i32(foundIdx);
         }
         j = j + 1;
       }
@@ -2306,6 +2744,161 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
   b.endObject();
 };
 
+let collectInterfaceDepsOnly = (items: Array<InterfaceItem>, deps: Array<String>): void => {
+  var j = 0;
+  while (j < items.length) {
+    let ifaceItem = items[j];
+    if (ifaceItem.tag == InterfaceItemTag.Use) {
+      let u = ifaceItem.use as Use;
+      if (u.from.tag == UsePathTag.Package) {
+        let pkg = u.from.packageId as PackageName;
+        deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+      }
+    }
+    j = j + 1;
+  }
+};
+
+let collectPackageDeps = (items: Array<AstItem>, deps: Array<String>): void => {
+  var idx = 0;
+  while (idx < items.length) {
+    let item = items[idx];
+    if (item.tag == AstItemTag.Interface) {
+      let iface = item.interfaceDef as InterfaceDef;
+      collectInterfaceDepsOnly(iface.items, deps);
+    } else if (item.tag == AstItemTag.World) {
+      let world = item.worldDef as WorldDef;
+      var j = 0;
+      while (j < world.items.length) {
+        let worldItem = world.items[j];
+        if (worldItem.tag == WorldItemTag.Import) {
+          let imp = worldItem.importItem as Import;
+          if (imp.kind.tag == ExternKindTag.Path) {
+            let path = imp.kind.path as UsePath;
+            if (path.tag == UsePathTag.Package) {
+              let pkg = path.packageId as PackageName;
+              deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+            }
+          } else if (imp.kind.tag == ExternKindTag.Interface) {
+            let inlineItems = imp.kind.items as Array<InterfaceItem>;
+            collectInterfaceDepsOnly(inlineItems, deps);
+          }
+        } else if (worldItem.tag == WorldItemTag.Export) {
+          let exp = worldItem.exportItem as Export;
+          if (exp.kind.tag == ExternKindTag.Path) {
+            let path = exp.kind.path as UsePath;
+            if (path.tag == UsePathTag.Package) {
+              let pkg = path.packageId as PackageName;
+              deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+            }
+          } else if (exp.kind.tag == ExternKindTag.Interface) {
+            let inlineItems = exp.kind.items as Array<InterfaceItem>;
+            collectInterfaceDepsOnly(inlineItems, deps);
+          }
+        } else if (worldItem.tag == WorldItemTag.Use) {
+          let u = worldItem.use as Use;
+          if (u.from.tag == UsePathTag.Package) {
+            let pkg = u.from.packageId as PackageName;
+            deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+          }
+        } else if (worldItem.tag == WorldItemTag.Include) {
+          let inc = worldItem.include as Include;
+          if (inc.from.tag == UsePathTag.Package) {
+            let pkg = inc.from.packageId as PackageName;
+            deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+          }
+        }
+        j = j + 1;
+      }
+    }
+    idx = idx + 1;
+  }
+};
+
+let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<AstItem>}>): Array<{name: PackageName | null, items: Array<AstItem>}> => {
+  let sorted = new Array<{name: PackageName | null, items: Array<AstItem>}>();
+  let visited = new HashMap<String, i32>();
+  let pkgMap = new HashMap<String, {name: PackageName | null, items: Array<AstItem>}>();
+  let nestedSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
+  
+  // Populate pkgMap and nestedSources with ALL packages
+  var idx = 0;
+  while (idx < pkgSources.length) {
+    let src = pkgSources[idx];
+    let key = formatPackageName(src.name);
+    pkgMap[key] = src;
+    nestedSources.push(src);
+    idx = idx + 1;
+  }
+
+  // Pre-sort packages alphabetically by full name (so independent packages sort alphabetically)
+  var i = 0;
+  while (i < nestedSources.length) {
+    var j = i + 1;
+    while (j < nestedSources.length) {
+      if (comparePackageNames(nestedSources[i].name, nestedSources[j].name) > 0) {
+        let temp = nestedSources[i];
+        nestedSources[i] = nestedSources[j];
+        nestedSources[j] = temp;
+      }
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+
+  let visit = (key: String): void => {
+    if (let (true, status) = visited.get(key)) {
+      if (status == 1 || status == 2) {
+        return;
+      }
+    }
+    
+    if (let (true, srcObj) = pkgMap.get(key)) {
+      let src = srcObj as {name: PackageName | null, items: Array<AstItem>};
+      visited[key] = 1;
+      
+      let deps = new Array<String>();
+      collectPackageDeps(src.items, deps);
+      
+      var dIdx = 0;
+      while (dIdx < deps.length) {
+        let dep = deps[dIdx];
+        
+        var depKey: String | null = null;
+        if (pkgMap.has(dep)) {
+          depKey = dep;
+        } else {
+          // Check if any key starts with dep + "@"
+          pkgMap.forEach((k: String, val: {name: PackageName | null, items: Array<AstItem>}) => {
+            if (k.length > dep.length && k.getByteAt(dep.length) == 64) { // '@'
+              if (k.sliceBytes(0, dep.length) == dep) {
+                depKey = k;
+              }
+            }
+          });
+        }
+        if (depKey != null) {
+          visit(depKey as String);
+        }
+        dIdx = dIdx + 1;
+      }
+      
+      visited[key] = 2;
+      sorted.push(src);
+    }
+  };
+
+  idx = 0;
+  while (idx < nestedSources.length) {
+    let src = nestedSources[idx];
+    let key = formatPackageName(src.name);
+    visit(key);
+    idx = idx + 1;
+  }
+
+  return sorted;
+};
+
 let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
   let pkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
   pkgSources.push({name: ast.packageName, items: ast.items});
@@ -2317,51 +2910,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
     pIdx = pIdx + 1;
   }
   
-  // Sort package sources by formatting they name
-  // wasm-tools sorts packages alphabetically, but handles the main/root package last or differently.
-  // Actually, we must preserve the exact order of the expected JSON.
-  // Let's look at packages-multiple-nested.wit.json again.
-  // The expected packages array is:
-  // 1. "bar:name" (nested package)
-  // 2. "foo:name" (nested package)
-  // 3. "foo:root" (main/root package)
-  // This means nested packages are sorted alphabetically, followed by the main package at the end!
-  // Wait, let's verify if packages-multiple-nested has nested "foo:name" and "bar:name", and main "foo:root".
-  // Yes! The sorted nested packages alphabetically: "bar:name", "foo:name", and then "foo:root" (main).
-  // So we sort the nested packages alphabetically by name first, and then put the main package at the end!
-  let sortedNestedPackages = new Array<NestedPackage>();
-  var idxComp = 0;
-  while (idxComp < ast.nestedPackages.length) {
-    sortedNestedPackages.push(ast.nestedPackages[idxComp]);
-    idxComp = idxComp + 1;
-  }
-  
-  // Simple bubble/insertion sort for nested packages (by formatted name)
-  var iSort = 0;
-  while (iSort < sortedNestedPackages.length) {
-    var jSort = iSort + 1;
-    while (jSort < sortedNestedPackages.length) {
-      let p1 = formatPackageName(sortedNestedPackages[iSort].name);
-      let p2 = formatPackageName(sortedNestedPackages[jSort].name);
-      if (p1.length > p2.length) { // placeholder to avoid > on custom classes if compiled as objects
-        let temp = sortedNestedPackages[iSort];
-        sortedNestedPackages[iSort] = sortedNestedPackages[jSort];
-        sortedNestedPackages[jSort] = temp;
-      }
-      jSort = jSort + 1;
-    }
-    iSort = iSort + 1;
-  }
-  
-  // Build final pkgSources: sorted nested packages first, then the main package at the end
-  let finalPkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
-  idxComp = 0;
-  while (idxComp < sortedNestedPackages.length) {
-    let np = sortedNestedPackages[idxComp];
-    finalPkgSources.push({name: np.name, items: np.items});
-    idxComp = idxComp + 1;
-  }
-  finalPkgSources.push({name: ast.packageName, items: ast.items});
+  let finalPkgSources = sortPackages(pkgSources);
   
   let globalInterfaces = new Array<InterfaceDef>();
   let globalWorlds = new Array<WorldDef>();
@@ -2442,15 +2991,22 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
     pIdxVar = pIdxVar + 1;
   }
   
-  let sortedInterfaces = sortInterfaces(globalInterfaces);
+  let sortedInterfaces = sortInterfaces(ctx, globalInterfaces);
   let sortedWorlds = sortWorlds(globalWorlds);
   
   var i = 0;
   while (i < sortedInterfaces.length) {
     let iface = sortedInterfaces[i];
     let ifaceIdx = ctx.registerInterface(iface);
+    let pkg = ctx.packages[iface.packageIndex];
+    if (pkg.name.length > 0) {
+      if (iface.isInline) {
+        ctx.interfaceIndices[pkg.name + "/inline/" + normalizeId(iface.name.name)] = ifaceIdx;
+      } else {
+        ctx.interfaceIndices[pkg.name + "/" + normalizeId(iface.name.name)] = ifaceIdx;
+      }
+    }
     if (!iface.isInline) {
-      let pkg = ctx.packages[iface.packageIndex];
       pkg.interfaces[normalizeId(iface.name.name)] = ifaceIdx;
     }
     i = i + 1;
