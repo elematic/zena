@@ -321,3 +321,19 @@ For hot paths, we could generate specialized comparison functions:
 | `x is Map<String, Dog>`      | Full              | `ref.test` + full TypeInfo check |
 
 This tiered approach means most `is` checks remain fast, and only fully-specified generic instantiation checks pay the TypeInfo comparison cost.
+
+## Current Compiler Status vs Future Path
+
+### Current State (Bootstrap & Self-Hosted)
+
+- **Classes & Structs**: Both compilers currently use **Full Specialization (Monomorphization)** for class struct layouts and fields. For every concrete class type argument combination (e.g., `Box<i32>`, `Box<String>`), a unique WASM struct layout is generated. There is no shared code layout for reference types yet.
+- **Generic Methods on VTables (Type Erasure)**: For generic methods on classes and interfaces (e.g. `map<U>`), the current compilers simplify vtable generation by erasing the method's generic type parameters to `anyref` inside the vtable slot.
+  - **Static Dispatch**: Direct calls are monomorphized (e.g., `map_spec_i32`), avoiding boxing.
+  - **Virtual/Interface Dispatch**: Calls through vtables reference a single erased base function slot (e.g., `Array_i32.map` returning `anyref`). Primitives passed to or returned from these slots are implicitly boxed into heap objects (like `Box_i32`) and unboxed via trampoline adapters.
+
+### Future Path (Eliminating Auto-Boxing)
+
+We intend to move to **Pure Monomorphization** to completely eliminate implicit heap allocations:
+
+1. **Remove `any` / Keep `anyref`**: The dynamically typed `any` (which implicitly boxes primitives) will be deprecated in favor of a strictly reference-only `anyref` type (which forbids primitive values without explicit wrapping).
+2. **Generic Method VTable Expansion**: Instead of type-erasing generic methods in vtables, the compiler's Reachability Analysis (RTA) will specialize virtual generic method slots. Each reached type argument combination (e.g., `map_spec_i32`, `map_spec_string`) will get its own physical slot in the class/interface vtable, making all virtual generic calls fully concrete and zero-overhead (no auto-boxing or trampolines).

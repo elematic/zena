@@ -186,6 +186,15 @@ types to ensure soundness and performance.
 - **No Mixing Primitives with References**: Value primitives cannot union with
   reference types.
   - ❌ `i32 | null` - ❌ `boolean | String` - ❌ `true | null`
+  - **Optional Chaining on Primitive Fields**: Since Zena does not support unions of primitives and null (e.g. `i32 | null`), optional chaining on a primitive field (e.g. `p?.x` where `x` is `i32`) is prohibited at compile-time as a standalone expression.
+    - _Allowed Pattern (Coalescence Fusion)_: Optional chaining on a primitive field is only allowed if it is immediately combined with a nullish coalescing operator containing a fallback value of the same type:
+      ```zena
+      let x = p?.x ?? 0; // ✅ Allowed: type of expression is raw, non-nullable i32
+      ```
+    - _Alternative Pattern (Explicit Checks)_:
+      ```zena
+      let x = if (p == null) 0 else p.x; // ✅ Allowed
+      ```
 
 - **No Mixing Different Primitive Base Types**: Primitives of different base
   types cannot be unioned.

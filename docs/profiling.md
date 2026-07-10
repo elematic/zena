@@ -15,13 +15,17 @@ To solve this, we configure Wasmtime to emit native JIT symbol maps via `--profi
 ## Setup Instructions
 
 ### 1. Install `samply`
+
 Install the native sampler tool using cargo:
+
 ```bash
 cargo install samply --locked
 ```
 
 ### 2. Configure Entitlements & Workaround Library Validation (macOS)
+
 On macOS, attaching to a running process requires the debugger entitlement. Run:
+
 ```bash
 samply setup
 ```
@@ -57,6 +61,7 @@ ZENA_PROFILE=1 samply record target/release/zena-cli build packages/zena-compile
 ```
 
 ### Options:
+
 - **`ZENA_PROFILE=1`**: Tells Wasmtime to enable PerfMap JIT symbol writing and native unwind registrations.
 - **`--no-cache`**: Disables the compiler's internal caches to force a full compile run.
 
@@ -79,5 +84,6 @@ Once compilation finishes, `samply` will automatically spin up a local web serve
 By default, Wasmtime compiles with `native_unwind_info` enabled to support external unwinders (like `samply`). However, registering and deregistering DWARF frames for thousands of functions dynamically introduces significant process startup/teardown overhead (~130ms or ~24% of compiler process runtime).
 
 For production execution:
+
 - `native_unwind_info` is **disabled** by default in `zena-cli` to guarantee maximum speed.
 - It is only turned back on when `ZENA_PROFILE=1` is specified to allow accurate stack capture.

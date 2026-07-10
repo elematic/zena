@@ -246,3 +246,11 @@ the future:
 For now, we prioritize **Performance** via full monomorphization, but we
 acknowledge that **Binary Size** is a critical constraint that may force us to
 adopt a hybrid model later.
+
+### Final Decision: Pure Monomorphization & Explicit Boxing
+
+To ensure all memory allocations and boxing overheads are explicit, Zena has decided to pursue a **purely monomorphized generic architecture**:
+
+1. **No Erasure Fallbacks**: Avoid any compiler-level type parameter erasure fallbacks (like resolving to `anyref` inside class method vtables).
+2. **Explicit VTable Method Monomorphization**: Expand vtable structures dynamically based on reached specialized generic method instantiations rather than relying on erased base methods and trampoline boxing.
+3. **No Implicit/Auto-Boxing**: Deprecate the dynamically-typed `any` in favor of a strictly reference-only `anyref` type, and prohibit implicit boxing patterns.

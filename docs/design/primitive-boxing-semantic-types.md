@@ -1,5 +1,8 @@
 # Primitive Boxing: Semantic Type Preservation
 
+> [!NOTE]
+> This document describes the **current/legacy auto-boxing architecture** of the bootstrap and early self-hosted compilers. In order to make all memory allocations and performance characteristics explicit, the long-term goal of Zena is to **eliminate all auto-boxing** by deprecating the `any` type, banning optional chaining on primitive fields (making it return `T` instead of `T | null` via required coalescence), and fully monomorphizing generic methods inside class and interface vtables.
+
 ## Problem Statement
 
 When boxing primitives for the `any` type, WASM cannot distinguish between

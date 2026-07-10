@@ -151,6 +151,13 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
 
 ## Planned
 
+### Boxing & Generics Design Refactoring
+
+1.  **Elimination of Auto-Boxing & Complete Monomorphization**:
+    - **Remove `any` Type**: Deprecate the dynamically-typed `any` type in favor of a strictly reference-only `anyref` type (e.g. mapping directly to WASM `anyref`/`eqref` with no implicit boxing of primitives).
+    - **Ban Optional Chaining on Primitive Fields**: Prohibit optional chaining expressions returning `T | null` where `T` is a primitive type (since unions of primitives and null are disallowed). If a primitive field is optionally chained, it must either be immediately coalesced via a fused nullish coalescing operator (`p?.x ?? 0`), or check for null explicitly beforehand.
+    - **Monomorphize Virtual VTable Methods**: Complete reachability analysis (RTA) for generic method type argument specialization. Every class/interface vtable will have specialized concrete slots for each reached type instantiation (e.g. `map_spec_i32` and `map_spec_string`), removing the need to erase method type parameters to `anyref` and eliminating vtable trampolines and auto-boxing.
+
 ### Near-Term
 
 1.  **Visitor Infrastructure Improvements**:
