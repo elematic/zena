@@ -1,24 +1,23 @@
 # WIT Parser Test Status
 
 **Last Updated**: 2026-07-09  
-**Summary**: 172/210 passing (81.9%)
+**Summary**: 174/210 passing (82.9%)
 
 ## Overview
 
 - ✅ **All 130 error tests pass** (parse-fail/\*)
-- ✅ **42 success tests pass** (produce correct JSON)
-- ❌ **37 success tests fail** (JSON mismatch - categorized below)
+- ✅ **44 success tests pass** (produce correct JSON)
+- ❌ **36 success tests fail** (JSON mismatch - categorized below)
 - ⏭️ **1 test skipped** (kinds-of-deps)
 
 ## Recent Fixes
 
-- Implemented world block local typedef definition and constructor/method signatures as implicit imports of the world, satisfying `w` world block types/imports in `resources.wit`.
-- Integrated `preRegisterHandles` for worlds blocks to ensure implicit world-resource constructors' `own` result handles are indexed cleanly.
-- Implemented and resolved WebAssembly Interface Type `map<K, V>` anonymous and defined alias types (`mapKeyType` and `mapValueType` serialization).
-- Implemented comment indentation-aligning leading block stripper (`normalizeDocs`) inside parsed `Docs` representation in `parser.zena`, fully syncing `comments.wit` preceding line and block comments.
-- Fully resolved and verified passing results for `comments.wit`, `resources.wit`, and `world-top-level-resources.wit`.
+- Built a transitive world dependency analyzer `collectWorldImports` to discover and list all implicitly referred or used interfaces (e.g. `interface-0`, `interface-2`) under world imports.
+- Correctly distinguished and resolved inline interface imports vs path-referenced interfaces inside Worlds, serialization aligning perfectly.
+- Collected world-level inline interface exports and registered them dynamically in the global topology graph.
+- Fully resolved and verified passing results for `maps.wit` and `world-diamond.wit`.
 
-## Passing Success Tests (42)
+## Passing Success Tests (44)
 
 | Test                               | Notes  |
 | ---------------------------------- | ------ |
@@ -28,6 +27,7 @@
 | error-context.wit                  | ✅     |
 | functions.wit                      | ✅     |
 | import-export-overlap1.wit         | ✅     |
+| maps.wit                           | ✅ NEW |
 | package-syntax1.wit                | ✅     |
 | package-syntax3.wit                | ✅     |
 | package-syntax4.wit                | ✅     |
@@ -46,6 +46,7 @@
 | use-chain.wit                      | ✅     |
 | union-fuzz-1.wit                   | ✅     |
 | wasi.wit                           | ✅     |
+| world-diamond.wit                  | ✅ NEW |
 | world-top-level-funcs.wit          | ✅     |
 | world-top-level-resources.wit      | ✅ NEW |
 
@@ -93,22 +94,20 @@ Single-file tests that need `use` statement type resolution.
 
 🎉 **Fully resolved!** All type index ordering, handle indexing, maps, fixed-length-lists, and comment format spacing test discrepancies are now completely resolved.
 
-### Category 4: World Import/Export Resolution (9 tests)
+### Category 4: World Import/Export Resolution (8 tests)
 
 World interface references not fully resolved.
 
-| Test                          | Error                         | Reason                          |
-| ----------------------------- | ----------------------------- | ------------------------------- |
-| maps.wit                      | expected world imports        | World-resource imports          |
-| include-reps.wit              | exports.interface-1 missing   | World interface ref             |
-| kebab-name-include-with.wit   | imports.a missing             | World include with              |
-| world-diamond.wit             | result type mismatch          | World type resolution           |
-| world-implicit-import1.wit    | interfaces: expected 3, got 1 | Implicit imports                |
-| world-implicit-import2.wit    | types: expected 2, got 1      | Implicit imports                |
-| world-implicit-import3.wit    | types: expected 2, got 1      | Implicit imports                |
-| world-same-fields4.wit        | interfaces: expected 3, got 1 | World fields                    |
-| worlds-union-dedup.wit        | imports.interface-0 missing   | World interface ref             |
-| worlds-with-types.wit         | types: expected 6, got 1      | World type resolution           |
+| Test                        | Error                         | Reason                |
+| --------------------------- | ----------------------------- | --------------------- |
+| include-reps.wit            | exports.interface-1 missing   | World interface ref   |
+| kebab-name-include-with.wit | imports.a missing             | World include with    |
+| world-implicit-import1.wit  | interfaces: expected 3, got 1 | Implicit imports      |
+| world-implicit-import2.wit  | types: expected 2, got 1      | Implicit imports      |
+| world-implicit-import3.wit  | types: expected 2, got 1      | Implicit imports      |
+| world-same-fields4.wit      | interfaces: expected 3, got 1 | World fields          |
+| worlds-union-dedup.wit      | imports.interface-0 missing   | World interface ref   |
+| worlds-with-types.wit       | types: expected 6, got 1      | World type resolution |
 
 ### Category 5: Nested Packages (5 tests)
 
