@@ -230,8 +230,6 @@ class SerializeContext {
     if (let (true, idx) = this.ownTypeIndices.get(resourceIdx)) {
       return idx;
     }
-    // Ensure borrow type exists first (wasm-tools ordering: borrow before own)
-    this.getBorrowType(resourceIdx);
     // Create new own type
     let kind = new TypeKind("handle");
     kind.ownIndex = resourceIdx;
@@ -246,45 +244,15 @@ class SerializeContext {
    * Handles bare resource names (converts them to own<resource>).
    */
   getParamTypeRef(t: Type): TypeRef {
-    // Special case: bare resource name becomes own<resource>
-    if (t.tag == TypeTag.Name) {
-      let id = t.name as Id;
-      let name = normalizeId(id.name);
-      
-      var foundIdx = -1;
-      if (this.currentInterfaceName != null) {
-        let key = "interface:" + (this.currentInterfaceName as String) + "/" + name;
-        if (let (true, idx) = this.typeIndices.get(key)) {
-          foundIdx = idx;
-        }
-      }
-      if (foundIdx < 0 && this.currentWorldName != null) {
-        let key = "world:" + (this.currentWorldName as String) + "/" + name;
-        if (let (true, idx) = this.typeIndices.get(key)) {
-          foundIdx = idx;
-        }
-      }
-      if (foundIdx < 0) {
-        if (let (true, idx) = this.typeIndices.get(name)) {
-          foundIdx = idx;
-        }
-      }
-      
-      if (foundIdx >= 0) {
-        // If it's a resource, return own<resource> instead
-        if (this.resourceTypeIndices.has(foundIdx)) {
-          return TypeRef.idx(this.getOwnType(foundIdx));
-        }
-        return TypeRef.idx(foundIdx);
-      }
-      return TypeRef.str(name);
-    }
-    // For all other types, use the standard getTypeRef
-    return this.getTypeRef(t);
+    return this.getTypeRefEx(t, true);
   }
 
   /** Get a type reference: primitive as string, complex as index. */
   getTypeRef(t: Type): TypeRef {
+    return this.getTypeRefEx(t, true);
+  }
+
+  getTypeRefEx(t: Type, resolveResourceAsOwn: boolean): TypeRef {
     // Check if primitive type
     if (t.tag == TypeTag.U8) { return TypeRef.str("u8"); }
     if (t.tag == TypeTag.U16) { return TypeRef.str("u16"); }
@@ -325,13 +293,16 @@ class SerializeContext {
       
       // Check if it's a user-defined type
       if (foundIdx >= 0) {
+        if (resolveResourceAsOwn && this.resourceTypeIndices.has(foundIdx)) {
+          return TypeRef.idx(this.getOwnType(foundIdx));
+        }
         return TypeRef.idx(foundIdx);
       }
       // Not a registered type - return as string (shouldn't happen for valid WIT)
       return TypeRef.str(name);
     }
     // Complex type - register and return index
-    let idx = this.registerAnonymousType(t);
+    let idx = this.registerAnonymousTypeEx(t, resolveResourceAsOwn);
     return TypeRef.idx(idx);
   }
   
@@ -346,13 +317,17 @@ class SerializeContext {
 
   /** Register an anonymous complex type and return its index. */
   registerAnonymousType(t: Type): i32 {
+    return this.registerAnonymousTypeEx(t, true);
+  }
+
+  registerAnonymousTypeEx(t: Type, resolveResourceAsOwn: boolean): i32 {
     if (t.tag == TypeTag.Tuple) {
       let types = t.types as Array<Type>;
       let refs = new Array<TypeRef>();
       var keyParts = "tuple:";
       var idx = 0;
       while (idx < types.length) {
-        let ref = this.getTypeRef(types[idx]);
+        let ref = this.getTypeRefEx(types[idx], resolveResourceAsOwn);
         refs.push(ref);
         if (idx > 0) { keyParts = keyParts + ","; }
         keyParts = keyParts + this.typeRefToKey(ref);
@@ -362,7 +337,7 @@ class SerializeContext {
       kind.tupleTypes = refs;
       return this.getOrCreateAnonType(keyParts, kind);
     } else if (t.tag == TypeTag.Option) {
-      let innerRef = this.getTypeRef(t.inner as Type);
+      let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
       let key = "option:" + this.typeRefToKey(innerRef);
       let kind = new TypeKind("option");
       kind.inner = innerRef;
@@ -371,19 +346,19 @@ class SerializeContext {
       var key = "result:";
       let kind = new TypeKind("result");
       if (t.okType != null) {
-        let okRef = this.getTypeRef(t.okType as Type);
+        let okRef = this.getTypeRefEx(t.okType as Type, resolveResourceAsOwn);
         kind.okType = okRef;
         key = key + this.typeRefToKey(okRef);
       }
       key = key + ",";
       if (t.errType != null) {
-        let errRef = this.getTypeRef(t.errType as Type);
+        let errRef = this.getTypeRefEx(t.errType as Type, resolveResourceAsOwn);
         kind.errType = errRef;
         key = key + this.typeRefToKey(errRef);
       }
       return this.getOrCreateAnonType(key, kind);
     } else if (t.tag == TypeTag.List) {
-      let innerRef = this.getTypeRef(t.inner as Type);
+      let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
       if (t.fixedLength >= 0) {
         let key = "fixed-length-list:" + this.typeRefToKey(innerRef) + ":" + i32ToString(t.fixedLength);
         let kind = new TypeKind("fixed-length-list");
@@ -400,7 +375,7 @@ class SerializeContext {
       var key = "future:";
       let kind = new TypeKind("future");
       if (t.inner != null) {
-        let innerRef = this.getTypeRef(t.inner as Type);
+        let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
         kind.inner = innerRef;
         key = key + this.typeRefToKey(innerRef);
       }
@@ -409,14 +384,14 @@ class SerializeContext {
       var key = "stream:";
       let kind = new TypeKind("stream");
       if (t.inner != null) {
-        let innerRef = this.getTypeRef(t.inner as Type);
+        let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
         kind.inner = innerRef;
         key = key + this.typeRefToKey(innerRef);
       }
       return this.getOrCreateAnonType(key, kind);
     } else if (t.tag == TypeTag.Own) {
       // Get the inner type index
-      let innerRef = this.getTypeRef(t.inner as Type);
+      let innerRef = this.getTypeRefEx(t.inner as Type, false);
       var resourceIdx = -1;
       if (innerRef.isIndex) {
         resourceIdx = innerRef.indexValue;
@@ -437,7 +412,7 @@ class SerializeContext {
       return this.registerType(entry);
     } else if (t.tag == TypeTag.Borrow) {
       // Get the inner type index
-      let innerRef = this.getTypeRef(t.inner as Type);
+      let innerRef = this.getTypeRefEx(t.inner as Type, false);
       var resourceIdx = -1;
       if (innerRef.isIndex) {
         resourceIdx = innerRef.indexValue;
@@ -907,6 +882,393 @@ let registerAllTypes = (ctx: SerializeContext): void => {
   ctx.currentWorldName = null;
 };
 
+let typeContainsBorrowFor = (t: Type, resourceName: String): boolean => {
+  if (t.tag == TypeTag.Borrow) {
+    let inner = t.inner as Type;
+    if (inner.tag == TypeTag.Name) {
+      let id = inner.name as Id;
+      return normalizeId(id.name) == resourceName;
+    }
+  }
+  if (t.tag == TypeTag.Tuple) {
+    let types = t.types as Array<Type>;
+    var idx = 0;
+    while (idx < types.length) {
+      if (typeContainsBorrowFor(types[idx], resourceName)) {
+        return true;
+      }
+      idx = idx + 1;
+    }
+  } else if (t.tag == TypeTag.Result) {
+    if (t.okType != null && typeContainsBorrowFor(t.okType as Type, resourceName)) {
+      return true;
+    }
+    if (t.errType != null && typeContainsBorrowFor(t.errType as Type, resourceName)) {
+      return true;
+    }
+  } else if (t.tag == TypeTag.Option || t.tag == TypeTag.List ||
+             t.tag == TypeTag.Future || t.tag == TypeTag.Stream) {
+    if (t.inner != null) {
+      return typeContainsBorrowFor(t.inner as Type, resourceName);
+    }
+  }
+  return false;
+};
+
+let isNakedOwnOrResource = (ctx: SerializeContext, t: Type): boolean => {
+  if (t.tag == TypeTag.Own) {
+    return true;
+  }
+  if (t.tag == TypeTag.Name) {
+    let id = t.name as Id;
+    let name = normalizeId(id.name);
+    var foundIdx = -1;
+    if (ctx.currentInterfaceName != null) {
+      let key = "interface:" + (ctx.currentInterfaceName as String) + "/" + name;
+      if (let (true, idx) = ctx.typeIndices.get(key)) {
+        foundIdx = idx;
+      }
+    }
+    if (foundIdx < 0 && ctx.currentWorldName != null) {
+      let key = "world:" + (ctx.currentWorldName as String) + "/" + name;
+      if (let (true, idx) = ctx.typeIndices.get(key)) {
+        foundIdx = idx;
+      }
+    }
+    if (foundIdx < 0) {
+      if (let (true, idx) = ctx.typeIndices.get(name)) {
+        foundIdx = idx;
+      }
+    }
+    if (foundIdx >= 0 && ctx.resourceTypeIndices.has(foundIdx)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+let registerInterfaceAllScopeTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceIdx: i32): void => {
+  ctx.currentInterfaceName = normalizeId(iface.name.name);
+  ctx.currentWorldName = null;
+  
+  // Stage 1: Register all defined TypeDefs
+  registerInterfaceTypes(ctx, iface, ifaceIdx);
+  
+  // Identify all local resources
+  let resources = new Array<TypeDef>();
+  var idx = 0;
+  while (idx < iface.items.length) {
+    let item = iface.items[idx];
+    if (item.tag == InterfaceItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      if (td.tag == TypeDefTag.Resource) {
+        resources.push(td);
+      }
+    }
+    idx = idx + 1;
+  }
+  
+  // Stage 2: Pre-register borrow handles if needed
+  var rIdx = 0;
+  while (rIdx < resources.length) {
+    let r = resources[rIdx];
+    let rName = normalizeId(r.name.name);
+    
+    var needsBorrow = false;
+    // Option A: R has at least one Method
+    if (r.resourceFuncs != null) {
+      let funcs = r.resourceFuncs as Array<ResourceFunc>;
+      var fIdx = 0;
+      while (fIdx < funcs.length) {
+        if (funcs[fIdx].tag == ResourceFuncTag.Method) {
+          needsBorrow = true;
+        }
+        fIdx = fIdx + 1;
+      }
+    }
+    
+    // Option B: borrow<R> is explicitly referenced
+    if (!needsBorrow) {
+      var itemIdx = 0;
+      while (itemIdx < iface.items.length) {
+        let item = iface.items[itemIdx];
+        if (item.tag == InterfaceItemTag.Func) {
+          let func = item.func as NamedFunc;
+          var pIdx = 0;
+          while (pIdx < func.func.params.length) {
+            if (typeContainsBorrowFor(func.func.params[pIdx].type, rName)) {
+              needsBorrow = true;
+            }
+            pIdx = pIdx + 1;
+          }
+          if (func.func.result != null && typeContainsBorrowFor(func.func.result as Type, rName)) {
+            needsBorrow = true;
+          }
+        } else if (item.tag == InterfaceItemTag.TypeDef) {
+          let td = item.typeDef as TypeDef;
+          if (td.tag == TypeDefTag.Record) {
+            let fields = td.fields as Array<Field>;
+            var fldIdx = 0;
+            while (fldIdx < fields.length) {
+              if (typeContainsBorrowFor(fields[fldIdx].type, rName)) {
+                needsBorrow = true;
+              }
+              fldIdx = fldIdx + 1;
+            }
+          } else if (td.tag == TypeDefTag.Alias) {
+            let at = td.aliasType as Type;
+            if (at.tag != TypeTag.Borrow && at.tag != TypeTag.Own) {
+              if (typeContainsBorrowFor(at, rName)) {
+                needsBorrow = true;
+              }
+            }
+          } else if (td.tag == TypeDefTag.Variant) {
+            let cases = td.cases as Array<Case>;
+            var csIdx = 0;
+            while (csIdx < cases.length) {
+              if (cases[csIdx].type != null && typeContainsBorrowFor(cases[csIdx].type as Type, rName)) {
+                needsBorrow = true;
+              }
+              csIdx = csIdx + 1;
+            }
+          }
+        }
+        itemIdx = itemIdx + 1;
+      }
+    }
+    
+    if (needsBorrow) {
+      var resourceTypeIdx = -1;
+      let lookupKey = "interface:" + (ctx.currentInterfaceName as String) + "/" + rName;
+      if (let (true, sIdx) = ctx.typeIndices.get(lookupKey)) {
+        resourceTypeIdx = sIdx;
+      }
+      if (resourceTypeIdx >= 0) {
+        ctx.getBorrowType(resourceTypeIdx);
+      }
+    }
+    rIdx = rIdx + 1;
+  }
+  
+  // Stage 3a: Process resource functions' explicit types FIRST
+  idx = 0;
+  while (idx < iface.items.length) {
+    let item = iface.items[idx];
+    if (item.tag == InterfaceItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
+        let funcs = td.resourceFuncs as Array<ResourceFunc>;
+        var fIdx = 0;
+        while (fIdx < funcs.length) {
+          let rf = funcs[fIdx];
+          var pIdx = 0;
+          while (pIdx < rf.func.func.params.length) {
+            let paramType = rf.func.func.params[pIdx].type;
+            if (!isNakedOwnOrResource(ctx, paramType)) {
+              ctx.getParamTypeRef(paramType);
+            }
+            pIdx = pIdx + 1;
+          }
+          if (rf.func.func.result != null) {
+            let resultType = rf.func.func.result as Type;
+            if (!isNakedOwnOrResource(ctx, resultType)) {
+              ctx.getParamTypeRef(resultType);
+            }
+          }
+          fIdx = fIdx + 1;
+        }
+      }
+    }
+    idx = idx + 1;
+  }
+  
+  // Stage 3b: Process freestanding functions' explicit types SECOND
+  idx = 0;
+  while (idx < iface.items.length) {
+    let item = iface.items[idx];
+    if (item.tag == InterfaceItemTag.Func) {
+      let func = item.func as NamedFunc;
+      var pIdx = 0;
+      while (pIdx < func.func.params.length) {
+        let paramType = func.func.params[pIdx].type;
+        if (!isNakedOwnOrResource(ctx, paramType)) {
+          ctx.getParamTypeRef(paramType);
+        }
+        pIdx = pIdx + 1;
+      }
+      if (func.func.result != null) {
+        let resultType = func.func.result as Type;
+        if (!isNakedOwnOrResource(ctx, resultType)) {
+          ctx.getParamTypeRef(resultType);
+        }
+      }
+    }
+    idx = idx + 1;
+  }
+  
+  ctx.currentInterfaceName = null;
+  ctx.currentWorldName = null;
+};
+
+let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32): void => {
+  ctx.currentInterfaceName = null;
+  ctx.currentWorldName = normalizeId(world.name.name);
+  
+  // Stage 1: Register all defined TypeDefs
+  registerWorldTypes(ctx, world, worldIdx);
+  
+  // Identify all local resources
+  let resources = new Array<TypeDef>();
+  var idx = 0;
+  while (idx < world.items.length) {
+    let item = world.items[idx];
+    if (item.tag == WorldItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      if (td.tag == TypeDefTag.Resource) {
+        resources.push(td);
+      }
+    }
+    idx = idx + 1;
+  }
+  
+  // Stage 2: Pre-register borrow handles if needed
+  var rIdx = 0;
+  while (rIdx < resources.length) {
+    let r = resources[rIdx];
+    let rName = normalizeId(r.name.name);
+    
+    var needsBorrow = false;
+    // Option A: R has at least one Method
+    if (r.resourceFuncs != null) {
+      let funcs = r.resourceFuncs as Array<ResourceFunc>;
+      var fIdx = 0;
+      while (fIdx < funcs.length) {
+        if (funcs[fIdx].tag == ResourceFuncTag.Method) {
+          needsBorrow = true;
+        }
+        fIdx = fIdx + 1;
+      }
+    }
+    
+    // Option B: check imports and exports of the world
+    if (!needsBorrow) {
+      var itemIdx = 0;
+      while (itemIdx < world.items.length) {
+        let item = world.items[itemIdx];
+        if (item.tag == WorldItemTag.Import) {
+          let imp = item.importItem as Import;
+          if (imp.kind.tag == ExternKindTag.Func) {
+            let func = imp.kind.funcDef as Func;
+            var pIdx = 0;
+            while (pIdx < func.params.length) {
+              if (typeContainsBorrowFor(func.params[pIdx].type, rName)) {
+                needsBorrow = true;
+              }
+              pIdx = pIdx + 1;
+            }
+            if (func.result != null && typeContainsBorrowFor(func.result as Type, rName)) {
+              needsBorrow = true;
+            }
+          }
+        } else if (item.tag == WorldItemTag.Export) {
+          let exp = item.exportItem as Export;
+          if (exp.kind.tag == ExternKindTag.Func) {
+            let func = exp.kind.funcDef as Func;
+            var pIdx = 0;
+            while (pIdx < func.params.length) {
+              if (typeContainsBorrowFor(func.params[pIdx].type, rName)) {
+                needsBorrow = true;
+              }
+              pIdx = pIdx + 1;
+            }
+            if (func.result != null && typeContainsBorrowFor(func.result as Type, rName)) {
+              needsBorrow = true;
+            }
+          }
+        }
+        itemIdx = itemIdx + 1;
+      }
+    }
+    
+    if (needsBorrow) {
+      var resourceTypeIdx = -1;
+      let lookupKey = "world:" + (ctx.currentWorldName as String) + "/" + rName;
+      if (let (true, sIdx) = ctx.typeIndices.get(lookupKey)) {
+        resourceTypeIdx = sIdx;
+      }
+      if (resourceTypeIdx >= 0) {
+        ctx.getBorrowType(resourceTypeIdx);
+      }
+    }
+    rIdx = rIdx + 1;
+  }
+  
+  // Stage 3: Process world import/export function explicit types
+  idx = 0;
+  while (idx < world.items.length) {
+    let item = world.items[idx];
+    if (item.tag == WorldItemTag.Import) {
+      let imp = item.importItem as Import;
+      if (imp.kind.tag == ExternKindTag.Func) {
+        let func = imp.kind.funcDef as Func;
+        var pIdx = 0;
+        while (pIdx < func.params.length) {
+          let paramType = func.params[pIdx].type;
+          if (!isNakedOwnOrResource(ctx, paramType)) {
+            ctx.getParamTypeRef(paramType);
+          }
+          pIdx = pIdx + 1;
+        }
+        if (func.result != null) {
+          let resultType = func.result as Type;
+          if (!isNakedOwnOrResource(ctx, resultType)) {
+            ctx.getParamTypeRef(resultType);
+          }
+        }
+      }
+    } else if (item.tag == WorldItemTag.Export) {
+      let exp = item.exportItem as Export;
+      if (exp.kind.tag == ExternKindTag.Func) {
+        let func = exp.kind.funcDef as Func;
+        var pIdx = 0;
+        while (pIdx < func.params.length) {
+          let paramType = func.params[pIdx].type;
+          if (!isNakedOwnOrResource(ctx, paramType)) {
+            ctx.getParamTypeRef(paramType);
+          }
+          pIdx = pIdx + 1;
+        }
+        if (func.result != null) {
+          let resultType = func.result as Type;
+          if (!isNakedOwnOrResource(ctx, resultType)) {
+            ctx.getParamTypeRef(resultType);
+          }
+        }
+      }
+    }
+    idx = idx + 1;
+  }
+  
+  ctx.currentInterfaceName = null;
+  ctx.currentWorldName = null;
+};
+
+let registerAllTypesAndScopeSignatures = (ctx: SerializeContext): void => {
+  // First, process all interfaces Block-by-Block (one at a time)
+  var iIdx = 0;
+  while (iIdx < ctx.interfaces.length) {
+    registerInterfaceAllScopeTypes(ctx, ctx.interfaces[iIdx], iIdx);
+    iIdx = iIdx + 1;
+  }
+  
+  // Second, process all worlds Block-by-Block (one at a time)
+  var wIdx = 0;
+  while (wIdx < ctx.worlds.length) {
+    registerWorldAllScopeTypes(ctx, ctx.worlds[wIdx], wIdx);
+    wIdx = wIdx + 1;
+  }
+};
+
 let formatPackageName = (name: PackageName | null): String => {
   if (name == null) { return ""; }
   let n = name as PackageName;
@@ -1005,7 +1367,7 @@ let serializeType = (b: JsonBuilder, ctx: SerializeContext, t: Type): void => {
 };
 
 /** Build a TypeKind from a Type for use in type definitions (embeds complex types directly). */
-let buildTypeKind = (ctx: SerializeContext, t: Type): TypeKind => {
+let buildTypeKind = (ctx: SerializeContext, t: Type, resolveResourceAsOwn: boolean): TypeKind => {
   if (t.tag == TypeTag.Stream) {
     let kind = new TypeKind("stream");
     if (t.inner != null) {
@@ -1055,14 +1417,14 @@ let buildTypeKind = (ctx: SerializeContext, t: Type): TypeKind => {
     return kind;
   } else if (t.tag == TypeTag.Own) {
     let kind = new TypeKind("handle");
-    let innerRef = ctx.getTypeRef(t.inner as Type);
+    let innerRef = ctx.getTypeRefEx(t.inner as Type, false);
     if (innerRef.isIndex) {
       kind.ownIndex = innerRef.indexValue;
     }
     return kind;
   } else if (t.tag == TypeTag.Borrow) {
     let kind = new TypeKind("handle");
-    let innerRef = ctx.getTypeRef(t.inner as Type);
+    let innerRef = ctx.getTypeRefEx(t.inner as Type, false);
     if (innerRef.isIndex) {
       kind.borrowIndex = innerRef.indexValue;
     }
@@ -1070,7 +1432,7 @@ let buildTypeKind = (ctx: SerializeContext, t: Type): TypeKind => {
   } else {
     // Primitive or name reference - wrap it as "type"
     let kind = new TypeKind("type");
-    kind.inner = ctx.getTypeRef(t);
+    kind.inner = ctx.getTypeRefEx(t, resolveResourceAsOwn);
     return kind;
   }
 };
@@ -1091,7 +1453,7 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
     }
   } else if (td.tag == TypeDefTag.Alias) {
     // For type aliases, embed the type kind directly (don't create separate anonymous type)
-    let aliasKind = buildTypeKind(ctx, td.aliasType as Type);
+    let aliasKind = buildTypeKind(ctx, td.aliasType as Type, false);
     kind = aliasKind;
   } else if (td.tag == TypeDefTag.Enum) {
     let casesArr = new Array<EnumCase>();
@@ -1151,10 +1513,24 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
 let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: ResourceFunc, resourceName: String, ifaceIndex: i32): void => {
   b.beginObject();
   
-  // Get the resource type index
+  // Get the resource type index using current interface/world scope first
   var resourceTypeIdx = 0;
-  if (let (true, idx) = ctx.typeIndices.get(resourceName)) {
-    resourceTypeIdx = idx;
+  if (ctx.currentInterfaceName != null) {
+    let key = "interface:" + (ctx.currentInterfaceName as String) + "/" + resourceName;
+    if (let (true, idx) = ctx.typeIndices.get(key)) {
+      resourceTypeIdx = idx;
+    }
+  }
+  if (resourceTypeIdx == 0 && ctx.currentWorldName != null) {
+    let key = "world:" + (ctx.currentWorldName as String) + "/" + resourceName;
+    if (let (true, idx) = ctx.typeIndices.get(key)) {
+      resourceTypeIdx = idx;
+    }
+  }
+  if (resourceTypeIdx == 0) {
+    if (let (true, idx) = ctx.typeIndices.get(resourceName)) {
+      resourceTypeIdx = idx;
+    }
   }
   
   // name includes prefix (e.g., "[method]resource.method")
@@ -1737,24 +2113,24 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
 export let serializeAstToJson = (ast: Ast): String => {
   let ctx = new SerializeContext();
   collectFromAst(ctx, ast);
-  registerAllTypes(ctx);
+  registerAllTypesAndScopeSignatures(ctx);
   
   let b = new JsonBuilder();
   b.beginObject();
-  
-  b.key("worlds").beginArray();
-  var wIdx = 0;
-  while (wIdx < ctx.worlds.length) {
-    serializeWorld(b, ctx, ctx.worlds[wIdx], wIdx);
-    wIdx = wIdx + 1;
-  }
-  b.endArray();
   
   b.key("interfaces").beginArray();
   var iIdx = 0;
   while (iIdx < ctx.interfaces.length) {
     serializeInterface(b, ctx, ctx.interfaces[iIdx], iIdx);
     iIdx = iIdx + 1;
+  }
+  b.endArray();
+  
+  b.key("worlds").beginArray();
+  var wIdx = 0;
+  while (wIdx < ctx.worlds.length) {
+    serializeWorld(b, ctx, ctx.worlds[wIdx], wIdx);
+    wIdx = wIdx + 1;
   }
   b.endArray();
   

@@ -1,29 +1,28 @@
 # WIT Parser Test Status
 
 **Last Updated**: 2026-07-09  
-**Summary**: 161/210 passing (76.7%)
+**Summary**: 167/210 passing (79.5%)
 
 ## Overview
 
 - ✅ **All 130 error tests pass** (parse-fail/\*)
-- ✅ **31 success tests pass** (produce correct JSON)
-- ❌ **49 success tests fail** (JSON mismatch - categorized below)
+- ✅ **37 success tests pass** (produce correct JSON)
+- ❌ **43 success tests fail** (JSON mismatch - categorized below)
 - ⏭️ **1 test skipped** (kinds-of-deps)
 
 ## Recent Fixes
 
-- Switched to topologically sorting type and interface dependency resolution in JS serialization context to completely fix type index ordering mismatch.
-- Implemented scoped type resolution inside interfaces and worlds during registration to properly locate types across aliases and uses.
-- Fixed `TypeOwner` representation to cleanly support `world` and `interface` owners.
-- Implemented and resolved fixed-length lists (`list<T, N>`) with parsed integer sizes in AST representation.
-- Fixed flag serialization structure (flags are objects with a `"name"` property).
-- Fully resolved `types.wit`, `use.wit`, `use-chain.wit`, and `type-then-eof.wit`.
+- Switched type resolution Stages inside `ast-json.zena` to a block-by-block resolution loop (resolving definitions, borrows, and then explicit signatures for each scope block sequentially).
+- Properly identified and deferred top-level naked `own` handle type registration to Stage 4 (JSON serialization), aligning completely/exactly with `wasm-tools` implicit constructor return type assignment order.
+- Ignored redundant anonymous handle type creation for direct TypeDef naked handle aliases (e.g. `type t = borrow<a>`).
+- Fully resolved and verified passing results for `streams-and-futures.wit`, `async.wit`, `resources-empty.wit`, `resources-multiple-returns-own.wit`, `resources-multiple.wit`, and `resources-return-own.wit`.
 
-## Passing Success Tests (31)
+## Passing Success Tests (37)
 
 | Test                               | Notes  |
 | ---------------------------------- | ------ |
-| async.wit                          | ✅     |
+| async.wit                          | ✅ NEW |
+| comments.wit                       | ✅     |
 | empty.wit                          | ✅     |
 | error-context.wit                  | ✅     |
 | functions.wit                      | ✅     |
@@ -32,20 +31,20 @@
 | package-syntax3.wit                | ✅     |
 | package-syntax4.wit                | ✅     |
 | random.wit                         | ✅     |
-| resources-empty.wit                | ✅     |
-| resources-multiple-returns-own.wit | ✅     |
-| resources-multiple.wit             | ✅     |
-| resources-return-own.wit           | ✅     |
+| resources-empty.wit                | ✅ NEW |
+| resources-multiple-returns-own.wit | ✅ NEW |
+| resources-multiple.wit             | ✅ NEW |
+| resources-return-own.wit           | ✅ NEW |
 | resources1.wit                     | ✅     |
 | same-name-import-export.wit        | ✅     |
-| type-then-eof.wit                  | ✅ NEW |
-| types.wit                          | ✅ NEW |
-| use.wit                            | ✅ NEW |
-| use-chain.wit                      | ✅ NEW |
+| streams-and-futures.wit            | ✅ NEW |
+| type-then-eof.wit                  | ✅     |
+| types.wit                          | ✅     |
+| use.wit                            | ✅     |
+| use-chain.wit                      | ✅     |
 | union-fuzz-1.wit                   | ✅     |
 | wasi.wit                           | ✅     |
 | world-top-level-funcs.wit          | ✅     |
-| comments.wit                       | ✅     |
 
 ## Failing Success Tests by Category
 
@@ -87,32 +86,20 @@ Single-file tests that need `use` statement type resolution.
 | stress-export-elaborate.wit | types.t1 missing              | use + export  |
 | unstable-resource.wit       | interfaces: expected 2, got 1 | use + gating  |
 
-### Category 3: Type Index Ordering (5 tests)
+### Category 3: Type Index Ordering (3 tests)
 
 Type indices don't match wasm-tools ordering (may need resolver pass).
 
-| Test                          | Error                        | Reason                          |
-| ----------------------------- | ---------------------------- | ------------------------------- |
-| maps.wit                      | docs.contents space mismatch | Comment format (+ type indices) |
-| resources.wit                 | result: expected 20, got 8   | Type index order                |
-| streams-and-futures.wit       | type: expected 15, got 21    | Type index order                |
-| world-top-level-resources.wit | type: expected 7, got 2      | Type index order                |
-
-### Category 4: World Import/Export Resolution (7 tests)
-
-World interface references not fully resolved.
-
-| Test                        | Error                         | Reason                |
-| --------------------------- | ----------------------------- | --------------------- |
-| include-reps.wit            | exports.interface-1 missing   | World interface ref   |
-| kebab-name-include-with.wit | imports.a missing             | World include with    |
-| world-diamond.wit           | result type mismatch          | World type resolution |
-| world-implicit-import1.wit  | interfaces: expected 3, got 1 | Implicit imports      |
-| world-implicit-import2.wit  | types: expected 2, got 1      | Implicit imports      |
-| world-implicit-import3.wit  | types: expected 2, got 1      | Implicit imports      |
-| world-same-fields4.wit      | interfaces: expected 3, got 1 | World fields          |
-| worlds-union-dedup.wit      | imports.interface-0 missing   | World interface ref   |
-| worlds-with-types.wit       | types: expected 6, got 1      | World type resolution |
+| Test                          | Error                         | Reason                          |
+| ----------------------------- | ----------------------------- | ------------------------------- |
+| maps.wit                      | docs.contents space mismatch  | Comment format (+ type indices) |
+| resources.wit                 | expected 20, got 21           | World-resource constructor sync |
+| world-top-level-resources.wit | expected 0, got 5             | World-resource constructor sync |
+| world-implicit-import2.wit    | types: expected 2, got 1      | Implicit imports                |
+| world-implicit-import3.wit    | types: expected 2, got 1      | Implicit imports                |
+| world-same-fields4.wit        | interfaces: expected 3, got 1 | World fields                    |
+| worlds-union-dedup.wit        | imports.interface-0 missing   | World interface ref             |
+| worlds-with-types.wit         | types: expected 6, got 1      | World type resolution           |
 
 ### Category 5: Nested Packages (5 tests)
 
