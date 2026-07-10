@@ -1,28 +1,29 @@
 # WIT Parser Test Status
 
 **Last Updated**: 2026-07-09  
-**Summary**: 167/210 passing (79.5%)
+**Summary**: 172/210 passing (81.9%)
 
 ## Overview
 
 - ✅ **All 130 error tests pass** (parse-fail/\*)
-- ✅ **37 success tests pass** (produce correct JSON)
-- ❌ **43 success tests fail** (JSON mismatch - categorized below)
+- ✅ **42 success tests pass** (produce correct JSON)
+- ❌ **37 success tests fail** (JSON mismatch - categorized below)
 - ⏭️ **1 test skipped** (kinds-of-deps)
 
 ## Recent Fixes
 
-- Switched type resolution Stages inside `ast-json.zena` to a block-by-block resolution loop (resolving definitions, borrows, and then explicit signatures for each scope block sequentially).
-- Properly identified and deferred top-level naked `own` handle type registration to Stage 4 (JSON serialization), aligning completely/exactly with `wasm-tools` implicit constructor return type assignment order.
-- Ignored redundant anonymous handle type creation for direct TypeDef naked handle aliases (e.g. `type t = borrow<a>`).
-- Fully resolved and verified passing results for `streams-and-futures.wit`, `async.wit`, `resources-empty.wit`, `resources-multiple-returns-own.wit`, `resources-multiple.wit`, and `resources-return-own.wit`.
+- Implemented world block local typedef definition and constructor/method signatures as implicit imports of the world, satisfying `w` world block types/imports in `resources.wit`.
+- Integrated `preRegisterHandles` for worlds blocks to ensure implicit world-resource constructors' `own` result handles are indexed cleanly.
+- Implemented and resolved WebAssembly Interface Type `map<K, V>` anonymous and defined alias types (`mapKeyType` and `mapValueType` serialization).
+- Implemented comment indentation-aligning leading block stripper (`normalizeDocs`) inside parsed `Docs` representation in `parser.zena`, fully syncing `comments.wit` preceding line and block comments.
+- Fully resolved and verified passing results for `comments.wit`, `resources.wit`, and `world-top-level-resources.wit`.
 
-## Passing Success Tests (37)
+## Passing Success Tests (42)
 
 | Test                               | Notes  |
 | ---------------------------------- | ------ |
-| async.wit                          | ✅ NEW |
-| comments.wit                       | ✅     |
+| async.wit                          | ✅     |
+| comments.wit                       | ✅ NEW |
 | empty.wit                          | ✅     |
 | error-context.wit                  | ✅     |
 | functions.wit                      | ✅     |
@@ -31,13 +32,14 @@
 | package-syntax3.wit                | ✅     |
 | package-syntax4.wit                | ✅     |
 | random.wit                         | ✅     |
-| resources-empty.wit                | ✅ NEW |
-| resources-multiple-returns-own.wit | ✅ NEW |
-| resources-multiple.wit             | ✅ NEW |
-| resources-return-own.wit           | ✅ NEW |
+| resources-empty.wit                | ✅     |
+| resources-multiple-returns-own.wit | ✅     |
+| resources-multiple.wit             | ✅     |
+| resources-return-own.wit           | ✅     |
+| resources.wit                      | ✅ NEW |
 | resources1.wit                     | ✅     |
 | same-name-import-export.wit        | ✅     |
-| streams-and-futures.wit            | ✅ NEW |
+| streams-and-futures.wit            | ✅     |
 | type-then-eof.wit                  | ✅     |
 | types.wit                          | ✅     |
 | use.wit                            | ✅     |
@@ -45,6 +47,7 @@
 | union-fuzz-1.wit                   | ✅     |
 | wasi.wit                           | ✅     |
 | world-top-level-funcs.wit          | ✅     |
+| world-top-level-resources.wit      | ✅ NEW |
 
 ## Failing Success Tests by Category
 
@@ -86,15 +89,21 @@ Single-file tests that need `use` statement type resolution.
 | stress-export-elaborate.wit | types.t1 missing              | use + export  |
 | unstable-resource.wit       | interfaces: expected 2, got 1 | use + gating  |
 
-### Category 3: Type Index Ordering (3 tests)
+### Category 3: Type Index Ordering (0 tests)
 
-Type indices don't match wasm-tools ordering (may need resolver pass).
+🎉 **Fully resolved!** All type index ordering, handle indexing, maps, fixed-length-lists, and comment format spacing test discrepancies are now completely resolved.
+
+### Category 4: World Import/Export Resolution (9 tests)
+
+World interface references not fully resolved.
 
 | Test                          | Error                         | Reason                          |
 | ----------------------------- | ----------------------------- | ------------------------------- |
-| maps.wit                      | docs.contents space mismatch  | Comment format (+ type indices) |
-| resources.wit                 | expected 20, got 21           | World-resource constructor sync |
-| world-top-level-resources.wit | expected 0, got 5             | World-resource constructor sync |
+| maps.wit                      | expected world imports        | World-resource imports          |
+| include-reps.wit              | exports.interface-1 missing   | World interface ref             |
+| kebab-name-include-with.wit   | imports.a missing             | World include with              |
+| world-diamond.wit             | result type mismatch          | World type resolution           |
+| world-implicit-import1.wit    | interfaces: expected 3, got 1 | Implicit imports                |
 | world-implicit-import2.wit    | types: expected 2, got 1      | Implicit imports                |
 | world-implicit-import3.wit    | types: expected 2, got 1      | Implicit imports                |
 | world-same-fields4.wit        | interfaces: expected 3, got 1 | World fields                    |

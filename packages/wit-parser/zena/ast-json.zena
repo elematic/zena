@@ -144,6 +144,8 @@ class TypeKind {
   var borrowIndex = -1;
   var ownIndex = -1;
   var listLength = -1;
+  var mapKeyType: TypeRef | null = null;
+  var mapValueType: TypeRef | null = null;
 
   new(tag: String) : tag = tag;
 }
@@ -431,6 +433,14 @@ class SerializeContext {
       kind.borrowIndex = resourceIdx;
       let entry = new TypeEntry(null, kind, none, null);
       return this.registerType(entry);
+    } else if (t.tag == TypeTag.Map) {
+      let keyRef = this.getTypeRefEx(t.keyType as Type, resolveResourceAsOwn);
+      let valRef = this.getTypeRefEx(t.valueType as Type, resolveResourceAsOwn);
+      let key = "map:" + this.typeRefToKey(keyRef) + ":" + this.typeRefToKey(valRef);
+      let kind = new TypeKind("map");
+      kind.mapKeyType = keyRef;
+      kind.mapValueType = valRef;
+      return this.getOrCreateAnonType(key, kind);
     }
 
     // Unknown type - should not reach here
@@ -476,6 +486,13 @@ let collectTypeDeps = (t: Type, deps: Array<String>): void => {
              t.tag == TypeTag.Own || t.tag == TypeTag.Borrow) {
     if (t.inner != null) {
       collectTypeDeps(t.inner as Type, deps);
+    }
+  } else if (t.tag == TypeTag.Map) {
+    if (t.keyType != null) {
+      collectTypeDeps(t.keyType as Type, deps);
+    }
+    if (t.valueType != null) {
+      collectTypeDeps(t.valueType as Type, deps);
     }
   }
 };
@@ -1203,7 +1220,36 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
     rIdx = rIdx + 1;
   }
   
-  // Stage 3: Process world import/export function explicit types
+  // Stage 3a: Process world resource functions' explicit types FIRST
+  var rFuncIdx = 0;
+  while (rFuncIdx < resources.length) {
+    let r = resources[rFuncIdx];
+    if (r.resourceFuncs != null) {
+      let funcs = r.resourceFuncs as Array<ResourceFunc>;
+      var fIdx = 0;
+      while (fIdx < funcs.length) {
+        let rf = funcs[fIdx];
+        var pIdx = 0;
+        while (pIdx < rf.func.func.params.length) {
+          let paramType = rf.func.func.params[pIdx].type;
+          if (!isNakedOwnOrResource(ctx, paramType)) {
+            ctx.getParamTypeRef(paramType);
+          }
+          pIdx = pIdx + 1;
+        }
+        if (rf.func.func.result != null) {
+          let resultType = rf.func.func.result as Type;
+          if (!isNakedOwnOrResource(ctx, resultType)) {
+            ctx.getParamTypeRef(resultType);
+          }
+        }
+        fIdx = fIdx + 1;
+      }
+    }
+    rFuncIdx = rFuncIdx + 1;
+  }
+  
+  // Stage 3b: Process world import/export function explicit types SECOND
   idx = 0;
   while (idx < world.items.length) {
     let item = world.items[idx];
@@ -1428,6 +1474,11 @@ let buildTypeKind = (ctx: SerializeContext, t: Type, resolveResourceAsOwn: boole
     if (innerRef.isIndex) {
       kind.borrowIndex = innerRef.indexValue;
     }
+    return kind;
+  } else if (t.tag == TypeTag.Map) {
+    let kind = new TypeKind("map");
+    kind.mapKeyType = ctx.getTypeRefEx(t.keyType as Type, resolveResourceAsOwn);
+    kind.mapValueType = ctx.getTypeRefEx(t.valueType as Type, resolveResourceAsOwn);
     return kind;
   } else {
     // Primitive or name reference - wrap it as "type"
@@ -1718,6 +1769,11 @@ let serializeTypeKind = (b: JsonBuilder, kind: TypeKind): void => {
     serializeTypeRef(b, kind.inner as TypeRef);
     b.i32(kind.listLength);
     b.endArray();
+  } else if (kind.tag == "map") {
+    b.key("map").beginArray();
+    serializeTypeRef(b, kind.mapKeyType as TypeRef);
+    serializeTypeRef(b, kind.mapValueType as TypeRef);
+    b.endArray();
   } else if (kind.tag == "future") {
     b.key("future");
     if (kind.inner != null) {
@@ -1918,7 +1974,63 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   
   // Serialize imports
   b.key("imports").beginObject();
+  
+  // 1. Serialize any world TypeDefs (like resources/types defined on the world)
   var idx = 0;
+  while (idx < world.items.length) {
+    let item = world.items[idx];
+    if (item.tag == WorldItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      let tdName = normalizeId(td.name.name);
+      b.key(tdName).beginObject();
+      let key = "world:" + worldName + "/" + tdName;
+      var typeIdx = -1;
+      if (let (true, sIdx) = ctx.typeIndices.get(key)) {
+        typeIdx = sIdx;
+      }
+      b.key("type").i32(typeIdx);
+      b.endObject();
+    }
+    idx = idx + 1;
+  }
+  
+  // 2. Serialize world resource functions as imports
+  idx = 0;
+  while (idx < world.items.length) {
+    let item = world.items[idx];
+    if (item.tag == WorldItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
+        let resourceName = normalizeId(td.name.name);
+        let funcs = td.resourceFuncs as Array<ResourceFunc>;
+        var fIdx = 0;
+        while (fIdx < funcs.length) {
+          let rf = funcs[fIdx];
+          if (rf.tag == ResourceFuncTag.Method) {
+            b.key("[method]" + resourceName + "." + normalizeId(rf.func.name.name)).beginObject();
+            b.key("function");
+            serializeResourceFunc(b, ctx, rf, resourceName, index);
+            b.endObject();
+          } else if (rf.tag == ResourceFuncTag.Static) {
+            b.key("[static]" + resourceName + "." + normalizeId(rf.func.name.name)).beginObject();
+            b.key("function");
+            serializeResourceFunc(b, ctx, rf, resourceName, index);
+            b.endObject();
+          } else if (rf.tag == ResourceFuncTag.Constructor) {
+            b.key("[constructor]" + resourceName).beginObject();
+            b.key("function");
+            serializeResourceFunc(b, ctx, rf, resourceName, index);
+            b.endObject();
+          }
+          fIdx = fIdx + 1;
+        }
+      }
+    }
+    idx = idx + 1;
+  }
+  
+  // 3. Serialize regular imports
+  idx = 0;
   while (idx < world.items.length) {
     let item = world.items[idx];
     if (item.tag == WorldItemTag.Import) {

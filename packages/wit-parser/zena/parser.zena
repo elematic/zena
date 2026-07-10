@@ -33,6 +33,84 @@ export class ParseError extends Error {
 // Unresolved AST Types (Parse Tree)
 // ============================================================================
 
+let normalizeDocs = (contents: String): String => {
+  if (contents.length == 0) {
+    return "";
+  }
+  
+  // 1. Split into lines and trim trailing whitespace
+  let lines = new Array<String>();
+  var lineStart = 0;
+  var i = 0;
+  while (i <= contents.length) {
+    if (i == contents.length || contents.getByteAt(i) == 10) { // 10 is '\n'
+      // Extract line
+      var line = contents.sliceBytes(lineStart, i);
+      // Trim training whitespace (space 32, tab 9, CR 13)
+      var end = line.length;
+      while (end > 0) {
+        let b = line.getByteAt(end - 1);
+        if (b == 32 || b == 9 || b == 13) {
+          end = end - 1;
+        } else {
+          break;
+        }
+      }
+      lines.push(line.sliceBytes(0, end));
+      lineStart = i + 1;
+    }
+    i = i + 1;
+  }
+  
+  // 2. Scan non-empty lines to find the minimum leading whitespace count
+  var minLeadingWs = 999999;
+  var hasNonEmpty = false;
+  var idx = 0;
+  while (idx < lines.length) {
+    let line = lines[idx];
+    if (line.length > 0) {
+      hasNonEmpty = true;
+      var leadingWs = 0;
+      while (leadingWs < line.length) {
+        let b = line.getByteAt(leadingWs);
+        if (b == 32 || b == 9) {
+          leadingWs = leadingWs + 1;
+        } else {
+          break;
+        }
+      }
+      if (leadingWs < minLeadingWs) {
+        minLeadingWs = leadingWs;
+      }
+    }
+    idx = idx + 1;
+  }
+  
+  if (!hasNonEmpty) {
+    minLeadingWs = 0;
+  }
+  
+  // 3. Strip the minimum leading whitespace and join back with newline
+  let sb = new StringBuilder();
+  idx = 0;
+  while (idx < lines.length) {
+    let line = lines[idx];
+    if (line.length > 0) {
+      if (minLeadingWs < line.length) {
+        sb.append(line.sliceBytes(minLeadingWs, line.length));
+      } else {
+        // Line is entirely whitespace
+      }
+    }
+    if (idx < lines.length - 1) {
+      sb.appendByte(10); // '\n'
+    }
+    idx = idx + 1;
+  }
+  
+  return sb.toString();
+};
+
 /**
  * Documentation comments collected from /// comments.
  */
@@ -920,6 +998,10 @@ export class Parser {
         attrs.push(this.#parseAttribute());
       }
       docs.attributes = attrs;
+    }
+    
+    if (docs.contents != null) {
+      docs.contents = normalizeDocs(docs.contents as String);
     }
     
     return docs;
