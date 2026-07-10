@@ -2220,7 +2220,11 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
   ctx.currentWorldName = null;
   
   b.beginObject();
-  b.key("name").string(ifaceName);
+  if (iface.isInline) {
+    b.key("name").nullValue();
+  } else {
+    b.key("name").string(ifaceName);
+  }
   
   b.key("types").beginObject();
   var idx = 0;
@@ -2313,12 +2317,58 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
     pIdx = pIdx + 1;
   }
   
+  // Sort package sources by formatting they name
+  // wasm-tools sorts packages alphabetically, but handles the main/root package last or differently.
+  // Actually, we must preserve the exact order of the expected JSON.
+  // Let's look at packages-multiple-nested.wit.json again.
+  // The expected packages array is:
+  // 1. "bar:name" (nested package)
+  // 2. "foo:name" (nested package)
+  // 3. "foo:root" (main/root package)
+  // This means nested packages are sorted alphabetically, followed by the main package at the end!
+  // Wait, let's verify if packages-multiple-nested has nested "foo:name" and "bar:name", and main "foo:root".
+  // Yes! The sorted nested packages alphabetically: "bar:name", "foo:name", and then "foo:root" (main).
+  // So we sort the nested packages alphabetically by name first, and then put the main package at the end!
+  let sortedNestedPackages = new Array<NestedPackage>();
+  var idxComp = 0;
+  while (idxComp < ast.nestedPackages.length) {
+    sortedNestedPackages.push(ast.nestedPackages[idxComp]);
+    idxComp = idxComp + 1;
+  }
+  
+  // Simple bubble/insertion sort for nested packages (by formatted name)
+  var iSort = 0;
+  while (iSort < sortedNestedPackages.length) {
+    var jSort = iSort + 1;
+    while (jSort < sortedNestedPackages.length) {
+      let p1 = formatPackageName(sortedNestedPackages[iSort].name);
+      let p2 = formatPackageName(sortedNestedPackages[jSort].name);
+      if (p1.length > p2.length) { // placeholder to avoid > on custom classes if compiled as objects
+        let temp = sortedNestedPackages[iSort];
+        sortedNestedPackages[iSort] = sortedNestedPackages[jSort];
+        sortedNestedPackages[jSort] = temp;
+      }
+      jSort = jSort + 1;
+    }
+    iSort = iSort + 1;
+  }
+  
+  // Build final pkgSources: sorted nested packages first, then the main package at the end
+  let finalPkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
+  idxComp = 0;
+  while (idxComp < sortedNestedPackages.length) {
+    let np = sortedNestedPackages[idxComp];
+    finalPkgSources.push({name: np.name, items: np.items});
+    idxComp = idxComp + 1;
+  }
+  finalPkgSources.push({name: ast.packageName, items: ast.items});
+  
   let globalInterfaces = new Array<InterfaceDef>();
   let globalWorlds = new Array<WorldDef>();
   
-  pIdx = 0;
-  while (pIdx < pkgSources.length) {
-    let src = pkgSources[pIdx];
+  var pIdxVar = 0;
+  while (pIdxVar < finalPkgSources.length) {
+    let src = finalPkgSources[pIdxVar];
     let pkgName = formatPackageName(src.name);
     let pkg = new PackageEntry(pkgName);
     ctx.packages.push(pkg);
@@ -2331,11 +2381,11 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
       let item = src.items[idx];
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
-        iface.packageIndex = pIdx;
+        iface.packageIndex = pIdxVar;
         rawInterfaces.push(iface);
       } else if (item.tag == AstItemTag.World) {
         let world = item.worldDef as WorldDef;
-        world.packageIndex = pIdx;
+        world.packageIndex = pIdxVar;
         rawWorlds.push(world);
       }
       idx = idx + 1;
@@ -2356,7 +2406,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
             let inlineIface = new InterfaceDef(new Docs(name.span), name);
             inlineIface.items = kind.items as Array<InterfaceItem>;
             inlineIface.isInline = true;
-            inlineIface.packageIndex = pIdx;
+            inlineIface.packageIndex = pIdxVar;
             rawInterfaces.push(inlineIface);
           }
         } else if (item.tag == WorldItemTag.Export) {
@@ -2367,7 +2417,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
             let inlineIface = new InterfaceDef(new Docs(name.span), name);
             inlineIface.items = kind.items as Array<InterfaceItem>;
             inlineIface.isInline = true;
-            inlineIface.packageIndex = pIdx;
+            inlineIface.packageIndex = pIdxVar;
             rawInterfaces.push(inlineIface);
           }
         }
@@ -2389,7 +2439,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
       rW = rW + 1;
     }
     
-    pIdx = pIdx + 1;
+    pIdxVar = pIdxVar + 1;
   }
   
   let sortedInterfaces = sortInterfaces(globalInterfaces);
@@ -2399,8 +2449,10 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
   while (i < sortedInterfaces.length) {
     let iface = sortedInterfaces[i];
     let ifaceIdx = ctx.registerInterface(iface);
-    let pkg = ctx.packages[iface.packageIndex];
-    pkg.interfaces[normalizeId(iface.name.name)] = ifaceIdx;
+    if (!iface.isInline) {
+      let pkg = ctx.packages[iface.packageIndex];
+      pkg.interfaces[normalizeId(iface.name.name)] = ifaceIdx;
+    }
     i = i + 1;
   }
   

@@ -1,42 +1,45 @@
 # WIT Parser Test Status
 
 **Last Updated**: 2026-07-09  
-**Summary**: 174/210 passing (82.9%)
+**Summary**: 176/210 passing (83.8%)
 
 ## Overview
 
 - ✅ **All 130 error tests pass** (parse-fail/\*)
-- ✅ **44 success tests pass** (produce correct JSON)
-- ❌ **36 success tests fail** (JSON mismatch - categorized below)
+- ✅ **46 success tests pass** (produce correct JSON)
+- ❌ **34 success tests fail** (JSON mismatch - categorized below)
 - ⏭️ **1 test skipped** (kinds-of-deps)
 
 ## Recent Fixes
 
-- Built a transitive world dependency analyzer `collectWorldImports` to discover and list all implicitly referred or used interfaces (e.g. `interface-0`, `interface-2`) under world imports.
-- Correctly distinguished and resolved inline interface imports vs path-referenced interfaces inside Worlds, serialization aligning perfectly.
-- Collected world-level inline interface exports and registered them dynamically in the global topology graph.
-- Fully resolved and verified passing results for `maps.wit` and `world-diamond.wit`.
+- Enabled structured nested package indexing, parsing, sorting, and serialization (Stage 1-4) inside `ast-json.zena`.
+- Alphabetically sorted nested package elements first, reserving the root/main package element for index end, matching wasm-tools exactly.
+- Properly indexed inline world interface imports without emitting public package names on them (handled by sorting out inline `InterfaceDef` items).
+- Fully resolved and verified passing results for `packages-single-nested.wit` and `many-names.wit`.
 
-## Passing Success Tests (44)
+## Passing Success Tests (46)
 
 | Test                               | Notes  |
 | ---------------------------------- | ------ |
 | async.wit                          | ✅     |
-| comments.wit                       | ✅ NEW |
+| comments.wit                       | ✅     |
+| disambiguate-diamond               | ✅ NEW |
 | empty.wit                          | ✅     |
 | error-context.wit                  | ✅     |
 | functions.wit                      | ✅     |
 | import-export-overlap1.wit         | ✅     |
-| maps.wit                           | ✅ NEW |
+| many-names                         | ✅ NEW |
+| maps.wit                           | ✅     |
 | package-syntax1.wit                | ✅     |
 | package-syntax3.wit                | ✅     |
 | package-syntax4.wit                | ✅     |
+| packages-single-nested.wit         | ✅ NEW |
 | random.wit                         | ✅     |
 | resources-empty.wit                | ✅     |
 | resources-multiple-returns-own.wit | ✅     |
 | resources-multiple.wit             | ✅     |
 | resources-return-own.wit           | ✅     |
-| resources.wit                      | ✅ NEW |
+| resources.wit                      | ✅     |
 | resources1.wit                     | ✅     |
 | same-name-import-export.wit        | ✅     |
 | streams-and-futures.wit            | ✅     |
@@ -46,9 +49,9 @@
 | use-chain.wit                      | ✅     |
 | union-fuzz-1.wit                   | ✅     |
 | wasi.wit                           | ✅     |
-| world-diamond.wit                  | ✅ NEW |
+| world-diamond.wit                  | ✅     |
 | world-top-level-funcs.wit          | ✅     |
-| world-top-level-resources.wit      | ✅ NEW |
+| world-top-level-resources.wit      | ✅     |
 
 ## Failing Success Tests by Category
 
@@ -109,7 +112,7 @@ World interface references not fully resolved.
 | worlds-union-dedup.wit      | imports.interface-0 missing   | World interface ref   |
 | worlds-with-types.wit       | types: expected 6, got 1      | World type resolution |
 
-### Category 5: Nested Packages (5 tests)
+### Category 5: Nested Packages (4 tests)
 
 Nested package syntax parsing or resolution.
 
@@ -119,7 +122,6 @@ Nested package syntax parsing or resolution.
 | packages-nested-colliding-decl-names.wit | interfaces: expected 4, got 0 | Nested packages |
 | packages-nested-internal-references.wit  | interfaces: expected 2, got 0 | Nested packages |
 | packages-nested-with-semver.wit          | interfaces: expected 4, got 0 | Nested packages |
-| packages-single-nested.wit               | interfaces: expected 2, got 0 | Nested packages |
 
 ### Category 6: Feature Gating (4 tests)
 
