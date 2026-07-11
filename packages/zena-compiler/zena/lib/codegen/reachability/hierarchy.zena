@@ -1,6 +1,6 @@
 import { Program } from '../../program.zena';
 import { ClassType, FunctionType, MixinType, InterfaceType } from '../../types.zena';
-import { Node, MethodDefinition, FieldDefinition, AccessorDeclaration, TypeAnnotation, MixinDeclaration, Identifier, SymbolPropertyName, MemberExpression } from '../../ast.zena';
+import { Node, ClassDeclaration, MethodDefinition, FieldDefinition, AccessorDeclaration, TypeAnnotation, MixinDeclaration, Identifier, SymbolPropertyName, MemberExpression } from '../../ast.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
@@ -21,40 +21,61 @@ export final class ClassHierarchyAnalysis {
   instantiatedSpecializedClasses: HashSet<String>;
   wasm: WasmModule;
 
-  implementingMethodCache = new HashMap<String, MethodDefinition>();
-  implementingMethodNulls = new HashSet<String>();
-  implementingMethodsCache = new HashMap<String, Array<MethodDefinition>>();
-  implementingFieldCache = new HashMap<String, FieldDefinition>();
-  implementingFieldNulls = new HashSet<String>();
-  implementingAccessorCache = new HashMap<String, AccessorDeclaration>();
-  implementingAccessorNulls = new HashSet<String>();
-  subclassRelationCache = new HashMap<String, boolean>();
+  implementingMethodCache = new HashMap<i32, HashMap<String, MethodDefinition>>();
+  implementingMethodNulls = new HashMap<i32, HashSet<String>>();
+  implementingMethodsCache = new HashMap<i32, HashMap<String, Array<MethodDefinition>>>();
+  implementingFieldCache = new HashMap<i32, HashMap<String, FieldDefinition>>();
+  implementingFieldNulls = new HashMap<i32, HashSet<String>>();
+  implementingAccessorCache = new HashMap<i32, HashMap<String, AccessorDeclaration>>();
+  implementingAccessorNulls = new HashMap<i32, HashSet<String>>();
+  subclassRelationCache = new HashMap<i32, boolean>();
   subclassCache = new HashMap<SymbolId, Array<ClassType>>();
   var lastSubclassCacheVersion = -1;
   classDeclTypeCache = new HashMap<i32, ClassType>();
+  classMixinIdsCache = new HashMap<SymbolId, HashMap<SymbolId, boolean>>();
 
   new(this.program, this.instantiatedSpecializedClasses, this.wasm);
 
-  findImplementingMethod(cType: ClassType, mName: String): MethodDefinition | null {
-    let key = (getClassKey(cType) as String) + "." + mName;
-    if (this.implementingMethodNulls.has(key)) {
-      return null;
-    }
-    if (let (true, cached) = this.implementingMethodCache.get(key)) {
+  getClassMixinIds(cd: ClassDeclaration, model: SemanticModel): HashMap<SymbolId, boolean> {
+    let lookupId = cd.id as SymbolId;
+    if (let (true, cached) = this.classMixinIdsCache.get(lookupId)) {
       return cached;
+    }
+    let seenIds = new HashMap<SymbolId, boolean>();
+    collectMixinSymbolIds(this.program, model, cd.mixins, seenIds);
+    this.classMixinIdsCache[lookupId] = seenIds;
+    return seenIds;
+  }
+
+  findImplementingMethod(cType: ClassType, mName: String): MethodDefinition | null {
+    if (let (true, nulls) = this.implementingMethodNulls.get(cType.id)) {
+      if (nulls.has(mName)) {
+        return null;
+      }
+    }
+    if (let (true, cache) = this.implementingMethodCache.get(cType.id)) {
+      if (let (true, cached) = cache.get(mName)) {
+        return cached;
+      }
     }
 
     var curr: ClassType | null = cType;
     while (curr != null) {
       let ct = curr as ClassType;
       let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
-      for (let unit in this.program.units) {
-        let model = unit.model;
-        if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
+      var model: SemanticModel | null = null;
+      if (ct.sourcePath != "") {
+        if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
+          model = unit.model;
+        }
+      }
+      if (model != null) {
+        let m = model as SemanticModel;
+        if (m.classDeclarations.has(lookupId)) {
+          let cd = m.classDeclarations[lookupId];
           let mixinMembers = new Array<Node>();
           let seenMixins = new HashMap<MixinKey, boolean>();
-          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
+          collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
           
           let allMembers = new Array<Node>();
           for (let member in cd.body) {
@@ -70,8 +91,44 @@ export final class ClassHierarchyAnalysis {
               if (md.isAbstract) { continue; }
               let name = getMethodName(md);
               if (matchMemberName(name, mName)) {
-                this.implementingMethodCache[key] = md;
+                if (!this.implementingMethodCache.has(cType.id)) {
+                  this.implementingMethodCache[cType.id] = new HashMap<String, MethodDefinition>();
+                }
+                this.implementingMethodCache[cType.id][mName] = md;
                 return md;
+              }
+            }
+          }
+        }
+      } else {
+        for (let unit in this.program.units) {
+          let m = unit.model;
+          if (m.classDeclarations.has(lookupId)) {
+            let cd = m.classDeclarations[lookupId];
+            let mixinMembers = new Array<Node>();
+            let seenMixins = new HashMap<MixinKey, boolean>();
+            collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
+            
+            let allMembers = new Array<Node>();
+            for (let member in cd.body) {
+              allMembers.push(member);
+            }
+            for (let member in mixinMembers) {
+              allMembers.push(member);
+            }
+            
+            for (let member in allMembers) {
+              if (member is MethodDefinition) {
+                let md = member as MethodDefinition;
+                if (md.isAbstract) { continue; }
+                let name = getMethodName(md);
+                if (matchMemberName(name, mName)) {
+                  if (!this.implementingMethodCache.has(cType.id)) {
+                    this.implementingMethodCache[cType.id] = new HashMap<String, MethodDefinition>();
+                  }
+                  this.implementingMethodCache[cType.id][mName] = md;
+                  return md;
+                }
               }
             }
           }
@@ -79,14 +136,18 @@ export final class ClassHierarchyAnalysis {
       }
       curr = ct.superType;
     }
-    this.implementingMethodNulls.add(key);
+    if (!this.implementingMethodNulls.has(cType.id)) {
+      this.implementingMethodNulls[cType.id] = new HashSet<String>();
+    }
+    this.implementingMethodNulls[cType.id].add(mName);
     return null;
   }
 
   findImplementingMethods(cType: ClassType, mName: String): Array<MethodDefinition> {
-    let key = (getClassKey(cType) as String) + "." + mName;
-    if (let (true, cached) = this.implementingMethodsCache.get(key)) {
-      return cached;
+    if (let (true, cache) = this.implementingMethodsCache.get(cType.id)) {
+      if (let (true, cached) = cache.get(mName)) {
+        return cached;
+      }
     }
 
     let methods = new Array<MethodDefinition>();
@@ -95,14 +156,19 @@ export final class ClassHierarchyAnalysis {
     while (curr != null) {
       let ct = curr as ClassType;
       let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
-      for (let unit in this.program.units) {
-        let model = unit.model;
-        if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
-
+      var model: SemanticModel | null = null;
+      if (ct.sourcePath != "") {
+        if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
+          model = unit.model;
+        }
+      }
+      if (model != null) {
+        let m = model as SemanticModel;
+        if (m.classDeclarations.has(lookupId)) {
+          let cd = m.classDeclarations[lookupId];
           let mixinMembers = new Array<Node>();
           let seenMixins = new HashMap<MixinKey, boolean>();
-          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
+          collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
           
           let allMembers = new Array<Node>();
           for (let member in cd.body) {
@@ -118,7 +184,7 @@ export final class ClassHierarchyAnalysis {
               if (md.isAbstract) { continue; }
               let name = getMethodName(md);
               if (matchMemberName(name, mName)) {
-                let mType = model.getNodeType(md);
+                let mType = m.getNodeType(md);
                 if (mType != null && mType is FunctionType) {
                   let ft = mType as FunctionType;
                   let sigKey = getSignatureKey(ft);
@@ -131,33 +197,82 @@ export final class ClassHierarchyAnalysis {
             }
           }
         }
+      } else {
+        for (let unit in this.program.units) {
+          let m = unit.model;
+          if (m.classDeclarations.has(lookupId)) {
+            let cd = m.classDeclarations[lookupId];
+            let mixinMembers = new Array<Node>();
+            let seenMixins = new HashMap<MixinKey, boolean>();
+            collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
+            
+            let allMembers = new Array<Node>();
+            for (let member in cd.body) {
+              allMembers.push(member);
+            }
+            for (let member in mixinMembers) {
+              allMembers.push(member);
+            }
+            
+            for (let member in allMembers) {
+              if (member is MethodDefinition) {
+                let md = member as MethodDefinition;
+                if (md.isAbstract) { continue; }
+                let name = getMethodName(md);
+                if (matchMemberName(name, mName)) {
+                  let mType = m.getNodeType(md);
+                  if (mType != null && mType is FunctionType) {
+                    let ft = mType as FunctionType;
+                    let sigKey = getSignatureKey(ft);
+                    if (!seenSigs.has(sigKey)) {
+                      methods.push(md);
+                      seenSigs.add(sigKey);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
       curr = ct.superType;
     }
-    this.implementingMethodsCache[key] = methods;
+    if (!this.implementingMethodsCache.has(cType.id)) {
+      this.implementingMethodsCache[cType.id] = new HashMap<String, Array<MethodDefinition>>();
+    }
+    this.implementingMethodsCache[cType.id][mName] = methods;
     return methods;
   }
 
   findImplementingField(cType: ClassType, fName: String): FieldDefinition | null {
-    let key = (getClassKey(cType) as String) + "." + fName;
-    if (this.implementingFieldNulls.has(key)) {
-      return null;
+    if (let (true, nulls) = this.implementingFieldNulls.get(cType.id)) {
+      if (nulls.has(fName)) {
+        return null;
+      }
     }
-    if (let (true, cached) = this.implementingFieldCache.get(key)) {
-      return cached;
+    if (let (true, cache) = this.implementingFieldCache.get(cType.id)) {
+      if (let (true, cached) = cache.get(fName)) {
+        return cached;
+      }
     }
 
     var curr: ClassType | null = cType;
     while (curr != null) {
       let ct = curr as ClassType;
       let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
-      for (let unit in this.program.units) {
-        let model = unit.model;
-        if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
+      var model: SemanticModel | null = null;
+      if (ct.sourcePath != "") {
+        if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
+          model = unit.model;
+        }
+      }
+      if (model != null) {
+        let m = model as SemanticModel;
+        if (m.classDeclarations.has(lookupId)) {
+          let cd = m.classDeclarations[lookupId];
           let mixinMembers = new Array<Node>();
           let seenMixins = new HashMap<MixinKey, boolean>();
-          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
+          collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
           
           let allMembers = new Array<Node>();
           for (let member in cd.body) {
@@ -181,8 +296,52 @@ export final class ClassHierarchyAnalysis {
                 case _: ""
               };
               if (matchMemberName(name, fName)) {
-                this.implementingFieldCache[key] = fd;
+                if (!this.implementingFieldCache.has(cType.id)) {
+                  this.implementingFieldCache[cType.id] = new HashMap<String, FieldDefinition>();
+                }
+                this.implementingFieldCache[cType.id][fName] = fd;
                 return fd;
+              }
+            }
+          }
+        }
+      } else {
+        for (let unit in this.program.units) {
+          let m = unit.model;
+          if (m.classDeclarations.has(lookupId)) {
+            let cd = m.classDeclarations[lookupId];
+            let mixinMembers = new Array<Node>();
+            let seenMixins = new HashMap<MixinKey, boolean>();
+            collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
+            
+            let allMembers = new Array<Node>();
+            for (let member in cd.body) {
+              allMembers.push(member);
+            }
+            for (let member in mixinMembers) {
+              allMembers.push(member);
+            }
+            
+            for (let member in allMembers) {
+              if (member is FieldDefinition) {
+                let fd = member as FieldDefinition;
+                if (fd.isAbstract) { continue; }
+                let name = match (fd.name) {
+                  case Identifier {name}: name
+                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                    case Identifier {name}: name
+                    case MemberExpression {property}: property.name
+                    case _: "<symbol>"
+                  }
+                  case _: ""
+                };
+                if (matchMemberName(name, fName)) {
+                  if (!this.implementingFieldCache.has(cType.id)) {
+                    this.implementingFieldCache[cType.id] = new HashMap<String, FieldDefinition>();
+                  }
+                  this.implementingFieldCache[cType.id][fName] = fd;
+                  return fd;
+                }
               }
             }
           }
@@ -190,30 +349,42 @@ export final class ClassHierarchyAnalysis {
       }
       curr = ct.superType;
     }
-    this.implementingFieldNulls.add(key);
+    if (!this.implementingFieldNulls.has(cType.id)) {
+      this.implementingFieldNulls[cType.id] = new HashSet<String>();
+    }
+    this.implementingFieldNulls[cType.id].add(fName);
     return null;
   }
 
   findImplementingAccessor(cType: ClassType, accName: String): AccessorDeclaration | null {
-    let key = (getClassKey(cType) as String) + "." + accName;
-    if (this.implementingAccessorNulls.has(key)) {
-      return null;
+    if (let (true, nulls) = this.implementingAccessorNulls.get(cType.id)) {
+      if (nulls.has(accName)) {
+        return null;
+      }
     }
-    if (let (true, cached) = this.implementingAccessorCache.get(key)) {
-      return cached;
+    if (let (true, cache) = this.implementingAccessorCache.get(cType.id)) {
+      if (let (true, cached) = cache.get(accName)) {
+        return cached;
+      }
     }
 
     var curr: ClassType | null = cType;
     while (curr != null) {
       let ct = curr as ClassType;
       let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
-      for (let unit in this.program.units) {
-        let model = unit.model;
-        if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
+      var model: SemanticModel | null = null;
+      if (ct.sourcePath != "") {
+        if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
+          model = unit.model;
+        }
+      }
+      if (model != null) {
+        let m = model as SemanticModel;
+        if (m.classDeclarations.has(lookupId)) {
+          let cd = m.classDeclarations[lookupId];
           let mixinMembers = new Array<Node>();
           let seenMixins = new HashMap<MixinKey, boolean>();
-          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
+          collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
           
           let allMembers = new Array<Node>();
           for (let member in cd.body) {
@@ -230,15 +401,66 @@ export final class ClassHierarchyAnalysis {
               if (accName.length > 4 && acc.getter != null && accName.sliceBytes(0, 4) == "get#") {
                 let targetProp = accName.sliceBytes(4, accName.length);
                 if (matchMemberName(name, targetProp)) {
-                  this.implementingAccessorCache[key] = acc;
+                  if (!this.implementingAccessorCache.has(cType.id)) {
+                    this.implementingAccessorCache[cType.id] = new HashMap<String, AccessorDeclaration>();
+                  }
+                  this.implementingAccessorCache[cType.id][accName] = acc;
                   return acc;
                 }
               }
               if (accName.length > 4 && acc.setter != null && accName.sliceBytes(0, 4) == "set#") {
                 let targetProp = accName.sliceBytes(4, accName.length);
                 if (matchMemberName(name, targetProp)) {
-                  this.implementingAccessorCache[key] = acc;
+                  if (!this.implementingAccessorCache.has(cType.id)) {
+                    this.implementingAccessorCache[cType.id] = new HashMap<String, AccessorDeclaration>();
+                  }
+                  this.implementingAccessorCache[cType.id][accName] = acc;
                   return acc;
+                }
+              }
+            }
+          }
+        }
+      } else {
+        for (let unit in this.program.units) {
+          let m = unit.model;
+          if (m.classDeclarations.has(lookupId)) {
+            let cd = m.classDeclarations[lookupId];
+            let mixinMembers = new Array<Node>();
+            let seenMixins = new HashMap<MixinKey, boolean>();
+            collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
+            
+            let allMembers = new Array<Node>();
+            for (let member in cd.body) {
+              allMembers.push(member);
+            }
+            for (let member in mixinMembers) {
+              allMembers.push(member);
+            }
+            
+            for (let member in allMembers) {
+              if (member is AccessorDeclaration) {
+                let acc = member as AccessorDeclaration;
+                let name = getAccessorName(acc);
+                if (accName.length > 4 && acc.getter != null && accName.sliceBytes(0, 4) == "get#") {
+                  let targetProp = accName.sliceBytes(4, accName.length);
+                  if (matchMemberName(name, targetProp)) {
+                    if (!this.implementingAccessorCache.has(cType.id)) {
+                      this.implementingAccessorCache[cType.id] = new HashMap<String, AccessorDeclaration>();
+                    }
+                    this.implementingAccessorCache[cType.id][accName] = acc;
+                    return acc;
+                  }
+                }
+                if (accName.length > 4 && acc.setter != null && accName.sliceBytes(0, 4) == "set#") {
+                  let targetProp = accName.sliceBytes(4, accName.length);
+                  if (matchMemberName(name, targetProp)) {
+                    if (!this.implementingAccessorCache.has(cType.id)) {
+                      this.implementingAccessorCache[cType.id] = new HashMap<String, AccessorDeclaration>();
+                    }
+                    this.implementingAccessorCache[cType.id][accName] = acc;
+                    return acc;
+                  }
                 }
               }
             }
@@ -247,12 +469,15 @@ export final class ClassHierarchyAnalysis {
       }
       curr = ct.superType;
     }
-    this.implementingAccessorNulls.add(key);
+    if (!this.implementingAccessorNulls.has(cType.id)) {
+      this.implementingAccessorNulls[cType.id] = new HashSet<String>();
+    }
+    this.implementingAccessorNulls[cType.id].add(accName);
     return null;
   }
 
   isSubclassOf(ct: ClassType, baseType: ClassType): boolean {
-    let key = i32ToString(ct.id) + "<:" + i32ToString(baseType.id);
+    let key = (ct.id << 16) | baseType.id;
     if (let (true, cached) = this.subclassRelationCache.get(key)) {
       return cached;
     }
@@ -271,15 +496,30 @@ export final class ClassHierarchyAnalysis {
       
       // Check mixins
       let lookupId = (if (currVal.genericSource != null) (currVal.genericSource as ClassType).id else currVal.id) as SymbolId;
-      for (let unit in this.program.units) {
-        let model = unit.model;
-        if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
-          let seenIds = new HashMap<SymbolId, boolean>();
-          collectMixinSymbolIds(this.program, model, cd.mixins, seenIds);
-          
+      var model: SemanticModel | null = null;
+      if (currVal.sourcePath != "") {
+        if (let (true, unit) = this.program.unitsByPath.get(currVal.sourcePath)) {
+          model = unit.model;
+        }
+      }
+      if (model != null) {
+        let m = model as SemanticModel;
+        if (m.classDeclarations.has(lookupId)) {
+          let cd = m.classDeclarations[lookupId];
+          let seenIds = this.getClassMixinIds(cd, m);
           if (seenIds.has(baseType.id as SymbolId)) {
             return true;
+          }
+        }
+      } else {
+        for (let unit in this.program.units) {
+          let m = unit.model;
+          if (m.classDeclarations.has(lookupId)) {
+            let cd = m.classDeclarations[lookupId];
+            let seenIds = this.getClassMixinIds(cd, m);
+            if (seenIds.has(baseType.id as SymbolId)) {
+              return true;
+            }
           }
         }
       }

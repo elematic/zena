@@ -242,14 +242,52 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // Pass 0: Register empty structs for all declared classes & interfaces to prevent cyclic dependencies
     for (let unit in this.program.units) {
       let model = unit.model;
-      walkEnter(unit.ast, (n: Node) => {
-        this.nodeIdToNode[n.id as i32] = n;
-        this.nodeIdToModel[n.id as i32] = model;
-        let sym = model.resolve(n);
-        if (sym != null) {
-          this.symbolIdToTargetId[sym.id] = sym.resolveTarget().id;
+      
+      {
+        // Populate class declarations and their members
+        let classKeys = model.classDeclarations.keys();
+        while (let (true, id) = classKeys.next()) {
+          let classDecl = model.classDeclarations[id];
+          this.nodeIdToNode[classDecl.id as i32] = classDecl;
+          this.nodeIdToModel[classDecl.id as i32] = model;
+          for (let member in classDecl.body) {
+            this.nodeIdToNode[member.id as i32] = member;
+            this.nodeIdToModel[member.id as i32] = model;
+          }
         }
-      });
+
+        // Populate interface declarations and their members
+        let interfaceKeys = model.interfaceDeclarations.keys();
+        while (let (true, id) = interfaceKeys.next()) {
+          let ifaceDecl = model.interfaceDeclarations[id];
+          this.nodeIdToNode[ifaceDecl.id as i32] = ifaceDecl;
+          this.nodeIdToModel[ifaceDecl.id as i32] = model;
+          for (let member in ifaceDecl.body) {
+            this.nodeIdToNode[member.id as i32] = member;
+            this.nodeIdToModel[member.id as i32] = model;
+          }
+        }
+
+        // Populate mixin declarations and their members
+        let mixinKeys = model.mixinDeclarations.keys();
+        while (let (true, id) = mixinKeys.next()) {
+          let mixinDecl = model.mixinDeclarations[id];
+          this.nodeIdToNode[mixinDecl.id as i32] = mixinDecl;
+          this.nodeIdToModel[mixinDecl.id as i32] = model;
+          for (let member in mixinDecl.body) {
+            this.nodeIdToNode[member.id as i32] = member;
+            this.nodeIdToModel[member.id as i32] = model;
+          }
+        }
+
+        // Populate global declarations
+        let globalKeys = model.globalDeclarations.keys();
+        while (let (true, id) = globalKeys.next()) {
+          let decl = model.globalDeclarations[id];
+          this.nodeIdToNode[decl.id as i32] = decl;
+          this.nodeIdToModel[decl.id as i32] = model;
+        }
+      }
       
       // Classes
       let classKeys = model.classDeclarations.keys();
@@ -394,21 +432,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
-    // Ensure exception and string helper infrastructures are initialized before discovery analysis
-    let exceptionFound = new Array<boolean>();
-    for (let u in this.program.units) {
-      walkEnter(u.ast, (n: Node) => {
-        if (n is ThrowExpression) {
-          exceptionFound.push(true);
-        } else if (n is TryExpression) {
-          exceptionFound.push(true);
-        }
-      });
-    }
-    let hasExceptions = exceptionFound.length > 0;
-    if (hasExceptions) {
-      this.wasm.ensureExceptionInfra(this.program.units[0].model);
-    }
     if (this.wasm.stringClass != null) {
       this.wasm.ensureStringHelpers(this.program.units[0].model);
       this.markFunctionReached(this.wasm.stringCreateFunc as WasmFunction);
@@ -1252,6 +1275,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // 5. Record reached closures
     for (let closureDep in deps.closures) {
       let funcExpr = closureDep.node as FunctionExpression;
+      this.nodeIdToNode[funcExpr.id as i32] = funcExpr;
+      this.nodeIdToModel[funcExpr.id as i32] = model;
       let classKey = if (classType != null) getClassKey(classType as ClassType) else "" as ClassKey;
       let closureKey = getClosureSpecializationKey(funcExpr.id, classKey);
 

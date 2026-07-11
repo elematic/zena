@@ -1,7 +1,7 @@
 import { Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface } from './context.zena';
 import { SemanticModel, InterfaceAdaptation } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, ByteArrayType, VoidType, BooleanType, I32Type, AnyType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType } from '../../types.zena';
-import { Node, NewExpression, RangeExpression, ArrayLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module } from '../../ast.zena';
+import { Node, NewExpression, RangeExpression, ArrayLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction } from '../wasm-module.zena';
 import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeExternRef } from '../wasm.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
@@ -226,6 +226,13 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   discoverNodeTypes(root: Node, model: SemanticModel, resolveType: (t: Type) => Type): void {
 
     walkEnter(root, (n: Node) => {
+      if (n is ThrowExpression || n is TryExpression) {
+        this.pass.wasm.ensureExceptionInfra(model);
+      }
+      if (n is StringLiteral) {
+        let sl = n as StringLiteral;
+        this.pass.wasm.getStringLiteralDataIndex(sl.value);
+      }
       let t = model.getNodeType(n);
       if (t != null) {
         let resolved = resolveType(t);

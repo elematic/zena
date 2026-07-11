@@ -66,17 +66,7 @@ export final class ModuleGenerator {
       }
     }
 
-    for (let wasmFunc in wasm.functions) {
-      if (wasmFunc.node != null) {
-        walkEnter(wasmFunc.node as Node, (node: Node): void => {
-          if (node is StringLiteral) {
-            let sl = node as StringLiteral;
-            wasm.getStringLiteralDataIndex(sl.value);
-          }
-        });
-      }
-    }
-    
+
     let tLayout = performance.start("codegen-layout");
     let stringClass = wasm.stringClass;
     if (stringClass != null) {
@@ -234,18 +224,6 @@ export final class ModuleGenerator {
       wasm.startFunction = startFunc;
     }
 
-    let found = new Array<boolean>();
-    for (let u in this.program.units) {
-      walk(u.ast as Node, (n: Node): boolean => true, (n: Node): void => {
-        if (n is ThrowExpression || n is TryExpression) {
-          found.push(true);
-        }
-      });
-    }
-
-    if (found.length > 0) {
-      wasm.ensureExceptionInfra(this.program.units[0].model);
-    }
     if (wasm.stringClass != null) {
       wasm.ensureStringHelpers(this.program.units[0].model);
     }

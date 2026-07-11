@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 200
+
+import { Iterable, Iterator } from 'zena:iterator';
+
+class Entry<K, V> {
+  key: K;
+  value: V;
+  new(this.key, this.value);
+}
+
+class MyListIterator<T> implements Iterator<Entry<String, T>> {
+  value: T;
+  var hasNext: boolean = true;
+  new(this.value);
+
+  next(): inline (true, Entry<String, T>) | inline (false, _) {
+    if (this.hasNext) {
+      this.hasNext = false;
+      return (true, new Entry<String, T>("key", this.value));
+    }
+    return (false, _);
+  }
+}
+
+class MyList<T> implements Iterable<Entry<String, T>> {
+  value: T;
+  new(this.value);
+
+  :Iterable.iterator(): Iterator<Entry<String, T>> {
+    return new MyListIterator<T>(this.value);
+  }
+
+  contains(value: Entry<String, T>): boolean { return false; }
+  all(predicate: (item: Entry<String, T>) => boolean): boolean { return false; }
+  some(predicate: (item: Entry<String, T>) => boolean): boolean { return false; }
+  fold<R>(initial: R, combine: (acc: R, item: Entry<String, T>) => R): R { return initial; }
+  find(predicate: (item: Entry<String, T>) => boolean): inline (true, Entry<String, T>) | inline (false, _) { return (false, _); }
+}
+
+export let main = (): i32 => {
+  let list = new MyList<i32>(200);
+  var sum = 0;
+  for (let entry in list) {
+    sum = sum + entry.value;
+  }
+  return sum;
+};
