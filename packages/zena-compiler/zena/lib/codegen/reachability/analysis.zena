@@ -3,7 +3,7 @@ import { walkEnter } from '../../visitor.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, isVoidOrNeverType, typeToString } from '../../types.zena';
-import { Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, TaggedTemplateExpression, TemplateElement, SourceLocation, Expression, ThrowExpression, TryExpression, Module, ImportSpecifier, Identifier, SymbolPropertyName, MemberExpression, CallExpression } from '../../ast.zena';
+import { Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, TaggedTemplateExpression, TemplateElement, SourceLocation, Expression, ThrowExpression, TryExpression, Module, ImportSpecifier, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration } from '../../ast.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
@@ -173,6 +173,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           this.wasm.addFunction(func);
         }
         this.markTypeReached(func.signature);
+        if (func.contextStruct != null) {
+          this.markTypeReached(func.contextStruct as WasmStruct);
+        }
         if (func.classType != null) {
           let ct = func.classType as ClassType;
           let model = this.getClassModel(ct);
@@ -498,6 +501,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           this.queueReferrer(new Referrer(true, id, -1, model, null, true));
         } else {
           this.queueReferrer(new Referrer(true, id, -1, model, null, false));
+        }
+      }
+
+      let mod = unit.ast;
+      for (let stmt in mod.body) {
+        if (!(stmt is VariableDeclaration) && !(stmt is DeclareFunction) && !(stmt is ClassDeclaration) && !(stmt is InterfaceDeclaration) && !(stmt is MixinDeclaration) && !(stmt is ImportDeclaration) && !(stmt is ExportAllDeclaration) && !(stmt is ExportFromDeclaration)) {
+          this.nodeIdToNode[stmt.id as i32] = stmt;
+          this.nodeIdToModel[stmt.id as i32] = model;
+          this.queueReferrer(new Referrer(false, -1 as SymbolId, stmt.id as i32, model, null, true));
         }
       }
     }

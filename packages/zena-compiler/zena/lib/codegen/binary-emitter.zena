@@ -9,14 +9,34 @@ export let emitValType = (buffer: ByteBuffer, type: ValType) => {
   let ignored = match (type) {
     case ValTypeRef as ref: {
       if (ref.target.index < 0) {
-         throw new Error("Invalid WasmType index < 0 for ValTypeRef");
+         let typeName = if (ref.target is WasmStruct) {
+           let ws = ref.target as WasmStruct;
+           "WasmStruct " + (if (ws.name != null) (ws.name as String) else "unnamed")
+         } else if (ref.target is WasmArray) {
+           "WasmArray"
+         } else if (ref.target is WasmSignature) {
+           "WasmSignature"
+         } else {
+           "WasmType"
+         };
+         throw new Error("Invalid WasmType index < 0 for ValTypeRef: target type is " + typeName);
       }
       buffer.writeByte(0x64);
       buffer.writeSLEB128(ref.target.index);
     }
     case ValTypeRefNull as ref: {
       if (ref.target.index < 0) {
-         throw new Error("Invalid WasmType index < 0 for ValTypeRefNull");
+         let typeName = if (ref.target is WasmStruct) {
+           let ws = ref.target as WasmStruct;
+           "WasmStruct " + (if (ws.name != null) (ws.name as String) else "unnamed")
+         } else if (ref.target is WasmArray) {
+           "WasmArray"
+         } else if (ref.target is WasmSignature) {
+           "WasmSignature"
+         } else {
+           "WasmType"
+         };
+         throw new Error("Invalid WasmType index < 0 for ValTypeRefNull: target type is " + typeName);
       }
       buffer.writeByte(0x63);
       buffer.writeSLEB128(ref.target.index);
@@ -496,6 +516,9 @@ export class BinaryEmitter implements WasmEmitter {
   }
   
   emitCall(target: WasmFunction): void {
+    if (target.index < 0) {
+      throw new Error("Invalid function call: function index < 0 for: " + (if (target.name != null) (target.name as String) else "unnamed"));
+    }
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.call as i32);
     b.writeULEB128(target.index);
@@ -657,12 +680,18 @@ export class BinaryEmitter implements WasmEmitter {
   }
 
   emitCallRef(typeIndex: i32): void {
+    if (typeIndex < 0) {
+      throw new Error("Invalid call_ref: typeIndex < 0");
+    }
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.call_ref as i32);
     b.writeULEB128(typeIndex);
   }
 
   emitRefFunc(index: i32): void {
+    if (index < 0) {
+      throw new Error("Invalid ref_func: index < 0");
+    }
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.ref_func as i32);
     b.writeULEB128(index);
@@ -761,6 +790,36 @@ export class BinaryEmitter implements WasmEmitter {
   }
   emitI32Store8(align: i32, offset: i32): void {
     (this.currentBuffer as ByteBuffer).writeByte(Opcode.i32_store8 as i32);
+    (this.currentBuffer as ByteBuffer).writeULEB128(align);
+    (this.currentBuffer as ByteBuffer).writeULEB128(offset);
+  }
+  emitI64Load(align: i32, offset: i32): void {
+    (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_load as i32);
+    (this.currentBuffer as ByteBuffer).writeULEB128(align);
+    (this.currentBuffer as ByteBuffer).writeULEB128(offset);
+  }
+  emitI64Store(align: i32, offset: i32): void {
+    (this.currentBuffer as ByteBuffer).writeByte(Opcode.i64_store as i32);
+    (this.currentBuffer as ByteBuffer).writeULEB128(align);
+    (this.currentBuffer as ByteBuffer).writeULEB128(offset);
+  }
+  emitF32Load(align: i32, offset: i32): void {
+    (this.currentBuffer as ByteBuffer).writeByte(Opcode.f32_load as i32);
+    (this.currentBuffer as ByteBuffer).writeULEB128(align);
+    (this.currentBuffer as ByteBuffer).writeULEB128(offset);
+  }
+  emitF32Store(align: i32, offset: i32): void {
+    (this.currentBuffer as ByteBuffer).writeByte(Opcode.f32_store as i32);
+    (this.currentBuffer as ByteBuffer).writeULEB128(align);
+    (this.currentBuffer as ByteBuffer).writeULEB128(offset);
+  }
+  emitF64Load(align: i32, offset: i32): void {
+    (this.currentBuffer as ByteBuffer).writeByte(Opcode.f64_load as i32);
+    (this.currentBuffer as ByteBuffer).writeULEB128(align);
+    (this.currentBuffer as ByteBuffer).writeULEB128(offset);
+  }
+  emitF64Store(align: i32, offset: i32): void {
+    (this.currentBuffer as ByteBuffer).writeByte(Opcode.f64_store as i32);
     (this.currentBuffer as ByteBuffer).writeULEB128(align);
     (this.currentBuffer as ByteBuffer).writeULEB128(offset);
   }

@@ -1448,7 +1448,11 @@ export let checkModule = (
           checkStatement(ctx, vd);
         }
       }
-      case _: { checkStatement(ctx, stmt); }
+      case _: {
+        ctx.enterNodeReferrer(stmt.id as i32);
+        checkStatement(ctx, stmt);
+        ctx.exitNodeReferrer(stmt.id as i32);
+      }
     }
   }
 
@@ -2579,6 +2583,31 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
       if (deps != null) {
         deps.functionAdaptations.push(new FunctionAdaptationDependency(node, src, tgt));
       }
+    }
+  }
+
+  let nonNullSrc = subtractNullFromType(sourceType);
+  let nonNullTgt = subtractNullFromType(effectiveTarget);
+  if (nonNullSrc is RecordT && nonNullTgt is RecordT) {
+    let itR = nonNullSrc as RecordT;
+    let expR = nonNullTgt as RecordT;
+    var needsAdaptation = itR.properties.size != expR.properties.size;
+    if (!needsAdaptation) {
+      let keys = itR.properties.keys();
+      while (let (true, key) = keys.next()) {
+        if (expR.properties.has(key)) {
+          let t1 = itR.properties[key];
+          let t2 = expR.properties[key];
+          if (!isAssignableTo(ctx, t1, t2) || !isAssignableTo(ctx, t2, t1)) {
+            needsAdaptation = true;
+          }
+        } else {
+          needsAdaptation = true;
+        }
+      }
+    }
+    if (needsAdaptation) {
+      ctx.model.setRecordAdaptation(node, itR, expR);
     }
   }
 };

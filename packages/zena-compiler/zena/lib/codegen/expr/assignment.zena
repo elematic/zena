@@ -564,17 +564,56 @@ export let generateAssignmentExpression = (
         }
 
         var isArraySet = false;
+        var isStoreIntr = false;
+        var storeIntrName = "";
         if (foundFunc != null) {
           if ((foundFunc as WasmFunction).intrinsic != null) {
             let intr = (foundFunc as WasmFunction).intrinsic as String;
             if (intr == "array.set") {
               isArraySet = true;
+            } else if (intr == "i32.store8" || intr == "i32.store" || intr == "i64.store" || intr == "f32.store" || intr == "f64.store") {
+              isStoreIntr = true;
+              storeIntrName = intr;
             } else {
               throw new Error("Unsupported index intrinsic assignment operator: " + intr);
             }
           }
         } else if (isArrayType(objectType)) {
           isArraySet = true;
+        }
+
+        if (isStoreIntr) {
+          let elementValType = typeToValType(ctx.wasm, getNodeType(ctx, assign.value) as Type);
+          var tempLocal = -1;
+          if (!discardValue) {
+            tempLocal = ctx.allocLocal(elementValType);
+          }
+
+          genExpr(indexExpr.index, false);
+          genExpr(assign.value, false);
+
+          if (!discardValue) {
+            ctx.emitter.emitLocalTee(tempLocal);
+          }
+
+          if (storeIntrName == "i32.store8") {
+            ctx.emitter.emitI32Store8(0, 0);
+          } else if (storeIntrName == "i32.store") {
+            ctx.emitter.emitI32Store(0, 0);
+          } else if (storeIntrName == "i64.store") {
+            ctx.emitter.emitI64Store(0, 0);
+          } else if (storeIntrName == "f32.store") {
+            ctx.emitter.emitF32Store(0, 0);
+          } else if (storeIntrName == "f64.store") {
+            ctx.emitter.emitF64Store(0, 0);
+          } else {
+            throw new Error("Unsupported store intrinsic: " + storeIntrName);
+          }
+
+          if (!discardValue) {
+            ctx.emitter.emitLocalGet(tempLocal);
+          }
+          return;
         }
 
         if (isArraySet) {

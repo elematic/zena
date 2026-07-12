@@ -760,6 +760,7 @@ fn run_single_test(
         .args(&[test_file.to_string_lossy().to_string()])
         .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
         .preopened_dir(stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
+        .preopened_dir("/tmp", "/tmp", DirPerms::all(), FilePerms::all())?
         .build_p1();
 
     let mut store = Store::new(engine, MyState { wasi });

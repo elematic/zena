@@ -16,36 +16,9 @@ const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 console.log('Building WASI tests with self-hosted compiler...');
 
 // Find all test files
-const assertTests = await glob(join(testsDir, 'assert/*_test.zena'));
-const testTests = await glob(join(testsDir, 'test/*_test.zena'));
-const byteBufferTests = await glob(join(testsDir, 'byte-buffer/*_test.zena'));
-const mathTests = await glob(join(testsDir, 'math/*_test.zena'));
-const fixedArrayTests = await glob(join(testsDir, 'fixed_array/*_test.zena'));
-const arrayTests = await glob(join(testsDir, 'array/*_test.zena'));
-const stringTests = await glob(join(testsDir, 'string/*_test.zena'));
-const stringBuilderTests = await glob(join(testsDir, 'string-builder/*_test.zena'));
-const stringConvertTests = await glob(join(testsDir, 'string-convert/*_test.zena'));
-const templateStringsArrayTests = await glob(join(testsDir, 'template_strings_array/*_test.zena'));
-const jsonTests = await glob(join(testsDir, 'json/*_test.zena'));
-const jsonBuilderTests = await glob(join(testsDir, 'json-builder/*_test.zena'));
-const orderedMapTests = await glob(join(testsDir, 'ordered-map/*_test.zena'));
-const setTests = await glob(join(testsDir, 'set/*_test.zena'));
-const allTestFiles = [
-  ...assertTests,
-  ...testTests,
-  ...byteBufferTests,
-  ...mathTests,
-  ...fixedArrayTests,
-  ...arrayTests,
-  ...stringTests,
-  ...stringBuilderTests,
-  ...stringConvertTests,
-  ...templateStringsArrayTests,
-  ...jsonTests,
-  ...jsonBuilderTests,
-  ...orderedMapTests,
-  ...setTests,
-];
+const allTestFiles = await glob(join(testsDir, '**/*_test.zena'), {
+  ignore: '**/cli/**',
+});
 
 const filesToCompile = [];
 const cliWasm = join(
@@ -155,7 +128,12 @@ await new Promise((resolve, reject) => {
 
     const child = spawn(zenaCli, ['build', runnerFile, '-o', wasmFile], {
       cwd: pkgDir,
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    child.stdout?.on('data', (data) => {
+      stdout += data.toString();
     });
 
     let stderr = '';
@@ -167,7 +145,7 @@ await new Promise((resolve, reject) => {
       activeCount--;
       if (code !== 0) {
         failedCompile = true;
-        compileErrorMsg = `Compilation failed for ${relPath}:\n${stderr}`;
+        compileErrorMsg = `Compilation failed for ${relPath}:\nStdout:\n${stdout}\nStderr:\n${stderr}`;
         reject(new Error(compileErrorMsg));
         return;
       }

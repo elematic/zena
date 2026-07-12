@@ -128,21 +128,81 @@ export final class FunctionGenerator {
           this.ctx.emitter.emitGlobalSet((this.ctx.wasm.sharedStringsGlobal as WasmGlobal).index);
         }
         
-        for (let g in this.ctx.wasm.globals) {
-          if (g.initExpr != null) {
-            let isLiteral = match (g.initExpr as Expression) {
-              case NumberLiteral: true
-              case BooleanLiteral: true
-              case _: false
-            };
-            if (!isLiteral) {
-              let originalModel = this.ctx.wasmFunction.model;
-              this.ctx.wasmFunction.model = g.model;
-              this.generateExpression(g.initExpr as Expression, false);
-              this.ctx.wasmFunction.model = originalModel;
-              this.ctx.emitter.emitGlobalSet(g.index);
+        let emitInit = (g: WasmGlobal) => {
+          let originalModel = this.ctx.wasmFunction.model;
+          this.ctx.wasmFunction.model = g.model;
+          this.generateExpression(g.initExpr as Expression, false);
+          this.ctx.wasmFunction.model = originalModel;
+          this.ctx.emitter.emitGlobalSet(g.index);
+        };
+
+        let isGlobalLiteral = (initExpr: Expression) => {
+          return match (initExpr) {
+            case NumberLiteral: true
+            case BooleanLiteral: true
+            case _: false
+          };
+        };
+
+        let initializeUnit = (unit: CompilationUnit) => {
+          let model = unit.model;
+          let mod = unit.ast;
+          for (let stmt in mod.body) {
+            if (stmt is VariableDeclaration) {
+              let vd = stmt as VariableDeclaration;
+              if (vd.pattern is IdentifierPattern) {
+                let ident = vd.pattern as IdentifierPattern;
+                let sym = model.resolveDeclaration(ident);
+                if (sym != null) {
+                  if (let (true, g) = this.ctx.wasm.globalMap.get(sym.id)) {
+                    if (g.initExpr != null && !isGlobalLiteral(g.initExpr as Expression)) {
+                      emitInit(g);
+                    }
+                  }
+                }
+              }
+            } else if (stmt is ClassDeclaration) {
+              let cd = stmt as ClassDeclaration;
+              for (let member in cd.body) {
+                if (member is FieldDefinition) {
+                  let fd = member as FieldDefinition;
+                  if (fd.isStatic && fd.value != null && !isGlobalLiteral(fd.value as Expression)) {
+                    let fieldName = match (fd.name) {
+                      case Identifier {name}: name
+                      case _: ""
+                    };
+                    if (fieldName != "") {
+                      let expectedName = cd.name.name + "_" + fieldName;
+                      for (let g in this.ctx.wasm.globals) {
+                        if (g.name == expectedName) {
+                          emitInit(g);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
             }
-          } else if (g.namespaceImport != null) {
+          }
+        };
+
+        let prog = this.ctx.wasm.program;
+        if (prog != null) {
+          let programNode = prog as Program;
+          for (let unit in programNode.units) {
+            if (unit.model.sourcePath.contains("memory.zena")) {
+              initializeUnit(unit);
+            }
+          }
+          for (let unit in programNode.units) {
+            if (!unit.model.sourcePath.contains("memory.zena")) {
+              initializeUnit(unit);
+            }
+          }
+        }
+
+        for (let g in this.ctx.wasm.globals) {
+          if (g.namespaceImport != null) {
             let spec = g.namespaceImport as ImportSpecifier;
             let moduleModel = g.model;
             
@@ -280,6 +340,29 @@ export final class FunctionGenerator {
           this.ctx.emitter.emitLocalGet(0);
           this.ctx.emitter.emitRefCast(st.index);
           this.ctx.emitter.emitStructGet(st.index, this.ctx.wasmFunction.getterFieldIndex);
+          
+          if (this.ctx.wasmFunction.signature.returns.length > 0) {
+            let actualType = st.fields[this.ctx.wasmFunction.getterFieldIndex].type;
+            let expectedType = this.ctx.wasmFunction.signature.returns[0];
+            match (expectedType) {
+              case ValTypeRefNull as r: {
+                if (!(actualType is ValTypeRefNull && (actualType as ValTypeRefNull).target.index == r.target.index)) {
+                  this.ctx.emitter.emitRefCastNull(r.target.index);
+                }
+              }
+              case ValTypeRef as r: {
+                if (!(actualType is ValTypeRef && (actualType as ValTypeRef).target.index == r.target.index)) {
+                  this.ctx.emitter.emitRefCast(r.target.index);
+                }
+              }
+              case ValTypeEqRef: {
+                if (!(actualType is ValTypeEqRef)) {
+                  this.ctx.emitter.emitRefCastEqNull();
+                }
+              }
+              case _: {}
+            }
+          }
         }
       } else if (this.ctx.wasmFunction.setterStruct != null) {
         let st = this.ctx.wasmFunction.setterStruct as WasmStruct;
@@ -1842,6 +1925,9 @@ export final class FunctionGenerator {
       let closureStruct = getClosureStruct(this.ctx.wasm, funcTypeNode);
 
       // 1. Push function reference
+      if (closureFunc.index < 0) {
+        throw new Error("Invalid function reference for closure: " + (if (closureFunc.name != null) (closureFunc.name as String) else "unnamed") + " (id: " + i32ToString(fExpr.id as i32) + ")");
+      }
       this.ctx.emitter.emitRefFunc(closureFunc.index);
 
       // 2. Push context pointer

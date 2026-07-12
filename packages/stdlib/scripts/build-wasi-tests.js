@@ -7,8 +7,13 @@
  */
 
 import {execSync} from 'node:child_process';
-import {existsSync, mkdirSync, readFileSync, statSync} from 'node:fs';
-import {dirname, join, relative} from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import {dirname, join, relative, basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
 
@@ -20,10 +25,10 @@ const cliPath = join(pkgDir, '..', 'cli', 'lib', 'cli.js');
 
 // Files/patterns that need wasmtime (--target wasi)
 const wasiPatterns = [
-  'fs/**/*.zena',
+  'fs/*_test.zena',
   'memory_test.zena',
-  'fixed_array/**/*.__runner__.zena',
-  'array/**/*.__runner__.zena',
+  'fixed_array/*_test.zena',
+  'array/*_test.zena',
 ];
 
 console.log('Building WASI tests...');
@@ -38,7 +43,23 @@ for (const pattern of wasiPatterns) {
   const files = await glob(fullPattern);
 
   for (const zenaFile of files) {
-    const relPath = relative(testsDir, zenaFile);
+    const baseName = basename(zenaFile, '.zena');
+    const runnerFile = join(dirname(zenaFile), `${baseName}.__runner__.zena`);
+
+    // Write wrapper runner file
+    const wrapperContent = `import {runAndReport} from 'zena:test';
+import {console} from 'zena:console';
+import {tests} from './${baseName}.zena';
+
+export let main = (): i32 => {
+  return runAndReport(tests, (s: String) => {
+    console.log(s);
+  });
+};
+`;
+    writeFileSync(runnerFile, wrapperContent, 'utf-8');
+
+    const relPath = relative(testsDir, runnerFile);
     const wasmFile = join(outDir, relPath.replace(/\.zena$/, '.wasm'));
 
     // Check if rebuild needed
@@ -60,7 +81,7 @@ for (const pattern of wasiPatterns) {
     // Compile with wasi target and debug info for better stack traces
     try {
       execSync(
-        `node "${cliPath}" build "${zenaFile}" --target wasi -g -o "${wasmFile}"`,
+        `node "${cliPath}" build "${runnerFile}" --target wasi -g -o "${wasmFile}"`,
         {
           stdio: 'pipe',
           cwd: pkgDir,

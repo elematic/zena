@@ -525,6 +525,29 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             }
           }
 
+          var intrinsicFunc: WasmFunction | null = null;
+          var currClassForIntr: ClassType | null = receiverCt;
+          while (currClassForIntr != null && intrinsicFunc == null) {
+            let key = getClassMethodKey(getClassKey(currClassForIntr as ClassType), lookupName);
+            if (ctx.wasm.classMethodMap.has(key)) {
+              let f = ctx.wasm.classMethodMap[key];
+              if (f.intrinsic != null) {
+                intrinsicFunc = f;
+              }
+            }
+            currClassForIntr = (currClassForIntr as ClassType).superType;
+          }
+
+          if (intrinsicFunc != null) {
+            let intrName = (intrinsicFunc as WasmFunction).intrinsic as String;
+            if (isArrayIntrinsic(intrName)) {
+              generateArrayIntrinsic(ctx, intrName, call, currentGenExpr);
+            } else {
+              generateGlobalIntrinsic(ctx, intrName, call, currentGenExpr);
+            }
+            return;
+          }
+
           let ctKey = getClassKey(ct);
           var structInfoOpt: WasmStruct | null = null;
           var vtableStructOpt: WasmStruct | null = null;
