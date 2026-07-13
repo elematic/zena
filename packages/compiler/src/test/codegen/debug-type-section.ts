@@ -5,7 +5,7 @@ import {writeFileSync} from 'node:fs';
 const source = `export let main = () => 42;`;
 const wasm = compileToWasm(source, '/main.zena', {dce: false});
 
-writeFileSync('/tmp/test-order.wasm', wasm);
+writeFileSync(new URL('./test-order.wasm', import.meta.url), wasm);
 
 // Parse type section
 let pos = 8; // Skip magic and version

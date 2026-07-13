@@ -181,10 +181,16 @@ fn compile_to_cache(
         .strip_prefix(repo_root)
         .context("File must be inside the Zena repository for now")?;
 
-    // Create an absolute path into the global user cache directory
-    let proj_dirs =
-        ProjectDirs::from("org", "zena-lang", "zena").context("No home directory found")?;
-    let cache_dir = proj_dirs.cache_dir().join("wasm_objects");
+    // Create an absolute path into the cache directory
+    let cache_dir = if std::env::var("ZENA_PROJECT_CACHE").is_ok()
+        || std::env::var("ZENA_LOCAL_CACHE").is_ok()
+    {
+        repo_root.join(".zena/cache")
+    } else {
+        let proj_dirs =
+            ProjectDirs::from("org", "zena-lang", "zena").context("No home directory found")?;
+        proj_dirs.cache_dir().join("wasm_objects")
+    };
     std::fs::create_dir_all(&cache_dir)?;
 
     let mut hasher = DefaultHasher::new();
@@ -369,6 +375,12 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
     guest_args.extend_from_slice(args);
     wasi_builder.args(&guest_args);
 
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+
     for dir in dirs {
         // Handle format `HOST_DIR::GUEST_DIR` standard in wasmtime CLI
         let parts: Vec<&str> = dir.split("::").collect();
@@ -378,7 +390,20 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
             (dir.as_str(), dir.as_str())
         };
 
-        wasi_builder.preopened_dir(host_dir, guest_dir, DirPerms::all(), FilePerms::all())?;
+        let host_path = Path::new(host_dir);
+        let host_dir_adjusted = if (std::env::var("ZENA_PROJECT_CACHE").is_ok()
+            || std::env::var("ZENA_LOCAL_CACHE").is_ok())
+            && host_path.starts_with("/tmp")
+        {
+            let relative_to_tmp = host_path.strip_prefix("/tmp").unwrap();
+            let new_host_path = repo_root.join(".zena/tmp").join(relative_to_tmp);
+            std::fs::create_dir_all(&new_host_path)?;
+            new_host_path
+        } else {
+            std::path::PathBuf::from(host_dir)
+        };
+
+        wasi_builder.preopened_dir(&host_dir_adjusted, guest_dir, DirPerms::all(), FilePerms::all())?;
     }
 
     let wasi = wasi_builder.build_p1();
@@ -753,6 +778,16 @@ fn run_single_test(
     let stdout_pipe = MemoryOutputPipe::new(1024 * 1024);
     let stderr_pipe = MemoryOutputPipe::new(1024 * 1024);
 
+    let tmp_host_dir = if std::env::var("ZENA_PROJECT_CACHE").is_ok()
+        || std::env::var("ZENA_LOCAL_CACHE").is_ok()
+    {
+        let dir = repo_root.join(".zena/tmp");
+        std::fs::create_dir_all(&dir)?;
+        dir
+    } else {
+        std::path::PathBuf::from("/tmp")
+    };
+
     let wasi = WasiCtxBuilder::new()
         .stdout(stdout_pipe.clone())
         .stderr(stderr_pipe.clone())
@@ -760,7 +795,7 @@ fn run_single_test(
         .args(&[test_file.to_string_lossy().to_string()])
         .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
         .preopened_dir(stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
-        .preopened_dir("/tmp", "/tmp", DirPerms::all(), FilePerms::all())?
+        .preopened_dir(&tmp_host_dir, "/tmp", DirPerms::all(), FilePerms::all())?
         .build_p1();
 
     let mut store = Store::new(engine, MyState { wasi });

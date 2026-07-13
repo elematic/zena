@@ -27,7 +27,7 @@ module.addExport('main', 0, funcIndex);
 
 // Generate the WASM
 const bytes = module.toBytes();
-writeFileSync('/tmp/minimal.wasm', bytes);
+writeFileSync(new URL('./minimal.wasm', import.meta.url), bytes);
 console.log('Generated minimal WASM with', bytes.length, 'bytes');
 console.log(
   'First 50 bytes:',

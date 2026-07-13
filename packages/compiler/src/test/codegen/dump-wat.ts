@@ -6,16 +6,18 @@ test('dump WAT for minimal and string programs', async () => {
   // Minimal program
   const minimal = 'export let main = () => 42;';
   const minimalWasm = compileToWasm(minimal, '/main.zena', {dce: true});
-  fs.writeFileSync('/tmp/minimal.wasm', minimalWasm);
+  const minimalUrl = new URL('./minimal.wasm', import.meta.url);
+  fs.writeFileSync(minimalUrl, minimalWasm);
   console.log('\n=== Minimal program (', minimalWasm.length, 'bytes) ===');
-  console.log('Written to /tmp/minimal.wasm');
-  console.log('Run: wasm-tools print /tmp/minimal.wasm\n');
+  console.log(`Written to ${minimalUrl.pathname}`);
+  console.log(`Run: wasm-tools print ${minimalUrl.pathname}\n`);
 
   // String program
   const withString = 'export let main = () => "hello";';
   const stringWasm = compileToWasm(withString, '/main.zena', {dce: true});
-  fs.writeFileSync('/tmp/string.wasm', stringWasm);
+  const stringUrl = new URL('./string.wasm', import.meta.url);
+  fs.writeFileSync(stringUrl, stringWasm);
   console.log('\n=== String program (', stringWasm.length, 'bytes) ===');
-  console.log('Written to /tmp/string.wasm');
-  console.log('Run: wasm-tools print /tmp/string.wasm\n');
+  console.log(`Written to ${stringUrl.pathname}`);
+  console.log(`Run: wasm-tools print ${stringUrl.pathname}\n`);
 });

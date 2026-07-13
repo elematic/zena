@@ -65,7 +65,7 @@ suite('CLI with test files', () => {
       'build',
       join(testFilesDir, 'valid.zena'),
       '-o',
-      join(tmpdir(), 'valid-test.wasm'),
+      join(__dirname, 'valid-test.wasm'),
     ]);
     assert.strictEqual(exitCode, 0);
   });

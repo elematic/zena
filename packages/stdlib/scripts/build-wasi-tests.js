@@ -7,12 +7,7 @@
  */
 
 import {execSync} from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import {existsSync, mkdirSync, statSync, writeFileSync} from 'node:fs';
 import {dirname, join, relative, basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';

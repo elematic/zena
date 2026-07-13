@@ -19,7 +19,7 @@ suite('Map DCE Debug', () => {
       };
     `;
     const bytes = compileToWasm(source, '/main.zena', {dce: true});
-    writeFileSync('/tmp/test-dce.wasm', bytes);
+    writeFileSync(new URL('./test-dce.wasm', import.meta.url), bytes);
 
     await WebAssembly.compile(bytes.buffer as ArrayBuffer);
     console.log(`FixedArray read with DCE: ${bytes.length} bytes`);
@@ -66,11 +66,11 @@ suite('Map DCE Debug', () => {
     `;
     // Generate both for comparison
     const bytesNoDCE = compileToWasm(source, '/main.zena', {dce: false});
-    writeFileSync('/tmp/map-no-dce.wasm', bytesNoDCE);
+    writeFileSync(new URL('./map-no-dce.wasm', import.meta.url), bytesNoDCE);
     console.log('Generated no-DCE version');
 
     const bytes = compileToWasm(source, '/main.zena', {dce: true});
-    writeFileSync('/tmp/map-dce.wasm', bytes);
+    writeFileSync(new URL('./map-dce.wasm', import.meta.url), bytes);
     console.log('Generated DCE version');
 
     await WebAssembly.compile(bytes.buffer as ArrayBuffer);
