@@ -175,6 +175,7 @@ const compileParserHarness = (): Uint8Array => {
     entryPoint,
     compiler.semanticContext,
     compiler.checkerContext,
+    {debug: true},
   );
   cachedWasm = generator.generate();
   return cachedWasm;
@@ -609,12 +610,17 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
         return {test, passed: false, error: `Parse failed: ${output}`};
       }
 
-      // Compare output to expected JSON structure
       try {
         const actualJson = JSON.parse(output);
         const expectedJson = JSON.parse(expected);
         const diff = compareJson(expectedJson, actualJson, '');
         if (diff) {
+          if (process.argv[2]) {
+            console.log('\n--- EXPECTED ---');
+            console.log(JSON.stringify(expectedJson, null, 2));
+            console.log('\n--- ACTUAL ---');
+            console.log(JSON.stringify(actualJson, null, 2));
+          }
           return {test, passed: false, error: `JSON mismatch: ${diff}`};
         }
       } catch (e) {
@@ -638,7 +644,8 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
       return {test, passed: true};
     }
   } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
+    console.error(e);
+    const error = e instanceof Error ? (e.stack ?? e.message) : String(e);
     return {test, passed: false, error};
   }
 };
@@ -716,7 +723,10 @@ const main = async (): Promise<void> => {
 
     // Discover tests
     const allTests = await discoverTests(testsDir);
-    const tests = allTests.filter((t) => !skipSet.has(t.name));
+    const filter = process.argv[2];
+    const tests = allTests.filter(
+      (t) => !skipSet.has(t.name) && (!filter || t.name.includes(filter)),
+    );
     const skippedTests = allTests
       .filter((t) => skipSet.has(t.name))
       .map((t) => t.name);

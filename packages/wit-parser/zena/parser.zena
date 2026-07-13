@@ -599,10 +599,11 @@ export class InterfaceItem {
  * A use statement in an interface.
  */
 export class Use {
+  var docs: Docs;
   var from: UsePath;
   var names: Array<UseName>;
 
-  new(from: UsePath, names: Array<UseName>) : from = from, names = names;
+  new(docs: Docs, from: UsePath, names: Array<UseName>) : docs = docs, from = from, names = names;
 }
 
 /**
@@ -726,6 +727,10 @@ export class WorldItem {
   var use: Use | null = null;
   var typeDef: TypeDef | null = null;
   var include: Include | null = null;
+  var isIncluded = false;
+  var isExplicit = false;
+  var packageIndex: i32 = -1;
+  var inheritedDocs: Docs | null = null;
 
   new(tag: WorldItemTag) : tag = tag;
 
@@ -1629,7 +1634,7 @@ export class Parser {
     
     // use path.{names};
     if (token.type == TokenType.Use) {
-      return InterfaceItem.fromUse(this.#parseUse());
+      return InterfaceItem.fromUse(this.#parseUse(docs));
     }
     
     // Type definitions
@@ -1655,7 +1660,7 @@ export class Parser {
   }
 
   /** Parse a use statement: use path.{names}; */
-  #parseUse(): Use {
+  #parseUse(docs: Docs): Use {
     this.#expect(TokenType.Use);
     let from = this.#parseUsePath();
     this.#expect(TokenType.Period);
@@ -1667,7 +1672,7 @@ export class Parser {
     );
     
     this.#expectSemicolon();
-    return new Use(from, names);
+    return new Use(docs, from, names);
   }
 
   /** Parse a use name: name or name as alias */
@@ -1722,7 +1727,7 @@ export class Parser {
     
     // use path.{names};
     if (token.type == TokenType.Use) {
-      return WorldItem.fromUse(this.#parseUse());
+      return WorldItem.fromUse(this.#parseUse(docs));
     }
     
     // include path;

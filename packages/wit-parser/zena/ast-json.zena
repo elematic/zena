@@ -10,11 +10,12 @@ import {Array} from 'zena:growable-array';
 import {HashMap} from 'zena:map';
 import {Option, Some, some, none} from 'zena:option';
 import {i32ToString, parseI32} from 'zena:string-convert';
-import {Ast, AstItem, AstItemTag, PackageName, NestedPackage, Id, Use, UseName, UsePath, UsePathTag, Include} from './parser.zena';
+import {Ast, AstItem, AstItemTag, PackageName, NestedPackage, Id, Use, UseName, UsePath, UsePathTag, Include, IncludeName} from './parser.zena';
 import {InterfaceDef, InterfaceItem, InterfaceItemTag} from './parser.zena';
 import {WorldDef, WorldItem, WorldItemTag, ExternKind, ExternKindTag, Import, Export} from './parser.zena';
 import {TypeDef, TypeDefTag, Type, TypeTag, NamedFunc, Func, Param, Field} from './parser.zena';
-import {Case, EnumCaseDef, FlagDef, ResourceFunc, ResourceFuncTag, Docs} from './parser.zena';
+import {Case, EnumCaseDef, FlagDef, ResourceFunc, ResourceFuncTag, Docs, Attribute, AttributeTag} from './parser.zena';
+import {console} from 'zena:console';
 
 // ============================================================================
 // Helper Functions
@@ -255,6 +256,193 @@ let comparePackageNames = (pn1: PackageName | null, pn2: PackageName | null): i3
   return compareVersions(p1.version as String, p2.version as String);
 };
 
+let isExcluded = (docs: Docs | null, pkgName: PackageName | null): boolean => {
+  if (docs == null || docs.attributes == null) {
+    return false;
+  }
+  let attrs = docs.attributes as Array<Attribute>;
+  var hasUnstable = false;
+  var unstableActive = false;
+  var hasSince = false;
+  var sincePassed = false;
+  var hasStability = false;
+  
+  var i = 0;
+  while (i < attrs.length) {
+    let attr = attrs[i];
+    if (attr.tag == AttributeTag.Unstable) {
+      hasStability = true;
+      hasUnstable = true;
+      let featureName = (attr.feature as Id).name;
+      if (featureName == "active") {
+        unstableActive = true;
+      }
+    } else if (attr.tag == AttributeTag.Since) {
+      hasStability = true;
+      hasSince = true;
+      if (pkgName != null && (pkgName as PackageName).version != null) {
+        let pkgVer = (pkgName as PackageName).version as String;
+        let sinceVer = attr.version as String;
+        if (compareVersions(pkgVer, sinceVer) >= 0) {
+          sincePassed = true;
+        }
+      } else {
+        sincePassed = true;
+      }
+    } else if (attr.tag == AttributeTag.Deprecated) {
+      hasStability = true;
+    }
+    i = i + 1;
+  }
+  
+  if (hasUnstable && !unstableActive) {
+    return true;
+  }
+  
+  if (hasStability) {
+    if (unstableActive) {
+      return false;
+    }
+    if (hasSince) {
+      return !sincePassed;
+    }
+    return true;
+  }
+  
+  return false;
+};
+
+let filterInterfaceItems = (iface: InterfaceDef, pkgName: PackageName | null): void => {
+  let filtered = new Array<InterfaceItem>();
+  var idx = 0;
+  while (idx < iface.items.length) {
+    let item = iface.items[idx];
+    var keep = true;
+    if (item.tag == InterfaceItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      if (isExcluded(td.docs, pkgName)) {
+        keep = false;
+      }
+    } else if (item.tag == InterfaceItemTag.Func) {
+      let func = item.func as NamedFunc;
+      if (isExcluded(func.docs, pkgName)) {
+        keep = false;
+      }
+    } else if (item.tag == InterfaceItemTag.Use) {
+      let u = item.use as Use;
+      if (isExcluded(u.docs, pkgName)) {
+        keep = false;
+      }
+    }
+    if (keep) {
+      filtered.push(item);
+    }
+    idx = idx + 1;
+  }
+  iface.items = filtered;
+};
+
+let filterWorldItems = (world: WorldDef, pkgName: PackageName | null): void => {
+  let filtered = new Array<WorldItem>();
+  var idx = 0;
+  while (idx < world.items.length) {
+    let item = world.items[idx];
+    var keep = true;
+    if (item.tag == WorldItemTag.Import) {
+      let imp = item.importItem as Import;
+      if (isExcluded(imp.docs, pkgName)) {
+        keep = false;
+      }
+    } else if (item.tag == WorldItemTag.Export) {
+      let exp = item.exportItem as Export;
+      if (isExcluded(exp.docs, pkgName)) {
+        keep = false;
+      }
+    } else if (item.tag == WorldItemTag.Use) {
+      let u = item.use as Use;
+      if (isExcluded(u.docs, pkgName)) {
+        keep = false;
+      }
+    } else if (item.tag == WorldItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      if (isExcluded(td.docs, pkgName)) {
+        keep = false;
+      }
+    } else if (item.tag == WorldItemTag.Include) {
+      let inc = item.include as Include;
+      if (isExcluded(inc.docs, pkgName)) {
+        keep = false;
+      }
+    }
+    if (keep) {
+      filtered.push(item);
+    }
+    idx = idx + 1;
+  }
+  world.items = filtered;
+};
+
+let filterGatedItems = (ast: Ast): void => {
+  let filteredItems = new Array<AstItem>();
+  var idx = 0;
+  while (idx < ast.items.length) {
+    let item = ast.items[idx];
+    var keep = true;
+    if (item.tag == AstItemTag.Interface) {
+      let iface = item.interfaceDef as InterfaceDef;
+      if (isExcluded(iface.docs, ast.packageName)) {
+        keep = false;
+      } else {
+        filterInterfaceItems(iface, ast.packageName);
+      }
+    } else if (item.tag == AstItemTag.World) {
+      let world = item.worldDef as WorldDef;
+      if (isExcluded(world.docs, ast.packageName)) {
+        keep = false;
+      } else {
+        filterWorldItems(world, ast.packageName);
+      }
+    }
+    if (keep) {
+      filteredItems.push(item);
+    }
+    idx = idx + 1;
+  }
+  ast.items = filteredItems;
+  
+  var pIdx = 0;
+  while (pIdx < ast.nestedPackages.length) {
+    let np = ast.nestedPackages[pIdx];
+    let npItems = new Array<AstItem>();
+    var idx2 = 0;
+    while (idx2 < np.items.length) {
+      let item = np.items[idx2];
+      var keep = true;
+      if (item.tag == AstItemTag.Interface) {
+        let iface = item.interfaceDef as InterfaceDef;
+        if (isExcluded(iface.docs, np.name)) {
+          keep = false;
+        } else {
+          filterInterfaceItems(iface, np.name);
+        }
+      } else if (item.tag == AstItemTag.World) {
+        let world = item.worldDef as WorldDef;
+        if (isExcluded(world.docs, np.name)) {
+          keep = false;
+        } else {
+          filterWorldItems(world, np.name);
+        }
+      }
+      if (keep) {
+        npItems.push(item);
+      }
+      idx2 = idx2 + 1;
+    }
+    np.items = npItems;
+    pIdx = pIdx + 1;
+  }
+};
+
 // ============================================================================
 // Helper Classes
 // ============================================================================
@@ -304,19 +492,22 @@ class ScopeTypeElement {
   var typeDef: TypeDef | null = null;
   var usePath: UsePath | null = null;
   var useName: UseName | null = null;
+  var docs: Docs | null = null;
 
   new(isTypeDef: boolean) : isTypeDef = isTypeDef;
 
   static fromTd(td: TypeDef): ScopeTypeElement {
     let e = new ScopeTypeElement(true);
     e.typeDef = td;
+    e.docs = td.docs;
     return e;
   }
 
-  static fromUse(path: UsePath, name: UseName): ScopeTypeElement {
+  static fromUse(path: UsePath, name: UseName, docs: Docs | null): ScopeTypeElement {
     let e = new ScopeTypeElement(false);
     e.usePath = path;
     e.useName = name;
+    e.docs = docs;
     return e;
   }
 }
@@ -449,7 +640,13 @@ class SerializeContext {
     // Create new borrow type
     let kind = new TypeKind("handle");
     kind.borrowIndex = resourceIdx;
-    let entry = new TypeEntry(null, kind, none, null);
+    
+    var docs: Docs | null = null;
+    if (resourceIdx >= 0 && resourceIdx < this.types.length) {
+      docs = this.types[resourceIdx].docs;
+    }
+    
+    let entry = new TypeEntry(null, kind, none, docs);
     let idx = this.registerType(entry);
     this.borrowTypeIndices[resourceIdx] = idx;
     return idx;
@@ -693,6 +890,383 @@ let getUsePathInterfaceName = (path: UsePath): String => {
     pkgName = pkgName + "@" + (pkg.version as String);
   }
   return pkgName + "/" + normalizeId(name);
+};
+
+let serializeStability = (b: JsonBuilder, docs: Docs | null): void => {
+  if (docs == null || docs.attributes == null) {
+    return;
+  }
+  let attrs = docs.attributes as Array<Attribute>;
+  var hasSince = false;
+  var sinceVer: String | null = null;
+  var hasDeprecated = false;
+  var depVer: String | null = null;
+  var hasUnstable = false;
+  var unstFeature: String | null = null;
+  
+  var i = 0;
+  while (i < attrs.length) {
+    let attr = attrs[i];
+    if (attr.tag == AttributeTag.Since) {
+      hasSince = true;
+      sinceVer = attr.version;
+    } else if (attr.tag == AttributeTag.Deprecated) {
+      hasDeprecated = true;
+      depVer = attr.version;
+    } else if (attr.tag == AttributeTag.Unstable) {
+      hasUnstable = true;
+      unstFeature = (attr.feature as Id).name;
+    }
+    i = i + 1;
+  }
+  
+  if (hasUnstable) {
+    b.key("stability").beginObject();
+    b.key("unstable").beginObject();
+    b.key("feature").string(unstFeature as String);
+    b.endObject();
+    b.endObject();
+  } else if (hasSince || hasDeprecated) {
+    b.key("stability").beginObject();
+    b.key("stable").beginObject();
+    if (hasSince) {
+      b.key("since").string(sinceVer as String);
+    }
+    if (hasDeprecated) {
+      b.key("deprecated").string(depVer as String);
+    }
+    b.endObject();
+    b.endObject();
+  }
+};
+
+let isStabilityEqual = (d1: Docs | null, d2: Docs | null): boolean => {
+  if (d1 == null && d2 == null) return true;
+  if (d1 == null || d2 == null) return false;
+  if (d1.attributes == null && d2.attributes == null) return true;
+  if (d1.attributes == null || d2.attributes == null) return false;
+  let attrs1 = d1.attributes as Array<Attribute>;
+  let attrs2 = d2.attributes as Array<Attribute>;
+  if (attrs1.length != attrs2.length) return false;
+  
+  var i = 0;
+  while (i < attrs1.length) {
+    let a1 = attrs1[i];
+    let a2 = attrs2[i];
+    if (a1.tag != a2.tag) return false;
+    
+    // Only omit since/stable attributes
+    if (a1.tag != AttributeTag.Since) return false;
+    
+    if (a1.version != a2.version) return false;
+    i = i + 1;
+  }
+  return true;
+};
+
+let resolveInterfaceIndex = (ctx: SerializeContext, name: String): i32 => {
+  if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
+    return sIdx;
+  }
+  
+  var slashIdx = -1;
+  var i = 0;
+  while (i < name.length) {
+    if (name.getByteAt(i) == 47) { // '/'
+      slashIdx = i;
+    }
+    i = i + 1;
+  }
+  
+  if (slashIdx >= 0) {
+    var hasAt = false;
+    var j = 0;
+    while (j < slashIdx) {
+      if (name.getByteAt(j) == 64) { // '@'
+        hasAt = true;
+      }
+      j = j + 1;
+    }
+    
+    if (!hasAt) {
+      let pkgNamePart = name.sliceBytes(0, slashIdx);
+      let interfaceNamePart = name.sliceBytes(slashIdx + 1, name.length);
+      
+      var pkgIdx = 0;
+      while (pkgIdx < ctx.packages.length) {
+        let pkg = ctx.packages[pkgIdx];
+        let pkgName = pkg.name;
+        if (pkgName == pkgNamePart || (pkgName.length > pkgNamePart.length && pkgName.sliceBytes(0, pkgNamePart.length) == pkgNamePart && pkgName.getByteAt(pkgNamePart.length) == 64)) {
+          let lookupKey = pkg.name + "/" + interfaceNamePart;
+          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
+            return sIdx;
+          }
+        }
+        pkgIdx = pkgIdx + 1;
+      }
+    }
+  }
+  
+  return -1;
+};
+
+let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, isImport: boolean, items: Array<WorldItem>): Docs | null => {
+  let pkgName = ctx.packages[world.packageIndex].name;
+  
+  var combinedDocs: Docs | null = null;
+  var hasMatch = false;
+  var hasExplicitDocs = false;
+  
+  // Compute if the interface is purely included (only imported via includes with no direct references)
+  var isPurelyIncluded = true;
+  var checkIdx = 0;
+  while (checkIdx < items.length) {
+    let item = items[checkIdx];
+    let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
+    if (item.tag == WorldItemTag.Import || item.tag == WorldItemTag.Use) {
+      var curIdx = -1;
+      if (item.tag == WorldItemTag.Import) {
+        let imp = item.importItem as Import;
+        if (imp.kind.tag == ExternKindTag.Interface) {
+          let name = normalizeId((imp.kind.name as Id).name);
+          let inlineName = "[import]" + name;
+          if (itemPkgName.length > 0) {
+            let lookupKey = itemPkgName + "/inline/" + inlineName;
+            curIdx = resolveInterfaceIndex(ctx, lookupKey);
+          }
+          if (curIdx < 0) {
+            curIdx = resolveInterfaceIndex(ctx, inlineName);
+          }
+          if (curIdx < 0 && itemPkgName.length > 0) {
+            let lookupKey = itemPkgName + "/" + name;
+            curIdx = resolveInterfaceIndex(ctx, lookupKey);
+          }
+          if (curIdx < 0) {
+            curIdx = resolveInterfaceIndex(ctx, name);
+          }
+        } else if (imp.kind.tag == ExternKindTag.Path) {
+          let name = getUsePathInterfaceName(imp.kind.path as UsePath);
+          if (itemPkgName.length > 0) {
+            let lookupKey = itemPkgName + "/" + name;
+            curIdx = resolveInterfaceIndex(ctx, lookupKey);
+          }
+          if (curIdx < 0) {
+            curIdx = resolveInterfaceIndex(ctx, name);
+          }
+        }
+      } else {
+        let u = item.use as Use;
+        let name = getUsePathInterfaceName(u.from);
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/" + name;
+          curIdx = resolveInterfaceIndex(ctx, lookupKey);
+        }
+        if (curIdx < 0) {
+          curIdx = resolveInterfaceIndex(ctx, name);
+        }
+      }
+      
+      if (curIdx == ifaceIdx && !item.isIncluded) {
+        isPurelyIncluded = false;
+      }
+    }
+    checkIdx = checkIdx + 1;
+  }
+  
+  // Pass 1: Direct imports / exports, and included Use statements (which act as implicit interface imports)
+  var idx = 0;
+  while (idx < items.length) {
+    let item = items[idx];
+    let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
+    if (isImport && (item.tag == WorldItemTag.Import || (item.tag == WorldItemTag.Use && item.isIncluded))) {
+      var curIdx = -1;
+      var docs: Docs | null = null;
+      if (item.tag == WorldItemTag.Import) {
+        let imp = item.importItem as Import;
+        docs = imp.docs;
+        if (imp.kind.tag == ExternKindTag.Interface) {
+          let name = normalizeId((imp.kind.name as Id).name);
+          let inlineName = "[import]" + name;
+          if (itemPkgName.length > 0) {
+            let lookupKey = itemPkgName + "/inline/" + inlineName;
+            curIdx = resolveInterfaceIndex(ctx, lookupKey);
+          }
+          if (curIdx < 0) {
+            curIdx = resolveInterfaceIndex(ctx, inlineName);
+          }
+          if (curIdx < 0 && itemPkgName.length > 0) {
+            let lookupKey = itemPkgName + "/" + name;
+            curIdx = resolveInterfaceIndex(ctx, lookupKey);
+          }
+          if (curIdx < 0) {
+            curIdx = resolveInterfaceIndex(ctx, name);
+          }
+        } else if (imp.kind.tag == ExternKindTag.Path) {
+          let name = getUsePathInterfaceName(imp.kind.path as UsePath);
+          if (itemPkgName.length > 0) {
+            let lookupKey = itemPkgName + "/" + name;
+            curIdx = resolveInterfaceIndex(ctx, lookupKey);
+          }
+          if (curIdx < 0) {
+            curIdx = resolveInterfaceIndex(ctx, name);
+          }
+        }
+      } else {
+        let u = item.use as Use;
+        docs = item.inheritedDocs;
+        let name = getUsePathInterfaceName(u.from);
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/" + name;
+          curIdx = resolveInterfaceIndex(ctx, lookupKey);
+        }
+        if (curIdx < 0) {
+          curIdx = resolveInterfaceIndex(ctx, name);
+        }
+      }
+      
+      if (curIdx == ifaceIdx) {
+        hasMatch = true;
+        combinedDocs = mergeDocs(combinedDocs, docs);
+        if (item.isExplicit) {
+          hasExplicitDocs = true;
+        }
+      }
+    } else if (!isImport && item.tag == WorldItemTag.Export) {
+      let exp = item.exportItem as Export;
+      var curIdx = -1;
+      var docs: Docs | null = exp.docs;
+      if (exp.kind.tag == ExternKindTag.Interface) {
+        let name = normalizeId((exp.kind.name as Id).name);
+        let inlineName = "[export]" + name;
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/inline/" + inlineName;
+          curIdx = resolveInterfaceIndex(ctx, lookupKey);
+        }
+        if (curIdx < 0) {
+          curIdx = resolveInterfaceIndex(ctx, inlineName);
+        }
+        if (curIdx < 0 && itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/" + name;
+          curIdx = resolveInterfaceIndex(ctx, lookupKey);
+        }
+        if (curIdx < 0) {
+          curIdx = resolveInterfaceIndex(ctx, name);
+        }
+      } else if (exp.kind.tag == ExternKindTag.Path) {
+        let name = getUsePathInterfaceName(exp.kind.path as UsePath);
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/" + name;
+          curIdx = resolveInterfaceIndex(ctx, lookupKey);
+        }
+        if (curIdx < 0) {
+          curIdx = resolveInterfaceIndex(ctx, name);
+        }
+      }
+      
+      if (curIdx == ifaceIdx) {
+        hasMatch = true;
+        combinedDocs = mergeDocs(combinedDocs, docs);
+        if (item.isExplicit) {
+          hasExplicitDocs = true;
+        }
+      }
+    }
+    idx = idx + 1;
+  }
+  
+  if (hasMatch) {
+    let iface = ctx.interfaces[ifaceIdx];
+    let isForeign = iface.packageIndex != world.packageIndex;
+    
+    if (!hasExplicitDocs || isForeign) {
+      let ifaceDocs = iface.docs;
+      if (ifaceDocs != null && isStabilityEqual(combinedDocs, ifaceDocs)) {
+        return null;
+      }
+      
+      let worldDocs = world.docs;
+      if (worldDocs != null && isStabilityEqual(combinedDocs, worldDocs)) {
+        return null;
+      }
+    }
+    
+    if (!hasExplicitDocs) {
+      var isUnstable = false;
+      if (combinedDocs != null && combinedDocs.attributes != null) {
+        let attrs = combinedDocs.attributes as Array<Attribute>;
+        var i = 0;
+        while (i < attrs.length) {
+          if (attrs[i].tag == AttributeTag.Unstable) {
+            isUnstable = true;
+          }
+          i = i + 1;
+        }
+      }
+      
+      if (!isUnstable) {
+        return null;
+      }
+    }
+    return combinedDocs;
+  }
+  
+  // Pass 2: Local type imports (direct/explicit Use statements) that act as implicit interface imports
+  if (isImport) {
+    idx = 0;
+    while (idx < items.length) {
+      let item = items[idx];
+      let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
+      if (item.tag == WorldItemTag.Use) {
+        let u = item.use as Use;
+        let name = getUsePathInterfaceName(u.from);
+        var curIdx = -1;
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/" + name;
+          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) { curIdx = sIdx; }
+        }
+        if (curIdx < 0) {
+          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) { curIdx = sIdx; }
+        }
+        if (curIdx == ifaceIdx) {
+          let worldDocs = world.docs;
+          if (worldDocs != null && isStabilityEqual(u.docs, worldDocs)) {
+            return null;
+          }
+          
+          if (item.isExplicit) {
+            return u.docs;
+          }
+          
+          let iface = ctx.interfaces[ifaceIdx];
+          let ifaceDocs = iface.docs;
+          if (ifaceDocs != null && isStabilityEqual(u.docs, ifaceDocs)) {
+            return null;
+          }
+          
+          var isUnstable = false;
+          let uDocs = u.docs;
+          if (uDocs != null && uDocs.attributes != null) {
+            let attrs = uDocs.attributes as Array<Attribute>;
+            var i = 0;
+            while (i < attrs.length) {
+              if (attrs[i].tag == AttributeTag.Unstable) {
+                isUnstable = true;
+              }
+              i = i + 1;
+            }
+          }
+          
+          if (!isUnstable) {
+            return null;
+          }
+          return u.docs;
+        }
+      }
+      idx = idx + 1;
+    }
+  }
+  
+  return null;
 };
 
 let collectTypeDeps = (t: Type, deps: Array<String>): void => {
@@ -940,7 +1514,7 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
       while (j < u.names.length) {
         let un = u.names[j];
         let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
-        siblingTypes[localName] = ScopeTypeElement.fromUse(u.from, un);
+        siblingTypes[localName] = ScopeTypeElement.fromUse(u.from, un, u.docs);
         j = j + 1;
       }
     }
@@ -1002,7 +1576,7 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
           let kind = new TypeKind("type");
           kind.inner = TypeRef.idx(srcIdx);
           
-          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromInterface(ifaceIdx)), null);
+          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromInterface(ifaceIdx)), elem.docs);
           typeIdx = ctx.registerType(entry);
         }
       }
@@ -1043,13 +1617,470 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
   }
 };
 
-let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32): void => {
+let findWorldByUsePath = (ctx: SerializeContext, path: UsePath): WorldDef | null => {
+  if (path.tag == UsePathTag.Id) {
+    let name = (path.id as Id).name;
+    let currentPkg = ctx.packages[ctx.currentWorldPackageIndex];
+    if (let (true, wIdx) = currentPkg.worlds.get(normalizeId(name))) {
+      return ctx.worlds[wIdx];
+    }
+    var p = 0;
+    while (p < ctx.packages.length) {
+      if (let (true, wIdx) = ctx.packages[p].worlds.get(normalizeId(name))) {
+        return ctx.worlds[wIdx];
+      }
+      p += 1;
+    }
+  } else if (path.tag == UsePathTag.Package) {
+    let name = (path.name as Id).name;
+    let pkg = path.packageId as PackageName;
+    let pkgNameStr = formatPackageName(pkg);
+    var p = 0;
+    while (p < ctx.packages.length) {
+      if (ctx.packages[p].name == pkgNameStr) {
+        if (let (true, wIdx) = ctx.packages[p].worlds.get(normalizeId(name))) {
+          return ctx.worlds[wIdx];
+        }
+      }
+      p += 1;
+    }
+  }
+  return null;
+};
+
+let applyRename = (name: String, renames: Array<IncludeName>): String => {
+  var i = 0;
+  while (i < renames.length) {
+    let r = renames[i];
+    if (r.name.name == name) {
+      return r.asName.name;
+    }
+    i = i + 1;
+  }
+  return name;
+};
+
+let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
+  let newName = applyRename(td.name.name, renames);
+  if (newName == td.name.name) {
+    return td;
+  }
+  let tdClone = new TypeDef(td.docs, td.tag, new Id(newName, td.name.span));
+  tdClone.aliasType = td.aliasType;
+  tdClone.fields = td.fields;
+  tdClone.flags = td.flags;
+  tdClone.cases = td.cases;
+  tdClone.enumCases = td.enumCases;
+  tdClone.resourceFuncs = td.resourceFuncs;
+  return tdClone;
+};
+
+let renameImport = (imp: Import, renames: Array<IncludeName>): Import => {
+  let kind = imp.kind;
+  if (kind.name != null) {
+    let originalName = (kind.name as Id).name;
+    let newName = applyRename(originalName, renames);
+    if (newName != originalName) {
+      let kindClone = new ExternKind(kind.tag);
+      kindClone.name = new Id(newName, (kind.name as Id).span);
+      kindClone.items = kind.items;
+      kindClone.path = kind.path;
+      kindClone.funcDef = kind.funcDef;
+      return new Import(imp.docs, kindClone);
+    }
+  }
+  return imp;
+};
+
+let renameExport = (exp: Export, renames: Array<IncludeName>): Export => {
+  let kind = exp.kind;
+  if (kind.name != null) {
+    let originalName = (kind.name as Id).name;
+    let newName = applyRename(originalName, renames);
+    if (newName != originalName) {
+      let kindClone = new ExternKind(kind.tag);
+      kindClone.name = new Id(newName, (kind.name as Id).span);
+      kindClone.items = kind.items;
+      kindClone.path = kind.path;
+      kindClone.funcDef = kind.funcDef;
+      return new Export(exp.docs, kindClone);
+    }
+  }
+  return exp;
+};
+
+let renameUse = (u: Use, renames: Array<IncludeName>): Use => {
+  var changed = false;
+  let newNames = new Array<UseName>();
+  var idx = 0;
+  while (idx < u.names.length) {
+    let un = u.names[idx];
+    let originalName = if (un.asName != null) (un.asName as Id).name else un.name.name;
+    let newName = applyRename(originalName, renames);
+    if (newName != originalName) {
+      changed = true;
+      let unClone = new UseName(un.name);
+      unClone.asName = new Id(newName, un.name.span);
+      newNames.push(unClone);
+    } else {
+      newNames.push(un);
+    }
+    idx = idx + 1;
+  }
+  if (changed) {
+    return new Use(u.docs, u.from, newNames);
+  }
+  return u;
+};
+
+let renameWorldItem = (item: WorldItem, renames: Array<IncludeName>): WorldItem => {
+  if (renames.length == 0) {
+    return item;
+  }
+  if (item.tag == WorldItemTag.TypeDef) {
+    let td = item.typeDef as TypeDef;
+    let renamedTd = renameTypeDef(td, renames);
+    if (renamedTd != td) {
+      let clonedItem = new WorldItem(WorldItemTag.TypeDef);
+      clonedItem.typeDef = renamedTd;
+      return clonedItem;
+    }
+  } else if (item.tag == WorldItemTag.Import) {
+    let imp = item.importItem as Import;
+    let renamedImp = renameImport(imp, renames);
+    if (renamedImp != imp) {
+      let clonedItem = new WorldItem(WorldItemTag.Import);
+      clonedItem.importItem = renamedImp;
+      return clonedItem;
+    }
+  } else if (item.tag == WorldItemTag.Export) {
+    let exp = item.exportItem as Export;
+    let renamedExp = renameExport(exp, renames);
+    if (renamedExp != exp) {
+      let clonedItem = new WorldItem(WorldItemTag.Export);
+      clonedItem.exportItem = renamedExp;
+      return clonedItem;
+    }
+  } else if (item.tag == WorldItemTag.Use) {
+    let u = item.use as Use;
+    let renamedUse = renameUse(u, renames);
+    if (renamedUse != u) {
+      let clonedItem = new WorldItem(WorldItemTag.Use);
+      clonedItem.use = renamedUse;
+      return clonedItem;
+    }
+  }
+  return item;
+};
+
+let parseVersionParts = (v: String): Array<i32> => {
+  let parts = new Array<i32>();
+  var cur = 0;
+  var i = 0;
+  while (i < v.length) {
+    let code = v.getByteAt(i);
+    if (code == 46) { // '.'
+      parts.push(cur);
+      cur = 0;
+    } else if (code >= 48 && code <= 57) { // digit
+      cur = cur * 10 + (code - 48);
+    }
+    i = i + 1;
+  }
+  parts.push(cur);
+  return parts;
+};
+
+let compareVersions = (v1: String, v2: String): i32 => {
+  let parts1 = parseVersionParts(v1);
+  let parts2 = parseVersionParts(v2);
+  var idx = 0;
+  while (idx < parts1.length && idx < parts2.length) {
+    let p1 = parts1[idx];
+    let p2 = parts2[idx];
+    if (p1 > p2) return 1;
+    if (p1 < p2) return -1;
+    idx = idx + 1;
+  }
+  if (parts1.length > parts2.length) return 1;
+  if (parts1.length < parts2.length) return -1;
+  return 0;
+};
+
+let combineDocs = (parent: Docs | null, child: Docs | null): Docs | null => {
+  if (parent == null) return child;
+  if (child == null) return parent;
+  if (parent.attributes == null) return child;
+  if (child.attributes == null) return parent;
+  
+  let pattrs = parent.attributes as Array<Attribute>;
+  let cattrs = child.attributes as Array<Attribute>;
+  
+  let newAttrs = new Array<Attribute>();
+  
+  var parentUnstable: Attribute | null = null;
+  var childUnstable: Attribute | null = null;
+  var parentSince: Attribute | null = null;
+  var childSince: Attribute | null = null;
+  var parentDeprecated: Attribute | null = null;
+  var childDeprecated: Attribute | null = null;
+  
+  var i = 0;
+  while (i < pattrs.length) {
+    let a = pattrs[i];
+    if (a.tag == AttributeTag.Unstable) parentUnstable = a;
+    else if (a.tag == AttributeTag.Since) parentSince = a;
+    else if (a.tag == AttributeTag.Deprecated) parentDeprecated = a;
+    i = i + 1;
+  }
+  
+  i = 0;
+  while (i < cattrs.length) {
+    let a = cattrs[i];
+    if (a.tag == AttributeTag.Unstable) childUnstable = a;
+    else if (a.tag == AttributeTag.Since) childSince = a;
+    else if (a.tag == AttributeTag.Deprecated) childDeprecated = a;
+    i = i + 1;
+  }
+  
+  let hasSinceAttr = parentSince != null || childSince != null;
+  if (!hasSinceAttr) {
+    if (parentUnstable != null) newAttrs.push(parentUnstable as Attribute);
+    else if (childUnstable != null) newAttrs.push(childUnstable as Attribute);
+  }
+  
+  if (parentSince != null && childSince != null) {
+    let pv = (parentSince as Attribute).version as String;
+    let cv = (childSince as Attribute).version as String;
+    if (compareVersions(pv, cv) > 0) newAttrs.push(parentSince as Attribute);
+    else newAttrs.push(childSince as Attribute);
+  } else if (parentSince != null) {
+    newAttrs.push(parentSince as Attribute);
+  } else if (childSince != null) {
+    newAttrs.push(childSince as Attribute);
+  }
+  
+  if (parentDeprecated != null && childDeprecated != null) {
+    let pv = (parentDeprecated as Attribute).version as String;
+    let cv = (childDeprecated as Attribute).version as String;
+    if (compareVersions(pv, cv) < 0) newAttrs.push(parentDeprecated as Attribute);
+    else newAttrs.push(childDeprecated as Attribute);
+  } else if (parentDeprecated != null) {
+    newAttrs.push(parentDeprecated as Attribute);
+  } else if (childDeprecated != null) {
+    newAttrs.push(childDeprecated as Attribute);
+  }
+  
+  let d = new Docs(parent.span);
+  d.attributes = newAttrs;
+  return d;
+};
+
+let mergeDocs = (parent: Docs | null, child: Docs | null): Docs | null => {
+  if (parent == null) return child;
+  if (child == null) return parent;
+  if (parent.attributes == null) return child;
+  if (child.attributes == null) return parent;
+  
+  let pattrs = parent.attributes as Array<Attribute>;
+  let cattrs = child.attributes as Array<Attribute>;
+  
+  let newAttrs = new Array<Attribute>();
+  
+  var parentUnstable: Attribute | null = null;
+  var childUnstable: Attribute | null = null;
+  var parentSince: Attribute | null = null;
+  var childSince: Attribute | null = null;
+  var parentDeprecated: Attribute | null = null;
+  var childDeprecated: Attribute | null = null;
+  
+  var i = 0;
+  while (i < pattrs.length) {
+    let a = pattrs[i];
+    if (a.tag == AttributeTag.Unstable) parentUnstable = a;
+    else if (a.tag == AttributeTag.Since) parentSince = a;
+    else if (a.tag == AttributeTag.Deprecated) parentDeprecated = a;
+    i = i + 1;
+  }
+  
+  i = 0;
+  while (i < cattrs.length) {
+    let a = cattrs[i];
+    if (a.tag == AttributeTag.Unstable) childUnstable = a;
+    else if (a.tag == AttributeTag.Since) childSince = a;
+    else if (a.tag == AttributeTag.Deprecated) childDeprecated = a;
+    i = i + 1;
+  }
+  
+  if (parentUnstable != null) {
+    newAttrs.push(parentUnstable as Attribute);
+  } else if (childUnstable != null) {
+    newAttrs.push(childUnstable as Attribute);
+  } else {
+    if (parentSince != null && childSince != null) {
+      let pv = (parentSince as Attribute).version as String;
+      let cv = (childSince as Attribute).version as String;
+      if (compareVersions(pv, cv) > 0) newAttrs.push(parentSince as Attribute);
+      else newAttrs.push(childSince as Attribute);
+    } else if (parentSince != null) {
+      newAttrs.push(parentSince as Attribute);
+    } else if (childSince != null) {
+      newAttrs.push(childSince as Attribute);
+    }
+  }
+  
+  if (parentDeprecated != null && childDeprecated != null) {
+    let pv = (parentDeprecated as Attribute).version as String;
+    let cv = (childDeprecated as Attribute).version as String;
+    if (compareVersions(pv, cv) < 0) newAttrs.push(parentDeprecated as Attribute);
+    else newAttrs.push(childDeprecated as Attribute);
+  } else if (parentDeprecated != null) {
+    newAttrs.push(parentDeprecated as Attribute);
+  } else if (childDeprecated != null) {
+    newAttrs.push(childDeprecated as Attribute);
+  }
+  
+  let d = new Docs(parent.span);
+  d.attributes = newAttrs;
+  return d;
+};
+
+let filterUnstableOnly = (docs: Docs | null): Docs | null => {
+  if (docs == null || docs.attributes == null) return null;
+  let attrs = docs.attributes as Array<Attribute>;
+  let newAttrs = new Array<Attribute>();
+  var i = 0;
+  while (i < attrs.length) {
+    let attr = attrs[i];
+    if (attr.tag == AttributeTag.Unstable) {
+      newAttrs.push(attr);
+    }
+    i = i + 1;
+  }
+  if (newAttrs.length == 0) return null;
+  let d = new Docs(docs.span);
+  d.attributes = newAttrs;
+  return d;
+};
+
+let filterStableOnly = (docs: Docs | null): Docs | null => {
+  if (docs == null || docs.attributes == null) return null;
+  let attrs = docs.attributes as Array<Attribute>;
+  let newAttrs = new Array<Attribute>();
+  var i = 0;
+  while (i < attrs.length) {
+    let attr = attrs[i];
+    if (attr.tag == AttributeTag.Since || attr.tag == AttributeTag.Deprecated) {
+      newAttrs.push(attr);
+    }
+    i = i + 1;
+  }
+  if (newAttrs.length == 0) return null;
+  let d = new Docs(docs.span);
+  d.attributes = newAttrs;
+  return d;
+};
+
+let expandWorldItems = (ctx: SerializeContext, world: WorldDef): Array<WorldItem> => {
+  let result = new Array<WorldItem>();
+  let visited = new HashMap<String, boolean>();
+  
+  let rec = (w: WorldDef, renames: Array<IncludeName>, inheritedDocs: Docs | null): void => {
+    let key = i32ToString(w.packageIndex) + "/" + normalizeId(w.name.name);
+    if (visited.has(key)) {
+      return;
+    }
+    visited[key] = true;
+    
+    let worldUnstableDocs = if (visited.size > 1) filterUnstableOnly(w.docs) else null;
+    let currentInheritedDocs = combineDocs(inheritedDocs, worldUnstableDocs);
+    
+    var idx = 0;
+    while (idx < w.items.length) {
+      let item = w.items[idx];
+      if (item.tag == WorldItemTag.Include) {
+        let inc = item.include as Include;
+        let incWorld = findWorldByUsePath(ctx, inc.from);
+        if (incWorld != null) {
+          let nestedRenames = new Array<IncludeName>();
+          var rIdx = 0;
+          while (rIdx < inc.names.length) {
+            let n = inc.names[rIdx];
+            let renamedAs = applyRename(n.asName.name, renames);
+            nestedRenames.push(new IncludeName(n.name, new Id(renamedAs, n.asName.span)));
+            rIdx = rIdx + 1;
+          }
+          var pIdx = 0;
+          while (pIdx < renames.length) {
+            let pr = renames[pIdx];
+            var found = false;
+            var j = 0;
+            while (j < nestedRenames.length) {
+              if (nestedRenames[j].name.name == pr.name.name) {
+                found = true;
+              }
+              j = j + 1;
+            }
+            if (!found) {
+              nestedRenames.push(pr);
+            }
+            pIdx = pIdx + 1;
+          }
+          
+          let includeInheritedDocs = if (visited.size == 1) combineDocs(currentInheritedDocs, filterStableOnly(inc.docs)) else currentInheritedDocs;
+          rec(incWorld as WorldDef, nestedRenames, includeInheritedDocs);
+        }
+      } else {
+        var renamedItem = renameWorldItem(item, renames);
+        let cloned = new WorldItem(item.tag);
+        cloned.packageIndex = w.packageIndex;
+        if (renames.length > 0 || visited.size > 1) {
+          cloned.isIncluded = true;
+        }
+        
+        let combineWith = if (visited.size > 1) currentInheritedDocs else null;
+        cloned.inheritedDocs = combineWith;
+        
+        if (item.tag == WorldItemTag.Import) {
+          let imp = renamedItem.importItem as Import;
+          cloned.importItem = new Import(combineDocs(combineWith, imp.docs), imp.kind);
+          cloned.isExplicit = imp.docs != null;
+        } else if (item.tag == WorldItemTag.Export) {
+          let exp = renamedItem.exportItem as Export;
+          cloned.exportItem = new Export(combineDocs(combineWith, exp.docs), exp.kind);
+          cloned.isExplicit = exp.docs != null;
+        } else if (item.tag == WorldItemTag.Use) {
+          let u = renamedItem.use as Use;
+          cloned.use = new Use(combineDocs(combineWith, u.docs), u.from, u.names);
+          cloned.isExplicit = u.docs != null;
+        } else {
+          cloned.importItem = renamedItem.importItem;
+          cloned.exportItem = renamedItem.exportItem;
+          cloned.use = renamedItem.use;
+          cloned.typeDef = renamedItem.typeDef;
+          cloned.include = renamedItem.include;
+        }
+        
+        result.push(cloned);
+      }
+      idx = idx + 1;
+    }
+  };
+  
+  let prevWorldPackageIndex = ctx.currentWorldPackageIndex;
+  ctx.currentWorldPackageIndex = world.packageIndex;
+  rec(world, new Array<IncludeName>(), null);
+  ctx.currentWorldPackageIndex = prevWorldPackageIndex;
+  return result;
+};
+
+let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32, items: Array<WorldItem>): void => {
   let siblingTypes = new HashMap<String, ScopeTypeElement>();
   let worldName = normalizeId(world.name.name);
   
   var idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < items.length) {
+    let item = items[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       siblingTypes[normalizeId(td.name.name)] = ScopeTypeElement.fromTd(td);
@@ -1059,7 +2090,7 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32)
       while (j < u.names.length) {
         let un = u.names[j];
         let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
-        siblingTypes[localName] = ScopeTypeElement.fromUse(u.from, un);
+        siblingTypes[localName] = ScopeTypeElement.fromUse(u.from, un, u.docs);
         j = j + 1;
       }
     }
@@ -1121,7 +2152,7 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32)
           let kind = new TypeKind("type");
           kind.inner = TypeRef.idx(srcIdx);
           
-          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromWorld(worldIdx)), null);
+          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromWorld(worldIdx)), elem.docs);
           typeIdx = ctx.registerType(entry);
         }
       }
@@ -1139,8 +2170,8 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32)
   };
 
   idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < items.length) {
+    let item = items[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       ensureRegistered(normalizeId(td.name.name));
@@ -1171,7 +2202,8 @@ let registerAllTypes = (ctx: SerializeContext): void => {
   while (wIdx < ctx.worlds.length) {
     ctx.currentInterfaceName = null;
     ctx.currentWorldName = normalizeId(ctx.worlds[wIdx].name.name);
-    registerWorldTypes(ctx, ctx.worlds[wIdx], wIdx);
+    let expandedItems = expandWorldItems(ctx, ctx.worlds[wIdx]);
+    registerWorldTypes(ctx, ctx.worlds[wIdx], wIdx, expandedItems);
     wIdx = wIdx + 1;
   }
   
@@ -1411,14 +2443,16 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
   ctx.currentInterfaceName = null;
   ctx.currentWorldName = normalizeId(world.name.name);
   
+  let expandedItems = expandWorldItems(ctx, world);
+  
   // Stage 1: Register all defined TypeDefs
-  registerWorldTypes(ctx, world, worldIdx);
+  registerWorldTypes(ctx, world, worldIdx, expandedItems);
   
   // Identify all local resources
   let resources = new Array<TypeDef>();
   var idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < expandedItems.length) {
+    let item = expandedItems[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       if (td.tag == TypeDefTag.Resource) {
@@ -1450,8 +2484,8 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
     // Option B: check imports and exports of the world
     if (!needsBorrow) {
       var itemIdx = 0;
-      while (itemIdx < world.items.length) {
-        let item = world.items[itemIdx];
+      while (itemIdx < expandedItems.length) {
+        let item = expandedItems[itemIdx];
         if (item.tag == WorldItemTag.Import) {
           let imp = item.importItem as Import;
           if (imp.kind.tag == ExternKindTag.Func) {
@@ -1531,8 +2565,8 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
   
   // Stage 3b: Process world import/export function explicit types SECOND
   idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < expandedItems.length) {
+    let item = expandedItems[idx];
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
       if (imp.kind.tag == ExternKindTag.Func) {
@@ -1825,12 +2859,7 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
     }
   }
   
-  // Extract docs if present
-  var docs: Docs | null = null;
-  if (td.docs.contents != null) {
-    docs = td.docs;
-  }
-  let entry = new TypeEntry(normalizeId(td.name.name), kind, some(owner), docs);
+  let entry = new TypeEntry(normalizeId(td.name.name), kind, some(owner), td.docs);
   let typeIdx = ctx.registerType(entry);
   
   // Track resources for bare name -> own<resource> conversion
@@ -1937,6 +2966,7 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
     serializeTypeRef(b, resultRef);
   }
   
+  serializeStability(b, rf.func.docs);
   b.endObject();
 };
 
@@ -1976,6 +3006,7 @@ let serializeFunction = (b: JsonBuilder, ctx: SerializeContext, nf: NamedFunc): 
     b.endObject();
   }
   
+  serializeStability(b, nf.docs);
   b.endObject();
 };
 
@@ -2176,16 +3207,20 @@ let serializeTypeEntry = (b: JsonBuilder, entry: TypeEntry): void => {
   
   if (entry.docs != null) {
     let d = entry.docs as Docs;
-    b.key("docs").beginObject();
-    b.key("contents").string(d.contents as String);
-    b.endObject();
+    if (d.contents != null) {
+      b.key("docs").beginObject();
+      b.key("contents").string(d.contents as String);
+      b.endObject();
+    }
   }
+  
+  serializeStability(b, entry.docs);
   
   b.endObject();
 };
 
 /** Serialize a world function (for import/export). */
-let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: String, func: Func): void => {
+let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: String, func: Func, docs: Docs | null): void => {
   b.beginObject();
   b.key("name").string(name);
   
@@ -2219,17 +3254,18 @@ let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: Strin
     serializeTypeRef(b, resultRef);
   }
   
+  serializeStability(b, docs);
   b.endObject();
 };
 
 /** Serialize an extern kind (import/export item content). */
-let serializeExternKind = (b: JsonBuilder, ctx: SerializeContext, kind: ExternKind): void => {
+let serializeExternKind = (b: JsonBuilder, ctx: SerializeContext, kind: ExternKind, docs: Docs | null): void => {
   b.beginObject();
   if (kind.tag == ExternKindTag.Func) {
     b.key("function");
     let name = normalizeId((kind.name as Id).name);
     let func = kind.funcDef as Func;
-    serializeWorldFunction(b, ctx, name, func);
+    serializeWorldFunction(b, ctx, name, func, docs);
   } else if (kind.tag == ExternKindTag.Path) {
     // Interface reference - TODO: Resolve interface by path
     b.key("interface").beginObject();
@@ -2244,7 +3280,7 @@ let serializeExternKind = (b: JsonBuilder, ctx: SerializeContext, kind: ExternKi
   b.endObject();
 };
 
-let collectWorldImports = (ctx: SerializeContext, world: WorldDef): HashMap<i32, boolean> => {
+let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<WorldItem>): HashMap<i32, boolean> => {
   let imports = new HashMap<i32, boolean>();
   let visited = new HashMap<i32, boolean>();
 
@@ -2292,12 +3328,12 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef): HashMap<i32,
   // Now, seed the recursive traversal with direct imports/exports
   let pkgName = ctx.packages[world.packageIndex].name;
   var idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < items.length) {
+    let item = items[idx];
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
       if (imp.kind.tag == ExternKindTag.Interface) {
-        let name = normalizeId((imp.kind.name as Id).name);
+        let name = "[import]" + normalizeId((imp.kind.name as Id).name);
         var ifaceIdx = -1;
         if (pkgName.length > 0) {
           let lookupKey = pkgName + "/inline/" + name;
@@ -2334,7 +3370,7 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef): HashMap<i32,
     } else if (item.tag == WorldItemTag.Export) {
       let exp = item.exportItem as Export;
       if (exp.kind.tag == ExternKindTag.Interface) {
-        let name = normalizeId((exp.kind.name as Id).name);
+        let name = "[export]" + normalizeId((exp.kind.name as Id).name);
         var ifaceIdx = -1;
         if (pkgName.length > 0) {
           let lookupKey = pkgName + "/inline/" + name;
@@ -2400,6 +3436,8 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   ctx.currentInterfacePackageIndex = -1;
   ctx.currentWorldPackageIndex = world.packageIndex;
   
+  let expandedItems = expandWorldItems(ctx, world);
+  
   b.beginObject();
   b.key("name").string(worldName);
   
@@ -2409,8 +3447,8 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   // 1. Serialize any world TypeDefs (like resources/types defined on the world)
   let pkgName = ctx.packages[world.packageIndex].name;
   var idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < expandedItems.length) {
+    let item = expandedItems[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       let tdName = normalizeId(td.name.name);
@@ -2454,8 +3492,8 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   
   // 2. Serialize world resource functions as imports
   idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < expandedItems.length) {
+    let item = expandedItems[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
@@ -2488,25 +3526,26 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   }
   
   // 3. Serialize interface imports (both explicit inline, direct path, and transitives)
-  let worldImports = collectWorldImports(ctx, world);
+  let worldImports = collectWorldImports(ctx, world, expandedItems);
   let inlineImports = new HashMap<i32, String>();
   
   idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < expandedItems.length) {
+    let item = expandedItems[idx];
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
       if (imp.kind.tag == ExternKindTag.Interface) {
         let name = normalizeId((imp.kind.name as Id).name);
+        let inlineName = "[import]" + name;
         var ifaceIdx = -1;
         if (pkgName.length > 0) {
-          let lookupKey = pkgName + "/inline/" + name;
+          let lookupKey = pkgName + "/inline/" + inlineName;
           if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
             ifaceIdx = sIdx;
           }
         }
         if (ifaceIdx < 0) {
-          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
+          if (let (true, sIdx) = ctx.interfaceIndices.get(inlineName)) {
             ifaceIdx = sIdx;
           }
         }
@@ -2523,12 +3562,14 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
       b.key(inlineName).beginObject();
       b.key("interface").beginObject();
       b.key("id").i32(ifaceIdx);
+      serializeStability(b, findWorldItemDocs(ctx, world, ifaceIdx, true, expandedItems));
       b.endObject();
       b.endObject();
     } else {
       b.key("interface-" + i32ToString(ifaceIdx)).beginObject();
       b.key("interface").beginObject();
       b.key("id").i32(ifaceIdx);
+      serializeStability(b, findWorldItemDocs(ctx, world, ifaceIdx, true, expandedItems));
       b.endObject();
       b.endObject();
     }
@@ -2536,14 +3577,14 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   
   // 4. Serialize regular freestanding function imports
   idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < expandedItems.length) {
+    let item = expandedItems[idx];
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
       if (imp.kind.tag == ExternKindTag.Func) {
         let name = normalizeId((imp.kind.name as Id).name);
         b.key(name);
-        serializeExternKind(b, ctx, imp.kind);
+        serializeExternKind(b, ctx, imp.kind, imp.docs);
       }
     }
     idx = idx + 1;
@@ -2553,27 +3594,29 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   // Serialize exports
   b.key("exports").beginObject();
   idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  while (idx < expandedItems.length) {
+    let item = expandedItems[idx];
     if (item.tag == WorldItemTag.Export) {
       let exp = item.exportItem as Export;
       if (exp.kind.tag == ExternKindTag.Interface) {
         let name = normalizeId((exp.kind.name as Id).name);
+        let inlineName = "[export]" + name;
         b.key(name).beginObject();
         b.key("interface").beginObject();
         var inlineIdx = -1;
         if (pkgName.length > 0) {
-          let lookupKey = pkgName + "/inline/" + name;
+          let lookupKey = pkgName + "/inline/" + inlineName;
           if (let (true, idxVal) = ctx.interfaceIndices.get(lookupKey)) {
             inlineIdx = idxVal;
           }
         }
         if (inlineIdx < 0) {
-          if (let (true, idxVal) = ctx.interfaceIndices.get(name)) {
+          if (let (true, idxVal) = ctx.interfaceIndices.get(inlineName)) {
             inlineIdx = idxVal;
           }
         }
         b.key("id").i32(inlineIdx);
+        serializeStability(b, findWorldItemDocs(ctx, world, inlineIdx, false, expandedItems));
         b.endObject();
         b.endObject();
       } else if (exp.kind.tag == ExternKindTag.Path) {
@@ -2587,19 +3630,28 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
           b.key("interface-" + i32ToString(ifaceIdx)).beginObject();
           b.key("interface").beginObject();
           b.key("id").i32(ifaceIdx);
+          serializeStability(b, findWorldItemDocs(ctx, world, ifaceIdx, false, expandedItems));
           b.endObject();
           b.endObject();
         }
       } else if (exp.kind.tag == ExternKindTag.Func) {
         let name = normalizeId((exp.kind.name as Id).name);
         b.key(name);
-        serializeExternKind(b, ctx, exp.kind);
+        serializeExternKind(b, ctx, exp.kind, exp.docs);
       }
     }
     idx = idx + 1;
   }
   b.endObject();
-  
+  if (world.docs != null) {
+    let d = world.docs as Docs;
+    if (d.contents != null) {
+      b.key("docs").beginObject();
+      b.key("contents").string(d.contents as String);
+      b.endObject();
+    }
+  }
+  serializeStability(b, world.docs);
   b.key("package").i32(world.packageIndex);
   b.endObject();
 };
@@ -2740,6 +3792,8 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
     b.endObject();
   }
   
+  serializeStability(b, iface.docs);
+  
   b.key("package").i32(iface.packageIndex);
   b.endObject();
 };
@@ -2821,8 +3875,11 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
   let pkgMap = new HashMap<String, {name: PackageName | null, items: Array<AstItem>}>();
   let nestedSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
   
-  // Populate pkgMap and nestedSources with ALL packages
-  var idx = 0;
+  let mainPkg = pkgSources[0];
+  let mainKey = formatPackageName(mainPkg.name);
+  pkgMap[mainKey] = mainPkg;
+  
+  var idx = 1;
   while (idx < pkgSources.length) {
     let src = pkgSources[idx];
     let key = formatPackageName(src.name);
@@ -2831,7 +3888,7 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
     idx = idx + 1;
   }
 
-  // Pre-sort packages alphabetically by full name (so independent packages sort alphabetically)
+  // Pre-sort nested packages alphabetically by full name (so independent packages sort alphabetically)
   var i = 0;
   while (i < nestedSources.length) {
     var j = i + 1;
@@ -2896,6 +3953,8 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
     idx = idx + 1;
   }
 
+  visit(mainKey);
+
   return sorted;
 };
 
@@ -2952,7 +4011,8 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
           if (imp.kind.tag == ExternKindTag.Interface) {
             let kind = imp.kind;
             let name = kind.name as Id;
-            let inlineIface = new InterfaceDef(new Docs(name.span), name);
+            let nameId = new Id("[import]" + name.name, name.span);
+            let inlineIface = new InterfaceDef(imp.docs, nameId);
             inlineIface.items = kind.items as Array<InterfaceItem>;
             inlineIface.isInline = true;
             inlineIface.packageIndex = pIdxVar;
@@ -2963,7 +4023,8 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
           if (exp.kind.tag == ExternKindTag.Interface) {
             let kind = exp.kind;
             let name = kind.name as Id;
-            let inlineIface = new InterfaceDef(new Docs(name.span), name);
+            let nameId = new Id("[export]" + name.name, name.span);
+            let inlineIface = new InterfaceDef(exp.docs, nameId);
             inlineIface.items = kind.items as Array<InterfaceItem>;
             inlineIface.isInline = true;
             inlineIface.packageIndex = pIdxVar;
@@ -3030,6 +4091,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
  * Serialize a parsed AST to JSON format matching wasm-tools output.
  */
 export let serializeAstToJson = (ast: Ast): String => {
+  filterGatedItems(ast);
   let ctx = new SerializeContext();
   collectFromAst(ctx, ast);
   registerAllTypesAndScopeSignatures(ctx);
