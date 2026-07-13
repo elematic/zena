@@ -3869,7 +3869,7 @@ let collectPackageDeps = (items: Array<AstItem>, deps: Array<String>): void => {
   }
 };
 
-let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<AstItem>}>): Array<{name: PackageName | null, items: Array<AstItem>}> => {
+let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<AstItem>}>, pkgDeps: HashMap<String, Array<String>>): Array<{name: PackageName | null, items: Array<AstItem>}> => {
   let sorted = new Array<{name: PackageName | null, items: Array<AstItem>}>();
   let visited = new HashMap<String, i32>();
   let pkgMap = new HashMap<String, {name: PackageName | null, items: Array<AstItem>}>();
@@ -3914,8 +3914,7 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
       let src = srcObj as {name: PackageName | null, items: Array<AstItem>};
       visited[key] = 1;
       
-      let deps = new Array<String>();
-      collectPackageDeps(src.items, deps);
+      let deps = if (let (true, d) = pkgDeps.get(key)) d else new Array<String>();
       
       var dIdx = 0;
       while (dIdx < deps.length) {
@@ -3958,7 +3957,7 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
   return sorted;
 };
 
-let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
+let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, Array<String>>): void => {
   let pkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
   pkgSources.push({name: ast.packageName, items: ast.items});
   
@@ -3969,7 +3968,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
     pIdx = pIdx + 1;
   }
   
-  let finalPkgSources = sortPackages(pkgSources);
+  let finalPkgSources = sortPackages(pkgSources, pkgDeps);
   
   let globalInterfaces = new Array<InterfaceDef>();
   let globalWorlds = new Array<WorldDef>();
@@ -4091,9 +4090,26 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
  * Serialize a parsed AST to JSON format matching wasm-tools output.
  */
 export let serializeAstToJson = (ast: Ast): String => {
+  let pkgDeps = new HashMap<String, Array<String>>();
+  
+  let mainKey = formatPackageName(ast.packageName);
+  let mainDeps = new Array<String>();
+  collectPackageDeps(ast.items, mainDeps);
+  pkgDeps[mainKey] = mainDeps;
+  
+  var pIdx = 0;
+  while (pIdx < ast.nestedPackages.length) {
+    let np = ast.nestedPackages[pIdx];
+    let key = formatPackageName(np.name);
+    let deps = new Array<String>();
+    collectPackageDeps(np.items, deps);
+    pkgDeps[key] = deps;
+    pIdx = pIdx + 1;
+  }
+
   filterGatedItems(ast);
   let ctx = new SerializeContext();
-  collectFromAst(ctx, ast);
+  collectFromAst(ctx, ast, pkgDeps);
   registerAllTypesAndScopeSignatures(ctx);
   
   let b = new JsonBuilder();
