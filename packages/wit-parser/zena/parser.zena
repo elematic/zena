@@ -207,33 +207,43 @@ export enum UsePathTag {
 /**
  * A path in a use statement.
  */
-export class UsePath {
+export sealed class UsePath {
+  case IdUsePath, PackageUsePath
+
   tag: UsePathTag;
   var id: Id | null = null;           // For Id tag
   var packageId: PackageName | null = null;  // For Package tag
   var name: Id | null = null;         // For Package tag (interface name)
 
-  new(tag: UsePathTag) : tag = tag;
+  new(this.tag);
 
   static fromId(id: Id): UsePath {
-    let p = new UsePath(UsePathTag.Id);
-    p.id = id;
-    return p;
+    return new IdUsePath(id);
   }
 
   static fromPackage(pkgId: PackageName, name: Id): UsePath {
-    let p = new UsePath(UsePathTag.Package);
-    p.packageId = pkgId;
-    p.name = name;
-    return p;
+    return new PackageUsePath(pkgId, name);
   }
 
   /** Get the final name component. */
   getName(): Id {
-    if (this.tag == UsePathTag.Id) {
-      return this.id as Id;
-    }
-    return this.name as Id;
+    return match (this) {
+      case let IdUsePath {id}: id
+      case let PackageUsePath {name}: name
+    };
+  }
+}
+
+export final class IdUsePath extends UsePath {
+  new(id: Id) : super(UsePathTag.Id) {
+    this.id = id;
+  }
+}
+
+export final class PackageUsePath extends UsePath {
+  new(pkgId: PackageName, name: Id) : super(UsePathTag.Package) {
+    this.packageId = pkgId;
+    this.name = name;
   }
 }
 
@@ -282,95 +292,141 @@ export enum TypeTag {
 /**
  * A type in the unresolved AST.
  */
-export class Type {
+export sealed class Type {
+  case U8Type, U16Type, U32Type, U64Type
+  case S8Type, S16Type, S32Type, S64Type
+  case F32Type, F64Type
+  case CharType, BoolType, StringType
+  case ErrorContextType
+  case ListType, OptionType, ResultType, TupleType, FutureType, StreamType, MapType
+  case OwnType, BorrowType, NameType
+
   tag: TypeTag;
   var span: Span;
-  
-  // For List, Option, Future, Stream (inner type)
+
+  // Keep these fields on the base class as nullable to maintain backwards-compatibility
   var inner: Type | null = null;
-  var fixedLength = -1;
-  
-  // For Result (ok and err types, both optional)
+  var fixedLength = 0 - 1; // -1
   var okType: Type | null = null;
   var errType: Type | null = null;
-  
-  // For Tuple (element types)
   var types: Array<Type> | null = null;
-  
-  // For Map (key and value)
   var keyType: Type | null = null;
   var valueType: Type | null = null;
-  
-  // For Name (type reference by name)
-  var name: Id | null;
+  var name: Id | null = null;
 
-  new(tag: TypeTag, span: Span) : tag = tag, span = span;
+  new(this.tag, this.span);
 
   static primitive(tag: TypeTag, span: Span): Type {
-    return new Type(tag, span);
+    return match (tag) {
+      case TypeTag.U8: new U8Type(span)
+      case TypeTag.U16: new U16Type(span)
+      case TypeTag.U32: new U32Type(span)
+      case TypeTag.U64: new U64Type(span)
+      case TypeTag.S8: new S8Type(span)
+      case TypeTag.S16: new S16Type(span)
+      case TypeTag.S32: new S32Type(span)
+      case TypeTag.S64: new S64Type(span)
+      case TypeTag.F32: new F32Type(span)
+      case TypeTag.F64: new F64Type(span)
+      case TypeTag.Char: new CharType(span)
+      case TypeTag.Bool: new BoolType(span)
+      case TypeTag.String: new StringType(span)
+      case TypeTag.ErrorContext: new ErrorContextType(span)
+      case _: throw new Error("not a primitive type tag")
+    };
   }
 
   static list(inner: Type, span: Span): Type {
-    let t = new Type(TypeTag.List, span);
-    t.inner = inner;
-    return t;
+    return new ListType(inner, span);
   }
 
   static option(inner: Type, span: Span): Type {
-    let t = new Type(TypeTag.Option, span);
-    t.inner = inner;
-    return t;
+    return new OptionType(inner, span);
   }
 
   static result(ok: Type | null, err: Type | null, span: Span): Type {
-    let t = new Type(TypeTag.Result, span);
-    t.okType = ok;
-    t.errType = err;
-    return t;
+    return new ResultType(ok, err, span);
   }
 
   static tuple(types: Array<Type>, span: Span): Type {
-    let t = new Type(TypeTag.Tuple, span);
-    t.types = types;
-    return t;
+    return new TupleType(types, span);
   }
 
   static future(inner: Type | null, span: Span): Type {
-    let t = new Type(TypeTag.Future, span);
-    t.inner = inner;
-    return t;
+    return new FutureType(inner, span);
   }
 
   static stream(inner: Type | null, span: Span): Type {
-    let t = new Type(TypeTag.Stream, span);
-    t.inner = inner;
-    return t;
+    return new StreamType(inner, span);
   }
 
   static map(key: Type, value: Type, span: Span): Type {
-    let t = new Type(TypeTag.Map, span);
-    t.keyType = key;
-    t.valueType = value;
-    return t;
+    return new MapType(key, value, span);
   }
 
   static own(inner: Type, span: Span): Type {
-    let t = new Type(TypeTag.Own, span);
-    t.inner = inner;
-    return t;
+    return new OwnType(inner, span);
   }
 
   static borrow(inner: Type, span: Span): Type {
-    let t = new Type(TypeTag.Borrow, span);
-    t.inner = inner;
-    return t;
+    return new BorrowType(inner, span);
   }
 
   static named(name: Id, span: Span): Type {
-    let t = new Type(TypeTag.Name, span);
-    t.name = name;
-    return t;
+    return new NameType(name, span);
   }
+}
+
+export final class U8Type extends Type { new(span: Span) : super(TypeTag.U8, span); }
+export final class U16Type extends Type { new(span: Span) : super(TypeTag.U16, span); }
+export final class U32Type extends Type { new(span: Span) : super(TypeTag.U32, span); }
+export final class U64Type extends Type { new(span: Span) : super(TypeTag.U64, span); }
+export final class S8Type extends Type { new(span: Span) : super(TypeTag.S8, span); }
+export final class S16Type extends Type { new(span: Span) : super(TypeTag.S16, span); }
+export final class S32Type extends Type { new(span: Span) : super(TypeTag.S32, span); }
+export final class S64Type extends Type { new(span: Span) : super(TypeTag.S64, span); }
+export final class F32Type extends Type { new(span: Span) : super(TypeTag.F32, span); }
+export final class F64Type extends Type { new(span: Span) : super(TypeTag.F64, span); }
+export final class CharType extends Type { new(span: Span) : super(TypeTag.Char, span); }
+export final class BoolType extends Type { new(span: Span) : super(TypeTag.Bool, span); }
+export final class StringType extends Type { new(span: Span) : super(TypeTag.String, span); }
+export final class ErrorContextType extends Type { new(span: Span) : super(TypeTag.ErrorContext, span); }
+
+export final class ListType extends Type {
+  new(inner: Type, span: Span) : super(TypeTag.List, span) { this.inner = inner; }
+}
+export final class OptionType extends Type {
+  new(inner: Type, span: Span) : super(TypeTag.Option, span) { this.inner = inner; }
+}
+export final class ResultType extends Type {
+  new(ok: Type | null, err: Type | null, span: Span) : super(TypeTag.Result, span) {
+    this.okType = ok;
+    this.errType = err;
+  }
+}
+export final class TupleType extends Type {
+  new(types: Array<Type>, span: Span) : super(TypeTag.Tuple, span) { this.types = types; }
+}
+export final class FutureType extends Type {
+  new(inner: Type | null, span: Span) : super(TypeTag.Future, span) { this.inner = inner; }
+}
+export final class StreamType extends Type {
+  new(inner: Type | null, span: Span) : super(TypeTag.Stream, span) { this.inner = inner; }
+}
+export final class MapType extends Type {
+  new(key: Type, value: Type, span: Span) : super(TypeTag.Map, span) {
+    this.keyType = key;
+    this.valueType = value;
+  }
+}
+export final class OwnType extends Type {
+  new(inner: Type, span: Span) : super(TypeTag.Own, span) { this.inner = inner; }
+}
+export final class BorrowType extends Type {
+  new(inner: Type, span: Span) : super(TypeTag.Borrow, span) { this.inner = inner; }
+}
+export final class NameType extends Type {
+  new(name: Id, span: Span) : super(TypeTag.Name, span) { this.name = name; }
 }
 
 // ============================================================================
@@ -490,65 +546,80 @@ export enum TypeDefTag {
 /**
  * A type definition.
  */
-export class TypeDef {
+export sealed class TypeDef {
+  case AliasDef, RecordDef, FlagsDef, VariantDef, EnumDef, ResourceDef
+
   var docs: Docs;
   var tag: TypeDefTag;
   var name: Id;
-  
-  // For Alias
+
   var aliasType: Type | null = null;
-  
-  // For Record
   var fields: Array<Field> | null = null;
-  
-  // For Flags
   var flags: Array<FlagDef> | null = null;
-  
-  // For Variant
   var cases: Array<Case> | null = null;
-  
-  // For Enum
   var enumCases: Array<EnumCaseDef> | null = null;
-  
-  // For Resource
   var resourceFuncs: Array<ResourceFunc> | null = null;
 
-  new(docs: Docs, tag: TypeDefTag, name: Id) : docs = docs, tag = tag, name = name;
+  new(this.docs, this.tag, this.name);
 
   static alias(docs: Docs, name: Id, type: Type): TypeDef {
-    let td = new TypeDef(docs, TypeDefTag.Alias, name);
-    td.aliasType = type;
-    return td;
+    return new AliasDef(docs, name, type);
   }
 
   static record(docs: Docs, name: Id, fields: Array<Field>): TypeDef {
-    let td = new TypeDef(docs, TypeDefTag.Record, name);
-    td.fields = fields;
-    return td;
+    return new RecordDef(docs, name, fields);
   }
 
   static flagsDef(docs: Docs, name: Id, flags: Array<FlagDef>): TypeDef {
-    let td = new TypeDef(docs, TypeDefTag.Flags, name);
-    td.flags = flags;
-    return td;
+    return new FlagsDef(docs, name, flags);
   }
 
   static variant(docs: Docs, name: Id, cases: Array<Case>): TypeDef {
-    let td = new TypeDef(docs, TypeDefTag.Variant, name);
-    td.cases = cases;
-    return td;
+    return new VariantDef(docs, name, cases);
   }
 
   static enumDef(docs: Docs, name: Id, cases: Array<EnumCaseDef>): TypeDef {
-    let td = new TypeDef(docs, TypeDefTag.Enum, name);
-    td.enumCases = cases;
-    return td;
+    return new EnumDef(docs, name, cases);
   }
 
   static resource(docs: Docs, name: Id, funcs: Array<ResourceFunc>): TypeDef {
-    let td = new TypeDef(docs, TypeDefTag.Resource, name);
-    td.resourceFuncs = funcs;
-    return td;
+    return new ResourceDef(docs, name, funcs);
+  }
+}
+
+export final class AliasDef extends TypeDef {
+  new(docs: Docs, name: Id, aliasType: Type) : super(docs, TypeDefTag.Alias, name) {
+    this.aliasType = aliasType;
+  }
+}
+
+export final class RecordDef extends TypeDef {
+  new(docs: Docs, name: Id, fields: Array<Field>) : super(docs, TypeDefTag.Record, name) {
+    this.fields = fields;
+  }
+}
+
+export final class FlagsDef extends TypeDef {
+  new(docs: Docs, name: Id, flags: Array<FlagDef>) : super(docs, TypeDefTag.Flags, name) {
+    this.flags = flags;
+  }
+}
+
+export final class VariantDef extends TypeDef {
+  new(docs: Docs, name: Id, cases: Array<Case>) : super(docs, TypeDefTag.Variant, name) {
+    this.cases = cases;
+  }
+}
+
+export final class EnumDef extends TypeDef {
+  new(docs: Docs, name: Id, enumCases: Array<EnumCaseDef>) : super(docs, TypeDefTag.Enum, name) {
+    this.enumCases = enumCases;
+  }
+}
+
+export final class ResourceDef extends TypeDef {
+  new(docs: Docs, name: Id, resourceFuncs: Array<ResourceFunc>) : super(docs, TypeDefTag.Resource, name) {
+    this.resourceFuncs = resourceFuncs;
   }
 }
 
@@ -568,30 +639,44 @@ export enum InterfaceItemTag {
 /**
  * An item in an interface.
  */
-export class InterfaceItem {
+export sealed class InterfaceItem {
+  case InterfaceTypeDef, InterfaceFunc, InterfaceUse
+
   var tag: InterfaceItemTag;
   var typeDef: TypeDef | null = null;
   var func: NamedFunc | null = null;
   var use: Use | null = null;
 
-  new(tag: InterfaceItemTag) : tag = tag;
+  new(this.tag);
 
   static fromTypeDef(td: TypeDef): InterfaceItem {
-    let item = new InterfaceItem(InterfaceItemTag.TypeDef);
-    item.typeDef = td;
-    return item;
+    return new InterfaceTypeDef(td);
   }
 
   static fromFunc(f: NamedFunc): InterfaceItem {
-    let item = new InterfaceItem(InterfaceItemTag.Func);
-    item.func = f;
-    return item;
+    return new InterfaceFunc(f);
   }
 
   static fromUse(u: Use): InterfaceItem {
-    let item = new InterfaceItem(InterfaceItemTag.Use);
-    item.use = u;
-    return item;
+    return new InterfaceUse(u);
+  }
+}
+
+export final class InterfaceTypeDef extends InterfaceItem {
+  new(typeDef: TypeDef) : super(InterfaceItemTag.TypeDef) {
+    this.typeDef = typeDef;
+  }
+}
+
+export final class InterfaceFunc extends InterfaceItem {
+  new(func: NamedFunc) : super(InterfaceItemTag.Func) {
+    this.func = func;
+  }
+}
+
+export final class InterfaceUse extends InterfaceItem {
+  new(use: Use) : super(InterfaceItemTag.Use) {
+    this.use = use;
   }
 }
 
@@ -635,33 +720,47 @@ export enum ExternKindTag {
 /**
  * The kind of an import or export.
  */
-export class ExternKind {
+export sealed class ExternKind {
+  case InterfaceExtern, PathExtern, FuncExtern
+
   var tag: ExternKindTag;
   var name: Id | null = null;           // For Interface and Func
   var items: Array<InterfaceItem> | null = null;  // For Interface
   var path: UsePath | null = null;      // For Path
   var funcDef: Func | null = null;      // For Func
 
-  new(tag: ExternKindTag) : tag = tag;
+  new(this.tag);
 
   static iface(name: Id, items: Array<InterfaceItem>): ExternKind {
-    let k = new ExternKind(ExternKindTag.Interface);
-    k.name = name;
-    k.items = items;
-    return k;
+    return new InterfaceExtern(name, items);
   }
 
   static fromPath(path: UsePath): ExternKind {
-    let k = new ExternKind(ExternKindTag.Path);
-    k.path = path;
-    return k;
+    return new PathExtern(path);
   }
 
   static makeFunc(name: Id, f: Func): ExternKind {
-    let k = new ExternKind(ExternKindTag.Func);
-    k.name = name;
-    k.funcDef = f;
-    return k;
+    return new FuncExtern(name, f);
+  }
+}
+
+export final class InterfaceExtern extends ExternKind {
+  new(name: Id, items: Array<InterfaceItem>) : super(ExternKindTag.Interface) {
+    this.name = name;
+    this.items = items;
+  }
+}
+
+export final class PathExtern extends ExternKind {
+  new(path: UsePath) : super(ExternKindTag.Path) {
+    this.path = path;
+  }
+}
+
+export final class FuncExtern extends ExternKind {
+  new(name: Id, funcDef: Func) : super(ExternKindTag.Func) {
+    this.name = name;
+    this.funcDef = funcDef;
   }
 }
 
@@ -720,7 +819,9 @@ export enum WorldItemTag {
 /**
  * An item in a world.
  */
-export class WorldItem {
+export sealed class WorldItem {
+  case WorldImport, WorldExport, WorldUse, WorldTypeDef, WorldInclude
+
   var tag: WorldItemTag;
   var importItem: Import | null = null;
   var exportItem: Export | null = null;
@@ -729,39 +830,59 @@ export class WorldItem {
   var include: Include | null = null;
   var isIncluded = false;
   var isExplicit = false;
-  var packageIndex: i32 = -1;
+  var packageIndex: i32 = 0 - 1; // -1
   var inheritedDocs: Docs | null = null;
 
-  new(tag: WorldItemTag) : tag = tag;
+  new(this.tag);
 
   static fromImport(i: Import): WorldItem {
-    let item = new WorldItem(WorldItemTag.Import);
-    item.importItem = i;
-    return item;
+    return new WorldImport(i);
   }
 
   static fromExport(e: Export): WorldItem {
-    let item = new WorldItem(WorldItemTag.Export);
-    item.exportItem = e;
-    return item;
+    return new WorldExport(e);
   }
 
   static fromUse(u: Use): WorldItem {
-    let item = new WorldItem(WorldItemTag.Use);
-    item.use = u;
-    return item;
+    return new WorldUse(u);
   }
 
   static fromTypeDef(td: TypeDef): WorldItem {
-    let item = new WorldItem(WorldItemTag.TypeDef);
-    item.typeDef = td;
-    return item;
+    return new WorldTypeDef(td);
   }
 
   static fromInclude(i: Include): WorldItem {
-    let item = new WorldItem(WorldItemTag.Include);
-    item.include = i;
-    return item;
+    return new WorldInclude(i);
+  }
+}
+
+export final class WorldImport extends WorldItem {
+  new(importItem: Import) : super(WorldItemTag.Import) {
+    this.importItem = importItem;
+  }
+}
+
+export final class WorldExport extends WorldItem {
+  new(exportItem: Export) : super(WorldItemTag.Export) {
+    this.exportItem = exportItem;
+  }
+}
+
+export final class WorldUse extends WorldItem {
+  new(use: Use) : super(WorldItemTag.Use) {
+    this.use = use;
+  }
+}
+
+export final class WorldTypeDef extends WorldItem {
+  new(typeDef: TypeDef) : super(WorldItemTag.TypeDef) {
+    this.typeDef = typeDef;
+  }
+}
+
+export final class WorldInclude extends WorldItem {
+  new(include: Include) : super(WorldItemTag.Include) {
+    this.include = include;
   }
 }
 
@@ -814,30 +935,44 @@ export enum AstItemTag {
 /**
  * A top-level item in a WIT file.
  */
-export class AstItem {
+export sealed class AstItem {
+  case AstInterface, AstWorld, AstUse
+
   var tag: AstItemTag;
   var interfaceDef: InterfaceDef | null = null;
   var worldDef: WorldDef | null = null;
   var use: ToplevelUse | null = null;
 
-  new(tag: AstItemTag) : tag = tag;
+  new(this.tag);
 
   static fromInterface(i: InterfaceDef): AstItem {
-    let item = new AstItem(AstItemTag.Interface);
-    item.interfaceDef = i;
-    return item;
+    return new AstInterface(i);
   }
 
   static fromWorld(w: WorldDef): AstItem {
-    let item = new AstItem(AstItemTag.World);
-    item.worldDef = w;
-    return item;
+    return new AstWorld(w);
   }
 
   static fromUse(u: ToplevelUse): AstItem {
-    let item = new AstItem(AstItemTag.Use);
-    item.use = u;
-    return item;
+    return new AstUse(u);
+  }
+}
+
+export final class AstInterface extends AstItem {
+  new(interfaceDef: InterfaceDef) : super(AstItemTag.Interface) {
+    this.interfaceDef = interfaceDef;
+  }
+}
+
+export final class AstWorld extends AstItem {
+  new(worldDef: WorldDef) : super(AstItemTag.World) {
+    this.worldDef = worldDef;
+  }
+}
+
+export final class AstUse extends AstItem {
+  new(use: ToplevelUse) : super(AstItemTag.Use) {
+    this.use = use;
   }
 }
 

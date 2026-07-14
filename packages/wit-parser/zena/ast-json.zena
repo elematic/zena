@@ -1281,9 +1281,7 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
     let originalName = (t.name as Id).name;
     let newName = applyRename(originalName, renames);
     if (newName != originalName) {
-      let tClone = new Type(TypeTag.Name, t.span);
-      tClone.name = new Id(newName, (t.name as Id).span);
-      return tClone;
+      return Type.named(new Id(newName, (t.name as Id).span), t.span);
     }
     return t;
   }
@@ -1292,8 +1290,15 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
     if (t.inner != null) {
       let renamedInner = renameType(t.inner as Type, renames);
       if (renamedInner != t.inner) {
-        let tClone = new Type(t.tag, t.span);
-        tClone.inner = renamedInner;
+        let tClone = match (t.tag) {
+          case TypeTag.List: Type.list(renamedInner, t.span)
+          case TypeTag.Option: Type.option(renamedInner, t.span)
+          case TypeTag.Future: Type.future(renamedInner, t.span)
+          case TypeTag.Stream: Type.stream(renamedInner, t.span)
+          case TypeTag.Own: Type.own(renamedInner, t.span)
+          case TypeTag.Borrow: Type.borrow(renamedInner, t.span)
+          case _: Type.primitive(t.tag, t.span)
+        };
         tClone.fixedLength = t.fixedLength;
         return tClone;
       }
@@ -1305,10 +1310,7 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
     let newOk = if (t.okType != null) renameType(t.okType as Type, renames) else null;
     let newErr = if (t.errType != null) renameType(t.errType as Type, renames) else null;
     if (newOk != t.okType || newErr != t.errType) {
-      let tClone = new Type(TypeTag.Result, t.span);
-      tClone.okType = newOk;
-      tClone.errType = newErr;
-      return tClone;
+      return Type.result(newOk, newErr, t.span);
     }
     return t;
   }
@@ -1327,9 +1329,7 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
       idx = idx + 1;
     }
     if (changed) {
-      let tClone = new Type(TypeTag.Tuple, t.span);
-      tClone.types = newTypes;
-      return tClone;
+      return Type.tuple(newTypes, t.span);
     }
     return t;
   }
@@ -1338,10 +1338,7 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
     let newKey = renameType(t.keyType as Type, renames);
     let newVal = renameType(t.valueType as Type, renames);
     if (newKey != t.keyType || newVal != t.valueType) {
-      let tClone = new Type(TypeTag.Map, t.span);
-      tClone.keyType = newKey;
-      tClone.valueType = newVal;
-      return tClone;
+      return Type.map(newKey, newVal, t.span);
     }
     return t;
   }
@@ -1475,13 +1472,14 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   }
   
   if (changed) {
-    let tdClone = new TypeDef(td.docs, td.tag, new Id(newName, td.name.span));
-    tdClone.aliasType = newAlias;
-    tdClone.fields = newFields;
-    tdClone.flags = td.flags;
-    tdClone.cases = newCases;
-    tdClone.enumCases = td.enumCases;
-    tdClone.resourceFuncs = newResourceFuncs;
+    let tdClone = match (td.tag) {
+      case TypeDefTag.Alias: TypeDef.alias(td.docs, new Id(newName, td.name.span), newAlias as Type)
+      case TypeDefTag.Record: TypeDef.record(td.docs, new Id(newName, td.name.span), newFields as Array<Field>)
+      case TypeDefTag.Flags: TypeDef.flagsDef(td.docs, new Id(newName, td.name.span), td.flags as Array<FlagDef>)
+      case TypeDefTag.Variant: TypeDef.variant(td.docs, new Id(newName, td.name.span), newCases as Array<Case>)
+      case TypeDefTag.Enum: TypeDef.enumDef(td.docs, new Id(newName, td.name.span), td.enumCases as Array<EnumCaseDef>)
+      case TypeDefTag.Resource: TypeDef.resource(td.docs, new Id(newName, td.name.span), newResourceFuncs as Array<ResourceFunc>)
+    };
     return tdClone;
   }
   
@@ -1510,11 +1508,11 @@ let renameImport = (imp: Import, renames: Array<IncludeName>): Import => {
   }
   
   if (changed) {
-    let kindClone = new ExternKind(kind.tag);
-    kindClone.name = newName;
-    kindClone.items = kind.items;
-    kindClone.path = kind.path;
-    kindClone.funcDef = newFuncDef;
+    let kindClone = match (kind.tag) {
+      case ExternKindTag.Interface: ExternKind.iface(newName as Id, kind.items as Array<InterfaceItem>)
+      case ExternKindTag.Path: ExternKind.fromPath(kind.path as UsePath)
+      case ExternKindTag.Func: ExternKind.makeFunc(newName as Id, newFuncDef as Func)
+    };
     return new Import(imp.docs, kindClone);
   }
   return imp;
@@ -1542,11 +1540,11 @@ let renameExport = (exp: Export, renames: Array<IncludeName>): Export => {
   }
   
   if (changed) {
-    let kindClone = new ExternKind(kind.tag);
-    kindClone.name = newName;
-    kindClone.items = kind.items;
-    kindClone.path = kind.path;
-    kindClone.funcDef = newFuncDef;
+    let kindClone = match (kind.tag) {
+      case ExternKindTag.Interface: ExternKind.iface(newName as Id, kind.items as Array<InterfaceItem>)
+      case ExternKindTag.Path: ExternKind.fromPath(kind.path as UsePath)
+      case ExternKindTag.Func: ExternKind.makeFunc(newName as Id, newFuncDef as Func)
+    };
     return new Export(exp.docs, kindClone);
   }
   return exp;
@@ -1584,33 +1582,25 @@ let renameWorldItem = (item: WorldItem, renames: Array<IncludeName>): WorldItem 
     let td = item.typeDef as TypeDef;
     let renamedTd = renameTypeDef(td, renames);
     if (renamedTd != td) {
-      let clonedItem = new WorldItem(WorldItemTag.TypeDef);
-      clonedItem.typeDef = renamedTd;
-      return clonedItem;
+      return WorldItem.fromTypeDef(renamedTd);
     }
   } else if (item.tag == WorldItemTag.Import) {
     let imp = item.importItem as Import;
     let renamedImp = renameImport(imp, renames);
     if (renamedImp != imp) {
-      let clonedItem = new WorldItem(WorldItemTag.Import);
-      clonedItem.importItem = renamedImp;
-      return clonedItem;
+      return WorldItem.fromImport(renamedImp);
     }
   } else if (item.tag == WorldItemTag.Export) {
     let exp = item.exportItem as Export;
     let renamedExp = renameExport(exp, renames);
     if (renamedExp != exp) {
-      let clonedItem = new WorldItem(WorldItemTag.Export);
-      clonedItem.exportItem = renamedExp;
-      return clonedItem;
+      return WorldItem.fromExport(renamedExp);
     }
   } else if (item.tag == WorldItemTag.Use) {
     let u = item.use as Use;
     let renamedUse = renameUse(u, renames);
     if (renamedUse != u) {
-      let clonedItem = new WorldItem(WorldItemTag.Use);
-      clonedItem.use = renamedUse;
-      return clonedItem;
+      return WorldItem.fromUse(renamedUse);
     }
   }
   return item;
@@ -1843,34 +1833,47 @@ let expandWorldItems = (ctx: SerializeContext, world: WorldDef): Array<WorldItem
         }
       } else {
         var renamedItem = renameWorldItem(item, renames);
-        let cloned = new WorldItem(item.tag);
+        let combineWith = if (visited.size > 1) currentInheritedDocs else null;
+        
+        let cloned = match (item.tag) {
+          case WorldItemTag.Import: {
+            let imp = renamedItem.importItem as Import;
+            let clonedImport = new Import(combineDocs(combineWith, imp.docs), imp.kind);
+            let c = WorldItem.fromImport(clonedImport);
+            c.isExplicit = imp.docs != null;
+            c
+          }
+          case WorldItemTag.Export: {
+            let exp = renamedItem.exportItem as Export;
+            let clonedExport = new Export(combineDocs(combineWith, exp.docs), exp.kind);
+            let c = WorldItem.fromExport(clonedExport);
+            c.isExplicit = exp.docs != null;
+            c
+          }
+          case WorldItemTag.Use: {
+            let u = renamedItem.use as Use;
+            let clonedUse = new Use(combineDocs(combineWith, u.docs), u.from, u.names);
+            let c = WorldItem.fromUse(clonedUse);
+            c.isExplicit = u.docs != null;
+            c
+          }
+          case WorldItemTag.TypeDef: {
+            let c = WorldItem.fromTypeDef(renamedItem.typeDef as TypeDef);
+            c.isExplicit = true;
+            c
+          }
+          case WorldItemTag.Include: {
+            let c = WorldItem.fromInclude(renamedItem.include as Include);
+            c.isExplicit = true;
+            c
+          }
+        };
+
         cloned.packageIndex = w.packageIndex;
         if (renames.length > 0 || visited.size > 1) {
           cloned.isIncluded = true;
         }
-        
-        let combineWith = if (visited.size > 1) currentInheritedDocs else null;
         cloned.inheritedDocs = combineWith;
-        
-        if (item.tag == WorldItemTag.Import) {
-          let imp = renamedItem.importItem as Import;
-          cloned.importItem = new Import(combineDocs(combineWith, imp.docs), imp.kind);
-          cloned.isExplicit = imp.docs != null;
-        } else if (item.tag == WorldItemTag.Export) {
-          let exp = renamedItem.exportItem as Export;
-          cloned.exportItem = new Export(combineDocs(combineWith, exp.docs), exp.kind);
-          cloned.isExplicit = exp.docs != null;
-        } else if (item.tag == WorldItemTag.Use) {
-          let u = renamedItem.use as Use;
-          cloned.use = new Use(combineDocs(combineWith, u.docs), u.from, u.names);
-          cloned.isExplicit = u.docs != null;
-        } else {
-          cloned.importItem = renamedItem.importItem;
-          cloned.exportItem = renamedItem.exportItem;
-          cloned.use = renamedItem.use;
-          cloned.typeDef = renamedItem.typeDef;
-          cloned.include = renamedItem.include;
-        }
         
         result.push(cloned);
       }
