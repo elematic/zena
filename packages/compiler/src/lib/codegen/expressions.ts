@@ -12698,6 +12698,16 @@ function generateMatchPatternCheck(
   body: number[],
 ) {
   switch ((pattern as any).type) {
+    case NodeType.BindingPattern:
+      generateMatchPatternCheck(
+        ctx,
+        (pattern as BindingPattern).pattern,
+        discriminantLocal,
+        discriminantType,
+        body,
+      );
+      break;
+
     case NodeType.Identifier:
       // Check if this is a sealed variant pattern (has inferredType from checker)
       if ((pattern as any).inferredType?.kind === TypeKind.Class) {
@@ -13334,6 +13344,17 @@ function generateMatchPatternBindings(
   discriminantType: number[],
   body: number[],
 ) {
+  if ((pattern as any).type === NodeType.BindingPattern) {
+    generateMatchPatternBindings(
+      ctx,
+      (pattern as BindingPattern).pattern,
+      discriminantLocal,
+      discriminantType,
+      body,
+    );
+    return;
+  }
+
   if ((pattern as any).type === NodeType.AsPattern) {
     const asPattern = pattern as AsPattern;
 

@@ -4765,6 +4765,12 @@ function subtractType(
     | BooleanLiteral
     | NullLiteral,
 ): Type {
+  if (type.kind === TypeKind.This) {
+    if (ctx.currentClass) {
+      type = ctx.currentClass;
+    }
+  }
+
   if (type.kind === TypeKind.Union) {
     const ut = type as UnionType;
     const remainingMembers: Type[] = [];
@@ -4841,7 +4847,9 @@ function subtractType(
       } else if (typeMap) {
         instantiatedV = ctx.substituteTypeParams(v, typeMap) as ClassType;
       }
-      if (isAssignableTo(ctx, instantiatedV, patType)) {
+      const isAssignable = isAssignableTo(ctx, instantiatedV, patType);
+      console.log(`[DEBUG] variant: ${instantiatedV.name}, patType: ${(patType as any).name ?? patType.kind}, isAssignable: ${isAssignable}, currentClass: ${ctx.currentClass?.name}`);
+      if (isAssignable) {
         // Pattern directly covers this variant
         changed = true;
         continue;

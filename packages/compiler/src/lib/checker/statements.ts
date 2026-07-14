@@ -2956,6 +2956,19 @@ function checkClassBodies(ctx: CheckerContext, decl: ClassDeclaration) {
   const classType = decl.inferredType as ClassType;
   if (!classType) return;
 
+  // Populate sealed variants early so they are available for match exhaustiveness
+  // checking inside method bodies.
+  if (decl.isSealed && decl.sealedVariants) {
+    classType.sealedVariants = [];
+    for (const variant of decl.sealedVariants) {
+      const variantName = variant.name.name;
+      const existingType = ctx.resolveType(variantName);
+      if (existingType && existingType.kind === TypeKind.Class) {
+        classType.sealedVariants.push(existingType as ClassType);
+      }
+    }
+  }
+
   const typeParameters = classType.typeParameters ?? [];
   const superType = classType.superType;
 
