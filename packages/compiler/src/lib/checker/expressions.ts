@@ -4848,7 +4848,6 @@ function subtractType(
         instantiatedV = ctx.substituteTypeParams(v, typeMap) as ClassType;
       }
       const isAssignable = isAssignableTo(ctx, instantiatedV, patType);
-      console.log(`[DEBUG] variant: ${instantiatedV.name}, patType: ${(patType as any).name ?? patType.kind}, isAssignable: ${isAssignable}, currentClass: ${ctx.currentClass?.name}`);
       if (isAssignable) {
         // Pattern directly covers this variant
         changed = true;
