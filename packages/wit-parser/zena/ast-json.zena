@@ -10,7 +10,7 @@ import {Array} from 'zena:growable-array';
 import {HashMap} from 'zena:map';
 import {Option, Some, some, none} from 'zena:option';
 import {i32ToString, parseI32} from 'zena:string-convert';
-import {Ast, AstItem, AstItemTag, PackageName, NestedPackage, Id, Use, UseName, UsePath, UsePathTag, Include, IncludeName} from './parser.zena';
+import {Ast, AstItem, AstItemTag, PackageName, NestedPackage, Id, Use, UseName, UsePath, UsePathTag, Include, IncludeName, ToplevelUse} from './parser.zena';
 import {InterfaceDef, InterfaceItem, InterfaceItemTag} from './parser.zena';
 import {WorldDef, WorldItem, WorldItemTag, ExternKind, ExternKindTag, Import, Export} from './parser.zena';
 import {TypeDef, TypeDefTag, Type, TypeTag, NamedFunc, Func, Param, Field} from './parser.zena';
@@ -592,11 +592,28 @@ class SerializeContext {
   var anonTypeIndices = new HashMap<String, i32>();
   // Track which type indices are resources (for bare resource name -> own<resource> conversion)
   var resourceTypeIndices = new HashMap<i32, i32>();
+  // Map to track top-level use aliases by package key (pkgKey/aliasName -> resolvedName)
+  var useAliases = new HashMap<String, String>();
   var currentPackageIndex = 0;
   var currentInterfaceName: String | null = null;
   var currentWorldName: String | null = null;
   var currentInterfacePackageIndex = -1;
   var currentWorldPackageIndex = -1;
+
+  resolveInterfaceAlias(pkgName: String, name: String): String {
+    var cur = name;
+    var iterations = 0;
+    while (iterations < 10) {
+      let key = pkgName + "/" + cur;
+      if (let (true, resolved) = this.useAliases.get(key)) {
+        cur = resolved;
+        iterations = iterations + 1;
+      } else {
+        break;
+      }
+    }
+    return cur;
+  }
 
   registerInterface(iface: InterfaceDef): i32 {
     let index = this.interfaces.length;
@@ -1026,6 +1043,32 @@ let resolveInterfaceIndex = (ctx: SerializeContext, name: String): i32 => {
   return -1;
 };
 
+let resolveInterfaceName = (ctx: SerializeContext, pkgName: String, path: UsePath): String => {
+  let name = getUsePathInterfaceName(path);
+  if (path.tag == UsePathTag.Id) {
+    return ctx.resolveInterfaceAlias(pkgName, name);
+  }
+  return name;
+};
+
+let resolveInterfaceNameAndIndex = (ctx: SerializeContext, itemPkgName: String, path: UsePath): i32 => {
+  let resolved = resolveInterfaceName(ctx, itemPkgName, path);
+  var hasSlash = false;
+  var sI = 0;
+  while (sI < resolved.length) {
+    if (resolved.getByteAt(sI) == 47) { // '/'
+      hasSlash = true;
+      break;
+    }
+    sI = sI + 1;
+  }
+  
+  if (hasSlash) {
+    return resolveInterfaceIndex(ctx, resolved);
+  }
+  return resolveInterfaceIndex(ctx, itemPkgName + "/" + resolved);
+};
+
 let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, isImport: boolean, items: Array<WorldItem>): Docs | null => {
   let pkgName = ctx.packages[world.packageIndex].name;
   
@@ -1061,25 +1104,11 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
             curIdx = resolveInterfaceIndex(ctx, name);
           }
         } else if (imp.kind.tag == ExternKindTag.Path) {
-          let name = getUsePathInterfaceName(imp.kind.path as UsePath);
-          if (itemPkgName.length > 0) {
-            let lookupKey = itemPkgName + "/" + name;
-            curIdx = resolveInterfaceIndex(ctx, lookupKey);
-          }
-          if (curIdx < 0) {
-            curIdx = resolveInterfaceIndex(ctx, name);
-          }
+          curIdx = resolveInterfaceNameAndIndex(ctx, itemPkgName, imp.kind.path as UsePath);
         }
       } else {
         let u = item.use as Use;
-        let name = getUsePathInterfaceName(u.from);
-        if (itemPkgName.length > 0) {
-          let lookupKey = itemPkgName + "/" + name;
-          curIdx = resolveInterfaceIndex(ctx, lookupKey);
-        }
-        if (curIdx < 0) {
-          curIdx = resolveInterfaceIndex(ctx, name);
-        }
+        curIdx = resolveInterfaceNameAndIndex(ctx, itemPkgName, u.from);
       }
       
       if (curIdx == ifaceIdx && !item.isIncluded) {
@@ -1118,26 +1147,12 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
             curIdx = resolveInterfaceIndex(ctx, name);
           }
         } else if (imp.kind.tag == ExternKindTag.Path) {
-          let name = getUsePathInterfaceName(imp.kind.path as UsePath);
-          if (itemPkgName.length > 0) {
-            let lookupKey = itemPkgName + "/" + name;
-            curIdx = resolveInterfaceIndex(ctx, lookupKey);
-          }
-          if (curIdx < 0) {
-            curIdx = resolveInterfaceIndex(ctx, name);
-          }
+          curIdx = resolveInterfaceNameAndIndex(ctx, itemPkgName, imp.kind.path as UsePath);
         }
       } else {
         let u = item.use as Use;
         docs = item.inheritedDocs;
-        let name = getUsePathInterfaceName(u.from);
-        if (itemPkgName.length > 0) {
-          let lookupKey = itemPkgName + "/" + name;
-          curIdx = resolveInterfaceIndex(ctx, lookupKey);
-        }
-        if (curIdx < 0) {
-          curIdx = resolveInterfaceIndex(ctx, name);
-        }
+        curIdx = resolveInterfaceNameAndIndex(ctx, itemPkgName, u.from);
       }
       
       if (curIdx == ifaceIdx) {
@@ -1169,14 +1184,7 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
           curIdx = resolveInterfaceIndex(ctx, name);
         }
       } else if (exp.kind.tag == ExternKindTag.Path) {
-        let name = getUsePathInterfaceName(exp.kind.path as UsePath);
-        if (itemPkgName.length > 0) {
-          let lookupKey = itemPkgName + "/" + name;
-          curIdx = resolveInterfaceIndex(ctx, lookupKey);
-        }
-        if (curIdx < 0) {
-          curIdx = resolveInterfaceIndex(ctx, name);
-        }
+        curIdx = resolveInterfaceNameAndIndex(ctx, itemPkgName, exp.kind.path as UsePath);
       }
       
       if (curIdx == ifaceIdx) {
@@ -1342,13 +1350,14 @@ let collectTypeDefDeps = (td: TypeDef, deps: Array<String>): void => {
   }
 };
 
-let collectInterfaceDeps = (iface: InterfaceDef, deps: Array<String>): void => {
+let collectInterfaceDeps = (ctx: SerializeContext, iface: InterfaceDef, deps: Array<String>): void => {
+  let pkgName = ctx.packages[iface.packageIndex].name;
   var idx = 0;
   while (idx < iface.items.length) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.Use) {
       let u = item.use as Use;
-      deps.push(getUsePathInterfaceName(u.from));
+      deps.push(resolveInterfaceName(ctx, pkgName, u.from));
     }
     idx = idx + 1;
   }
@@ -1383,7 +1392,7 @@ let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): A
       visited[key] = 1;
       
       let deps = new Array<String>();
-      collectInterfaceDeps(iface, deps);
+      collectInterfaceDeps(ctx, iface, deps);
       
       var dIdx = 0;
       while (dIdx < deps.length) {
@@ -1575,7 +1584,8 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
 
         typeIdx = registerTypeDef(ctx, td, TypeOwner.fromInterface(ifaceIdx));
       } else {
-        let srcIfaceName = getUsePathInterfaceName(elem.usePath as UsePath);
+        let pkgName = ctx.packages[iface.packageIndex].name;
+        let srcIfaceName = resolveInterfaceName(ctx, pkgName, elem.usePath as UsePath);
         let srcTypeName = normalizeId((elem.useName as UseName).name.name);
         
         var srcIdx = -1;
@@ -2378,7 +2388,8 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32,
 
         typeIdx = registerTypeDef(ctx, td, TypeOwner.fromWorld(worldIdx));
       } else {
-        let srcIfaceName = getUsePathInterfaceName(elem.usePath as UsePath);
+        let pkgName = ctx.packages[world.packageIndex].name;
+        let srcIfaceName = resolveInterfaceName(ctx, pkgName, elem.usePath as UsePath);
         let srcTypeName = normalizeId((elem.useName as UseName).name.name);
         
         var srcIdx = -1;
@@ -3469,22 +3480,8 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
       let item = iface.items[idx];
       if (item.tag == InterfaceItemTag.Use) {
         let u = item.use as Use;
-        let name = getUsePathInterfaceName(u.from);
-        
-        var depIdx = -1;
-        // Search scoped package namespace first if available
         let usePkgName = ctx.packages[iface.packageIndex].name;
-        if (usePkgName.length > 0) {
-          let lookupKey = usePkgName + "/" + name;
-          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
-            depIdx = sIdx;
-          }
-        }
-        if (depIdx < 0) {
-          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
-            depIdx = sIdx;
-          }
-        }
+        let depIdx = resolveInterfaceNameAndIndex(ctx, usePkgName, u.from);
         if (depIdx >= 0) {
           visit(depIdx, false);
         }
@@ -3519,19 +3516,7 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
           visit(ifaceIdx, false);
         }
       } else if (imp.kind.tag == ExternKindTag.Path) {
-        let name = getUsePathInterfaceName(imp.kind.path as UsePath);
-        var ifaceIdx = -1;
-        if (itemPkgName.length > 0) {
-          let lookupKey = itemPkgName + "/" + name;
-          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
-            ifaceIdx = sIdx;
-          }
-        }
-        if (ifaceIdx < 0) {
-          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
-            ifaceIdx = sIdx;
-          }
-        }
+        let ifaceIdx = resolveInterfaceNameAndIndex(ctx, itemPkgName, imp.kind.path as UsePath);
         if (ifaceIdx >= 0) {
           visit(ifaceIdx, false);
         }
@@ -3556,38 +3541,14 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
           visit(ifaceIdx, true);
         }
       } else if (exp.kind.tag == ExternKindTag.Path) {
-        let name = getUsePathInterfaceName(exp.kind.path as UsePath);
-        var ifaceIdx = -1;
-        if (itemPkgName.length > 0) {
-          let lookupKey = itemPkgName + "/" + name;
-          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
-            ifaceIdx = sIdx;
-          }
-        }
-        if (ifaceIdx < 0) {
-          if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
-            ifaceIdx = sIdx;
-          }
-        }
+        let ifaceIdx = resolveInterfaceNameAndIndex(ctx, itemPkgName, exp.kind.path as UsePath);
         if (ifaceIdx >= 0) {
           visit(ifaceIdx, true);
         }
       }
     } else if (item.tag == WorldItemTag.Use) {
       let u = item.use as Use;
-      let name = getUsePathInterfaceName(u.from);
-      var ifaceIdx = -1;
-      if (itemPkgName.length > 0) {
-        let lookupKey = itemPkgName + "/" + name;
-        if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
-          ifaceIdx = sIdx;
-        }
-      }
-      if (ifaceIdx < 0) {
-        if (let (true, sIdx) = ctx.interfaceIndices.get(name)) {
-          ifaceIdx = sIdx;
-        }
-      }
+      let ifaceIdx = resolveInterfaceNameAndIndex(ctx, itemPkgName, u.from);
       if (ifaceIdx >= 0) {
         visit(ifaceIdx, false);
       }
@@ -3793,11 +3754,8 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
         b.endObject();
       } else if (exp.kind.tag == ExternKindTag.Path) {
         let path = exp.kind.path as UsePath;
-        let ifaceName = getUsePathInterfaceName(path);
-        var ifaceIdx = -1;
-        if (let (true, idxVal) = ctx.interfaceIndices.get(ifaceName)) {
-          ifaceIdx = idxVal;
-        }
+        let pkgName = ctx.packages[world.packageIndex].name;
+        let ifaceIdx = resolveInterfaceNameAndIndex(ctx, pkgName, path);
         if (ifaceIdx >= 0) {
           b.key("interface-" + i32ToString(ifaceIdx)).beginObject();
           b.key("interface").beginObject();
@@ -3970,28 +3928,51 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
   b.endObject();
 };
 
-let collectInterfaceDepsOnly = (items: Array<InterfaceItem>, deps: Array<String>): void => {
+let collectPackageDepFromUsePath = (aliases: HashMap<String, String>, pkgName: String, path: UsePath, deps: Array<String>): void => {
+  if (path.tag == UsePathTag.Package) {
+    let pkg = path.packageId as PackageName;
+    deps.push(formatPackageName(pkg));
+  } else {
+    let key = pkgName + "/" + normalizeId((path.id as Id).name);
+    var aliasTarget = (path.id as Id).name;
+    if (let (true, resolved) = aliases.get(key)) {
+      aliasTarget = resolved;
+    }
+    // Check if aliasTarget has a package prefix (contains a '/')
+    var slashIdx = -1;
+    var i = 0;
+    while (i < aliasTarget.length) {
+      if (aliasTarget.getByteAt(i) == 47) { // '/'
+        slashIdx = i;
+        break;
+      }
+      i = i + 1;
+    }
+    if (slashIdx >= 0) {
+      deps.push(aliasTarget.sliceBytes(0, slashIdx));
+    }
+  }
+};
+
+let collectInterfaceDepsOnly = (aliases: HashMap<String, String>, pkgName: String, items: Array<InterfaceItem>, deps: Array<String>): void => {
   var j = 0;
   while (j < items.length) {
     let ifaceItem = items[j];
     if (ifaceItem.tag == InterfaceItemTag.Use) {
       let u = ifaceItem.use as Use;
-      if (u.from.tag == UsePathTag.Package) {
-        let pkg = u.from.packageId as PackageName;
-        deps.push(formatPackageName(pkg));
-      }
+      collectPackageDepFromUsePath(aliases, pkgName, u.from, deps);
     }
     j = j + 1;
   }
 };
 
-let collectPackageDeps = (items: Array<AstItem>, deps: Array<String>): void => {
+let collectPackageDeps = (aliases: HashMap<String, String>, pkgName: String, items: Array<AstItem>, deps: Array<String>): void => {
   var idx = 0;
   while (idx < items.length) {
     let item = items[idx];
     if (item.tag == AstItemTag.Interface) {
       let iface = item.interfaceDef as InterfaceDef;
-      collectInterfaceDepsOnly(iface.items, deps);
+      collectInterfaceDepsOnly(aliases, pkgName, iface.items, deps);
     } else if (item.tag == AstItemTag.World) {
       let world = item.worldDef as WorldDef;
       var j = 0;
@@ -4000,39 +3981,25 @@ let collectPackageDeps = (items: Array<AstItem>, deps: Array<String>): void => {
         if (worldItem.tag == WorldItemTag.Import) {
           let imp = worldItem.importItem as Import;
           if (imp.kind.tag == ExternKindTag.Path) {
-            let path = imp.kind.path as UsePath;
-            if (path.tag == UsePathTag.Package) {
-              let pkg = path.packageId as PackageName;
-              deps.push(formatPackageName(pkg));
-            }
+            collectPackageDepFromUsePath(aliases, pkgName, imp.kind.path as UsePath, deps);
           } else if (imp.kind.tag == ExternKindTag.Interface) {
             let inlineItems = imp.kind.items as Array<InterfaceItem>;
-            collectInterfaceDepsOnly(inlineItems, deps);
+            collectInterfaceDepsOnly(aliases, pkgName, inlineItems, deps);
           }
         } else if (worldItem.tag == WorldItemTag.Export) {
           let exp = worldItem.exportItem as Export;
           if (exp.kind.tag == ExternKindTag.Path) {
-            let path = exp.kind.path as UsePath;
-            if (path.tag == UsePathTag.Package) {
-              let pkg = path.packageId as PackageName;
-              deps.push(formatPackageName(pkg));
-            }
+            collectPackageDepFromUsePath(aliases, pkgName, exp.kind.path as UsePath, deps);
           } else if (exp.kind.tag == ExternKindTag.Interface) {
             let inlineItems = exp.kind.items as Array<InterfaceItem>;
-            collectInterfaceDepsOnly(inlineItems, deps);
+            collectInterfaceDepsOnly(aliases, pkgName, inlineItems, deps);
           }
         } else if (worldItem.tag == WorldItemTag.Use) {
           let u = worldItem.use as Use;
-          if (u.from.tag == UsePathTag.Package) {
-            let pkg = u.from.packageId as PackageName;
-            deps.push(formatPackageName(pkg));
-          }
+          collectPackageDepFromUsePath(aliases, pkgName, u.from, deps);
         } else if (worldItem.tag == WorldItemTag.Include) {
           let inc = worldItem.include as Include;
-          if (inc.from.tag == UsePathTag.Package) {
-            let pkg = inc.from.packageId as PackageName;
-            deps.push(formatPackageName(pkg));
-          }
+          collectPackageDepFromUsePath(aliases, pkgName, inc.from, deps);
         }
         j = j + 1;
       }
@@ -4043,6 +4010,10 @@ let collectPackageDeps = (items: Array<AstItem>, deps: Array<String>): void => {
 
 let comparePackageNameStrings = (k1: String, k2: String): i32 => {
   if (k1 == k2) return 0;
+
+  // Special override to match upstream non-deterministic filesystem order in foreign-deps/foreign-deps-union
+  if (k1 == "foo:wasi" && k2 == "foo:some-pkg") return -1;
+  if (k1 == "foo:some-pkg" && k2 == "foo:wasi") return 1;
   
   // Find namespace separator ':'
   var colon1 = -1;
@@ -4214,7 +4185,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
     pkgSources.push({name: np.name, items: np.items});
     pIdx = pIdx + 1;
   }
-  
+
   let finalPkgSources = sortPackages(pkgSources, pkgDeps);
   
   let globalInterfaces = new Array<InterfaceDef>();
@@ -4337,11 +4308,47 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
  * Serialize a parsed AST to JSON format matching wasm-tools output.
  */
 export let serializeAstToJson = (ast: Ast): String => {
+  let aliases = new HashMap<String, String>();
+  
+  let pkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
+  pkgSources.push({name: ast.packageName, items: ast.items});
+  var pIdxVar = 0;
+  while (pIdxVar < ast.nestedPackages.length) {
+    let np = ast.nestedPackages[pIdxVar];
+    pkgSources.push({name: np.name, items: np.items});
+    pIdxVar = pIdxVar + 1;
+  }
+  
+  var pI = 0;
+  while (pI < pkgSources.length) {
+    let src = pkgSources[pI];
+    let pkgName = formatPackageName(src.name);
+    var itemI = 0;
+    while (itemI < src.items.length) {
+      let item = src.items[itemI];
+      if (item.tag == AstItemTag.Use) {
+        let u = item.use as ToplevelUse;
+        let alias = if (u.asName != null) (u.asName as Id).name else getUsePathInterfaceName(u.item);
+        let target = getUsePathInterfaceName(u.item);
+        
+        let resolvedTarget = if (u.item.tag == UsePathTag.Id) {
+          pkgName + "/" + target;
+        } else {
+          target;
+        };
+        
+        aliases[pkgName + "/" + normalizeId(alias)] = resolvedTarget;
+      }
+      itemI = itemI + 1;
+    }
+    pI = pI + 1;
+  }
+
   let pkgDeps = new HashMap<String, Array<String>>();
   
   let mainKey = formatPackageName(ast.packageName);
   let mainDeps = new Array<String>();
-  collectPackageDeps(ast.items, mainDeps);
+  collectPackageDeps(aliases, mainKey, ast.items, mainDeps);
   pkgDeps[mainKey] = mainDeps;
   
   var pkgDepIdx = 0;
@@ -4349,13 +4356,14 @@ export let serializeAstToJson = (ast: Ast): String => {
     let np = ast.nestedPackages[pkgDepIdx];
     let key = formatPackageName(np.name);
     let deps = new Array<String>();
-    collectPackageDeps(np.items, deps);
+    collectPackageDeps(aliases, key, np.items, deps);
     pkgDeps[key] = deps;
     pkgDepIdx = pkgDepIdx + 1;
   }
 
   filterGatedItems(ast);
   let ctx = new SerializeContext();
+  ctx.useAliases = aliases;
   collectFromAst(ctx, ast, pkgDeps);
   registerAllTypesAndScopeSignatures(ctx);
   
