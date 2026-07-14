@@ -10,129 +10,135 @@ import {normalizeId} from './helpers.zena';
 // ============================================================================
 
 export sealed class TypeRef {
-  case Primitive(name: String)
-  case Index(value: i32)
+  case PrimitiveRef, IndexRef
 
   static str(s: String): TypeRef {
-    return new Primitive(s);
+    return new PrimitiveRef(s);
   }
 
   static idx(i: i32): TypeRef {
-    return new Index(i);
+    return new IndexRef(i);
   }
 
   serialize(b: JsonBuilder): void {
     match (this) {
-      case Primitive {name}: b.string(name);
-      case Index {value}: b.i32(value);
+      case let PrimitiveRef {name}: { b.string(name); }
+      case let IndexRef {value}: { b.i32(value); }
     }
   }
 
   isIndex(): boolean {
-    match (this) {
-      case Primitive: return false;
-      case Index: return true;
-    }
+    return match (this) {
+      case PrimitiveRef: false
+      case IndexRef: true
+    };
   }
 
   indexValue(): i32 {
-    match (this) {
-      case Primitive: return -1;
-      case Index {value}: return value;
-    }
+    return match (this) {
+      case PrimitiveRef: -1
+      case let IndexRef {value}: value
+    };
   }
 
   strValue(): String {
-    match (this) {
-      case Primitive {name}: return name;
-      case Index: return "";
-    }
+    return match (this) {
+      case let PrimitiveRef {name}: name
+      case IndexRef: ""
+    };
   }
 }
 
+export final class PrimitiveRef(name: String) extends TypeRef
+export final class IndexRef(value: i32) extends TypeRef
+
 export sealed class TypeOwner {
-  case Interface(index: i32)
-  case World(index: i32)
+  case InterfaceOwner, WorldOwner
 
   static fromInterface(index: i32): TypeOwner {
-    return new Interface(index);
+    return new InterfaceOwner(index);
   }
 
   static fromWorld(index: i32): TypeOwner {
-    return new World(index);
+    return new WorldOwner(index);
   }
 
   serialize(b: JsonBuilder): void {
     b.beginObject();
     match (this) {
-      case Interface {index}: b.key("interface").i32(index);
-      case World {index}: b.key("world").i32(index);
+      case let InterfaceOwner {index}: { b.key("interface").i32(index); }
+      case let WorldOwner {index}: { b.key("world").i32(index); }
     }
     b.endObject();
   }
 
   isWorld(): boolean {
-    match (this) {
-      case Interface: return false;
-      case World: return true;
-    }
+    return match (this) {
+      case InterfaceOwner: false
+      case WorldOwner: true
+    };
   }
 
   index(): i32 {
-    match (this) {
-      case Interface {index}: return index;
-      case World {index}: return index;
-    }
+    return match (this) {
+      case let InterfaceOwner {index}: index
+      case let WorldOwner {index}: index
+    };
   }
 }
 
+export final class InterfaceOwner(index: i32) extends TypeOwner
+export final class WorldOwner(index: i32) extends TypeOwner
+
 export sealed class ScopeTypeElement {
-  case TypeDef(def: TypeDef)
-  case Use(path: UsePath, name: UseName, docs: Docs | null)
+  case TypeDefElement, UseElement
 
   static fromTd(td: TypeDef): ScopeTypeElement {
-    return new TypeDef(td);
+    return new TypeDefElement(td);
   }
 
   static fromUse(path: UsePath, name: UseName, docs: Docs | null): ScopeTypeElement {
-    return new Use(path, name, docs);
+    return new UseElement(path, name, docs);
   }
 
   isTypeDef(): boolean {
-    match (this) {
-      case TypeDef: return true;
-      case Use: return false;
-    }
+    return match (this) {
+      case TypeDefElement: true
+      case UseElement: false
+    };
   }
 
   typeDef(): TypeDef | null {
-    match (this) {
-      case TypeDef {def}: return def;
-      case Use: return null;
-    }
+    return match (this) {
+      case let TypeDefElement {def}: def
+      case UseElement: null
+    };
   }
 
   usePath(): UsePath | null {
-    match (this) {
-      case TypeDef: return null;
-      case Use {path}: return path;
-    }
+    return match (this) {
+      case TypeDefElement: null
+      case let UseElement {path}: path
+    };
   }
 
   useName(): UseName | null {
-    match (this) {
-      case TypeDef: return null;
-      case Use {name}: return name;
-    }
+    return match (this) {
+      case TypeDefElement: null
+      case let UseElement {name}: name
+    };
   }
 
   docs(): Docs | null {
-    match (this) {
-      case TypeDef {def}: return def.docs;
-      case Use {docs}: return docs;
-    }
+    return match (this) {
+      case let TypeDefElement {def}: def.docs
+      case let UseElement {docs}: docs
+    };
   }
 }
+
+export final class TypeDefElement(def: TypeDef) extends ScopeTypeElement
+export final class UseElement(path: UsePath, name: UseName, docs: Docs | null) extends ScopeTypeElement
 
 export class RecordField {
   var name: String;
@@ -190,71 +196,63 @@ export class EnumCase {
 }
 
 export sealed class TypeKind {
-  case Type(inner: TypeRef)
-  case List(inner: TypeRef)
-  case FixedLengthList(inner: TypeRef, len: i32)
-  case Option(inner: TypeRef)
-  case Result(ok: TypeRef | null, err: TypeRef | null)
-  case Record(fields: Array<RecordField>)
-  case Tuple(types: Array<TypeRef>)
-  case Flags(flags: Array<String>)
-  case Variant(cases: Array<VariantCase>)
-  case Enum(cases: Array<EnumCase>)
-  case Handle(borrowIndex: i32, ownIndex: i32)
-  case Map(key: TypeRef, value: TypeRef)
-  case Future(inner: TypeRef | null)
-  case Stream(inner: TypeRef | null)
-  case Unknown
-  case Resource
+  case TypeAlias, ListKind, FixedLengthListKind, OptionKind, ResultKind
+  case RecordKind, TupleKind, FlagsKind, VariantKind, EnumKind, HandleKind
+  case MapKind, FutureKind, StreamKind, UnknownKind, ResourceKind
 
   tag(): String {
-    match (this) {
-      case Type: return "type";
-      case List: return "list";
-      case FixedLengthList: return "fixed-length-list";
-      case Option: return "option";
-      case Result: return "result";
-      case Record: return "record";
-      case Tuple: return "tuple";
-      case Flags: return "flags";
-      case Variant: return "variant";
-      case Enum: return "enum";
-      case Handle: return "handle";
-      case Map: return "map";
-      case Future: return "future";
-      case Stream: return "stream";
-      case Unknown: return "unknown";
-      case Resource: return "resource";
-    }
+    return match (this) {
+      case TypeAlias: "type"
+      case ListKind: "list"
+      case FixedLengthListKind: "fixed-length-list"
+      case OptionKind: "option"
+      case ResultKind: "result"
+      case RecordKind: "record"
+      case TupleKind: "tuple"
+      case FlagsKind: "flags"
+      case VariantKind: "variant"
+      case EnumKind: "enum"
+      case HandleKind: "handle"
+      case MapKind: "map"
+      case FutureKind: "future"
+      case StreamKind: "stream"
+      case UnknownKind: "unknown"
+      case ResourceKind: "resource"
+    };
   }
 
   serialize(b: JsonBuilder): void {
     match (this) {
-      case Resource:
+      case ResourceKind: {
         b.string("resource");
-      case Type {inner}:
+      }
+      case let TypeAlias {inner}: {
         b.beginObject();
         b.key("type");
         inner.serialize(b);
         b.endObject();
-      case List {inner}:
+      }
+      case let ListKind {inner}: {
         b.beginObject();
         b.key("list");
         inner.serialize(b);
         b.endObject();
-      case FixedLengthList {inner, len}:
+      }
+      case let FixedLengthListKind {inner, len}: {
         b.beginObject();
         b.key("fixed-length-list").beginArray();
         inner.serialize(b);
         b.i32(len);
         b.endArray();
         b.endObject();
-      case Option {inner}:
+      }
+      case let OptionKind {inner}: {
         b.beginObject();
         b.key("option");
         inner.serialize(b);
         b.endObject();
-      case Result {ok, err}:
+      }
+      case let ResultKind {ok, err}: {
         b.beginObject();
         b.key("result").beginObject();
         b.key("ok");
@@ -263,7 +261,8 @@ export sealed class TypeKind {
         if (err != null) { (err as TypeRef).serialize(b); } else { b.nullValue(); }
         b.endObject();
         b.endObject();
-      case Record {fields}:
+      }
+      case let RecordKind {fields}: {
         b.beginObject();
         b.key("record").beginObject();
         b.key("fields").beginArray();
@@ -275,7 +274,8 @@ export sealed class TypeKind {
         b.endArray();
         b.endObject();
         b.endObject();
-      case Tuple {types}:
+      }
+      case let TupleKind {types}: {
         b.beginObject();
         b.key("tuple").beginObject();
         b.key("types").beginArray();
@@ -287,7 +287,8 @@ export sealed class TypeKind {
         b.endArray();
         b.endObject();
         b.endObject();
-      case Flags {flags}:
+      }
+      case let FlagsKind {flags}: {
         b.beginObject();
         b.key("flags").beginObject();
         b.key("flags").beginArray();
@@ -301,7 +302,8 @@ export sealed class TypeKind {
         b.endArray();
         b.endObject();
         b.endObject();
-      case Variant {cases}:
+      }
+      case let VariantKind {cases}: {
         b.beginObject();
         b.key("variant").beginObject();
         b.key("cases").beginArray();
@@ -313,7 +315,8 @@ export sealed class TypeKind {
         b.endArray();
         b.endObject();
         b.endObject();
-      case Enum {cases}:
+      }
+      case let EnumKind {cases}: {
         b.beginObject();
         b.key("enum").beginObject();
         b.key("cases").beginArray();
@@ -325,7 +328,8 @@ export sealed class TypeKind {
         b.endArray();
         b.endObject();
         b.endObject();
-      case Handle {borrowIndex, ownIndex}:
+      }
+      case let HandleKind {borrowIndex, ownIndex}: {
         b.beginObject();
         b.key("handle").beginObject();
         if (borrowIndex >= 0) {
@@ -335,30 +339,52 @@ export sealed class TypeKind {
         }
         b.endObject();
         b.endObject();
-      case Map {key, value}:
+      }
+      case let MapKind {key, value}: {
         b.beginObject();
         b.key("map").beginArray();
         key.serialize(b);
         value.serialize(b);
         b.endArray();
         b.endObject();
-      case Future {inner}:
+      }
+      case let FutureKind {inner}: {
         b.beginObject();
         b.key("future");
         if (inner != null) { (inner as TypeRef).serialize(b); } else { b.nullValue(); }
         b.endObject();
-      case Stream {inner}:
+      }
+      case let StreamKind {inner}: {
         b.beginObject();
         b.key("stream");
         if (inner != null) { (inner as TypeRef).serialize(b); } else { b.nullValue(); }
         b.endObject();
-      case Unknown:
+      }
+      case UnknownKind: {
         b.beginObject();
         b.key("unknown").beginObject().endObject();
         b.endObject();
+      }
     }
   }
 }
+
+export final class TypeAlias(inner: TypeRef) extends TypeKind
+export final class ListKind(inner: TypeRef) extends TypeKind
+export final class FixedLengthListKind(inner: TypeRef, len: i32) extends TypeKind
+export final class OptionKind(inner: TypeRef) extends TypeKind
+export final class ResultKind(ok: TypeRef | null, err: TypeRef | null) extends TypeKind
+export final class RecordKind(fields: Array<RecordField>) extends TypeKind
+export final class TupleKind(types: Array<TypeRef>) extends TypeKind
+export final class FlagsKind(flags: Array<String>) extends TypeKind
+export final class VariantKind(cases: Array<VariantCase>) extends TypeKind
+export final class EnumKind(cases: Array<EnumCase>) extends TypeKind
+export final class HandleKind(borrowIndex: i32, ownIndex: i32) extends TypeKind
+export final class MapKind(key: TypeRef, value: TypeRef) extends TypeKind
+export final class FutureKind(inner: TypeRef | null) extends TypeKind
+export final class StreamKind(inner: TypeRef | null) extends TypeKind
+export final class UnknownKind extends TypeKind {}
+export final class ResourceKind extends TypeKind {}
 
 export let serializeStability = (b: JsonBuilder, docs: Docs | null): void => {
   if (docs == null || docs.attributes == null) {

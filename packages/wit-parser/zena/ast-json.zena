@@ -17,6 +17,7 @@ import {TypeDef, TypeDefTag, Type, TypeTag, NamedFunc, Func, Param, Field} from 
 import {Case, EnumCaseDef, FlagDef, ResourceFunc, ResourceFuncTag, Docs, Attribute, AttributeTag} from './parser.zena';
 import {console} from 'zena:console';
 import {normalizeId, compareStrings, isPurelyNumeric, stringToInt, getPreIdentifiers, compareVersions, formatPackageName, comparePackageNames, comparePackageNameStrings} from './helpers.zena';
+import {TypeRef, PrimitiveRef, IndexRef, TypeOwner, InterfaceOwner, WorldOwner, ScopeTypeElement, TypeDefElement, UseElement, RecordField, VariantCase, EnumCase, TypeEntry, TypeKind, TypeAlias, ListKind, FixedLengthListKind, OptionKind, ResultKind, RecordKind, TupleKind, FlagsKind, VariantKind, EnumKind, HandleKind, MapKind, FutureKind, StreamKind, UnknownKind, ResourceKind, PackageEntry, serializeStability} from './ast-json-types.zena';
 
 
 
@@ -215,132 +216,6 @@ let filterGatedItems = (ast: Ast): void => {
  * A type reference: either a primitive type name (string) or an index into
  * the types array (i32). This matches the wasm-tools JSON format.
  */
-class TypeRef {
-  isIndex: boolean;
-  strValue: String;
-  indexValue: i32;
-
-  new(isIndex: boolean, strValue: String, indexValue: i32)
-    : isIndex = isIndex,
-      strValue = strValue,
-      indexValue = indexValue;
-
-  static str(s: String): TypeRef {
-    return new TypeRef(false, s, 0);
-  }
-
-  static idx(i: i32): TypeRef {
-    return new TypeRef(true, "", i);
-  }
-}
-
-/** Represents owners of types - can be an interface or a world. */
-class TypeOwner {
-  isWorld: boolean;
-  index: i32;
-
-  new(isWorld: boolean, index: i32) : isWorld = isWorld, index = index;
-
-  static fromInterface(index: i32): TypeOwner {
-    return new TypeOwner(false, index);
-  }
-
-  static fromWorld(index: i32): TypeOwner {
-    return new TypeOwner(true, index);
-  }
-}
-
-/** Represents a scope type element - either a type definition or a use alias. */
-class ScopeTypeElement {
-  var isTypeDef: boolean;
-  var typeDef: TypeDef | null = null;
-  var usePath: UsePath | null = null;
-  var useName: UseName | null = null;
-  var docs: Docs | null = null;
-
-  new(isTypeDef: boolean) : isTypeDef = isTypeDef;
-
-  static fromTd(td: TypeDef): ScopeTypeElement {
-    let e = new ScopeTypeElement(true);
-    e.typeDef = td;
-    e.docs = td.docs;
-    return e;
-  }
-
-  static fromUse(path: UsePath, name: UseName, docs: Docs | null): ScopeTypeElement {
-    let e = new ScopeTypeElement(false);
-    e.usePath = path;
-    e.useName = name;
-    e.docs = docs;
-    return e;
-  }
-}
-
-/** Field in a record type. */
-class RecordField {
-  var name: String;
-  var typeRef: TypeRef;
-
-  new(name: String, typeRef: TypeRef) : name = name, typeRef = typeRef;
-}
-
-/** Case in a variant type. */
-class VariantCase {
-  var name: String;
-  var typeRef: TypeRef | null;
-
-  new(name: String, typeRef: TypeRef | null) : name = name, typeRef = typeRef;
-}
-
-/** Case in an enum type (with optional docs). */
-class EnumCase {
-  var name: String;
-  var docs: Docs | null;
-
-  new(name: String, docs: Docs | null) : name = name, docs = docs;
-}
-
-/** An entry in the types array. */
-class TypeEntry {
-  var name: String | null;
-  var kind: TypeKind;
-  var owner: Option<TypeOwner>;
-  var docs: Docs | null;
-
-  new(name: String | null, kind: TypeKind, owner: Option<TypeOwner>, docs: Docs | null) : name = name, kind = kind, owner = owner, docs = docs;
-}
-
-/** The kind object for a type entry. */
-class TypeKind {
-  var tag: String;
-  var tupleTypes: Array<TypeRef> | null = null;
-  var inner: TypeRef | null = null;
-  var okType: TypeRef | null = null;
-  var errType: TypeRef | null = null;
-  var fields: Array<RecordField> | null = null;
-  var cases: Array<VariantCase> | null = null;
-  var enumCases: Array<EnumCase> | null = null;
-  var flagValues: Array<String> | null = null;
-  // For handle types (borrow/own)
-  var borrowIndex = -1;
-  var ownIndex = -1;
-  var listLength = -1;
-  var mapKeyType: TypeRef | null = null;
-  var mapValueType: TypeRef | null = null;
-
-  new(tag: String) : tag = tag;
-}
-
-/** Entry for a package in the output. */
-class PackageEntry {
-  var name: String;
-  var interfaces = new HashMap<String, i32>();
-  var worlds = new HashMap<String, i32>();
-
-  new(name: String) : name = name;
-}
-
-/** Tracks indices during serialization. */
 class SerializeContext {
   var interfaces = new Array<InterfaceDef>();
   var worlds = new Array<WorldDef>();
@@ -408,11 +283,12 @@ class SerializeContext {
     }
     if (idx >= 0 && idx < this.types.length) {
       let t = this.types[idx];
-      if (t.kind.tag == "type" && t.kind.inner != null) {
-        let innerRef = t.kind.inner as TypeRef;
-        if (innerRef.isIndex) {
-          return this.isResourceType(innerRef.indexValue);
-        }
+      match (t.kind) {
+        case TypeAlias {inner}:
+          if (inner.isIndex()) {
+            return this.isResourceType(inner.indexValue());
+          }
+        case _: {}
       }
     }
     return false;
@@ -435,8 +311,7 @@ class SerializeContext {
       return idx;
     }
     // Create new borrow type
-    let kind = new TypeKind("handle");
-    kind.borrowIndex = resourceIdx;
+    let kind = new HandleKind(resourceIdx, -1);
     
     var docs: Docs | null = null;
     if (resourceIdx >= 0 && resourceIdx < this.types.length) {
@@ -455,8 +330,7 @@ class SerializeContext {
       return idx;
     }
     // Create new own type
-    let kind = new TypeKind("handle");
-    kind.ownIndex = resourceIdx;
+    let kind = new HandleKind(-1, resourceIdx);
     let entry = new TypeEntry(null, kind, none, null);
     let idx = this.registerType(entry);
     this.ownTypeIndices[resourceIdx] = idx;
@@ -532,10 +406,10 @@ class SerializeContext {
   
   /** Get canonical key for a TypeRef. */
   typeRefToKey(ref: TypeRef): String {
-    if (ref.isIndex) {
-      return "#" + i32ToString(ref.indexValue);
+    if (ref.isIndex()) {
+      return "#" + i32ToString(ref.indexValue());
     } else {
-      return ref.strValue;
+      return ref.strValue();
     }
   }
 
@@ -557,71 +431,74 @@ class SerializeContext {
         keyParts = keyParts + this.typeRefToKey(ref);
         idx = idx + 1;
       }
-      let kind = new TypeKind("tuple");
-      kind.tupleTypes = refs;
+      let kind = new TupleKind(refs);
       return this.getOrCreateAnonType(keyParts, kind);
     } else if (t.tag == TypeTag.Option) {
       let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
       let key = "option:" + this.typeRefToKey(innerRef);
-      let kind = new TypeKind("option");
-      kind.inner = innerRef;
+      let kind = new OptionKind(innerRef);
       return this.getOrCreateAnonType(key, kind);
     } else if (t.tag == TypeTag.Result) {
       var key = "result:";
-      let kind = new TypeKind("result");
-      if (t.okType != null) {
+      let ok = if (t.okType != null) {
         let okRef = this.getTypeRefEx(t.okType as Type, resolveResourceAsOwn);
-        kind.okType = okRef;
         key = key + this.typeRefToKey(okRef);
-      }
+        okRef
+      } else {
+        null
+      };
       key = key + ",";
-      if (t.errType != null) {
+      let err = if (t.errType != null) {
         let errRef = this.getTypeRefEx(t.errType as Type, resolveResourceAsOwn);
-        kind.errType = errRef;
         key = key + this.typeRefToKey(errRef);
-      }
+        errRef
+      } else {
+        null
+      };
+      let kind = new ResultKind(ok, err);
       return this.getOrCreateAnonType(key, kind);
     } else if (t.tag == TypeTag.List) {
       let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
       if (t.fixedLength >= 0) {
         let key = "fixed-length-list:" + this.typeRefToKey(innerRef) + ":" + i32ToString(t.fixedLength);
-        let kind = new TypeKind("fixed-length-list");
-        kind.inner = innerRef;
-        kind.listLength = t.fixedLength;
+        let kind = new FixedLengthListKind(innerRef, t.fixedLength);
         return this.getOrCreateAnonType(key, kind);
       } else {
         let key = "list:" + this.typeRefToKey(innerRef);
-        let kind = new TypeKind("list");
-        kind.inner = innerRef;
+        let kind = new ListKind(innerRef);
         return this.getOrCreateAnonType(key, kind);
       }
     } else if (t.tag == TypeTag.Future) {
       var key = "future:";
-      let kind = new TypeKind("future");
-      if (t.inner != null) {
+      let inner = if (t.inner != null) {
         let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
-        kind.inner = innerRef;
         key = key + this.typeRefToKey(innerRef);
-      }
+        innerRef
+      } else {
+        null
+      };
+      let kind = new FutureKind(inner);
       return this.getOrCreateAnonType(key, kind);
     } else if (t.tag == TypeTag.Stream) {
       var key = "stream:";
-      let kind = new TypeKind("stream");
-      if (t.inner != null) {
+      let inner = if (t.inner != null) {
         let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
-        kind.inner = innerRef;
         key = key + this.typeRefToKey(innerRef);
-      }
+        innerRef
+      } else {
+        null
+      };
+      let kind = new StreamKind(inner);
       return this.getOrCreateAnonType(key, kind);
     } else if (t.tag == TypeTag.Own) {
       // Get the inner type index
       let innerRef = this.getTypeRefEx(t.inner as Type, false);
       var resourceIdx = -1;
-      if (innerRef.isIndex) {
-        resourceIdx = innerRef.indexValue;
+      if (innerRef.isIndex()) {
+        resourceIdx = innerRef.indexValue();
       } else {
         // Named resource - look up in typeIndices
-        if (let (true, idx) = this.typeIndices.get(innerRef.strValue)) {
+        if (let (true, idx) = this.typeIndices.get(innerRef.strValue())) {
           resourceIdx = idx;
         }
       }
@@ -630,19 +507,18 @@ class SerializeContext {
         return this.getOwnType(resourceIdx);
       }
       // Fallback if resource not found
-      let kind = new TypeKind("handle");
-      kind.ownIndex = resourceIdx;
+      let kind = new HandleKind(-1, resourceIdx);
       let entry = new TypeEntry(null, kind, none, null);
       return this.registerType(entry);
     } else if (t.tag == TypeTag.Borrow) {
       // Get the inner type index
       let innerRef = this.getTypeRefEx(t.inner as Type, false);
       var resourceIdx = -1;
-      if (innerRef.isIndex) {
-        resourceIdx = innerRef.indexValue;
+      if (innerRef.isIndex()) {
+        resourceIdx = innerRef.indexValue();
       } else {
         // Named resource - look up in typeIndices
-        if (let (true, idx) = this.typeIndices.get(innerRef.strValue)) {
+        if (let (true, idx) = this.typeIndices.get(innerRef.strValue())) {
           resourceIdx = idx;
         }
       }
@@ -651,22 +527,19 @@ class SerializeContext {
         return this.getBorrowType(resourceIdx);
       }
       // Fallback if resource not found
-      let kind = new TypeKind("handle");
-      kind.borrowIndex = resourceIdx;
+      let kind = new HandleKind(resourceIdx, -1);
       let entry = new TypeEntry(null, kind, none, null);
       return this.registerType(entry);
     } else if (t.tag == TypeTag.Map) {
       let keyRef = this.getTypeRefEx(t.keyType as Type, resolveResourceAsOwn);
       let valRef = this.getTypeRefEx(t.valueType as Type, resolveResourceAsOwn);
       let key = "map:" + this.typeRefToKey(keyRef) + ":" + this.typeRefToKey(valRef);
-      let kind = new TypeKind("map");
-      kind.mapKeyType = keyRef;
-      kind.mapValueType = valRef;
+      let kind = new MapKind(keyRef, valRef);
       return this.getOrCreateAnonType(key, kind);
     }
 
     // Unknown type - should not reach here
-    let kind = new TypeKind("unknown");
+    let kind = new UnknownKind();
     let entry = new TypeEntry(null, kind, none, null);
     return this.registerType(entry);
   }
@@ -689,53 +562,7 @@ let getUsePathInterfaceName = (path: UsePath): String => {
   return pkgName + "/" + normalizeId(name);
 };
 
-let serializeStability = (b: JsonBuilder, docs: Docs | null): void => {
-  if (docs == null || docs.attributes == null) {
-    return;
-  }
-  let attrs = docs.attributes as Array<Attribute>;
-  var hasSince = false;
-  var sinceVer: String | null = null;
-  var hasDeprecated = false;
-  var depVer: String | null = null;
-  var hasUnstable = false;
-  var unstFeature: String | null = null;
-  
-  var i = 0;
-  while (i < attrs.length) {
-    let attr = attrs[i];
-    if (attr.tag == AttributeTag.Since) {
-      hasSince = true;
-      sinceVer = attr.version;
-    } else if (attr.tag == AttributeTag.Deprecated) {
-      hasDeprecated = true;
-      depVer = attr.version;
-    } else if (attr.tag == AttributeTag.Unstable) {
-      hasUnstable = true;
-      unstFeature = (attr.feature as Id).name;
-    }
-    i = i + 1;
-  }
-  
-  if (hasUnstable) {
-    b.key("stability").beginObject();
-    b.key("unstable").beginObject();
-    b.key("feature").string(unstFeature as String);
-    b.endObject();
-    b.endObject();
-  } else if (hasSince || hasDeprecated) {
-    b.key("stability").beginObject();
-    b.key("stable").beginObject();
-    if (hasSince) {
-      b.key("since").string(sinceVer as String);
-    }
-    if (hasDeprecated) {
-      b.key("deprecated").string(depVer as String);
-    }
-    b.endObject();
-    b.endObject();
-  }
-};
+
 
 let isStabilityEqual = (d1: Docs | null, d2: Docs | null): boolean => {
   if (d1 == null && d2 == null) return true;
@@ -1332,8 +1159,8 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
       let elem = elemObj as ScopeTypeElement;
       
       var typeIdx = -1;
-      if (elem.isTypeDef) {
-        let td = elem.typeDef as TypeDef;
+      if (elem.isTypeDef()) {
+        let td = elem.typeDef() as TypeDef;
         let deps = new Array<String>();
         collectTypeDefDeps(td, deps);
 
@@ -1349,8 +1176,8 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
         typeIdx = registerTypeDef(ctx, td, TypeOwner.fromInterface(ifaceIdx));
       } else {
         let pkgName = ctx.packages[iface.packageIndex].name;
-        let srcIfaceName = resolveInterfaceName(ctx, pkgName, elem.usePath as UsePath);
-        let srcTypeName = normalizeId((elem.useName as UseName).name.name);
+        let srcIfaceName = resolveInterfaceName(ctx, pkgName, elem.usePath() as UsePath);
+        let srcTypeName = normalizeId((elem.useName() as UseName).name.name);
         
         var srcIdx = -1;
         let lookupKey = "interface:" + srcIfaceName + "/" + srcTypeName;
@@ -1363,10 +1190,9 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
         }
         
         if (srcIdx >= 0) {
-          let kind = new TypeKind("type");
-          kind.inner = TypeRef.idx(srcIdx);
+          let kind = new TypeAlias(TypeRef.idx(srcIdx));
           
-          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromInterface(ifaceIdx)), elem.docs);
+          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromInterface(ifaceIdx)), elem.docs());
           typeIdx = ctx.registerType(entry);
         }
       }
@@ -2104,8 +1930,8 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32,
       let elem = elemObj as ScopeTypeElement;
       
       var typeIdx = -1;
-      if (elem.isTypeDef) {
-        let td = elem.typeDef as TypeDef;
+      if (elem.isTypeDef()) {
+        let td = elem.typeDef() as TypeDef;
         let deps = new Array<String>();
         collectTypeDefDeps(td, deps);
 
@@ -2121,8 +1947,8 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32,
         typeIdx = registerTypeDef(ctx, td, TypeOwner.fromWorld(worldIdx));
       } else {
         let pkgName = ctx.packages[world.packageIndex].name;
-        let srcIfaceName = resolveInterfaceName(ctx, pkgName, elem.usePath as UsePath);
-        let srcTypeName = normalizeId((elem.useName as UseName).name.name);
+        let srcIfaceName = resolveInterfaceName(ctx, pkgName, elem.usePath() as UsePath);
+        let srcTypeName = normalizeId((elem.useName() as UseName).name.name);
         
         var srcIdx = -1;
         let lookupKey = "interface:" + srcIfaceName + "/" + srcTypeName;
@@ -2135,10 +1961,9 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32,
         }
         
         if (srcIdx >= 0) {
-          let kind = new TypeKind("type");
-          kind.inner = TypeRef.idx(srcIdx);
+          let kind = new TypeAlias(TypeRef.idx(srcIdx));
           
-          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromWorld(worldIdx)), elem.docs);
+          let entry = new TypeEntry(normName, kind, some(TypeOwner.fromWorld(worldIdx)), elem.docs());
           typeIdx = ctx.registerType(entry);
         }
       }
@@ -2592,81 +2417,29 @@ let primitiveTypeToString = (t: Type): String => {
   return "unknown";
 };
 
-/** Serialize a TypeRef to JSON (string or integer). */
-let serializeTypeRef = (b: JsonBuilder, ref: TypeRef): void => {
-  if (ref.isIndex) {
-    b.i32(ref.indexValue);
-  } else {
-    b.string(ref.strValue);
-  }
-};
 
-let typeToString = (ctx: SerializeContext, t: Type): String => {
-  if (t.tag == TypeTag.U8) { return "u8"; }
-  if (t.tag == TypeTag.U16) { return "u16"; }
-  if (t.tag == TypeTag.U32) { return "u32"; }
-  if (t.tag == TypeTag.U64) { return "u64"; }
-  if (t.tag == TypeTag.S8) { return "s8"; }
-  if (t.tag == TypeTag.S16) { return "s16"; }
-  if (t.tag == TypeTag.S32) { return "s32"; }
-  if (t.tag == TypeTag.S64) { return "s64"; }
-  if (t.tag == TypeTag.F32) { return "f32"; }
-  if (t.tag == TypeTag.F64) { return "f64"; }
-  if (t.tag == TypeTag.Char) { return "char"; }
-  if (t.tag == TypeTag.Bool) { return "bool"; }
-  if (t.tag == TypeTag.String) { return "string"; }
-  if (t.tag == TypeTag.ErrorContext) { return "error-context"; }
-  if (t.tag == TypeTag.Name) {
-    let id = t.name as Id;
-    return id.name;
-  }
-  return "TODO";
-};
-
-let serializeType = (b: JsonBuilder, ctx: SerializeContext, t: Type): void => {
-  b.string(typeToString(ctx, t));
-};
 
 /** Build a TypeKind from a Type for use in type definitions (embeds complex types directly). */
 let buildTypeKind = (ctx: SerializeContext, t: Type, resolveResourceAsOwn: boolean): TypeKind => {
   if (t.tag == TypeTag.Stream) {
-    let kind = new TypeKind("stream");
-    if (t.inner != null) {
-      kind.inner = ctx.getTypeRef(t.inner as Type);
-    }
-    return kind;
+    let innerRef = if (t.inner != null) ctx.getTypeRef(t.inner as Type) else null;
+    return new StreamKind(innerRef);
   } else if (t.tag == TypeTag.Future) {
-    let kind = new TypeKind("future");
-    if (t.inner != null) {
-      kind.inner = ctx.getTypeRef(t.inner as Type);
-    }
-    return kind;
+    let innerRef = if (t.inner != null) ctx.getTypeRef(t.inner as Type) else null;
+    return new FutureKind(innerRef);
   } else if (t.tag == TypeTag.Option) {
-    let kind = new TypeKind("option");
-    kind.inner = ctx.getTypeRef(t.inner as Type);
-    return kind;
+    return new OptionKind(ctx.getTypeRef(t.inner as Type));
   } else if (t.tag == TypeTag.List) {
     if (t.fixedLength >= 0) {
-      let kind = new TypeKind("fixed-length-list");
-      kind.inner = ctx.getTypeRef(t.inner as Type);
-      kind.listLength = t.fixedLength;
-      return kind;
+      return new FixedLengthListKind(ctx.getTypeRef(t.inner as Type), t.fixedLength);
     } else {
-      let kind = new TypeKind("list");
-      kind.inner = ctx.getTypeRef(t.inner as Type);
-      return kind;
+      return new ListKind(ctx.getTypeRef(t.inner as Type));
     }
   } else if (t.tag == TypeTag.Result) {
-    let kind = new TypeKind("result");
-    if (t.okType != null) {
-      kind.okType = ctx.getTypeRef(t.okType as Type);
-    }
-    if (t.errType != null) {
-      kind.errType = ctx.getTypeRef(t.errType as Type);
-    }
-    return kind;
+    let ok = if (t.okType != null) ctx.getTypeRef(t.okType as Type) else null;
+    let err = if (t.errType != null) ctx.getTypeRef(t.errType as Type) else null;
+    return new ResultKind(ok, err);
   } else if (t.tag == TypeTag.Tuple) {
-    let kind = new TypeKind("tuple");
     let types = t.types as Array<Type>;
     let refs = new Array<TypeRef>();
     var idx = 0;
@@ -2674,41 +2447,34 @@ let buildTypeKind = (ctx: SerializeContext, t: Type, resolveResourceAsOwn: boole
       refs.push(ctx.getTypeRef(types[idx]));
       idx = idx + 1;
     }
-    kind.tupleTypes = refs;
-    return kind;
+    return new TupleKind(refs);
   } else if (t.tag == TypeTag.Own) {
-    let kind = new TypeKind("handle");
     let innerRef = ctx.getTypeRefEx(t.inner as Type, false);
-    if (innerRef.isIndex) {
-      kind.ownIndex = innerRef.indexValue;
+    var ownIndex = -1;
+    if (innerRef.isIndex()) {
+      ownIndex = innerRef.indexValue();
     }
-    return kind;
+    return new HandleKind(-1, ownIndex);
   } else if (t.tag == TypeTag.Borrow) {
-    let kind = new TypeKind("handle");
     let innerRef = ctx.getTypeRefEx(t.inner as Type, false);
-    if (innerRef.isIndex) {
-      kind.borrowIndex = innerRef.indexValue;
+    var borrowIndex = -1;
+    if (innerRef.isIndex()) {
+      borrowIndex = innerRef.indexValue();
     }
-    return kind;
+    return new HandleKind(borrowIndex, -1);
   } else if (t.tag == TypeTag.Map) {
-    let kind = new TypeKind("map");
-    kind.mapKeyType = ctx.getTypeRefEx(t.keyType as Type, resolveResourceAsOwn);
-    kind.mapValueType = ctx.getTypeRefEx(t.valueType as Type, resolveResourceAsOwn);
-    return kind;
+    let key = ctx.getTypeRefEx(t.keyType as Type, resolveResourceAsOwn);
+    let value = ctx.getTypeRefEx(t.valueType as Type, resolveResourceAsOwn);
+    return new MapKind(key, value);
   } else {
     // Primitive or name reference - wrap it as "type"
-    let kind = new TypeKind("type");
-    kind.inner = ctx.getTypeRefEx(t, resolveResourceAsOwn);
-    return kind;
+    return new TypeAlias(ctx.getTypeRefEx(t, resolveResourceAsOwn));
   }
 };
 
 let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i32 => {
-  var kind = new TypeKind(typeDefTagToString(td.tag));
-  
-  if (td.tag == TypeDefTag.Record) {
+  let kind = if (td.tag == TypeDefTag.Record) {
     let fieldsArr = new Array<RecordField>();
-    kind.fields = fieldsArr;
     let fields = td.fields as Array<Field>;
     var idx = 0;
     while (idx < fields.length) {
@@ -2717,13 +2483,11 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
       fieldsArr.push(new RecordField(normalizeId(field.name.name), typeRef));
       idx = idx + 1;
     }
+    new RecordKind(fieldsArr)
   } else if (td.tag == TypeDefTag.Alias) {
-    // For type aliases, embed the type kind directly (don't create separate anonymous type)
-    let aliasKind = buildTypeKind(ctx, td.aliasType as Type, false);
-    kind = aliasKind;
+    buildTypeKind(ctx, td.aliasType as Type, false)
   } else if (td.tag == TypeDefTag.Enum) {
     let casesArr = new Array<EnumCase>();
-    kind.enumCases = casesArr;
     let cases = td.enumCases as Array<EnumCaseDef>;
     var idx = 0;
     while (idx < cases.length) {
@@ -2735,18 +2499,18 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
       casesArr.push(new EnumCase(normalizeId(ec.name.name), docs));
       idx = idx + 1;
     }
+    new EnumKind(casesArr)
   } else if (td.tag == TypeDefTag.Flags) {
     let flagsArr = new Array<String>();
-    kind.flagValues = flagsArr;
     let flags = td.flags as Array<FlagDef>;
     var idx = 0;
     while (idx < flags.length) {
       flagsArr.push(normalizeId(flags[idx].name.name));
       idx = idx + 1;
     }
+    new FlagsKind(flagsArr)
   } else if (td.tag == TypeDefTag.Variant) {
     let casesArr = new Array<VariantCase>();
-    kind.cases = casesArr;
     let cases = td.cases as Array<Case>;
     var idx = 0;
     while (idx < cases.length) {
@@ -2758,8 +2522,13 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
       casesArr.push(new VariantCase(normalizeId(c.name.name), typeRef));
       idx = idx + 1;
     }
-  }
-  
+    new VariantKind(casesArr)
+  } else if (td.tag == TypeDefTag.Resource) {
+    new ResourceKind()
+  } else {
+    new UnknownKind()
+  };
+
   let entry = new TypeEntry(normalizeId(td.name.name), kind, some(owner), td.docs);
   let typeIdx = ctx.registerType(entry);
   
@@ -2844,7 +2613,7 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
     b.key("name").string(normalizeId(param.name.name));
     b.key("type");
     let typeRef = ctx.getParamTypeRef(param.type);
-    serializeTypeRef(b, typeRef);
+    typeRef.serialize(b);
     b.endObject();
     idx = idx + 1;
   }
@@ -2857,7 +2626,7 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
     if (nf.func.result != null) {
       b.key("result");
       let resultRef = ctx.getParamTypeRef(nf.func.result as Type);
-      serializeTypeRef(b, resultRef);
+      resultRef.serialize(b);
     } else {
       // Use existing own type or create if needed
       let ownIdx = ctx.getOwnType(resourceTypeIdx);
@@ -2866,7 +2635,7 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
   } else if (nf.func.result != null) {
     b.key("result");
     let resultRef = ctx.getParamTypeRef(nf.func.result as Type);
-    serializeTypeRef(b, resultRef);
+    resultRef.serialize(b);
   }
   
   serializeStability(b, rf.func.docs);
@@ -2890,7 +2659,7 @@ let serializeFunction = (b: JsonBuilder, ctx: SerializeContext, nf: NamedFunc): 
     b.key("name").string(normalizeId(param.name.name));
     b.key("type");
     let typeRef = ctx.getParamTypeRef(param.type);
-    serializeTypeRef(b, typeRef);
+    typeRef.serialize(b);
     b.endObject();
     idx = idx + 1;
   }
@@ -2899,7 +2668,7 @@ let serializeFunction = (b: JsonBuilder, ctx: SerializeContext, nf: NamedFunc): 
   if (nf.func.result != null) {
     b.key("result");
     let resultRef = ctx.getParamTypeRef(nf.func.result as Type);
-    serializeTypeRef(b, resultRef);
+    resultRef.serialize(b);
   }
   
   // Serialize docs if present
@@ -2913,214 +2682,7 @@ let serializeFunction = (b: JsonBuilder, ctx: SerializeContext, nf: NamedFunc): 
   b.endObject();
 };
 
-let serializeTypeKind = (b: JsonBuilder, kind: TypeKind): void => {
-  // Resource is a simple string, not an object
-  if (kind.tag == "resource") {
-    b.string("resource");
-    return;
-  }
-  
-  b.beginObject();
-  
-  if (kind.tag == "record") {
-    b.key("record").beginObject();
-    b.key("fields").beginArray();
-    if (kind.fields != null) {
-      let fields = kind.fields as Array<RecordField>;
-      var idx = 0;
-      while (idx < fields.length) {
-        let f = fields[idx];
-        b.beginObject();
-        b.key("name").string(f.name);
-        b.key("type");
-        serializeTypeRef(b, f.typeRef);
-        b.endObject();
-        idx = idx + 1;
-      }
-    }
-    b.endArray();
-    b.endObject();
-  } else if (kind.tag == "type") {
-    // Type alias - inner is a TypeRef
-    b.key("type");
-    serializeTypeRef(b, kind.inner as TypeRef);
-  } else if (kind.tag == "tuple") {
-    b.key("tuple").beginObject();
-    b.key("types").beginArray();
-    if (kind.tupleTypes != null) {
-      let types = kind.tupleTypes as Array<TypeRef>;
-      var idx = 0;
-      while (idx < types.length) {
-        serializeTypeRef(b, types[idx]);
-        idx = idx + 1;
-      }
-    }
-    b.endArray();
-    b.endObject();
-  } else if (kind.tag == "option") {
-    b.key("option");
-    serializeTypeRef(b, kind.inner as TypeRef);
-  } else if (kind.tag == "result") {
-    b.key("result").beginObject();
-    if (kind.okType != null) {
-      b.key("ok");
-      serializeTypeRef(b, kind.okType as TypeRef);
-    } else {
-      b.key("ok").nullValue();
-    }
-    if (kind.errType != null) {
-      b.key("err");
-      serializeTypeRef(b, kind.errType as TypeRef);
-    } else {
-      b.key("err").nullValue();
-    }
-    b.endObject();
-  } else if (kind.tag == "list") {
-    b.key("list");
-    serializeTypeRef(b, kind.inner as TypeRef);
-  } else if (kind.tag == "fixed-length-list") {
-    b.key("fixed-length-list").beginArray();
-    serializeTypeRef(b, kind.inner as TypeRef);
-    b.i32(kind.listLength);
-    b.endArray();
-  } else if (kind.tag == "map") {
-    b.key("map").beginArray();
-    serializeTypeRef(b, kind.mapKeyType as TypeRef);
-    serializeTypeRef(b, kind.mapValueType as TypeRef);
-    b.endArray();
-  } else if (kind.tag == "future") {
-    b.key("future");
-    if (kind.inner != null) {
-      serializeTypeRef(b, kind.inner as TypeRef);
-    } else {
-      b.nullValue();
-    }
-  } else if (kind.tag == "stream") {
-    b.key("stream");
-    if (kind.inner != null) {
-      serializeTypeRef(b, kind.inner as TypeRef);
-    } else {
-      b.nullValue();
-    }
-  } else if (kind.tag == "own") {
-    b.key("own");
-    serializeTypeRef(b, kind.inner as TypeRef);
-  } else if (kind.tag == "borrow") {
-    b.key("borrow");
-    serializeTypeRef(b, kind.inner as TypeRef);
-  } else if (kind.tag == "enum") {
-    b.key("enum").beginObject();
-    b.key("cases").beginArray();
-    if (kind.enumCases != null) {
-      let cases = kind.enumCases as Array<EnumCase>;
-      var idx = 0;
-      while (idx < cases.length) {
-        let ec = cases[idx];
-        b.beginObject();
-        b.key("name").string(ec.name);
-        if (ec.docs != null) {
-          let d = ec.docs as Docs;
-          b.key("docs").beginObject();
-          b.key("contents").string(d.contents as String);
-          b.endObject();
-        }
-        b.endObject();
-        idx = idx + 1;
-      }
-    }
-    b.endArray();
-    b.endObject();
-  } else if (kind.tag == "flags") {
-    b.key("flags").beginObject();
-    b.key("flags").beginArray();
-    if (kind.flagValues != null) {
-      let flags = kind.flagValues as Array<String>;
-      var idx = 0;
-      while (idx < flags.length) {
-        b.beginObject();
-        b.key("name").string(flags[idx]);
-        b.endObject();
-        idx = idx + 1;
-      }
-    }
-    b.endArray();
-    b.endObject();
-  } else if (kind.tag == "variant") {
-    b.key("variant").beginObject();
-    b.key("cases").beginArray();
-    if (kind.cases != null) {
-      let cases = kind.cases as Array<VariantCase>;
-      var idx = 0;
-      while (idx < cases.length) {
-        let c = cases[idx];
-        b.beginObject();
-        b.key("name").string(c.name);
-        if (c.typeRef != null) {
-          b.key("type");
-          serializeTypeRef(b, c.typeRef as TypeRef);
-        } else {
-          b.key("type").nullValue();
-        }
-        b.endObject();
-        idx = idx + 1;
-      }
-    }
-    b.endArray();
-    b.endObject();
-  } else if (kind.tag == "handle") {
-    // Handle type (borrow or own)
-    b.key("handle").beginObject();
-    if (kind.borrowIndex >= 0) {
-      b.key("borrow").i32(kind.borrowIndex);
-    } else if (kind.ownIndex >= 0) {
-      b.key("own").i32(kind.ownIndex);
-    }
-    b.endObject();
-  } else {
-    b.key(kind.tag).beginObject().endObject();
-  }
-  
-  b.endObject();
-};
 
-let serializeTypeEntry = (b: JsonBuilder, entry: TypeEntry): void => {
-  b.beginObject();
-  
-  if (entry.name != null) {
-    b.key("name").string(entry.name as String);
-  } else {
-    b.key("name").nullValue();
-  }
-  
-  b.key("kind");
-  serializeTypeKind(b, entry.kind);
-  
-  if (entry.owner is Some<TypeOwner>) {
-    let o = (entry.owner as Some<TypeOwner>).value;
-    b.key("owner").beginObject();
-    if (o.isWorld) {
-      b.key("world").i32(o.index);
-    } else {
-      b.key("interface").i32(o.index);
-    }
-    b.endObject();
-  } else {
-    b.key("owner").nullValue();
-  }
-  
-  if (entry.docs != null) {
-    let d = entry.docs as Docs;
-    if (d.contents != null) {
-      b.key("docs").beginObject();
-      b.key("contents").string(d.contents as String);
-      b.endObject();
-    }
-  }
-  
-  serializeStability(b, entry.docs);
-  
-  b.endObject();
-};
 
 /** Serialize a world function (for import/export). */
 let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: String, func: Func, docs: Docs | null): void => {
@@ -3143,7 +2705,7 @@ let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: Strin
     b.key("name").string(normalizeId(param.name.name));
     b.key("type");
     let typeRef = ctx.getParamTypeRef(param.type);
-    serializeTypeRef(b, typeRef);
+    typeRef.serialize(b);
     b.endObject();
     pIdx = pIdx + 1;
   }
@@ -3154,7 +2716,7 @@ let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: Strin
     let resultType = func.result as Type;
     b.key("result");
     let resultRef = ctx.getParamTypeRef(resultType);
-    serializeTypeRef(b, resultRef);
+    resultRef.serialize(b);
   }
   
   serializeStability(b, docs);
@@ -3510,24 +3072,7 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   b.endObject();
 };
 
-let serializePackage = (b: JsonBuilder, pkg: PackageEntry): void => {
-  b.beginObject();
-  b.key("name").string(pkg.name);
-  
-  b.key("interfaces").beginObject();
-  pkg.interfaces.forEach((name: String, idx: i32) => {
-    b.key(name).i32(idx);
-  });
-  b.endObject();
-  
-  b.key("worlds").beginObject();
-  pkg.worlds.forEach((name: String, idx: i32) => {
-    b.key(name).i32(idx);
-  });
-  b.endObject();
-  
-  b.endObject();
-};
+
 
 let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: InterfaceDef, index: i32): void => {
   let ifaceName = normalizeId(iface.name.name);
@@ -4057,7 +3602,7 @@ export let serializeAstToJson = (ast: Ast, pkgOrderStr: String | null = null): S
   b.key("types").beginArray();
   var tIdx = 0;
   while (tIdx < ctx.types.length) {
-    serializeTypeEntry(b, ctx.types[tIdx]);
+    ctx.types[tIdx].serialize(b);
     tIdx = tIdx + 1;
   }
   b.endArray();
@@ -4065,7 +3610,7 @@ export let serializeAstToJson = (ast: Ast, pkgOrderStr: String | null = null): S
   b.key("packages").beginArray();
   var pIdx = 0;
   while (pIdx < ctx.packages.length) {
-    serializePackage(b, ctx.packages[pIdx]);
+    ctx.packages[pIdx].serialize(b);
     pIdx = pIdx + 1;
   }
   b.endArray();
