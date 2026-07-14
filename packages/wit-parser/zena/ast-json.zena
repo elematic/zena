@@ -405,13 +405,11 @@ class SerializeContext {
       let types = t.types as Array<Type>;
       let refs = new Array<TypeRef>();
       var keyParts = "tuple:";
-      var idx = 0;
-      while (idx < types.length) {
+      for (var idx = 0; idx < types.length; idx += 1) {
         let ref = this.getTypeRefEx(types[idx], resolveResourceAsOwn);
         refs.push(ref);
         if (idx > 0) { keyParts = keyParts + ","; }
         keyParts = keyParts + this.typeRefToKey(ref);
-        idx += 1;
       }
       let kind = new TupleKind(refs);
       return this.getOrCreateAnonType(keyParts, kind);
@@ -555,8 +553,7 @@ let isStabilityEqual = (d1: Docs | null, d2: Docs | null): boolean => {
   let attrs2 = d2.attributes as Array<Attribute>;
   if (attrs1.length != attrs2.length) return false;
   
-  var i = 0;
-  while (i < attrs1.length) {
+  for (var i = 0; i < attrs1.length; i += 1) {
     let a1 = attrs1[i];
     let a2 = attrs2[i];
     if (a1.tag != a2.tag) return false;
@@ -565,7 +562,6 @@ let isStabilityEqual = (d1: Docs | null, d2: Docs | null): boolean => {
     if (a1.tag != AttributeTag.Since) return false;
     
     if (a1.version != a2.version) return false;
-    i += 1;
   }
   return true;
 };
@@ -576,30 +572,25 @@ let resolveInterfaceIndex = (ctx: SerializeContext, name: String): i32 => {
   }
   
   var slashIdx = -1;
-  var i = 0;
-  while (i < name.length) {
+  for (var i = 0; i < name.length; i += 1) {
     if (name.getByteAt(i) == 47) { // '/'
       slashIdx = i;
     }
-    i += 1;
   }
   
   if (slashIdx >= 0) {
     var hasAt = false;
-    var j = 0;
-    while (j < slashIdx) {
+    for (var j = 0; j < slashIdx; j += 1) {
       if (name.getByteAt(j) == 64) { // '@'
         hasAt = true;
       }
-      j += 1;
     }
     
     if (!hasAt) {
       let pkgNamePart = name.sliceBytes(0, slashIdx);
       let interfaceNamePart = name.sliceBytes(slashIdx + 1, name.length);
       
-      var pkgIdx = 0;
-      while (pkgIdx < ctx.packages.length) {
+      for (var pkgIdx = 0; pkgIdx < ctx.packages.length; pkgIdx += 1) {
         let pkg = ctx.packages[pkgIdx];
         let pkgName = pkg.name;
         if (pkgName == pkgNamePart || (pkgName.length > pkgNamePart.length && pkgName.sliceBytes(0, pkgNamePart.length) == pkgNamePart && pkgName.getByteAt(pkgNamePart.length) == 64)) {
@@ -608,7 +599,6 @@ let resolveInterfaceIndex = (ctx: SerializeContext, name: String): i32 => {
             return sIdx;
           }
         }
-        pkgIdx += 1;
       }
     }
   }
@@ -627,13 +617,11 @@ let resolveInterfaceName = (ctx: SerializeContext, pkgName: String, path: UsePat
 let resolveInterfaceNameAndIndex = (ctx: SerializeContext, itemPkgName: String, path: UsePath): i32 => {
   let resolved = resolveInterfaceName(ctx, itemPkgName, path);
   var hasSlash = false;
-  var sI = 0;
-  while (sI < resolved.length) {
+  for (var sI = 0; sI < resolved.length; sI += 1) {
     if (resolved.getByteAt(sI) == 47) { // '/'
       hasSlash = true;
       break;
     }
-    sI += 1;
   }
   
   if (hasSlash) {
@@ -941,21 +929,18 @@ let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): A
       let deps = new Array<String>();
       collectInterfaceDeps(ctx, iface, deps);
       
-      var dIdx = 0;
-      while (dIdx < deps.length) {
+      for (var dIdx = 0; dIdx < deps.length; dIdx += 1) {
         let dep = deps[dIdx];
         
         var hasSlash = false;
-        var sIdx = 0;
         var slashIdx = -1;
-        while (sIdx < dep.length) {
+        for (var sIdx = 0; sIdx < dep.length; sIdx += 1) {
           if (dep.getByteAt(sIdx) == 47) { // '/'
             hasSlash = true;
             slashIdx = sIdx;
             break;
           }
-          sIdx += 1;
-        }
+          }
         
         var depKey = dep;
         if (!hasSlash) {
@@ -964,14 +949,12 @@ let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): A
           let pkgNamePart = dep.sliceBytes(0, slashIdx);
           let ifaceNamePart = dep.sliceBytes(slashIdx + 1, dep.length);
           var foundPkgIdx = -1;
-          var p = 0;
-          while (p < ctx.packages.length) {
+          for (var p = 0; p < ctx.packages.length; p += 1) {
             if (ctx.packages[p].name == pkgNamePart) {
               foundPkgIdx = p;
               break;
             }
-            p += 1;
-          }
+            }
           if (foundPkgIdx >= 0) {
             depKey = i32ToString(foundPkgIdx) + "/" + ifaceNamePart;
           }
@@ -980,7 +963,6 @@ let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): A
         if (ifaceMap.has(depKey)) {
           visit(depKey);
         }
-        dIdx += 1;
       }
       
       visited[key] = 2;
@@ -1001,8 +983,7 @@ let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): A
 };
 
 let collectWorldDeps = (world: WorldDef, deps: Array<String>): void => {
-  var idx = 0;
-  while (idx < world.items.length) {
+  for (var idx = 0; idx < world.items.length; idx += 1) {
     let item = world.items[idx];
     if (item.tag == WorldItemTag.Include) {
       let inc = item.include as Include;
@@ -1010,7 +991,6 @@ let collectWorldDeps = (world: WorldDef, deps: Array<String>): void => {
         deps.push(normalizeId((inc.from.id as Id).name));
       }
     }
-    idx += 1;
   }
 };
 
@@ -1019,12 +999,10 @@ let sortWorlds = (worlds: Array<WorldDef>): Array<WorldDef> => {
   let visited = new HashMap<String, i32>();
   
   let worldMap = new HashMap<String, WorldDef>();
-  var idx = 0;
-  while (idx < worlds.length) {
+  for (var idx = 0; idx < worlds.length; idx += 1) {
     let world = worlds[idx];
     let key = i32ToString(world.packageIndex) + "/" + normalizeId(world.name.name);
     worldMap[key] = world;
-    idx += 1;
   }
   
   let visit = (key: String): void => {
@@ -1041,14 +1019,12 @@ let sortWorlds = (worlds: Array<WorldDef>): Array<WorldDef> => {
       let deps = new Array<String>();
       collectWorldDeps(world, deps);
       
-      var dIdx = 0;
-      while (dIdx < deps.length) {
+      for (var dIdx = 0; dIdx < deps.length; dIdx += 1) {
         let dep = deps[dIdx];
         let depKey = i32ToString(world.packageIndex) + "/" + dep;
         if (worldMap.has(depKey)) {
           visit(depKey);
         }
-        dIdx += 1;
       }
       
       visited[key] = 2;
@@ -1056,12 +1032,10 @@ let sortWorlds = (worlds: Array<WorldDef>): Array<WorldDef> => {
     }
   };
   
-  idx = 0;
-  while (idx < worlds.length) {
+  for (var idx = 0; idx < worlds.length; idx += 1) {
     let world = worlds[idx];
     let key = i32ToString(world.packageIndex) + "/" + normalizeId(world.name.name);
     visit(key);
-    idx += 1;
   }
   
   return sorted;
@@ -1071,23 +1045,19 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
   let siblingTypes = new HashMap<String, ScopeTypeElement>();
   let ifaceName = normalizeId(iface.name.name);
   
-  var idx = 0;
-  while (idx < iface.items.length) {
+  for (var idx = 0; idx < iface.items.length; idx += 1) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       siblingTypes[normalizeId(td.name.name)] = ScopeTypeElement.fromTd(td);
     } else if (item.tag == InterfaceItemTag.Use) {
       let u = item.use as Use;
-      var j = 0;
-      while (j < u.names.length) {
+      for (var j = 0; j < u.names.length; j += 1) {
         let un = u.names[j];
         let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
         siblingTypes[localName] = ScopeTypeElement.fromUse(u.from, un, u.docs);
-        j += 1;
-      }
+        }
     }
-    idx += 1;
   }
 
   let visited = new HashMap<String, i32>();
@@ -1117,13 +1087,11 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
         let deps = new Array<String>();
         collectTypeDefDeps(td, deps);
 
-        var dIdx = 0;
-        while (dIdx < deps.length) {
+        for (var dIdx = 0; dIdx < deps.length; dIdx += 1) {
           let dep = deps[dIdx];
           if (siblingTypes.has(dep)) {
             ensureRegistered(dep);
           }
-          dIdx += 1;
         }
 
         typeIdx = registerTypeDef(ctx, td, TypeOwner.fromInterface(ifaceIdx));
@@ -1166,23 +1134,19 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
     return -1;
   };
 
-  idx = 0;
-  while (idx < iface.items.length) {
+  for (var idx = 0; idx < iface.items.length; idx += 1) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       ensureRegistered(normalizeId(td.name.name));
     } else if (item.tag == InterfaceItemTag.Use) {
       let u = item.use as Use;
-      var j = 0;
-      while (j < u.names.length) {
+      for (var j = 0; j < u.names.length; j += 1) {
         let un = u.names[j];
         let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
         ensureRegistered(localName);
-        j += 1;
-      }
+        }
     }
-    idx += 1;
   }
 };
 
@@ -1193,25 +1157,21 @@ let findWorldByUsePath = (ctx: SerializeContext, path: UsePath): WorldDef | null
     if (let (true, wIdx) = currentPkg.worlds.get(normalizeId(name))) {
       return ctx.worlds[wIdx];
     }
-    var p = 0;
-    while (p < ctx.packages.length) {
+    for (var p = 0; p < ctx.packages.length; p += 1) {
       if (let (true, wIdx) = ctx.packages[p].worlds.get(normalizeId(name))) {
         return ctx.worlds[wIdx];
       }
-      p += 1;
     }
   } else if (path.tag == UsePathTag.Package) {
     let name = (path.name as Id).name;
     let pkg = path.packageId as PackageName;
     let pkgNameStr = formatPackageName(pkg);
-    var p = 0;
-    while (p < ctx.packages.length) {
+    for (var p = 0; p < ctx.packages.length; p += 1) {
       if (ctx.packages[p].name == pkgNameStr) {
         if (let (true, wIdx) = ctx.packages[p].worlds.get(normalizeId(name))) {
           return ctx.worlds[wIdx];
         }
       }
-      p += 1;
     }
   }
   return null;
@@ -1558,22 +1518,18 @@ let combineDocs = (parent: Docs | null, child: Docs | null): Docs | null => {
   var parentDeprecated: Attribute | null = null;
   var childDeprecated: Attribute | null = null;
   
-  var i = 0;
-  while (i < pattrs.length) {
+  for (var i = 0; i < pattrs.length; i += 1) {
     let a = pattrs[i];
     if (a.tag == AttributeTag.Unstable) parentUnstable = a;
     else if (a.tag == AttributeTag.Since) parentSince = a;
     else if (a.tag == AttributeTag.Deprecated) parentDeprecated = a;
-    i += 1;
   }
   
-  i = 0;
-  while (i < cattrs.length) {
+  for (var i = 0; i < cattrs.length; i += 1) {
     let a = cattrs[i];
     if (a.tag == AttributeTag.Unstable) childUnstable = a;
     else if (a.tag == AttributeTag.Since) childSince = a;
     else if (a.tag == AttributeTag.Deprecated) childDeprecated = a;
-    i += 1;
   }
   
   let hasSinceAttr = parentSince != null || childSince != null;
@@ -1627,22 +1583,18 @@ let mergeDocs = (parent: Docs | null, child: Docs | null): Docs | null => {
   var parentDeprecated: Attribute | null = null;
   var childDeprecated: Attribute | null = null;
   
-  var i = 0;
-  while (i < pattrs.length) {
+  for (var i = 0; i < pattrs.length; i += 1) {
     let a = pattrs[i];
     if (a.tag == AttributeTag.Unstable) parentUnstable = a;
     else if (a.tag == AttributeTag.Since) parentSince = a;
     else if (a.tag == AttributeTag.Deprecated) parentDeprecated = a;
-    i += 1;
   }
   
-  i = 0;
-  while (i < cattrs.length) {
+  for (var i = 0; i < cattrs.length; i += 1) {
     let a = cattrs[i];
     if (a.tag == AttributeTag.Unstable) childUnstable = a;
     else if (a.tag == AttributeTag.Since) childSince = a;
     else if (a.tag == AttributeTag.Deprecated) childDeprecated = a;
-    i += 1;
   }
   
   if (parentUnstable != null) {
@@ -1682,13 +1634,11 @@ let filterUnstableOnly = (docs: Docs | null): Docs | null => {
   if (docs == null || docs.attributes == null) return null;
   let attrs = docs.attributes as Array<Attribute>;
   let newAttrs = new Array<Attribute>();
-  var i = 0;
-  while (i < attrs.length) {
+  for (var i = 0; i < attrs.length; i += 1) {
     let attr = attrs[i];
     if (attr.tag == AttributeTag.Unstable) {
       newAttrs.push(attr);
     }
-    i += 1;
   }
   if (newAttrs.length == 0) return null;
   let d = new Docs(docs.span);
@@ -1700,13 +1650,11 @@ let filterStableOnly = (docs: Docs | null): Docs | null => {
   if (docs == null || docs.attributes == null) return null;
   let attrs = docs.attributes as Array<Attribute>;
   let newAttrs = new Array<Attribute>();
-  var i = 0;
-  while (i < attrs.length) {
+  for (var i = 0; i < attrs.length; i += 1) {
     let attr = attrs[i];
     if (attr.tag == AttributeTag.Since || attr.tag == AttributeTag.Deprecated) {
       newAttrs.push(attr);
     }
-    i += 1;
   }
   if (newAttrs.length == 0) return null;
   let d = new Docs(docs.span);
@@ -1728,37 +1676,30 @@ let expandWorldItems = (ctx: SerializeContext, world: WorldDef): Array<WorldItem
     let worldUnstableDocs = if (visited.size > 1) filterUnstableOnly(w.docs) else null;
     let currentInheritedDocs = combineDocs(inheritedDocs, worldUnstableDocs);
     
-    var idx = 0;
-    while (idx < w.items.length) {
+    for (var idx = 0; idx < w.items.length; idx += 1) {
       let item = w.items[idx];
       if (item.tag == WorldItemTag.Include) {
         let inc = item.include as Include;
         let incWorld = findWorldByUsePath(ctx, inc.from);
         if (incWorld != null) {
           let nestedRenames = new Array<IncludeName>();
-          var rIdx = 0;
-          while (rIdx < inc.names.length) {
+          for (var rIdx = 0; rIdx < inc.names.length; rIdx += 1) {
             let n = inc.names[rIdx];
             let renamedAs = applyRename(n.asName.name, renames);
             nestedRenames.push(new IncludeName(n.name, new Id(renamedAs, n.asName.span)));
-            rIdx += 1;
-          }
-          var pIdx = 0;
-          while (pIdx < renames.length) {
+            }
+          for (var pIdx = 0; pIdx < renames.length; pIdx += 1) {
             let pr = renames[pIdx];
             var found = false;
-            var j = 0;
-            while (j < nestedRenames.length) {
+            for (var j = 0; j < nestedRenames.length; j += 1) {
               if (nestedRenames[j].name.name == pr.name.name) {
                 found = true;
               }
-              j += 1;
-            }
+              }
             if (!found) {
               nestedRenames.push(pr);
             }
-            pIdx += 1;
-          }
+            }
           
           let includeInheritedDocs = if (visited.size == 1) combineDocs(currentInheritedDocs, filterStableOnly(inc.docs)) else currentInheritedDocs;
           rec(incWorld as WorldDef, nestedRenames, includeInheritedDocs);
@@ -1809,7 +1750,6 @@ let expandWorldItems = (ctx: SerializeContext, world: WorldDef): Array<WorldItem
         
         result.push(cloned);
       }
-      idx += 1;
     }
   };
   
@@ -1824,23 +1764,19 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32,
   let siblingTypes = new HashMap<String, ScopeTypeElement>();
   let worldName = normalizeId(world.name.name);
   
-  var idx = 0;
-  while (idx < items.length) {
+  for (var idx = 0; idx < items.length; idx += 1) {
     let item = items[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       siblingTypes[normalizeId(td.name.name)] = ScopeTypeElement.fromTd(td);
     } else if (item.tag == WorldItemTag.Use) {
       let u = item.use as Use;
-      var j = 0;
-      while (j < u.names.length) {
+      for (var j = 0; j < u.names.length; j += 1) {
         let un = u.names[j];
         let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
         siblingTypes[localName] = ScopeTypeElement.fromUse(u.from, un, u.docs);
-        j += 1;
-      }
+        }
     }
-    idx += 1;
   }
 
   let visited = new HashMap<String, i32>();
@@ -1870,13 +1806,11 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32,
         let deps = new Array<String>();
         collectTypeDefDeps(td, deps);
 
-        var dIdx = 0;
-        while (dIdx < deps.length) {
+        for (var dIdx = 0; dIdx < deps.length; dIdx += 1) {
           let dep = deps[dIdx];
           if (siblingTypes.has(dep)) {
             ensureRegistered(dep);
           }
-          dIdx += 1;
         }
 
         typeIdx = registerTypeDef(ctx, td, TypeOwner.fromWorld(worldIdx));
@@ -1915,42 +1849,34 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32,
     return -1;
   };
 
-  idx = 0;
-  while (idx < items.length) {
+  for (var idx = 0; idx < items.length; idx += 1) {
     let item = items[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       ensureRegistered(normalizeId(td.name.name));
     } else if (item.tag == WorldItemTag.Use) {
       let u = item.use as Use;
-      var j = 0;
-      while (j < u.names.length) {
+      for (var j = 0; j < u.names.length; j += 1) {
         let un = u.names[j];
         let localName = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
         ensureRegistered(localName);
-        j += 1;
-      }
+        }
     }
-    idx += 1;
   }
 };
 
 let registerAllTypes = (ctx: SerializeContext): void => {
-  var iIdx = 0;
-  while (iIdx < ctx.interfaces.length) {
+  for (var iIdx = 0; iIdx < ctx.interfaces.length; iIdx += 1) {
     ctx.currentInterfaceName = normalizeId(ctx.interfaces[iIdx].name.name);
     ctx.currentWorldName = null;
     registerInterfaceTypes(ctx, ctx.interfaces[iIdx], iIdx);
-    iIdx += 1;
   }
 
-  var wIdx = 0;
-  while (wIdx < ctx.worlds.length) {
+  for (var wIdx = 0; wIdx < ctx.worlds.length; wIdx += 1) {
     ctx.currentInterfaceName = null;
     ctx.currentWorldName = normalizeId(ctx.worlds[wIdx].name.name);
     let expandedItems = expandWorldItems(ctx, ctx.worlds[wIdx]);
     registerWorldTypes(ctx, ctx.worlds[wIdx], wIdx, expandedItems);
-    wIdx += 1;
   }
   
   ctx.currentInterfaceName = null;
@@ -1967,12 +1893,10 @@ let typeContainsBorrowFor = (t: Type, resourceName: String): boolean => {
   }
   if (t.tag == TypeTag.Tuple) {
     let types = t.types as Array<Type>;
-    var idx = 0;
-    while (idx < types.length) {
+    for (var idx = 0; idx < types.length; idx += 1) {
       if (typeContainsBorrowFor(types[idx], resourceName)) {
         return true;
       }
-      idx += 1;
     }
   } else if (t.tag == TypeTag.Result) {
     if (t.okType != null && typeContainsBorrowFor(t.okType as Type, resourceName)) {
@@ -2031,8 +1955,7 @@ let registerInterfaceAllScopeTypes = (ctx: SerializeContext, iface: InterfaceDef
   
   // Identify all local resources
   let resources = new Array<TypeDef>();
-  var idx = 0;
-  while (idx < iface.items.length) {
+  for (var idx = 0; idx < iface.items.length; idx += 1) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
@@ -2040,19 +1963,16 @@ let registerInterfaceAllScopeTypes = (ctx: SerializeContext, iface: InterfaceDef
         resources.push(td);
       }
     }
-    idx += 1;
   }
   
   // Stage 3a: Process resource functions' explicit types FIRST
-  idx = 0;
-  while (idx < iface.items.length) {
+  for (var idx = 0; idx < iface.items.length; idx += 1) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
         let funcs = td.resourceFuncs as Array<ResourceFunc>;
-        var fIdx = 0;
-        while (fIdx < funcs.length) {
+        for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           
           // Prepend implicit self parameter (borrow<resource>) if it is a method
@@ -2068,41 +1988,34 @@ let registerInterfaceAllScopeTypes = (ctx: SerializeContext, iface: InterfaceDef
             }
           }
           
-          var pIdx = 0;
-          while (pIdx < rf.func.func.params.length) {
+          for (var pIdx = 0; pIdx < rf.func.func.params.length; pIdx += 1) {
             let paramType = rf.func.func.params[pIdx].type;
             if (!isNakedOwnOrResource(ctx, paramType)) {
               ctx.getParamTypeRef(paramType);
             }
-            pIdx += 1;
-          }
+            }
           if (rf.func.func.result != null) {
             let resultType = rf.func.func.result as Type;
             if (!isNakedOwnOrResource(ctx, resultType)) {
               ctx.getParamTypeRef(resultType);
             }
           }
-          fIdx += 1;
-        }
+          }
       }
     }
-    idx += 1;
   }
   
   // Stage 3b: Process freestanding functions' explicit types SECOND
-  idx = 0;
-  while (idx < iface.items.length) {
+  for (var idx = 0; idx < iface.items.length; idx += 1) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.Func) {
       let func = item.func as NamedFunc;
-      var pIdx = 0;
-      while (pIdx < func.func.params.length) {
+      for (var pIdx = 0; pIdx < func.func.params.length; pIdx += 1) {
         let paramType = func.func.params[pIdx].type;
         if (!isNakedOwnOrResource(ctx, paramType)) {
           ctx.getParamTypeRef(paramType);
         }
-        pIdx += 1;
-      }
+        }
       if (func.func.result != null) {
         let resultType = func.func.result as Type;
         if (!isNakedOwnOrResource(ctx, resultType)) {
@@ -2110,7 +2023,6 @@ let registerInterfaceAllScopeTypes = (ctx: SerializeContext, iface: InterfaceDef
         }
       }
     }
-    idx += 1;
   }
   
   ctx.currentInterfaceName = null;
@@ -2128,8 +2040,7 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
   
   // Identify all local/included resources
   let resources = new Array<WorldItem>();
-  var idx = 0;
-  while (idx < expandedItems.length) {
+  for (var idx = 0; idx < expandedItems.length; idx += 1) {
     let item = expandedItems[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
@@ -2137,19 +2048,16 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
         resources.push(item);
       }
     }
-    idx += 1;
   }
   
   // Stage 3a: Process world resource functions' explicit types FIRST (only local resources)
-  var rFuncIdx = 0;
-  while (rFuncIdx < resources.length) {
+  for (var rFuncIdx = 0; rFuncIdx < resources.length; rFuncIdx += 1) {
     let item = resources[rFuncIdx];
     if (!item.isIncluded) {
       let r = item.typeDef as TypeDef;
       if (r.resourceFuncs != null) {
         let funcs = r.resourceFuncs as Array<ResourceFunc>;
-        var fIdx = 0;
-        while (fIdx < funcs.length) {
+        for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           
           // Prepend implicit self parameter (borrow<resource>) if it is a method
@@ -2165,43 +2073,36 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
             }
           }
           
-          var pIdx = 0;
-          while (pIdx < rf.func.func.params.length) {
+          for (var pIdx = 0; pIdx < rf.func.func.params.length; pIdx += 1) {
             let paramType = rf.func.func.params[pIdx].type;
             if (!isNakedOwnOrResource(ctx, paramType)) {
               ctx.getParamTypeRef(paramType);
             }
-            pIdx += 1;
-          }
+            }
           if (rf.func.func.result != null) {
             let resultType = rf.func.func.result as Type;
             if (!isNakedOwnOrResource(ctx, resultType)) {
               ctx.getParamTypeRef(resultType);
             }
           }
-          fIdx += 1;
-        }
+          }
       }
     }
-    rFuncIdx += 1;
   }
   
   // Stage 3b: Process world import/export function explicit types SECOND
-  idx = 0;
-  while (idx < expandedItems.length) {
+  for (var idx = 0; idx < expandedItems.length; idx += 1) {
     let item = expandedItems[idx];
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
       if (imp.kind.tag == ExternKindTag.Func) {
         let func = imp.kind.funcDef as Func;
-        var pIdx = 0;
-        while (pIdx < func.params.length) {
+        for (var pIdx = 0; pIdx < func.params.length; pIdx += 1) {
           let paramType = func.params[pIdx].type;
           if (!isNakedOwnOrResource(ctx, paramType)) {
             ctx.getParamTypeRef(paramType);
           }
-          pIdx += 1;
-        }
+          }
         if (func.result != null) {
           let resultType = func.result as Type;
           if (!isNakedOwnOrResource(ctx, resultType)) {
@@ -2213,14 +2114,12 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
       let exp = item.exportItem as Export;
       if (exp.kind.tag == ExternKindTag.Func) {
         let func = exp.kind.funcDef as Func;
-        var pIdx = 0;
-        while (pIdx < func.params.length) {
+        for (var pIdx = 0; pIdx < func.params.length; pIdx += 1) {
           let paramType = func.params[pIdx].type;
           if (!isNakedOwnOrResource(ctx, paramType)) {
             ctx.getParamTypeRef(paramType);
           }
-          pIdx += 1;
-        }
+          }
         if (func.result != null) {
           let resultType = func.result as Type;
           if (!isNakedOwnOrResource(ctx, resultType)) {
@@ -2229,19 +2128,16 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
         }
       }
     }
-    idx += 1;
   }
   
   // Stage 3c: Process world resource functions' explicit types THIRD (only included resources)
-  rFuncIdx = 0;
-  while (rFuncIdx < resources.length) {
+  for (var rFuncIdx = 0; rFuncIdx < resources.length; rFuncIdx += 1) {
     let item = resources[rFuncIdx];
     if (item.isIncluded) {
       let r = item.typeDef as TypeDef;
       if (r.resourceFuncs != null) {
         let funcs = r.resourceFuncs as Array<ResourceFunc>;
-        var fIdx = 0;
-        while (fIdx < funcs.length) {
+        for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           
           // Prepend implicit self parameter (borrow<resource>) if it is a method
@@ -2257,25 +2153,21 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
             }
           }
           
-          var pIdx = 0;
-          while (pIdx < rf.func.func.params.length) {
+          for (var pIdx = 0; pIdx < rf.func.func.params.length; pIdx += 1) {
             let paramType = rf.func.func.params[pIdx].type;
             if (!isNakedOwnOrResource(ctx, paramType)) {
               ctx.getParamTypeRef(paramType);
             }
-            pIdx += 1;
-          }
+            }
           if (rf.func.func.result != null) {
             let resultType = rf.func.func.result as Type;
             if (!isNakedOwnOrResource(ctx, resultType)) {
               ctx.getParamTypeRef(resultType);
             }
           }
-          fIdx += 1;
-        }
+          }
       }
     }
-    rFuncIdx += 1;
   }
   
   ctx.currentInterfaceName = null;
@@ -2284,17 +2176,13 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
 
 let registerAllTypesAndScopeSignatures = (ctx: SerializeContext): void => {
   // First, process all interfaces Block-by-Block (one at a time)
-  var iIdx = 0;
-  while (iIdx < ctx.interfaces.length) {
+  for (var iIdx = 0; iIdx < ctx.interfaces.length; iIdx += 1) {
     registerInterfaceAllScopeTypes(ctx, ctx.interfaces[iIdx], iIdx);
-    iIdx += 1;
   }
   
   // Second, process all worlds Block-by-Block (one at a time)
-  var wIdx = 0;
-  while (wIdx < ctx.worlds.length) {
+  for (var wIdx = 0; wIdx < ctx.worlds.length; wIdx += 1) {
     registerWorldAllScopeTypes(ctx, ctx.worlds[wIdx], wIdx);
-    wIdx += 1;
   }
 };
 
@@ -2377,10 +2265,8 @@ let buildTypeKind = (ctx: SerializeContext, t: Type, resolveResourceAsOwn: boole
   } else if (t.tag == TypeTag.Tuple) {
     let types = t.types as Array<Type>;
     let refs = new Array<TypeRef>();
-    var idx = 0;
-    while (idx < types.length) {
+    for (var idx = 0; idx < types.length; idx += 1) {
       refs.push(ctx.getTypeRef(types[idx]));
-      idx += 1;
     }
     return new TupleKind(refs);
   } else if (t.tag == TypeTag.Own) {
@@ -2411,12 +2297,10 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
   let kind = if (td.tag == TypeDefTag.Record) {
     let fieldsArr = new Array<RecordField>();
     let fields = td.fields as Array<Field>;
-    var idx = 0;
-    while (idx < fields.length) {
+    for (var idx = 0; idx < fields.length; idx += 1) {
       let field = fields[idx];
       let typeRef = ctx.getTypeRef(field.type);
       fieldsArr.push(new RecordField(normalizeId(field.name.name), typeRef));
-      idx += 1;
     }
     new RecordKind(fieldsArr)
   } else if (td.tag == TypeDefTag.Alias) {
@@ -2424,38 +2308,32 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
   } else if (td.tag == TypeDefTag.Enum) {
     let casesArr = new Array<EnumCase>();
     let cases = td.enumCases as Array<EnumCaseDef>;
-    var idx = 0;
-    while (idx < cases.length) {
+    for (var idx = 0; idx < cases.length; idx += 1) {
       let ec = cases[idx];
       var docs: Docs | null = null;
       if (ec.docs.contents != null) {
         docs = ec.docs;
       }
       casesArr.push(new EnumCase(normalizeId(ec.name.name), docs));
-      idx += 1;
     }
     new EnumKind(casesArr)
   } else if (td.tag == TypeDefTag.Flags) {
     let flagsArr = new Array<String>();
     let flags = td.flags as Array<FlagDef>;
-    var idx = 0;
-    while (idx < flags.length) {
+    for (var idx = 0; idx < flags.length; idx += 1) {
       flagsArr.push(normalizeId(flags[idx].name.name));
-      idx += 1;
     }
     new FlagsKind(flagsArr)
   } else if (td.tag == TypeDefTag.Variant) {
     let casesArr = new Array<VariantCase>();
     let cases = td.cases as Array<Case>;
-    var idx = 0;
-    while (idx < cases.length) {
+    for (var idx = 0; idx < cases.length; idx += 1) {
       let c = cases[idx];
       var typeRef: TypeRef | null = null;
       if (c.type != null) {
         typeRef = ctx.getTypeRef(c.type as Type);
       }
       casesArr.push(new VariantCase(normalizeId(c.name.name), typeRef));
-      idx += 1;
     }
     new VariantKind(casesArr)
   } else if (td.tag == TypeDefTag.Resource) {
@@ -2540,9 +2418,8 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
     b.endObject();
   }
   
-  var idx = 0;
   let nf = rf.func;
-  while (idx < nf.func.params.length) {
+  for (var idx = 0; idx < nf.func.params.length; idx += 1) {
     let param = nf.func.params[idx];
     b.beginObject();
     b.key("name").string(normalizeId(param.name.name));
@@ -2550,7 +2427,6 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
     let typeRef = ctx.getParamTypeRef(param.type);
     typeRef.serialize(b);
     b.endObject();
-    idx += 1;
   }
   b.endArray();
   
@@ -2587,8 +2463,7 @@ let serializeFunction = (b: JsonBuilder, ctx: SerializeContext, nf: NamedFunc): 
   }
   
   b.key("params").beginArray();
-  var idx = 0;
-  while (idx < nf.func.params.length) {
+  for (var idx = 0; idx < nf.func.params.length; idx += 1) {
     let param = nf.func.params[idx];
     b.beginObject();
     b.key("name").string(normalizeId(param.name.name));
@@ -2596,7 +2471,6 @@ let serializeFunction = (b: JsonBuilder, ctx: SerializeContext, nf: NamedFunc): 
     let typeRef = ctx.getParamTypeRef(param.type);
     typeRef.serialize(b);
     b.endObject();
-    idx += 1;
   }
   b.endArray();
   
@@ -2633,8 +2507,7 @@ let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: Strin
   
   // Params
   b.key("params").beginArray();
-  var pIdx = 0;
-  while (pIdx < func.params.length) {
+  for (var pIdx = 0; pIdx < func.params.length; pIdx += 1) {
     let param = func.params[pIdx];
     b.beginObject();
     b.key("name").string(normalizeId(param.name.name));
@@ -2642,7 +2515,6 @@ let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: Strin
     let typeRef = ctx.getParamTypeRef(param.type);
     typeRef.serialize(b);
     b.endObject();
-    pIdx += 1;
   }
   b.endArray();
   
@@ -2696,8 +2568,7 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
     
     // Now, find what this interface uses
     let iface = ctx.interfaces[ifaceIdx];
-    var idx = 0;
-    while (idx < iface.items.length) {
+    for (var idx = 0; idx < iface.items.length; idx += 1) {
       let item = iface.items[idx];
       if (item.tag == InterfaceItemTag.Use) {
         let u = item.use as Use;
@@ -2707,14 +2578,12 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
           visit(depIdx, false);
         }
       }
-      idx += 1;
     }
   };
 
   // Now, seed the recursive traversal with direct imports/exports
   let pkgName = ctx.packages[world.packageIndex].name;
-  var idx = 0;
-  while (idx < items.length) {
+  for (var idx = 0; idx < items.length; idx += 1) {
     let item = items[idx];
     let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (item.tag == WorldItemTag.Import) {
@@ -2774,7 +2643,6 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
         visit(ifaceIdx, false);
       }
     }
-    idx += 1;
   }
 
   return imports;
@@ -2797,8 +2665,7 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   
   // 1. Serialize any world TypeDefs (like resources/types defined on the world)
   let pkgName = ctx.packages[world.packageIndex].name;
-  var idx = 0;
-  while (idx < expandedItems.length) {
+  for (var idx = 0; idx < expandedItems.length; idx += 1) {
     let item = expandedItems[idx];
     let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (item.tag == WorldItemTag.TypeDef) {
@@ -2823,8 +2690,7 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
       b.endObject();
     } else if (item.tag == WorldItemTag.Use) {
       let u = item.use as Use;
-      var j = 0;
-      while (j < u.names.length) {
+      for (var j = 0; j < u.names.length; j += 1) {
         let un = u.names[j];
         let name = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
         b.key(name).beginObject();
@@ -2836,23 +2702,19 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
         }
         b.key("type").i32(typeIdx);
         b.endObject();
-        j += 1;
-      }
+        }
     }
-    idx += 1;
   }
   
   // 2. Serialize world resource functions as imports
-  idx = 0;
-  while (idx < expandedItems.length) {
+  for (var idx = 0; idx < expandedItems.length; idx += 1) {
     let item = expandedItems[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
         let resourceName = normalizeId(td.name.name);
         let funcs = td.resourceFuncs as Array<ResourceFunc>;
-        var fIdx = 0;
-        while (fIdx < funcs.length) {
+        for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           if (rf.tag == ResourceFuncTag.Method) {
             b.key("[method]" + resourceName + "." + normalizeId(rf.func.name.name)).beginObject();
@@ -2870,19 +2732,16 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
             serializeResourceFunc(b, ctx, rf, resourceName, index);
             b.endObject();
           }
-          fIdx += 1;
-        }
+          }
       }
     }
-    idx += 1;
   }
   
   // 3. Serialize interface imports (both explicit inline, direct path, and transitives)
   let worldImports = collectWorldImports(ctx, world, expandedItems);
   let inlineImports = new HashMap<i32, String>();
   
-  idx = 0;
-  while (idx < expandedItems.length) {
+  for (var idx = 0; idx < expandedItems.length; idx += 1) {
     let item = expandedItems[idx];
     let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (item.tag == WorldItemTag.Import) {
@@ -2907,7 +2766,6 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
         }
       }
     }
-    idx += 1;
   }
   
   worldImports.forEach((ifaceIdx: i32, val: boolean) => {
@@ -2929,8 +2787,7 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   });
   
   // 4. Serialize regular freestanding function imports
-  idx = 0;
-  while (idx < expandedItems.length) {
+  for (var idx = 0; idx < expandedItems.length; idx += 1) {
     let item = expandedItems[idx];
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
@@ -2940,14 +2797,12 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
         serializeExternKind(b, ctx, imp.kind, imp.docs);
       }
     }
-    idx += 1;
   }
   b.endObject();
   
   // Serialize exports
   b.key("exports").beginObject();
-  idx = 0;
-  while (idx < expandedItems.length) {
+  for (var idx = 0; idx < expandedItems.length; idx += 1) {
     let item = expandedItems[idx];
     let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (item.tag == WorldItemTag.Export) {
@@ -2991,7 +2846,6 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
         serializeExternKind(b, ctx, exp.kind, exp.docs);
       }
     }
-    idx += 1;
   }
   b.endObject();
   if (world.docs != null) {
@@ -3025,8 +2879,7 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
   
   b.key("types").beginObject();
   let pkgName = ctx.packages[iface.packageIndex].name;
-  var idx = 0;
-  while (idx < iface.items.length) {
+  for (var idx = 0; idx < iface.items.length; idx += 1) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
@@ -3050,8 +2903,7 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
       }
     } else if (item.tag == InterfaceItemTag.Use) {
       let u = item.use as Use;
-      var j = 0;
-      while (j < u.names.length) {
+      for (var j = 0; j < u.names.length; j += 1) {
         let un = u.names[j];
         let name = normalizeId(if (un.asName != null) (un.asName as Id).name else un.name.name);
         
@@ -3071,25 +2923,21 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
         if (foundIdx >= 0) {
           b.key(name).i32(foundIdx);
         }
-        j += 1;
-      }
+        }
     }
-    idx += 1;
   }
   b.endObject();
   
   b.key("functions").beginObject();
   // First serialize resource methods (wasm-tools order: resource methods create types first)
-  idx = 0;
-  while (idx < iface.items.length) {
+  for (var idx = 0; idx < iface.items.length; idx += 1) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
         let resourceName = normalizeId(td.name.name);
         let funcs = td.resourceFuncs as Array<ResourceFunc>;
-        var fIdx = 0;
-        while (fIdx < funcs.length) {
+        for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           if (rf.tag == ResourceFuncTag.Method) {
             b.key("[method]" + resourceName + "." + normalizeId(rf.func.name.name));
@@ -3101,22 +2949,18 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
             b.key("[constructor]" + resourceName);
             serializeResourceFunc(b, ctx, rf, resourceName, index);
           }
-          fIdx += 1;
-        }
+          }
       }
     }
-    idx += 1;
   }
   // Then serialize regular interface functions
-  idx = 0;
-  while (idx < iface.items.length) {
+  for (var idx = 0; idx < iface.items.length; idx += 1) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.Func) {
       let func = item.func as NamedFunc;
       b.key(normalizeId(func.name.name));
       serializeFunction(b, ctx, func);
     }
-    idx += 1;
   }
   b.endObject();
   
@@ -3144,13 +2988,11 @@ let collectPackageDepFromUsePath = (aliases: HashMap<String, String>, pkgName: S
     }
     // Check if aliasTarget has a package prefix (contains a '/')
     var slashIdx = -1;
-    var i = 0;
-    while (i < aliasTarget.length) {
+    for (var i = 0; i < aliasTarget.length; i += 1) {
       if (aliasTarget.getByteAt(i) == 47) { // '/'
         slashIdx = i;
         break;
       }
-      i += 1;
     }
     if (slashIdx >= 0) {
       deps.push(aliasTarget.sliceBytes(0, slashIdx));
@@ -3159,28 +3001,24 @@ let collectPackageDepFromUsePath = (aliases: HashMap<String, String>, pkgName: S
 };
 
 let collectInterfaceDepsOnly = (aliases: HashMap<String, String>, pkgName: String, items: Array<InterfaceItem>, deps: Array<String>): void => {
-  var j = 0;
-  while (j < items.length) {
+  for (var j = 0; j < items.length; j += 1) {
     let ifaceItem = items[j];
     if (ifaceItem.tag == InterfaceItemTag.Use) {
       let u = ifaceItem.use as Use;
       collectPackageDepFromUsePath(aliases, pkgName, u.from, deps);
     }
-    j += 1;
   }
 };
 
 let collectPackageDeps = (aliases: HashMap<String, String>, pkgName: String, items: Array<AstItem>, deps: Array<String>): void => {
-  var idx = 0;
-  while (idx < items.length) {
+  for (var idx = 0; idx < items.length; idx += 1) {
     let item = items[idx];
     if (item.tag == AstItemTag.Interface) {
       let iface = item.interfaceDef as InterfaceDef;
       collectInterfaceDepsOnly(aliases, pkgName, iface.items, deps);
     } else if (item.tag == AstItemTag.World) {
       let world = item.worldDef as WorldDef;
-      var j = 0;
-      while (j < world.items.length) {
+      for (var j = 0; j < world.items.length; j += 1) {
         let worldItem = world.items[j];
         if (worldItem.tag == WorldItemTag.Import) {
           let imp = worldItem.importItem as Import;
@@ -3205,10 +3043,8 @@ let collectPackageDeps = (aliases: HashMap<String, String>, pkgName: String, ite
           let inc = worldItem.include as Include;
           collectPackageDepFromUsePath(aliases, pkgName, inc.from, deps);
         }
-        j += 1;
-      }
+        }
     }
-    idx += 1;
   }
 };
 
@@ -3222,28 +3058,22 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
   let pkgMap = new HashMap<String, {name: PackageName | null, items: Array<AstItem>}>();
   let keys = new Array<String>();
   
-  var idx = 0;
-  while (idx < pkgSources.length) {
+  for (var idx = 0; idx < pkgSources.length; idx += 1) {
     let src = pkgSources[idx];
     let key = formatPackageName(src.name);
     pkgMap[key] = src;
     keys.push(key);
-    idx += 1;
   }
   
   // Sort the keys alphabetically/semver to ensure deterministic start order
-  var i = 0;
-  while (i < keys.length) {
-    var j = i + 1;
-    while (j < keys.length) {
+  for (var i = 0; i < keys.length; i += 1) {
+    for (var j = i + 1; j < keys.length; j += 1) {
       if (comparePackageNameStrings(pkgOrder, keys[i], keys[j]) > 0) {
         let temp = keys[i];
         keys[i] = keys[j];
         keys[j] = temp;
       }
-      j += 1;
-    }
-    i += 1;
+      }
   }
   
   // Now do a topological sort using DFS.
@@ -3264,27 +3094,21 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
       let deps = depsList as Array<String>;
       
       // Sort dependencies alphabetically/semver for deterministic visit order
-      var dI = 0;
-      while (dI < deps.length) {
-        var dJ = dI + 1;
-        while (dJ < deps.length) {
+      for (var dI = 0; dI < deps.length; dI += 1) {
+        for (var dJ = dI + 1; dJ < deps.length; dJ += 1) {
           if (comparePackageNameStrings(pkgOrder, deps[dI], deps[dJ]) > 0) {
             let temp = deps[dI];
             deps[dI] = deps[dJ];
             deps[dJ] = temp;
           }
-          dJ += 1;
-        }
-        dI += 1;
+          }
       }
       
-      dI = 0;
-      while (dI < deps.length) {
+      for (var dI = 0; dI < deps.length; dI += 1) {
         let depKey = deps[dI];
         if (pkgMap.has(depKey)) {
           visit(depKey);
         }
-        dI += 1;
       }
     }
     
@@ -3295,10 +3119,8 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
   };
   
   // Visit all keys in alphabetical order
-  idx = 0;
-  while (idx < keys.length) {
+  for (var idx = 0; idx < keys.length; idx += 1) {
     visit(keys[idx]);
-    idx += 1;
   }
   
   return sorted;
@@ -3308,11 +3130,9 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
   let pkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
   pkgSources.push({name: ast.packageName, items: ast.items});
   
-  var pIdx = 0;
-  while (pIdx < ast.nestedPackages.length) {
+  for (var pIdx = 0; pIdx < ast.nestedPackages.length; pIdx += 1) {
     let np = ast.nestedPackages[pIdx];
     pkgSources.push({name: np.name, items: np.items});
-    pIdx += 1;
   }
 
   let finalPkgSources = sortPackages(pkgSources, pkgDeps, pkgOrder);
@@ -3320,8 +3140,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
   let globalInterfaces = new Array<InterfaceDef>();
   let globalWorlds = new Array<WorldDef>();
   
-  var pIdxVar = 0;
-  while (pIdxVar < finalPkgSources.length) {
+  for (var pIdxVar = 0; pIdxVar < finalPkgSources.length; pIdxVar += 1) {
     let src = finalPkgSources[pIdxVar];
     let pkgName = formatPackageName(src.name);
     let pkg = new PackageEntry(pkgName);
@@ -3330,8 +3149,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
     let rawInterfaces = new Array<InterfaceDef>();
     let rawWorlds = new Array<WorldDef>();
     
-    var idx = 0;
-    while (idx < src.items.length) {
+    for (var idx = 0; idx < src.items.length; idx += 1) {
       let item = src.items[idx];
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
@@ -3342,15 +3160,12 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
         world.packageIndex = pIdxVar;
         rawWorlds.push(world);
       }
-      idx += 1;
-    }
+      }
     
     // Collect inline interfaces defined within the worlds of this package
-    idx = 0;
-    while (idx < rawWorlds.length) {
+    for (var idx = 0; idx < rawWorlds.length; idx += 1) {
       let world = rawWorlds[idx];
-      var j = 0;
-      while (j < world.items.length) {
+      for (var j = 0; j < world.items.length; j += 1) {
         let item = world.items[j];
         if (item.tag == WorldItemTag.Import) {
           let imp = item.importItem as Import;
@@ -3377,32 +3192,24 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
             rawInterfaces.push(inlineIface);
           }
         }
-        j += 1;
+        }
       }
-      idx += 1;
-    }
     
     // Append package items to global list
-    var rI = 0;
-    while (rI < rawInterfaces.length) {
+    for (var rI = 0; rI < rawInterfaces.length; rI += 1) {
       globalInterfaces.push(rawInterfaces[rI]);
-      rI += 1;
-    }
+      }
     
-    var rW = 0;
-    while (rW < rawWorlds.length) {
+    for (var rW = 0; rW < rawWorlds.length; rW += 1) {
       globalWorlds.push(rawWorlds[rW]);
-      rW += 1;
-    }
+      }
     
-    pIdxVar += 1;
   }
   
   let sortedInterfaces = sortInterfaces(ctx, globalInterfaces);
   let sortedWorlds = sortWorlds(globalWorlds);
   
-  var i = 0;
-  while (i < sortedInterfaces.length) {
+  for (var i = 0; i < sortedInterfaces.length; i += 1) {
     let iface = sortedInterfaces[i];
     let ifaceIdx = ctx.registerInterface(iface);
     let pkg = ctx.packages[iface.packageIndex];
@@ -3416,16 +3223,13 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
     if (!iface.isInline) {
       pkg.interfaces[normalizeId(iface.name.name)] = ifaceIdx;
     }
-    i += 1;
   }
   
-  var w = 0;
-  while (w < sortedWorlds.length) {
+  for (var w = 0; w < sortedWorlds.length; w += 1) {
     let world = sortedWorlds[w];
     let worldIdx = ctx.registerWorld(world);
     let pkg = ctx.packages[world.packageIndex];
     pkg.worlds[normalizeId(world.name.name)] = worldIdx;
-    w += 1;
   }
 };
 
@@ -3441,19 +3245,15 @@ export let serializeAstToJson = (ast: Ast, pkgOrderStr: String | null = null): S
   
   let pkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
   pkgSources.push({name: ast.packageName, items: ast.items});
-  var pIdxVar = 0;
-  while (pIdxVar < ast.nestedPackages.length) {
+  for (var pIdxVar = 0; pIdxVar < ast.nestedPackages.length; pIdxVar += 1) {
     let np = ast.nestedPackages[pIdxVar];
     pkgSources.push({name: np.name, items: np.items});
-    pIdxVar += 1;
   }
   
-  var pI = 0;
-  while (pI < pkgSources.length) {
+  for (var pI = 0; pI < pkgSources.length; pI += 1) {
     let src = pkgSources[pI];
     let pkgName = formatPackageName(src.name);
-    var itemI = 0;
-    while (itemI < src.items.length) {
+    for (var itemI = 0; itemI < src.items.length; itemI += 1) {
       let item = src.items[itemI];
       if (item.tag == AstItemTag.Use) {
         let u = item.use as ToplevelUse;
@@ -3468,9 +3268,7 @@ export let serializeAstToJson = (ast: Ast, pkgOrderStr: String | null = null): S
         
         aliases[pkgName + "/" + normalizeId(alias)] = resolvedTarget;
       }
-      itemI += 1;
-    }
-    pI += 1;
+      }
   }
 
   let pkgDeps = new HashMap<String, Array<String>>();
@@ -3480,29 +3278,25 @@ export let serializeAstToJson = (ast: Ast, pkgOrderStr: String | null = null): S
   collectPackageDeps(aliases, mainKey, ast.items, mainDeps);
   pkgDeps[mainKey] = mainDeps;
   
-  var pkgDepIdx = 0;
-  while (pkgDepIdx < ast.nestedPackages.length) {
+  for (var pkgDepIdx = 0; pkgDepIdx < ast.nestedPackages.length; pkgDepIdx += 1) {
     let np = ast.nestedPackages[pkgDepIdx];
     let key = formatPackageName(np.name);
     let deps = new Array<String>();
     collectPackageDeps(aliases, key, np.items, deps);
     pkgDeps[key] = deps;
-    pkgDepIdx += 1;
   }
 
   let pkgOrder = new Array<String>();
   if (pkgOrderStr != null) {
     let str = pkgOrderStr as String;
     var start = 0;
-    var i = 0;
-    while (i < str.length) {
+    for (var i = 0; i < str.length; i += 1) {
       if (str.getByteAt(i) == 44) { // ','
         if (i > start) {
           pkgOrder.push(str.sliceBytes(start, i));
         }
         start = i + 1;
       }
-      i += 1;
     }
     if (str.length > start) {
       pkgOrder.push(str.sliceBytes(start, str.length));
@@ -3519,34 +3313,26 @@ export let serializeAstToJson = (ast: Ast, pkgOrderStr: String | null = null): S
   b.beginObject();
   
   b.key("interfaces").beginArray();
-  var iIdx = 0;
-  while (iIdx < ctx.interfaces.length) {
+  for (var iIdx = 0; iIdx < ctx.interfaces.length; iIdx += 1) {
     serializeInterface(b, ctx, ctx.interfaces[iIdx], iIdx);
-    iIdx += 1;
   }
   b.endArray();
   
   b.key("worlds").beginArray();
-  var wIdx = 0;
-  while (wIdx < ctx.worlds.length) {
+  for (var wIdx = 0; wIdx < ctx.worlds.length; wIdx += 1) {
     serializeWorld(b, ctx, ctx.worlds[wIdx], wIdx);
-    wIdx += 1;
   }
   b.endArray();
   
   b.key("types").beginArray();
-  var tIdx = 0;
-  while (tIdx < ctx.types.length) {
+  for (var tIdx = 0; tIdx < ctx.types.length; tIdx += 1) {
     ctx.types[tIdx].serialize(b);
-    tIdx += 1;
   }
   b.endArray();
   
   b.key("packages").beginArray();
-  var pIdx = 0;
-  while (pIdx < ctx.packages.length) {
+  for (var pIdx = 0; pIdx < ctx.packages.length; pIdx += 1) {
     ctx.packages[pIdx].serialize(b);
-    pIdx += 1;
   }
   b.endArray();
   

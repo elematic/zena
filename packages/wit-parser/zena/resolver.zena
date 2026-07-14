@@ -136,11 +136,9 @@ class PackageRegistry {
     }
 
     // Register nested packages
-    var i = 0;
-    while (i < ast.nestedPackages.length) {
+    for (var i = 0; i < ast.nestedPackages.length; i += 1) {
       let pkg = ast.nestedPackages[i];
       registry.#registerPackage(pkg.name, pkg.items);
-      i += 1;
     }
 
     return registry;
@@ -158,8 +156,7 @@ class PackageRegistry {
     let content = new PackageContent(name);
 
     // Collect interfaces and worlds
-    var i = 0;
-    while (i < items.length) {
+    for (var i = 0; i < items.length; i += 1) {
       let item = items[i];
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
@@ -168,7 +165,6 @@ class PackageRegistry {
         let world = item.worldDef as WorldDef;
         content.worlds[world.name.name] = world;
       }
-      i += 1;
     }
 
     this.#packages[key] = content;
@@ -270,8 +266,7 @@ class PackageRegistry {
 /** Convert a string to lowercase (simple ASCII version). */
 let toLower = (s: String): String => {
   let sb = new StringBuilder(s.length);
-  var i = 0;
-  while (i < s.length) {
+  for (var i = 0; i < s.length; i += 1) {
     let b = s.getByteAt(i);
     // A-Z (65-90) -> a-z (97-122)
     if (b >= 65 && b <= 90) {
@@ -279,7 +274,6 @@ let toLower = (s: String): String => {
     } else {
       sb.appendByte(b);
     }
-    i += 1;
   }
   return sb.toString();
 };
@@ -287,13 +281,11 @@ let toLower = (s: String): String => {
 /** Find a symbol in a list by name (case-insensitive). */
 let findSymbolInList = (symbols: Array<SymbolEntry>, name: String): SymbolEntry | null => {
   let lower = toLower(name);
-  var i = 0;
-  while (i < symbols.length) {
+  for (var i = 0; i < symbols.length; i += 1) {
     let sym = symbols[i];
     if (toLower(sym.name) == lower) {
       return sym;
     }
-    i += 1;
   }
   return null;
 };
@@ -322,12 +314,10 @@ let isGated = (docs: Docs): boolean => {
     return false;
   }
   let attrs = docs.attributes as Array<Attribute>;
-  var i = 0;
-  while (i < attrs.length) {
+  for (var i = 0; i < attrs.length; i += 1) {
     if (attrs[i].tag == AttributeTag.Unstable) {
       return true;
     }
-    i += 1;
   }
   return false;
 };
@@ -362,13 +352,11 @@ class Scope {
   /** Find a symbol by name (case-insensitive for kebab-case). */
   find(name: String): SymbolEntry | null {
     let lower = toLower(name);
-    var i = 0;
-    while (i < this.symbols.length) {
+    for (var i = 0; i < this.symbols.length; i += 1) {
       let sym = this.symbols[i];
       if (toLower(sym.name) == lower) {
         return sym;
       }
-      i += 1;
     }
     return null;
   }
@@ -394,39 +382,33 @@ class Scope {
 
   /** Find a type by name. */
   findType(name: String): TypeDef | null {
-    var i = 0;
-    while (i < this.types.length) {
+    for (var i = 0; i < this.types.length; i += 1) {
       let td = this.types[i];
       if (td.name.name == name) {
         return td;
       }
-      i += 1;
     }
     return null;
   }
 
   /** Find a world by name. */
   findWorld(name: String): WorldDef | null {
-    var i = 0;
-    while (i < this.worlds.length) {
+    for (var i = 0; i < this.worlds.length; i += 1) {
       let wd = this.worlds[i];
       if (wd.name.name == name) {
         return wd;
       }
-      i += 1;
     }
     return null;
   }
 
   /** Find an interface by name. */
   findInterface(name: String): InterfaceDef | null {
-    var i = 0;
-    while (i < this.interfaces.length) {
+    for (var i = 0; i < this.interfaces.length; i += 1) {
       let iface = this.interfaces[i];
       if (iface.name.name == name) {
         return iface;
       }
-      i += 1;
     }
     return null;
   }
@@ -494,13 +476,11 @@ export class Resolver {
 
   /** Find a symbol in any scope (innermost first). */
   #findSymbol(name: String): SymbolEntry | null {
-    var i = this.#scopes.length - 1;
-    while (i >= 0) {
+    for (var i = this.#scopes.length - 1; i >= 0; i -= 1) {
       let sym = this.#scopes[i].find(name);
       if (sym != null) {
         return sym;
       }
-      i -= 1;
     }
     return null;
   }
@@ -549,8 +529,7 @@ export class Resolver {
     this.#pushScope();
 
     // First pass: collect interfaces and worlds (they take priority over use aliases)
-    var i = 0;
-    while (i < ast.items.length) {
+    for (var i = 0; i < ast.items.length; i += 1) {
       let item = ast.items[i];
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
@@ -565,15 +544,13 @@ export class Resolver {
         // Store the world definition for include cycle detection
         this.#currentScope().worlds.push(world);
       }
-      i += 1;
     }
 
     // Second mini-pass: collect top-level use aliases
     // Check for conflicts where a use alias appears BEFORE an interface/world in source order
     // but only if they're in the same "file" (no package declaration between them)
     let packageDeclPos = if (ast.packageName != null) (ast.packageName as PackageName).span.start else 0;
-    i = 0;
-    while (i < ast.items.length) {
+    for (var i = 0; i < ast.items.length; i += 1) {
       let item = ast.items[i];
       if (item.tag == AstItemTag.Use) {
         let use = item.use as ToplevelUse;
@@ -603,26 +580,21 @@ export class Resolver {
           this.#define(name, SymbolKind.Interface, span);
         }
       }
-      i += 1;
     }
 
     // Second pass: resolve each item
-    i = 0;
-    while (i < ast.items.length) {
+    for (var i = 0; i < ast.items.length; i += 1) {
       let item = ast.items[i];
       this.#resolveAstItem(item);
-      i += 1;
     }
 
     // Check for duplicate nested package names
     this.#checkDuplicateNestedPackages(ast.nestedPackages);
 
     // Resolve nested packages - each gets its own scope
-    i = 0;
-    while (i < ast.nestedPackages.length) {
+    for (var i = 0; i < ast.nestedPackages.length; i += 1) {
       let pkg = ast.nestedPackages[i];
       this.#resolveNestedPackage(pkg);
-      i += 1;
     }
 
     this.#popScope();
@@ -630,12 +602,10 @@ export class Resolver {
 
   /** Check for duplicate nested package names. */
   #checkDuplicateNestedPackages(packages: Array<NestedPackage>): void {
-    var i = 0;
-    while (i < packages.length) {
+    for (var i = 0; i < packages.length; i += 1) {
       let pkg1 = packages[i];
       let name1 = this.#packageNameToString(pkg1.name);
-      var j = i + 1;
-      while (j < packages.length) {
+      for (var j = i + 1; j < packages.length; j += 1) {
         let pkg2 = packages[j];
         let name2 = this.#packageNameToString(pkg2.name);
         if (name1 == name2) {
@@ -644,9 +614,7 @@ export class Resolver {
             pkg2.name.span
           );
         }
-        j += 1;
-      }
-      i += 1;
+        }
     }
   }
 
@@ -696,8 +664,7 @@ export class Resolver {
     this.#pushScope();
 
     // First pass: collect all names in this package (interfaces, worlds, and top-level use aliases)
-    var i = 0;
-    while (i < pkg.items.length) {
+    for (var i = 0; i < pkg.items.length; i += 1) {
       let item = pkg.items[i];
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
@@ -720,14 +687,11 @@ export class Resolver {
         }
         // else: silently shadow - will resolve in second pass
       }
-      i += 1;
     }
 
     // Second pass: resolve each item
-    i = 0;
-    while (i < pkg.items.length) {
+    for (var i = 0; i < pkg.items.length; i += 1) {
       this.#resolveAstItem(pkg.items[i]);
-      i += 1;
     }
 
     this.#popScope();
@@ -757,8 +721,7 @@ export class Resolver {
     this.#pushScope();
 
     // First pass: collect all type names and functions with gating info
-    var i = 0;
-    while (i < iface.items.length) {
+    for (var i = 0; i < iface.items.length; i += 1) {
       let item = iface.items[i];
       if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
@@ -781,15 +744,12 @@ export class Resolver {
         let itemGated = isGated(f.docs);
         this.#defineWithGating(f.name.name, SymbolKind.Func, f.name.span, itemGated);
       }
-      i += 1;
     }
 
     // Second pass: resolve types and validate
-    i = 0;
-    while (i < iface.items.length) {
+    for (var i = 0; i < iface.items.length; i += 1) {
       let item = iface.items[i];
       this.#resolveInterfaceItem(item);
-      i += 1;
     }
 
     this.#popScope();
@@ -843,23 +803,19 @@ export class Resolver {
     let exports = new Array<SymbolEntry>();
 
     // First pass: collect names from type definitions
-    var i = 0;
-    while (i < world.items.length) {
+    for (var i = 0; i < world.items.length; i += 1) {
       let item = world.items[i];
       if (item.tag == WorldItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
         this.#define(td.name.name, SymbolKind.Type, td.name.span);
         this.#currentScope().types.push(td);
       }
-      i += 1;
     }
 
     // Second pass: resolve items and check import/export conflicts
-    i = 0;
-    while (i < world.items.length) {
+    for (var i = 0; i < world.items.length; i += 1) {
       let item = world.items[i];
       this.#resolveWorldItem(item, imports, exports, world.name.name);
-      i += 1;
     }
 
     // Third pass: check for transitive dependency conflicts
@@ -933,8 +889,7 @@ export class Resolver {
     let worldName = id.name;
 
     // Check each item in the included world
-    var i = 0;
-    while (i < w.items.length) {
+    for (var i = 0; i < w.items.length; i += 1) {
       let item = w.items[i];
       if (item.tag == WorldItemTag.Import) {
         let imp = item.importItem as Import;
@@ -1020,7 +975,6 @@ export class Resolver {
           }
         }
       }
-      i += 1;
     }
   }
 
@@ -1040,13 +994,11 @@ export class Resolver {
 
   /** Apply a rename from include names if the name matches. */
   #applyIncludeRename(name: String, names: Array<IncludeName>): String {
-    var i = 0;
-    while (i < names.length) {
+    for (var i = 0; i < names.length; i += 1) {
       let n = names[i];
       if (n.name.name == name) {
         return n.asName.name;
       }
-      i += 1;
     }
     return name;
   }
@@ -1111,10 +1063,8 @@ export class Resolver {
       // Resolve interface items in their own scope (inline interfaces have their own namespace)
       this.#pushScope();
       let items = kind.items as Array<InterfaceItem>;
-      var j = 0;
-      while (j < items.length) {
+      for (var j = 0; j < items.length; j += 1) {
         this.#resolveInterfaceItem(items[j]);
-        j += 1;
       }
       this.#popScope();
     } else if (kind.tag == ExternKindTag.Path) {
@@ -1192,13 +1142,11 @@ export class Resolver {
       // Check for duplicate case names
       this.#checkDuplicateVariantCases(cases);
       // Resolve case types
-      var i = 0;
-      while (i < cases.length) {
+      for (var i = 0; i < cases.length; i += 1) {
         let c = cases[i];
         if (c.type != null) {
           this.#resolveType(c.type as Type, false);
         }
-        i += 1;
       }
     }
 
@@ -1215,10 +1163,8 @@ export class Resolver {
     if (td.tag == TypeDefTag.Record) {
       let fields = td.fields as Array<Field>;
       this.#checkDuplicateFieldNames(fields, td.name.span);
-      var i = 0;
-      while (i < fields.length) {
+      for (var i = 0; i < fields.length; i += 1) {
         this.#resolveType(fields[i].type, false);
-        i += 1;
       }
     }
 
@@ -1232,8 +1178,7 @@ export class Resolver {
       // because they implicitly reference the gated resource type (bad-gate4, bad-gate5)
       let resourceGated = isGated(td.docs);
 
-      var i = 0;
-      while (i < funcs.length) {
+      for (var i = 0; i < funcs.length; i += 1) {
         let rf = funcs[i];
         let funcGated = isGated(rf.func.docs);
 
@@ -1258,7 +1203,6 @@ export class Resolver {
         this.#resolveNamedFunc(rf.func);
         this.#inGatedContext = prevGatedContext;
 
-        i += 1;
       }
     }
 
@@ -1313,8 +1257,7 @@ export class Resolver {
     var constructorSpan: Span | null = null;
     var methodNames = new Array<SymbolEntry>();
 
-    var i = 0;
-    while (i < funcs.length) {
+    for (var i = 0; i < funcs.length; i += 1) {
       let rf = funcs[i];
       if (rf.tag == ResourceFuncTag.Constructor) {
         constructorCount += 1;
@@ -1332,75 +1275,58 @@ export class Resolver {
         }
         methodNames.push(new SymbolEntry(name, SymbolKind.Func, rf.func.name.span));
       }
-      i += 1;
     }
   }
 
   #checkDuplicateCaseNames(cases: Array<EnumCaseDef>): void {
-    var i = 0;
-    while (i < cases.length) {
-      var j = i + 1;
-      while (j < cases.length) {
+    for (var i = 0; i < cases.length; i += 1) {
+      for (var j = i + 1; j < cases.length; j += 1) {
         if (cases[i].name.name == cases[j].name.name) {
           throw new ResolveError(
             "duplicate enum case `" + cases[j].name.name + "`",
             cases[j].name.span
           );
         }
-        j += 1;
-      }
-      i += 1;
+        }
     }
   }
 
   #checkDuplicateVariantCases(cases: Array<Case>): void {
-    var i = 0;
-    while (i < cases.length) {
-      var j = i + 1;
-      while (j < cases.length) {
+    for (var i = 0; i < cases.length; i += 1) {
+      for (var j = i + 1; j < cases.length; j += 1) {
         if (cases[i].name.name == cases[j].name.name) {
           throw new ResolveError(
             "duplicate variant case `" + cases[j].name.name + "`",
             cases[j].name.span
           );
         }
-        j += 1;
-      }
-      i += 1;
+        }
     }
   }
 
   #checkDuplicateFieldNames(fields: Array<Field>, typeSpan: Span): void {
-    var i = 0;
-    while (i < fields.length) {
-      var j = i + 1;
-      while (j < fields.length) {
+    for (var i = 0; i < fields.length; i += 1) {
+      for (var j = i + 1; j < fields.length; j += 1) {
         if (fields[i].name.name == fields[j].name.name) {
           throw new ResolveError(
             "duplicate field `" + fields[j].name.name + "`",
             fields[j].name.span
           );
         }
-        j += 1;
-      }
-      i += 1;
+        }
     }
   }
 
   #checkDuplicateFlagNames(flags: Array<FlagDef>): void {
-    var i = 0;
-    while (i < flags.length) {
-      var j = i + 1;
-      while (j < flags.length) {
+    for (var i = 0; i < flags.length; i += 1) {
+      for (var j = i + 1; j < flags.length; j += 1) {
         if (flags[i].name.name == flags[j].name.name) {
           throw new ResolveError(
             "duplicate flag `" + flags[j].name.name + "`",
             flags[j].name.span
           );
         }
-        j += 1;
-      }
-      i += 1;
+        }
     }
   }
 
@@ -1497,11 +1423,9 @@ export class Resolver {
           // Check record fields for cycles and borrow usage
           this.#resolving.push(name);
           let fields = typeDef.fields as Array<Field>;
-          var i = 0;
-          while (i < fields.length) {
+          for (var i = 0; i < fields.length; i += 1) {
             // Propagate inReturnPosition to catch borrow<T> in record fields
             this.#resolveType(fields[i].type, inReturnPosition);
-            i += 1;
           }
           this.#resolving.pop();
         }
@@ -1548,47 +1472,39 @@ export class Resolver {
 
     if (t.tag == TypeTag.Tuple) {
       let types = t.types as Array<Type>;
-      var i = 0;
-      while (i < types.length) {
+      for (var i = 0; i < types.length; i += 1) {
         this.#resolveType(types[i], inReturnPosition);
-        i += 1;
       }
     }
   }
 
   #isResolving(name: String): boolean {
-    var i = 0;
-    while (i < this.#resolving.length) {
+    for (var i = 0; i < this.#resolving.length; i += 1) {
       if (this.#resolving[i] == name) {
         return true;
       }
-      i += 1;
     }
     return false;
   }
 
   /** Find a type definition by name in any scope. */
   #findTypeDef(name: String): TypeDef | null {
-    var i = this.#scopes.length - 1;
-    while (i >= 0) {
+    for (var i = this.#scopes.length - 1; i >= 0; i -= 1) {
       let td = this.#scopes[i].findType(name);
       if (td != null) {
         return td;
       }
-      i -= 1;
     }
     return null;
   }
 
   /** Find a world definition by name in any scope. */
   #findWorldDef(name: String): WorldDef | null {
-    var i = this.#scopes.length - 1;
-    while (i >= 0) {
+    for (var i = this.#scopes.length - 1; i >= 0; i -= 1) {
       let wd = this.#scopes[i].findWorld(name);
       if (wd != null) {
         return wd;
       }
-      i -= 1;
     }
     return null;
   }
@@ -1644,14 +1560,12 @@ export class Resolver {
     let ifaceDef = iface as InterfaceDef;
     
     // Search for a use statement that imports this type
-    var i = 0;
-    while (i < ifaceDef.items.length) {
+    for (var i = 0; i < ifaceDef.items.length; i += 1) {
       let item = ifaceDef.items[i];
       if (item.tag == InterfaceItemTag.Use) {
         let u = item.use as Use;
         // Check if this use imports our type
-        var j = 0;
-        while (j < u.names.length) {
+        for (var j = 0; j < u.names.length; j += 1) {
           let useName = u.names[j];
           let importedAs = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
           if (importedAs == typeName) {
@@ -1659,10 +1573,8 @@ export class Resolver {
             let originalName = useName.name.name;  // Use original name for lookup
             return this.#typeDefContainsBorrowFromUse(u, originalName);
           }
-          j += 1;
-        }
+          }
       }
-      i += 1;
     }
     return false;
   }
@@ -1676,8 +1588,7 @@ export class Resolver {
     let ifaceDef = sourceIface as InterfaceDef;
     
     // Find the TypeDef in the source interface
-    var i = 0;
-    while (i < ifaceDef.items.length) {
+    for (var i = 0; i < ifaceDef.items.length; i += 1) {
       let item = ifaceDef.items[i];
       if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
@@ -1685,7 +1596,6 @@ export class Resolver {
           return this.#typeDefContainsBorrow(td, ifaceDef);
         }
       }
-      i += 1;
     }
     return false;
   }
@@ -1694,23 +1604,19 @@ export class Resolver {
   #typeDefContainsBorrow(td: TypeDef, sourceIface: InterfaceDef): boolean {
     if (td.tag == TypeDefTag.Record) {
       let fields = td.fields as Array<Field>;
-      var i = 0;
-      while (i < fields.length) {
+      for (var i = 0; i < fields.length; i += 1) {
         if (this.#typeContainsBorrow(fields[i].type, sourceIface)) {
           return true;
         }
-        i += 1;
       }
     } else if (td.tag == TypeDefTag.Variant) {
       let cases = td.cases as Array<Case>;
-      var i = 0;
-      while (i < cases.length) {
+      for (var i = 0; i < cases.length; i += 1) {
         if (cases[i].type != null) {
           if (this.#typeContainsBorrow(cases[i].type as Type, sourceIface)) {
             return true;
           }
         }
-        i += 1;
       }
     } else if (td.tag == TypeDefTag.Alias) {
       return this.#typeContainsBorrow(td.aliasType as Type, sourceIface);
@@ -1725,12 +1631,10 @@ export class Resolver {
     }
     if (t.tag == TypeTag.Tuple) {
       let types = t.types as Array<Type>;
-      var i = 0;
-      while (i < types.length) {
+      for (var i = 0; i < types.length; i += 1) {
         if (this.#typeContainsBorrow(types[i], sourceIface)) {
           return true;
         }
-        i += 1;
       }
     }
     if (t.tag == TypeTag.List || t.tag == TypeTag.Option ||
@@ -1751,8 +1655,7 @@ export class Resolver {
       // Check if this named type is a record/variant that contains borrows
       let name = (t.name as Id).name;
       // Look up in the source interface
-      var i = 0;
-      while (i < sourceIface.items.length) {
+      for (var i = 0; i < sourceIface.items.length; i += 1) {
         let item = sourceIface.items[i];
         if (item.tag == InterfaceItemTag.TypeDef) {
           let innerTd = item.typeDef as TypeDef;
@@ -1760,7 +1663,6 @@ export class Resolver {
             return this.#typeDefContainsBorrow(innerTd, sourceIface);
           }
         }
-        i += 1;
       }
     }
     return false;
@@ -1793,10 +1695,8 @@ export class Resolver {
     this.#checkDuplicateParamNames(f.params);
 
     // Resolve parameter types
-    var i = 0;
-    while (i < f.params.length) {
+    for (var i = 0; i < f.params.length; i += 1) {
       this.#resolveType(f.params[i].type, false);
-      i += 1;
     }
 
     // Resolve return type
@@ -1806,19 +1706,15 @@ export class Resolver {
   }
 
   #checkDuplicateParamNames(params: Array<Param>): void {
-    var i = 0;
-    while (i < params.length) {
-      var j = i + 1;
-      while (j < params.length) {
+    for (var i = 0; i < params.length; i += 1) {
+      for (var j = i + 1; j < params.length; j += 1) {
         if (params[i].name.name == params[j].name.name) {
           throw new ResolveError(
             "duplicate parameter `" + params[j].name.name + "`",
             params[j].name.span
           );
         }
-        j += 1;
-      }
-      i += 1;
+        }
     }
   }
 
@@ -1828,12 +1724,10 @@ export class Resolver {
 
   /** Check if an interface is currently being resolved (for cycle detection). */
   #isResolvingInterface(name: String): boolean {
-    var i = 0;
-    while (i < this.#resolvingInterfaces.length) {
+    for (var i = 0; i < this.#resolvingInterfaces.length; i += 1) {
       if (this.#resolvingInterfaces[i] == name) {
         return true;
       }
-      i += 1;
     }
     return false;
   }
@@ -1913,13 +1807,11 @@ export class Resolver {
 
     // Add imported names to current scope with their correct kinds
     // (Resource vs Type) to support proper handle validation
-    var i = 0;
-    while (i < use.names.length) {
+    for (var i = 0; i < use.names.length; i += 1) {
       let useName = use.names[i];
       let name = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
       let kind = this.#getUseNameKind(use, useName.name.name);
       this.#define(name, kind, useName.name.span);
-      i += 1;
     }
   }
 
@@ -1978,8 +1870,7 @@ export class Resolver {
   /** Helper to validate use names against an interface definition. */
   #validateUseNamesInInterface(use: Use, ifaceDef: InterfaceDef): void {
     // Check each imported name
-    var i = 0;
-    while (i < use.names.length) {
+    for (var i = 0; i < use.names.length; i += 1) {
       let useName = use.names[i];
       let lookupName = useName.name.name;
       let found = this.#findItemInInterface(ifaceDef, lookupName);
@@ -1997,14 +1888,12 @@ export class Resolver {
           useName.name.span
         );
       }
-      i += 1;
     }
   }
 
   /** Find an item in an interface by name, returning a SymbolEntry if found. */
   #findItemInInterface(iface: InterfaceDef, name: String): SymbolEntry | null {
-    var i = 0;
-    while (i < iface.items.length) {
+    for (var i = 0; i < iface.items.length; i += 1) {
       let item = iface.items[i];
       if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
@@ -2020,8 +1909,7 @@ export class Resolver {
       } else if (item.tag == InterfaceItemTag.Use) {
         // Check names brought in by use statements
         let u = item.use as Use;
-        var j = 0;
-        while (j < u.names.length) {
+        for (var j = 0; j < u.names.length; j += 1) {
           let useName = u.names[j];
           let importedName = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
           if (importedName == name) {
@@ -2029,23 +1917,19 @@ export class Resolver {
             let originalKind = this.#getUseNameKind(u, useName.name.name);
             return new SymbolEntry(name, originalKind, useName.name.span);
           }
-          j += 1;
-        }
+          }
       }
-      i += 1;
     }
     return null;
   }
 
   /** Find an interface definition by name in any scope. */
   #findInterface(name: String): InterfaceDef | null {
-    var i = this.#scopes.length - 1;
-    while (i >= 0) {
+    for (var i = this.#scopes.length - 1; i >= 0; i -= 1) {
       let iface = this.#scopes[i].findInterface(name);
       if (iface != null) {
         return iface;
       }
-      i -= 1;
     }
     return null;
   }
@@ -2151,14 +2035,12 @@ export class Resolver {
   /** Format known packages for error messages. */
   #formatKnownPackages(known: Array<String>): String {
     let sb = new StringBuilder(64);
-    var i = 0;
-    while (i < known.length) {
+    for (var i = 0; i < known.length; i += 1) {
       sb.append("    ");
       sb.append(known[i]);
       if (i < known.length - 1) {
         sb.appendByte(10);  // newline
       }
-      i += 1;
     }
     return sb.toString();
   }
@@ -2171,12 +2053,10 @@ export class Resolver {
 
   /** Check if a name is a kebab-case name (contains hyphens). */
   #isKebabName(name: String): boolean {
-    var i = 0;
-    while (i < name.length) {
+    for (var i = 0; i < name.length; i += 1) {
       if (name.getByteAt(i) == 45) {  // 45 is '-'
         return true;
       }
-      i += 1;
     }
     return false;
   }
@@ -2223,8 +2103,7 @@ export class Resolver {
 
   /** Validate include rename names - kebab-names (functions) and resources can be renamed, not IDs (interfaces). */
   #validateIncludeNames(include: Include, world: WorldDef): void {
-    var i = 0;
-    while (i < include.names.length) {
+    for (var i = 0; i < include.names.length; i += 1) {
       let incName = include.names[i];
       let name = incName.name.name;
 
@@ -2238,14 +2117,12 @@ export class Resolver {
           include.from.getName().span
         );
       }
-      i += 1;
     }
   }
 
   /** Check if a name in the world is renameable (function or resource). */
   #isRenameableItemInWorld(world: WorldDef, name: String): boolean {
-    var i = 0;
-    while (i < world.items.length) {
+    for (var i = 0; i < world.items.length; i += 1) {
       let item = world.items[i];
       if (item.tag == WorldItemTag.Import) {
         let imp = item.importItem as Import;
@@ -2271,7 +2148,6 @@ export class Resolver {
           return true;
         }
       }
-      i += 1;
     }
     return false;
   }
@@ -2282,8 +2158,7 @@ export class Resolver {
     this.#includingWorlds.push(world.name.name);
 
     // Only process includes - we don't need to fully resolve the world again
-    var i = 0;
-    while (i < world.items.length) {
+    for (var i = 0; i < world.items.length; i += 1) {
       let item = world.items[i];
       if (item.tag == WorldItemTag.Include) {
         let inc = item.include as Include;
@@ -2295,7 +2170,6 @@ export class Resolver {
         this.#resolveInclude(inc);
         this.#inGatedContext = prevGatedContext;
       }
-      i += 1;
     }
 
     this.#includingWorlds.pop();
@@ -2303,12 +2177,10 @@ export class Resolver {
 
   /** Check if a world is currently being included (for cycle detection). */
   #isIncludingWorld(name: String): boolean {
-    var i = 0;
-    while (i < this.#includingWorlds.length) {
+    for (var i = 0; i < this.#includingWorlds.length; i += 1) {
       if (this.#includingWorlds[i] == name) {
         return true;
       }
-      i += 1;
     }
     return false;
   }
@@ -2343,8 +2215,7 @@ export class Resolver {
     // Collect inline interface exports (export name: interface {...})
     let inlineExports = new Array<String>();
 
-    var i = 0;
-    while (i < world.items.length) {
+    for (var i = 0; i < world.items.length; i += 1) {
       let item = world.items[i];
       if (item.tag == WorldItemTag.Import) {
         let imp = item.importItem as Import;
@@ -2380,12 +2251,10 @@ export class Resolver {
           inlineExports.push(name.name);
         }
       }
-      i += 1;
     }
 
     // Check 1: Path exports with dependencies on inline imports
-    i = 0;
-    while (i < pathExports.length) {
+    for (var i = 0; i < pathExports.length; i += 1) {
       let exportName = pathExports[i];
       let iface = this.#findInterface(exportName);
       if (iface != null) {
@@ -2393,8 +2262,7 @@ export class Resolver {
         let deps = this.#collectTransitiveDependencies(ifaceDef);
         
         // Check if any dependency is also an inline import
-        var j = 0;
-        while (j < deps.length) {
+        for (var j = 0; j < deps.length; j += 1) {
           let dep = deps[j];
           if (this.#containsString(inlineImports, dep)) {
             // Found a conflict!
@@ -2405,16 +2273,13 @@ export class Resolver {
               world.name.span
             );
           }
-          j += 1;
-        }
+          }
       }
-      i += 1;
     }
 
     // Check 2: Path imports with dependencies on path exports (or vice versa)
     // This catches cases like: import i3 (depends on i1), export i1, export i3
-    i = 0;
-    while (i < pathImports.length) {
+    for (var i = 0; i < pathImports.length; i += 1) {
       let importName = pathImports[i];
       let iface = this.#findInterface(importName);
       if (iface != null) {
@@ -2422,8 +2287,7 @@ export class Resolver {
         let deps = this.#collectTransitiveDependencies(ifaceDef);
         
         // Check if any dependency is also a path export
-        var j = 0;
-        while (j < deps.length) {
+        for (var j = 0; j < deps.length; j += 1) {
           let dep = deps[j];
           if (this.#containsString(pathExports, dep)) {
             // Found a conflict! An imported interface depends on an exported interface.
@@ -2439,20 +2303,16 @@ export class Resolver {
               world.name.span
             );
           }
-          j += 1;
-        }
+          }
       }
-      i += 1;
     }
 
     // Check 3: Inline exports with dependencies on inline imports or dependencies that conflict with exports
-    i = 0;
-    while (i < inlineExports.length) {
+    for (var i = 0; i < inlineExports.length; i += 1) {
       let exportName = inlineExports[i];
       
       // Check the inline export's use statements for transitive dependencies
-      var j = 0;
-      while (j < world.items.length) {
+      for (var j = 0; j < world.items.length; j += 1) {
         let item = world.items[j];
         if (item.tag == WorldItemTag.Export) {
           let exp = item.exportItem as Export;
@@ -2466,8 +2326,7 @@ export class Resolver {
               // Check if any dependency is also an inline import
               // Use nonEmptyInlineImports because empty inline imports don't cause conflicts
               // with inline exports (uses resolve to package-level interface)
-              var k = 0;
-              while (k < deps.length) {
+              for (var k = 0; k < deps.length; k += 1) {
                 let dep = deps[k];
                 if (this.#containsString(nonEmptyInlineImports, dep)) {
                   throw new ResolveError(
@@ -2480,8 +2339,7 @@ export class Resolver {
                 let depIface = this.#findInterface(dep);
                 if (depIface != null) {
                   let depDeps = this.#collectTransitiveDependencies(depIface as InterfaceDef);
-                  var m = 0;
-                  while (m < depDeps.length) {
+                  for (var m = 0; m < depDeps.length; m += 1) {
                     if (this.#containsString(pathExports, depDeps[m])) {
                       throw new ResolveError(
                         "failed to elaborate world imports/exports of `" + world.name.name + "`\n" +
@@ -2489,17 +2347,13 @@ export class Resolver {
                         world.name.span
                       );
                     }
-                    m += 1;
-                  }
+                    }
                 }
-                k += 1;
-              }
+                }
             }
           }
         }
-        j += 1;
-      }
-      i += 1;
+        }
     }
   }
 
@@ -2520,8 +2374,7 @@ export class Resolver {
     visited.push(name);
 
     // Check all items for use statements
-    var i = 0;
-    while (i < iface.items.length) {
+    for (var i = 0; i < iface.items.length; i += 1) {
       let item = iface.items[i];
       if (item.tag == InterfaceItemTag.Use) {
         let use = item.use as Use;
@@ -2538,7 +2391,6 @@ export class Resolver {
           }
         }
       }
-      i += 1;
     }
   }
 
@@ -2547,8 +2399,7 @@ export class Resolver {
     let result = new Array<String>();
     let visited = new Array<String>();
     
-    var i = 0;
-    while (i < items.length) {
+    for (var i = 0; i < items.length; i += 1) {
       let item = items[i];
       if (item.tag == InterfaceItemTag.Use) {
         let use = item.use as Use;
@@ -2564,19 +2415,16 @@ export class Resolver {
           }
         }
       }
-      i += 1;
     }
     return result;
   }
 
   /** Check if a string array contains a value. */
   #containsString(arr: Array<String>, val: String): boolean {
-    var i = 0;
-    while (i < arr.length) {
+    for (var i = 0; i < arr.length; i += 1) {
       if (arr[i] == val) {
         return true;
       }
-      i += 1;
     }
     return false;
   }
