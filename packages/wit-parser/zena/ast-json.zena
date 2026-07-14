@@ -32,9 +32,7 @@ let isExcluded = (docs: Docs | null, pkgName: PackageName | null): boolean => {
   var sincePassed = false;
   var hasStability = false;
   
-  var i = 0;
-  while (i < attrs.length) {
-    let attr = attrs[i];
+  for (let attr in attrs) {
     if (attr.tag == AttributeTag.Unstable) {
       hasStability = true;
       hasUnstable = true;
@@ -57,7 +55,6 @@ let isExcluded = (docs: Docs | null, pkgName: PackageName | null): boolean => {
     } else if (attr.tag == AttributeTag.Deprecated) {
       hasStability = true;
     }
-    i = i + 1;
   }
   
   if (hasUnstable && !unstableActive) {
@@ -79,9 +76,7 @@ let isExcluded = (docs: Docs | null, pkgName: PackageName | null): boolean => {
 
 let filterInterfaceItems = (iface: InterfaceDef, pkgName: PackageName | null): void => {
   let filtered = new Array<InterfaceItem>();
-  var idx = 0;
-  while (idx < iface.items.length) {
-    let item = iface.items[idx];
+  for (let item in iface.items) {
     var keep = true;
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
@@ -102,16 +97,13 @@ let filterInterfaceItems = (iface: InterfaceDef, pkgName: PackageName | null): v
     if (keep) {
       filtered.push(item);
     }
-    idx = idx + 1;
   }
   iface.items = filtered;
 };
 
 let filterWorldItems = (world: WorldDef, pkgName: PackageName | null): void => {
   let filtered = new Array<WorldItem>();
-  var idx = 0;
-  while (idx < world.items.length) {
-    let item = world.items[idx];
+  for (let item in world.items) {
     var keep = true;
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
@@ -142,16 +134,13 @@ let filterWorldItems = (world: WorldDef, pkgName: PackageName | null): void => {
     if (keep) {
       filtered.push(item);
     }
-    idx = idx + 1;
   }
   world.items = filtered;
 };
 
 let filterGatedItems = (ast: Ast): void => {
   let filteredItems = new Array<AstItem>();
-  var idx = 0;
-  while (idx < ast.items.length) {
-    let item = ast.items[idx];
+  for (let item in ast.items) {
     var keep = true;
     if (item.tag == AstItemTag.Interface) {
       let iface = item.interfaceDef as InterfaceDef;
@@ -171,17 +160,12 @@ let filterGatedItems = (ast: Ast): void => {
     if (keep) {
       filteredItems.push(item);
     }
-    idx = idx + 1;
   }
   ast.items = filteredItems;
   
-  var pIdx = 0;
-  while (pIdx < ast.nestedPackages.length) {
-    let np = ast.nestedPackages[pIdx];
+  for (let np in ast.nestedPackages) {
     let npItems = new Array<AstItem>();
-    var idx2 = 0;
-    while (idx2 < np.items.length) {
-      let item = np.items[idx2];
+    for (let item in np.items) {
       var keep = true;
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
@@ -201,10 +185,8 @@ let filterGatedItems = (ast: Ast): void => {
       if (keep) {
         npItems.push(item);
       }
-      idx2 = idx2 + 1;
     }
     np.items = npItems;
-    pIdx = pIdx + 1;
   }
 };
 
@@ -669,9 +651,7 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
   
   // Compute if the interface is purely included (only imported via includes with no direct references)
   var isPurelyIncluded = true;
-  var checkIdx = 0;
-  while (checkIdx < items.length) {
-    let item = items[checkIdx];
+  for (let item in items) {
     let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (item.tag == WorldItemTag.Import || item.tag == WorldItemTag.Use) {
       var curIdx = -1;
@@ -706,13 +686,10 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
         isPurelyIncluded = false;
       }
     }
-    checkIdx = checkIdx + 1;
   }
   
   // Pass 1: Direct imports / exports, and included Use statements (which act as implicit interface imports)
-  var idx = 0;
-  while (idx < items.length) {
-    let item = items[idx];
+  for (let item in items) {
     let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (isImport && (item.tag == WorldItemTag.Import || (item.tag == WorldItemTag.Use && item.isIncluded))) {
       var curIdx = -1;
@@ -786,7 +763,6 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
         }
       }
     }
-    idx = idx + 1;
   }
   
   if (hasMatch) {
@@ -809,12 +785,10 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
       var isUnstable = false;
       if (combinedDocs != null && combinedDocs.attributes != null) {
         let attrs = combinedDocs.attributes as Array<Attribute>;
-        var i = 0;
-        while (i < attrs.length) {
-          if (attrs[i].tag == AttributeTag.Unstable) {
+        for (let attr in attrs) {
+          if (attr.tag == AttributeTag.Unstable) {
             isUnstable = true;
           }
-          i = i + 1;
         }
       }
       
@@ -827,9 +801,7 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
   
   // Pass 2: Local type imports (direct/explicit Use statements) that act as implicit interface imports
   if (isImport) {
-    idx = 0;
-    while (idx < items.length) {
-      let item = items[idx];
+    for (let item in items) {
       let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
       if (item.tag == WorldItemTag.Use) {
         let u = item.use as Use;
@@ -862,12 +834,10 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
           let uDocs = u.docs;
           if (uDocs != null && uDocs.attributes != null) {
             let attrs = uDocs.attributes as Array<Attribute>;
-            var i = 0;
-            while (i < attrs.length) {
-              if (attrs[i].tag == AttributeTag.Unstable) {
+            for (let attr in attrs) {
+              if (attr.tag == AttributeTag.Unstable) {
                 isUnstable = true;
               }
-              i = i + 1;
             }
           }
           
@@ -877,7 +847,6 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
           return u.docs;
         }
       }
-      idx = idx + 1;
     }
   }
   
@@ -890,10 +859,8 @@ let collectTypeDeps = (t: Type, deps: Array<String>): void => {
     deps.push(normalizeId(id.name));
   } else if (t.tag == TypeTag.Tuple) {
     let types = t.types as Array<Type>;
-    var idx = 0;
-    while (idx < types.length) {
-      collectTypeDeps(types[idx], deps);
-      idx = idx + 1;
+    for (let subtype in types) {
+      collectTypeDeps(subtype, deps);
     }
   } else if (t.tag == TypeTag.Result) {
     if (t.okType != null) {
@@ -921,36 +888,28 @@ let collectTypeDeps = (t: Type, deps: Array<String>): void => {
 let collectTypeDefDeps = (td: TypeDef, deps: Array<String>): void => {
   if (td.tag == TypeDefTag.Record) {
     let fields = td.fields as Array<Field>;
-    var idx = 0;
-    while (idx < fields.length) {
-      collectTypeDeps(fields[idx].type, deps);
-      idx = idx + 1;
+    for (let f in fields) {
+      collectTypeDeps(f.type, deps);
     }
   } else if (td.tag == TypeDefTag.Alias) {
     collectTypeDeps(td.aliasType as Type, deps);
   } else if (td.tag == TypeDefTag.Variant) {
     let cases = td.cases as Array<Case>;
-    var idx = 0;
-    while (idx < cases.length) {
-      let c = cases[idx];
+    for (let c in cases) {
       if (c.type != null) {
         collectTypeDeps(c.type as Type, deps);
       }
-      idx = idx + 1;
     }
   }
 };
 
 let collectInterfaceDeps = (ctx: SerializeContext, iface: InterfaceDef, deps: Array<String>): void => {
   let pkgName = ctx.packages[iface.packageIndex].name;
-  var idx = 0;
-  while (idx < iface.items.length) {
-    let item = iface.items[idx];
+  for (let item in iface.items) {
     if (item.tag == InterfaceItemTag.Use) {
       let u = item.use as Use;
       deps.push(resolveInterfaceName(ctx, pkgName, u.from));
     }
-    idx = idx + 1;
   }
 };
 
@@ -959,16 +918,13 @@ let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): A
   let visited = new HashMap<String, i32>();
   
   let ifaceMap = new HashMap<String, InterfaceDef>();
-  var idx = 0;
-  while (idx < interfaces.length) {
-    let iface = interfaces[idx];
+  for (let iface in interfaces) {
     let key = if (iface.isInline) {
       i32ToString(iface.packageIndex) + "/inline/" + normalizeId(iface.name.name);
     } else {
       i32ToString(iface.packageIndex) + "/" + normalizeId(iface.name.name);
     };
     ifaceMap[key] = iface;
-    idx = idx + 1;
   }
   
   let visit = (key: String): void => {
@@ -1032,16 +988,13 @@ let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): A
     }
   };
   
-  idx = 0;
-  while (idx < interfaces.length) {
-    let iface = interfaces[idx];
+  for (let iface in interfaces) {
     let key = if (iface.isInline) {
       i32ToString(iface.packageIndex) + "/inline/" + normalizeId(iface.name.name);
     } else {
       i32ToString(iface.packageIndex) + "/" + normalizeId(iface.name.name);
     };
     visit(key);
-    idx = idx + 1;
   }
   
   return sorted;
@@ -1265,13 +1218,10 @@ let findWorldByUsePath = (ctx: SerializeContext, path: UsePath): WorldDef | null
 };
 
 let applyRename = (name: String, renames: Array<IncludeName>): String => {
-  var i = 0;
-  while (i < renames.length) {
-    let r = renames[i];
+  for (let r in renames) {
     if (r.name.name == name) {
       return r.asName.name;
     }
-    i = i + 1;
   }
   return name;
 };
@@ -1318,15 +1268,12 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
   if (t.tag == TypeTag.Tuple) {
     var changed = false;
     let newTypes = new Array<Type>();
-    var idx = 0;
-    while (idx < (t.types as Array<Type>).length) {
-      let originalType = (t.types as Array<Type>)[idx];
+    for (let originalType in (t.types as Array<Type>)) {
       let renamedType = renameType(originalType, renames);
       if (renamedType != originalType) {
         changed = true;
       }
       newTypes.push(renamedType);
-      idx = idx + 1;
     }
     if (changed) {
       return Type.tuple(newTypes, t.span);
@@ -1357,15 +1304,12 @@ let renameParam = (p: Param, renames: Array<IncludeName>): Param => {
 let renameFunc = (f: Func, renames: Array<IncludeName>): Func => {
   var changed = false;
   let newParams = new Array<Param>();
-  var idx = 0;
-  while (idx < f.params.length) {
-    let p = f.params[idx];
+  for (let p in f.params) {
     let renamedParam = renameParam(p, renames);
     if (renamedParam != p) {
       changed = true;
     }
     newParams.push(renamedParam);
-    idx = idx + 1;
   }
   let newResult = if (f.result != null) renameType(f.result as Type, renames) else null;
   if (newResult != f.result) {
@@ -1413,9 +1357,7 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   if (td.tag == TypeDefTag.Record && td.fields != null) {
     let oldFields = td.fields as Array<Field>;
     let fields = new Array<Field>();
-    var idx = 0;
-    while (idx < oldFields.length) {
-      let f = oldFields[idx];
+    for (let f in oldFields) {
       let renamedType = renameType(f.type, renames);
       if (renamedType != f.type) {
         changed = true;
@@ -1423,7 +1365,6 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
       } else {
         fields.push(f);
       }
-      idx = idx + 1;
     }
     newFields = fields;
   }
@@ -1432,9 +1373,7 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   if (td.tag == TypeDefTag.Variant && td.cases != null) {
     let oldCases = td.cases as Array<Case>;
     let cases = new Array<Case>();
-    var idx = 0;
-    while (idx < oldCases.length) {
-      let c = oldCases[idx];
+    for (let c in oldCases) {
       var renamedType = c.type;
       if (c.type != null) {
         renamedType = renameType(c.type as Type, renames);
@@ -1449,7 +1388,6 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
       } else {
         cases.push(c);
       }
-      idx = idx + 1;
     }
     newCases = cases;
   }
@@ -1458,15 +1396,12 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
     let oldFuncs = td.resourceFuncs as Array<ResourceFunc>;
     let funcs = new Array<ResourceFunc>();
-    var idx = 0;
-    while (idx < oldFuncs.length) {
-      let rf = oldFuncs[idx];
+    for (let rf in oldFuncs) {
       let renamedRf = renameResourceFunc(rf, renames);
       if (renamedRf != rf) {
         changed = true;
       }
       funcs.push(renamedRf);
-      idx = idx + 1;
     }
     newResourceFuncs = funcs;
   }
@@ -1553,9 +1488,7 @@ let renameExport = (exp: Export, renames: Array<IncludeName>): Export => {
 let renameUse = (u: Use, renames: Array<IncludeName>): Use => {
   var changed = false;
   let newNames = new Array<UseName>();
-  var idx = 0;
-  while (idx < u.names.length) {
-    let un = u.names[idx];
+  for (let un in u.names) {
     let originalName = if (un.asName != null) (un.asName as Id).name else un.name.name;
     let newName = applyRename(originalName, renames);
     if (newName != originalName) {
@@ -1566,7 +1499,6 @@ let renameUse = (u: Use, renames: Array<IncludeName>): Use => {
     } else {
       newNames.push(un);
     }
-    idx = idx + 1;
   }
   if (changed) {
     return new Use(u.docs, u.from, newNames);
