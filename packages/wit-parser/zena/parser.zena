@@ -1856,6 +1856,7 @@ export class Parser {
   /** Parse a complete AST. */
   #parseAst(): Ast {
     let ast = new Ast();
+    var currentTopPackage: NestedPackage | null = null;
     
     // Optional package declaration at start
     var docs = this.#parseDocs();
@@ -1900,6 +1901,7 @@ export class Parser {
             if (docs.contents != null) {
               ast.packageDocs = docs;
             }
+            currentTopPackage = null;
           } else {
             // Check if this is the same package or a different package
             let existing = ast.packageName as PackageName;
@@ -1907,9 +1909,7 @@ export class Parser {
             let newKey = this.#packageKey(name);
             
             if (existingKey == newKey) {
-              // Same package - items will be added to ast.items below (continue normal parsing)
-              // This is valid for multi-file scenarios where each file starts with same package decl
-              // But check for conflicting doc comments
+              // Same package as main
               if (docs.contents != null && ast.packageDocs != null) {
                 throw new ParseError(
                   "found doc comments on multiple 'package' items",
@@ -1919,34 +1919,16 @@ export class Parser {
               if (docs.contents != null) {
                 ast.packageDocs = docs;
               }
+              currentTopPackage = null;
             } else {
-              // Different package - treat as nested package for remaining items
-              // (In single-file context this might be an error, but we can't detect file boundaries)
-              // Check if we already have a nested package with this key
+              // Different package
               let existingNested = this.#findNestedPackage(ast.nestedPackages, newKey);
-              
               if (existingNested != null) {
-                // Add items to the existing nested package
-                let ePkg = existingNested as NestedPackage;
-                // Parse all items until we see another package or EOF
-                while (!this.#check(TokenType.Package) && !this.#check(TokenType.Eof)) {
-                  let itemDocs = this.#parseDocs();
-                  if (!this.#check(TokenType.Package) && !this.#check(TokenType.Eof)) {
-                    ePkg.items.push(this.#parseAstItem(itemDocs));
-                  }
-                }
+                currentTopPackage = existingNested as NestedPackage;
               } else {
-                // Create a new nested package for subsequent items
                 let pkg = new NestedPackage(docs, name);
-                
-                // Parse all items until we see another package or EOF
-                while (!this.#check(TokenType.Package) && !this.#check(TokenType.Eof)) {
-                  let itemDocs = this.#parseDocs();
-                  if (!this.#check(TokenType.Package) && !this.#check(TokenType.Eof)) {
-                    pkg.items.push(this.#parseAstItem(itemDocs));
-                  }
-                }
                 ast.nestedPackages.push(pkg);
+                currentTopPackage = pkg;
               }
             }
           }
@@ -1955,7 +1937,12 @@ export class Parser {
         continue;
       }
       
-      ast.items.push(this.#parseAstItem(docs));
+      if (currentTopPackage != null) {
+        let pkg = currentTopPackage as NestedPackage;
+        pkg.items.push(this.#parseAstItem(docs));
+      } else {
+        ast.items.push(this.#parseAstItem(docs));
+      }
       docs = this.#parseDocs();
     }
     

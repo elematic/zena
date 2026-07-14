@@ -3,11 +3,11 @@
 ## Status
 
 - **Status**: Progressing (Phase 4.5 - Resolution and Serialization Polish)
-- **Last Updated**: 2026-07-13
-- **Current Completion**: 201/210 tests passing (95.7%)
+- **Last Updated**: 2026-07-14
+- **Current Completion**: 207/210 tests passing (98.6%)
   - Error/Parse-Fail tests: 130/130 passing (100%)
-  - Success/JSON-Compare tests: 71/80 passing (88.7%)
-  - Remaining: 9 success tests failing, 1 skipped
+  - Success/JSON-Compare tests: 77/80 passing (96.3%)
+  - Remaining: 3 success tests failing, 1 skipped
 
 ## Overview
 
@@ -372,13 +372,13 @@ packages/wit-parser/zena/
 
 ### 4.3 Parser Next Steps
 
-Syntax parsing and resolver/serializer implementations are complete. All 90/90 semantic validation tests (error cases) are passing. The remaining failures (9 success tests) are JSON serialization or scoping discrepancies categorized below:
+Syntax parsing and resolver/serializer implementations are complete. All 90/90 semantic validation tests (error cases) are passing. The remaining failures (3 success tests) are JSON serialization or scoping discrepancies categorized below:
 
 ### Failing Success Test Categories
 
-1. **Multi-file/Package Resolution** (9 tests remaining)
+1. **Multi-file/Package Resolution** (3 tests remaining)
    - _Issue_: Multi-file packages and cross-package uses do not resolve their structures fully, or are ordered differently.
-   - _Example_: `complex-include`, `diamond1`, `foreign-deps`, `foreign-deps-union`, `multi-file`, `multi-file-multi-package`, `multi-package-deps`, `multi-package-shared-deps`, `versions`
+   - _Example_: `foreign-deps`, `foreign-deps-union`, `multi-file`
 
 ### 4.4 Zena Features Exercised
 

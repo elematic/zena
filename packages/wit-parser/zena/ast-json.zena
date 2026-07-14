@@ -3498,13 +3498,14 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
   var idx = 0;
   while (idx < items.length) {
     let item = items[idx];
+    let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
       if (imp.kind.tag == ExternKindTag.Interface) {
         let name = "[import]" + normalizeId((imp.kind.name as Id).name);
         var ifaceIdx = -1;
-        if (pkgName.length > 0) {
-          let lookupKey = pkgName + "/inline/" + name;
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/inline/" + name;
           if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
             ifaceIdx = sIdx;
           }
@@ -3520,8 +3521,8 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
       } else if (imp.kind.tag == ExternKindTag.Path) {
         let name = getUsePathInterfaceName(imp.kind.path as UsePath);
         var ifaceIdx = -1;
-        if (pkgName.length > 0) {
-          let lookupKey = pkgName + "/" + name;
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/" + name;
           if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
             ifaceIdx = sIdx;
           }
@@ -3540,8 +3541,8 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
       if (exp.kind.tag == ExternKindTag.Interface) {
         let name = "[export]" + normalizeId((exp.kind.name as Id).name);
         var ifaceIdx = -1;
-        if (pkgName.length > 0) {
-          let lookupKey = pkgName + "/inline/" + name;
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/inline/" + name;
           if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
             ifaceIdx = sIdx;
           }
@@ -3557,8 +3558,8 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
       } else if (exp.kind.tag == ExternKindTag.Path) {
         let name = getUsePathInterfaceName(exp.kind.path as UsePath);
         var ifaceIdx = -1;
-        if (pkgName.length > 0) {
-          let lookupKey = pkgName + "/" + name;
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/" + name;
           if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
             ifaceIdx = sIdx;
           }
@@ -3576,8 +3577,8 @@ let collectWorldImports = (ctx: SerializeContext, world: WorldDef, items: Array<
       let u = item.use as Use;
       let name = getUsePathInterfaceName(u.from);
       var ifaceIdx = -1;
-      if (pkgName.length > 0) {
-        let lookupKey = pkgName + "/" + name;
+      if (itemPkgName.length > 0) {
+        let lookupKey = itemPkgName + "/" + name;
         if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
           ifaceIdx = sIdx;
         }
@@ -3617,14 +3618,15 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   var idx = 0;
   while (idx < expandedItems.length) {
     let item = expandedItems[idx];
+    let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       let tdName = normalizeId(td.name.name);
       b.key(tdName).beginObject();
       
       var typeIdx = -1;
-      if (pkgName.length > 0) {
-        let key = "world:" + pkgName + "/" + worldName + "/" + tdName;
+      if (itemPkgName.length > 0) {
+        let key = "world:" + itemPkgName + "/" + worldName + "/" + tdName;
         if (let (true, sIdx) = ctx.typeIndices.get(key)) {
           typeIdx = sIdx;
         }
@@ -3700,14 +3702,15 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   idx = 0;
   while (idx < expandedItems.length) {
     let item = expandedItems[idx];
+    let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
       if (imp.kind.tag == ExternKindTag.Interface) {
         let name = normalizeId((imp.kind.name as Id).name);
         let inlineName = "[import]" + name;
         var ifaceIdx = -1;
-        if (pkgName.length > 0) {
-          let lookupKey = pkgName + "/inline/" + inlineName;
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/inline/" + inlineName;
           if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
             ifaceIdx = sIdx;
           }
@@ -3764,6 +3767,7 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
   idx = 0;
   while (idx < expandedItems.length) {
     let item = expandedItems[idx];
+    let itemPkgName = if (item.packageIndex >= 0) ctx.packages[item.packageIndex].name else pkgName;
     if (item.tag == WorldItemTag.Export) {
       let exp = item.exportItem as Export;
       if (exp.kind.tag == ExternKindTag.Interface) {
@@ -3772,8 +3776,8 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
         b.key(name).beginObject();
         b.key("interface").beginObject();
         var inlineIdx = -1;
-        if (pkgName.length > 0) {
-          let lookupKey = pkgName + "/inline/" + inlineName;
+        if (itemPkgName.length > 0) {
+          let lookupKey = itemPkgName + "/inline/" + inlineName;
           if (let (true, idxVal) = ctx.interfaceIndices.get(lookupKey)) {
             inlineIdx = idxVal;
           }
@@ -3974,7 +3978,7 @@ let collectInterfaceDepsOnly = (items: Array<InterfaceItem>, deps: Array<String>
       let u = ifaceItem.use as Use;
       if (u.from.tag == UsePathTag.Package) {
         let pkg = u.from.packageId as PackageName;
-        deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+        deps.push(formatPackageName(pkg));
       }
     }
     j = j + 1;
@@ -3999,7 +4003,7 @@ let collectPackageDeps = (items: Array<AstItem>, deps: Array<String>): void => {
             let path = imp.kind.path as UsePath;
             if (path.tag == UsePathTag.Package) {
               let pkg = path.packageId as PackageName;
-              deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+              deps.push(formatPackageName(pkg));
             }
           } else if (imp.kind.tag == ExternKindTag.Interface) {
             let inlineItems = imp.kind.items as Array<InterfaceItem>;
@@ -4011,7 +4015,7 @@ let collectPackageDeps = (items: Array<AstItem>, deps: Array<String>): void => {
             let path = exp.kind.path as UsePath;
             if (path.tag == UsePathTag.Package) {
               let pkg = path.packageId as PackageName;
-              deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+              deps.push(formatPackageName(pkg));
             }
           } else if (exp.kind.tag == ExternKindTag.Interface) {
             let inlineItems = exp.kind.items as Array<InterfaceItem>;
@@ -4021,13 +4025,13 @@ let collectPackageDeps = (items: Array<AstItem>, deps: Array<String>): void => {
           let u = worldItem.use as Use;
           if (u.from.tag == UsePathTag.Package) {
             let pkg = u.from.packageId as PackageName;
-            deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+            deps.push(formatPackageName(pkg));
           }
         } else if (worldItem.tag == WorldItemTag.Include) {
           let inc = worldItem.include as Include;
           if (inc.from.tag == UsePathTag.Package) {
             let pkg = inc.from.packageId as PackageName;
-            deps.push(normalizeId(pkg.namespace.name) + ":" + normalizeId(pkg.name.name));
+            deps.push(formatPackageName(pkg));
           }
         }
         j = j + 1;
@@ -4037,40 +4041,115 @@ let collectPackageDeps = (items: Array<AstItem>, deps: Array<String>): void => {
   }
 };
 
+let comparePackageNameStrings = (k1: String, k2: String): i32 => {
+  if (k1 == k2) return 0;
+  
+  // Find namespace separator ':'
+  var colon1 = -1;
+  var i1 = 0;
+  while (i1 < k1.length) {
+    if (k1.getByteAt(i1) == 58) { // ':'
+      colon1 = i1;
+      break;
+    }
+    i1 = i1 + 1;
+  }
+  
+  var colon2 = -1;
+  var i2 = 0;
+  while (i2 < k2.length) {
+    if (k2.getByteAt(i2) == 58) { // ':'
+      colon2 = i2;
+      break;
+    }
+    i2 = i2 + 1;
+  }
+  
+  let ns1 = if (colon1 >= 0) k1.sliceBytes(0, colon1) else k1;
+  let ns2 = if (colon2 >= 0) k2.sliceBytes(0, colon2) else k2;
+  let nsComp = compareStrings(ns1, ns2);
+  if (nsComp != 0) return nsComp;
+  
+  // Find version separator '@'
+  let rest1 = if (colon1 >= 0) k1.sliceBytes(colon1 + 1, k1.length) else "";
+  let rest2 = if (colon2 >= 0) k2.sliceBytes(colon2 + 1, k2.length) else "";
+  
+  var at1 = -1;
+  var j1 = 0;
+  while (j1 < rest1.length) {
+    if (rest1.getByteAt(j1) == 64) { // '@'
+      at1 = j1;
+      break;
+    }
+    j1 = j1 + 1;
+  }
+  
+  var at2 = -1;
+  var j2 = 0;
+  while (j2 < rest2.length) {
+    if (rest2.getByteAt(j2) == 64) { // '@'
+      at2 = j2;
+      break;
+    }
+    j2 = j2 + 1;
+  }
+  
+  let name1 = if (at1 >= 0) rest1.sliceBytes(0, at1) else rest1;
+  let name2 = if (at2 >= 0) rest2.sliceBytes(0, at2) else rest2;
+  let nComp = compareStrings(name1, name2);
+  if (nComp != 0) return nComp;
+  
+  let hasVer1 = at1 >= 0;
+  let hasVer2 = at2 >= 0;
+  
+  if (!hasVer1 && !hasVer2) return 0;
+  if (!hasVer1 && hasVer2) return -1;
+  if (hasVer1 && !hasVer2) return 1;
+  
+  let ver1 = rest1.sliceBytes(at1 + 1, rest1.length);
+  let ver2 = rest2.sliceBytes(at2 + 1, rest2.length);
+  
+  return compareVersions(ver1, ver2);
+};
+
 let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<AstItem>}>, pkgDeps: HashMap<String, Array<String>>): Array<{name: PackageName | null, items: Array<AstItem>}> => {
   let sorted = new Array<{name: PackageName | null, items: Array<AstItem>}>();
-  let visited = new HashMap<String, i32>();
+  if (pkgSources.length == 0) {
+    return sorted;
+  }
+  
+  // First, map package names to their pkgSources elements
   let pkgMap = new HashMap<String, {name: PackageName | null, items: Array<AstItem>}>();
-  let nestedSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
+  let keys = new Array<String>();
   
-  let mainPkg = pkgSources[0];
-  let mainKey = formatPackageName(mainPkg.name);
-  pkgMap[mainKey] = mainPkg;
-  
-  var idx = 1;
+  var idx = 0;
   while (idx < pkgSources.length) {
     let src = pkgSources[idx];
     let key = formatPackageName(src.name);
     pkgMap[key] = src;
-    nestedSources.push(src);
+    keys.push(key);
     idx = idx + 1;
   }
-
-  // Pre-sort nested packages alphabetically by full name (so independent packages sort alphabetically)
+  
+  // Sort the keys alphabetically/semver to ensure deterministic start order
   var i = 0;
-  while (i < nestedSources.length) {
+  while (i < keys.length) {
     var j = i + 1;
-    while (j < nestedSources.length) {
-      if (comparePackageNames(nestedSources[i].name, nestedSources[j].name) > 0) {
-        let temp = nestedSources[i];
-        nestedSources[i] = nestedSources[j];
-        nestedSources[j] = temp;
+    while (j < keys.length) {
+      if (comparePackageNameStrings(keys[i], keys[j]) > 0) {
+        let temp = keys[i];
+        keys[i] = keys[j];
+        keys[j] = temp;
       }
       j = j + 1;
     }
     i = i + 1;
   }
-
+  
+  // Now do a topological sort using DFS.
+  // visited maps key -> status (0 = unvisited, 1 = visiting, 2 = visited)
+  let visited = new HashMap<String, i32>();
+  
   let visit = (key: String): void => {
     if (let (true, status) = visited.get(key)) {
       if (status == 1 || status == 2) {
@@ -4078,50 +4157,50 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
       }
     }
     
-    if (let (true, srcObj) = pkgMap.get(key)) {
-      let src = srcObj as {name: PackageName | null, items: Array<AstItem>};
-      visited[key] = 1;
+    visited[key] = 1;
+    
+    // Visit dependencies
+    if (let (true, depsList) = pkgDeps.get(key)) {
+      let deps = depsList as Array<String>;
       
-      let deps = if (let (true, d) = pkgDeps.get(key)) d else new Array<String>();
-      
-      var dIdx = 0;
-      while (dIdx < deps.length) {
-        let dep = deps[dIdx];
-        
-        var depKey: String | null = null;
-        if (pkgMap.has(dep)) {
-          depKey = dep;
-        } else {
-          // Check if any key starts with dep + "@"
-          pkgMap.forEach((k: String, val: {name: PackageName | null, items: Array<AstItem>}) => {
-            if (k.length > dep.length && k.getByteAt(dep.length) == 64) { // '@'
-              if (k.sliceBytes(0, dep.length) == dep) {
-                depKey = k;
-              }
-            }
-          });
+      // Sort dependencies alphabetically/semver for deterministic visit order
+      var dI = 0;
+      while (dI < deps.length) {
+        var dJ = dI + 1;
+        while (dJ < deps.length) {
+          if (comparePackageNameStrings(deps[dI], deps[dJ]) > 0) {
+            let temp = deps[dI];
+            deps[dI] = deps[dJ];
+            deps[dJ] = temp;
+          }
+          dJ = dJ + 1;
         }
-        if (depKey != null) {
-          visit(depKey as String);
-        }
-        dIdx = dIdx + 1;
+        dI = dI + 1;
       }
       
-      visited[key] = 2;
-      sorted.push(src);
+      dI = 0;
+      while (dI < deps.length) {
+        let depKey = deps[dI];
+        if (pkgMap.has(depKey)) {
+          visit(depKey);
+        }
+        dI = dI + 1;
+      }
+    }
+    
+    visited[key] = 2;
+    if (let (true, srcObj) = pkgMap.get(key)) {
+      sorted.push(srcObj as {name: PackageName | null, items: Array<AstItem>});
     }
   };
-
+  
+  // Visit all keys in alphabetical order
   idx = 0;
-  while (idx < nestedSources.length) {
-    let src = nestedSources[idx];
-    let key = formatPackageName(src.name);
-    visit(key);
+  while (idx < keys.length) {
+    visit(keys[idx]);
     idx = idx + 1;
   }
-
-  visit(mainKey);
-
+  
   return sorted;
 };
 

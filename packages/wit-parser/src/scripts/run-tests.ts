@@ -530,9 +530,9 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
     // Read input WIT file(s)
     let witInput: string;
     if (test.isDirectory) {
-      // Recursively find all .wit files, with deps first
+      // Recursively find all .wit files, with main first
       const {deps, main} = await findWitFilesRecursively(test.witPath);
-      const allFiles = [...deps, ...main];
+      const allFiles = [...main, ...deps];
       if (allFiles.length === 0) {
         return {test, passed: false, error: 'No .wit files in directory'};
       }
