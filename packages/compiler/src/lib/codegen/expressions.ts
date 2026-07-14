@@ -6293,6 +6293,11 @@ function generateBinaryExpression(
         if (methodInfo) {
           hasOperator = true;
           if (foundClass.isFinal || methodInfo.isFinal) {
+            if (methodInfo.index === -1) {
+              throw new Error(
+                `Direct call to method '==' on class '${foundClass.name}' has index -1`,
+              );
+            }
             body.push(
               Opcode.call,
               ...WasmModule.encodeSignedLEB128(methodInfo.index),

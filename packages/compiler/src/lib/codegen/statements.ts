@@ -964,6 +964,11 @@ function generateIteratorMethodCall(
     classInfo.isFinal || methodInfo.isFinal || classInfo.isExtension;
 
   if (useStaticDispatch) {
+    if (methodInfo.index === -1) {
+      throw new Error(
+        `Direct call to method '${methodName}' on class '${classInfo.name}' has index -1`,
+      );
+    }
     // Static dispatch - direct call
     body.push(Opcode.call, ...WasmModule.encodeSignedLEB128(methodInfo.index));
   } else {

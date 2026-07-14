@@ -425,7 +425,6 @@ export final class FunctionGenerator {
           }
         } else if (target.index == -1) {
           this.ctx.emitter.emitUnreachable();
-          return;
         } else {
           this.ctx.emitter.emitLocalGet(0);
           let receiverType = target.signature.params[0];
@@ -438,27 +437,27 @@ export final class FunctionGenerator {
             }
             case _: {}
           }
-        var i = 1;
-        while (i < this.ctx.wasmFunction.signature.params.length) {
-          this.ctx.emitter.emitLocalGet(i);
-          let paramWasmType = this.ctx.wasmFunction.signature.params[i];
-          let targetWasmType = target.signature.params[i];
-          if (!valTypeEquals(paramWasmType, targetWasmType)) {
-            match (targetWasmType) {
-              case ValTypeRefNull as targetRefNull: {
-                this.ctx.emitter.emitRefCast(targetRefNull.target.index);
+          var i = 1;
+          while (i < this.ctx.wasmFunction.signature.params.length) {
+            this.ctx.emitter.emitLocalGet(i);
+            let paramWasmType = this.ctx.wasmFunction.signature.params[i];
+            let targetWasmType = target.signature.params[i];
+            if (!valTypeEquals(paramWasmType, targetWasmType)) {
+              match (targetWasmType) {
+                case ValTypeRefNull as targetRefNull: {
+                  this.ctx.emitter.emitRefCast(targetRefNull.target.index);
+                }
+                case ValTypeRef as targetRef: {
+                  this.ctx.emitter.emitRefCast(targetRef.target.index);
+                }
+                case _: {}
               }
-              case ValTypeRef as targetRef: {
-                this.ctx.emitter.emitRefCast(targetRef.target.index);
-              }
-              case _: {}
             }
+            i += 1;
           }
-          i += 1;
+          this.ctx.emitter.emitCall(target);
         }
-        this.ctx.emitter.emitCall(target);
-      }
-    } else if (this.ctx.wasmFunction.isFunctionAdaptation) {
+      } else if (this.ctx.wasmFunction.isFunctionAdaptation) {
         this.generateFunctionAdaptationBody();
       } else if (this.ctx.wasmFunction.isClosureTrampoline) {
         this.generateClosureTrampolineBody();

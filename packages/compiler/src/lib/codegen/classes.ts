@@ -1101,6 +1101,14 @@ export function generateTrampoline(
     );
   }
 
+  if (classMethod.index === -1 && !classMethod.intrinsic) {
+    body.push(Opcode.unreachable);
+    body.push(Opcode.end);
+    ctx.module.addCode(trampolineIndex, ctx.extraLocals, body);
+    ctx.restoreFunctionContext(savedContext);
+    return trampolineIndex;
+  }
+
   let targetTypeIndex = classInfo.structTypeIndex;
   if (classInfo.isExtension && classInfo.onType) {
     targetTypeIndex = decodeTypeIndex(classInfo.onType);
@@ -1722,15 +1730,49 @@ function generateFieldGetterTrampoline(
     const getterName = getGetterName(fieldName);
     const methodInfo = classInfo.methods.get(getterName);
     if (methodInfo) {
-      // Call getter
-      body.push(
-        Opcode.local_get,
-        ...WasmModule.encodeSignedLEB128(castedThisLocal),
-      );
-      body.push(
-        Opcode.call,
-        ...WasmModule.encodeSignedLEB128(methodInfo.index),
-      );
+      if (methodInfo.intrinsic) {
+        body.push(
+          Opcode.local_get,
+          ...WasmModule.encodeSignedLEB128(castedThisLocal),
+        );
+        if (methodInfo.intrinsic === 'array.len') {
+          body.push(0xfb, GcOpcode.array_len);
+        } else if (methodInfo.intrinsic === 'array.get') {
+          if (!classInfo.onType)
+            throw new Error('array.get intrinsic requires onType');
+          const typeIndex = decodeTypeIndex(classInfo.onType);
+          body.push(
+            0xfb,
+            GcOpcode.array_get,
+            ...WasmModule.encodeSignedLEB128(typeIndex),
+          );
+        } else if (methodInfo.intrinsic === 'array.get_u') {
+          if (!classInfo.onType)
+            throw new Error('array.get_u intrinsic requires onType');
+          const typeIndex = decodeTypeIndex(classInfo.onType);
+          body.push(
+            0xfb,
+            GcOpcode.array_get_u,
+            ...WasmModule.encodeSignedLEB128(typeIndex),
+          );
+        } else {
+          throw new Error(
+            `Unsupported getter intrinsic in trampoline: ${methodInfo.intrinsic}`,
+          );
+        }
+      } else if (methodInfo.index === -1) {
+        body.push(Opcode.unreachable);
+      } else {
+        // Call getter
+        body.push(
+          Opcode.local_get,
+          ...WasmModule.encodeSignedLEB128(castedThisLocal),
+        );
+        body.push(
+          Opcode.call,
+          ...WasmModule.encodeSignedLEB128(methodInfo.index),
+        );
+      }
     } else {
       throw new Error(
         `Class ${classInfo.name} does not implement field '${fieldName}' required by interface`,
@@ -6213,11 +6255,18 @@ function instantiateClassImpl(
           mangledMethodName = methodName + getSignatureKey(funcTypeForSig);
         }
 
+        const shouldRegister =
+          methodName === CONSTRUCTOR_NAME ||
+          intrinsic !== undefined ||
+          member.isDeclare ||
+          ctx.isMethodUsed(checkerType, mangledMethodName);
+
         // Add to vtable with the actual key (mangled for overloads, base name otherwise)
         if (
           methodName !== CONSTRUCTOR_NAME &&
           !intrinsic &&
-          !vtable.includes(mangledMethodName)
+          !vtable.includes(mangledMethodName) &&
+          shouldRegister
         ) {
           vtable.push(mangledMethodName);
         }
@@ -6295,7 +6344,7 @@ function instantiateClassImpl(
         const typeIndex = ctx.module.addType(params, results);
 
         let funcIndex = -1;
-        if (!intrinsic) {
+        if (!intrinsic && shouldRegister) {
           funcIndex = ctx.module.addFunction(typeIndex);
           // Set debug name for generic class method
           ctx.setFunctionDebugName(
@@ -6672,12 +6721,11 @@ function instantiateClassImpl(
       const methodInfo = methods.get(methodName);
       if (!methodInfo) throw new Error(`Method ${methodName} not found`);
       if (methodInfo.index === -1) {
-        console.log(
-          `WARNING/ERROR: Method info has index -1 inside registerMethods for class ${classInfo.name}, method ${methodName}`,
-        );
+        vtableInit.push(Opcode.ref_null, HeapType.nofunc);
+      } else {
+        vtableInit.push(Opcode.ref_func);
+        vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
       }
-      vtableInit.push(Opcode.ref_func);
-      vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     }
     vtableInit.push(0xfb, GcOpcode.struct_new);
     vtableInit.push(...WasmModule.encodeSignedLEB128(vtableTypeIndex));
@@ -7652,12 +7700,49 @@ function applyMixin(
         ];
         const params = [thisWasmType, ...paramWasmTypes];
 
-        const typeIndex = ctx.module.addType(params, results);
-        const funcIndex = ctx.module.addFunction(typeIndex);
-        ctx.setFunctionDebugName(
-          funcIndex,
-          `${intermediateName}.${methodName}`,
-        );
+        let isUsed = false;
+        if (checkerIntermediateType) {
+          if (ctx.isMethodUsed(checkerIntermediateType, methodName)) {
+            isUsed = true;
+          } else if (
+            checkerIntermediateType.isMixinIntermediate &&
+            checkerIntermediateType.onType &&
+            (checkerIntermediateType.onType.kind === TypeKind.Class ||
+              checkerIntermediateType.onType.kind === TypeKind.Interface)
+          ) {
+            isUsed = ctx.isMethodUsed(
+              checkerIntermediateType.onType as ClassType | InterfaceType,
+              methodName,
+            );
+          }
+        }
+
+        const shouldRegister =
+          methodName === CONSTRUCTOR_NAME ||
+          !checkerIntermediateType ||
+          isUsed;
+
+        let funcIndex = -1;
+        let typeIndex = -1;
+        if (checkerIntermediateType) {
+          const directUsed = ctx.isMethodUsed(checkerIntermediateType, methodName);
+          const isMixin = checkerIntermediateType.isMixinIntermediate;
+          const onType = checkerIntermediateType.onType;
+          const onTypeUsed = onType && (onType.kind === TypeKind.Class || onType.kind === TypeKind.Interface) ? ctx.isMethodUsed(onType as any, methodName) : false;
+          console.error(`Mixin check: ${intermediateName}.${methodName} -> directUsed: ${directUsed}, isMixin: ${isMixin}, onTypeUsed: ${onTypeUsed}, shouldRegister: ${shouldRegister}`);
+        } else {
+          console.error(`Mixin check: ${intermediateName}.${methodName} -> no checkerIntermediateType, shouldRegister: ${shouldRegister}`);
+        }
+        if (shouldRegister) {
+          typeIndex = ctx.module.addType(params, results);
+          funcIndex = ctx.module.addFunction(typeIndex);
+          ctx.setFunctionDebugName(
+            funcIndex,
+            `${intermediateName}.${methodName}`,
+          );
+        } else {
+          typeIndex = ctx.module.addType(params, results);
+        }
 
         methods.set(methodName, {
           index: funcIndex,
@@ -7667,7 +7752,7 @@ function applyMixin(
           isFinal: resolvedType.isFinal,
         });
 
-        if (!vtable.includes(methodName)) {
+        if (shouldRegister && !vtable.includes(methodName)) {
           vtable.push(methodName);
         }
       }

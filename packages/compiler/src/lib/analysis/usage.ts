@@ -464,6 +464,9 @@ class UsageAnalyzer {
    * Mark a declaration as used and add it to the worklist.
    */
   #markUsed(decl: Declaration, reason?: string): void {
+    if (decl.type === NodeType.ClassDeclaration && (decl as any).name?.name === 'FixedArray') {
+      console.error(`  FixedArray marked as used! Reason: ${reason}`);
+    }
     if (this.#usedDeclarations.has(decl)) return;
 
     const info: UsageInfo = {isUsed: true};
@@ -525,7 +528,12 @@ class UsageAnalyzer {
         }
         visit(classDecl.onType, visitor, null);
         for (const member of classDecl.body) {
-          visit(member, visitor, null);
+          if (
+            member.type !== NodeType.MethodDefinition &&
+            member.type !== NodeType.AccessorDeclaration
+          ) {
+            visit(member, visitor, null);
+          }
         }
         break;
       }
@@ -535,7 +543,12 @@ class UsageAnalyzer {
           visit(ext, visitor, null);
         }
         for (const member of ifaceDecl.body) {
-          visit(member, visitor, null);
+          if (
+            member.type !== NodeType.MethodSignature &&
+            member.type !== NodeType.AccessorSignature
+          ) {
+            visit(member, visitor, null);
+          }
         }
         break;
       }
@@ -545,7 +558,12 @@ class UsageAnalyzer {
           visit(mixin, visitor, null);
         }
         for (const member of mixinDecl.body) {
-          visit(member, visitor, null);
+          if (
+            member.type !== NodeType.MethodDefinition &&
+            member.type !== NodeType.AccessorDeclaration
+          ) {
+            visit(member, visitor, null);
+          }
         }
         break;
       }
@@ -1424,9 +1442,14 @@ class UsageAnalyzer {
     classType: ClassType | InterfaceType,
     methodName: string,
   ): boolean {
+    const isTarget = classType.name?.includes('IterableUtils') || classType.name?.includes('Iterable');
+    if (isTarget) {
+      console.error(`  isMethodUsedInternal checking: ${classType.name}.${methodName}`);
+    }
     // Check if directly marked as used
     const usedSet = this.#usedMethods.get(classType);
     if (usedSet?.has(methodName)) {
+      if (isTarget) console.error(`    Found in direct usedSet`);
       return true;
     }
 
@@ -1438,6 +1461,7 @@ class UsageAnalyzer {
       if (ct.genericSource) {
         const sourceUsedSet = this.#usedMethods.get(ct.genericSource);
         if (sourceUsedSet?.has(methodName)) {
+          if (isTarget) console.error(`    Found in genericSource direct usedSet`);
           return true;
         }
       }
@@ -1446,6 +1470,7 @@ class UsageAnalyzer {
       if (it.genericSource) {
         const sourceUsedSet = this.#usedMethods.get(it.genericSource);
         if (sourceUsedSet?.has(methodName)) {
+          if (isTarget) console.error(`    Found in genericSource direct usedSet (interface)`);
           return true;
         }
       }
@@ -1458,6 +1483,7 @@ class UsageAnalyzer {
       while (current) {
         const polySet = this.#polymorphicMethods.get(current);
         if (polySet?.has(methodName)) {
+          if (isTarget) console.error(`    Found polymorphic in super: ${current.name}`);
           return true;
         }
         current = current.superType;
@@ -1466,6 +1492,7 @@ class UsageAnalyzer {
       // Also check implemented interfaces for polymorphic calls
       for (const iface of ct.implements) {
         if (this.#isMethodUsedViaInterface(iface, methodName)) {
+          if (isTarget) console.error(`    Found used via interface: ${iface.name}`);
           return true;
         }
       }
@@ -1477,11 +1504,13 @@ class UsageAnalyzer {
       for (const parent of it.extends ?? []) {
         const polySet = this.#polymorphicMethods.get(parent);
         if (polySet?.has(methodName)) {
+          if (isTarget) console.error(`    Found polymorphic in extends parent interface: ${parent.name}`);
           return true;
         }
       }
     }
 
+    if (isTarget) console.error(`    Not found, returning false`);
     return false;
   }
 
