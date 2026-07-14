@@ -1,0 +1,480 @@
+import {JsonBuilder} from 'zena:json';
+import {Array} from 'zena:growable-array';
+import {HashMap} from 'zena:map';
+import {Option, Some, none} from 'zena:option';
+import {Docs, TypeDef, UsePath, UseName, Id, Attribute, AttributeTag} from './parser.zena';
+import {normalizeId} from './helpers.zena';
+
+// ============================================================================
+// Helper Types for JSON Output (Flat Schema matching wasm-tools)
+// ============================================================================
+
+export sealed class TypeRef {
+  case Primitive(name: String)
+  case Index(value: i32)
+
+  static str(s: String): TypeRef {
+    return new Primitive(s);
+  }
+
+  static idx(i: i32): TypeRef {
+    return new Index(i);
+  }
+
+  serialize(b: JsonBuilder): void {
+    match (this) {
+      case Primitive {name}: b.string(name);
+      case Index {value}: b.i32(value);
+    }
+  }
+
+  isIndex(): boolean {
+    match (this) {
+      case Primitive: return false;
+      case Index: return true;
+    }
+  }
+
+  indexValue(): i32 {
+    match (this) {
+      case Primitive: return -1;
+      case Index {value}: return value;
+    }
+  }
+
+  strValue(): String {
+    match (this) {
+      case Primitive {name}: return name;
+      case Index: return "";
+    }
+  }
+}
+
+export sealed class TypeOwner {
+  case Interface(index: i32)
+  case World(index: i32)
+
+  static fromInterface(index: i32): TypeOwner {
+    return new Interface(index);
+  }
+
+  static fromWorld(index: i32): TypeOwner {
+    return new World(index);
+  }
+
+  serialize(b: JsonBuilder): void {
+    b.beginObject();
+    match (this) {
+      case Interface {index}: b.key("interface").i32(index);
+      case World {index}: b.key("world").i32(index);
+    }
+    b.endObject();
+  }
+
+  isWorld(): boolean {
+    match (this) {
+      case Interface: return false;
+      case World: return true;
+    }
+  }
+
+  index(): i32 {
+    match (this) {
+      case Interface {index}: return index;
+      case World {index}: return index;
+    }
+  }
+}
+
+export sealed class ScopeTypeElement {
+  case TypeDef(def: TypeDef)
+  case Use(path: UsePath, name: UseName, docs: Docs | null)
+
+  static fromTd(td: TypeDef): ScopeTypeElement {
+    return new TypeDef(td);
+  }
+
+  static fromUse(path: UsePath, name: UseName, docs: Docs | null): ScopeTypeElement {
+    return new Use(path, name, docs);
+  }
+
+  isTypeDef(): boolean {
+    match (this) {
+      case TypeDef: return true;
+      case Use: return false;
+    }
+  }
+
+  typeDef(): TypeDef | null {
+    match (this) {
+      case TypeDef {def}: return def;
+      case Use: return null;
+    }
+  }
+
+  usePath(): UsePath | null {
+    match (this) {
+      case TypeDef: return null;
+      case Use {path}: return path;
+    }
+  }
+
+  useName(): UseName | null {
+    match (this) {
+      case TypeDef: return null;
+      case Use {name}: return name;
+    }
+  }
+
+  docs(): Docs | null {
+    match (this) {
+      case TypeDef {def}: return def.docs;
+      case Use {docs}: return docs;
+    }
+  }
+}
+
+export class RecordField {
+  var name: String;
+  var typeRef: TypeRef;
+
+  new(name: String, typeRef: TypeRef) : name = name, typeRef = typeRef;
+
+  serialize(b: JsonBuilder): void {
+    b.beginObject();
+    b.key("name").string(this.name);
+    b.key("type");
+    this.typeRef.serialize(b);
+    b.endObject();
+  }
+}
+
+export class VariantCase {
+  var name: String;
+  var typeRef: TypeRef | null;
+
+  new(name: String, typeRef: TypeRef | null) : name = name, typeRef = typeRef;
+
+  serialize(b: JsonBuilder): void {
+    b.beginObject();
+    b.key("name").string(this.name);
+    b.key("type");
+    if (this.typeRef != null) {
+      (this.typeRef as TypeRef).serialize(b);
+    } else {
+      b.nullValue();
+    }
+    b.endObject();
+  }
+}
+
+export class EnumCase {
+  var name: String;
+  var docs: Docs | null;
+
+  new(name: String, docs: Docs | null) : name = name, docs = docs;
+
+  serialize(b: JsonBuilder): void {
+    b.beginObject();
+    b.key("name").string(this.name);
+    if (this.docs != null) {
+      let d = this.docs as Docs;
+      if (d.contents != null) {
+        b.key("docs").beginObject();
+        b.key("contents").string(d.contents as String);
+        b.endObject();
+      }
+    }
+    b.endObject();
+  }
+}
+
+export sealed class TypeKind {
+  case Type(inner: TypeRef)
+  case List(inner: TypeRef)
+  case FixedLengthList(inner: TypeRef, len: i32)
+  case Option(inner: TypeRef)
+  case Result(ok: TypeRef | null, err: TypeRef | null)
+  case Record(fields: Array<RecordField>)
+  case Tuple(types: Array<TypeRef>)
+  case Flags(flags: Array<String>)
+  case Variant(cases: Array<VariantCase>)
+  case Enum(cases: Array<EnumCase>)
+  case Handle(borrowIndex: i32, ownIndex: i32)
+  case Map(key: TypeRef, value: TypeRef)
+  case Future(inner: TypeRef | null)
+  case Stream(inner: TypeRef | null)
+  case Unknown
+  case Resource
+
+  tag(): String {
+    match (this) {
+      case Type: return "type";
+      case List: return "list";
+      case FixedLengthList: return "fixed-length-list";
+      case Option: return "option";
+      case Result: return "result";
+      case Record: return "record";
+      case Tuple: return "tuple";
+      case Flags: return "flags";
+      case Variant: return "variant";
+      case Enum: return "enum";
+      case Handle: return "handle";
+      case Map: return "map";
+      case Future: return "future";
+      case Stream: return "stream";
+      case Unknown: return "unknown";
+      case Resource: return "resource";
+    }
+  }
+
+  serialize(b: JsonBuilder): void {
+    match (this) {
+      case Resource:
+        b.string("resource");
+      case Type {inner}:
+        b.beginObject();
+        b.key("type");
+        inner.serialize(b);
+        b.endObject();
+      case List {inner}:
+        b.beginObject();
+        b.key("list");
+        inner.serialize(b);
+        b.endObject();
+      case FixedLengthList {inner, len}:
+        b.beginObject();
+        b.key("fixed-length-list").beginArray();
+        inner.serialize(b);
+        b.i32(len);
+        b.endArray();
+        b.endObject();
+      case Option {inner}:
+        b.beginObject();
+        b.key("option");
+        inner.serialize(b);
+        b.endObject();
+      case Result {ok, err}:
+        b.beginObject();
+        b.key("result").beginObject();
+        b.key("ok");
+        if (ok != null) { (ok as TypeRef).serialize(b); } else { b.nullValue(); }
+        b.key("err");
+        if (err != null) { (err as TypeRef).serialize(b); } else { b.nullValue(); }
+        b.endObject();
+        b.endObject();
+      case Record {fields}:
+        b.beginObject();
+        b.key("record").beginObject();
+        b.key("fields").beginArray();
+        var i = 0;
+        while (i < fields.length) {
+          fields[i].serialize(b);
+          i += 1;
+        }
+        b.endArray();
+        b.endObject();
+        b.endObject();
+      case Tuple {types}:
+        b.beginObject();
+        b.key("tuple").beginObject();
+        b.key("types").beginArray();
+        var i = 0;
+        while (i < types.length) {
+          types[i].serialize(b);
+          i += 1;
+        }
+        b.endArray();
+        b.endObject();
+        b.endObject();
+      case Flags {flags}:
+        b.beginObject();
+        b.key("flags").beginObject();
+        b.key("flags").beginArray();
+        var i = 0;
+        while (i < flags.length) {
+          b.beginObject();
+          b.key("name").string(flags[i]);
+          b.endObject();
+          i += 1;
+        }
+        b.endArray();
+        b.endObject();
+        b.endObject();
+      case Variant {cases}:
+        b.beginObject();
+        b.key("variant").beginObject();
+        b.key("cases").beginArray();
+        var i = 0;
+        while (i < cases.length) {
+          cases[i].serialize(b);
+          i += 1;
+        }
+        b.endArray();
+        b.endObject();
+        b.endObject();
+      case Enum {cases}:
+        b.beginObject();
+        b.key("enum").beginObject();
+        b.key("cases").beginArray();
+        var i = 0;
+        while (i < cases.length) {
+          cases[i].serialize(b);
+          i += 1;
+        }
+        b.endArray();
+        b.endObject();
+        b.endObject();
+      case Handle {borrowIndex, ownIndex}:
+        b.beginObject();
+        b.key("handle").beginObject();
+        if (borrowIndex >= 0) {
+          b.key("borrow").i32(borrowIndex);
+        } else if (ownIndex >= 0) {
+          b.key("own").i32(ownIndex);
+        }
+        b.endObject();
+        b.endObject();
+      case Map {key, value}:
+        b.beginObject();
+        b.key("map").beginArray();
+        key.serialize(b);
+        value.serialize(b);
+        b.endArray();
+        b.endObject();
+      case Future {inner}:
+        b.beginObject();
+        b.key("future");
+        if (inner != null) { (inner as TypeRef).serialize(b); } else { b.nullValue(); }
+        b.endObject();
+      case Stream {inner}:
+        b.beginObject();
+        b.key("stream");
+        if (inner != null) { (inner as TypeRef).serialize(b); } else { b.nullValue(); }
+        b.endObject();
+      case Unknown:
+        b.beginObject();
+        b.key("unknown").beginObject().endObject();
+        b.endObject();
+    }
+  }
+}
+
+export let serializeStability = (b: JsonBuilder, docs: Docs | null): void => {
+  if (docs == null || docs.attributes == null) {
+    return;
+  }
+  let attrs = docs.attributes as Array<Attribute>;
+  var hasSince = false;
+  var sinceVer: String | null = null;
+  var hasDeprecated = false;
+  var depVer: String | null = null;
+  var hasUnstable = false;
+  var unstFeature: String | null = null;
+  
+  var i = 0;
+  while (i < attrs.length) {
+    let attr = attrs[i];
+    if (attr.tag == AttributeTag.Since) {
+      hasSince = true;
+      sinceVer = attr.version;
+    } else if (attr.tag == AttributeTag.Deprecated) {
+      hasDeprecated = true;
+      depVer = attr.version;
+    } else if (attr.tag == AttributeTag.Unstable) {
+      hasUnstable = true;
+      unstFeature = (attr.feature as Id).name;
+    }
+    i = i + 1;
+  }
+  
+  if (hasUnstable) {
+    b.key("stability").beginObject();
+    b.key("unstable").beginObject();
+    b.key("feature").string(unstFeature as String);
+    b.endObject();
+    b.endObject();
+  } else if (hasSince || hasDeprecated) {
+    b.key("stability").beginObject();
+    b.key("stable").beginObject();
+    if (hasSince) {
+      b.key("since").string(sinceVer as String);
+    }
+    if (hasDeprecated) {
+      b.key("deprecated").string(depVer as String);
+    }
+    b.endObject();
+    b.endObject();
+  }
+};
+
+export class TypeEntry {
+  var name: String | null;
+  var kind: TypeKind;
+  var owner: Option<TypeOwner>;
+  var docs: Docs | null;
+
+  new(name: String | null, kind: TypeKind, owner: Option<TypeOwner>, docs: Docs | null)
+    : name = name, kind = kind, owner = owner, docs = docs;
+
+  serialize(b: JsonBuilder): void {
+    b.beginObject();
+    
+    if (this.name != null) {
+      b.key("name").string(this.name as String);
+    } else {
+      b.key("name").nullValue();
+    }
+    
+    b.key("kind");
+    this.kind.serialize(b);
+    
+    if (this.owner is Some<TypeOwner>) {
+      let o = (this.owner as Some<TypeOwner>).value;
+      b.key("owner");
+      o.serialize(b);
+    } else {
+      b.key("owner").nullValue();
+    }
+    
+    if (this.docs != null) {
+      let d = this.docs as Docs;
+      if (d.contents != null) {
+        b.key("docs").beginObject();
+        b.key("contents").string(d.contents as String);
+        b.endObject();
+      }
+    }
+    
+    serializeStability(b, this.docs);
+    
+    b.endObject();
+  }
+}
+
+export class PackageEntry {
+  var name: String;
+  interfaces = new HashMap<String, i32>();
+  worlds = new HashMap<String, i32>();
+
+  new(name: String) : name = name;
+
+  serialize(b: JsonBuilder): void {
+    b.beginObject();
+    b.key("name").string(this.name);
+    
+    b.key("interfaces").beginObject();
+    this.interfaces.forEach((name: String, idx: i32) => {
+      b.key(name).i32(idx);
+    });
+    b.endObject();
+    
+    b.key("worlds").beginObject();
+    this.worlds.forEach((name: String, idx: i32) => {
+      b.key(name).i32(idx);
+    });
+    b.endObject();
+    
+    b.endObject();
+  }
+}
