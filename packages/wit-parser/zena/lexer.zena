@@ -8,6 +8,7 @@
 
 import {String} from 'zena:string';
 import {StringBuilder} from 'zena:string-builder';
+import {StringReader} from 'zena:string-reader';
 import {TokenType, Span, Token, keywordToToken} from './token.zena';
 
 // ============================================================================
@@ -70,11 +71,7 @@ export class LexError extends Error {
  * ```
  */
 export class Lexer {
-  /** The source text being lexed. */
-  #source: String;
-  
-  /** Current byte position in the source. */
-  var #pos = 0;
+  #reader: StringReader;
   
   /** Comment content accumulated before items (used for docs). */
   var #precedingComments: StringBuilder | null = null;
@@ -82,7 +79,7 @@ export class Lexer {
   /**
    * Create a new lexer for the given source text.
    */
-  new(source: String) : #source = source;
+  new(source: String) : #reader = new StringReader(source);
   
   /**
    * Get and clear any comments accumulated before the current position.
@@ -109,7 +106,7 @@ export class Lexer {
     // Skip whitespace and comments
     this.#skipTrivia();
 
-    let start = this.#pos;
+    let start = this.#reader.position;
 
     // Check for end of input
     if (this.#isEof()) {
@@ -140,9 +137,9 @@ export class Lexer {
       this.#advance();
       if (!this.#isEof() && this.#peek() == 62) {  // >
         this.#advance();
-        return new Token(TokenType.RArrow, new Span(start, this.#pos));
+        return new Token(TokenType.RArrow, new Span(start, this.#reader.position));
       }
-      return new Token(TokenType.Minus, new Span(start, this.#pos));
+      return new Token(TokenType.Minus, new Span(start, this.#reader.position));
     }
 
     // / or /// doc comment
@@ -166,7 +163,7 @@ export class Lexer {
           }
           this.#advance();
         }
-        return new Token(TokenType.DocComment, new Span(start, this.#pos));
+        return new Token(TokenType.DocComment, new Span(start, this.#reader.position));
       }
       return this.#single(TokenType.Slash);
     }
@@ -189,7 +186,7 @@ export class Lexer {
 
     // Unknown character
     this.#advance();
-    throw new LexError("unexpected character", new Span(start, this.#pos));
+    throw new LexError("unexpected character", new Span(start, this.#reader.position));
   }
 
   /**
@@ -197,9 +194,9 @@ export class Lexer {
    * Note: This re-lexes; for efficiency, callers should cache the result.
    */
   peek(): Token {
-    let savedPos = this.#pos;
+    let savedPos = this.#reader.position;
     let token = this.next();
-    this.#pos = savedPos;
+    this.#reader.reset(savedPos);
     return token;
   }
 
@@ -222,7 +219,7 @@ export class Lexer {
    * Get the source text for a span.
    */
   getSpanText(span: Span): String {
-    return this.#source.sliceBytes(span.start, span.end);
+    return this.#reader.sliceRange(span.start, span.end);
   }
 
   // --------------------------------------------------------------------------
@@ -231,33 +228,29 @@ export class Lexer {
 
   /** Check if we're at end of file. */
   #isEof(): boolean {
-    return this.#pos >= this.#source.length;
+    return this.#reader.isAtEnd;
   }
 
   /** Peek at current byte without advancing. */
   #peek(): i32 {
-    return this.#source.getByteAt(this.#pos);
+    return this.#reader.peekByte();
   }
 
   /** Peek at byte at given offset from current position. */
   #peekAt(offset: i32): i32 {
-    let idx = this.#pos + offset;
-    if (idx >= this.#source.length) {
-      return 0;  // EOF
-    }
-    return this.#source.getByteAt(idx);
+    return this.#reader.peekByteAt(offset);
   }
 
   /** Advance position by one byte. */
   #advance(): void {
-    this.#pos = this.#pos + 1;
+    this.#reader.advanceByte();
   }
 
   /** Create a single-character token. */
   #single(type: TokenType): Token {
-    let start = this.#pos;
+    let start = this.#reader.position;
     this.#advance();
-    return new Token(type, new Span(start, this.#pos));
+    return new Token(type, new Span(start, this.#reader.position));
   }
 
   /** Skip whitespace and comments. */
@@ -294,7 +287,7 @@ export class Lexer {
     this.#advance();
     this.#advance();
     
-    let contentStart = this.#pos;
+    let contentStart = this.#reader.position;
     
     // Capture everything until newline
     while (!this.#isEof()) {
@@ -304,7 +297,7 @@ export class Lexer {
       }
       this.#advance();
     }
-    let contentEnd = this.#pos;
+    let contentEnd = this.#reader.position;
     
     // Skip the newline if present
     if (!this.#isEof() && this.#peek() == 10) {
@@ -320,7 +313,7 @@ export class Lexer {
       sb.append("\n");
     }
     // Get comment content
-    let rawContent = this.#source.sliceBytes(contentStart, contentEnd);
+    let rawContent = this.#reader.sliceRange(contentStart, contentEnd);
     sb.append(rawContent);
   }
 
@@ -329,7 +322,7 @@ export class Lexer {
     // Skip just the opening '/' - we keep the '*' as part of the content
     this.#advance();
     
-    let contentStart = this.#pos;
+    let contentStart = this.#reader.position;
 
     // Skip the '*'
     this.#advance();
@@ -362,7 +355,7 @@ export class Lexer {
     }
     
     // contentEnd is the current position (includes the final */)
-    let contentEnd = this.#pos;
+    let contentEnd = this.#reader.position;
     
     // Accumulate the comment content
     if (this.#precedingComments == null) {
@@ -373,7 +366,7 @@ export class Lexer {
       sb.append("\n");
     }
     // Get block comment content (including leading * and trailing */)
-    let content = this.#source.sliceBytes(contentStart, contentEnd);
+    let content = this.#reader.sliceRange(contentStart, contentEnd);
     sb.append(content);
   }
 
@@ -384,7 +377,7 @@ export class Lexer {
       this.#advance();
     }
 
-    let span = new Span(start, this.#pos);
+    let span = new Span(start, this.#reader.position);
     let text = this.getSpanText(span);
 
     // Check if it's a keyword
@@ -397,14 +390,14 @@ export class Lexer {
     // We've already consumed the %
     // Now consume the identifier
     if (this.#isEof() || !isIdStart(this.#peek())) {
-      throw new LexError("expected identifier after '%'", new Span(start, this.#pos));
+      throw new LexError("expected identifier after '%'", new Span(start, this.#reader.position));
     }
 
     while (!this.#isEof() && isIdContinue(this.#peek())) {
       this.#advance();
     }
 
-    return new Token(TokenType.ExplicitId, new Span(start, this.#pos));
+    return new Token(TokenType.ExplicitId, new Span(start, this.#reader.position));
   }
 
   /** Lex an integer literal. */
@@ -415,7 +408,7 @@ export class Lexer {
       this.#advance();  // x
       
       if (this.#isEof() || !isHexDigit(this.#peek())) {
-        throw new LexError("expected hex digit after '0x'", new Span(start, this.#pos));
+        throw new LexError("expected hex digit after '0x'", new Span(start, this.#reader.position));
       }
       
       while (!this.#isEof() && isHexDigit(this.#peek())) {
@@ -428,6 +421,6 @@ export class Lexer {
       }
     }
 
-    return new Token(TokenType.Integer, new Span(start, this.#pos));
+    return new Token(TokenType.Integer, new Span(start, this.#reader.position));
   }
 }
