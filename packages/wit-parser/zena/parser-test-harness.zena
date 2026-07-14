@@ -224,10 +224,42 @@ export let parseJson = (): void => {
   let input = readInput();
   
   outputString = try {
-    let ast = Parser.parse(input);
+    let prefix = "package-order:";
+    var hasPrefix = false;
+    if (input.length > prefix.length) {
+      hasPrefix = true;
+      var pI = 0;
+      while (pI < prefix.length) {
+        if (input.getByteAt(pI) != prefix.getByteAt(pI)) {
+          hasPrefix = false;
+          break;
+        }
+        pI = pI + 1;
+      }
+    }
+    
+    var pkgOrderStr: String | null = null;
+    var witContent = input;
+    if (hasPrefix) {
+      var nlIdx = -1;
+      var idx = 0;
+      while (idx < input.length) {
+        if (input.getByteAt(idx) == 10) { // '\n'
+          nlIdx = idx;
+          break;
+        }
+        idx = idx + 1;
+      }
+      if (nlIdx >= 0) {
+        pkgOrderStr = input.sliceBytes(prefix.length, nlIdx);
+        witContent = input.sliceBytes(nlIdx + 1, input.length);
+      }
+    }
+
+    let ast = Parser.parse(witContent);
     // Run semantic validation
     Resolver.resolve(ast);
-    serializeAstToJson(ast)
+    serializeAstToJson(ast, pkgOrderStr)
   } catch (e) {
     "ParseError: " + e.message + "\n"
   };

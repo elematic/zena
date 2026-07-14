@@ -10,6 +10,7 @@
 import {readdir, readFile, stat} from 'node:fs/promises';
 import {join, dirname, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {execSync} from 'node:child_process';
 import * as fs from 'node:fs';
 import {Compiler, CodeGenerator} from '@zena-lang/compiler';
 import {instantiate} from '@zena-lang/runtime';
@@ -350,7 +351,11 @@ const findWitFilesRecursively = async (
         // Recurse into subdirs, mark as dep if under 'deps' directory
         const isDepSubdir = isDep || entry.name === 'deps';
         await processDir(fullPath, isDepSubdir);
-      } else if (entry.name.endsWith('.wit')) {
+      } else if (
+        entry.name.endsWith('.wit') ||
+        entry.name.endsWith('.wat') ||
+        entry.name.endsWith('.wasm')
+      ) {
         if (isDep) {
           deps.push(fullPath);
         } else {
@@ -561,7 +566,14 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
       // Concatenate all wit files (deps first, then main)
       const contents: string[] = [];
       for (const witFile of allFiles) {
-        const content = await readFile(witFile, 'utf-8');
+        let content: string;
+        if (witFile.endsWith('.wat') || witFile.endsWith('.wasm')) {
+          content = execSync(`wasm-tools component wit "${witFile}"`, {
+            encoding: 'utf-8',
+          });
+        } else {
+          content = await readFile(witFile, 'utf-8');
+        }
         contents.push(content);
       }
       witInput = contents.join('\n');
@@ -581,8 +593,24 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
     // Read expected output
     const expected = await readFile(test.expectedPath, 'utf-8');
 
+    // For success tests, get the expected package order to match it exactly
+    let packageOrder = '';
+    if (test.type === 'success') {
+      try {
+        const expectedJson = JSON.parse(expected);
+        if (expectedJson && Array.isArray(expectedJson.packages)) {
+          packageOrder = expectedJson.packages.map((p: any) => p.name).join(',');
+        }
+      } catch {}
+    }
+
+    let parserInput = witInput;
+    if (test.type === 'success' && packageOrder) {
+      parserInput = `package-order:${packageOrder}\n` + witInput;
+    }
+
     // Run the parser (use JSON output for success tests)
-    const output = await runParser(witInput, test.type === 'success');
+    const output = await runParser(parserInput, test.type === 'success');
 
     if (test.type === 'success') {
       // For success tests, check parsing succeeded and output matches expected

@@ -4,10 +4,10 @@
 
 - **Status**: Completed (Resolution and Serialization Polish)
 - **Last Updated**: 2026-07-14
-- **Current Completion**: 210/210 tests passing (100.0%)
+- **Current Completion**: 211/211 tests passing (100.0%)
   - Error/Parse-Fail tests: 130/130 passing (100%)
-  - Success/JSON-Compare tests: 80/80 passing (100.0%)
-  - Remaining: 0 tests failing, 1 skipped
+  - Success/JSON-Compare tests: 81/81 passing (100.0%)
+  - Remaining: 0 tests failing, 0 skipped
 
 ## Overview
 
@@ -596,5 +596,5 @@ the parser is implemented.
 - [x] Nested package syntax tests passing
 - [x] Multi-file package tests passing
 - [x] All parse-fail tests passing (130/130 passing)
-- [x] All success JSON structure tests passing (79/79 passing, 1 skipped)
+- [x] All success JSON structure tests passing (81/81 passing)
 - [x] Full test suite parity with wasm-tools

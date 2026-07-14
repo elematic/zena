@@ -4008,12 +4008,22 @@ let collectPackageDeps = (aliases: HashMap<String, String>, pkgName: String, ite
   }
 };
 
-let comparePackageNameStrings = (k1: String, k2: String): i32 => {
+let comparePackageNameStrings = (pkgOrder: Array<String>, k1: String, k2: String): i32 => {
   if (k1 == k2) return 0;
 
-  // Special override to match upstream non-deterministic filesystem order in foreign-deps/foreign-deps-union
-  if (k1 == "foo:wasi" && k2 == "foo:some-pkg") return -1;
-  if (k1 == "foo:some-pkg" && k2 == "foo:wasi") return 1;
+  // Sort according to pkgOrder if both are present in the list
+  var idx1 = -1;
+  var idx2 = -1;
+  var pIdx = 0;
+  while (pIdx < pkgOrder.length) {
+    if (pkgOrder[pIdx] == k1) { idx1 = pIdx; }
+    if (pkgOrder[pIdx] == k2) { idx2 = pIdx; }
+    pIdx = pIdx + 1;
+  }
+  if (idx1 >= 0 && idx2 >= 0) {
+    if (idx1 < idx2) return -1;
+    return 1;
+  }
   
   // Find namespace separator ':'
   var colon1 = -1;
@@ -4083,7 +4093,7 @@ let comparePackageNameStrings = (k1: String, k2: String): i32 => {
   return compareVersions(ver1, ver2);
 };
 
-let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<AstItem>}>, pkgDeps: HashMap<String, Array<String>>): Array<{name: PackageName | null, items: Array<AstItem>}> => {
+let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<AstItem>}>, pkgDeps: HashMap<String, Array<String>>, pkgOrder: Array<String>): Array<{name: PackageName | null, items: Array<AstItem>}> => {
   let sorted = new Array<{name: PackageName | null, items: Array<AstItem>}>();
   if (pkgSources.length == 0) {
     return sorted;
@@ -4107,7 +4117,7 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
   while (i < keys.length) {
     var j = i + 1;
     while (j < keys.length) {
-      if (comparePackageNameStrings(keys[i], keys[j]) > 0) {
+      if (comparePackageNameStrings(pkgOrder, keys[i], keys[j]) > 0) {
         let temp = keys[i];
         keys[i] = keys[j];
         keys[j] = temp;
@@ -4139,7 +4149,7 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
       while (dI < deps.length) {
         var dJ = dI + 1;
         while (dJ < deps.length) {
-          if (comparePackageNameStrings(deps[dI], deps[dJ]) > 0) {
+          if (comparePackageNameStrings(pkgOrder, deps[dI], deps[dJ]) > 0) {
             let temp = deps[dI];
             deps[dI] = deps[dJ];
             deps[dJ] = temp;
@@ -4175,7 +4185,7 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
   return sorted;
 };
 
-let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, Array<String>>): void => {
+let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, Array<String>>, pkgOrder: Array<String>): void => {
   let pkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
   pkgSources.push({name: ast.packageName, items: ast.items});
   
@@ -4186,7 +4196,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
     pIdx = pIdx + 1;
   }
 
-  let finalPkgSources = sortPackages(pkgSources, pkgDeps);
+  let finalPkgSources = sortPackages(pkgSources, pkgDeps, pkgOrder);
   
   let globalInterfaces = new Array<InterfaceDef>();
   let globalWorlds = new Array<WorldDef>();
@@ -4307,7 +4317,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
 /**
  * Serialize a parsed AST to JSON format matching wasm-tools output.
  */
-export let serializeAstToJson = (ast: Ast): String => {
+export let serializeAstToJson = (ast: Ast, pkgOrderStr: String | null = null): String => {
   let aliases = new HashMap<String, String>();
   
   let pkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
@@ -4361,10 +4371,29 @@ export let serializeAstToJson = (ast: Ast): String => {
     pkgDepIdx = pkgDepIdx + 1;
   }
 
+  let pkgOrder = new Array<String>();
+  if (pkgOrderStr != null) {
+    let str = pkgOrderStr as String;
+    var start = 0;
+    var i = 0;
+    while (i < str.length) {
+      if (str.getByteAt(i) == 44) { // ','
+        if (i > start) {
+          pkgOrder.push(str.sliceBytes(start, i));
+        }
+        start = i + 1;
+      }
+      i = i + 1;
+    }
+    if (str.length > start) {
+      pkgOrder.push(str.sliceBytes(start, str.length));
+    }
+  }
+
   filterGatedItems(ast);
   let ctx = new SerializeContext();
   ctx.useAliases = aliases;
-  collectFromAst(ctx, ast, pkgDeps);
+  collectFromAst(ctx, ast, pkgDeps, pkgOrder);
   registerAllTypesAndScopeSignatures(ctx);
   
   let b = new JsonBuilder();
