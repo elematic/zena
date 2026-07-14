@@ -12,6 +12,7 @@ import {join, dirname, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import * as fs from 'node:fs';
 import {Compiler, CodeGenerator} from '@zena-lang/compiler';
+import {instantiate} from '@zena-lang/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // When compiled, we're in scripts/; when running from source, we're in src/scripts/
@@ -191,34 +192,13 @@ const runParser = async (
   const wasm = compileParserHarness();
   const inputBytes = new TextEncoder().encode(inputString);
 
-  const imports = {
-    env: {
-      getStackTrace: () => null,
-      captureStackTrace: () => null,
-      formatStackTrace: () => null,
-    },
+  const result = await instantiate(wasm as BufferSource, {
     input: {
       getLength: () => inputBytes.length,
       getByte: (index: number) => inputBytes[index] ?? 0,
     },
-    console: {
-      log_i32: () => {},
-      log_f32: () => {},
-      log_f64: () => {},
-      log_string: () => {},
-      error_string: () => {},
-      warn_string: () => {},
-      info_string: () => {},
-      debug_string: () => {},
-    },
-  };
-
-  const result = await WebAssembly.instantiate(
-    wasm as BufferSource,
-    imports as WebAssembly.Imports,
-  );
-  const instance = (result as unknown as {instance: WebAssembly.Instance})
-    .instance;
+  });
+  const instance = 'instance' in result ? result.instance : result;
   const exports = instance.exports as unknown as {
     parse: () => void;
     parseJson: () => void;
@@ -753,8 +733,9 @@ const main = async (): Promise<void> => {
       (r) => !r.passed && !expectedFailureSet.has(r.test.name),
     );
     if (unexpectedFailures.length > 0) {
+      const names = unexpectedFailures.map((r) => r.test.name).join(', ');
       console.log(
-        `\n❌ ${unexpectedFailures.length} unexpected failure(s) - add to expectedFailures in test-config.json if known issue`,
+        `\n❌ ${unexpectedFailures.length} unexpected failure(s): [${names}] - add to expectedFailures in test-config.json if known issue`,
       );
       process.exit(1);
     }

@@ -4,10 +4,10 @@
 
 - **Status**: Progressing (Phase 4.5 - Resolution and Serialization Polish)
 - **Last Updated**: 2026-07-13
-- **Current Completion**: 164/210 tests passing (78%)
+- **Current Completion**: 200/210 tests passing (95%)
   - Error/Parse-Fail tests: 130/130 passing (100%)
-  - Success/JSON-Compare tests: 34/79 passing (43%)
-  - Remaining: 45 success tests failing, 1 skipped
+  - Success/JSON-Compare tests: 70/80 passing (87%)
+  - Remaining: 10 success tests failing, 1 skipped
 
 ## Overview
 
@@ -372,35 +372,16 @@ packages/wit-parser/zena/
 
 ### 4.3 Parser Next Steps
 
-Syntax parsing and resolver/serializer implementations are complete. All 130/130 semantic validation tests (error cases) are passing. The remaining failures (52 success tests) are JSON serialization or scoping discrepancies categorized below:
+Syntax parsing and resolver/serializer implementations are complete. All 90/90 semantic validation tests (error cases) are passing. The remaining failures (10 success tests) are JSON serialization or scoping discrepancies categorized below:
 
 ### Failing Success Test Categories
 
-1. **Multi-file/Package Resolution** (22 tests)
+1. **Multi-file/Package Resolution** (9 tests remaining)
    - _Issue_: Multi-file packages and cross-package uses do not resolve their structures fully, or are ordered differently.
-   - _Example_: `complex-include`, `cross-package-resource`, `diamond1`
+   - _Example_: `complex-include`, `diamond1`, `foreign-deps`, `foreign-deps-union`, `multi-file`, `multi-file-multi-package`, `multi-package-deps`, `multi-package-shared-deps`, `versions`
 
-2. **Use Statement Resolution** (7 tests)
-   - _Issue_: Single-file tests with `use` statement type tracking or gating.
-   - _Example_: `gated-use.wit`, `shared-types.wit`, `use-chain.wit`
-
-3. **Type Index Ordering & Formatting** (8 tests)
-   - _Issue_: Type indices don't match canonical wasm-tools ordering (which uses a post-validation/resolution layout).
-   - _Example_: `comments.wit`, `maps.wit`, `types.wit`
-
-4. **World Import/Export Resolution** (7 tests)
-   - _Issue_: World interface references or implicit imports (`world-implicit-import1.wit`, etc.) are not fully linked or resolved.
-
-5. **Nested Packages** (5 tests)
-   - _Issue_: Nested packages parse correctly but are not fully populated in the final parent JSON representation.
-   - _Example_: `packages-multiple-nested.wit`
-
-6. **Feature Gating** (4 tests)
-   - _Issue_: Stability attributes like `@since` or `@unstable` are not filtering out items fully from the final output structure.
-   - _Example_: `feature-gates.wit`
-
-7. **Other Scoping Issues** (3 tests)
-   - _Issue_: Miscellaneous issues like `union-fuzz-2.wit` (top-level type resolver) and `with-resource-as.wit` (`with...as` resolution).
+2. **Other Scoping/Resolution Issues** (1 test remaining)
+   - _Issue_: `with-resource-as.wit` (`with...as` alias type resolution).
 
 ### 4.4 Zena Features Exercised
 
