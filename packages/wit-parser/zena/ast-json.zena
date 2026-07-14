@@ -1676,51 +1676,278 @@ let applyRename = (name: String, renames: Array<IncludeName>): String => {
   return name;
 };
 
+let renameType = (t: Type, renames: Array<IncludeName>): Type => {
+  if (t.tag == TypeTag.Name) {
+    let originalName = (t.name as Id).name;
+    let newName = applyRename(originalName, renames);
+    if (newName != originalName) {
+      let tClone = new Type(TypeTag.Name, t.span);
+      tClone.name = new Id(newName, (t.name as Id).span);
+      return tClone;
+    }
+    return t;
+  }
+  
+  if (t.tag == TypeTag.List || t.tag == TypeTag.Option || t.tag == TypeTag.Future || t.tag == TypeTag.Stream || t.tag == TypeTag.Own || t.tag == TypeTag.Borrow) {
+    if (t.inner != null) {
+      let renamedInner = renameType(t.inner as Type, renames);
+      if (renamedInner != t.inner) {
+        let tClone = new Type(t.tag, t.span);
+        tClone.inner = renamedInner;
+        tClone.fixedLength = t.fixedLength;
+        return tClone;
+      }
+    }
+    return t;
+  }
+  
+  if (t.tag == TypeTag.Result) {
+    let newOk = if (t.okType != null) renameType(t.okType as Type, renames) else null;
+    let newErr = if (t.errType != null) renameType(t.errType as Type, renames) else null;
+    if (newOk != t.okType || newErr != t.errType) {
+      let tClone = new Type(TypeTag.Result, t.span);
+      tClone.okType = newOk;
+      tClone.errType = newErr;
+      return tClone;
+    }
+    return t;
+  }
+  
+  if (t.tag == TypeTag.Tuple) {
+    var changed = false;
+    let newTypes = new Array<Type>();
+    var idx = 0;
+    while (idx < (t.types as Array<Type>).length) {
+      let originalType = (t.types as Array<Type>)[idx];
+      let renamedType = renameType(originalType, renames);
+      if (renamedType != originalType) {
+        changed = true;
+      }
+      newTypes.push(renamedType);
+      idx = idx + 1;
+    }
+    if (changed) {
+      let tClone = new Type(TypeTag.Tuple, t.span);
+      tClone.types = newTypes;
+      return tClone;
+    }
+    return t;
+  }
+  
+  if (t.tag == TypeTag.Map) {
+    let newKey = renameType(t.keyType as Type, renames);
+    let newVal = renameType(t.valueType as Type, renames);
+    if (newKey != t.keyType || newVal != t.valueType) {
+      let tClone = new Type(TypeTag.Map, t.span);
+      tClone.keyType = newKey;
+      tClone.valueType = newVal;
+      return tClone;
+    }
+    return t;
+  }
+  
+  return t;
+};
+
+let renameParam = (p: Param, renames: Array<IncludeName>): Param => {
+  let renamedType = renameType(p.type, renames);
+  if (renamedType != p.type) {
+    return new Param(p.name, renamedType);
+  }
+  return p;
+};
+
+let renameFunc = (f: Func, renames: Array<IncludeName>): Func => {
+  var changed = false;
+  let newParams = new Array<Param>();
+  var idx = 0;
+  while (idx < f.params.length) {
+    let p = f.params[idx];
+    let renamedParam = renameParam(p, renames);
+    if (renamedParam != p) {
+      changed = true;
+    }
+    newParams.push(renamedParam);
+    idx = idx + 1;
+  }
+  let newResult = if (f.result != null) renameType(f.result as Type, renames) else null;
+  if (newResult != f.result) {
+    changed = true;
+  }
+  if (changed) {
+    let fClone = new Func(f.span);
+    fClone.isAsync = f.isAsync;
+    fClone.params = newParams;
+    fClone.result = newResult;
+    return fClone;
+  }
+  return f;
+};
+
+let renameNamedFunc = (nf: NamedFunc, renames: Array<IncludeName>): NamedFunc => {
+  let renamedFunc = renameFunc(nf.func, renames);
+  if (renamedFunc != nf.func) {
+    return new NamedFunc(nf.docs, nf.name, renamedFunc);
+  }
+  return nf;
+};
+
+let renameResourceFunc = (rf: ResourceFunc, renames: Array<IncludeName>): ResourceFunc => {
+  let renamedFunc = renameNamedFunc(rf.func, renames);
+  if (renamedFunc != rf.func) {
+    return new ResourceFunc(rf.tag, renamedFunc);
+  }
+  return rf;
+};
+
 let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   let newName = applyRename(td.name.name, renames);
-  if (newName == td.name.name) {
-    return td;
+  var changed = (newName != td.name.name);
+  
+  var newAlias = td.aliasType;
+  if (td.tag == TypeDefTag.Alias && td.aliasType != null) {
+    newAlias = renameType(td.aliasType as Type, renames);
+    if (newAlias != td.aliasType) {
+      changed = true;
+    }
   }
-  let tdClone = new TypeDef(td.docs, td.tag, new Id(newName, td.name.span));
-  tdClone.aliasType = td.aliasType;
-  tdClone.fields = td.fields;
-  tdClone.flags = td.flags;
-  tdClone.cases = td.cases;
-  tdClone.enumCases = td.enumCases;
-  tdClone.resourceFuncs = td.resourceFuncs;
-  return tdClone;
+  
+  var newFields = td.fields;
+  if (td.tag == TypeDefTag.Record && td.fields != null) {
+    let oldFields = td.fields as Array<Field>;
+    let fields = new Array<Field>();
+    var idx = 0;
+    while (idx < oldFields.length) {
+      let f = oldFields[idx];
+      let renamedType = renameType(f.type, renames);
+      if (renamedType != f.type) {
+        changed = true;
+        fields.push(new Field(f.docs, f.name, renamedType));
+      } else {
+        fields.push(f);
+      }
+      idx = idx + 1;
+    }
+    newFields = fields;
+  }
+  
+  var newCases = td.cases;
+  if (td.tag == TypeDefTag.Variant && td.cases != null) {
+    let oldCases = td.cases as Array<Case>;
+    let cases = new Array<Case>();
+    var idx = 0;
+    while (idx < oldCases.length) {
+      let c = oldCases[idx];
+      var renamedType = c.type;
+      if (c.type != null) {
+        renamedType = renameType(c.type as Type, renames);
+        if (renamedType != c.type) {
+          changed = true;
+        }
+      }
+      if (renamedType != c.type) {
+        let cClone = new Case(c.docs, c.name);
+        cClone.type = renamedType;
+        cases.push(cClone);
+      } else {
+        cases.push(c);
+      }
+      idx = idx + 1;
+    }
+    newCases = cases;
+  }
+  
+  var newResourceFuncs = td.resourceFuncs;
+  if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
+    let oldFuncs = td.resourceFuncs as Array<ResourceFunc>;
+    let funcs = new Array<ResourceFunc>();
+    var idx = 0;
+    while (idx < oldFuncs.length) {
+      let rf = oldFuncs[idx];
+      let renamedRf = renameResourceFunc(rf, renames);
+      if (renamedRf != rf) {
+        changed = true;
+      }
+      funcs.push(renamedRf);
+      idx = idx + 1;
+    }
+    newResourceFuncs = funcs;
+  }
+  
+  if (changed) {
+    let tdClone = new TypeDef(td.docs, td.tag, new Id(newName, td.name.span));
+    tdClone.aliasType = newAlias;
+    tdClone.fields = newFields;
+    tdClone.flags = td.flags;
+    tdClone.cases = newCases;
+    tdClone.enumCases = td.enumCases;
+    tdClone.resourceFuncs = newResourceFuncs;
+    return tdClone;
+  }
+  
+  return td;
 };
 
 let renameImport = (imp: Import, renames: Array<IncludeName>): Import => {
   let kind = imp.kind;
+  var changed = false;
+  var newName = kind.name;
   if (kind.name != null) {
     let originalName = (kind.name as Id).name;
-    let newName = applyRename(originalName, renames);
-    if (newName != originalName) {
-      let kindClone = new ExternKind(kind.tag);
-      kindClone.name = new Id(newName, (kind.name as Id).span);
-      kindClone.items = kind.items;
-      kindClone.path = kind.path;
-      kindClone.funcDef = kind.funcDef;
-      return new Import(imp.docs, kindClone);
+    let nameStr = applyRename(originalName, renames);
+    if (nameStr != originalName) {
+      changed = true;
+      newName = new Id(nameStr, (kind.name as Id).span);
     }
+  }
+  
+  var newFuncDef = kind.funcDef;
+  if (kind.tag == ExternKindTag.Func && kind.funcDef != null) {
+    newFuncDef = renameFunc(kind.funcDef as Func, renames);
+    if (newFuncDef != kind.funcDef) {
+      changed = true;
+    }
+  }
+  
+  if (changed) {
+    let kindClone = new ExternKind(kind.tag);
+    kindClone.name = newName;
+    kindClone.items = kind.items;
+    kindClone.path = kind.path;
+    kindClone.funcDef = newFuncDef;
+    return new Import(imp.docs, kindClone);
   }
   return imp;
 };
 
 let renameExport = (exp: Export, renames: Array<IncludeName>): Export => {
   let kind = exp.kind;
+  var changed = false;
+  var newName = kind.name;
   if (kind.name != null) {
     let originalName = (kind.name as Id).name;
-    let newName = applyRename(originalName, renames);
-    if (newName != originalName) {
-      let kindClone = new ExternKind(kind.tag);
-      kindClone.name = new Id(newName, (kind.name as Id).span);
-      kindClone.items = kind.items;
-      kindClone.path = kind.path;
-      kindClone.funcDef = kind.funcDef;
-      return new Export(exp.docs, kindClone);
+    let nameStr = applyRename(originalName, renames);
+    if (nameStr != originalName) {
+      changed = true;
+      newName = new Id(nameStr, (kind.name as Id).span);
     }
+  }
+  
+  var newFuncDef = kind.funcDef;
+  if (kind.tag == ExternKindTag.Func && kind.funcDef != null) {
+    newFuncDef = renameFunc(kind.funcDef as Func, renames);
+    if (newFuncDef != kind.funcDef) {
+      changed = true;
+    }
+  }
+  
+  if (changed) {
+    let kindClone = new ExternKind(kind.tag);
+    kindClone.name = newName;
+    kindClone.items = kind.items;
+    kindClone.path = kind.path;
+    kindClone.funcDef = newFuncDef;
+    return new Export(exp.docs, kindClone);
   }
   return exp;
 };
@@ -2396,58 +2623,61 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
   // Stage 1: Register all defined TypeDefs
   registerWorldTypes(ctx, world, worldIdx, expandedItems);
   
-  // Identify all local resources
-  let resources = new Array<TypeDef>();
+  // Identify all local/included resources
+  let resources = new Array<WorldItem>();
   var idx = 0;
   while (idx < expandedItems.length) {
     let item = expandedItems[idx];
     if (item.tag == WorldItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       if (td.tag == TypeDefTag.Resource) {
-        resources.push(td);
+        resources.push(item);
       }
     }
     idx = idx + 1;
   }
   
-  // Stage 3a: Process world resource functions' explicit types FIRST
+  // Stage 3a: Process world resource functions' explicit types FIRST (only local resources)
   var rFuncIdx = 0;
   while (rFuncIdx < resources.length) {
-    let r = resources[rFuncIdx];
-    if (r.resourceFuncs != null) {
-      let funcs = r.resourceFuncs as Array<ResourceFunc>;
-      var fIdx = 0;
-      while (fIdx < funcs.length) {
-        let rf = funcs[fIdx];
-        
-        // Prepend implicit self parameter (borrow<resource>) if it is a method
-        if (rf.tag == ResourceFuncTag.Method) {
-          let rName = normalizeId(r.name.name);
-          var resourceTypeIdx = -1;
-          let lookupKey = "world:" + (ctx.currentWorldName as String) + "/" + rName;
-          if (let (true, sIdx) = ctx.typeIndices.get(lookupKey)) {
-            resourceTypeIdx = sIdx;
+    let item = resources[rFuncIdx];
+    if (!item.isIncluded) {
+      let r = item.typeDef as TypeDef;
+      if (r.resourceFuncs != null) {
+        let funcs = r.resourceFuncs as Array<ResourceFunc>;
+        var fIdx = 0;
+        while (fIdx < funcs.length) {
+          let rf = funcs[fIdx];
+          
+          // Prepend implicit self parameter (borrow<resource>) if it is a method
+          if (rf.tag == ResourceFuncTag.Method) {
+            let rName = normalizeId(r.name.name);
+            var resourceTypeIdx = -1;
+            let lookupKey = "world:" + (ctx.currentWorldName as String) + "/" + rName;
+            if (let (true, sIdx) = ctx.typeIndices.get(lookupKey)) {
+              resourceTypeIdx = sIdx;
+            }
+            if (resourceTypeIdx >= 0) {
+              ctx.getBorrowType(resourceTypeIdx);
+            }
           }
-          if (resourceTypeIdx >= 0) {
-            ctx.getBorrowType(resourceTypeIdx);
+          
+          var pIdx = 0;
+          while (pIdx < rf.func.func.params.length) {
+            let paramType = rf.func.func.params[pIdx].type;
+            if (!isNakedOwnOrResource(ctx, paramType)) {
+              ctx.getParamTypeRef(paramType);
+            }
+            pIdx = pIdx + 1;
           }
+          if (rf.func.func.result != null) {
+            let resultType = rf.func.func.result as Type;
+            if (!isNakedOwnOrResource(ctx, resultType)) {
+              ctx.getParamTypeRef(resultType);
+            }
+          }
+          fIdx = fIdx + 1;
         }
-        
-        var pIdx = 0;
-        while (pIdx < rf.func.func.params.length) {
-          let paramType = rf.func.func.params[pIdx].type;
-          if (!isNakedOwnOrResource(ctx, paramType)) {
-            ctx.getParamTypeRef(paramType);
-          }
-          pIdx = pIdx + 1;
-        }
-        if (rf.func.func.result != null) {
-          let resultType = rf.func.func.result as Type;
-          if (!isNakedOwnOrResource(ctx, resultType)) {
-            ctx.getParamTypeRef(resultType);
-          }
-        }
-        fIdx = fIdx + 1;
       }
     }
     rFuncIdx = rFuncIdx + 1;
@@ -2497,6 +2727,52 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
       }
     }
     idx = idx + 1;
+  }
+  
+  // Stage 3c: Process world resource functions' explicit types THIRD (only included resources)
+  rFuncIdx = 0;
+  while (rFuncIdx < resources.length) {
+    let item = resources[rFuncIdx];
+    if (item.isIncluded) {
+      let r = item.typeDef as TypeDef;
+      if (r.resourceFuncs != null) {
+        let funcs = r.resourceFuncs as Array<ResourceFunc>;
+        var fIdx = 0;
+        while (fIdx < funcs.length) {
+          let rf = funcs[fIdx];
+          
+          // Prepend implicit self parameter (borrow<resource>) if it is a method
+          if (rf.tag == ResourceFuncTag.Method) {
+            let rName = normalizeId(r.name.name);
+            var resourceTypeIdx = -1;
+            let lookupKey = "world:" + (ctx.currentWorldName as String) + "/" + rName;
+            if (let (true, sIdx) = ctx.typeIndices.get(lookupKey)) {
+              resourceTypeIdx = sIdx;
+            }
+            if (resourceTypeIdx >= 0) {
+              ctx.getBorrowType(resourceTypeIdx);
+            }
+          }
+          
+          var pIdx = 0;
+          while (pIdx < rf.func.func.params.length) {
+            let paramType = rf.func.func.params[pIdx].type;
+            if (!isNakedOwnOrResource(ctx, paramType)) {
+              ctx.getParamTypeRef(paramType);
+            }
+            pIdx = pIdx + 1;
+          }
+          if (rf.func.func.result != null) {
+            let resultType = rf.func.func.result as Type;
+            if (!isNakedOwnOrResource(ctx, resultType)) {
+              ctx.getParamTypeRef(resultType);
+            }
+          }
+          fIdx = fIdx + 1;
+        }
+      }
+    }
+    rFuncIdx = rFuncIdx + 1;
   }
   
   ctx.currentInterfaceName = null;
