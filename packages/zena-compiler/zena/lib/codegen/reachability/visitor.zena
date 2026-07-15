@@ -1135,37 +1135,24 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
 
     if (isIntrinsic) {
-      var targetUnit: CompilationUnit | null = null;
-      for (let u in this.pass.program.units) {
-        if (u.model == moduleModel) {
-          targetUnit = u;
-        }
-      }
-      if (targetUnit != null) {
-        let unitNode = targetUnit as CompilationUnit;
-        for (let stmt in unitNode.ast.body) {
-          match (stmt) {
-            case DeclareFunction as df: {
-              if (df.name.name == decl.name.name) {
-                var dfIntrinsicName = "";
-                for (let dec in df.decorators) {
-                  if (dec.name == "intrinsic" && dec.args.length == 1) {
-                    dfIntrinsicName = dec.args[0].value;
-                  }
-                }
-                if (dfIntrinsicName != "") {
-                  this.pass.wasm.intrinsics[df.id] = dfIntrinsicName;
-                  if (dfIntrinsicName == "wasi_write_string") {
-                    this.registerWasiInfra(moduleModel);
-                  } else if (dfIntrinsicName == "hash") {
-                    this.registerStringHashHelper(moduleModel);
-                    this.pass.wasm.ensureHashInfra(moduleModel);
-                    this.pass.markFunctionReached(this.pass.wasm.stringHashFunc as WasmFunction);
-                  }
-                }
-              }
+      let key = moduleModel.sourcePath + "::" + decl.name.name;
+      if (let (true, list) = this.pass.program.exportedFunctions.get(key)) {
+        for (let df in list) {
+          var dfIntrinsicName = "";
+          for (let dec in df.decorators) {
+            if (dec.name == "intrinsic" && dec.args.length == 1) {
+              dfIntrinsicName = dec.args[0].value;
             }
-            case _: {}
+          }
+          if (dfIntrinsicName != "") {
+            this.pass.wasm.intrinsics[df.id] = dfIntrinsicName;
+            if (dfIntrinsicName == "wasi_write_string") {
+              this.registerWasiInfra(moduleModel);
+            } else if (dfIntrinsicName == "hash") {
+              this.registerStringHashHelper(moduleModel);
+              this.pass.wasm.ensureHashInfra(moduleModel);
+              this.pass.markFunctionReached(this.pass.wasm.stringHashFunc as WasmFunction);
+            }
           }
         }
       }
@@ -1452,7 +1439,7 @@ let matchTypesForImport = (t1: Type, t2: Type): boolean => {
       return false;
     }
     case _: {
-      return typeToString(t1) == typeToString(t2);
+      return getTypeUniqueKey(t1) == getTypeUniqueKey(t2);
     }
   }
 };

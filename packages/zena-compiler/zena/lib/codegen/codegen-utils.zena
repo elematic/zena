@@ -417,7 +417,13 @@ export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
 };
 
 export let getMixinKey = (mt: MixinType): MixinKey => {
-  return `${mt.sourcePath}::${mt.name}` as MixinKey;
+  let cached = mt.mixinKeyCache;
+  if (cached != null) {
+    return cached as MixinKey;
+  }
+  let key = `${mt.sourcePath}::${mt.name}` as MixinKey;
+  mt.mixinKeyCache = key as String;
+  return key;
 };
 
 export let getMixinKeyFromSymbol = (model: SemanticModel, sym: Symbol): MixinKey => {
@@ -529,7 +535,7 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
   if (ft.parameters.length == paramTypes.length) {
     var match = true;
     for (var pi = 0; pi < paramTypes.length; pi += 1) {
-      if (typeToString(ft.parameters[pi]) != typeToString(paramTypes[pi])) {
+      if (getTypeUniqueKey(ft.parameters[pi]) != getTypeUniqueKey(paramTypes[pi])) {
         match = false;
       }
     }
@@ -543,7 +549,7 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
     if (ov.parameters.length == paramTypes.length) {
       var match = true;
       for (var pi = 0; pi < paramTypes.length; pi += 1) {
-        if (typeToString(ov.parameters[pi]) != typeToString(paramTypes[pi])) {
+        if (getTypeUniqueKey(ov.parameters[pi]) != getTypeUniqueKey(paramTypes[pi])) {
           match = false;
         }
       }

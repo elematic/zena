@@ -70,6 +70,11 @@ export final class ClassHierarchyAnalysis {
           model = unit.model;
         }
       }
+      if (model == null) {
+        if (let (true, m) = this.program.symbolToModel.get(lookupId)) {
+          model = m;
+        }
+      }
       if (model != null) {
         let m = model as SemanticModel;
         if (m.classDeclarations.has(lookupId)) {
@@ -97,39 +102,6 @@ export final class ClassHierarchyAnalysis {
                 }
                 this.implementingMethodCache[startClassId][mName] = md;
                 return md;
-              }
-            }
-          }
-        }
-      } else {
-        for (let unit in this.program.units) {
-          let m = unit.model;
-          if (m.classDeclarations.has(lookupId)) {
-            let cd = m.classDeclarations[lookupId];
-            let mixinMembers = new Array<Node>();
-            let seenMixins = new HashMap<MixinKey, boolean>();
-            collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
-            
-            let allMembers = new Array<Node>();
-            for (let member in cd.body) {
-              allMembers.push(member);
-            }
-            for (let member in mixinMembers) {
-              allMembers.push(member);
-            }
-            
-            for (let member in allMembers) {
-              if (member is MethodDefinition) {
-                let md = member as MethodDefinition;
-                if (md.isAbstract) { continue; }
-                let name = getMethodName(md);
-                if (matchMemberName(name, mName)) {
-                  if (!this.implementingMethodCache.has(startClassId)) {
-                    this.implementingMethodCache[startClassId] = new HashMap<String, MethodDefinition>();
-                  }
-                  this.implementingMethodCache[startClassId][mName] = md;
-                  return md;
-                }
               }
             }
           }
@@ -162,6 +134,11 @@ export final class ClassHierarchyAnalysis {
       if (ct.sourcePath != "") {
         if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
           model = unit.model;
+        }
+      }
+      if (model == null) {
+        if (let (true, m) = this.program.symbolToModel.get(lookupId)) {
+          model = m;
         }
       }
       if (model != null) {
@@ -199,43 +176,6 @@ export final class ClassHierarchyAnalysis {
             }
           }
         }
-      } else {
-        for (let unit in this.program.units) {
-          let m = unit.model;
-          if (m.classDeclarations.has(lookupId)) {
-            let cd = m.classDeclarations[lookupId];
-            let mixinMembers = new Array<Node>();
-            let seenMixins = new HashMap<MixinKey, boolean>();
-            collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
-            
-            let allMembers = new Array<Node>();
-            for (let member in cd.body) {
-              allMembers.push(member);
-            }
-            for (let member in mixinMembers) {
-              allMembers.push(member);
-            }
-            
-            for (let member in allMembers) {
-              if (member is MethodDefinition) {
-                let md = member as MethodDefinition;
-                if (md.isAbstract) { continue; }
-                let name = getMethodName(md);
-                if (matchMemberName(name, mName)) {
-                  let mType = m.getNodeType(md);
-                  if (mType != null && mType is FunctionType) {
-                    let ft = mType as FunctionType;
-                    let sigKey = getSignatureKey(ft);
-                    if (!seenSigs.has(sigKey)) {
-                      methods.push(md);
-                      seenSigs.add(sigKey);
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
       }
       curr = ct.superType;
     }
@@ -267,6 +207,11 @@ export final class ClassHierarchyAnalysis {
       if (ct.sourcePath != "") {
         if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
           model = unit.model;
+        }
+      }
+      if (model == null) {
+        if (let (true, m) = this.program.symbolToModel.get(lookupId)) {
+          model = m;
         }
       }
       if (model != null) {
@@ -308,47 +253,6 @@ export final class ClassHierarchyAnalysis {
             }
           }
         }
-      } else {
-        for (let unit in this.program.units) {
-          let m = unit.model;
-          if (m.classDeclarations.has(lookupId)) {
-            let cd = m.classDeclarations[lookupId];
-            let mixinMembers = new Array<Node>();
-            let seenMixins = new HashMap<MixinKey, boolean>();
-            collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
-            
-            let allMembers = new Array<Node>();
-            for (let member in cd.body) {
-              allMembers.push(member);
-            }
-            for (let member in mixinMembers) {
-              allMembers.push(member);
-            }
-            
-            for (let member in allMembers) {
-              if (member is FieldDefinition) {
-                let fd = member as FieldDefinition;
-                if (fd.isAbstract) { continue; }
-                let name = match (fd.name) {
-                  case Identifier {name}: name
-                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-                    case Identifier {name}: name
-                    case MemberExpression {property}: property.name
-                    case _: "<symbol>"
-                  }
-                  case _: ""
-                };
-                if (matchMemberName(name, fName)) {
-                  if (!this.implementingFieldCache.has(startClassId)) {
-                    this.implementingFieldCache[startClassId] = new HashMap<String, FieldDefinition>();
-                  }
-                  this.implementingFieldCache[startClassId][fName] = fd;
-                  return fd;
-                }
-              }
-            }
-          }
-        }
       }
       curr = ct.superType;
     }
@@ -380,6 +284,11 @@ export final class ClassHierarchyAnalysis {
       if (ct.sourcePath != "") {
         if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
           model = unit.model;
+        }
+      }
+      if (model == null) {
+        if (let (true, m) = this.program.symbolToModel.get(lookupId)) {
+          model = m;
         }
       }
       if (model != null) {
@@ -425,51 +334,6 @@ export final class ClassHierarchyAnalysis {
             }
           }
         }
-      } else {
-        for (let unit in this.program.units) {
-          let m = unit.model;
-          if (m.classDeclarations.has(lookupId)) {
-            let cd = m.classDeclarations[lookupId];
-            let mixinMembers = new Array<Node>();
-            let seenMixins = new HashMap<MixinKey, boolean>();
-            collectMixinMembers(this.program, m, cd.mixins, mixinMembers, seenMixins);
-            
-            let allMembers = new Array<Node>();
-            for (let member in cd.body) {
-              allMembers.push(member);
-            }
-            for (let member in mixinMembers) {
-              allMembers.push(member);
-            }
-            
-            for (let member in allMembers) {
-              if (member is AccessorDeclaration) {
-                let acc = member as AccessorDeclaration;
-                let name = getAccessorName(acc);
-                if (accName.length > 4 && acc.getter != null && accName.sliceBytes(0, 4) == "get#") {
-                  let targetProp = accName.sliceBytes(4, accName.length);
-                  if (matchMemberName(name, targetProp)) {
-                    if (!this.implementingAccessorCache.has(startClassId)) {
-                      this.implementingAccessorCache[startClassId] = new HashMap<String, AccessorDeclaration>();
-                    }
-                    this.implementingAccessorCache[startClassId][accName] = acc;
-                    return acc;
-                  }
-                }
-                if (accName.length > 4 && acc.setter != null && accName.sliceBytes(0, 4) == "set#") {
-                  let targetProp = accName.sliceBytes(4, accName.length);
-                  if (matchMemberName(name, targetProp)) {
-                    if (!this.implementingAccessorCache.has(startClassId)) {
-                      this.implementingAccessorCache[startClassId] = new HashMap<String, AccessorDeclaration>();
-                    }
-                    this.implementingAccessorCache[startClassId][accName] = acc;
-                    return acc;
-                  }
-                }
-              }
-            }
-          }
-        }
       }
       curr = ct.superType;
     }
@@ -509,6 +373,11 @@ export final class ClassHierarchyAnalysis {
       if (model == null && this.classModels.has(lookupId)) {
         model = this.classModels[lookupId];
       }
+      if (model == null) {
+        if (let (true, m) = this.program.symbolToModel.get(lookupId)) {
+          model = m;
+        }
+      }
       if (model != null) {
         let m = model as SemanticModel;
         if (m.classDeclarations.has(lookupId)) {
@@ -516,17 +385,6 @@ export final class ClassHierarchyAnalysis {
           let seenIds = this.getClassMixinIds(cd, m);
           if (seenIds.has(baseType.id as SymbolId)) {
             return true;
-          }
-        }
-      } else {
-        for (let unit in this.program.units) {
-          let m = unit.model;
-          if (m.classDeclarations.has(lookupId)) {
-            let cd = m.classDeclarations[lookupId];
-            let seenIds = this.getClassMixinIds(cd, m);
-            if (seenIds.has(baseType.id as SymbolId)) {
-              return true;
-            }
           }
         }
       }
