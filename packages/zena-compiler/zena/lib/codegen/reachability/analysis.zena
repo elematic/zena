@@ -78,6 +78,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   referencedInterfaceMembersById = new HashMap<SymbolId, Array<String>>();
 
   var mixinToClasses = new HashMap<MixinKey, Array<ClassType>>();
+  #preludeClassCache = new HashMap<String, ClassType>();
+  #preludeInterfaceCache = new HashMap<String, InterfaceType>();
 
   reachableQueue = new Array<Referrer>();
   checkableQueue = new Array<Referrer>();
@@ -1687,12 +1689,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   getModelPath(model: SemanticModel): String {
-    for (let unit in this.program.units) {
-      if (unit.model == model) {
-        return unit.ast.path;
-      }
-    }
-    return "unknown-model";
+    return model.sourcePath;
   }
 
   getNodeModel(node: Node, defaultModel: SemanticModel): SemanticModel {
@@ -1709,6 +1706,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let lookupId = (if ((curr as ClassType).genericSource != null) ((curr as ClassType).genericSource as ClassType).id else (curr as ClassType).id) as SymbolId;
       if (this.classModels.has(lookupId)) {
         return this.classModels[lookupId];
+      }
+      if (this.program.symbolToModel.has(lookupId)) {
+        return this.program.symbolToModel[lookupId];
       }
       curr = (curr as ClassType).superType;
     }
@@ -1741,22 +1741,32 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   findPreludeClass(name: String): ClassType | null {
+    if (this.#preludeClassCache.has(name)) {
+      return this.#preludeClassCache[name];
+    }
     for (let unit in this.program.units) {
       let model = unit.model;
       let t = model.getExportType(name);
       if (t != null && t is ClassType) {
-        return t as ClassType;
+        let ct = t as ClassType;
+        this.#preludeClassCache[name] = ct;
+        return ct;
       }
     }
     return null;
   }
 
   findPreludeInterface(name: String): InterfaceType | null {
+    if (this.#preludeInterfaceCache.has(name)) {
+      return this.#preludeInterfaceCache[name];
+    }
     for (let unit in this.program.units) {
       let model = unit.model;
       let t = model.getExportType(name);
       if (t != null && t is InterfaceType) {
-        return t as InterfaceType;
+        let it = t as InterfaceType;
+        this.#preludeInterfaceCache[name] = it;
+        return it;
       }
     }
     return null;
