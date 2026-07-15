@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 42
+
+class Base {
+  value: i32;
+  new(this.value);
+}
+class Sub1 extends Base {
+  new(value: i32) : super(value);
+}
+class Sub2 extends Base {
+  new(value: i32) : super(value);
+}
+
+let test = (cond: boolean, x: Sub1, y: Sub2): Base => {
+  // The type-checker infers the type of the 'if' expression as a Union (Sub1 | Sub2).
+  // In the self-hosted compiler, this union lowers to eqref.
+  // Assigning it to a variable of type Base requires the compiler to correctly
+  // generate/allow a cast from the expression's Wasm representation (eqref) to Base.
+  let result: Base = if (cond) x else y;
+  return result;
+};
+
+export let main = (): i32 => {
+  let s1 = new Sub1(42);
+  let s2 = new Sub2(100);
+  return test(true, s1, s2).value;
+};

@@ -3707,8 +3707,12 @@ export function registerClassMethods(
   } as ClassDeclaration;
 
   // Pass the checker type for identity-based lookup (classType is already declared at function top)
+  const capturedModule = ctx.currentModule ?? ctx.stmtToModule.get(decl) ?? null;
   ctx.bodyGenerators.push(() => {
+    const savedModule = ctx.currentModule;
+    ctx.currentModule = capturedModule;
     generateClassMethods(ctx, declForGen, undefined, classType);
+    ctx.currentModule = savedModule;
   });
 
   classInfo.methodsRegistered = true;
@@ -4851,8 +4855,30 @@ export function generateClassMethods(
       if (
         member.decorators &&
         member.decorators.some((d) => d.name === 'intrinsic')
-      )
+      ) {
+        const propName = getMemberName(member.name);
+        const intrinsicDecorator = member.decorators.find((d) => d.name === 'intrinsic');
+        const intrinsicName = intrinsicDecorator?.args?.[0]?.type === NodeType.StringLiteral
+          ? (intrinsicDecorator.args[0] as any).value
+          : undefined;
+
+        if (intrinsicName === 'array.len') {
+          const getterName = getGetterName(propName);
+          const getterInfo = classInfo.methods.get(getterName);
+          if (
+            getterInfo &&
+            getterInfo.index !== -1 &&
+            (!getterInfo.classType || getterInfo.classType === lookupType)
+          ) {
+            const getterBody: number[] = [];
+            getterBody.push(Opcode.local_get, 0);
+            getterBody.push(0xfb, GcOpcode.array_len);
+            getterBody.push(Opcode.end);
+            ctx.module.addCode(getterInfo.index, [], getterBody);
+          }
+        }
         continue;
+      }
 
       if (!getMemberName(member.name).startsWith('#')) {
         const propName = getMemberName(member.name);

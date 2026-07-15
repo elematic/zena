@@ -131,8 +131,14 @@ export class CodegenContext {
    */
   public checkerContext: CheckerContext;
 
+  #fileName = '<anonymous>';
   /** File name used for diagnostic locations */
-  public fileName = '<anonymous>';
+  get fileName(): string {
+    return this.currentModule?.path ?? this.#fileName;
+  }
+  set fileName(val: string) {
+    this.#fileName = val;
+  }
 
   /**
    * Stack of lexical scopes for variable name resolution.
@@ -459,6 +465,8 @@ export class CodegenContext {
    */
   public debug: boolean;
 
+  public stmtToModule = new Map<Statement, Module>();
+
   constructor(
     modules: Module[],
     entryPointPath: string | undefined,
@@ -468,6 +476,11 @@ export class CodegenContext {
     debug: boolean = false,
   ) {
     this.modules = modules;
+    for (const mod of modules) {
+      for (const stmt of mod.body) {
+        this.stmtToModule.set(stmt, mod);
+      }
+    }
     // Find entry point by path, or default to last module (for backward compatibility)
     this.entryPointModule = entryPointPath
       ? (modules.find((m) => m.path === entryPointPath) ??

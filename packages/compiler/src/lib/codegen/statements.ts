@@ -1409,6 +1409,19 @@ export function generateLocalVariableDeclaration(
     }
     type = mapCheckerTypeToWasmType(ctx, resolvedType);
 
+    // If the initializer evaluates to an erased reference (eqref/anyref),
+    // but the variable is declared as a specific struct reference type,
+    // we need to emit a cast.
+    if (
+      isErasedRefType(exprType) &&
+      type.length > 1 &&
+      (type[0] === ValType.ref_null || type[0] === ValType.ref)
+    ) {
+      const targetIndex = decodeTypeIndex(type);
+      body.push(0xfb, GcOpcode.ref_cast_null);
+      body.push(...WasmModule.encodeSignedLEB128(targetIndex));
+    }
+
     // Union boxing (i32 -> eqref/anyref)
     const isAnyRef = isErasedRefType(type);
 

@@ -353,7 +353,7 @@ function checkExpressionInternal(
     case NodeType.MapLiteral:
       return checkMapLiteral(ctx, expr as MapLiteral);
     case NodeType.TupleLiteral:
-      return checkTupleLiteral(ctx, expr as TupleLiteral);
+      return checkTupleLiteral(ctx, expr as TupleLiteral, expectedType);
     case NodeType.InlineTupleLiteral:
       return checkInlineTupleLiteral(ctx, expr as InlineTupleLiteral);
     case NodeType.IndexExpression:
@@ -4249,40 +4249,97 @@ function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
   return instantiatedType;
 }
 
-function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {
-  const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
+function getBaseType(type: Type): Type {
+  if (type.kind === TypeKind.TypeAlias) {
+    const alias = type as TypeAliasType;
+    if (alias.isDistinct) return alias;
+    if (!alias.target) return alias;
+    return getBaseType(alias.target);
+  }
+  return type;
+}
 
-  // If we're in an inline return context, produce InlineTupleType so codegen
-  // generates flat multi-value instead of a heap-allocated struct.
-  const returnType = ctx.currentFunctionReturnType;
-  if (returnType && returnType.kind === TypeKind.InlineTuple) {
-    const resultType: InlineTupleType = {
+function checkTupleLiteral(
+  ctx: CheckerContext,
+  expr: TupleLiteral,
+  expectedType?: Type,
+): Type {
+  let expectedElementTypes: Type[] | null = null;
+  let useInlineTuple = false;
+
+  if (expectedType) {
+    const baseExpected = getBaseType(expectedType);
+    if (baseExpected.kind === TypeKind.InlineTuple) {
+      expectedElementTypes = (baseExpected as InlineTupleType).elementTypes;
+      useInlineTuple = true;
+    } else if (baseExpected.kind === TypeKind.Union) {
+      for (const member of (baseExpected as UnionType).types) {
+        const baseMember = getBaseType(member);
+        if (baseMember.kind === TypeKind.InlineTuple) {
+          expectedElementTypes = (baseMember as InlineTupleType).elementTypes;
+          useInlineTuple = true;
+          break;
+        }
+      }
+    }
+  } else {
+    const returnType = ctx.currentFunctionReturnType;
+    if (returnType && returnType.kind === TypeKind.InlineTuple) {
+      useInlineTuple = true;
+    } else if (
+      returnType &&
+      returnType.kind === TypeKind.Union &&
+      (returnType as UnionType).types.every(
+        (t) => t.kind === TypeKind.InlineTuple,
+      )
+    ) {
+      useInlineTuple = true;
+    }
+  }
+
+  const elementTypes = expr.elements.map((e, i) => {
+    const elemExpected =
+      expectedElementTypes && i < expectedElementTypes.length
+        ? expectedElementTypes[i]
+        : undefined;
+    return checkExpression(ctx, e, elemExpected);
+  });
+
+  if (useInlineTuple) {
+    const inlineT: InlineTupleType = {
       kind: TypeKind.InlineTuple,
       elementTypes,
     };
-    expr.inferredType = resultType;
-    return resultType;
-  }
-  // Also handle union-of-inline-tuples return type (e.g. (true, T) | (false, _))
-  if (
-    returnType &&
-    returnType.kind === TypeKind.Union &&
-    (returnType as UnionType).types.every(
-      (t) => t.kind === TypeKind.InlineTuple,
-    )
-  ) {
-    const resultType: InlineTupleType = {
-      kind: TypeKind.InlineTuple,
-      elementTypes,
-    };
-    expr.inferredType = resultType;
-    return resultType;
+    if (expectedType) {
+      const baseExpected = getBaseType(expectedType);
+      if (
+        baseExpected.kind === TypeKind.InlineTuple &&
+        isAssignableTo(ctx, inlineT, baseExpected)
+      ) {
+        expr.inferredType = baseExpected;
+        return baseExpected;
+      }
+    }
+    expr.inferredType = inlineT;
+    return inlineT;
   }
 
-  return {
+  const tupleT: TupleType = {
     kind: TypeKind.Tuple,
     elementTypes,
-  } as TupleType;
+  };
+  if (expectedType) {
+    const baseExpected = getBaseType(expectedType);
+    if (
+      baseExpected.kind === TypeKind.Tuple &&
+      isAssignableTo(ctx, tupleT, baseExpected)
+    ) {
+      expr.inferredType = baseExpected;
+      return baseExpected;
+    }
+  }
+  expr.inferredType = tupleT;
+  return tupleT;
 }
 
 /**
