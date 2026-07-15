@@ -3,17 +3,19 @@ import { Symbol } from '../../scope/symbol.zena';
 import { 
   MatchExpression, MatchCase, Expression, BlockStatement, Statement, ExpressionStatement, Node,
   IdentifierPattern, Identifier, AsPattern, ClassPattern, RecordPattern, TuplePattern, LogicalPattern,
-  BindingPattern, NullLiteral, NumberLiteral, BooleanLiteral, StringLiteral, LiteralPattern
+  BindingPattern, NullLiteral, NumberLiteral, BooleanLiteral, StringLiteral, LiteralPattern,
+  MemberExpression
 } from '../../ast.zena';
 import { Type, F64Type, F32Type, VoidType, ClassType, typeToString, isVoidOrNeverType } from '../../types.zena';
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeRef } from '../wasm.zena';
 import { getClassKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
-import { typeToValType, getCellStruct } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, getCellStruct } from '../type-mapping.zena';
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { parseF64, parseI64 } from 'zena:string-convert';
 import { WasmStruct, RecordDispatchInfo, WasmFunction } from '../wasm-module.zena';
 import { generateStringLiteral, parseI64OrU64Literal } from './primitives.zena';
+import { castValTypeRefNullIfNeeded } from './calls.zena';
 
 export let generateMatchExpression = (
   ctx: FunctionContext,
@@ -22,6 +24,9 @@ export let generateMatchExpression = (
   genExpr: (e: Expression, discardValue: boolean) => void,
   genStmt: (s: Statement) => void
 ): void => {
+  let wasReachable = ctx.isReachable;
+  var overallReachable = false;
+
   // 1. Evaluate discriminant and store in temp local
   let discType = ctx.wasmFunction.model.getNodeType(expr.discriminant) as Type;
   let discWasmType = typeToValType(ctx.wasm, discType);
@@ -33,9 +38,7 @@ export let generateMatchExpression = (
   let nodeType = ctx.wasmFunction.model.getNodeType(expr);
   var resultValType: ValType = new ValTypeVoid();
   if (!discardValue) {
-    if (nodeType is F64Type) {
-      resultValType = new ValTypeF64();
-    } else if (nodeType is F32Type) {
+    if (nodeType is F32Type) {
       resultValType = new ValTypeF32();
     } else if (nodeType != null && !isVoidOrNeverType(nodeType as Type)) {
       resultValType = typeToValType(ctx.wasm, nodeType as Type);
@@ -50,18 +53,19 @@ export let generateMatchExpression = (
   var i = 0;
   while (i < expr.cases.length) {
     let mc = expr.cases[i];
+    ctx.isReachable = wasReachable;
     
     // Case block
     ctx.emitter.emitBlock(new ValTypeVoid());
     ctx.enterBlockStructure();
 
     // Pattern check
-    generateMatchPatternCheck(ctx, mc.pattern, tempDiscriminant, discWasmType);
+    generateMatchPatternCheck(ctx, mc.pattern, tempDiscriminant, discWasmType, genExpr);
     ctx.emitter.emitI32Eqz();
     ctx.emitter.emitBrIf(0); // br to end of case block if check fails
 
     // Bind variables
-    generateMatchPatternBindings(ctx, mc.pattern, tempDiscriminant, discWasmType);
+    generateMatchPatternBindings(ctx, mc.pattern, tempDiscriminant, discWasmType, genExpr);
 
     // Guard (if exists)
     if (mc.guard != null) {
@@ -96,6 +100,10 @@ export let generateMatchExpression = (
     // Break to outer match block
     ctx.emitter.emitBr(1);
 
+    if (ctx.isReachable) {
+      overallReachable = true;
+    }
+
     ctx.exitBlockStructure();
     ctx.emitter.emitEnd(); // end case block
 
@@ -107,13 +115,16 @@ export let generateMatchExpression = (
 
   ctx.exitBlockStructure();
   ctx.emitter.emitEnd(); // end match block
+
+  ctx.isReachable = overallReachable;
 };
 
 let generateMatchPatternCheck = (
   ctx: FunctionContext,
   pattern: Node,
   discriminantLocal: i32,
-  discriminantType: ValType
+  discriminantType: ValType,
+  genExpr: (e: Expression, discardValue: boolean) => void
 ): void => {
   match (pattern) {
     case IdentifierPattern as pat: {
@@ -142,7 +153,7 @@ let generateMatchPatternCheck = (
       }
     }
     case AsPattern as ap: {
-      generateMatchPatternCheck(ctx, ap.pattern, discriminantLocal, discriminantType);
+      generateMatchPatternCheck(ctx, ap.pattern, discriminantLocal, discriminantType, genExpr);
     }
     case ClassPattern as cp: {
       let ct = ctx.wasmFunction.model.getNodeType(cp.name) as ClassType;
@@ -189,7 +200,7 @@ let generateMatchPatternCheck = (
               let tempField = ctx.allocLocal(fieldWasmType);
               ctx.emitter.emitLocalSet(tempField);
 
-              generateMatchPatternCheck(ctx, prop.value, tempField, fieldWasmType);
+              generateMatchPatternCheck(ctx, prop.value, tempField, fieldWasmType, genExpr);
               ctx.emitter.emitI32And();
             }
           }
@@ -202,26 +213,26 @@ let generateMatchPatternCheck = (
     }
     case LogicalPattern as lp: {
       if (lp.operator == "||") {
-        generateMatchPatternCheck(ctx, lp.left, discriminantLocal, discriminantType);
+        generateMatchPatternCheck(ctx, lp.left, discriminantLocal, discriminantType, genExpr);
         ctx.emitter.emitIf(new ValTypeI32());
         ctx.emitter.emitI32Const(1);
         ctx.emitter.emitElse();
-        generateMatchPatternCheck(ctx, lp.right, discriminantLocal, discriminantType);
+        generateMatchPatternCheck(ctx, lp.right, discriminantLocal, discriminantType, genExpr);
         ctx.emitter.emitEnd();
       } else {
-        generateMatchPatternCheck(ctx, lp.left, discriminantLocal, discriminantType);
+        generateMatchPatternCheck(ctx, lp.left, discriminantLocal, discriminantType, genExpr);
         ctx.emitter.emitIf(new ValTypeI32());
-        generateMatchPatternCheck(ctx, lp.right, discriminantLocal, discriminantType);
+        generateMatchPatternCheck(ctx, lp.right, discriminantLocal, discriminantType, genExpr);
         ctx.emitter.emitElse();
         ctx.emitter.emitI32Const(0);
         ctx.emitter.emitEnd();
       }
     }
     case BindingPattern as bp: {
-      generateMatchPatternCheck(ctx, bp.pattern, discriminantLocal, discriminantType);
+      generateMatchPatternCheck(ctx, bp.pattern, discriminantLocal, discriminantType, genExpr);
     }
     case LiteralPattern as lp: {
-      generateMatchPatternCheck(ctx, lp.value, discriminantLocal, discriminantType);
+      generateMatchPatternCheck(ctx, lp.value, discriminantLocal, discriminantType, genExpr);
     }
     case NumberLiteral as num: {
       ctx.emitter.emitLocalGet(discriminantLocal);
@@ -330,7 +341,7 @@ let generateMatchPatternCheck = (
             let tempField = ctx.allocLocal(fieldWasmType);
             ctx.emitter.emitLocalSet(tempField);
 
-            generateMatchPatternCheck(ctx, elPattern as Node, tempField, fieldWasmType);
+            generateMatchPatternCheck(ctx, elPattern as Node, tempField, fieldWasmType, genExpr);
             ctx.emitter.emitI32And();
           }
         }
@@ -429,7 +440,7 @@ let generateMatchPatternCheck = (
                 let tempField = ctx.allocLocal(fieldWasmType);
                 ctx.emitter.emitLocalSet(tempField);
 
-                generateMatchPatternCheck(ctx, prop.value, tempField, fieldWasmType);
+                generateMatchPatternCheck(ctx, prop.value, tempField, fieldWasmType, genExpr);
                 ctx.emitter.emitI32And();
               }
             }
@@ -447,6 +458,22 @@ let generateMatchPatternCheck = (
       ctx.emitter.emitLocalGet(discriminantLocal);
       ctx.emitter.emitRefIsNull();
     }
+    case MemberExpression as me: {
+      ctx.emitter.emitLocalGet(discriminantLocal);
+      genExpr(me as Expression, false);
+      if (discriminantType is ValTypeI32) {
+        ctx.emitter.emitI32Eq();
+      } else if (discriminantType is ValTypeI64) {
+        ctx.emitter.emitI64Eq();
+      } else if (discriminantType is ValTypeF32) {
+        ctx.emitter.emitF32Eq();
+      } else if (discriminantType is ValTypeF64) {
+        ctx.emitter.emitF64Eq();
+      } else {
+        ctx.emitter.emitDrop();
+        ctx.emitter.emitI32Const(0);
+      }
+    }
     case _: {
       ctx.emitter.emitI32Const(1);
     }
@@ -457,18 +484,24 @@ let generateMatchPatternBindings = (
   ctx: FunctionContext,
   pattern: Node,
   discriminantLocal: i32,
-  discriminantType: ValType
+  discriminantType: ValType,
+  genExpr: (e: Expression, discardValue: boolean) => void
 ): void => {
   match (pattern) {
     case IdentifierPattern as pat: {
       if (pat.name != "_") {
         let sym = ctx.wasmFunction.model.resolveDeclaration(pat);
-        if (sym != null && ctx.localIndices.has(sym.id)) {
-          let idx = ctx.localIndices[sym.id];
+        if (sym != null && ctx.localIndices.has((sym as Symbol).id)) {
+          let s = sym as Symbol;
+          let idx = ctx.localIndices[s.id];
           ctx.emitter.emitLocalGet(discriminantLocal);
-          if (ctx.isCelled(sym.id)) {
-            let symType = ctx.wasmFunction.model.getBindingType(sym);
-            let valType = typeToValType(ctx.wasm, symType);
+          let symType = ctx.wasmFunction.model.getBindingType(s);
+          if (symType != null) {
+            let targetWasmType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
+            castValTypeRefNullIfNeeded(ctx, discriminantType, targetWasmType);
+          }
+          if (ctx.isCelled(s.id)) {
+            let valType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
             let cellStruct = getCellStruct(ctx.wasm, valType);
             ctx.emitter.emitStructNew(cellStruct.index);
           }
@@ -479,12 +512,17 @@ let generateMatchPatternBindings = (
     case Identifier as ident: {
       if (ident.name != "_") {
         let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
-        if (sym != null && !(sym as Symbol).isType() && ctx.localIndices.has(sym.id)) {
-          let idx = ctx.localIndices[sym.id];
+        if (sym != null && !(sym as Symbol).isType() && ctx.localIndices.has((sym as Symbol).id)) {
+          let s = sym as Symbol;
+          let idx = ctx.localIndices[s.id];
           ctx.emitter.emitLocalGet(discriminantLocal);
-          if (ctx.isCelled(sym.id)) {
-            let symType = ctx.wasmFunction.model.getBindingType(sym);
-            let valType = typeToValType(ctx.wasm, symType);
+          let symType = ctx.wasmFunction.model.getBindingType(s);
+          if (symType != null) {
+            let targetWasmType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
+            castValTypeRefNullIfNeeded(ctx, discriminantType, targetWasmType);
+          }
+          if (ctx.isCelled(s.id)) {
+            let valType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
             let cellStruct = getCellStruct(ctx.wasm, valType);
             ctx.emitter.emitStructNew(cellStruct.index);
           }
@@ -494,18 +532,23 @@ let generateMatchPatternBindings = (
     }
     case AsPattern as ap: {
       let sym = ctx.wasmFunction.model.resolveDeclaration(ap.name);
-      if (sym != null && ctx.localIndices.has(sym.id)) {
-        let idx = ctx.localIndices[sym.id];
+      if (sym != null && ctx.localIndices.has((sym as Symbol).id)) {
+        let s = sym as Symbol;
+        let idx = ctx.localIndices[s.id];
         ctx.emitter.emitLocalGet(discriminantLocal);
-        if (ctx.isCelled(sym.id)) {
-          let symType = ctx.wasmFunction.model.getBindingType(sym);
-          let valType = typeToValType(ctx.wasm, symType);
+        let symType = ctx.wasmFunction.model.getBindingType(s);
+        if (symType != null) {
+          let targetWasmType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
+          castValTypeRefNullIfNeeded(ctx, discriminantType, targetWasmType);
+        }
+        if (ctx.isCelled(s.id)) {
+          let valType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
           let cellStruct = getCellStruct(ctx.wasm, valType);
           ctx.emitter.emitStructNew(cellStruct.index);
         }
         ctx.emitter.emitLocalSet(idx);
       }
-      generateMatchPatternBindings(ctx, ap.pattern, discriminantLocal, discriminantType);
+      generateMatchPatternBindings(ctx, ap.pattern, discriminantLocal, discriminantType, genExpr);
     }
     case ClassPattern as cp: {
       let ct = ctx.wasmFunction.model.getNodeType(cp.name) as ClassType;
@@ -539,21 +582,21 @@ let generateMatchPatternBindings = (
           let tempField = ctx.allocLocal(fieldWasmType);
           ctx.emitter.emitLocalSet(tempField);
 
-          generateMatchPatternBindings(ctx, prop.value, tempField, fieldWasmType);
+          generateMatchPatternBindings(ctx, prop.value, tempField, fieldWasmType, genExpr);
         }
       }
     }
     case LogicalPattern as lp: {
       if (lp.operator == "||") {
-        generateMatchPatternCheck(ctx, lp.left, discriminantLocal, discriminantType);
+        generateMatchPatternCheck(ctx, lp.left, discriminantLocal, discriminantType, genExpr);
         ctx.emitter.emitIf(new ValTypeVoid());
-        generateMatchPatternBindings(ctx, lp.left, discriminantLocal, discriminantType);
+        generateMatchPatternBindings(ctx, lp.left, discriminantLocal, discriminantType, genExpr);
         ctx.emitter.emitElse();
-        generateMatchPatternBindings(ctx, lp.right, discriminantLocal, discriminantType);
+        generateMatchPatternBindings(ctx, lp.right, discriminantLocal, discriminantType, genExpr);
         ctx.emitter.emitEnd();
       } else {
-        generateMatchPatternBindings(ctx, lp.left, discriminantLocal, discriminantType);
-        generateMatchPatternBindings(ctx, lp.right, discriminantLocal, discriminantType);
+        generateMatchPatternBindings(ctx, lp.left, discriminantLocal, discriminantType, genExpr);
+        generateMatchPatternBindings(ctx, lp.right, discriminantLocal, discriminantType, genExpr);
       }
     }
     case TuplePattern as tp: {
@@ -585,7 +628,7 @@ let generateMatchPatternBindings = (
             let tempField = ctx.allocLocal(fieldWasmType);
             ctx.emitter.emitLocalSet(tempField);
 
-            generateMatchPatternBindings(ctx, elPattern as Node, tempField, fieldWasmType);
+            generateMatchPatternBindings(ctx, elPattern as Node, tempField, fieldWasmType, genExpr);
           }
         }
       }
@@ -652,14 +695,14 @@ let generateMatchPatternBindings = (
               let tempField = ctx.allocLocal(fieldWasmType);
               ctx.emitter.emitLocalSet(tempField);
 
-              generateMatchPatternBindings(ctx, prop.value, tempField, fieldWasmType);
+              generateMatchPatternBindings(ctx, prop.value, tempField, fieldWasmType, genExpr);
             }
           }
         }
       }
     }
     case BindingPattern as bp: {
-      generateMatchPatternBindings(ctx, bp.pattern, discriminantLocal, discriminantType);
+      generateMatchPatternBindings(ctx, bp.pattern, discriminantLocal, discriminantType, genExpr);
     }
     case _: {}
   }

@@ -1,7 +1,7 @@
 import { Referrer, ReachabilityContext, SpecializerInterface, ClassInterfacePair } from './context.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo } from '../../types.zena';
-import { Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, TypeAnnotation, InterfaceDeclaration, Expression } from '../../ast.zena';
+import { Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, TypeAnnotation, InterfaceDeclaration, Expression, MixinDeclaration } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, ClassCodegenInfo } from '../wasm-module.zena';
 import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeFuncRef } from '../wasm.zena';
 import { SymbolId } from '../../scope/symbol.zena';
@@ -34,7 +34,9 @@ export final class Specializer implements SpecializerInterface {
       return;
     }
     this.pass.instantiatedSpecializedClasses.add(cKey);
+    this.pass.cha.registerInstantiatedClass(classType);
 
+    /*
     if (let (true, funcs) = this.pass.wasm.classMethods.get(cKey)) {
       for (let func in funcs) {
         if (!this.pass.reachedFunctionsSet.has(func)) {
@@ -43,6 +45,7 @@ export final class Specializer implements SpecializerInterface {
         }
       }
     }
+    */
 
     let unspecC = classType.genericSource ?? classType;
     let classId = unspecC.id as SymbolId;
@@ -57,6 +60,28 @@ export final class Specializer implements SpecializerInterface {
     // Keep == and hashCode for any instantiated class if they exist,
     // as they can be called virtually by generic operations and HashMap/HashSet.
     let unspecModel = this.pass.getClassModel(classType);
+
+    // Propagate all reached members of the base class to this new instantiation
+    if (let (true, reachedSet) = this.pass.reachedClassMembers.get(classId)) {
+      for (let memberNodeId in reachedSet) {
+        let memberModel = if (this.pass.nodeIdToModel.has(memberNodeId)) {
+          this.pass.nodeIdToModel[memberNodeId]
+        } else {
+          unspecModel
+        };
+        this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, memberNodeId, memberModel, classType, false));
+      }
+    }
+    if (let (true, reachedSet) = this.pass.reachedReachableClassMembers.get(classId)) {
+      for (let memberNodeId in reachedSet) {
+        let memberModel = if (this.pass.nodeIdToModel.has(memberNodeId)) {
+          this.pass.nodeIdToModel[memberNodeId]
+        } else {
+          unspecModel
+        };
+        this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, memberNodeId, memberModel, classType, true));
+      }
+    }
     let eqMethod = this.pass.cha.findImplementingMethod(classType, "==");
     if (eqMethod != null) {
       this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (eqMethod as Node).id as i32, this.pass.getNodeModel(eqMethod as Node, unspecModel), classType, this.pass.currentReachable));
@@ -74,6 +99,7 @@ export final class Specializer implements SpecializerInterface {
     this.pass.typeLowerer.discoverType(classType, model);
 
     let classDecl = this.pass.classDecls[classId];
+
     if (classDecl != null && classDecl is ClassDeclaration) {
       let cd = classDecl as ClassDeclaration;
       // Discover static fields
@@ -96,7 +122,7 @@ export final class Specializer implements SpecializerInterface {
               } else {
                 model.getNodeType(fd)
               };
-              let vType = typeToValType(this.pass.wasm, fType);
+              let vType = typeToValType(this.pass.wasm, fType as Type);
               let name = cd.name.name + "_" + fieldName;
               let initExp = if (fd.value != null) { fd.value as Expression } else { null as Expression };
               let wasmGlobal = new WasmGlobal(name, fieldName, vType, true, initExp, null, model);
@@ -118,11 +144,7 @@ export final class Specializer implements SpecializerInterface {
       }
 
       if (!hasExplicitCtor && !classType.isExtension) {
-        let cKey = getClassKey(classType);
-        let hasCtor = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "<constructor>"));
-        if (!hasCtor) {
-          this.registerClassMethod(classType, cd, "<constructor>", null, false, false, null, model);
-        }
+        this.registerClassMethod(classType, cd, "<constructor>", null, false, false, null, model);
       }
 
       // Discover constructor and field initializers
@@ -141,15 +163,11 @@ export final class Specializer implements SpecializerInterface {
         }
       }
     } else if (classDecl != null && classDecl is SealedVariant) {
-      let cKey = getClassKey(classType);
-      let hasCtor = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "<constructor>"));
-      if (!hasCtor && !classType.isExtension) {
+      if (!classType.isExtension) {
         this.registerClassMethod(classType, null, "<constructor>", null, false, false, null, model);
       }
     } else {
-      let cKey = getClassKey(classType);
-      let hasCtor = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "<constructor>"));
-      if (!hasCtor && !classType.isExtension) {
+      if (!classType.isExtension) {
         this.registerClassMethod(classType, null, "<constructor>", null, false, false, null, model);
       }
     }
@@ -496,23 +514,39 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
+    var hasExplicitCtor = false;
+    if (classDecl != null) {
+      let cd = classDecl as Node;
+      var bodyNodes: Array<Node> | null = null;
+      if (cd is ClassDeclaration) {
+        bodyNodes = (cd as ClassDeclaration).body;
+      } else if (cd is InterfaceDeclaration) {
+        bodyNodes = (cd as InterfaceDeclaration).body;
+      } else if (cd is MixinDeclaration) {
+        bodyNodes = (cd as MixinDeclaration).body;
+      }
+      if (bodyNodes != null) {
+        for (let member in bodyNodes as Array<Node>) {
+          if (member is MethodDefinition) {
+            let md = member as MethodDefinition;
+            if (getMethodName(md) == "<constructor>") {
+              hasExplicitCtor = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (!hasExplicitCtor && !ct.isExtension) {
+      this.registerClassMethod(ct, classDecl, "<constructor>", null, false, false, null, sourceModel);
+    }
+
     if (ct.isCaseClass) {
-      let hasCtor = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "<constructor>"));
-      if (!hasCtor) {
-        this.registerClassMethod(ct, classDecl, "<constructor>", null, false, false, null, sourceModel);
-      }
- 
-      let hasEq = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "=="));
-      if (!hasEq) {
-        let eqFunc = this.registerClassMethod(ct, classDecl, "==", null, false, false, null, sourceModel);
-        eqFunc.isCaseClassEq = true;
-      }
- 
-      let hasHash = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "hashCode"));
-      if (!hasHash) {
-        let hashFunc = this.registerClassMethod(ct, classDecl, "hashCode", null, false, false, null, sourceModel);
-        hashFunc.isCaseClassHash = true;
-      }
+      let eqFunc = this.registerClassMethod(ct, classDecl, "==", null, false, false, null, sourceModel);
+      eqFunc.isCaseClassEq = true;
+
+      let hashFunc = this.registerClassMethod(ct, classDecl, "hashCode", null, false, false, null, sourceModel);
+      hashFunc.isCaseClassHash = true;
     }
 
     // Register implicit interface getters/setters for specialized classes
@@ -550,6 +584,7 @@ export final class Specializer implements SpecializerInterface {
 
   registerSpecializedInterface(it: InterfaceType, ifaceDecl: InterfaceDeclaration | null, sourceModel: SemanticModel): void {
     let iKey = getInterfaceKey(it);
+
     if (this.pass.wasm.interfaceStructs.has(iKey)) {
       return;
     }
@@ -678,9 +713,10 @@ export final class Specializer implements SpecializerInterface {
 
           var currClass: ClassType | null = cType;
           while (currClass != null && methodTypeNode == null) {
+            let cc = currClass as ClassType;
             if (baseName != methName) {
-              if (currClass.members.has(baseName)) {
-                let mInfo = currClass.members[baseName];
+              if (cc.members.has(baseName)) {
+                let mInfo = cc.members[baseName];
                 if (mInfo.type is FunctionType) {
                   let ft = mInfo.type as FunctionType;
                   if (specIdx >= 0) {
@@ -699,12 +735,12 @@ export final class Specializer implements SpecializerInterface {
                 }
               }
             } else {
-              if (currClass.members.has(methName)) {
-                methodTypeNode = currClass.members[methName].type;
+              if (cc.members.has(methName)) {
+                methodTypeNode = cc.members[methName].type;
               }
             }
             if (methodTypeNode == null) {
-              currClass = currClass.superType;
+              currClass = cc.superType;
             }
           }
         }
@@ -719,22 +755,27 @@ export final class Specializer implements SpecializerInterface {
           } else if (methName.startsWith("get#")) {
             let fieldName = methName.sliceBytes(4, methName.length);
             var pType: Type | null = null;
-            if (cType.members.has(fieldName)) {
-              let m = cType.members[fieldName];
-              if (m is FieldInfo) {
-                pType = (m as FieldInfo).type;
-              } else if (m is MethodInfo) {
-                let mi = m as MethodInfo;
-                if (mi.type is FunctionType) {
-                  pType = (mi.type as FunctionType).returnType;
+            var curr: ClassType | null = cType;
+            while (curr != null && pType == null) {
+              let cc = curr as ClassType;
+              if (cc.members.has(fieldName)) {
+                let m = cc.members[fieldName];
+                if (m is FieldInfo) {
+                  pType = (m as FieldInfo).type;
+                } else if (m is MethodInfo) {
+                  let mi = m as MethodInfo;
+                  if (mi.type is FunctionType) {
+                    pType = (mi.type as FunctionType).returnType;
+                  }
                 }
               }
-            }
-            if (pType == null && cType.members.has("#" + fieldName)) {
-              let m = cType.members["#" + fieldName];
-              if (m is FieldInfo) {
-                pType = (m as FieldInfo).type;
+              if (pType == null && cc.members.has("#" + fieldName)) {
+                let m = cc.members["#" + fieldName];
+                if (m is FieldInfo) {
+                  pType = (m as FieldInfo).type;
+                }
               }
+              curr = cc.superType;
             }
             if (pType != null) {
               methodTypeNode = new FunctionType(new Array<Type>(), null, pType as Type);
@@ -742,27 +783,32 @@ export final class Specializer implements SpecializerInterface {
           } else if (methName.startsWith("set#")) {
             let fieldName = methName.sliceBytes(4, methName.length);
             var pType: Type | null = null;
-            if (cType.members.has(fieldName)) {
-              let m = cType.members[fieldName];
-              if (m is FieldInfo) {
-                pType = (m as FieldInfo).type;
-              } else if (m is MethodInfo) {
-                let mi = m as MethodInfo;
-                if (mi.type is FunctionType) {
-                  let ft = mi.type as FunctionType;
-                  if (ft.parameters.length > 0) {
-                    pType = ft.parameters[0];
-                  } else {
-                    pType = ft.returnType;
+            var curr: ClassType | null = cType;
+            while (curr != null && pType == null) {
+              let cc = curr as ClassType;
+              if (cc.members.has(fieldName)) {
+                let m = cc.members[fieldName];
+                if (m is FieldInfo) {
+                  pType = (m as FieldInfo).type;
+                } else if (m is MethodInfo) {
+                  let mi = m as MethodInfo;
+                  if (mi.type is FunctionType) {
+                    let ft = mi.type as FunctionType;
+                    if (ft.parameters.length > 0) {
+                      pType = ft.parameters[0];
+                    } else {
+                      pType = ft.returnType;
+                    }
                   }
                 }
               }
-            }
-            if (pType == null && cType.members.has("#" + fieldName)) {
-              let m = cType.members["#" + fieldName];
-              if (m is FieldInfo) {
-                pType = (m as FieldInfo).type;
+              if (pType == null && cc.members.has("#" + fieldName)) {
+                let m = cc.members["#" + fieldName];
+                if (m is FieldInfo) {
+                  pType = (m as FieldInfo).type;
+                }
               }
+              curr = cc.superType;
             }
             if (pType != null) {
               let params = new Array<Type>();
@@ -946,6 +992,12 @@ export final class Specializer implements SpecializerInterface {
     let registeredKey = getClassMethodKey(getClassKey(cType), realMethName);
     if (this.pass.wasm.classMethodMap.has(registeredKey)) {
       let func = this.pass.wasm.classMethodMap[registeredKey];
+      if (func.node == null && methodNode != null) {
+        func.node = methodNode;
+      }
+      if (func.classDecl == null && cDecl != null) {
+        func.classDecl = cDecl;
+      }
       let hasInst = this.pass.instantiatedSpecializedClasses.has(getClassKey(cType) as String);
       if (!isGenericTemplate && (hasInst || cType.isExtension)) {
         if (!this.pass.reachedFunctionsSet.has(func)) {
@@ -1176,21 +1228,26 @@ export final class Specializer implements SpecializerInterface {
     }
 
     if ((cdDecl != null || ct.isCaseClass || (cd != null && cd is SealedVariant)) && !ct.isExtension) {
-      let hasCtor = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "<constructor>"));
-      if (!hasCtor) {
-        this.registerClassMethod(ct, cd, "<constructor>", null, false, false, null, sourceModel);
+      let wasmFunc = this.registerClassMethod(ct, cd, "<constructor>", null, false, false, null, sourceModel);
+      if (wasmFunc.classDecl == null) {
+        wasmFunc.classDecl = cd;
       }
+      if (wasmFunc.structType == null) {
+        wasmFunc.structType = st;
+      }
+      let params = new Array<ValType>();
+      params.push(new ValTypeRefNull(st));
+      for (var i = 1; i < wasmFunc.signature.params.length; i += 1) {
+        params.push(wasmFunc.signature.params[i]);
+      }
+      let sig = this.pass.wasm.getSignature(params, wasmFunc.signature.returns);
+      wasmFunc.signature = sig;
+      this.pass.markTypeReached(sig);
       if (ct.isCaseClass) {
-        let hasEq = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "=="));
-        if (!hasEq) {
-          let eqFunc = this.registerClassMethod(ct, cd, "==", null, false, false, null, sourceModel);
-          eqFunc.isCaseClassEq = true;
-        }
-        let hasHash = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, "hashCode"));
-        if (!hasHash) {
-          let hashFunc = this.registerClassMethod(ct, cd, "hashCode", null, false, false, null, sourceModel);
-          hashFunc.isCaseClassHash = true;
-        }
+        let eqFunc = this.registerClassMethod(ct, cd, "==", null, false, false, null, sourceModel);
+        eqFunc.isCaseClassEq = true;
+        let hashFunc = this.registerClassMethod(ct, cd, "hashCode", null, false, false, null, sourceModel);
+        hashFunc.isCaseClassHash = true;
       }
     }
 
@@ -1277,6 +1334,7 @@ export final class Specializer implements SpecializerInterface {
     for (let f in fields) {
       st.fields.push(f);
     }
+
   }
 
   instantiateGenericFunction(symId: SymbolId, typeArgs: Array<Type>): WasmFunction {

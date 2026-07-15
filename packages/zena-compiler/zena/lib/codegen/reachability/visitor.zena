@@ -11,7 +11,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters } from '../type-mapping.zena';
 import { collectValueExports } from '../function-generator.zena';
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -31,10 +31,17 @@ export final class TypeLowerer implements TypeLowererInterface {
     if (rawT == null) { return; }
     let t = eraseTypeParameters(rawT as Type);
     let typeStr = getTypeUniqueKey(t);
-    if (this.pass.discoveredTypes.has(typeStr)) {
-      return;
+    if (this.pass.currentReachable) {
+      if (this.pass.reachedSemanticTypes.has(typeStr)) {
+        return;
+      }
+      this.pass.reachedSemanticTypes.add(typeStr);
+    } else {
+      if (this.pass.discoveredTypes.has(typeStr)) {
+        return;
+      }
+      this.pass.discoveredTypes.add(typeStr);
     }
-    this.pass.discoveredTypes.add(typeStr);
     
     if (t is RecordType) {
       let rec = t as RecordType;
@@ -81,6 +88,58 @@ export final class TypeLowerer implements TypeLowererInterface {
       this.discoverType(ft.returnType, model);
       let contextStruct = getClosureStruct(this.pass.wasm, eraseType(ft) as FunctionType);
       this.pass.markTypeReached(contextStruct);
+
+      if (ft.functionSymbolId != (-1 as SymbolId)) {
+        let targetSymId = ft.functionSymbolId;
+        var resolvedArgs = new Array<Type>();
+        if (ft.typeArguments != null) {
+          for (let arg in (ft.typeArguments as Array<Type>)) {
+            resolvedArgs.push(arg);
+          }
+        }
+        let isSpecialized = resolvedArgs.length > 0;
+        if (isSpecialized && this.pass.wasm.genericFunctions.has(targetSymId)) {
+          this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
+        }
+        
+        var targetWasmFunc: WasmFunction | null = null;
+        var keyName = "";
+        if (isSpecialized) {
+          let specKey = getSpecializedFunctionKey(ft.functionSymbolName, resolvedArgs);
+          keyName = specKey as String;
+          if (let (true, f) = this.pass.wasm.specializedFunctions.get(specKey)) {
+            targetWasmFunc = f;
+          }
+        } else {
+          keyName = i32ToString(targetSymId as i32);
+          if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+            targetWasmFunc = f;
+          }
+        }
+        if (targetWasmFunc != null) {
+          this.pass.visitor.registerWrapper(keyName, ft, targetWasmFunc as WasmFunction, model);
+          
+          if (ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0) {
+            let erasedArgs = new Array<Type>();
+            for (let arg in (ft.typeArguments as Array<Type>)) {
+              erasedArgs.push(eraseType(arg));
+            }
+            let erasedFt = eraseType(ft) as FunctionType;
+            let erasedSpecKey = getSpecializedFunctionKey(ft.functionSymbolName, erasedArgs);
+            
+            var erasedTargetWasmFunc: WasmFunction | null = null;
+            if (let (true, f) = this.pass.wasm.specializedFunctions.get(erasedSpecKey)) {
+              erasedTargetWasmFunc = f;
+            } else if (this.pass.wasm.genericFunctions.has(targetSymId)) {
+              erasedTargetWasmFunc = this.pass.specializer.instantiateGenericFunction(targetSymId, erasedArgs);
+            }
+            
+            if (erasedTargetWasmFunc != null) {
+              this.pass.visitor.registerWrapper(erasedSpecKey as String, erasedFt, erasedTargetWasmFunc as WasmFunction, model);
+            }
+          }
+        }
+      }
     } else if (t is ClassType) {
       let ct = t as ClassType;
       if (ct.name == "array" && ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
@@ -151,12 +210,14 @@ export final class TypeLowerer implements TypeLowererInterface {
           this.discoverType(resolvedType, model);
         }
       }
-    } else if (t is InterfaceType) {
+    } else    if (t is InterfaceType) {
       let it = t as InterfaceType;
       let iKey = getInterfaceKey(it);
+
       if (this.pass.wasm.interfaceStructs.has(iKey)) {
         let emptyStruct = this.pass.wasm.interfaceStructs[iKey];
         if (this.pass.currentReachable) {
+
           this.pass.markTypeReached(emptyStruct);
           let emptyVTableStruct = this.pass.wasm.interfaceVTableStructs[iKey];
           this.pass.markTypeReached(emptyVTableStruct);
@@ -177,14 +238,20 @@ export final class TypeLowerer implements TypeLowererInterface {
       if (this.pass.wasm.interfaceStructs.has(iKey)) {
         let emptyStruct = this.pass.wasm.interfaceStructs[iKey];
         if (this.pass.currentReachable) {
+
           this.pass.markTypeReached(emptyStruct);
           let emptyVTableStruct = this.pass.wasm.interfaceVTableStructs[iKey];
           this.pass.markTypeReached(emptyVTableStruct);
         }
       }
+      let itParams = getInterfaceTypeParameters(it);
+      for (let ext in it.extendsList) {
+        let resolvedExt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ext);
+        this.discoverType(resolvedExt, model);
+      }
       for (let pair in it.members) {
         if (pair.value is FieldInfo) {
-          let resolvedType = substituteTypeParamsInCodegen(getInterfaceTypeParameters(it), it.typeArguments, pair.value.type);
+          let resolvedType = substituteTypeParamsInCodegen(itParams, it.typeArguments, pair.value.type);
           this.discoverType(resolvedType, model);
         }
       }
@@ -220,6 +287,7 @@ export final class TypeLowerer implements TypeLowererInterface {
  */
 export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   pass: ReachabilityContext;
+  #discoveringOnDemand = new HashSet<SymbolId>();
 
   new(this.pass);
 
@@ -457,6 +525,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               for (let md in mds) {
                 this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedClass, this.pass.currentReachable));
               }
+
+              let specializedIterable = findImplementedInterfaceTransitive(resolvedClass, "Iterable");
+              if (specializedIterable != null) {
+                this.pass.typeLowerer.discoverType(specializedIterable, model);
+              }
             }
           }
 
@@ -631,7 +704,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 let symVal = sym as Symbol;
                 var targetSymId = symVal.id;
                 if (symVal.declaration != null && symVal.declaration is ImportSpecifier) {
-                  targetSymId = resolveImportedSymbolId(this.pass.program, model, symVal.declaration as ImportSpecifier);
+                  targetSymId = resolveImportedSymbolId(this.pass.program, model, symVal.declaration as ImportSpecifier, null);
                 }
                 var resolvedArgs = new Array<Type>();
                 if (ft.typeArguments != null) {
@@ -665,7 +738,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     let symVal = sym as Symbol;
     var targetSymId = symVal.id;
     if (symVal.declaration != null && symVal.declaration is ImportSpecifier) {
-      targetSymId = resolveImportedSymbolId(this.pass.program, model, symVal.declaration as ImportSpecifier);
+      targetSymId = resolveImportedSymbolId(this.pass.program, model, symVal.declaration as ImportSpecifier, null);
     }
     var resolvedArgs = new Array<Type>();
     if (ft.typeArguments != null) {
@@ -690,6 +763,23 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       keyName = i32ToString(symVal.id as i32);
       if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
         targetWasmFunc = f;
+      } else {
+        if (!this.#discoveringOnDemand.has(targetSymId)) {
+          this.#discoveringOnDemand.add(targetSymId);
+          if (let (true, targetModel) = this.pass.symbolIdToModel.get(targetSymId)) {
+            if (let (true, decl) = targetModel.globalDeclarations.get(targetSymId)) {
+              let resolver = (t: Type): Type => t;
+              this.discoverNodeTypes(decl, targetModel, resolver);
+              if (decl is VariableDeclaration) {
+                this.discoverVariableDeclaration(targetSymId, decl as VariableDeclaration, targetModel);
+              }
+              if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+                targetWasmFunc = f;
+              }
+            }
+          }
+          this.#discoveringOnDemand.delete(targetSymId);
+        }
       }
     }
     if (targetWasmFunc != null) {
@@ -724,9 +814,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       wrapperParams.push(typeToValType(this.pass.wasm, p));
     }
     let wrapperReturns = new Array<ValType>();
-    if (!(ft.returnType is VoidType)) {
-      wrapperReturns.push(typeToValType(this.pass.wasm, ft.returnType));
-    }
+    mapReturnTypeToWasmResults(this.pass.wasm, ft.returnType, wrapperReturns);
     let sig = this.pass.wasm.getSignature(wrapperParams, wrapperReturns);
     
     let wrapperKey = getFunctionValueWrapperKey(keyName, ft);
@@ -744,6 +832,79 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.pass.markFunctionReached(wrapperFunc);
       
       getClosureStruct(this.pass.wasm, ft);
+    }
+  }
+
+  discoverFunctionValueWrapper(ft: FunctionType, model: SemanticModel): void {
+    let targetSymId = ft.functionSymbolId;
+    if (targetSymId == (-1 as SymbolId)) {
+      return;
+    }
+    
+    var resolvedArgs = new Array<Type>();
+    if (ft.typeArguments != null) {
+      for (let arg in (ft.typeArguments as Array<Type>)) {
+        resolvedArgs.push(arg);
+      }
+    }
+    let isSpecialized = resolvedArgs.length > 0;
+    if (isSpecialized && targetSymId != (-1 as SymbolId) && this.pass.wasm.genericFunctions.has(targetSymId)) {
+      this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
+    }
+    
+    var targetWasmFunc: WasmFunction | null = null;
+    var keyName = "";
+    if (isSpecialized) {
+      let specKey = getSpecializedFunctionKey(ft.functionSymbolName, resolvedArgs);
+      keyName = specKey as String;
+      if (let (true, f) = this.pass.wasm.specializedFunctions.get(specKey)) {
+        targetWasmFunc = f;
+      }
+    } else {
+      keyName = i32ToString(targetSymId as i32);
+      if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+        targetWasmFunc = f;
+      } else {
+        if (!this.#discoveringOnDemand.has(targetSymId)) {
+          this.#discoveringOnDemand.add(targetSymId);
+          if (let (true, targetModel) = this.pass.symbolIdToModel.get(targetSymId)) {
+            if (let (true, decl) = targetModel.globalDeclarations.get(targetSymId)) {
+              let resolver = (t: Type): Type => t;
+              this.discoverNodeTypes(decl, targetModel, resolver);
+              if (decl is VariableDeclaration) {
+                this.discoverVariableDeclaration(targetSymId, decl as VariableDeclaration, targetModel);
+              }
+              if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+                targetWasmFunc = f;
+              }
+            }
+          }
+          this.#discoveringOnDemand.delete(targetSymId);
+        }
+      }
+    }
+    if (targetWasmFunc != null) {
+      this.registerWrapper(keyName, ft, targetWasmFunc as WasmFunction, model);
+      
+      if (ft.typeArguments != null && (ft.typeArguments as Array<Type>).length > 0) {
+        let erasedArgs = new Array<Type>();
+        for (let arg in (ft.typeArguments as Array<Type>)) {
+          erasedArgs.push(eraseType(arg));
+        }
+        let erasedFt = eraseType(ft) as FunctionType;
+        let erasedSpecKey = getSpecializedFunctionKey(ft.functionSymbolName, erasedArgs);
+        
+        var erasedTargetWasmFunc: WasmFunction | null = null;
+        if (let (true, f) = this.pass.wasm.specializedFunctions.get(erasedSpecKey)) {
+          erasedTargetWasmFunc = f;
+        } else if (targetSymId != (-1 as SymbolId) && this.pass.wasm.genericFunctions.has(targetSymId)) {
+          erasedTargetWasmFunc = this.pass.specializer.instantiateGenericFunction(targetSymId, erasedArgs);
+        }
+        
+        if (erasedTargetWasmFunc != null) {
+          this.registerWrapper(erasedSpecKey as String, erasedFt, erasedTargetWasmFunc as WasmFunction, model);
+        }
+      }
     }
   }
 
@@ -843,7 +1004,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let nodeType = moduleModel.getNodeType(ident);
         var isMutable = true;
         
-        var vType = typeToValType(this.pass.wasm, nodeType);
+        var vType = typeToValType(this.pass.wasm, nodeType as Type);
 
         let sym = moduleModel.resolveDeclaration(ident);
         if (sym != null) {
@@ -862,6 +1023,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
 
   discoverImportDeclaration(importDecl: ImportDeclaration, moduleModel: SemanticModel): void {
     for (let spec in importDecl.imports) {
+      let sym = moduleModel.resolveDeclaration(spec as Node);
+      if (sym != null) {
+        let targetSym = sym.resolveTarget();
+        this.pass.symbolIdToTargetId[sym.id] = targetSym.id;
+      }
       if (spec.imported.name == "*") {
         let localIdent = spec.local;
         let sym = moduleModel.resolveDeclaration(spec as Node);
@@ -1150,6 +1316,8 @@ let eraseType = (t: Type): Type => {
       if (ft.typeParameters != null) {
         ret.typeParameters = ft.typeParameters;
       }
+      ret.functionSymbolId = ft.functionSymbolId;
+      ret.functionSymbolName = ft.functionSymbolName;
       ret
     }
     case ClassType as ct: {
@@ -1328,4 +1496,46 @@ let matchOverloadForImport = (t1: Type, t2: Type): boolean => {
     return true;
   }
   return false;
+};
+
+let findImplementedInterfaceTransitive = (ct: ClassType, name: String): InterfaceType | null => {
+  let seen = new HashMap<InterfaceKey, boolean>();
+  let queue = new Array<InterfaceType>();
+  
+  let ctParams = getClassTypeParameters(ct);
+  for (let impl in ct.implementsList) {
+    let resolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, impl) as InterfaceType;
+    queue.push(resolved);
+  }
+  
+  var currSuper = ct.superType;
+  while (currSuper != null) {
+    let superCt = currSuper as ClassType;
+    let superCtParams = getClassTypeParameters(superCt);
+    for (let impl in superCt.implementsList) {
+      let resolved = substituteTypeParamsInCodegen(superCtParams, superCt.typeArguments, impl) as InterfaceType;
+      queue.push(resolved);
+    }
+    currSuper = superCt.superType;
+  }
+  
+  var head = 0;
+  while (head < queue.length) {
+    let it = queue[head];
+    head += 1;
+    
+    let key = getInterfaceKey(it);
+    if (!seen.has(key)) {
+      seen[key] = true;
+      if (it.name == name) {
+        return it;
+      }
+      let itParams = getInterfaceTypeParameters(it);
+      for (let ext in it.extendsList) {
+        let resolvedExt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ext) as InterfaceType;
+        queue.push(resolvedExt);
+      }
+    }
+  }
+  return null;
 };

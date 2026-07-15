@@ -229,10 +229,11 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
     case IdentifierPattern as pat: {
       if (pat.name != "_") {
         let sym = ctx.wasmFunction.model.resolveDeclaration(pat);
-        if (sym != null && !ctx.localIndices.has(sym.id)) {
+        if (sym != null && !ctx.localIndices.has((sym as Symbol).id)) {
+          let s = sym as Symbol;
           var varType = getNodeType(ctx, pat);
           if (varType == null || varType is ErrorType) {
-            let bt = ctx.wasmFunction.model.getBindingType(sym);
+            let bt = ctx.wasmFunction.model.getBindingType(s);
             if (bt != null) {
               varType = bt;
             }
@@ -241,12 +242,12 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
           if (varType != null && !(varType is ErrorType)) {
             vType = typeToValTypeWithSub(ctx.wasm, varType as Type, ctx.wasmFunction);
           }
-          if (ctx.isCelled(sym.id)) {
+          if (ctx.isCelled(s.id)) {
             let cellStruct = getCellStruct(ctx.wasm, vType);
             vType = new ValTypeRefNull(cellStruct);
           }
           let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
-          ctx.localIndices[sym.id] = index;
+          ctx.localIndices[s.id] = index;
           ctx.localTypes.push(vType);
         }
       }
@@ -254,10 +255,11 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
     case Identifier as pat: {
       if (pat.name != "_") {
         let sym = ctx.wasmFunction.model.resolveDeclaration(pat);
-        if (sym != null && !sym.isType() && ctx.wasmFunction.model.getBindingType(sym) != null && !ctx.localIndices.has(sym.id)) {
+        if (sym != null && !(sym as Symbol).isType() && ctx.wasmFunction.model.getBindingType(sym as Symbol) != null && !ctx.localIndices.has((sym as Symbol).id)) {
+          let s = sym as Symbol;
           var varType = getNodeType(ctx, pat);
           if (varType == null || varType is ErrorType) {
-            let bt = ctx.wasmFunction.model.getBindingType(sym);
+            let bt = ctx.wasmFunction.model.getBindingType(s);
             if (bt != null) {
               varType = bt;
             }
@@ -266,22 +268,23 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
           if (varType != null && !(varType is ErrorType)) {
             vType = typeToValTypeWithSub(ctx.wasm, varType as Type, ctx.wasmFunction);
           }
-          if (ctx.isCelled(sym.id)) {
+          if (ctx.isCelled(s.id)) {
             let cellStruct = getCellStruct(ctx.wasm, vType);
             vType = new ValTypeRefNull(cellStruct);
           }
           let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
-          ctx.localIndices[sym.id] = index;
+          ctx.localIndices[s.id] = index;
           ctx.localTypes.push(vType);
         }
       }
     }
     case AsPattern as ap: {
       let sym = ctx.wasmFunction.model.resolveDeclaration(ap.name);
-      if (sym != null && !ctx.localIndices.has(sym.id)) {
+      if (sym != null && !ctx.localIndices.has((sym as Symbol).id)) {
+        let s = sym as Symbol;
         var varType = getNodeType(ctx, ap.name);
         if (varType == null || varType is ErrorType) {
-          let bt = ctx.wasmFunction.model.getBindingType(sym);
+          let bt = ctx.wasmFunction.model.getBindingType(s);
           if (bt != null) {
             varType = bt;
           }
@@ -290,12 +293,12 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
         if (varType != null && !(varType is ErrorType)) {
           vType = typeToValTypeWithSub(ctx.wasm, varType as Type, ctx.wasmFunction);
         }
-        if (ctx.isCelled(sym.id)) {
+        if (ctx.isCelled(s.id)) {
           let cellStruct = getCellStruct(ctx.wasm, vType);
           vType = new ValTypeRefNull(cellStruct);
         }
         let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
-        ctx.localIndices[sym.id] = index;
+        ctx.localIndices[s.id] = index;
         ctx.localTypes.push(vType);
       }
       discoverLocalsFromPattern(ctx, ap.pattern);

@@ -3,10 +3,10 @@ import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, Unio
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
-import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16 } from '../wasm.zena';
+import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16, valTypeToOpcode, valTypeEquals } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, getSpecializedFunctionKey } from '../codegen-utils.zena';
-import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext, eraseTypeParameters } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext, eraseTypeParameters, getExpressionType } from '../type-mapping.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
@@ -14,6 +14,32 @@ import { generateGlobalIntrinsic, generateArrayIntrinsic, isArrayIntrinsic } fro
 import { dirName, normalizePath } from '../../module-resolver.zena';
 import { i32ToString } from 'zena:string-convert';
 import { console } from 'zena:console';
+
+export let castValTypeRefNullIfNeeded = (ctx: FunctionContext, initWasmType: ValType, targetWasmType: ValType): void => {
+  let isTargetRef = match (targetWasmType) {
+    case ValTypeRef: true
+    case ValTypeRefNull: true
+    case ValTypeStructRef: true
+    case _: false
+  };
+  if (isTargetRef && !valTypeEquals(initWasmType, targetWasmType)) {
+    let targetIdx = match (targetWasmType) {
+      case ValTypeRefNull as trn: trn.target.index
+      case ValTypeRef as tr: tr.target.index
+      case ValTypeStructRef: heapTypeToSigned(HeapType.struct)
+      case _: -1
+    };
+    if (targetIdx != -1) {
+      ctx.emitter.emitRefCastNull(targetIdx);
+    }
+  }
+};
+
+export let castRefNullIfNeeded = (ctx: FunctionContext, argType: Type, targetType: Type): void => {
+  let initWasmType = typeToValTypeWithSub(ctx.wasm, argType, ctx.wasmFunction);
+  let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetType, ctx.wasmFunction);
+  castValTypeRefNullIfNeeded(ctx, initWasmType, targetWasmType);
+};
 
 let generateCallArguments = (
   ctx: FunctionContext,
@@ -38,11 +64,13 @@ let generateCallArguments = (
     let arg = call.args[i];
     let isDefault = hasDefaults && i >= originalArgCount;
 
-    let symId = if (ft != null && ft.parameterSymbols != null && i < (ft.parameterSymbols as Array<SymbolId>).length) {
-      (ft.parameterSymbols as Array<SymbolId>)[i]
+    let symId = if (ft != null && (ft as FunctionType).parameterSymbols != null && i < ((ft as FunctionType).parameterSymbols as Array<SymbolId>).length) {
+      ((ft as FunctionType).parameterSymbols as Array<SymbolId>)[i]
     } else {
       -1 as SymbolId
     };
+
+    let expectedParamType = if (ft != null && i < (ft as FunctionType).parameters.length) (ft as FunctionType).parameters[i] else null;
 
     if (isDefault) {
       let savedClass = ctx.wasmFunction.classType;
@@ -60,11 +88,18 @@ let generateCallArguments = (
       genExpr(arg, false);
     }
 
+    if (expectedParamType != null) {
+      let argType = getExpressionType(ctx, arg);
+      if (argType != null) {
+        castRefNullIfNeeded(ctx, argType as Type, expectedParamType as Type);
+      }
+    }
+
     // Save parameter value for subsequent default arguments if needed
     if (symId != (-1 as SymbolId)) {
-      let argType = getNodeType(ctx, arg);
-      if (argType == null) throw new Error("Missing parameter type for default arg save");
-      let tempLocal = ctx.allocLocal(typeToValType(ctx.wasm, argType));
+      let argTypeOpt = getExpressionType(ctx, arg);
+      let expectedType = if (expectedParamType != null) (expectedParamType as Type) else (if (argTypeOpt == null) throw new Error("Missing parameter type for default arg save") else argTypeOpt as Type);
+      let tempLocal = ctx.allocLocal(typeToValTypeWithSub(ctx.wasm, expectedType, ctx.wasmFunction));
       if (ctx.localIndices.has(symId)) {
         savedLocalIndices[symId] = ctx.localIndices[symId];
       }
@@ -321,8 +356,8 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           
           let resolved = symVal.resolveTarget();
           var resolvedArgsCall = new Array<Type>();
-          if (ft != null && ft.typeArguments != null) {
-            for (let arg in (ft.typeArguments as Array<Type>)) {
+          if (ft != null && (ft as FunctionType).typeArguments != null) {
+            for (let arg in ((ft as FunctionType).typeArguments as Array<Type>)) {
               resolvedArgsCall.push(substituteTypeParamsInFunctionContext(ctx.wasmFunction, arg));
             }
           }
@@ -376,12 +411,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             if (!f.isStatic) {
               currentGenExpr(member.object, false);
             }
-            var argIdx = 0;
-            while (argIdx < call.args.length) {
-              let arg = call.args[argIdx];
-              currentGenExpr(arg, false);
-              argIdx += 1;
-            }
+            generateCallArguments(ctx, call, ft, -1, currentGenExpr);
             ctx.emitter.emitCall(f);
             return;
           }
@@ -440,8 +470,8 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             if (mInfo.type is FunctionType) {
               let baseFt = mInfo.type as FunctionType;
               if (baseFt.typeParameters != null && (baseFt.typeParameters as Array<TypeParameterType>).length > 0) {
-                if (ft != null && ft.typeArguments != null) {
-                  methodTypeArgs = ft.typeArguments as Array<Type>;
+                if (ft != null && (ft as FunctionType).typeArguments != null) {
+                  methodTypeArgs = (ft as FunctionType).typeArguments as Array<Type>;
                   let resolvedArgsCall = new Array<Type>();
                   for (let arg in methodTypeArgs as Array<Type>) {
                     resolvedArgsCall.push(substituteTypeParamsInFunctionContext(ctx.wasmFunction, arg));
@@ -519,8 +549,8 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           } else if (member.object is Identifier) {
             let identObj = member.object as Identifier;
             let sym = ctx.wasmFunction.model.resolve(identObj);
-            if (sym != null && ctx.localConcreteClassTypes.has(sym.id)) {
-              receiverCt = ctx.localConcreteClassTypes[sym.id];
+            if (sym != null && ctx.localConcreteClassTypes.has((sym as Symbol).id)) {
+              receiverCt = ctx.localConcreteClassTypes[(sym as Symbol).id];
               isConcrete = true;
             }
           }
@@ -754,7 +784,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           }
           
           if (foundFunc == null) {
-            throw new Error("Could not find extension function for array method call: " + targetName + " for element type " + typeToString(elemType as Type) + " in function " + ctx.wasmFunction.name);
+             throw new Error("Could not find extension function for array method call: " + targetName + " for element type " + typeToString(elemType as Type) + " in function " + (ctx.wasmFunction.name as String));
           }
 
           let f = foundFunc as WasmFunction;

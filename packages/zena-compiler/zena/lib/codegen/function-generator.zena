@@ -9,8 +9,8 @@ import {
   ContinueStatement, RecordLiteral, TupleLiteral, MemberExpression,
   IndexExpression, NewExpression, MethodDefinition, FieldInitializer, Parameter,
   ThisExpression, SuperInitializer, SuperExpression, ClassDeclaration, FieldDefinition,
-  AccessorDeclaration, SetterInfo, AsExpression, IsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral, TaggedTemplateExpression,
-  SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
+  AccessorDeclaration, SetterInfo, AsExpression, IsExpression, MatchExpression, ArrayLiteral, SymbolPropertyName, TemplateLiteral, TaggedTemplateExpression, MapLiteral,
+  SourceLocation, ForInStatement, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAnnotation,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction,
   ThrowExpression, TryExpression, RangeExpression, PipelineExpression, PipePlaceholder,
   Module, getMemberPropertyName
@@ -23,7 +23,7 @@ import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned } from './wasm.zena';
 import { WasmField, WasmStruct, WasmSignature, sortWasmFields, WasmGlobal, WasmFunction, WasmModule, WasmArray } from './wasm-module.zena';
-import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters, getNonNullableType, getInterfaceTypeParameters } from './type-mapping.zena';
+import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters, getNonNullableType, getInterfaceTypeParameters, substituteTypeParamsInClassContext } from './type-mapping.zena';
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
   getClassPrivateFieldKey, classInterfaceKeyToString,
@@ -45,7 +45,7 @@ import { generateIfExpression, generateThrowExpression, generateTryExpression, g
 import { generateNewExpression, generateRangeExpression } from './expr/classes.zena';
 import { generateMatchExpression } from './expr/match.zena';
 import { generateMemberExpression, generateIndexExpression } from './expr/member.zena';
-import { generateRecordLiteral, generateTupleLiteral, generateArrayLiteral } from './expr/literals.zena';
+import { generateRecordLiteral, generateTupleLiteral, generateArrayLiteral, generateMapLiteral } from './expr/literals.zena';
 import { generateReturnStatement, generateExpressionStatement, generateIfStatement, generateValueReturn } from './stmt/control-flow.zena';
 import { generateBreakStatement, generateContinueStatement, generateWhileStatement, generateForStatement, generateForInStatement } from './stmt/loops.zena';
 import { generateBlockStatement } from './stmt/blocks.zena';
@@ -59,6 +59,7 @@ import { WasmEmitter } from './wasm-emitter.zena';
  */
 export final class FunctionGenerator {
   ctx: FunctionContext;
+  var ignoreInterfaceAdaptations = false;
 
   new(wasm: WasmModule, emitter: WasmEmitter, wasmFunction: WasmFunction)
     : ctx = new FunctionContext(wasm, emitter, wasmFunction);
@@ -293,25 +294,42 @@ export final class FunctionGenerator {
       if (this.ctx.wasmFunction.methodName != null && (this.ctx.wasmFunction.methodName as String) == "<constructor>") {
         let classType = this.ctx.wasmFunction.classType as ClassType;
         let classDecl = this.ctx.wasmFunction.classDecl;
-        if (classDecl != null && classDecl is ClassDeclaration) {
-          let cd = classDecl as ClassDeclaration;
-          let mixinFields = new Array<FieldDefinition>();
-          let seenMixins = new HashMap<MixinKey, boolean>();
-          collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
-
-          let allFields = new Array<FieldDefinition>();
-          for (let member in cd.body) {
-            if (member is FieldDefinition) {
-              allFields.push(member as FieldDefinition);
+        if (classDecl != null) {
+          var bodyNodes: Array<Node> | null = null;
+          var mixins: Array<TypeAnnotation> | null = null;
+          if (classDecl is ClassDeclaration) {
+            let cd = classDecl as ClassDeclaration;
+            bodyNodes = cd.body;
+            mixins = cd.mixins;
+          } else if (classDecl is InterfaceDeclaration) {
+            let id = classDecl as InterfaceDeclaration;
+            bodyNodes = id.body;
+          } else if (classDecl is MixinDeclaration) {
+            let md = classDecl as MixinDeclaration;
+            bodyNodes = md.body;
+            mixins = md.mixins;
+          }
+          if (bodyNodes != null) {
+            let mixinFields = new Array<FieldDefinition>();
+            let seenMixins = new HashMap<MixinKey, boolean>();
+            if (mixins != null) {
+              collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, mixins as Array<TypeAnnotation>, mixinFields, seenMixins);
             }
-          }
-          for (let fd in mixinFields) {
-            allFields.push(fd);
-          }
 
-          for (let fd in allFields) {
-            if (fd.value != null && !fd.isStatic) {
-              this.discoverLocalsFromExpr(fd.value as Expression);
+            let allFields = new Array<FieldDefinition>();
+            for (let member in bodyNodes as Array<Node>) {
+              if (member is FieldDefinition) {
+                allFields.push(member as FieldDefinition);
+              }
+            }
+            for (let fd in mixinFields) {
+              allFields.push(fd);
+            }
+
+            for (let fd in allFields) {
+              if (fd.value != null && !fd.isStatic) {
+                this.discoverLocalsFromExpr(fd.value as Expression);
+              }
             }
           }
         }
@@ -374,23 +392,52 @@ export final class FunctionGenerator {
           this.ctx.emitter.emitLocalGet(1);
           this.ctx.emitter.emitStructSet(st.index, this.ctx.wasmFunction.setterFieldIndex);
         }
+      } else if (this.ctx.wasmFunction.intrinsic != null) {
+        let intrinsic = this.ctx.wasmFunction.intrinsic as String;
+        if (intrinsic == "array.len") {
+          this.ctx.emitter.emitLocalGet(0);
+          this.ctx.emitter.emitArrayLen();
+          this.ctx.emitter.emitReturn();
+          this.ctx.isReachable = false;
+        } else {
+          this.ctx.emitter.emitUnreachable();
+          this.ctx.isReachable = false;
+        }
       } else if (this.ctx.wasmFunction.interfaceTrampolineTarget != null) {
         let target = this.ctx.wasmFunction.interfaceTrampolineTarget as WasmFunction;
-        if (target.index == -1) {
+        if (target.intrinsic != null) {
+          let intr = target.intrinsic as String;
+          if (intr == "array.len") {
+            this.ctx.emitter.emitLocalGet(0);
+            let receiverType = target.signature.params[0];
+            match (receiverType) {
+              case ValTypeRefNull as r: {
+                this.ctx.emitter.emitRefCast(r.target.index);
+              }
+              case ValTypeRef as r: {
+                this.ctx.emitter.emitRefCast(r.target.index);
+              }
+              case _: {}
+            }
+            this.ctx.emitter.emitArrayLen();
+          } else {
+            this.ctx.emitter.emitUnreachable();
+          }
+        } else if (target.index == -1) {
           this.ctx.emitter.emitUnreachable();
           return;
-        }
-        this.ctx.emitter.emitLocalGet(0);
-        let receiverType = target.signature.params[0];
-        match (receiverType) {
-          case ValTypeRefNull as r: {
-            this.ctx.emitter.emitRefCast(r.target.index);
+        } else {
+          this.ctx.emitter.emitLocalGet(0);
+          let receiverType = target.signature.params[0];
+          match (receiverType) {
+            case ValTypeRefNull as r: {
+              this.ctx.emitter.emitRefCast(r.target.index);
+            }
+            case ValTypeRef as r: {
+              this.ctx.emitter.emitRefCast(r.target.index);
+            }
+            case _: {}
           }
-          case ValTypeRef as r: {
-            this.ctx.emitter.emitRefCast(r.target.index);
-          }
-          case _: {}
-        }
         var i = 1;
         while (i < this.ctx.wasmFunction.signature.params.length) {
           this.ctx.emitter.emitLocalGet(i);
@@ -410,7 +457,8 @@ export final class FunctionGenerator {
           i += 1;
         }
         this.ctx.emitter.emitCall(target);
-      } else if (this.ctx.wasmFunction.isFunctionAdaptation) {
+      }
+    } else if (this.ctx.wasmFunction.isFunctionAdaptation) {
         this.generateFunctionAdaptationBody();
       } else if (this.ctx.wasmFunction.isClosureTrampoline) {
         this.generateClosureTrampolineBody();
@@ -583,7 +631,7 @@ export final class FunctionGenerator {
         if (sym != null && this.ctx.isCelled(sym.id)) {
           let paramIdx = this.ctx.localIndices[sym.id];
           let symType = this.ctx.wasmFunction.model.getBindingType(sym);
-          let valType = typeToValTypeWithSub(this.ctx.wasm, symType, this.ctx.wasmFunction);
+          let valType = typeToValTypeWithSub(this.ctx.wasm, symType as Type, this.ctx.wasmFunction);
           let cellStruct = getCellStruct(this.ctx.wasm, valType);
           
           let cellLocalIdx = this.ctx.allocLocal(new ValTypeRefNull(cellStruct));
@@ -604,7 +652,7 @@ export final class FunctionGenerator {
             let loadParamValue = (): void => {
               this.ctx.emitter.emitLocalGet(paramIdx);
             };
-            generatePatternBinding(this.ctx, param.pattern as Node, symType, loadParamValue);
+            generatePatternBinding(this.ctx, param.pattern as Node, symType as Type, loadParamValue);
           }
         }
       }
@@ -649,66 +697,95 @@ export final class FunctionGenerator {
         case _: "<unknown>"
       };
       if (methName == "<constructor>") {
+        if (this.ctx.wasmFunction.classType != null) {
+          // console.log("Compiling ctor body for:");
+          let ct = this.ctx.wasmFunction.classType as ClassType;
+          // console.log(ct.name);
+          let inits = mDef.initializerList;
+          // console.log("has initializerList:");
+          // console.log(if (inits == null) "false" else "true");
+          if (inits != null) {
+            // console.log("initializerList length:");
+            // console.log(i32ToString((inits as Array<Node>).length));
+          }
+        }
         let structType = this.ctx.wasmFunction.structType;
         if (structType != null) {
           let classDecl = this.ctx.wasmFunction.classDecl;
-          if (classDecl != null && classDecl is ClassDeclaration) {
-            let cd = classDecl as ClassDeclaration;
-            let mixinFields = new Array<FieldDefinition>();
-            let seenMixins = new HashMap<MixinKey, boolean>();
-            collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
-
-            let allFields = new Array<FieldDefinition>();
-            for (let member in cd.body) {
-              if (member is FieldDefinition) {
-                allFields.push(member as FieldDefinition);
+          if (classDecl != null) {
+            var bodyNodes: Array<Node> | null = null;
+            var mixins: Array<TypeAnnotation> | null = null;
+            if (classDecl is ClassDeclaration) {
+              let cd = classDecl as ClassDeclaration;
+              bodyNodes = cd.body;
+              mixins = cd.mixins;
+            } else if (classDecl is InterfaceDeclaration) {
+              let id = classDecl as InterfaceDeclaration;
+              bodyNodes = id.body;
+            } else if (classDecl is MixinDeclaration) {
+              let md = classDecl as MixinDeclaration;
+              bodyNodes = md.body;
+              mixins = md.mixins;
+            }
+            if (bodyNodes != null) {
+              let mixinFields = new Array<FieldDefinition>();
+              let seenMixins = new HashMap<MixinKey, boolean>();
+              if (mixins != null) {
+                collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, mixins as Array<TypeAnnotation>, mixinFields, seenMixins);
               }
-            }
-            for (let fd in mixinFields) {
-              allFields.push(fd);
-            }
 
-            for (let fd in allFields) {
-              if (fd.value != null && !fd.isStatic) {
-                let fieldName = match (fd.name) {
-                  case Identifier {name}: name
-                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+              let allFields = new Array<FieldDefinition>();
+              for (let member in bodyNodes as Array<Node>) {
+                if (member is FieldDefinition) {
+                  allFields.push(member as FieldDefinition);
+                }
+              }
+              for (let fd in mixinFields) {
+                allFields.push(fd);
+              }
+
+              for (let fd in allFields) {
+                if (fd.value != null && !fd.isStatic) {
+                  let fieldName = match (fd.name) {
                     case Identifier {name}: name
-                    case MemberExpression {property}: property.name
-                    case _: "<symbol>"
-                  }
-                  case _: ""
-                };
-                if (fieldName != "") {
-                  var actualFieldName = fieldName;
-                  if (this.ctx.wasmFunction.classType != null) {
-                    let ct = this.ctx.wasmFunction.classType as ClassType;
-                    if (ct.fieldSetterNames != null) {
-                      let m = ct.fieldSetterNames as HashMap<String, String>;
-                      if (m.has(fieldName)) {
-                        actualFieldName = m[fieldName];
+                    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                      case Identifier {name}: name
+                      case MemberExpression {property}: property.name
+                      case _: "<symbol>"
+                    }
+                    case _: ""
+                  };
+                  if (fieldName != "") {
+                    var actualFieldName = fieldName;
+                    if (this.ctx.wasmFunction.classType != null) {
+                      let ct = this.ctx.wasmFunction.classType as ClassType;
+                      if (ct.fieldSetterNames != null) {
+                        let m = ct.fieldSetterNames as HashMap<String, String>;
+                        if (m.has(fieldName)) {
+                          actualFieldName = m[fieldName];
+                        }
                       }
                     }
-                  }
-                  var fieldIndex = -1;
-                  let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
-                    if (this.ctx.wasmFunction.classType != null) {
-                      getClassPrivateFieldKey(getClassKey(this.ctx.wasmFunction.classType as ClassType), actualFieldName)
+                    var fieldIndex = -1;
+                    let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
+                      if (this.ctx.wasmFunction.classType != null) {
+                        getClassPrivateFieldKey(getClassKey(this.ctx.wasmFunction.classType as ClassType), actualFieldName)
+                      } else {
+                        actualFieldName
+                      }
                     } else {
                       actualFieldName
+                    };
+                    for (var i = 0; i < structType.fields.length; i += 1) {
+                      if (structType.fields[i].name != null && (structType.fields[i].name as String) == lookupName) {
+                        fieldIndex = i;
+                      }
                     }
-                  } else {
-                    actualFieldName
-                  };
-                  for (var i = 0; i < structType.fields.length; i += 1) {
-                    if (structType.fields[i].name != null && (structType.fields[i].name as String) == lookupName) {
-                      fieldIndex = i;
+                    if (fieldIndex >= 0) {
+                      this.ctx.emitter.emitLocalGet(0);
+                      this.generateExpression(fd.value as Expression);
+                      this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
                     }
-                  }
-                  if (fieldIndex >= 0) {
-                    this.ctx.emitter.emitLocalGet(0);
-                    this.generateExpression(fd.value as Expression);
-                    this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
                   }
                 }
               }
@@ -824,7 +901,7 @@ export final class FunctionGenerator {
             } else {
               if (this.ctx.isReachable) {
                 throw new Error("Function '" + name + "' misses a return statement");
-              } else if (this.ctx.needsUnreachable) {
+              } else {
                 this.ctx.emitter.emitUnreachable();
               }
             }
@@ -862,7 +939,7 @@ export final class FunctionGenerator {
       case IfStatement: generateIfStatement(this.ctx, stmt as IfStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
       case WhileStatement: generateWhileStatement(this.ctx, stmt as WhileStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
       case ForStatement: generateForStatement(this.ctx, stmt as ForStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s))
-      case ForInStatement: generateForInStatement(this.ctx, stmt as ForInStatement, (e: Expression, discardValue: boolean = false) => this.generateExpression(e, discardValue), (s: Statement) => this.generateStatement(s), generatePatternBinding)
+      case ForInStatement: generateForInStatement(this.ctx, stmt as ForInStatement, (e: Expression, discardValue: boolean, ignoreAdaptations: boolean) => this.generateExpressionWithAdaptationOption(e, discardValue, ignoreAdaptations), (s: Statement) => this.generateStatement(s), generatePatternBinding)
       case VariableDeclaration: generateVariableDeclaration(this.ctx, stmt as VariableDeclaration, (e: Expression) => this.generateExpression(e))
       case _: {
         var typeStr = "Other Node";
@@ -898,6 +975,13 @@ export final class FunctionGenerator {
     }
   }
 
+  generateExpressionWithAdaptationOption(expr: Expression, discardValue: boolean, ignoreAdaptations: boolean): void {
+    let old = this.ignoreInterfaceAdaptations;
+    this.ignoreInterfaceAdaptations = ignoreAdaptations;
+    this.generateExpression(expr, discardValue);
+    this.ignoreInterfaceAdaptations = old;
+  }
+
   generateExpression(expr: Expression, discardValue: boolean = false): void {
     var handlesDiscardNatively: boolean = false;
     match (expr) {
@@ -916,6 +1000,7 @@ export final class FunctionGenerator {
       case RecordLiteral: generateRecordLiteral(this.ctx, expr as RecordLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case TupleLiteral: generateTupleLiteral(this.ctx, expr as TupleLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case ArrayLiteral: generateArrayLiteral(this.ctx, expr as ArrayLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
+      case MapLiteral: generateMapLiteral(this.ctx, expr as MapLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
       case ThisExpression: {
         if (this.ctx.thisLocalIndex >= 0) {
@@ -1023,7 +1108,7 @@ export final class FunctionGenerator {
       }
       case AsExpression: {
         let asExpr = expr as AsExpression;
-        let targetType = this.ctx.wasmFunction.model.getNodeType(asExpr);
+        let targetType = this.ctx.wasmFunction.model.getNodeType(asExpr) as Type;
         let targetWasmType = typeToValTypeWithSub(this.ctx.wasm, targetType, this.ctx.wasmFunction);
 
         var handledLiteral = false;
@@ -1065,8 +1150,11 @@ export final class FunctionGenerator {
         if (!handledLiteral) {
           this.generateExpression(asExpr.expression);
           
-           let rawSourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
-          var sourceType = rawSourceType;
+          let rawSourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
+          var sourceType: Type = new AnyType() as Type;
+          if (rawSourceType != null) {
+            sourceType = rawSourceType as Type;
+          }
           if (asExpr.expression is Identifier) {
             let sym = this.ctx.wasmFunction.model.resolve(asExpr.expression as Identifier);
             if (sym != null) {
@@ -1260,11 +1348,6 @@ export final class FunctionGenerator {
         }
       }
     }
-    case _: {
-      let t = this.ctx.wasmFunction.model.getNodeType(expr);
-      let tStr = if (t != null) { typeToString(t as Type) } else { "null" };
-      throw new Error("Unsupported expression type in codegen. Node type in model: " + tStr);
-    }
   }
     
     // EXCEPTION: Implicit Structural Adaptation
@@ -1308,15 +1391,23 @@ export final class FunctionGenerator {
       this.ctx.emitter.emitStructNew(outDispatchInfo.fatPtrType.index);
     }
 
-    let interfaceAdaptation = this.ctx.wasmFunction.model.getInterfaceAdaptation(expr);
+    let interfaceAdaptation = if (this.ignoreInterfaceAdaptations) null else this.ctx.wasmFunction.model.getInterfaceAdaptation(expr);
     if (interfaceAdaptation != null && !discardValue) {
       let ia = interfaceAdaptation as InterfaceAdaptation;
       var srcType = ia.source;
       var tgtType = ia.target;
+      if (srcType is ClassType) {
+        let sct = srcType as ClassType;
+        if (sct.isMixinIntermediate || (sct.name.length >= 5 && sct.name.sliceBytes(sct.name.length - 5, sct.name.length) == "_This")) {
+          if (this.ctx.wasmFunction.classType != null) {
+            srcType = this.ctx.wasmFunction.classType as ClassType;
+          }
+        }
+      }
       if (this.ctx.wasmFunction.classType != null) {
         let ct = this.ctx.wasmFunction.classType as ClassType;
-        srcType = substituteTypeParamsInCodegen(getClassTypeParameters(ct), ct.typeArguments, srcType) as ClassType;
-        tgtType = substituteTypeParamsInCodegen(getClassTypeParameters(ct), ct.typeArguments, tgtType) as InterfaceType;
+        srcType = substituteTypeParamsInClassContext(ct, srcType) as ClassType;
+        tgtType = substituteTypeParamsInClassContext(ct, tgtType) as InterfaceType;
       }
       let cName = getClassKey(srcType);
       let iName = getInterfaceKey(tgtType);
@@ -1754,49 +1845,67 @@ export final class FunctionGenerator {
     
     // 2. Initialize fields with default values
     let classDecl = this.ctx.wasmFunction.classDecl;
-    if (classDecl != null && classDecl is ClassDeclaration) {
-      let cd = classDecl as ClassDeclaration;
-      let mixinFields = new Array<FieldDefinition>();
-      let seenMixins = new HashMap<MixinKey, boolean>();
-      collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
-
-      let allFields = new Array<FieldDefinition>();
-      for (let member in cd.body) {
-        if (member is FieldDefinition) {
-          allFields.push(member as FieldDefinition);
+    if (classDecl != null) {
+      var bodyNodes: Array<Node> | null = null;
+      var mixins: Array<TypeAnnotation> | null = null;
+      if (classDecl is ClassDeclaration) {
+        let cd = classDecl as ClassDeclaration;
+        bodyNodes = cd.body;
+        mixins = cd.mixins;
+      } else if (classDecl is InterfaceDeclaration) {
+        let id = classDecl as InterfaceDeclaration;
+        bodyNodes = id.body;
+      } else if (classDecl is MixinDeclaration) {
+        let md = classDecl as MixinDeclaration;
+        bodyNodes = md.body;
+        mixins = md.mixins;
+      }
+      if (bodyNodes != null) {
+        let mixinFields = new Array<FieldDefinition>();
+        let seenMixins = new HashMap<MixinKey, boolean>();
+        if (mixins != null) {
+          collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, mixins as Array<TypeAnnotation>, mixinFields, seenMixins);
         }
-      }
-      for (let fd in mixinFields) {
-        allFields.push(fd);
-      }
 
-      for (let fd in allFields) {
-        if (fd.value != null && !fd.isStatic) {
-          let fieldName = match (fd.name) {
-            case Identifier {name}: name
-            case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+        let allFields = new Array<FieldDefinition>();
+        for (let member in bodyNodes as Array<Node>) {
+          if (member is FieldDefinition) {
+            allFields.push(member as FieldDefinition);
+          }
+        }
+        for (let fd in mixinFields) {
+          allFields.push(fd);
+        }
+
+        for (let fd in allFields) {
+          if (fd.value != null && !fd.isStatic) {
+            let fieldName = match (fd.name) {
               case Identifier {name}: name
-              case MemberExpression {property}: property.name
-              case _: "<symbol>"
-            }
-            case _: ""
-          };
-          if (fieldName != "") {
-            let lookupName = if (fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#") {
-              getClassPrivateFieldKey(getClassKey(classType), fieldName)
-            } else {
-              fieldName
-            };
-            var fieldIndex = -1;
-            for (var i = 0; i < structType.fields.length; i += 1) {
-              if (structType.fields[i].name != null && (structType.fields[i].name as String) == lookupName) {
-                fieldIndex = i;
+              case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+                case Identifier {name}: name
+                case MemberExpression {property}: property.name
+                case _: "<symbol>"
               }
-            }
-            if (fieldIndex != -1) {
-              this.ctx.emitter.emitLocalGet(0);
-              this.generateExpression(fd.value as Expression);
-              this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
+              case _: ""
+            };
+            if (fieldName != "") {
+              let lookupName = if (fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#") {
+                getClassPrivateFieldKey(getClassKey(classType), fieldName)
+              } else {
+                fieldName
+              };
+              var fieldIndex = -1;
+              for (var i = 0; i < structType.fields.length; i += 1) {
+                if (structType.fields[i].name != null && (structType.fields[i].name as String) == lookupName) {
+                  fieldIndex = i;
+                }
+              }
+
+              if (fieldIndex != -1) {
+                this.ctx.emitter.emitLocalGet(0);
+                this.generateExpression(fd.value as Expression);
+                this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
+              }
             }
           }
         }
