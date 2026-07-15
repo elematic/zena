@@ -166,7 +166,9 @@ fn compile_to_cache(
         .unwrap()
         .parent()
         .unwrap();
-    let compiler_wasm = repo_root.join("packages/zena-compiler/zena/out/cli.wasm");
+    let compiler_wasm = std::env::var("ZENA_COMPILER_WASM")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| repo_root.join("packages/zena-compiler/zena/out/cli.wasm"));
 
     if !compiler_wasm.exists() {
         anyhow::bail!(
@@ -199,6 +201,49 @@ fn compile_to_cache(
     if let Ok(compiler_bytes) = std::fs::read(&compiler_wasm) {
         compiler_bytes.hash(&mut hasher);
     }
+
+    // Walk packages/stdlib to include standard library files
+    let stdlib_dir = repo_root.join("packages/stdlib");
+    for entry in WalkDir::new(&stdlib_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "zena"))
+    {
+        entry.path().hash(&mut hasher);
+        if let Ok(metadata) = entry.metadata() {
+            if let Ok(modified) = metadata.modified() {
+                modified.hash(&mut hasher);
+            }
+            metadata.len().hash(&mut hasher);
+        }
+    }
+
+    // If the file is inside the repo's packages directory, hash that package's zena files
+    if let Ok(rel_to_repo) = abs_path.strip_prefix(&repo_root) {
+        let mut components = rel_to_repo.components();
+        if let Some(std::path::Component::Normal(first)) = components.next() {
+            if first == "packages" {
+                if let Some(std::path::Component::Normal(pkg_name)) = components.next() {
+                    let pkg_dir = repo_root.join("packages").join(pkg_name);
+                    // Walk only the package directory recursively
+                    for entry in WalkDir::new(&pkg_dir)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().extension().map_or(false, |ext| ext == "zena"))
+                    {
+                        entry.path().hash(&mut hasher);
+                        if let Ok(metadata) = entry.metadata() {
+                            if let Ok(modified) = metadata.modified() {
+                                modified.hash(&mut hasher);
+                            }
+                            metadata.len().hash(&mut hasher);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let hash = hasher.finish();
     let file_name = abs_path.file_stem().unwrap_or_default().to_string_lossy();
     let cached_wasm_name = format!("{}_{:x}.wasm", file_name, hash);
@@ -232,6 +277,7 @@ fn compile_to_cache(
     }
 
     let mut config = Config::new();
+    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
@@ -348,6 +394,7 @@ fn compile_to_cache(
 
 fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[String]) -> Result<()> {
     let mut config = Config::new();
+    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
@@ -649,6 +696,7 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool) -> Resul
     println!("Running {} tests...", test_files.len());
 
     let mut config = Config::new();
+    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
@@ -667,7 +715,9 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool) -> Resul
             .unwrap()
             .parent()
             .unwrap();
-        let compiler_wasm = repo_root.join("packages/zena-compiler/zena/out/cli.wasm");
+        let compiler_wasm = std::env::var("ZENA_COMPILER_WASM")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| repo_root.join("packages/zena-compiler/zena/out/cli.wasm"));
         if compiler_wasm.exists() {
             let cwasm_path = compiler_wasm.with_extension("cwasm");
             let _ = load_or_compile_module(&engine, &compiler_wasm, &cwasm_path)?;

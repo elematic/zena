@@ -20,6 +20,9 @@ const outDir = join(zenaDir, 'out');
 const cliPath = join(pkgDir, '..', 'cli', 'lib', 'cli.js');
 const repoRoot = join(pkgDir, '..', '..');
 
+const selfHosted = process.env.SELF_HOSTED === 'true';
+const testSubdir = selfHosted ? 'test-self' : 'test';
+
 // Generate a single monolithic test file
 const generateWrapper = (testFileNames: string[]): string => {
   let imports = '';
@@ -46,7 +49,7 @@ ${pushes}
 // Build all test files
 const testPattern = 'test/*_test.zena';
 
-console.log('Building zena-compiler tests...');
+console.log(`Building zena-compiler tests (${selfHosted ? 'self-hosted' : 'bootstrap'})...`);
 console.log('');
 
 const fullPattern = join(zenaDir, testPattern);
@@ -56,7 +59,7 @@ files.sort(); // Ensure stable output order
 const testFileNames = files.map((f) => basename(f));
 const wrapperFileName = '__all_tests__.zena';
 const wrapperPath = join(zenaDir, 'test', wrapperFileName);
-const wasmFile = join(outDir, 'test', '__all_tests__.wasm');
+const wasmFile = join(outDir, testSubdir, '__all_tests__.wasm');
 
 // Ensure output directory exists
 const wasmDir = dirname(wasmFile);
@@ -66,14 +69,29 @@ if (!existsSync(wasmDir)) {
 
 writeFileSync(wrapperPath, generateWrapper(testFileNames));
 
+const compileCommand = (src: string, dest: string): string => {
+  if (selfHosted) {
+    const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+    return `"${zenaCli}" build "${src}" -o "${dest}"`;
+  } else {
+    return `node --stack-size=4096 "${cliPath}" build "${src}" --target wasi -g -l -o "${dest}" --warn-unnecessary-casts --warnings-as-errors`;
+  }
+};
+
+const runEnv = {...process.env};
+if (selfHosted) {
+  runEnv.ZENA_COMPILER_WASM = 'packages/zena-compiler/zena/out/cli-self.wasm';
+}
+
 let failed = false;
 
 try {
   execSync(
-    `node --stack-size=4096 "${cliPath}" build "${wrapperPath}" --target wasi -g -l -o "${wasmFile}" --warn-unnecessary-casts --warnings-as-errors`,
+    compileCommand(wrapperPath, wasmFile),
     {
       stdio: 'inherit', // Show compiler output so we see errors immediately
       cwd: repoRoot,
+      env: runEnv,
     },
   );
   console.log(`  ✓ Combined tests built successfully`);
@@ -83,14 +101,15 @@ try {
 }
 
 const syntaxSrc = join(zenaDir, 'test', 'portable_syntax.zena');
-const syntaxWasm = join(outDir, 'test', 'portable_syntax.wasm');
+const syntaxWasm = join(outDir, testSubdir, 'portable_syntax.wasm');
 try {
   console.log('Building portable syntax tests...');
   execSync(
-    `node --stack-size=4096 "${cliPath}" build "${syntaxSrc}" --target wasi -g -l -o "${syntaxWasm}" --warn-unnecessary-casts --warnings-as-errors`,
+    compileCommand(syntaxSrc, syntaxWasm),
     {
       stdio: 'inherit',
       cwd: repoRoot,
+      env: runEnv,
     },
   );
   console.log(`  ✓ Portable syntax tests built successfully`);
@@ -100,14 +119,15 @@ try {
 }
 
 const semanticsSrc = join(zenaDir, 'test', 'portable_semantics.zena');
-const semanticsWasm = join(outDir, 'test', 'portable_semantics.wasm');
+const semanticsWasm = join(outDir, testSubdir, 'portable_semantics.wasm');
 try {
   console.log('Building portable semantics tests...');
   execSync(
-    `node --stack-size=4096 "${cliPath}" build "${semanticsSrc}" --target wasi -g -l -o "${semanticsWasm}" --warn-unnecessary-casts --warnings-as-errors`,
+    compileCommand(semanticsSrc, semanticsWasm),
     {
       stdio: 'inherit',
       cwd: repoRoot,
+      env: runEnv,
     },
   );
   console.log(`  ✓ Portable semantics tests built successfully`);

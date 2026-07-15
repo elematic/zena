@@ -58,6 +58,10 @@ let targets = [
     name: 'stdlib_moderate.zena',
     path: join(benchmarksDir, 'stdlib_moderate.zena'),
   },
+  {
+    name: 'self_compile.zena',
+    path: join(repoRoot, 'packages', 'zena-compiler', 'zena', 'cli', 'main.zena'),
+  },
 ];
 
 if (filter) {

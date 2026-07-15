@@ -28,21 +28,19 @@ if (process.env.HOST_PATH) {
   process.env.PATH = `${process.env.HOST_PATH}:${process.env.PATH ?? ''}`;
 }
 
-// Check wasmtime is available
-try {
-  execSync('which wasmtime', {stdio: 'pipe'});
-} catch {
-  console.error(`${RED}Error: wasmtime not found${NC}`);
-  console.error('Install wasmtime or run: nix develop');
-  process.exit(1);
-}
+
 
 // Find all .wasm files
 const pattern = join(outDir, '**/*.wasm');
 const allWasmFiles = await glob(pattern);
+const selfHosted = process.env.SELF_HOSTED === 'true';
+const testSubdir = selfHosted ? 'test-self' : 'test';
+
 let wasmFiles = allWasmFiles.filter(
   (f) =>
+    f.includes(`/${testSubdir}/`) &&
     !f.endsWith('cli.wasm') &&
+    !f.endsWith('cli-self.wasm') &&
     !f.includes('/execution/') &&
     !f.endsWith('portable_syntax.wasm') &&
     !f.endsWith('portable_semantics.wasm'),

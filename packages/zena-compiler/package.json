@@ -14,10 +14,16 @@
     "build:scripts": "wireit",
     "build:cli": "wireit",
     "build:tests": "wireit",
+    "build:tests:self-hosted": "wireit",
+    "build:self-hosted": "wireit",
     "test": "wireit",
+    "test:self-hosted": "wireit",
     "test:unit": "wireit",
+    "test:unit:self-hosted": "wireit",
     "test:syntax": "wireit",
+    "test:syntax:self-hosted": "wireit",
     "test:semantics": "wireit",
+    "test:semantics:self-hosted": "wireit",
     "test:execution": "wireit",
     "test:interop": "wireit",
     "benchmark": "wireit"
@@ -51,6 +57,20 @@
         "../stdlib:lib"
       ]
     },
+    "build:self-hosted": {
+      "command": "../../target/release/zena-cli build zena/cli/main.zena -o zena/out/cli-self.wasm",
+      "files": [
+        "zena/**/*.zena",
+        "zena/out/cli.wasm"
+      ],
+      "output": [
+        "zena/out/cli-self.wasm"
+      ],
+      "dependencies": [
+        "build:cli",
+        "../zena-cli:build"
+      ]
+    },
     "build:scripts": {
       "command": "tsc",
       "files": [
@@ -80,6 +100,24 @@
         "../stdlib:lib"
       ]
     },
+    "build:tests:self-hosted": {
+      "command": "SELF_HOSTED=true node scripts/build-wasi-tests.js",
+      "files": [
+        "zena/**/*.zena",
+        "!zena/**/*.__runner__.zena",
+        "zena/out/cli-self.wasm"
+      ],
+      "output": [
+        "zena/out/test-self/**/*.wasm",
+        "zena/**/*.__runner__.zena"
+      ],
+      "dependencies": [
+        "build:scripts",
+        "build:self-hosted",
+        "../zena-cli:build",
+        "../stdlib:lib"
+      ]
+    },
     "test": {
       "dependencies": [
         "test:unit",
@@ -87,6 +125,14 @@
         "test:semantics",
         "test:execution",
         "test:interop"
+      ]
+    },
+    "test:self-hosted": {
+      "dependencies": [
+        "build:self-hosted",
+        "test:unit:self-hosted",
+        "test:syntax:self-hosted",
+        "test:semantics:self-hosted"
       ]
     },
     "test:unit": {
@@ -99,6 +145,18 @@
       "dependencies": [
         "build:scripts",
         "build:tests"
+      ]
+    },
+    "test:unit:self-hosted": {
+      "command": "SELF_HOSTED=true node scripts/run-wasmtime.js",
+      "files": [
+        "scripts/run-wasmtime.js",
+        "test-files/snapshots/**/*.snap"
+      ],
+      "output": [],
+      "dependencies": [
+        "build:scripts",
+        "build:tests:self-hosted"
       ]
     },
     "test:syntax": {
@@ -114,6 +172,19 @@
         "build:tests"
       ]
     },
+    "test:syntax:self-hosted": {
+      "command": "SELF_HOSTED=true node scripts/run-wasmtime.js zena/out/test-self/portable_syntax.wasm",
+      "files": [
+        "../../tests/language/syntax/**/*.zena",
+        "../../tests/language/syntax/**/*.ast.json",
+        "scripts/run-wasmtime.js"
+      ],
+      "output": [],
+      "dependencies": [
+        "build:scripts",
+        "build:tests:self-hosted"
+      ]
+    },
     "test:semantics": {
       "command": "node scripts/run-wasmtime.js zena/out/test/portable_semantics.wasm",
       "files": [
@@ -124,6 +195,18 @@
       "dependencies": [
         "build:scripts",
         "build:tests"
+      ]
+    },
+    "test:semantics:self-hosted": {
+      "command": "SELF_HOSTED=true node scripts/run-wasmtime.js zena/out/test-self/portable_semantics.wasm",
+      "files": [
+        "../../tests/language/semantics/**/*.zena",
+        "scripts/run-wasmtime.js"
+      ],
+      "output": [],
+      "dependencies": [
+        "build:scripts",
+        "build:tests:self-hosted"
       ]
     },
     "test:execution": {
