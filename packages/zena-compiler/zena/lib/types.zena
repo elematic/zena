@@ -176,6 +176,7 @@ export final class ClassType extends Type {
   var declaredFields: HashSet<String> | null = null;
   var sealedVariants: Array<ClassType> | null = null;
   var forwardVariantNames: HashSet<String> | null = null;
+  instantiations = new HashMap<String, ClassType>();
 
   /** The file path where this class was declared (set by the checker). */
   var sourcePath: String = "";
@@ -501,12 +502,29 @@ let substituteInType = (
  * Create an instantiated copy of a generic ClassType with concrete type arguments.
  * This is a factory function that properly initializes all fields from the source.
  */
+let getInstantiationKey = (typeArguments: Array<Type>): String => {
+  var sb = "";
+  for (let arg in typeArguments) {
+    if (sb != "") {
+      sb = sb + ",";
+    }
+    sb = sb + typeToString(arg);
+  }
+  return sb;
+};
+
 export let instantiateClassType = (
   source: ClassType,
   typeArguments: Array<Type>,
 ): ClassType => {
-
-  let result = new ClassType(source.id, source.name);
+  let key = getInstantiationKey(typeArguments);
+  let result = if (let (true, cached) = source.instantiations.get(key)) {
+    cached
+  } else {
+    let res = new ClassType(source.id, source.name);
+    source.instantiations[key] = res;
+    res
+  };
   result.typeParameters = source.typeParameters;
   result.typeArguments = typeArguments;
   result.genericSource = source;
@@ -517,6 +535,7 @@ export let instantiateClassType = (
     null
   };
   // Copy and substitute implementsList entries
+  result.implementsList = new Array<InterfaceType>();
   var i = 0;
   while (i < source.implementsList.length) {
     let subImpl = substituteInType(source.implementsList[i] as Type, source.typeParameters, typeArguments);
@@ -524,6 +543,7 @@ export let instantiateClassType = (
     i += 1;
   }
   // Copy and substitute mixins list
+  result.mixins = new Array<MixinType>();
   for (let m in source.mixins) {
     let subM = substituteInType(m, source.typeParameters, typeArguments);
     result.mixins.push((subM ?? m) as MixinType);
@@ -561,6 +581,7 @@ export let instantiateClassType = (
   result.forwardVariantNames = source.forwardVariantNames;
   
   // Copy vtable entries
+  result.vtable = new Array<String>();
   for (let f in source.vtable) {
     result.vtable.push(f);
   }
@@ -603,6 +624,7 @@ export final class InterfaceType extends Type {
   var genericSource: InterfaceType | null = null;
   var interfaceKey: String | null = null;
   var sourcePath: String = "";
+  instantiations = new HashMap<String, InterfaceType>();
 
   new(id: i32, name: String) : id = id, name = name, super();
 }
@@ -614,7 +636,14 @@ export let instantiateInterfaceType = (
   source: InterfaceType,
   typeArguments: Array<Type>,
 ): InterfaceType => {
-  let result = new InterfaceType(source.id, source.name);
+  let key = getInstantiationKey(typeArguments);
+  let result = if (let (true, cached) = source.instantiations.get(key)) {
+    cached
+  } else {
+    let res = new InterfaceType(source.id, source.name);
+    source.instantiations[key] = res;
+    res
+  };
   result.typeParameters = source.typeParameters;
   result.typeArguments = typeArguments;
   result.genericSource = source;
@@ -637,6 +666,7 @@ export final class MixinType extends Type {
   var sourcePath: String = "";
   var mixins: Array<MixinType> = new Array<MixinType>();
   var mixinKeyCache: String | null = null;
+  instantiations = new HashMap<String, MixinType>();
 
   new(name: String) : name = name, super();
 }
@@ -645,13 +675,21 @@ export let instantiateMixinType = (
   source: MixinType,
   typeArguments: Array<Type>,
 ): MixinType => {
-  let result = new MixinType(source.name);
+  let key = getInstantiationKey(typeArguments);
+  let result = if (let (true, cached) = source.instantiations.get(key)) {
+    cached
+  } else {
+    let res = new MixinType(source.name);
+    source.instantiations[key] = res;
+    res
+  };
   result.typeParameters = source.typeParameters;
   result.typeArguments = typeArguments;
   result.genericSource = source;
   result.onType = source.onType;
   result.members = source.members;
   result.sourcePath = source.sourcePath;
+  result.mixins = new Array<MixinType>();
   // Copy and substitute mixins
   for (let m in source.mixins) {
     let subM = substituteInType(m, source.typeParameters, typeArguments);
