@@ -999,8 +999,6 @@ let findDeclaration = (ctx: FunctionContext, sym: Symbol, expectedType: Type | n
   let decl = resolved.declaration;
   if (decl == null) return null;
 
-
-
   let prog = ctx.wasm.program;
   if (prog != null && resolved.modulePath != "") {
     let canonicalPath = resolved.modulePath;
@@ -1008,26 +1006,22 @@ let findDeclaration = (ctx: FunctionContext, sym: Symbol, expectedType: Type | n
       let targetUnit = prog.unitsByPath[canonicalPath];
       let importedName = resolved.name;
       
-      var fallback: DeclareFunction | null = null;
-      for (let stmt in targetUnit.ast.body) {
-        match (stmt) {
-          case DeclareFunction as df: {
-            if (df.name.name == importedName) {
-              if (expectedType == null) {
-                return df;
-              }
-              let nodeType = targetUnit.model.getNodeType(df);
-              if (nodeType != null && matchOverload(nodeType as Type, expectedType as Type)) {
-                return df;
-              }
-              fallback = df;
-            }
+      let key = canonicalPath + "::" + importedName;
+      if (let (true, list) = prog.exportedFunctions.get(key)) {
+        var fallback: DeclareFunction | null = null;
+        for (let df in list) {
+          if (expectedType == null) {
+            return df;
           }
-          case _: {}
+          let nodeType = targetUnit.model.getNodeType(df);
+          if (nodeType != null && matchOverload(nodeType as Type, expectedType as Type)) {
+            return df;
+          }
+          fallback = df;
         }
-      }
-      if (fallback != null) {
-        return fallback;
+        if (fallback != null) {
+          return fallback;
+        }
       }
     }
   }

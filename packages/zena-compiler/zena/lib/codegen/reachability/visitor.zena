@@ -1381,47 +1381,25 @@ let resolveImportedSymbolId = (program: Program, model: SemanticModel, spec: Imp
   let targetUnit = program.unitsByPath[canonicalPath];
   let importedName = spec.imported.name;
   
-  var fallback: Symbol | null = null;
-  for (let stmt in targetUnit.ast.body) {
-    match (stmt) {
-      case DeclareFunction as df: {
-        if (df.name.name == importedName) {
-          let sym = targetUnit.model.resolveDeclaration(df);
-          if (expectedType == null) {
-            return (sym as Symbol).id;
-          }
-          let nodeType = targetUnit.model.getNodeType(df);
-          if (nodeType != null && matchOverloadForImport(nodeType as Type, expectedType as Type)) {
-            return (sym as Symbol).id;
-          }
-          fallback = sym;
+  let key = canonicalPath + "::" + importedName;
+  if (let (true, list) = program.exportedSymbols.get(key)) {
+    var fallback: Symbol | null = null;
+    for (let sym in list) {
+      if (expectedType == null) {
+        return sym.id;
+      }
+      let declNode = sym.declaration;
+      if (declNode != null) {
+        let nodeType = targetUnit.model.getNodeType(declNode as Node);
+        if (nodeType != null && matchOverloadForImport(nodeType as Type, expectedType as Type)) {
+          return sym.id;
         }
       }
-      case VariableDeclaration as vd: {
-        match (vd.pattern) {
-          case IdentifierPattern {name} as pat: {
-            if (name == importedName) {
-              let sym = targetUnit.model.resolve(pat);
-              if (sym != null) {
-                if (expectedType == null) {
-                  return (sym as Symbol).id;
-                }
-                let nodeType = targetUnit.model.getNodeType(pat);
-                if (nodeType != null && matchOverloadForImport(nodeType as Type, expectedType as Type)) {
-                  return (sym as Symbol).id;
-                }
-                fallback = sym;
-              }
-            }
-          }
-          case _: {}
-        }
-      }
-      case _: {}
+      fallback = sym;
     }
-  }
-  if (fallback != null) {
-    return (fallback as Symbol).id;
+    if (fallback != null) {
+      return (fallback as Symbol).id;
+    }
   }
   return -1 as SymbolId;
 };
