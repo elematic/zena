@@ -126,6 +126,8 @@ export final class FunctionType extends Type {
   var isFinal: boolean = false;
   var isAbstract: boolean = false;
   var overloads: Array<FunctionType> | null = null;
+  var functionSymbolId: SymbolId = -1 as SymbolId;
+  var functionSymbolName: String = "";
 
   new(
     parameters: Array<Type>,
@@ -133,7 +135,8 @@ export final class FunctionType extends Type {
     returnType: Type
   ) : parameters = parameters,
       parameterNames = parameterNames,
-      returnType = returnType;
+      returnType = returnType,
+      super();
 }
 
 export final class ClassType extends Type {
@@ -142,9 +145,11 @@ export final class ClassType extends Type {
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
   var superType: ClassType | null = null;
-  implementsList = new Array<InterfaceType>();
-  mixins = new Array<MixinType>();
+  var implementsList: Array<InterfaceType> = new Array<InterfaceType>();
+  var mixins: Array<MixinType> = new Array<MixinType>();
   var classKey: String | null = null;
+  var cachedParams: Array<TypeParameterType> | null = null;
+  var cachedArgs: Array<Type> | null = null;
   
   /**
    * The members of the class (fields, methods, and accessors).
@@ -155,10 +160,10 @@ export final class ClassType extends Type {
    * This map is mutated incrementally by the checker during class resolution,
    * but is treated as immutable during codegen to emit `WasmStruct`s.
    */
-  var members = new OrderedMap<String, MemberInfo>();
+  var members: OrderedMap<String, MemberInfo> = new OrderedMap<String, MemberInfo>();
   var constructorType: FunctionType | null = null;
   var fieldSetterNames: HashMap<String, String> | null = null;
-  vtable = new Array<String>();
+  var vtable: Array<String> = new Array<String>();
   var isFinal = false;
   var isCaseClass = false;
   var isAbstract = false;
@@ -178,7 +183,7 @@ export final class ClassType extends Type {
   // that takes a generic class to copy. This will allow us to make as many
   // of these fields immutable as possible instead of reassigning them in
   // `instantiateClassType`.
-  new(id: i32, name: String) : id = id, name = name;
+  new(id: i32, name: String) : id = id, name = name, super();
 }
 
 let substituteInType = (
@@ -265,6 +270,8 @@ let substituteInType = (
       newFt.isFinal = ft.isFinal;
       newFt.isAbstract = ft.isAbstract;
       newFt.overloads = ft.overloads;
+      newFt.functionSymbolId = ft.functionSymbolId;
+      newFt.functionSymbolName = ft.functionSymbolName;
       newFt
     }
     case ClassType as ct: {
@@ -288,6 +295,7 @@ let substituteInType = (
           let sub = substituteInType(arg, typeParameters, typeArguments);
           newArgs.push((sub ?? arg));
         }
+
         let inst = new ClassType(ct.id, ct.name);
         inst.typeParameters = ctParams;
         inst.typeArguments = newArgs;
@@ -334,6 +342,8 @@ let substituteInType = (
           newFt.parameterInitializers = ctor.parameterInitializers;
           newFt.parameterSymbols = ctor.parameterSymbols;
           newFt.optionalParameters = ctor.optionalParameters;
+          newFt.functionSymbolId = ctor.functionSymbolId;
+          newFt.functionSymbolName = ctor.functionSymbolName;
           newFt
         } else {
           null
@@ -494,6 +504,7 @@ export let instantiateClassType = (
   source: ClassType,
   typeArguments: Array<Type>,
 ): ClassType => {
+
   let result = new ClassType(source.id, source.name);
   result.typeParameters = source.typeParameters;
   result.typeArguments = typeArguments;
@@ -528,6 +539,8 @@ export let instantiateClassType = (
     newFt.parameterInitializers = ctor.parameterInitializers;
     newFt.parameterSymbols = ctor.parameterSymbols;
     newFt.optionalParameters = ctor.optionalParameters;
+    newFt.functionSymbolId = ctor.functionSymbolId;
+    newFt.functionSymbolName = ctor.functionSymbolName;
     newFt
   } else {
     null
@@ -574,6 +587,8 @@ export let instantiateFunctionType = (
   newFt.isFinal = source.isFinal;
   newFt.isAbstract = source.isAbstract;
   newFt.overloads = source.overloads;
+  newFt.functionSymbolId = source.functionSymbolId;
+  newFt.functionSymbolName = source.functionSymbolName;
   return newFt;
 };
 
@@ -582,13 +597,13 @@ export final class InterfaceType extends Type {
   name: String;
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
-  var extendsList = new Array<InterfaceType>();
-  var members = new OrderedMap<String, MemberInfo>();
+  var extendsList: Array<InterfaceType> = new Array<InterfaceType>();
+  var members: OrderedMap<String, MemberInfo> = new OrderedMap<String, MemberInfo>();
   var genericSource: InterfaceType | null = null;
   var interfaceKey: String | null = null;
   var sourcePath: String = "";
 
-  new(id: i32, name: String) : id = id, name = name;
+  new(id: i32, name: String) : id = id, name = name, super();
 }
 
 /**
@@ -619,9 +634,9 @@ export final class MixinType extends Type {
   var members: OrderedMap<String, MemberInfo> = new OrderedMap<String, MemberInfo>();
   var genericSource: MixinType | null = null;
   var sourcePath: String = "";
-  mixins = new Array<MixinType>();
+  var mixins: Array<MixinType> = new Array<MixinType>();
 
-  new(name: String) : name = name;
+  new(name: String) : name = name, super();
 }
 
 export let instantiateMixinType = (
@@ -648,7 +663,7 @@ export final class TypeParameterType extends Type {
   var constraint: Type | null;
   var defaultType: Type | null;
 
-  new(this.name, this.constraint, this.defaultType);
+  new(this.name, this.constraint, this.defaultType) : super();
 }
 
 
@@ -690,7 +705,7 @@ export final class SymbolType(
 ) extends Type
 
 export final class ThisType extends Type {
-  new() {}
+  new() : super();
 }
 
 /**
@@ -772,6 +787,15 @@ export let numericTypeName = (t: Type): String => match (t) {
 export let isBooleanLike = (t: Type): boolean => match (t) {
   case BooleanType: true
   case BoolLiteralType {}: true
+  case UnionType {types}: {
+    var allBool = true;
+    for (let member in types) {
+      if (!isBooleanLike(member)) {
+        allBool = false;
+      }
+    }
+    allBool
+  }
   case _: false
 };
 

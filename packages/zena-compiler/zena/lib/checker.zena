@@ -274,6 +274,19 @@ final class CheckerContext {
     return null;
   }
 
+  setNodeType(node: Node, type: Type): void {
+    this.model.setNodeType(node, type);
+    if (type is FunctionType) {
+      let ft = type as FunctionType;
+      if (ft.functionSymbolId != (-1 as SymbolId)) {
+        let deps = this.currentDependencies();
+        if (deps != null) {
+          deps.referencedTypes.add(ft);
+        }
+      }
+    }
+  }
+
   referrerStack: Array<String> {
     get { return this.#referrerStack; }
   }
@@ -423,7 +436,7 @@ final class CheckerContext {
     this.model.setBindingType(info, t);
     // Also store on the declaration node for getNodeType() queries.
     if (info.declaration != null) {
-      this.model.setNodeType(info.declaration as Node, t);
+      this.setNodeType(info.declaration as Node, t);
     }
   }
 
@@ -434,6 +447,27 @@ final class CheckerContext {
    * declarations (enabling forward references and self-recursion).
    */
   resolveIdentifier(node: Node): Type | null {
+    let t = this.resolveIdentifierInternal(node);
+    if (t != null) {
+      let info = this.model.resolve(node);
+      if (info != null) {
+        let si = info as Symbol;
+        let resolvedSym = si.resolveTarget();
+        if (t is FunctionType) {
+          let ft = t as FunctionType;
+          ft.functionSymbolId = resolvedSym.id;
+          ft.functionSymbolName = resolvedSym.name;
+          let deps = this.currentDependencies();
+          if (deps != null) {
+            deps.referencedTypes.add(ft);
+          }
+        }
+      }
+    }
+    return t;
+  }
+
+  resolveIdentifierInternal(node: Node): Type | null {
     let info = this.model.resolve(node);
     if (info == null) { return null; }
     let si = info as Symbol;
@@ -443,9 +477,7 @@ final class CheckerContext {
 
     let deps = this.currentDependencies();
     if (deps != null) {
-      if (resolvedSym.modulePath.length > 0) {
-        deps.referencedSymbols.add(resolvedSym.id);
-      }
+      deps.referencedSymbols.add(resolvedSym.id);
     }
 
     var i = this.#narrowings.length - 1;
@@ -731,7 +763,7 @@ final class CheckerContext {
     return this.#materializeFromSymbol(si as Symbol, name);
   }
 
-  #materializeFromSymbol(info: Symbol, nameHint: String): Type | null {
+  #materializeFromSymbol(info: Symbol, nameHint: String, target: Symbol = info): Type | null {
     if (let (true, mat) = this.#materializedTypes.get(info.id)) {
       return mat;
     }
@@ -740,15 +772,20 @@ final class CheckerContext {
     if (btType != null) {
       return btType as Type;
     }
+    let btTarget = this.model.getBindingType(target);
+    if (btTarget != null) {
+      return btTarget as Type;
+    }
 
     let models = this.#depModels;
     if (models != null) {
       let depModels = models as HashMap<String, SemanticModel>;
       for (let depKey in depModels.keys()) {
         if (let (true, depModel) = depModels.get(depKey)) {
-          let bt = depModel.getBindingType(info);
+          let bt = depModel.getBindingType(target);
           if (bt != null) {
             this.#materializedTypes[info.id] = bt as Type;
+            this.#materializedTypes[target.id] = bt as Type;
             this.model.setBindingType(info, bt as Type);
             return bt as Type;
           }
@@ -756,35 +793,41 @@ final class CheckerContext {
       }
     }
 
-    if (info.declaration != null) {
-      let declNode = info.declaration as Node;
+    if (target.declaration != null) {
+      let declNode = target.declaration as Node;
       if (declNode.loc != null) {
         let declLoc = declNode.loc as SourceLocation;
         if (let (true, cached) = this.#materializedDeclTypes.get(declLoc.start)) {
           this.#materializedTypes[info.id] = cached;
+          this.#materializedTypes[target.id] = cached;
           this.model.setBindingType(info, cached);
           return cached;
         }
       }
     }
 
-    if (info.declaration == null) {
+    if (target.declaration == null) {
       return this.#resolveBuiltinOrPreludeType(nameHint);
     }
 
     // Cycle detection — keyed by Symbol.id, not name.
+    if (this.#pendingTypes.has(target.id)) {
+      return null;
+    }
     if (this.#pendingTypes.has(info.id)) {
       return null;
     }
+    this.#pendingTypes.add(target.id);
     this.#pendingTypes.add(info.id);
 
-    let t = this.#materializeType(info);
+    let t = this.#materializeType(target);
     if (t != null) {
       let materialized = t as Type;
       this.#materializedTypes[info.id] = materialized;
+      this.#materializedTypes[target.id] = materialized;
       this.model.setBindingType(info, materialized);
-      if (info.declaration != null) {
-        let declNode = info.declaration as Node;
+      if (target.declaration != null) {
+        let declNode = target.declaration as Node;
         if (declNode.loc != null) {
           let declLoc = declNode.loc as SourceLocation;
           this.#materializedDeclTypes[declLoc.start] = materialized;
@@ -841,6 +884,7 @@ final class CheckerContext {
       }
     }
 
+    this.#pendingTypes.delete(target.id);
     this.#pendingTypes.delete(info.id);
     return t;
   }
@@ -2101,6 +2145,8 @@ let substituteTypeParams = (
       res.isAbstract = ft.isAbstract;
       res.typeArguments = ft.typeArguments;
       res.genericSource = ft.genericSource;
+      res.functionSymbolId = ft.functionSymbolId;
+      res.functionSymbolName = ft.functionSymbolName;
       return res;
     }
     case ClassType as ct: {
@@ -2202,6 +2248,8 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       }
       newFt.isFinal = ft.isFinal;
       newFt.isAbstract = ft.isAbstract;
+      newFt.functionSymbolId = ft.functionSymbolId;
+      newFt.functionSymbolName = ft.functionSymbolName;
       return newFt;
     }
     case UnionT {types}: {
@@ -2569,8 +2617,10 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
     ctx.model.setInterfaceAdaptation(node, sourceType as ClassType, effectiveTarget as InterfaceType);
     let deps = ctx.currentDependencies();
     if (deps != null) {
-      let classSymId = (sourceType as ClassType).id as SymbolId;
-      let ifaceSymId = (effectiveTarget as InterfaceType).id as SymbolId;
+      let ct = sourceType as ClassType;
+      let it = effectiveTarget as InterfaceType;
+      let classSymId = (ct.genericSource ?? ct).id as SymbolId;
+      let ifaceSymId = (it.genericSource ?? it).id as SymbolId;
       let key = i32ToString(classSymId as i32) + "::" + i32ToString(ifaceSymId as i32);
       deps.usedInterfaceAdaptations.add(key);
     }
@@ -3513,12 +3563,15 @@ let extractNullGuardNarrowing = (
             if (info == null) {
               return (null, null, false);
             }
+            if (!(info is Symbol)) {
+              return (null, null, false);
+            }
             let si = info as Symbol;
             var originalType = ctx.model.getNodeType(targetExpr as Node);
             if (originalType == null) {
               originalType = ctx.resolveIdentifier(targetExpr as Node);
             }
-            if (originalType == null) {
+            if (originalType == null || !(originalType is Type)) {
               return (null, null, false);
             }
             let isEqualNull = operator == "==" || operator == "===";
@@ -3528,8 +3581,9 @@ let extractNullGuardNarrowing = (
             return (null, null, false);
           }
         }
+      } else {
+        return (null, null, false);
       }
-      return (null, null, false);
     }
     case _: { return (null, null, false); }
   }
@@ -3848,6 +3902,55 @@ let bodyAssignsToVariable = (ctx: CheckerContext, stmt: Statement, targetId: Sym
     case _: false
   };
 };
+let unwrapAliases = (t: Type): Type => {
+  var curr = t;
+  while (curr is TypeAliasType) {
+    let ta = curr as TypeAliasType;
+    if (ta.isDistinct) { break; }
+    curr = ta.target;
+  }
+  return curr;
+};
+
+let findImplementedInterfaceTransitiveInChecker = (ct: ClassType, name: String): InterfaceType | null => {
+  let seen = new HashMap<String, boolean>();
+  let queue = new Array<InterfaceType>();
+  
+  for (let impl in ct.implementsList) {
+    let resolved = substituteTypeParams(ct.typeParameters, ct.typeArguments, impl) as InterfaceType;
+    queue.push(resolved);
+  }
+  
+  var currSuper = ct.superType;
+  while (currSuper != null) {
+    let superCt = currSuper as ClassType;
+    for (let impl in superCt.implementsList) {
+      let resolved = substituteTypeParams(superCt.typeParameters, superCt.typeArguments, impl) as InterfaceType;
+      queue.push(resolved);
+    }
+    currSuper = superCt.superType;
+  }
+  
+  var head = 0;
+  while (head < queue.length) {
+    let it = queue[head];
+    head += 1;
+    
+    let sourceName = if (it.genericSource != null) (it.genericSource as InterfaceType).name else it.name;
+    let key = sourceName + "_" + i32ToString(it.id);
+    if (!seen.has(key)) {
+      seen[key] = true;
+      if (sourceName == name) {
+        return it;
+      }
+      for (let ext in it.extendsList) {
+        let resolvedExt = substituteTypeParams(it.typeParameters, it.typeArguments, ext) as InterfaceType;
+        queue.push(resolvedExt);
+      }
+    }
+  }
+  return null;
+};
 
 let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
   match (stmt) {
@@ -3899,7 +4002,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
           } else {
             let instantiated = tryInstantiateGenericFunction(ctx, argType, expected);
             if (instantiated != argType) {
-              ctx.model.setNodeType(argExpr, instantiated);
+              ctx.setNodeType(argExpr, instantiated);
             }
             checkAndRegisterInterfaceAdaptation(ctx, argExpr, instantiated, expected);
           }
@@ -4245,6 +4348,18 @@ case _: {
     }
     case ForInStatement {pattern, iterable, body, loc}: {
       let iterableType = checkExpression(ctx, iterable, null);
+      let baseT = unwrapAliases(iterableType);
+      if (baseT is ClassType) {
+        let ct = baseT as ClassType;
+        let iterableIface = findImplementedInterfaceTransitiveInChecker(ct, "Iterable");
+        if (iterableIface != null) {
+          checkAndRegisterInterfaceAdaptation(ctx, iterable, ct, iterableIface as InterfaceType);
+        }
+        let iteratorIface = findImplementedInterfaceTransitiveInChecker(ct, "Iterator");
+        if (iteratorIface != null) {
+          checkAndRegisterInterfaceAdaptation(ctx, iterable, ct, iteratorIface as InterfaceType);
+        }
+      }
       let elementType = getElementType(ctx, iterableType, iterable);
       ctx.enterScope();
       ctx.enterLoop();
@@ -4299,7 +4414,7 @@ let checkVariableDeclaration = (
     } else {
       let instantiated = tryInstantiateGenericFunction(ctx, initType, expectedType);
       if (instantiated != initType) {
-        ctx.model.setNodeType(init, instantiated);
+        ctx.setNodeType(init, instantiated);
       }
       if (instantiated is RecordT && expectedType is RecordT) {
         // TODO: Fix narrowing here
@@ -4802,7 +4917,7 @@ let getMatchedLiteralType = (expr: Expression, expected: Type): Type | null => {
 let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
   let t = checkExpressionInner(ctx, expr, expectedType);
   // Record the inferred type in the semantic model.
-  ctx.model.setNodeType(expr, t);
+  ctx.setNodeType(expr, t);
   return t;
 };
 
@@ -5160,7 +5275,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (operator != null) {
       // We know op is set and not "??". Act like a binary expression: left + right.
       effectiveType = checkBinaryExpression(ctx, leftType, operator, left, value, loc);
-      ctx.model.setNodeType(value, effectiveType);
+      ctx.setNodeType(value, effectiveType);
     }
 
     if (!isAssignableTo(ctx, effectiveType, leftType)) {
@@ -5173,7 +5288,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     } else {
       let instantiated = tryInstantiateGenericFunction(ctx, effectiveType, leftType);
       if (instantiated != effectiveType) {
-        ctx.model.setNodeType(value, instantiated);
+        ctx.setNodeType(value, instantiated);
         effectiveType = instantiated;
       }
       checkAndRegisterInterfaceAdaptation(ctx, value, effectiveType, leftType);
@@ -5393,7 +5508,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case IsExpression {expression, typeAnnotation, loc}: {
     checkExpression(ctx, expression, null);
     let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
-    ctx.model.setNodeType(typeAnnotation, targetType);
+    ctx.setNodeType(typeAnnotation, targetType);
     new BooleanType()
   }
   case ArrayLiteral {elements, loc}: {
@@ -5530,9 +5645,23 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       i += 1;
     }
     if (useInlineTuple) {
-      return new InlineTupleT(elementTypes);
+      let inlineT = new InlineTupleT(elementTypes);
+      if (expectedType != null) {
+        let baseExpected = baseType(expectedType as Type);
+        if (baseExpected is InlineTupleT && isAssignableTo(ctx, inlineT, baseExpected)) {
+          return baseExpected;
+        }
+      }
+      return inlineT;
     }
-    new TupleT(elementTypes)
+    let tupleT = new TupleT(elementTypes);
+    if (expectedType != null) {
+      let baseExpected = baseType(expectedType as Type);
+      if (baseExpected is TupleT && isAssignableTo(ctx, tupleT, baseExpected)) {
+        return baseExpected;
+      }
+    }
+    tupleT
   }
   case MapLiteral {entries, loc}: {
     if (entries.length == 0) {
@@ -5626,6 +5755,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     checkMatchExpr(ctx, discriminant, cases, loc, expectedType)
   }
   case ThrowExpression {argument, loc}: {
+    let deps = ctx.currentDependencies();
+    if (deps != null) {
+      deps.needsExceptionInfra = true;
+    }
     let argType = checkExpression(ctx, argument, null);
     let errorType = ctx.resolveTypeName("Error");
     if (errorType != null) {
@@ -5655,6 +5788,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     new NeverType()
   }
   case TryExpression {body, handler, finalizer, loc}: {
+    let deps = ctx.currentDependencies();
+    if (deps != null) {
+      deps.needsExceptionInfra = true;
+    }
     let tryType = checkMatchCaseBody(ctx, body as Node, expectedType);
     var catchType: Type | null = null;
     if (handler != null) {
@@ -6867,7 +7004,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
           } else {
             let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
             if (instantiatedVal != initType) {
-              ctx.model.setNodeType(fd.value as Expression, instantiatedVal);
+              ctx.setNodeType(fd.value as Expression, instantiatedVal);
             }
           }
           ctx.exitNodeReferrer(fd.id as i32);
@@ -7164,7 +7301,7 @@ let checkMethodSignature = (
       } else {
         let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, paramType);
         if (instantiatedVal != initType) {
-          ctx.model.setNodeType(initExp, instantiatedVal);
+          ctx.setNodeType(initExp, instantiatedVal);
         }
       }
     }
@@ -7252,7 +7389,7 @@ let checkMethodSignature = (
   if (hasInitializers) {
     ft.parameterInitializers = initializers;
   }
-  ctx.model.setNodeType(md, ft);
+  ctx.setNodeType(md, ft);
   ctx.exitScope();
   return ft;
 };
@@ -8077,11 +8214,11 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
       }
       let ovs = existingFunc.overloads as Array<FunctionType>;
       ovs.push(funcType);
-      ctx.model.setNodeType(df, funcType);
+      ctx.setNodeType(df, funcType);
     } else {
       ctx.declareBinding(info as Symbol, funcType);
       if (info.declaration != df) {
-        ctx.model.setNodeType(df, funcType);
+        ctx.setNodeType(df, funcType);
       }
     }
   }
@@ -8155,12 +8292,11 @@ let checkNewExpression = (
       // Instantiate generic class (infers type arguments if not explicit).
       let instantiated = instantiateGenericClass(ctx, ct, typeArguments, args, loc);
 
-      // Resolve constructor.
       let ctorType = instantiated.constructorType;
-      if (ctorType != null) {
-        let deps = ctx.currentDependencies();
-        if (deps != null) {
-          deps.referencedTypes.add(instantiated as Type);
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        deps.referencedTypes.add(instantiated as Type);
+        if (ctorType != null) {
           deps.referencedClassMethods.add(i32ToString((ct.genericSource ?? ct).id) + ".<constructor>");
         }
       }
@@ -8258,7 +8394,7 @@ let checkNewExpression = (
         } else {
           let instantiatedVal = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
           if (instantiatedVal != argType) {
-            ctx.model.setNodeType(args[ai], instantiatedVal);
+            ctx.setNodeType(args[ai], instantiatedVal);
           }
           checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
         }
@@ -9590,16 +9726,14 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
       var si = 0;
       while (si < stmts.length) {
         let isLast = si == stmts.length - 1;
-        let et = if (isLast) { expectedType } else { null };
-        // For ExpressionStatement/ReturnStatement, we need to extract the type
-        // from the expression. Use checkStatement for all other types.
+        let et = if (isLast) { expectedType } else { new VoidType() as Type };
         match (stmts[si]) {
           case ExpressionStatement {expression}: {
             lastType = checkExpression(ctx, expression, et);
           }
           case ReturnStatement {argument}: {
             if (argument != null) {
-              lastType = checkExpression(ctx, argument as Expression, et);
+              lastType = checkExpression(ctx, argument as Expression, ctx.returnType);
             } else {
               lastType = new VoidType();
             }
@@ -9658,8 +9792,8 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         );
         return;
       }
-      ctx.model.setNodeType(cp.name, classType as Type);
-      ctx.model.setNodeType(cp, classType as Type);
+      ctx.setNodeType(cp.name, classType as Type);
+      ctx.setNodeType(cp, classType as Type);
       // Resolve field types from the class.
       let props = cp.properties;
       var pi = 0;
@@ -9748,7 +9882,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         // If so, skip binding — it's a type match, not a variable binding.
         let resolvedType = ctx.resolveTypeName(ident.name);
         if (resolvedType != null) {
-          ctx.model.setNodeType(ident, resolvedType as Type);
+          ctx.setNodeType(ident, resolvedType as Type);
         }
         var isVariant = false;
         if (resolvedType != null) {
@@ -9767,8 +9901,26 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         }
       }
     }
+    case LiteralPattern {value}: {
+      checkExpression(ctx, value, expectedType);
+    }
+    case MemberExpression as me: {
+      checkExpression(ctx, me as Expression, expectedType);
+    }
+    case NumberLiteral as lit: {
+      checkExpression(ctx, lit as Expression, expectedType);
+    }
+    case StringLiteral as lit: {
+      checkExpression(ctx, lit as Expression, expectedType);
+    }
+    case BooleanLiteral as lit: {
+      checkExpression(ctx, lit as Expression, expectedType);
+    }
+    case NullLiteral as lit: {
+      checkExpression(ctx, lit as Expression, expectedType);
+    }
     case _: {
-      // Literal patterns, wildcard, etc. - no bindings needed.
+      // Wildcard, etc. - no bindings needed.
     }
   }
 };
@@ -10045,6 +10197,10 @@ let checkFunctionExpression = (
   if (hasInitializers) {
     fnType.parameterInitializers = initializers;
   }
+  let deps = ctx.currentDependencies();
+  if (deps != null) {
+    deps.referencedTypes.add(fnType);
+  }
   if (isClosure) {
     let captureInfo = analyzeCaptures(fe, ctx.model);
     let capSyms = new Array<SymbolId>();
@@ -10142,7 +10298,7 @@ let checkCallExpressionInner = (
       }
       
       let effectiveFt = matchedFt as FunctionType;
-      ctx.model.setNodeType(callee, effectiveFt);
+      ctx.setNodeType(callee, effectiveFt);
       ctx.model.setUnionCallCalleeType(callee, calleeType as UnionT);
       
       var j = 0;
@@ -10159,7 +10315,7 @@ let checkCallExpressionInner = (
         } else {
           let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
           if (instantiated != argType) {
-            ctx.model.setNodeType(args[j], instantiated);
+            ctx.setNodeType(args[j], instantiated);
           }
           checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
         }
@@ -10246,6 +10402,8 @@ let checkCallExpressionInner = (
             newFt.parameterSymbols = effectiveFt.parameterSymbols;
             newFt.typeArguments = typeArgs;
             newFt.genericSource = effectiveFt;
+            newFt.functionSymbolId = effectiveFt.functionSymbolId;
+            newFt.functionSymbolName = effectiveFt.functionSymbolName;
             effectiveFt = newFt;
           } else {
             // Infer type arguments from argument types.
@@ -10278,6 +10436,8 @@ let checkCallExpressionInner = (
             newFt.parameterSymbols = effectiveFt.parameterSymbols;
             newFt.typeArguments = typeArgs;
             newFt.genericSource = effectiveFt;
+            newFt.functionSymbolId = effectiveFt.functionSymbolId;
+            newFt.functionSymbolName = effectiveFt.functionSymbolName;
             effectiveFt = newFt;
           }
         }
@@ -10370,7 +10530,7 @@ let checkCallExpressionInner = (
         );
       }
 
-      ctx.model.setNodeType(callee, effectiveFt);
+      ctx.setNodeType(callee, effectiveFt);
 
       // Check argument types (re-evaluating to apply generic substitutions and defaults).
       var j = 0;
@@ -10387,7 +10547,7 @@ let checkCallExpressionInner = (
         } else {
           let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
           if (instantiated != argType) {
-            ctx.model.setNodeType(args[j], instantiated);
+            ctx.setNodeType(args[j], instantiated);
           }
           checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
         }
