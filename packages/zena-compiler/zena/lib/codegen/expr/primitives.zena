@@ -5,8 +5,8 @@ import { parseI32, parseF64, i32ToString, parseI64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { WasmStruct, WasmFunction, WasmGlobal, WasmSignature, WasmArray } from '../wasm-module.zena';
-import { typeToValType, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults, getValTypeKey, substituteTypeParamsInClassContext } from '../type-mapping.zena';
-import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType, ValTypeEqRef, ValTypeStructRef } from '../wasm.zena';
+import { typeToValType, typeToValTypeWithSub, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults, getValTypeKey, substituteTypeParamsInClassContext } from '../type-mapping.zena';
+import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType, ValTypeEqRef, ValTypeStructRef, valTypeEquals } from '../wasm.zena';
 import { ClassKey, ExportGlobalKey, ExportKey, getClassKey, getSpecializedName, getSignatureKey, ClassMethodKey, getClassMethodKey, FunctionValueWrapperKey, getFunctionValueWrapperKey } from '../codegen-utils.zena';
 import { String } from 'zena:string';
 
@@ -15,32 +15,82 @@ import { String } from 'zena:string';
 // expression along with literals, its code generation handles scope resolution,
 // locals, and globals, which is semantically distinct from emitting static
 // primitives.
+let castIdentifierIfNeeded = (ctx: FunctionContext, ident: Identifier, resolvedSym: Symbol): void => {
+  let unionCalleeType = ctx.wasmFunction.model.getUnionCallCalleeType(ident);
+  if (unionCalleeType != null) {
+    return;
+  }
+  let symType = ctx.wasmFunction.model.getBindingType(resolvedSym);
+  let nodeType = ctx.wasmFunction.model.getNodeType(ident);
+  if (symType != null && nodeType != null) {
+    let initWasmType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
+    let targetWasmType = typeToValTypeWithSub(ctx.wasm, nodeType as Type, ctx.wasmFunction);
+    let isTargetRef = match (targetWasmType) {
+      case ValTypeRef: true
+      case ValTypeRefNull: true
+      case ValTypeStructRef: true
+      case _: false
+    };
+    if (isTargetRef && !valTypeEquals(initWasmType, targetWasmType)) {
+      let targetIdx = match (targetWasmType) {
+        case ValTypeRefNull as trn: trn.target.index
+        case ValTypeRef as tr: tr.target.index
+        case ValTypeStructRef: heapTypeToSigned(HeapType.struct)
+        case _: -1
+      };
+      if (targetIdx != -1) {
+        ctx.emitter.emitRefCastNull(targetIdx);
+      }
+    }
+  }
+};
+
 export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void => {
   let sym = ctx.wasmFunction.model.resolve(ident);
+  var resolvedSym: Symbol | null = null;
   if (sym != null) {
-    let resolvedSym = (sym as Symbol).resolveTarget();
-    if (ctx.localIndices.has(resolvedSym.id)) {
-      ctx.emitter.emitLocalGet(ctx.localIndices[resolvedSym.id]);
-      if (ctx.isCelled(resolvedSym.id)) {
-        let symType = ctx.wasmFunction.model.getBindingType(resolvedSym);
-        let valType = typeToValType(ctx.wasm, symType);
+    resolvedSym = (sym as Symbol).resolveTarget();
+    let rSym = resolvedSym as Symbol;
+    if (ctx.localIndices.has(rSym.id)) {
+      ctx.emitter.emitLocalGet(ctx.localIndices[rSym.id]);
+      if (ctx.isCelled(rSym.id)) {
+        let symType = ctx.wasmFunction.model.getBindingType(rSym);
+        let valType = typeToValType(ctx.wasm, symType as Type);
         let cellStruct = getCellStruct(ctx.wasm, valType);
         ctx.emitter.emitStructGet(cellStruct.index, 0);
       }
+      castIdentifierIfNeeded(ctx, ident, rSym);
       return;
     }
-    if (ctx.wasm.globalMap.has(resolvedSym.id)) {
-      ctx.emitter.emitGlobalGet(ctx.wasm.globalMap[resolvedSym.id].index);
+    if (ctx.wasm.globalMap.has(rSym.id)) {
+      ctx.emitter.emitGlobalGet(ctx.wasm.globalMap[rSym.id].index);
+      castIdentifierIfNeeded(ctx, ident, rSym);
       return;
     }
-    let exportKey = resolvedSym.name as ExportGlobalKey;
+    let exportKey = rSym.name as ExportGlobalKey;
     if (ctx.wasm.exportGlobalMap.has(exportKey)) {
       ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[exportKey].index);
+      castIdentifierIfNeeded(ctx, ident, rSym);
       return;
     }
     
     // Check if the identifier is a function referenced as a value
     var nodeType = ctx.wasmFunction.model.getNodeType(ident);
+    if (ident.name == "generatePatternBinding") {
+      console.log("GENERATE IDENTIFIER generatePatternBinding!");
+      console.log("  sym.id = " + i32ToString(sym.id as i32));
+      console.log("  resolvedSym.id = " + i32ToString(rSym.id as i32));
+      if (nodeType == null) {
+        console.log("  nodeType is null!");
+      } else {
+        console.log("  nodeType class = " + (if (nodeType is FunctionType) "FunctionType" else "other"));
+        if (nodeType is FunctionType) {
+          let ft = nodeType as FunctionType;
+          console.log("  ft.functionSymbolId = " + i32ToString(ft.functionSymbolId as i32));
+          console.log("  ft.functionSymbolName = " + ft.functionSymbolName);
+        }
+      }
+    }
     if (nodeType != null) {
       nodeType = substituteTypeParamsInClassContext(ctx.wasmFunction.classType, nodeType as Type);
     }
@@ -51,7 +101,7 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
       if (isSpecialized) {
         keyName = getSpecializedName(ident.name, ft.typeArguments as Array<Type>);
       } else {
-        keyName = i32ToString(sym.id as i32);
+        keyName = i32ToString(rSym.id as i32);
       }
       
       let wrapperParams = new Array<ValType>();
@@ -141,7 +191,7 @@ export let parseI64OrU64Literal = (raw: String): inline (boolean, i64) => {
 
 export let generateNumberLiteral = (ctx: FunctionContext, expr: NumberLiteral): void => {
   let nodeType = ctx.wasmFunction.model.getNodeType(expr as Node);
-  let baseT = baseType(nodeType);
+  let baseT = baseType(nodeType as Type);
 
   if (baseT is F64Type) {
     let val = parseF64(expr.raw);
@@ -501,7 +551,10 @@ export let generateTaggedTemplateExpression = (
       }
     }
   } else if (expr.quasi.expressions.length > 0) {
-    expectedValueType = ctx.wasmFunction.model.getNodeType(expr.quasi.expressions[0]);
+    let rawEvt = ctx.wasmFunction.model.getNodeType(expr.quasi.expressions[0]);
+    if (rawEvt != null) {
+      expectedValueType = rawEvt as Type;
+    }
   }
 
   if (expectedValueType == null) {

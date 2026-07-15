@@ -1,10 +1,10 @@
 import { FunctionContext } from '../function-context.zena';
-import { RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement, ArrayLiteral, Expression, Node, Identifier } from '../../ast.zena';
-import { RecordType, TupleType, InlineTupleType, ArrayType, F64Type, F32Type, Type, ClassType } from '../../types.zena';
+import { RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement, ArrayLiteral, Expression, Node, Identifier, MapLiteral, MapEntry } from '../../ast.zena';
+import { RecordType, TupleType, InlineTupleType, ArrayType, F64Type, F32Type, Type, ClassType, UnionType, TypeAliasType } from '../../types.zena';
 import { ValType, ValTypeRefNull, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeStructRef, ValTypeEqRef, ValTypeAnyRef } from '../wasm.zena';
-import { WasmField, WasmArray, sortWasmFields, WasmStruct, WasmGlobal } from '../wasm-module.zena';
+import { WasmField, WasmArray, sortWasmFields, WasmStruct, WasmGlobal, WasmFunction } from '../wasm-module.zena';
 import { typeToValType, getNonNullableType } from '../type-mapping.zena';
-import { getClassKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
 import { NodeMap } from '../../node-map.zena';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
@@ -246,4 +246,94 @@ export let generateRecordLiteral = (
   }
   ctx.emitter.emitGlobalGet(dispatchInfo.vtableGlobal.index);
   ctx.emitter.emitStructNew(dispatchInfo.fatPtrType.index);
+};
+
+export let generateMapLiteral = (
+    ctx: FunctionContext,
+    expr: MapLiteral,
+    genExpr: (e: Expression, discardValue: boolean) => void): void => {
+  let rawNodeType = ctx.wasmFunction.model.getNodeType(expr);
+  if (rawNodeType is ClassType) {
+    let mapType = rawNodeType as ClassType;
+    let mapValType = typeToValType(ctx.wasm, mapType);
+    let mapClassKey = getClassKey(mapType);
+    
+    var structTypeOpt: WasmStruct | null = null;
+    var vtableGlobal: WasmGlobal | null = null;
+    if (let (true, info) = ctx.wasm.classInfos.get(mapClassKey)) {
+      structTypeOpt = info.structType;
+      vtableGlobal = info.vtableGlobal;
+    }
+    if (structTypeOpt == null) {
+      throw new Error("Map class struct not found: " + mapType.name);
+    }
+    let structType = structTypeOpt as WasmStruct;
+    
+    let ctorKey = getClassMethodKey(mapClassKey, "<constructor>");
+    var ctorFuncOpt: WasmFunction | null = if (ctx.wasm.classMethodMap.has(ctorKey)) {
+      ctx.wasm.classMethodMap[ctorKey]
+    } else {
+      null
+    };
+    if (ctorFuncOpt == null) {
+      throw new Error("Map class must have a constructor");
+    }
+    let ctorFunc = ctorFuncOpt as WasmFunction;
+
+    let setKey = getClassMethodKey(mapClassKey, "[]=");
+    var setFuncOpt: WasmFunction | null = if (ctx.wasm.classMethodMap.has(setKey)) {
+      ctx.wasm.classMethodMap[setKey]
+    } else {
+      null
+    };
+    if (setFuncOpt == null) {
+      throw new Error("Map class must have an operator []= method");
+    }
+    let setFunc = setFuncOpt as WasmFunction;
+
+    let mapLocal = ctx.allocLocal(mapValType);
+    
+    ctx.emitter.emitStructNewDefault(structType.index);
+    ctx.emitter.emitLocalSet(mapLocal);
+    
+    if (vtableGlobal != null) {
+        ctx.emitter.emitLocalGet(mapLocal);
+        ctx.emitter.emitGlobalGet((vtableGlobal as WasmGlobal).index);
+        ctx.emitter.emitStructSet(structType.index, 0);
+    }
+    
+    ctx.emitter.emitLocalGet(mapLocal);
+    
+    // Generate capacity argument (number of entries, minimum 16)
+    let capacity = if (expr.entries.length > 16) { expr.entries.length } else { 16 };
+    ctx.emitter.emitI32Const(capacity);
+    
+    // Call constructor
+    ctx.emitter.emitCall(ctorFunc);
+    
+    // Call []= for each entry
+    var i = 0;
+    while (i < expr.entries.length) {
+      let entry = expr.entries[i];
+      
+      // Load map reference
+      ctx.emitter.emitLocalGet(mapLocal);
+      
+      // Generate key
+      genExpr(entry.key, false);
+      
+      // Generate value
+      genExpr(entry.value, false);
+      
+      // Call set method
+      ctx.emitter.emitCall(setFunc);
+      
+      i += 1;
+    }
+    
+    // Return map reference
+    ctx.emitter.emitLocalGet(mapLocal);
+  } else {
+    throw new Error("generateMapLiteral: nodeType is not a ClassType");
+  }
 };

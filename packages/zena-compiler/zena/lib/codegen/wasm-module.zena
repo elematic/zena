@@ -106,7 +106,7 @@ export class WasmFunction {
   var structType: WasmStruct | null = null;
   var classType: ClassType | null = null;
   var classDecl: Node | null = null;
-  signature: WasmSignature;
+  var signature: WasmSignature;
   var node: Node | null = null;
   var isImport: boolean = false;
   var isStatic: boolean = false;
@@ -916,12 +916,45 @@ export class WasmModule {
     sortedTypes.push(t);
   }
   
+  #referencesNominal(t: WasmType): boolean {
+    if (t is WasmStruct || t is WasmArray) {
+      return true;
+    }
+    if (t is WasmSignature) {
+      let sig = t as WasmSignature;
+      for (let param in sig.params) {
+        match (param) {
+          case ValTypeRef {target}: {
+            if (this.#referencesNominal(target)) { return true; }
+          }
+          case ValTypeRefNull {target}: {
+            if (this.#referencesNominal(target)) { return true; }
+          }
+          case _: {}
+        }
+      }
+      for (let ret in sig.returns) {
+        match (ret) {
+          case ValTypeRef {target}: {
+            if (this.#referencesNominal(target)) { return true; }
+          }
+          case ValTypeRefNull {target}: {
+            if (this.#referencesNominal(target)) { return true; }
+          }
+          case _: {}
+        }
+      }
+    }
+    return false;
+  }
+
   /**
    * Locks in the module layout, assigning final WebAssembly indices (i32)
    * to all types, functions, and globals. Must be called after all
    * discoveries are made, but before the emission passes begin.
    */
   layout(): void {
+    // console.log("wasm.layout() called! types count = " + i32ToString(this.types.length));
     this.isLayoutLocked = true;
     
     this.classMethodMap.clear();
@@ -953,41 +986,9 @@ export class WasmModule {
     let zone1 = new Array<WasmType>();
     let zone2 = new Array<WasmType>();
     
-    let referencesNominal = (t: WasmType): boolean => {
-      if (t is WasmStruct || t is WasmArray) {
-        return true;
-      }
-      if (t is WasmSignature) {
-        let sig = t as WasmSignature;
-        for (let param in sig.params) {
-          match (param) {
-            case ValTypeRef {target}: {
-              if (referencesNominal(target)) { return true; }
-            }
-            case ValTypeRefNull {target}: {
-              if (referencesNominal(target)) { return true; }
-            }
-            case _: {}
-          }
-        }
-        for (let ret in sig.returns) {
-          match (ret) {
-            case ValTypeRef {target}: {
-              if (referencesNominal(target)) { return true; }
-            }
-            case ValTypeRefNull {target}: {
-              if (referencesNominal(target)) { return true; }
-            }
-            case _: {}
-          }
-        }
-      }
-      return false;
-    };
-    
     for (let t in this.types) {
       if (t is WasmSignature) {
-        if (!referencesNominal(t)) {
+        if (!this.#referencesNominal(t)) {
           zone1.push(t);
         } else {
           zone2.push(t);
@@ -1015,6 +1016,12 @@ export class WasmModule {
     for (var i = 0; i < this.types.length; i += 1) {
       let t = this.types[i];
       t.index = i;
+      if (t is WasmStruct) {
+        let ws = t as WasmStruct;
+        if (ws.name != null && (ws.name as String).contains("Iterable_12_MapEntry_332_String_119_bool")) {
+          console.log("layout assigned index: " + i32ToString(i) + " to " + (ws.name as String));
+        }
+      }
     }
     for (var i = 0; i < this.tags.length; i += 1) {
       let t = this.tags[i];

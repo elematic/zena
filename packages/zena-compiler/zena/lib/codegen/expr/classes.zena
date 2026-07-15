@@ -5,9 +5,10 @@ import { Error } from 'zena:error';
 import { ClassType, FunctionType, Type } from '../../types.zena';
 import { WasmField, WasmFunction, WasmGlobal, WasmStruct } from '../wasm-module.zena';
 import { getClassKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
-import { typeToValType, getNodeType, eraseTypeParameters } from '../type-mapping.zena';
+import { typeToValType, getNodeType, eraseTypeParameters, getExpressionType } from '../type-mapping.zena';
 import { Array } from 'zena:array';
 import { console } from 'zena:console';
+import { castRefNullIfNeeded } from './calls.zena';
 
 export let generateNewExpression = (
   ctx: FunctionContext,
@@ -17,6 +18,8 @@ export let generateNewExpression = (
   let rawNodeType = getNodeType(ctx, expr);
   if (rawNodeType is ClassType) {
     let classType = eraseTypeParameters(rawNodeType as ClassType) as ClassType;
+    let ctorFt = classType.constructorType;
+
     if (classType.isExtension) {
       let ctorKey = getClassMethodKey(getClassKey(classType), "<constructor>");
       var ctorFunc: WasmFunction | null = if (ctx.wasm.classMethodMap.has(ctorKey)) {
@@ -25,8 +28,18 @@ export let generateNewExpression = (
         null
       };
       if (ctorFunc != null) {
-        for (let arg in expr.args) {
+        var i = 0;
+        while (i < expr.args.length) {
+          let arg = expr.args[i];
           genExpr(arg, false);
+          let expectedParamType = if (ctorFt != null && i < (ctorFt as FunctionType).parameters.length) (ctorFt as FunctionType).parameters[i] else null;
+          if (expectedParamType != null) {
+            let argType = getExpressionType(ctx, arg);
+            if (argType != null) {
+              castRefNullIfNeeded(ctx, argType as Type, expectedParamType as Type);
+            }
+          }
+          i += 1;
         }
         ctx.emitter.emitCall(ctorFunc as WasmFunction);
         return;
@@ -76,10 +89,21 @@ export let generateNewExpression = (
     } else {
       null
     };
+
     
     if (ctorFunc != null) {
-      for (let arg in expr.args) {
+      var i = 0;
+      while (i < expr.args.length) {
+        let arg = expr.args[i];
         genExpr(arg, false);
+        let expectedParamType = if (ctorFt != null && i < (ctorFt as FunctionType).parameters.length) (ctorFt as FunctionType).parameters[i] else null;
+        if (expectedParamType != null) {
+          let argType = getExpressionType(ctx, arg);
+          if (argType != null) {
+            castRefNullIfNeeded(ctx, argType as Type, expectedParamType as Type);
+          }
+        }
+        i += 1;
       }
       ctx.emitter.emitCall(ctorFunc as WasmFunction);
       ctx.emitter.emitLocalGet(emptyLocal);

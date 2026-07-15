@@ -23,8 +23,9 @@ export class Referrer {
   model: SemanticModel;
   classType: ClassType | null;
   isReachable: boolean;
+  typeArguments: Array<Type> | null;
 
-  new(this.isSymbol, this.symId, this.nodeId, this.model, this.classType = null, this.isReachable = true);
+  new(this.isSymbol, this.symId, this.nodeId, this.model, this.classType = null, this.isReachable = true, this.typeArguments = null);
 }
 
 /**
@@ -81,6 +82,8 @@ export interface ReachabilityVisitorInterface {
   discoverImportDeclaration(importDecl: ImportDeclaration, moduleModel: SemanticModel): void;
   discoverVariableDeclaration(symId: SymbolId, varDecl: VariableDeclaration, moduleModel: SemanticModel): void;
   discoverDeclareFunction(decl: DeclareFunction, moduleModel: SemanticModel): void;
+  registerWrapper(keyName: String, ft: FunctionType, targetWasmFunc: WasmFunction, model: SemanticModel): void;
+  discoverFunctionValueWrapper(ft: FunctionType, model: SemanticModel): void;
 }
 
 /**
@@ -108,7 +111,7 @@ export interface ReachabilityContext {
   nodeIdToNode: HashMap<i32, Node>;
   nodeIdToModel: HashMap<i32, SemanticModel>;
   reachedGlobals: HashSet<SymbolId>;
-  reachedMembers: HashSet<i32>;
+  reachedMembers: HashSet<String>;
   reachedFunctionsSet: HashSet<WasmFunction>;
   specializedInterfaces: Array<InterfaceType>;
   mixinToClasses: HashMap<MixinKey, Array<ClassType>>;
@@ -117,6 +120,7 @@ export interface ReachabilityContext {
   typeLowerer: TypeLowererInterface;
   visitor: ReachabilityVisitorInterface;
   discoveredTypes: HashSet<String>;
+  reachedSemanticTypes: HashSet<String>;
   instantiatedClassesByInterface: HashMap<SymbolId, Array<ClassInterfacePair>>;
   referencedInterfaceMembersById: HashMap<SymbolId, Array<String>>;
   referencedReachableInterfaceMembers: HashSet<String>;

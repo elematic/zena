@@ -31,13 +31,40 @@ export final class ModuleGenerator {
   
   new(this.program, this.emitter, this.target = "zena-cli");
 
+  emitDefaultValue(type: ValType): void {
+    if (type is ValTypeI32) {
+      this.emitter.emitI32Const(0);
+    } else if (type is ValTypeI64) {
+      this.emitter.emitI64Const(0 as i64);
+    } else if (type is ValTypeF64) {
+      this.emitter.emitF64Const(0.0);
+    } else if (type is ValTypeF32) {
+      this.emitter.emitF32Const(0.0);
+    } else {
+      match (type) {
+        case ValTypeRefNull as refNullType: {
+          this.emitter.emitRefNull(refNullType.target.index);
+        }
+        case ValTypeRef as refType: {
+          this.emitter.emitRefNull(refType.target.index);
+        }
+        case ValTypeStructRef: {
+          this.emitter.emitRefNull(-21);
+        }
+        case _: {
+          this.emitter.emitRefNull(-19); // fallback to eqref
+        }
+      }
+    }
+  }
+
   generateExpression(expr: Expression, funcComp: FunctionGenerator): void {
     funcComp.generateExpression(expr);
   }
   
   compile(): void {
     for (let u in this.program.units) {
-      u.model.program = this.program as ProgramInterface;
+      u.model.program = this.program;
     }
     let wasm = new WasmModule();
     wasm.program = this.program;
@@ -439,17 +466,27 @@ export final class ModuleGenerator {
       } else if (g.initSingletonStruct != null) {
         let cType = g.initSingletonStruct as ClassType;
         let cKey = getClassKey(cType);
-        var structType: WasmStruct | null = null;
-        var vtableGlobal: WasmGlobal | null = null;
+        var structTypeOpt: WasmStruct | null = null;
+        var vtableGlobalOpt: WasmGlobal | null = null;
         if (let (true, info) = wasm.classInfos.get(cKey)) {
-          structType = info.structType;
-          vtableGlobal = info.vtableGlobal;
+          structTypeOpt = info.structType;
+          vtableGlobalOpt = info.vtableGlobal;
         }
-        if (structType == null || vtableGlobal == null) {
-          throw new Error("Singleton struct or vtable not found for class: " + cType.name);
+        if (structTypeOpt == null) {
+          throw new Error("Singleton struct not found for class: " + cType.name);
         }
-        this.emitter.emitGlobalGet((vtableGlobal as WasmGlobal).index);
-        this.emitter.emitStructNew((structType as WasmStruct).index);
+        let structType = structTypeOpt as WasmStruct;
+        for (let field in structType.fields) {
+          if (field.name != null && (field.name as String) == "<vtable>") {
+            if (vtableGlobalOpt == null) {
+              throw new Error("Singleton vtable not found for class: " + cType.name);
+            }
+            this.emitter.emitGlobalGet((vtableGlobalOpt as WasmGlobal).index);
+          } else {
+            this.emitDefaultValue(field.type);
+          }
+        }
+        this.emitter.emitStructNew(structType.index);
         emitted = true;
       } else if (g.initArraySize >= 0) {
         this.emitter.emitI32Const(g.initArraySize);

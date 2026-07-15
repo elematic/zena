@@ -7,7 +7,7 @@ import {
   RecordType, TupleType, MixinType
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
-import { Node } from '../ast.zena';
+import { Node, Identifier } from '../ast.zena';
 import { FunctionContext } from './function-context.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
@@ -171,6 +171,8 @@ export let substituteTypeParamsInCodegen = (
       newFt.isFinal = ft.isFinal;
       newFt.isAbstract = ft.isAbstract;
       newFt.overloads = ft.overloads;
+      newFt.functionSymbolId = ft.functionSymbolId;
+      newFt.functionSymbolName = ft.functionSymbolName;
       newFt
     }
     case ClassType as ct: {
@@ -201,6 +203,7 @@ export let substituteTypeParamsInCodegen = (
         if (!argsChanged && ct.typeArguments != null) {
           return ct;
         }
+
         let inst = new ClassType(ct.id, ct.name);
         inst.typeParameters = ctParams;
         inst.typeArguments = newArgs;
@@ -244,6 +247,8 @@ export let substituteTypeParamsInCodegen = (
           newFt.parameterInitializers = ctor.parameterInitializers;
           newFt.parameterSymbols = ctor.parameterSymbols;
           newFt.optionalParameters = ctor.optionalParameters;
+          newFt.functionSymbolId = ctor.functionSymbolId;
+          newFt.functionSymbolName = ctor.functionSymbolName;
           newFt
         } else {
           null
@@ -509,34 +514,39 @@ export let substituteTypeParamsInClassContext = (classType: ClassType | null, t:
     return t;
   }
   
-  let allParams = new Array<TypeParameterType>();
-  let allArgs = new Array<Type>();
-  
-  // 1. Add class's own type arguments
   let ct = classType as ClassType;
-  let ctParams = getClassTypeParameters(ct);
-  if (ctParams != null && ct.typeArguments != null) {
-    let tps = ctParams as Array<TypeParameterType>;
-    let tas = ct.typeArguments as Array<Type>;
-    for (var i = 0; i < tps.length; i += 1) {
-      allParams.push(tps[i]);
-      if (i < tas.length) {
-        allArgs.push(tas[i]);
-      } else {
-        allArgs.push(new AnyType());
+  if (ct.cachedParams == null || ct.cachedArgs == null) {
+    let params = new Array<TypeParameterType>();
+    let args = new Array<Type>();
+    
+    // 1. Add class's own type arguments
+    let ctParams = getClassTypeParameters(ct);
+    if (ctParams != null && ct.typeArguments != null) {
+      let tps = ctParams as Array<TypeParameterType>;
+      let tas = ct.typeArguments as Array<Type>;
+      for (var i = 0; i < tps.length; i += 1) {
+        params.push(tps[i]);
+        if (i < tas.length) {
+          args.push(tas[i]);
+        } else {
+          args.push(new AnyType());
+        }
       }
     }
+    
+    // 2. Add implements list and superType recursively
+    let seen = new HashMap<String, boolean>();
+    addClassTransitiveInterfaces(ct, params, args, seen);
+    
+    // 3. Add mixins transitively
+    let seenMixins = new HashMap<String, boolean>();
+    addClassTransitiveMixins(ct, params, args, seenMixins);
+    
+    ct.cachedParams = params;
+    ct.cachedArgs = args;
   }
   
-  // 2. Add implements list and superType recursively
-  let seen = new HashMap<String, boolean>();
-  addClassTransitiveInterfaces(ct, allParams, allArgs, seen);
-  
-  // 3. Add mixins transitively
-  let seenMixins = new HashMap<String, boolean>();
-  addClassTransitiveMixins(ct, allParams, allArgs, seenMixins);
-  
-  let substituted = substituteTypeParamsInCodegen(allParams, allArgs, t);
+  let substituted = substituteTypeParamsInCodegen(ct.cachedParams as Array<TypeParameterType>, ct.cachedArgs as Array<Type>, t);
   return mapMixinThisInType(ct, substituted);
 };
 
@@ -567,6 +577,21 @@ export let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
     return ct;
   }
   return substituteTypeParamsInFunctionContext(ctx.wasmFunction, t);
+};
+
+export let getExpressionType = (ctx: FunctionContext, node: Node): Type | null => {
+  let t = getNodeType(ctx, node);
+  if (t != null) { return t; }
+  if (node is Identifier) {
+    let sym = ctx.wasmFunction.model.resolve(node as Identifier);
+    if (sym != null) {
+      let bType = ctx.wasmFunction.model.getBindingType(sym);
+      if (bType != null) {
+        return substituteTypeParamsInFunctionContext(ctx.wasmFunction, bType);
+      }
+    }
+  }
+  return null;
 };
 
 export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, fieldName: String): WasmSignature => {
@@ -647,6 +672,7 @@ export let eraseTypeParameters = (t: Type): Type => {
           newArgs.push(sub);
         }
         if (!changed) { return t; }
+
         let inst = new ClassType(ct.id, ct.name);
         inst.typeArguments = newArgs;
         if (ct.superType != null) {
@@ -687,6 +713,8 @@ export let eraseTypeParameters = (t: Type): Type => {
           newFt.parameterInitializers = ctor.parameterInitializers;
           newFt.parameterSymbols = ctor.parameterSymbols;
           newFt.optionalParameters = ctor.optionalParameters;
+          newFt.functionSymbolId = ctor.functionSymbolId;
+          newFt.functionSymbolName = ctor.functionSymbolName;
           newFt
         } else {
           null
@@ -735,6 +763,15 @@ export let eraseTypeParameters = (t: Type): Type => {
       let inst = new FunctionType(newParams, ft.parameterNames, newRet);
       inst.typeParameters = ft.typeParameters;
       inst.typeArguments = ft.typeArguments;
+      inst.genericSource = ft.genericSource;
+      inst.parameterInitializers = ft.parameterInitializers;
+      inst.parameterSymbols = ft.parameterSymbols;
+      inst.optionalParameters = ft.optionalParameters;
+      inst.isFinal = ft.isFinal;
+      inst.isAbstract = ft.isAbstract;
+      inst.overloads = ft.overloads;
+      inst.functionSymbolId = ft.functionSymbolId;
+      inst.functionSymbolName = ft.functionSymbolName;
       inst
     }
     case MixinType as mt: {
@@ -904,12 +941,10 @@ let getWasmTypeKey = (target: WasmType): String => {
   return "anon";
 };
 
-export let getValTypeKey = (type: ValType): String => {
-  match (type) {
-    case ValTypeRef {target}: "ref_" + getWasmTypeKey(target)
-    case ValTypeRefNull {target}: "refnull_" + getWasmTypeKey(target)
-    case _: i32ToString(valTypeToOpcode(type))
-  }
+export let getValTypeKey = (type: ValType): String => match (type) {
+  case ValTypeRef {target}: "ref_" + getWasmTypeKey(target)
+  case ValTypeRefNull {target}: "refnull_" + getWasmTypeKey(target)
+  case _: i32ToString(valTypeToOpcode(type))
 };
 
 export let getClosureKey = (params: Array<ValType>, returns: Array<ValType>): ClosureKey => {
@@ -1218,6 +1253,7 @@ export let mapReturnTypeToWasmResultsWithSub = (wasm: WasmModule, type: Type, re
 };
 
 export let containsMixinThis = (type: Type): boolean => match (type) {
+  case ThisType: true
   case ClassType as resolvedCt: {
     if (resolvedCt.name.length >= 5 && resolvedCt.name.sliceBytes(resolvedCt.name.length - 5, resolvedCt.name.length) == "_This") {
       true
@@ -1288,6 +1324,7 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
     return type;
   }
   return match (type) {
+    case ThisType: ct as Type
     case ClassType as resolvedCt: {
       if (resolvedCt.name.length >= 5 && resolvedCt.name.sliceBytes(resolvedCt.name.length - 5, resolvedCt.name.length) == "_This") {
         ct as Type
@@ -1319,6 +1356,8 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
             newFt.parameterInitializers = ctor.parameterInitializers;
             newFt.parameterSymbols = ctor.parameterSymbols;
             newFt.optionalParameters = ctor.optionalParameters;
+            newFt.functionSymbolId = ctor.functionSymbolId;
+            newFt.functionSymbolName = ctor.functionSymbolName;
             newFt
           } else {
             null
@@ -1385,6 +1424,8 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
       newFt.isFinal = ft.isFinal;
       newFt.isAbstract = ft.isAbstract;
       newFt.overloads = ft.overloads;
+      newFt.functionSymbolId = ft.functionSymbolId;
+      newFt.functionSymbolName = ft.functionSymbolName;
       newFt as Type
     }
     case _: type

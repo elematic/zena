@@ -113,11 +113,22 @@ export let generateIfExpression = (
   ctx.emitter.emitIf(resultValType);
   ctx.enterBlockStructure();
 
+  let wasReachable = ctx.isReachable;
+
   generateIfBranch(ctx, expr.consequent, dropResult, genExpr, genStmt);
+  let consReachable = ctx.isReachable;
   
+  ctx.isReachable = wasReachable;
   if (expr.alternate != null) {
     ctx.emitter.emitElse();
     generateIfBranch(ctx, expr.alternate as Node, dropResult, genExpr, genStmt);
+    let altReachable = ctx.isReachable;
+    ctx.isReachable = consReachable || altReachable;
+    if (!ctx.isReachable) {
+      ctx.needsUnreachable = true;
+    }
+  } else {
+    ctx.isReachable = wasReachable;
   }
   
   ctx.exitBlockStructure();
@@ -188,7 +199,7 @@ export let generateTryExpression = (
   let tag = ctx.wasm.exceptionTag as WasmTag;
 
   let nodeType = ctx.wasmFunction.model.getNodeType(expr as Node);
-  let resultType = typeToValType(ctx.wasm, nodeType);
+  let resultType = typeToValType(ctx.wasm, nodeType as Type);
 
   var resultLocal: i32 = -1;
   if (!discardValue && !(resultType is ValTypeVoid)) {

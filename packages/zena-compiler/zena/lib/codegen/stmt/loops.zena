@@ -3,12 +3,12 @@ import { WasmArray, WasmGlobal } from '../wasm-module.zena';
 import { Error } from 'zena:error';
 import { 
   Node, BreakStatement, ContinueStatement, WhileStatement, ForStatement, Statement, Expression,
-  ForInStatement, BindingPattern, IdentifierPattern, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral
+  ForInStatement, BindingPattern, IdentifierPattern, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral, SourceLocation
 } from '../../ast.zena';
 import { VoidType, Type, InterfaceType, ClassType, ArrayType, ThisType, UnionType, NullType, instantiateClassType, MethodInfo, FunctionType, InlineTupleType, baseType, typeToString } from '../../types.zena';
 import { ValType } from "../wasm.zena";
 import { FunctionContext } from '../function-context.zena';
-import { typeToValType, getInterfaceMemberSignature, substituteTypeParamsInCodegen, typeToValTypeWithSub, getNodeType, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
+import { typeToValType, getInterfaceMemberSignature, substituteTypeParamsInCodegen, typeToValTypeWithSub, getNodeType, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInFunctionContext, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { 
   getInterfaceKey, getInterfaceMemberKey, getClassKey, getClassInterfaceKey,
   classInterfaceKeyToString, InterfaceKey, getClassPrivateFieldKey
@@ -19,6 +19,8 @@ import { HashMap } from 'zena:map';
 import { generatePatternBinding } from './bindings.zena';
 import { generateLetPatternCheck } from './control-flow.zena';
 import { walk } from '../../visitor.zena';
+import { i32ToString } from 'zena:string-convert';
+
 
 let hasBreakTargetingLoop = (body: Statement): boolean => {
   var foundBreak = false;
@@ -252,7 +254,7 @@ let findIterableOrIteratorElementType = (t: Type): Type | null => {
       return elementType;
     }
     case ClassType as ct: {
-      if (ct.name == "array" && ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
+      if ((ct.name == "array" || ct.name == "Array" || ct.name == "FixedArray" || ct.name == "ImmutableArray") && ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
         return (ct.typeArguments as Array<Type>)[0];
       }
       for (let iface in ct.implementsList) {
@@ -356,7 +358,7 @@ let getForInElementType = (ctx: FunctionContext, iterableType: Type): Type => {
 export let generateForInStatement = (
   ctx: FunctionContext,
   stmt: ForInStatement,
-  genExpr: (e: Expression, discardValue: boolean) => void,
+  genExpr: (e: Expression, discardValue: boolean, ignoreAdaptations: boolean) => void,
   genStmt: (s: Statement) => void,
   genPatternBinding: (
     ctx: FunctionContext,
@@ -427,7 +429,7 @@ export let generateForInStatement = (
       throw new Error("for-in: element type not found for FixedArray");
     }
 
-    genExpr(stmt.iterable, false);
+    genExpr(stmt.iterable, false, true);
 
     let arrWasmType = typeToValTypeWithSub(ctx.wasm, resolvedIterableType, ctx.wasmFunction);
     let arrLocal = ctx.allocLocal(arrWasmType);
@@ -550,7 +552,7 @@ export let generateForInStatement = (
       }
     };
 
-    genExpr(stmt.iterable, false);
+    genExpr(stmt.iterable, false, true);
     let arrWasmType = typeToValTypeWithSub(ctx.wasm, resolvedIterableType, ctx.wasmFunction);
     let arrLocal = ctx.allocLocal(arrWasmType);
     ctx.emitter.emitLocalSet(arrLocal);
@@ -635,18 +637,24 @@ export let generateForInStatement = (
     }
   }
 
+  let ignoreAdaptations = !isIterator && resolvedIterableType is ClassType;
   // 1. Generate iterable expression - pushes iterable/iterator on stack
-  genExpr(stmt.iterable, false);
+  genExpr(stmt.iterable, false, ignoreAdaptations);
 
   var it: InterfaceType | null = null;
   if (!isIterator) {
     if (resolvedIterableType is ClassType) {
       var ct = resolvedIterableType as ClassType;
+      if (ct.isMixinIntermediate || (ct.name.length >= 5 && ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This")) {
+        if (ctx.wasmFunction.classType != null) {
+          ct = ctx.wasmFunction.classType as ClassType;
+        }
+      }
       if (ctx.wasmFunction.classType != null) {
         let fct = ctx.wasmFunction.classType as ClassType;
-        ct = substituteTypeParamsInCodegen(getClassTypeParameters(fct), fct.typeArguments, ct) as ClassType;
+        ct = substituteTypeParamsInClassContext(fct, ct) as ClassType;
       } else {
-        ct = substituteTypeParamsInCodegen(null, null, ct) as ClassType;
+        ct = substituteTypeParamsInClassContext(ct, ct) as ClassType;
       }
       let cName = getClassKey(ct);
       let iterableIface = findPreludeInterface(ctx, "Iterable");
@@ -655,10 +663,10 @@ export let generateForInStatement = (
       }
       var ifaceType = findImplementedInterfaceTransitive(ct, "Iterable");
       if (ifaceType == null) {
-        ifaceType = substituteTypeParamsInCodegen(getClassTypeParameters(ct), ct.typeArguments, iterableIface as InterfaceType) as InterfaceType;
+        ifaceType = substituteTypeParamsInClassContext(ct, iterableIface as InterfaceType) as InterfaceType;
       }
       it = ifaceType as InterfaceType;
-      let iName = getInterfaceKey(it);
+      let iName = getInterfaceKey(it as InterfaceType);
       
       let key = getClassInterfaceKey(cName, iName);
       let vtableGlobalOpt = ctx.wasm.getClassInterfaceVTable(key);
@@ -674,7 +682,13 @@ export let generateForInStatement = (
     } else if (resolvedIterableType is InterfaceType) {
       it = resolvedIterableType as InterfaceType;
     } else {
-      throw new Error("Self-hosted compiler only supports for-in on InterfaceType and ClassType for now");
+      let locStr = if (stmt.loc != null) {
+        let span = stmt.loc as SourceLocation;
+        " at " + ctx.wasmFunction.model.sourcePath + ":" + i32ToString(span.line) + ":" + i32ToString(span.column)
+      } else {
+        " in " + ctx.wasmFunction.model.sourcePath
+      };
+      throw new Error("Self-hosted compiler only supports for-in on InterfaceType and ClassType for now. Found: " + typeToString(resolvedIterableType) + locStr);
     }
 
     let iName = getInterfaceKey(it as InterfaceType);
@@ -707,11 +721,16 @@ export let generateForInStatement = (
     if (resolvedIterableType is ClassType) {
       // Box the class reference on stack into the Iterator interface fat pointer
       var ct = resolvedIterableType as ClassType;
+      if (ct.isMixinIntermediate || (ct.name.length >= 5 && ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This")) {
+        if (ctx.wasmFunction.classType != null) {
+          ct = ctx.wasmFunction.classType as ClassType;
+        }
+      }
       if (ctx.wasmFunction.classType != null) {
         let fct = ctx.wasmFunction.classType as ClassType;
-        ct = substituteTypeParamsInCodegen(getClassTypeParameters(fct), fct.typeArguments, ct) as ClassType;
+        ct = substituteTypeParamsInClassContext(fct, ct) as ClassType;
       } else {
-        ct = substituteTypeParamsInCodegen(null, null, ct) as ClassType;
+        ct = substituteTypeParamsInClassContext(ct, ct) as ClassType;
       }
       let cName = getClassKey(ct);
       let iName = getInterfaceKey(iteratorType);

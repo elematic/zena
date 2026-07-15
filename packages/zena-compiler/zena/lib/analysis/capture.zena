@@ -55,6 +55,7 @@ let isLocalSymbol = (sym: Symbol, model: SemanticModel): boolean => {
       }
     }
   }
+  return false;
 };
 
 let isDeclaredInClosure = (sym: Symbol, funcExpr: FunctionExpression, model: SemanticModel): boolean => {
@@ -68,6 +69,7 @@ let isDeclaredInClosure = (sym: Symbol, funcExpr: FunctionExpression, model: Sem
     }
     curr = parent;
   }
+  return false;
 };
 
 export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): CaptureInfo => {
@@ -79,11 +81,12 @@ export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): C
     match (n) {
       case Identifier as ident: {
         let sym = model.resolve(ident);
-        if (sym != null && isLocalSymbol(sym, model)) {
-          if (!isDeclaredInClosure(sym, func, model)) {
-            if (!seen.has(sym.id)) {
-              seen.add(sym.id);
-              info.captures.push(sym);
+        if (sym != null && isLocalSymbol(sym as Symbol, model)) {
+          let s = sym as Symbol;
+          if (!isDeclaredInClosure(s, func, model)) {
+            if (!seen.has(s.id)) {
+              seen.add(s.id);
+              info.captures.push(s);
             }
           }
         }
@@ -95,13 +98,14 @@ export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): C
         if (assign.left is Identifier) {
           let ident = assign.left as Identifier;
           let sym = model.resolve(ident);
-          if (sym != null && isLocalSymbol(sym, model)) {
-            if (!isDeclaredInClosure(sym, func, model)) {
-              if (!seen.has(sym.id)) {
-                seen.add(sym.id);
-                info.captures.push(sym);
+          if (sym != null && isLocalSymbol(sym as Symbol, model)) {
+            let s = sym as Symbol;
+            if (!isDeclaredInClosure(s, func, model)) {
+              if (!seen.has(s.id)) {
+                seen.add(s.id);
+                info.captures.push(s);
               }
-              info.mutableCaptures.add(sym.id);
+              info.mutableCaptures.add(s.id);
             }
           }
         }

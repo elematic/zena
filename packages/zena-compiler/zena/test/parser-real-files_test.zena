@@ -1,9 +1,6 @@
-// Test that the self-hosted parser can parse real Zena source files.
-// This catches unsupported syntax that the parser doesn't handle yet.
-
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue } from 'zena:assert';
-import { readFile } from 'zena:fs';
+import { readFile, listDir, FileType } from 'zena:fs';
 import { Error } from 'zena:error';
 import { parse } from '../lib/parser.zena';
 import { console } from 'zena:console';
@@ -14,39 +11,40 @@ let parseFile = (path: String): boolean => {
     parse(source, path);
     true
   } catch (e) {
-    console.log("Parse error: " + e.message);
+    console.log("Parse error in " + path + ": " + e.message);
+    let stack = e.getStackTrace();
+    if (stack != null) {
+      console.log(stack);
+    }
     false
   };
   return mod;
 };
 
+let parseDir = (dirPath: String): void => {
+  let entries = listDir(dirPath);
+  for (let entry in entries) {
+    if (entry.fileType == FileType.Directory) {
+      if (entry.name != "." && entry.name != "..") {
+        let subPath = dirPath + "/" + entry.name;
+        suite(entry.name, (): void => {
+          parseDir(subPath);
+        });
+      }
+    } else if (entry.fileType == FileType.RegularFile) {
+      if (entry.name.endsWith(".zena")) {
+        let filePath = dirPath + "/" + entry.name;
+        test(entry.name, (ctx: TestContext): void => {
+          isTrue(parseFile(filePath));
+        });
+      }
+    }
+  }
+};
+
 export let tests = suite('Parser: Real Files', (): void => {
-
-  test('parses ast-json.zena', (ctx: TestContext): void => {
-    isTrue(parseFile('packages/zena-compiler/zena/lib/ast-json.zena'));
-  });
-
-  test('parses parser.zena', (ctx: TestContext): void => {
-    isTrue(parseFile('packages/zena-compiler/zena/lib/parser.zena'));
-  });
-
-  test('parses tokenizer.zena', (ctx: TestContext): void => {
-    isTrue(parseFile('packages/zena-compiler/zena/lib/tokenizer.zena'));
-  });
-
-  test('parses ast.zena', (ctx: TestContext): void => {
-    isTrue(parseFile('packages/zena-compiler/zena/lib/ast.zena'));
-  });
-
-  test('parses scope.zena', (ctx: TestContext): void => {
-    isTrue(parseFile('packages/zena-compiler/zena/lib/scope.zena'));
-  });
-
-  test('parses checker.zena', (ctx: TestContext): void => {
-    isTrue(parseFile('packages/zena-compiler/zena/lib/checker.zena'));
-  });
-
-  test('parses map.zena', (ctx: TestContext): void => {
-    isTrue(parseFile('packages/stdlib/zena/map.zena'));
+  suite('stdlib', (): void => {
+    parseDir('packages/stdlib/zena');
   });
 });
+

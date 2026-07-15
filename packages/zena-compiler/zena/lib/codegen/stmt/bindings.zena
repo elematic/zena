@@ -15,7 +15,35 @@ import { Array } from 'zena:array';
 import { RecordDispatchInfo, WasmField, sortWasmFields, WasmStruct } from '../wasm-module.zena';
 import { getClassKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
 import { i32ToString } from 'zena:string-convert';
-import { ValTypeRefNull, ValTypeRef, ValType, ValTypeAnyRef } from '../wasm.zena';
+import { ValTypeRefNull, ValTypeRef, ValType, ValTypeAnyRef, valTypeToOpcode, ValTypeStructRef, HeapType, heapTypeToSigned, valTypeEquals } from '../wasm.zena';
+
+let loadValueAndCast = (
+  ctx: FunctionContext,
+  loadValue: () => void,
+  valueType: Type,
+  targetType: Type
+): void => {
+  loadValue();
+  let initWasmType = typeToValTypeWithSub(ctx.wasm, valueType, ctx.wasmFunction);
+  let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetType, ctx.wasmFunction);
+  let isTargetRef = match (targetWasmType) {
+    case ValTypeRef: true
+    case ValTypeRefNull: true
+    case ValTypeStructRef: true
+    case _: false
+  };
+  if (isTargetRef && !valTypeEquals(initWasmType, targetWasmType)) {
+    let targetIdx = match (targetWasmType) {
+      case ValTypeRefNull as trn: trn.target.index
+      case ValTypeRef as tr: tr.target.index
+      case ValTypeStructRef: heapTypeToSigned(HeapType.struct)
+      case _: -1
+    };
+    if (targetIdx != -1) {
+      ctx.emitter.emitRefCastNull(targetIdx);
+    }
+  }
+};
 
 export let generatePatternBinding = (
   ctx: FunctionContext,
@@ -54,30 +82,32 @@ export let generatePatternBinding = (
     }
     case AsPattern as ap: {
       let sym = ctx.wasmFunction.model.resolveDeclaration(ap.name);
-      if (sym != null && ctx.localIndices.has(sym.id)) {
-        loadValue();
-        if (ctx.isCelled(sym.id)) {
-          let symType = ctx.wasmFunction.model.getBindingType(sym);
+      if (sym != null && ctx.localIndices.has((sym as Symbol).id)) {
+        let s = sym as Symbol;
+        let symType = ctx.wasmFunction.model.getBindingType(s) as Type;
+        loadValueAndCast(ctx, loadValue, valueType, symType);
+        if (ctx.isCelled(s.id)) {
           let valType = typeToValTypeWithSub(ctx.wasm, symType, ctx.wasmFunction);
           let cellStruct = getCellStruct(ctx.wasm, valType);
           ctx.emitter.emitStructNew(cellStruct.index);
         }
-        ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
+        ctx.emitter.emitLocalSet(ctx.localIndices[s.id]);
       }
       generatePatternBinding(ctx, ap.pattern, t, loadValue);
     }
     case IdentifierPattern as ident: {
       if (ident.name != "_") {
         let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
-        if (sym != null && ctx.localIndices.has(sym.id)) {
-          loadValue();
-          if (ctx.isCelled(sym.id)) {
-            let symType = ctx.wasmFunction.model.getBindingType(sym);
+        if (sym != null && ctx.localIndices.has((sym as Symbol).id)) {
+          let s = sym as Symbol;
+          let symType = ctx.wasmFunction.model.getBindingType(s) as Type;
+          loadValueAndCast(ctx, loadValue, valueType, symType);
+          if (ctx.isCelled(s.id)) {
             let valType = typeToValTypeWithSub(ctx.wasm, symType, ctx.wasmFunction);
             let cellStruct = getCellStruct(ctx.wasm, valType);
             ctx.emitter.emitStructNew(cellStruct.index);
           }
-          ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
+          ctx.emitter.emitLocalSet(ctx.localIndices[s.id]);
         } else {
           loadValue();
           ctx.emitter.emitDrop();
@@ -90,15 +120,16 @@ export let generatePatternBinding = (
     case Identifier as ident: {
       if (ident.name != "_") {
         let sym = ctx.wasmFunction.model.resolveDeclaration(ident);
-        if (sym != null && !(sym as Symbol).isType() && ctx.localIndices.has(sym.id)) {
-          loadValue();
-          if (ctx.isCelled(sym.id)) {
-            let symType = ctx.wasmFunction.model.getBindingType(sym);
+        if (sym != null && !(sym as Symbol).isType() && ctx.localIndices.has((sym as Symbol).id)) {
+          let s = sym as Symbol;
+          let symType = ctx.wasmFunction.model.getBindingType(s) as Type;
+          loadValueAndCast(ctx, loadValue, valueType, symType);
+          if (ctx.isCelled(s.id)) {
             let valType = typeToValTypeWithSub(ctx.wasm, symType, ctx.wasmFunction);
             let cellStruct = getCellStruct(ctx.wasm, valType);
             ctx.emitter.emitStructNew(cellStruct.index);
           }
-          ctx.emitter.emitLocalSet(ctx.localIndices[sym.id]);
+          ctx.emitter.emitLocalSet(ctx.localIndices[s.id]);
         } else {
           loadValue();
           ctx.emitter.emitDrop();
@@ -374,7 +405,7 @@ export let generateVariableDeclaration = (
     let loadInit = (): void => {
       genExpr(initExpr, false);
     };
-    generatePatternBinding(ctx, stmt.pattern, initType, loadInit);
+    generatePatternBinding(ctx, stmt.pattern, initType as Type, loadInit);
 
     if (stmt.kind == "let" && stmt.pattern is IdentifierPattern) {
       let identPat = stmt.pattern as IdentifierPattern;
