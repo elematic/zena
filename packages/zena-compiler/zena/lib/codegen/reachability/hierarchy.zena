@@ -1,6 +1,6 @@
 import { Program } from '../../program.zena';
-import { ClassType, FunctionType, MixinType, InterfaceType } from '../../types.zena';
-import { Node, ClassDeclaration, MethodDefinition, FieldDefinition, AccessorDeclaration, TypeAnnotation, MixinDeclaration, Identifier, SymbolPropertyName, MemberExpression } from '../../ast.zena';
+import { ClassType, FunctionType, MixinType, InterfaceType, TypeId } from '../../types.zena';
+import { Node, NodeId, ClassDeclaration, MethodDefinition, FieldDefinition, AccessorDeclaration, TypeAnnotation, MixinDeclaration, Identifier, SymbolPropertyName, MemberExpression } from '../../ast.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
@@ -21,29 +21,28 @@ export final class ClassHierarchyAnalysis {
   instantiatedSpecializedClasses: HashSet<String>;
   wasm: WasmModule;
 
-  implementingMethodCache = new HashMap<i32, HashMap<String, MethodDefinition>>();
-  implementingMethodNulls = new HashMap<i32, HashSet<String>>();
-  implementingMethodsCache = new HashMap<i32, HashMap<String, Array<MethodDefinition>>>();
-  implementingFieldCache = new HashMap<i32, HashMap<String, FieldDefinition>>();
-  implementingFieldNulls = new HashMap<i32, HashSet<String>>();
-  implementingAccessorCache = new HashMap<i32, HashMap<String, AccessorDeclaration>>();
-  implementingAccessorNulls = new HashMap<i32, HashSet<String>>();
+  implementingMethodCache = new HashMap<TypeId, HashMap<String, MethodDefinition>>();
+  implementingMethodNulls = new HashMap<TypeId, HashSet<String>>();
+  implementingMethodsCache = new HashMap<TypeId, HashMap<String, Array<MethodDefinition>>>();
+  implementingFieldCache = new HashMap<TypeId, HashMap<String, FieldDefinition>>();
+  implementingFieldNulls = new HashMap<TypeId, HashSet<String>>();
+  implementingAccessorCache = new HashMap<TypeId, HashMap<String, AccessorDeclaration>>();
+  implementingAccessorNulls = new HashMap<TypeId, HashSet<String>>();
   subclassRelationCache = new HashMap<i32, boolean>();
   subclassesByBaseId = new HashMap<SymbolId, Array<ClassType>>();
-  classDeclTypeCache = new HashMap<i32, ClassType>();
+  classDeclTypeCache = new HashMap<NodeId, ClassType>();
   classMixinIdsCache = new HashMap<SymbolId, HashMap<SymbolId, boolean>>();
   classModels: HashMap<SymbolId, SemanticModel>;
 
   new(this.program, this.instantiatedSpecializedClasses, this.wasm, this.classModels);
 
-  getClassMixinIds(cd: ClassDeclaration, model: SemanticModel): HashMap<SymbolId, boolean> {
-    let lookupId = cd.id as SymbolId;
-    if (let (true, cached) = this.classMixinIdsCache.get(lookupId)) {
+  getClassMixinIds(cd: ClassDeclaration, symId: SymbolId, model: SemanticModel): HashMap<SymbolId, boolean> {
+    if (let (true, cached) = this.classMixinIdsCache.get(symId)) {
       return cached;
     }
     let seenIds = new HashMap<SymbolId, boolean>();
     collectMixinSymbolIds(this.program, model, cd.mixins, seenIds);
-    this.classMixinIdsCache[lookupId] = seenIds;
+    this.classMixinIdsCache[symId] = seenIds;
     return seenIds;
   }
 
@@ -63,7 +62,7 @@ export final class ClassHierarchyAnalysis {
     var curr: ClassType | null = cType;
     while (curr != null) {
       let ct = curr as ClassType;
-      let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+      let lookupId = (ct.genericSource ?? ct).symbolId;
       var model: SemanticModel | null = null;
       if (ct.sourcePath != "") {
         if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
@@ -129,7 +128,7 @@ export final class ClassHierarchyAnalysis {
     var curr: ClassType | null = cType;
     while (curr != null) {
       let ct = curr as ClassType;
-      let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+      let lookupId = (ct.genericSource ?? ct).symbolId;
       var model: SemanticModel | null = null;
       if (ct.sourcePath != "") {
         if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
@@ -202,7 +201,7 @@ export final class ClassHierarchyAnalysis {
     var curr: ClassType | null = cType;
     while (curr != null) {
       let ct = curr as ClassType;
-      let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+      let lookupId = (ct.genericSource ?? ct).symbolId;
       var model: SemanticModel | null = null;
       if (ct.sourcePath != "") {
         if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
@@ -279,7 +278,7 @@ export final class ClassHierarchyAnalysis {
     var curr: ClassType | null = cType;
     while (curr != null) {
       let ct = curr as ClassType;
-      let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+      let lookupId = (ct.genericSource ?? ct).symbolId;
       var model: SemanticModel | null = null;
       if (ct.sourcePath != "") {
         if (let (true, unit) = this.program.unitsByPath.get(ct.sourcePath)) {
@@ -345,7 +344,7 @@ export final class ClassHierarchyAnalysis {
   }
 
   isSubclassOf(ct: ClassType, baseType: ClassType): boolean {
-    let key = (ct.id << 16) | baseType.id;
+    let key = ((ct.id as i32) << 16) | (baseType.id as i32);
     if (let (true, cached) = this.subclassRelationCache.get(key)) {
       return cached;
     }
@@ -363,7 +362,7 @@ export final class ClassHierarchyAnalysis {
       if (currVal.genericSource != null && (currVal.genericSource as ClassType).id == baseType.id) return true;
       
       // Check mixins
-      let lookupId = (if (currVal.genericSource != null) (currVal.genericSource as ClassType).id else currVal.id) as SymbolId;
+      let lookupId = (currVal.genericSource ?? currVal).symbolId;
       var model: SemanticModel | null = null;
       if (currVal.sourcePath != "") {
         if (let (true, unit) = this.program.unitsByPath.get(currVal.sourcePath)) {
@@ -382,8 +381,8 @@ export final class ClassHierarchyAnalysis {
         let m = model as SemanticModel;
         if (m.classDeclarations.has(lookupId)) {
           let cd = m.classDeclarations[lookupId];
-          let seenIds = this.getClassMixinIds(cd, m);
-          if (seenIds.has(baseType.id as SymbolId)) {
+          let seenIds = this.getClassMixinIds(cd, lookupId, m);
+          if (seenIds.has(baseType.symbolId)) {
             return true;
           }
         }
@@ -398,16 +397,16 @@ export final class ClassHierarchyAnalysis {
     var curr: ClassType | null = ct;
     while (curr != null) {
       let currVal = curr as ClassType;
-      list.add(currVal.id as SymbolId);
+      list.add(currVal.symbolId);
       if (currVal.genericSource != null) {
-        list.add((currVal.genericSource as ClassType).id as SymbolId);
+        list.add((currVal.genericSource as ClassType).symbolId);
       }
       
-      let lookupId = (if (currVal.genericSource != null) (currVal.genericSource as ClassType).id else currVal.id) as SymbolId;
+      let lookupId = (currVal.genericSource ?? currVal).symbolId;
       if (let (true, m) = this.classModels.get(lookupId)) {
         if (m.classDeclarations.has(lookupId)) {
           let cd = m.classDeclarations[lookupId];
-          let seenIds = this.getClassMixinIds(cd, m);
+          let seenIds = this.getClassMixinIds(cd, lookupId, m);
           let keys = seenIds.keys();
           while (let (true, k) = keys.next()) {
             list.add(k);
@@ -431,7 +430,7 @@ export final class ClassHierarchyAnalysis {
   }
 
   findInstantiatedSubclasses(baseType: ClassType): Array<ClassType> {
-    let baseSymId = baseType.id as SymbolId;
+    let baseSymId = baseType.symbolId;
     if (let (true, list) = this.subclassesByBaseId.get(baseSymId)) {
       return list;
     }

@@ -48,7 +48,7 @@ export final class Specializer implements SpecializerInterface {
     */
 
     let unspecC = classType.genericSource ?? classType;
-    let classId = unspecC.id as SymbolId;
+    let classId = unspecC.symbolId;
     this.pass.instantiatedClasses.add(classId);
     if (this.pass.specializedClassTypes.has(classId)) {
       let list = this.pass.specializedClassTypes[classId];
@@ -176,7 +176,7 @@ export final class Specializer implements SpecializerInterface {
     let allIfaces = this.pass.cha.collectAllImplementedInterfaces(classType);
     for (let iface in allIfaces) {
       let unspecI = iface.genericSource ?? iface;
-      let ifaceId = unspecI.id as SymbolId;
+      let ifaceId = unspecI.symbolId;
       
       if (!this.pass.instantiatedClassesByInterface.has(ifaceId)) {
         this.pass.instantiatedClassesByInterface[ifaceId] = new Array<ClassInterfacePair>();
@@ -226,7 +226,7 @@ export final class Specializer implements SpecializerInterface {
   registerSpecializedClass(ct: ClassType, classDecl: Node | null, sourceModel: SemanticModel): void {
 
     if (ct.name == "Node") {
-      throw new Error("registerSpecializedClass called for Node! classDeclIsNull=" + (if (classDecl == null) "1" else "0") + ", ct.id=" + i32ToString(ct.id));
+      throw new Error("registerSpecializedClass called for Node! classDeclIsNull=" + (if (classDecl == null) "1" else "0") + ", ct.id=" + i32ToString(ct.id as i32));
     }
     let cKey = getClassKey(ct);
     if (this.pass.wasm.classInfos.has(cKey)) {
@@ -1047,7 +1047,7 @@ export final class Specializer implements SpecializerInterface {
 
     if (ct.superType != null) {
       let superCt = ct.superType as ClassType;
-      let superLookupId = (if (superCt.genericSource != null) (superCt.genericSource as ClassType).id else superCt.id) as SymbolId;
+      let superLookupId = (superCt.genericSource ?? superCt).symbolId;
       let superDecl: Node | null = if (this.pass.classDecls.has(superLookupId)) this.pass.classDecls[superLookupId] else null;
       let superModel = this.pass.getClassModel(superCt);
       this.populateClassStructAndMethods(superCt, superDecl, superModel);

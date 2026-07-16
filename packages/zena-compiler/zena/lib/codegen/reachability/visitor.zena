@@ -151,7 +151,7 @@ export final class TypeLowerer implements TypeLowererInterface {
         return;
       }
       let cKey = getClassKey(ct);
-      let lookupId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+      let lookupId = (ct.genericSource ?? ct).symbolId;
       if (this.pass.wasm.classInfos.has(cKey)) {
         return;
       }
@@ -227,7 +227,7 @@ export final class TypeLowerer implements TypeLowererInterface {
       
       // Register specialized interface struct & methods if generic instantiation
       if (it.typeArguments != null && (it.typeArguments as Array<Type>).length > 0 && isConcrete(it)) {
-        let lookupId = (if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id) as SymbolId;
+        let lookupId = (it.genericSource ?? it).symbolId;
         if (this.pass.interfaceDecls.has(lookupId)) {
           let ifaceDecl = this.pass.interfaceDecls[lookupId];
           let sourceModel = this.pass.interfaceModels[lookupId];
@@ -509,7 +509,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             let itKey = getInterfaceMemberKey(iterableKey, ":iterator");
             this.pass.wasm.usedInterfaceMembers[itKey] = true;
             
-            let resolvedIfaceStr = i32ToString((iterableIface.genericSource ?? iterableIface).id) + ".:iterator";
+            let resolvedIfaceStr = i32ToString((iterableIface.genericSource ?? iterableIface).id as i32) + ".:iterator";
             this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
 
             for (let resolvedClass in resolvedIterableTypes) {
@@ -538,7 +538,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             let nextKey = getInterfaceMemberKey(iteratorKey, "next");
             this.pass.wasm.usedInterfaceMembers[nextKey] = true;
             
-            let resolvedIfaceStr = i32ToString((iteratorIface.genericSource ?? iteratorIface).id) + ".next";
+            let resolvedIfaceStr = i32ToString((iteratorIface.genericSource ?? iteratorIface).id as i32) + ".next";
             this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
           }
         }
@@ -564,7 +564,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             
             let resolvedName = if (isMethod) propName else "get#" + propName;
             this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, resolvedName)] = true;
-            let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id) + "." + resolvedName;
+            let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id as i32) + "." + resolvedName;
             this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
           } else if (resolvedObj is ClassType) {
             let ct = resolvedObj as ClassType;
@@ -598,7 +598,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             let mds = this.pass.cha.findImplementingMethods(ct, resolvedName);
             for (let md in mds) {
               if (isGenericMethod && methodTypeArgs != null) {
-                let unspecCdId = (if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id) as SymbolId;
+                let unspecCdId = (ct.genericSource ?? ct).symbolId;
                 let cd = if (let (true, decl) = this.pass.classDecls.get(unspecCdId)) decl else null;
                 this.pass.specializer.instantiateGenericMethod(ct, cd, propName, md as Node, methodTypeArgs as Array<Type>, this.pass.getNodeModel(md as Node, targetModel));
               } else {
@@ -629,7 +629,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             let targetName = "[]";
             if (it.members.has(targetName)) {
               this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "[]")] = true;
-              let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id) + ".[]";
+              let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id as i32) + ".[]";
               this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
             }
           }
@@ -653,14 +653,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                   let fi = member as FieldInfo;
                   if (fi.isMutable) {
                     this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "set#" + propName)] = true;
-                    let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id) + ".set#" + propName;
+                    let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id as i32) + ".set#" + propName;
                     this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
                   }
                 }
               }
               if (it.members.has(setterName)) {
                 this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, setterName)] = true;
-                let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id) + "." + setterName;
+                let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id as i32) + "." + setterName;
                 this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
               }
             }
@@ -676,7 +676,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               let targetName = "[]=";
               if (it.members.has(targetName)) {
                 this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "[]=")] = true;
-                let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id) + ".[]=";
+                let resolvedIfaceStr = i32ToString((it.genericSource ?? it).id as i32) + ".[]=";
                 this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
               }
             }
