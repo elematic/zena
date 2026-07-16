@@ -19,16 +19,22 @@ import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
 
-class ParsedMethodRef {
+final class ParsedMethodRef {
   classSymId: SymbolId;
   mName: String;
   new(this.classSymId, this.mName);
 }
 
-class ParsedInterfaceMemberRef {
+final class ParsedInterfaceMemberRef {
   ifaceSymId: SymbolId;
   mName: String;
   new(this.ifaceSymId, this.mName);
+}
+
+final class ParsedAdaptationRef {
+  classSymId: SymbolId;
+  ifaceSymId: SymbolId;
+  new(this.classSymId, this.ifaceSymId);
 }
 
 /**
@@ -97,6 +103,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
   parsedClassMethodRefs = new HashMap<String, ParsedMethodRef>();
   parsedInterfaceMemberRefs = new HashMap<String, ParsedInterfaceMemberRef>();
+  parsedAdaptationRefs = new HashMap<String, ParsedAdaptationRef>();
 
   new(this.program, this.wasm, this.target = "zena-cli") {
     this.cha = new ClassHierarchyAnalysis(this.program, this.instantiatedSpecializedClasses, this.wasm, this.classModels);
@@ -1170,27 +1177,41 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     // 0. Register used interface adaptations first
     for (let adaptKey in deps.usedInterfaceAdaptations) {
-      let keyStr = adaptKey;
-      var colonIdx = -1;
-      for (var i = 0; i < keyStr.length - 1; i += 1) {
-        if (keyStr.getByteAt(i) == 58 && keyStr.getByteAt(i + 1) == 58) {
-          colonIdx = i;
-          break;
+      var parsed: ParsedAdaptationRef | null = null;
+      if (let (true, cached) = this.parsedAdaptationRefs.get(adaptKey)) {
+        parsed = cached;
+      } else {
+        let keyStr = adaptKey;
+        var colonIdx = -1;
+        for (var i = 0; i < keyStr.length - 1; i += 1) {
+          if (keyStr.getByteAt(i) == 58 && keyStr.getByteAt(i + 1) == 58) {
+            colonIdx = i;
+            break;
+          }
+        }
+        if (colonIdx != -1) {
+          let classIdStr = keyStr.sliceBytes(0, colonIdx);
+          let ifaceIdStr = keyStr.sliceBytes(colonIdx + 2, keyStr.length);
+          let classId = if (let (true, cid) = parseI32(classIdStr)) cid else -1;
+          let ifaceId = if (let (true, iid) = parseI32(ifaceIdStr)) iid else -1;
+          let newRef = new ParsedAdaptationRef(classId as SymbolId, ifaceId as SymbolId);
+          this.parsedAdaptationRefs[adaptKey] = newRef;
+          parsed = newRef;
         }
       }
-      if (colonIdx != -1) {
-        let classIdStr = keyStr.sliceBytes(0, colonIdx);
-        let ifaceIdStr = keyStr.sliceBytes(colonIdx + 2, keyStr.length);
-        let classId = if (let (true, cid) = parseI32(classIdStr)) cid else -1;
-        let ifaceId = if (let (true, iid) = parseI32(ifaceIdStr)) iid else -1;
-        if (this.interfaceDecls.has(ifaceId as SymbolId)) {
-          let ifaceDecl = this.interfaceDecls[ifaceId as SymbolId];
-          let ifaceModel = this.interfaceModels[ifaceId as SymbolId];
+
+      if (parsed != null) {
+        let pref = parsed as ParsedAdaptationRef;
+        let classId = pref.classSymId;
+        let ifaceId = pref.ifaceSymId;
+        if (this.interfaceDecls.has(ifaceId)) {
+          let ifaceDecl = this.interfaceDecls[ifaceId];
+          let ifaceModel = this.interfaceModels[ifaceId];
           let it = ifaceModel.getBindingType(ifaceModel.resolve(ifaceDecl) as Symbol) as InterfaceType;
           
-          if (this.symbolIdToDecl.has(classId as SymbolId)) {
-            let classDecl = this.symbolIdToDecl[classId as SymbolId];
-            let classModel = this.symbolIdToModel[classId as SymbolId];
+          if (this.symbolIdToDecl.has(classId)) {
+            let classDecl = this.symbolIdToDecl[classId];
+            let classModel = this.symbolIdToModel[classId];
             let ct = this.getClassDeclType(classDecl, classModel);
             if (ct != null && it != null) {
               let unspecCName = getClassKey(ct.genericSource ?? ct);
@@ -1630,19 +1651,33 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.referencedInterfaceMembers.add(ifaceStr);
     }
 
-    var dotIdx = -1;
-    for (var i = 0; i < ifaceStr.length; i += 1) {
-      if (ifaceStr.getByteAt(i) == 46) {
-        dotIdx = i;
-        break;
+    var parsed: ParsedInterfaceMemberRef | null = null;
+    if (let (true, cached) = this.parsedInterfaceMemberRefs.get(ifaceStr)) {
+      parsed = cached;
+    } else {
+      var dotIdx = -1;
+      for (var i = 0; i < ifaceStr.length; i += 1) {
+        if (ifaceStr.getByteAt(i) == 46) {
+          dotIdx = i;
+          break;
+        }
+      }
+      if (dotIdx != -1) {
+        let ifaceIdStr = ifaceStr.sliceBytes(0, dotIdx);
+        let mName = ifaceStr.sliceBytes(dotIdx + 1, ifaceStr.length);
+        let ifaceId = if (let (true, iid) = parseI32(ifaceIdStr)) iid else -1;
+        let newRef = new ParsedInterfaceMemberRef(ifaceId as SymbolId, mName);
+        this.parsedInterfaceMemberRefs[ifaceStr] = newRef;
+        parsed = newRef;
       }
     }
-    if (dotIdx != -1) {
-      let ifaceIdStr = ifaceStr.sliceBytes(0, dotIdx);
-      let mName = ifaceStr.sliceBytes(dotIdx + 1, ifaceStr.length);
-      let ifaceId = if (let (true, iid) = parseI32(ifaceIdStr)) iid else -1;
-      if (ifaceId != -1) {
-        let symId = ifaceId as SymbolId;
+
+    if (parsed != null) {
+      let pref = parsed as ParsedInterfaceMemberRef;
+      let ifaceId = pref.ifaceSymId;
+      let mName = pref.mName;
+      if (ifaceId as i32 != -1) {
+        let symId = ifaceId;
         if (!this.referencedInterfaceMembersById.has(symId)) {
           this.referencedInterfaceMembersById[symId] = new Array<String>();
         }

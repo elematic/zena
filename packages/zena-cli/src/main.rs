@@ -396,7 +396,6 @@ fn compile_to_cache(
 fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[String]) -> Result<()> {
     let mut config = Config::new();
     config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-    config.compiler_inlining(Inlining::Yes);
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
@@ -699,7 +698,6 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool) -> Resul
 
     let mut config = Config::new();
     config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-    config.compiler_inlining(Inlining::Yes);
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
