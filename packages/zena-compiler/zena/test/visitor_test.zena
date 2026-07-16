@@ -230,6 +230,23 @@ export let tests = suite('AST Visitor', (): void => {
     equal(tupleCount, 1);
   });
 
+  test('visits onType in class declarations', (ctx: TestContext): void => {
+    let source = "extension class MyExtension on array<i32> {}";
+    let ast = parse(source, 'test.zena');
+    let typeNames = new Array<String>();
+
+    walkEnter(ast, (node) => {
+      match (node) {
+        case NamedTypeAnnotation {name}: typeNames.push(name)
+        case _: {}
+      }
+    });
+
+    equal(typeNames.length, 2);
+    equal(typeNames[0], 'array');
+    equal(typeNames[1], 'i32');
+  });
+
 });
 
 
