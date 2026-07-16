@@ -18,6 +18,7 @@ import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterfa
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
+import { performance } from '../../time.zena';
 
 final class ParsedMethodRef {
   classSymId: SymbolId;
@@ -327,6 +328,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
 
   run(): void {
+    let tInit = performance.start("codegen-discovery-init");
     // Pass 0: Register empty structs for all declared classes & interfaces to prevent cyclic dependencies
     for (let unit in this.program.units) {
       let model = unit.model;
@@ -610,8 +612,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.specializer.instantiateClassType(tsaClass, this.getClassModel(tsaClass));
     }
 
+    performance.end(tInit);
+    let tQueues = performance.start("codegen-discovery-queues");
     // Main reachability queue traversal
     this.processQueues();
+    performance.end(tQueues);
+    let tLayout = performance.start("codegen-discovery-layout");
 
     // Pass 0.6: Link superStruct for inheritance and inherit vtable slots recursively
     let linkedClasses = new HashMap<ClassKey, boolean>();
@@ -981,7 +987,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
+    performance.end(tLayout);
+    let tQueues2 = performance.start("codegen-discovery-queues");
     this.processQueues();
+    performance.end(tQueues2);
+    let tLayout2 = performance.start("codegen-discovery-layout");
 
     // Pass 2: Generate class-interface trampoline vtables
     let classes = new Array<ClassType>();
@@ -1102,7 +1112,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     
+    performance.end(tLayout2);
+    let tQueues3 = performance.start("codegen-discovery-queues");
     this.processQueues();
+    performance.end(tQueues3);
+    let tLayout3 = performance.start("codegen-discovery-layout");
     
     this.isRtaActive = false;
     
@@ -1157,6 +1171,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     
     this.closeReachedTypes();
     this.wasm.types = this.emittedTypes;
+    performance.end(tLayout3);
   }
 
   traverseDependencies(deps: SymbolDependencies, model: SemanticModel, classType: ClassType | null, typeArguments: Array<Type> | null = null, node: Node | null = null): void {

@@ -1,0 +1,71 @@
+import { console } from 'zena:console';
+import { parseJson, stringify, JsonObject, JsonArray, JsonValue } from 'zena:json';
+import { HashMap } from 'zena:map';
+import { Array } from 'zena:growable-array';
+
+class Book {
+  title: String;
+  author: String;
+  year: i32;
+  new(this.title, this.author, this.year);
+}
+
+export let main = (): i32 => {
+  let jsonInput = 
+    "{\n" +
+    "  \"libraryName\": \"Zena Library\",\n" +
+    "  \"books\": [\n" +
+    "    { \"title\": \"Structure and Interpretation of Computer Programs\", \"author\": \"Sussman & Abelson\", \"year\": 1996 },\n" +
+    "    { \"title\": \"Compilers: Principles, Techniques, and Tools\", \"author\": \"Aho, Lam, Sethi, Ullman\", \"year\": 2006 },\n" +
+    "    { \"title\": \"Types and Programming Languages\", \"author\": \"Pierce\", \"year\": 2002 },\n" +
+    "    { \"title\": \"Introduction to Algorithms\", \"author\": \"Cormen, Leiserson, Rivest, Stein\", \"year\": 2009 }\n" +
+    "  ]\n" +
+    "}";
+
+  console.log("Parsing JSON...");
+  let root = parseJson(jsonInput) as JsonObject;
+  let name = root["libraryName"] as String;
+  console.log("Library: " + name);
+
+  let booksJson = root["books"] as JsonArray;
+  let books = new Array<Book>();
+  
+  var i = 0;
+  while (i < booksJson.length) {
+    let bookObj = booksJson[i] as JsonObject;
+    let title = bookObj["title"] as String;
+    let author = bookObj["author"] as String;
+    let yearFloat = bookObj["year"] as f64; // numbers are boxed f64
+    books.push(new Book(title, author, yearFloat as i32));
+    i += 1;
+  }
+
+  console.log("Found " + i32ToString(books.length) + " books.");
+
+  // Group books by author or filter by year
+  let recentBooks = new Array<Book>();
+  for (let book in books) {
+    if (book.year >= 2000) {
+      recentBooks.push(book);
+      console.log("  - Recent: " + book.title + " (" + i32ToString(book.year) + ")");
+    }
+  }
+
+  // Convert a custom structure back to JSON
+  let recentList = new JsonArray();
+  for (let book in recentBooks) {
+    let bObj = new JsonObject();
+    bObj["title"] = book.title;
+    bObj["author"] = book.author;
+    recentList.push(bObj);
+  }
+
+  let outputObj = new JsonObject();
+  outputObj["recent_books"] = recentList;
+
+  let stringified = stringify(outputObj);
+  console.log("Stringified output:");
+  console.log(stringified);
+
+  return recentBooks.length;
+};

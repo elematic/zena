@@ -59,9 +59,13 @@ let targets = [
     path: join(benchmarksDir, 'stdlib_moderate.zena'),
   },
   {
-    name: 'self_compile.zena',
-    path: join(repoRoot, 'packages', 'zena-compiler', 'zena', 'cli', 'main.zena'),
+    name: 'stdlib_heavy.zena',
+    path: join(benchmarksDir, 'stdlib_heavy.zena'),
   },
+  // {
+  //   name: 'self_compile.zena',
+  //   path: join(repoRoot, 'packages', 'zena-compiler', 'zena', 'cli', 'main.zena'),
+  // },
 ];
 
 if (filter) {
@@ -111,6 +115,9 @@ if (runCompiler && targets.length > 0) {
     let totalCheck = 0;
     let totalCodegen = 0;
     let totalDiscovery = 0;
+    let totalDiscoveryInit = 0;
+    let totalDiscoveryQueues = 0;
+    let totalDiscoveryLayout = 0;
     let totalLayout = 0;
     let totalEmitCode = 0;
     let totalEmitOther = 0;
@@ -138,6 +145,12 @@ if (runCompiler && targets.length > 0) {
           totalCheck += parseFloat(line.split(':')[1].trim());
         } else if (line.startsWith('Codegen:')) {
           totalCodegen += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Discovery Init:')) {
+          totalDiscoveryInit += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Discovery Queues:')) {
+          totalDiscoveryQueues += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Discovery Layout:')) {
+          totalDiscoveryLayout += parseFloat(line.split(':')[1].trim());
         } else if (line.trim().startsWith('Discovery:')) {
           totalDiscovery += parseFloat(line.split(':')[1].trim());
         } else if (line.trim().startsWith('Layout:')) {
@@ -158,6 +171,9 @@ if (runCompiler && targets.length > 0) {
     const check = totalCheck / targetRuns;
     const codegen = totalCodegen / targetRuns;
     const discovery = totalDiscovery / targetRuns;
+    const discoveryInit = totalDiscoveryInit / targetRuns;
+    const discoveryQueues = totalDiscoveryQueues / targetRuns;
+    const discoveryLayout = totalDiscoveryLayout / targetRuns;
     const layout = totalLayout / targetRuns;
     const emitCode = totalEmitCode / targetRuns;
     const emitOther = totalEmitOther / targetRuns;
@@ -171,6 +187,9 @@ if (runCompiler && targets.length > 0) {
     let totalNodeCheck = 0;
     let totalNodeCodegen = 0;
     let totalNodeDiscovery = 0;
+    let totalNodeDiscoveryInit = 0;
+    let totalNodeDiscoveryQueues = 0;
+    let totalNodeDiscoveryLayout = 0;
     let totalNodeLayout = 0;
     let totalNodeEmitCode = 0;
     let totalNodeEmitOther = 0;
@@ -198,6 +217,12 @@ if (runCompiler && targets.length > 0) {
           totalNodeCheck += parseFloat(line.split(':')[1].trim());
         } else if (line.startsWith('Codegen:')) {
           totalNodeCodegen += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Discovery Init:')) {
+          totalNodeDiscoveryInit += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Discovery Queues:')) {
+          totalNodeDiscoveryQueues += parseFloat(line.split(':')[1].trim());
+        } else if (line.trim().startsWith('Discovery Layout:')) {
+          totalNodeDiscoveryLayout += parseFloat(line.split(':')[1].trim());
         } else if (line.trim().startsWith('Discovery:')) {
           totalNodeDiscovery += parseFloat(line.split(':')[1].trim());
         } else if (line.trim().startsWith('Layout:')) {
@@ -218,6 +243,9 @@ if (runCompiler && targets.length > 0) {
     const nodeCheck = totalNodeCheck / targetRuns;
     const nodeCodegen = totalNodeCodegen / targetRuns;
     const nodeDiscovery = totalNodeDiscovery / targetRuns;
+    const nodeDiscoveryInit = totalNodeDiscoveryInit / targetRuns;
+    const nodeDiscoveryQueues = totalNodeDiscoveryQueues / targetRuns;
+    const nodeDiscoveryLayout = totalNodeDiscoveryLayout / targetRuns;
     const nodeLayout = totalNodeLayout / targetRuns;
     const nodeEmitCode = totalNodeEmitCode / targetRuns;
     const nodeEmitOther = totalNodeEmitOther / targetRuns;
@@ -352,6 +380,27 @@ if (runCompiler && targets.length > 0) {
           '  Discovery',
           `${discovery.toFixed(2)} ms`,
           `${nodeDiscovery.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          '    Init',
+          `${discoveryInit.toFixed(2)} ms`,
+          `${nodeDiscoveryInit.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          '    Queues',
+          `${discoveryQueues.toFixed(2)} ms`,
+          `${nodeDiscoveryQueues.toFixed(2)} ms`,
+        ]),
+      );
+      console.log(
+        formatBreakdownRow([
+          '    Layout',
+          `${discoveryLayout.toFixed(2)} ms`,
+          `${nodeDiscoveryLayout.toFixed(2)} ms`,
         ]),
       );
       console.log(
