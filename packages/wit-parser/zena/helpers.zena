@@ -1,6 +1,7 @@
 import {PackageName, Id} from './parser.zena';
 import {Array} from 'zena:growable-array';
 import {StringReader} from 'zena:string-reader';
+import {Option, some, none} from 'zena:option';
 
 /** Normalize an identifier - strip '%' prefix if present (explicit escaping). */
 export let normalizeId = (name: String): String => {
@@ -234,62 +235,74 @@ export let comparePackageNameStrings = (pkgOrder: Array<String>, k1: String, k2:
     return 1;
   }
   
-  // Find namespace separator ':'
-  var colon1 = -1;
-  for (var i1 = 0; i1 < k1.length; i1 += 1) {
-    if (k1.getByteAt(i1) == 58) { // ':'
-      colon1 = i1;
-      break;
-    }
-  }
+  let p1 = parsePackageParts(k1);
+  let p2 = parsePackageParts(k2);
   
-  var colon2 = -1;
-  for (var i2 = 0; i2 < k2.length; i2 += 1) {
-    if (k2.getByteAt(i2) == 58) { // ':'
-      colon2 = i2;
-      break;
-    }
-  }
-  
-  let ns1 = if (colon1 >= 0) k1.sliceBytes(0, colon1) else k1;
-  let ns2 = if (colon2 >= 0) k2.sliceBytes(0, colon2) else k2;
-  let nsComp = compareStrings(ns1, ns2);
+  let nsComp = compareStrings(p1.namespace, p2.namespace);
   if (nsComp != 0) return nsComp;
   
-  // Find version separator '@'
-  let rest1 = if (colon1 >= 0) k1.sliceBytes(colon1 + 1, k1.length) else "";
-  let rest2 = if (colon2 >= 0) k2.sliceBytes(colon2 + 1, k2.length) else "";
-  
-  var at1 = -1;
-  for (var j1 = 0; j1 < rest1.length; j1 += 1) {
-    if (rest1.getByteAt(j1) == 64) { // '@'
-      at1 = j1;
-      break;
-    }
-  }
-  
-  var at2 = -1;
-  for (var j2 = 0; j2 < rest2.length; j2 += 1) {
-    if (rest2.getByteAt(j2) == 64) { // '@'
-      at2 = j2;
-      break;
-    }
-  }
-  
-  let name1 = if (at1 >= 0) rest1.sliceBytes(0, at1) else rest1;
-  let name2 = if (at2 >= 0) rest2.sliceBytes(0, at2) else rest2;
-  let nComp = compareStrings(name1, name2);
+  let nComp = compareStrings(p1.name, p2.name);
   if (nComp != 0) return nComp;
   
-  let hasVer1 = at1 >= 0;
-  let hasVer2 = at2 >= 0;
+  let hasVer1 = p1.version != null;
+  let hasVer2 = p2.version != null;
   
   if (!hasVer1 && !hasVer2) return 0;
   if (!hasVer1 && hasVer2) return -1;
   if (hasVer1 && !hasVer2) return 1;
   
-  let ver1 = rest1.sliceBytes(at1 + 1, rest1.length);
-  let ver2 = rest2.sliceBytes(at2 + 1, rest2.length);
+  return compareVersions(p1.version as String, p2.version as String);
+};
+
+class PackageParts {
+  namespace: String;
+  name: String;
+  version: String | null;
+  new(this.namespace, this.name, this.version);
+}
+
+let parsePackageParts = (name: String): PackageParts => {
+  let colonParts = name.split(":");
+  var namespace = "";
+  var rest = name;
+  if (colonParts.length == 2) {
+    namespace = colonParts[0];
+    rest = colonParts[1];
+  }
   
-  return compareVersions(ver1, ver2);
+  let atParts = rest.split("@");
+  if (atParts.length == 2) {
+    return new PackageParts(namespace, atParts[0], atParts[1]);
+  }
+  return new PackageParts(namespace, rest, null);
+};
+
+export class PackageNameRef {
+  packageName: String;
+  version: String | null;
+  new(this.packageName, this.version);
+}
+
+export let parsePackageName = (name: String): PackageNameRef => {
+  let atParts = name.split("@");
+  if (atParts.length == 2) {
+    return new PackageNameRef(atParts[0], atParts[1]);
+  }
+  return new PackageNameRef(name, null);
+};
+
+export class InterfaceNameRef {
+  packageName: String;
+  version: String | null;
+  interfaceName: String;
+  new(this.packageName, this.version, this.interfaceName);
+}
+
+export let parseInterfaceName = (name: String): InterfaceNameRef | null => {
+  let slashParts = name.split("/");
+  if (slashParts.length != 2) {
+    return null;
+  }
+  let pkgRef = parsePackageName(slashParts[0]);
+  return new InterfaceNameRef(pkgRef.packageName, pkgRef.version, slashParts[1]);
 };

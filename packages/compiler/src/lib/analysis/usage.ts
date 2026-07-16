@@ -464,9 +464,6 @@ class UsageAnalyzer {
    * Mark a declaration as used and add it to the worklist.
    */
   #markUsed(decl: Declaration, reason?: string): void {
-    if (decl.type === NodeType.ClassDeclaration && (decl as any).name?.name === 'FixedArray') {
-      console.error(`  FixedArray marked as used! Reason: ${reason}`);
-    }
     if (this.#usedDeclarations.has(decl)) return;
 
     const info: UsageInfo = {isUsed: true};

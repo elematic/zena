@@ -8,6 +8,7 @@
 import {JsonBuilder} from 'zena:json';
 import {Array} from 'zena:growable-array';
 import {HashMap} from 'zena:map';
+import {HashSet} from 'zena:set';
 import {Option, Some, some, none} from 'zena:option';
 import {i32ToString, parseI32} from 'zena:string-convert';
 import {Ast, AstItem, AstItemTag, PackageName, NestedPackage, Id, Use, UseName, UsePath, UsePathTag, Include, IncludeName, ToplevelUse} from './parser.zena';
@@ -16,7 +17,7 @@ import {WorldDef, WorldItem, WorldItemTag, ExternKind, ExternKindTag, Import, Ex
 import {TypeDef, TypeDefTag, Type, TypeTag, NamedFunc, Func, Param, Field} from './parser.zena';
 import {Case, EnumCaseDef, FlagDef, ResourceFunc, ResourceFuncTag, Docs, Attribute, AttributeTag} from './parser.zena';
 import {console} from 'zena:console';
-import {normalizeId, compareStrings, isPurelyNumeric, stringToInt, getPreIdentifiers, compareVersions, formatPackageName, comparePackageNames, comparePackageNameStrings} from './helpers.zena';
+import {normalizeId, compareStrings, isPurelyNumeric, stringToInt, getPreIdentifiers, compareVersions, formatPackageName, comparePackageNames, comparePackageNameStrings, InterfaceNameRef, parseInterfaceName, PackageNameRef, parsePackageName} from './helpers.zena';
 import {TypeRef, PrimitiveRef, IndexRef, TypeOwner, InterfaceOwner, WorldOwner, ScopeTypeElement, TypeDefElement, UseElement, RecordField, VariantCase, EnumCase, TypeEntry, TypeKind, TypeAlias, ListKind, FixedLengthListKind, OptionKind, ResultKind, RecordKind, TupleKind, FlagsKind, VariantKind, EnumKind, HandleKind, MapKind, FutureKind, StreamKind, UnknownKind, ResourceKind, PackageEntry, serializeStability} from './ast-json-types.zena';
 
 
@@ -223,12 +224,14 @@ class SerializeContext {
 
   resolveInterfaceAlias(pkgName: String, name: String): String {
     var cur = name;
-    var iterations = 0;
-    while (iterations < 10) {
+    let visited = new HashSet<String>();
+    while (true) {
       let key = pkgName + "/" + cur;
+      if (!visited.add(key)) {
+        throw new Error("Circular dependency in interface alias resolution: " + name);
+      }
       if (let (true, resolved) = this.useAliases.get(key)) {
         cur = resolved;
-        iterations += 1;
       } else {
         break;
       }
@@ -265,12 +268,11 @@ class SerializeContext {
     }
     if (idx >= 0 && idx < this.types.length) {
       let t = this.types[idx];
-      match (t.kind) {
-        case TypeAlias {inner}:
-          if (inner.isIndex()) {
-            return this.isResourceType(inner.indexValue());
-          }
-        case _: {}
+      if (t.kind is TypeAlias) {
+        let alias = t.kind as TypeAlias;
+        if (alias.inner.isIndex()) {
+          return this.isResourceType(alias.inner.indexValue());
+        }
       }
     }
     return false;
@@ -333,57 +335,61 @@ class SerializeContext {
   }
 
   getTypeRefEx(t: Type, resolveResourceAsOwn: boolean): TypeRef {
-    // Check if primitive type
-    if (t.tag == TypeTag.U8) { return TypeRef.str("u8"); }
-    if (t.tag == TypeTag.U16) { return TypeRef.str("u16"); }
-    if (t.tag == TypeTag.U32) { return TypeRef.str("u32"); }
-    if (t.tag == TypeTag.U64) { return TypeRef.str("u64"); }
-    if (t.tag == TypeTag.S8) { return TypeRef.str("s8"); }
-    if (t.tag == TypeTag.S16) { return TypeRef.str("s16"); }
-    if (t.tag == TypeTag.S32) { return TypeRef.str("s32"); }
-    if (t.tag == TypeTag.S64) { return TypeRef.str("s64"); }
-    if (t.tag == TypeTag.F32) { return TypeRef.str("f32"); }
-    if (t.tag == TypeTag.F64) { return TypeRef.str("f64"); }
-    if (t.tag == TypeTag.Char) { return TypeRef.str("char"); }
-    if (t.tag == TypeTag.Bool) { return TypeRef.str("bool"); }
-    if (t.tag == TypeTag.String) { return TypeRef.str("string"); }
-    if (t.tag == TypeTag.ErrorContext) { return TypeRef.str("error-context"); }
-    if (t.tag == TypeTag.Name) {
-      let id = t.name as Id;
-      let name = normalizeId(id.name);
-      
-      var foundIdx = -1;
-      if (this.currentInterfaceName != null) {
-        let key = "interface:" + (this.currentInterfaceName as String) + "/" + name;
-        if (let (true, idx) = this.typeIndices.get(key)) {
-          foundIdx = idx;
+    return match (t.tag) {
+      case TypeTag.U8: TypeRef.str("u8")
+      case TypeTag.U16: TypeRef.str("u16")
+      case TypeTag.U32: TypeRef.str("u32")
+      case TypeTag.U64: TypeRef.str("u64")
+      case TypeTag.S8: TypeRef.str("s8")
+      case TypeTag.S16: TypeRef.str("s16")
+      case TypeTag.S32: TypeRef.str("s32")
+      case TypeTag.S64: TypeRef.str("s64")
+      case TypeTag.F32: TypeRef.str("f32")
+      case TypeTag.F64: TypeRef.str("f64")
+      case TypeTag.Char: TypeRef.str("char")
+      case TypeTag.Bool: TypeRef.str("bool")
+      case TypeTag.String: TypeRef.str("string")
+      case TypeTag.ErrorContext: TypeRef.str("error-context")
+      case TypeTag.Name: {
+        let id = t.name as Id;
+        let name = normalizeId(id.name);
+        
+        var foundIdx = -1;
+        if (this.currentInterfaceName != null) {
+          let key = "interface:" + (this.currentInterfaceName as String) + "/" + name;
+          if (let (true, idx) = this.typeIndices.get(key)) {
+            foundIdx = idx;
+          }
+        }
+        if (foundIdx < 0 && this.currentWorldName != null) {
+          let key = "world:" + (this.currentWorldName as String) + "/" + name;
+          if (let (true, idx) = this.typeIndices.get(key)) {
+            foundIdx = idx;
+          }
+        }
+        if (foundIdx < 0) {
+          if (let (true, idx) = this.typeIndices.get(name)) {
+            foundIdx = idx;
+          }
+        }
+        
+        // Check if it's a user-defined type
+        if (foundIdx >= 0) {
+          if (resolveResourceAsOwn && this.isResourceType(foundIdx)) {
+            TypeRef.idx(this.getOwnType(foundIdx))
+          } else {
+            TypeRef.idx(foundIdx)
+          }
+        } else {
+          TypeRef.str(name)
         }
       }
-      if (foundIdx < 0 && this.currentWorldName != null) {
-        let key = "world:" + (this.currentWorldName as String) + "/" + name;
-        if (let (true, idx) = this.typeIndices.get(key)) {
-          foundIdx = idx;
-        }
+      case _: {
+        // Complex type - register and return index
+        let idx = this.registerAnonymousTypeEx(t, resolveResourceAsOwn);
+        TypeRef.idx(idx)
       }
-      if (foundIdx < 0) {
-        if (let (true, idx) = this.typeIndices.get(name)) {
-          foundIdx = idx;
-        }
-      }
-      
-      // Check if it's a user-defined type
-      if (foundIdx >= 0) {
-        if (resolveResourceAsOwn && this.isResourceType(foundIdx)) {
-          return TypeRef.idx(this.getOwnType(foundIdx));
-        }
-        return TypeRef.idx(foundIdx);
-      }
-      // Not a registered type - return as string (shouldn't happen for valid WIT)
-      return TypeRef.str(name);
-    }
-    // Complex type - register and return index
-    let idx = this.registerAnonymousTypeEx(t, resolveResourceAsOwn);
-    return TypeRef.idx(idx);
+    };
   }
   
   /** Get canonical key for a TypeRef. */
@@ -401,127 +407,140 @@ class SerializeContext {
   }
 
   registerAnonymousTypeEx(t: Type, resolveResourceAsOwn: boolean): i32 {
-    if (t.tag == TypeTag.Tuple) {
-      let types = t.types as Array<Type>;
-      let refs = new Array<TypeRef>();
-      var keyParts = "tuple:";
-      for (var idx = 0; idx < types.length; idx += 1) {
-        let ref = this.getTypeRefEx(types[idx], resolveResourceAsOwn);
-        refs.push(ref);
-        if (idx > 0) { keyParts = keyParts + ","; }
-        keyParts = keyParts + this.typeRefToKey(ref);
+    return match (t.tag) {
+      case TypeTag.Tuple: {
+        let types = t.types as Array<Type>;
+        let refs = new Array<TypeRef>();
+        var keyParts = "tuple:";
+        for (var idx = 0; idx < types.length; idx += 1) {
+          let ref = this.getTypeRefEx(types[idx], resolveResourceAsOwn);
+          refs.push(ref);
+          if (idx > 0) { keyParts = keyParts + ","; }
+          keyParts = keyParts + this.typeRefToKey(ref);
+        }
+        let kind = new TupleKind(refs);
+        this.getOrCreateAnonType(keyParts, kind)
       }
-      let kind = new TupleKind(refs);
-      return this.getOrCreateAnonType(keyParts, kind);
-    } else if (t.tag == TypeTag.Option) {
-      let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
-      let key = "option:" + this.typeRefToKey(innerRef);
-      let kind = new OptionKind(innerRef);
-      return this.getOrCreateAnonType(key, kind);
-    } else if (t.tag == TypeTag.Result) {
-      var key = "result:";
-      let ok = if (t.okType != null) {
-        let okRef = this.getTypeRefEx(t.okType as Type, resolveResourceAsOwn);
-        key = key + this.typeRefToKey(okRef);
-        okRef
-      } else {
-        null
-      };
-      key = key + ",";
-      let err = if (t.errType != null) {
-        let errRef = this.getTypeRefEx(t.errType as Type, resolveResourceAsOwn);
-        key = key + this.typeRefToKey(errRef);
-        errRef
-      } else {
-        null
-      };
-      let kind = new ResultKind(ok, err);
-      return this.getOrCreateAnonType(key, kind);
-    } else if (t.tag == TypeTag.List) {
-      let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
-      if (t.fixedLength >= 0) {
-        let key = "fixed-length-list:" + this.typeRefToKey(innerRef) + ":" + i32ToString(t.fixedLength);
-        let kind = new FixedLengthListKind(innerRef, t.fixedLength);
-        return this.getOrCreateAnonType(key, kind);
-      } else {
-        let key = "list:" + this.typeRefToKey(innerRef);
-        let kind = new ListKind(innerRef);
-        return this.getOrCreateAnonType(key, kind);
+      case TypeTag.Option: {
+        let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
+        let key = "option:" + this.typeRefToKey(innerRef);
+        let kind = new OptionKind(innerRef);
+        this.getOrCreateAnonType(key, kind)
       }
-    } else if (t.tag == TypeTag.Future) {
-      var key = "future:";
-      let inner = if (t.inner != null) {
+      case TypeTag.Result: {
+        var key = "result:";
+        let ok = if (t.okType != null) {
+          let okRef = this.getTypeRefEx(t.okType as Type, resolveResourceAsOwn);
+          key = key + this.typeRefToKey(okRef);
+          okRef
+        } else {
+          null
+        };
+        key = key + ",";
+        let err = if (t.errType != null) {
+          let errRef = this.getTypeRefEx(t.errType as Type, resolveResourceAsOwn);
+          key = key + this.typeRefToKey(errRef);
+          errRef
+        } else {
+          null
+        };
+        let kind = new ResultKind(ok, err);
+        this.getOrCreateAnonType(key, kind)
+      }
+      case TypeTag.List: {
         let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
-        key = key + this.typeRefToKey(innerRef);
-        innerRef
-      } else {
-        null
-      };
-      let kind = new FutureKind(inner);
-      return this.getOrCreateAnonType(key, kind);
-    } else if (t.tag == TypeTag.Stream) {
-      var key = "stream:";
-      let inner = if (t.inner != null) {
-        let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
-        key = key + this.typeRefToKey(innerRef);
-        innerRef
-      } else {
-        null
-      };
-      let kind = new StreamKind(inner);
-      return this.getOrCreateAnonType(key, kind);
-    } else if (t.tag == TypeTag.Own) {
-      // Get the inner type index
-      let innerRef = this.getTypeRefEx(t.inner as Type, false);
-      var resourceIdx = -1;
-      if (innerRef.isIndex()) {
-        resourceIdx = innerRef.indexValue();
-      } else {
-        // Named resource - look up in typeIndices
-        if (let (true, idx) = this.typeIndices.get(innerRef.strValue())) {
-          resourceIdx = idx;
+        if (t.fixedLength >= 0) {
+          let key = "fixed-length-list:" + this.typeRefToKey(innerRef) + ":" + i32ToString(t.fixedLength);
+          let kind = new FixedLengthListKind(innerRef, t.fixedLength);
+          this.getOrCreateAnonType(key, kind)
+        } else {
+          let key = "list:" + this.typeRefToKey(innerRef);
+          let kind = new ListKind(innerRef);
+          this.getOrCreateAnonType(key, kind)
         }
       }
-      if (resourceIdx >= 0) {
-        // Use getOwnType to avoid duplicates
-        return this.getOwnType(resourceIdx);
+      case TypeTag.Future: {
+        var key = "future:";
+        let inner = if (t.inner != null) {
+          let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
+          key = key + this.typeRefToKey(innerRef);
+          innerRef
+        } else {
+          null
+        };
+        let kind = new FutureKind(inner);
+        this.getOrCreateAnonType(key, kind)
       }
-      // Fallback if resource not found
-      let kind = new HandleKind(-1, resourceIdx);
-      let entry = new TypeEntry(null, kind, none, null);
-      return this.registerType(entry);
-    } else if (t.tag == TypeTag.Borrow) {
-      // Get the inner type index
-      let innerRef = this.getTypeRefEx(t.inner as Type, false);
-      var resourceIdx = -1;
-      if (innerRef.isIndex()) {
-        resourceIdx = innerRef.indexValue();
-      } else {
-        // Named resource - look up in typeIndices
-        if (let (true, idx) = this.typeIndices.get(innerRef.strValue())) {
-          resourceIdx = idx;
+      case TypeTag.Stream: {
+        var key = "stream:";
+        let inner = if (t.inner != null) {
+          let innerRef = this.getTypeRefEx(t.inner as Type, resolveResourceAsOwn);
+          key = key + this.typeRefToKey(innerRef);
+          innerRef
+        } else {
+          null
+        };
+        let kind = new StreamKind(inner);
+        this.getOrCreateAnonType(key, kind)
+      }
+      case TypeTag.Own: {
+        // Get the inner type index
+        let innerRef = this.getTypeRefEx(t.inner as Type, false);
+        var resourceIdx = -1;
+        if (innerRef.isIndex()) {
+          resourceIdx = innerRef.indexValue();
+        } else {
+          // Named resource - look up in typeIndices
+          if (let (true, idx) = this.typeIndices.get(innerRef.strValue())) {
+            resourceIdx = idx;
+          }
+        }
+        if (resourceIdx >= 0) {
+          // Use getOwnType to avoid duplicates
+          this.getOwnType(resourceIdx)
+        } else {
+          // Fallback if resource not found
+          let kind = new HandleKind(-1, resourceIdx);
+          let entry = new TypeEntry(null, kind, none, null);
+          this.registerType(entry)
         }
       }
-      if (resourceIdx >= 0) {
-        // Use getBorrowType to avoid duplicates
-        return this.getBorrowType(resourceIdx);
+      case TypeTag.Borrow: {
+        // Get the inner type index
+        let innerRef = this.getTypeRefEx(t.inner as Type, false);
+        var resourceIdx = -1;
+        if (innerRef.isIndex()) {
+          resourceIdx = innerRef.indexValue();
+        } else {
+          // Named resource - look up in typeIndices
+          if (let (true, idx) = this.typeIndices.get(innerRef.strValue())) {
+            resourceIdx = idx;
+          }
+        }
+        if (resourceIdx >= 0) {
+          // Use getBorrowType to avoid duplicates
+          this.getBorrowType(resourceIdx)
+        } else {
+          // Fallback if resource not found
+          let kind = new HandleKind(resourceIdx, -1);
+          let entry = new TypeEntry(null, kind, none, null);
+          this.registerType(entry)
+        }
       }
-      // Fallback if resource not found
-      let kind = new HandleKind(resourceIdx, -1);
-      let entry = new TypeEntry(null, kind, none, null);
-      return this.registerType(entry);
-    } else if (t.tag == TypeTag.Map) {
-      let keyRef = this.getTypeRefEx(t.keyType as Type, resolveResourceAsOwn);
-      let valRef = this.getTypeRefEx(t.valueType as Type, resolveResourceAsOwn);
-      let key = "map:" + this.typeRefToKey(keyRef) + ":" + this.typeRefToKey(valRef);
-      let kind = new MapKind(keyRef, valRef);
-      return this.getOrCreateAnonType(key, kind);
-    }
-
-    // Unknown type - should not reach here
-    let kind = new UnknownKind();
-    let entry = new TypeEntry(null, kind, none, null);
-    return this.registerType(entry);
+      case TypeTag.Map: {
+        let keyRef = this.getTypeRefEx(t.keyType as Type, resolveResourceAsOwn);
+        let valRef = this.getTypeRefEx(t.valueType as Type, resolveResourceAsOwn);
+        let key = "map:" + this.typeRefToKey(keyRef) + ":" + this.typeRefToKey(valRef);
+        let kind = new MapKind(keyRef, valRef);
+        this.getOrCreateAnonType(key, kind)
+      }
+      case _: {
+        // Unknown type - should not reach here
+        let kind = new UnknownKind();
+        let entry = new TypeEntry(null, kind, none, null);
+        this.registerType(entry)
+      }
+    };
   }
 }
 
@@ -571,34 +590,23 @@ let resolveInterfaceIndex = (ctx: SerializeContext, name: String): i32 => {
     return sIdx;
   }
   
-  var slashIdx = -1;
-  for (var i = 0; i < name.length; i += 1) {
-    if (name.getByteAt(i) == 47) { // '/'
-      slashIdx = i;
-    }
+  let parsed = parseInterfaceName(name);
+  if (parsed == null) {
+    return -1;
   }
   
-  if (slashIdx >= 0) {
-    var hasAt = false;
-    for (var j = 0; j < slashIdx; j += 1) {
-      if (name.getByteAt(j) == 64) { // '@'
-        hasAt = true;
-      }
-    }
-    
-    if (!hasAt) {
-      let pkgNamePart = name.sliceBytes(0, slashIdx);
-      let interfaceNamePart = name.sliceBytes(slashIdx + 1, name.length);
-      
-      for (var pkgIdx = 0; pkgIdx < ctx.packages.length; pkgIdx += 1) {
-        let pkg = ctx.packages[pkgIdx];
-        let pkgName = pkg.name;
-        if (pkgName == pkgNamePart || (pkgName.length > pkgNamePart.length && pkgName.sliceBytes(0, pkgNamePart.length) == pkgNamePart && pkgName.getByteAt(pkgNamePart.length) == 64)) {
-          let lookupKey = pkg.name + "/" + interfaceNamePart;
-          if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
-            return sIdx;
-          }
-        }
+  // If the lookup name already has a version, we don't try to resolve it to an unversioned match
+  if (parsed.version != null) {
+    return -1;
+  }
+  
+  for (var pkgIdx = 0; pkgIdx < ctx.packages.length; pkgIdx += 1) {
+    let pkg = ctx.packages[pkgIdx];
+    let pkgRef = parsePackageName(pkg.name);
+    if (pkgRef.packageName == parsed.packageName) {
+      let lookupKey = pkg.name + "/" + parsed.interfaceName;
+      if (let (true, sIdx) = ctx.interfaceIndices.get(lookupKey)) {
+        return sIdx;
       }
     }
   }
@@ -616,15 +624,7 @@ let resolveInterfaceName = (ctx: SerializeContext, pkgName: String, path: UsePat
 
 let resolveInterfaceNameAndIndex = (ctx: SerializeContext, itemPkgName: String, path: UsePath): i32 => {
   let resolved = resolveInterfaceName(ctx, itemPkgName, path);
-  var hasSlash = false;
-  for (var sI = 0; sI < resolved.length; sI += 1) {
-    if (resolved.getByteAt(sI) == 47) { // '/'
-      hasSlash = true;
-      break;
-    }
-  }
-  
-  if (hasSlash) {
+  if (resolved.contains("/")) {
     return resolveInterfaceIndex(ctx, resolved);
   }
   return resolveInterfaceIndex(ctx, itemPkgName + "/" + resolved);

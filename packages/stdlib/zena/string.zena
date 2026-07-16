@@ -13,6 +13,7 @@
  * boundaries. Direct use of sliceBytes() with computed indices can split
  * multi-byte UTF-8 sequences.
  */
+import {FixedArray} from 'zena:fixed-array';
 
 export enum Encoding {
   WTF8,    // 0 - UTF-8 with unpaired surrogates allowed
@@ -230,6 +231,66 @@ export final class String {
       return false;
     }
     return this.#regionEquals(suffix, this.#end - suffixLength, suffix.#start, suffixLength);
+  }
+
+  /**
+   * Splits the string into an array of substrings separated by the given separator.
+   */
+  split(separator: String): FixedArray<String> {
+    let sepLength = separator.#end - separator.#start;
+    if (sepLength == 0) {
+      return new FixedArray<String>(1, this);
+    }
+
+    let haystackLength = this.#end - this.#start;
+    if (sepLength > haystackLength) {
+      return new FixedArray<String>(1, this);
+    }
+
+    // First pass: count parts
+    var count = 1;
+    var i = 0;
+    let lastIndex = sepLength - 1;
+    let firstByte = __byte_array_get(separator.#data, separator.#start);
+    let lastByte = __byte_array_get(separator.#data, separator.#start + lastIndex);
+
+    while (i <= haystackLength - sepLength) {
+      let currentIndex = this.#start + i;
+      if (__byte_array_get(this.#data, currentIndex) == firstByte &&
+          __byte_array_get(this.#data, currentIndex + lastIndex) == lastByte &&
+          (sepLength <= 2 || this.#regionEquals(separator, currentIndex + 1, separator.#start + 1, sepLength - 2))) {
+        count += 1;
+        i += sepLength;
+      } else {
+        i += 1;
+      }
+    }
+
+    // Allocate result array
+    let result = __array_new_empty<String>(count) as FixedArray<String>;
+
+    // Second pass: fill parts
+    var partIdx = 0;
+    var lastStart = 0;
+    i = 0;
+    while (i <= haystackLength - sepLength) {
+      let currentIndex = this.#start + i;
+      if (__byte_array_get(this.#data, currentIndex) == firstByte &&
+          __byte_array_get(this.#data, currentIndex + lastIndex) == lastByte &&
+          (sepLength <= 2 || this.#regionEquals(separator, currentIndex + 1, separator.#start + 1, sepLength - 2))) {
+        result[partIdx] = this.sliceBytes(lastStart, i);
+        partIdx += 1;
+        i += sepLength;
+        lastStart = i;
+      } else {
+        i += 1;
+      }
+    }
+    // Add the last part
+    let lastPart = this.sliceBytes(lastStart, haystackLength);
+    result[partIdx] = lastPart;
+
+    return result;
   }
 
   /**

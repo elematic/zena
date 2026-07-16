@@ -314,4 +314,75 @@ export final class StringReader {
       this.#pos = this.#pos + 1;
     }
   }
+
+  /**
+   * Reads a substring up to the next occurrence of `needle`.
+   * If `needle` is found, returns the substring before it and advances the cursor past `needle`.
+   * If `needle` is not found, returns null and does not advance the cursor.
+   */
+  readUntil(needle: String): String | null {
+    let needleLength = needle.length;
+    if (needleLength == 0) {
+      return null;
+    }
+    
+    let haystackLength = this.#source.length;
+    if (needleLength > haystackLength - this.#pos) {
+      return null;
+    }
+    
+    if (needleLength == 1) {
+      let b = needle.getByteAt(0);
+      let start = this.#pos;
+      for (var i = this.#pos; i < haystackLength; i += 1) {
+        if (this.#source.getByteAt(i) == b) {
+          this.#pos = i + 1;
+          return this.#source.sliceBytes(start, i);
+        }
+      }
+      return null;
+    }
+    
+    let firstByte = needle.getByteAt(0);
+    let lastByte = needle.getByteAt(needleLength - 1);
+    
+    for (var i = this.#pos; i <= haystackLength - needleLength; i += 1) {
+      // 1. Check first byte
+      if (this.#source.getByteAt(i) != firstByte) {
+        continue;
+      }
+      
+      // 2. Check last byte
+      if (this.#source.getByteAt(i + needleLength - 1) != lastByte) {
+        continue;
+      }
+      
+      // 3. Full comparison
+      var match = true;
+      for (var j = 1; j < needleLength - 1; j += 1) {
+        if (this.#source.getByteAt(i + j) != needle.getByteAt(j)) {
+          match = false;
+          break;
+        }
+      }
+      
+      if (match) {
+        let result = this.#source.sliceBytes(this.#pos, i);
+        this.#pos = i + needleLength; // advance past the needle
+        return result;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Reads the remaining substring from current position to the end of the string,
+   * advancing the cursor to the end.
+   */
+  readToEnd(): String {
+    let start = this.#pos;
+    this.#pos = this.#source.length;
+    return this.#source.sliceBytes(start, this.#source.length);
+  }
 }
