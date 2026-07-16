@@ -58,10 +58,10 @@ let targets = [
     name: 'stdlib_moderate.zena',
     path: join(benchmarksDir, 'stdlib_moderate.zena'),
   },
-  // {
-  //   name: 'self_compile.zena',
-  //   path: join(repoRoot, 'packages', 'zena-compiler', 'zena', 'cli', 'main.zena'),
-  // },
+  {
+    name: 'self_compile.zena',
+    path: join(repoRoot, 'packages', 'zena-compiler', 'zena', 'cli', 'main.zena'),
+  },
 ];
 
 if (filter) {
@@ -85,12 +85,14 @@ if (runCompiler && targets.length > 0) {
   for (const target of targets) {
     console.log(`Running benchmarks for ${target.name}...`);
 
+    const targetRuns = target.name === 'self_compile.zena' ? 1 : ITERATIONS;
+
     const bootOutWasm = join(outDir, `${target.name}.boot.wasm`);
     const selfOutWasm = join(outDir, `${target.name}.self.wasm`);
 
     // --- Benchmark Bootstrap Compiler ---
     const bootTimes: number[] = [];
-    for (let i = 0; i < ITERATIONS; i++) {
+    for (let i = 0; i < targetRuns; i++) {
       const t0 = performance.now();
       execSync(
         `node "${bootstrapCli}" build "${target.path}" --target wasi -o "${bootOutWasm}"`,
@@ -99,7 +101,7 @@ if (runCompiler && targets.length > 0) {
       const t1 = performance.now();
       bootTimes.push(t1 - t0);
     }
-    const bootMean = bootTimes.reduce((a, b) => a + b, 0) / ITERATIONS;
+    const bootMean = bootTimes.reduce((a, b) => a + b, 0) / targetRuns;
 
     // --- Benchmark Self-Hosted Compiler & Capture Timings ---
     const selfTimes: number[] = [];
@@ -114,7 +116,7 @@ if (runCompiler && targets.length > 0) {
     let totalEmitOther = 0;
     let totalTime = 0;
 
-    for (let i = 0; i < ITERATIONS; i++) {
+    for (let i = 0; i < targetRuns; i++) {
       const t0 = performance.now();
       const output = execSync(
         `"${zenaCli}" build "${target.path}" -o "${selfOutWasm}" --time --no-cache`,
@@ -149,17 +151,17 @@ if (runCompiler && targets.length > 0) {
         }
       }
     }
-    const selfMean = selfTimes.reduce((a, b) => a + b, 0) / ITERATIONS;
-    const fileLoad = totalFileLoad / ITERATIONS;
-    const pureParse = totalPureParse / ITERATIONS;
-    const scope = totalScope / ITERATIONS;
-    const check = totalCheck / ITERATIONS;
-    const codegen = totalCodegen / ITERATIONS;
-    const discovery = totalDiscovery / ITERATIONS;
-    const layout = totalLayout / ITERATIONS;
-    const emitCode = totalEmitCode / ITERATIONS;
-    const emitOther = totalEmitOther / ITERATIONS;
-    const meanTotalTime = totalTime / ITERATIONS;
+    const selfMean = selfTimes.reduce((a, b) => a + b, 0) / targetRuns;
+    const fileLoad = totalFileLoad / targetRuns;
+    const pureParse = totalPureParse / targetRuns;
+    const scope = totalScope / targetRuns;
+    const check = totalCheck / targetRuns;
+    const codegen = totalCodegen / targetRuns;
+    const discovery = totalDiscovery / targetRuns;
+    const layout = totalLayout / targetRuns;
+    const emitCode = totalEmitCode / targetRuns;
+    const emitOther = totalEmitOther / targetRuns;
+    const meanTotalTime = totalTime / targetRuns;
 
     // --- Benchmark Self-Hosted Compiler in Node.js & Capture Timings ---
     const selfNodeTimes: number[] = [];
@@ -174,7 +176,7 @@ if (runCompiler && targets.length > 0) {
     let totalNodeEmitOther = 0;
     let totalNodeTime = 0;
 
-    for (let i = 0; i < ITERATIONS; i++) {
+    for (let i = 0; i < targetRuns; i++) {
       const t0 = performance.now();
       const output = execSync(
         `node --experimental-wasi-unstable-preview1 "${runCompilerNode}" "${target.path}" -o "${selfOutWasm}" --time`,
@@ -209,17 +211,17 @@ if (runCompiler && targets.length > 0) {
         }
       }
     }
-    const selfNodeMean = selfNodeTimes.reduce((a, b) => a + b, 0) / ITERATIONS;
-    const nodeFileLoad = totalNodeFileLoad / ITERATIONS;
-    const nodePureParse = totalNodePureParse / ITERATIONS;
-    const nodeScope = totalNodeScope / ITERATIONS;
-    const nodeCheck = totalNodeCheck / ITERATIONS;
-    const nodeCodegen = totalNodeCodegen / ITERATIONS;
-    const nodeDiscovery = totalNodeDiscovery / ITERATIONS;
-    const nodeLayout = totalNodeLayout / ITERATIONS;
-    const nodeEmitCode = totalNodeEmitCode / ITERATIONS;
-    const nodeEmitOther = totalNodeEmitOther / ITERATIONS;
-    const meanNodeTotalTime = totalNodeTime / ITERATIONS;
+    const selfNodeMean = selfNodeTimes.reduce((a, b) => a + b, 0) / targetRuns;
+    const nodeFileLoad = totalNodeFileLoad / targetRuns;
+    const nodePureParse = totalNodePureParse / targetRuns;
+    const nodeScope = totalNodeScope / targetRuns;
+    const nodeCheck = totalNodeCheck / targetRuns;
+    const nodeCodegen = totalNodeCodegen / targetRuns;
+    const nodeDiscovery = totalNodeDiscovery / targetRuns;
+    const nodeLayout = totalNodeLayout / targetRuns;
+    const nodeEmitCode = totalNodeEmitCode / targetRuns;
+    const nodeEmitOther = totalNodeEmitOther / targetRuns;
+    const meanNodeTotalTime = totalNodeTime / targetRuns;
 
     // --- Print Results ---
     console.log(`\nBenchmark Results for ${target.name}:`);

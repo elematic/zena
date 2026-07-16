@@ -1,7 +1,7 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
 import { Array } from 'zena:array';
-import { typeContainsTypeParameter } from '../lib/codegen/codegen-utils.zena';
+import { typeContainsTypeParameter, sortStringsByLengthDescending } from '../lib/codegen/codegen-utils.zena';
 import {
   Type, I32Type, ClassType, InterfaceType, TypeAliasType, MixinType, TypeParameterType
 } from '../lib/types.zena';
@@ -126,4 +126,54 @@ export let tests = suite('codegen-utils: typeContainsTypeParameter', (): void =>
     mixinType.typeParameters = tps;
     isTrue(typeContainsTypeParameter(mixinType as Type));
   });
+
+  test('sortStringsByLengthDescending basic functionality', (ctx: TestContext): void => {
+    let arr = new Array<String>();
+    arr.push("a");
+    arr.push("abc");
+    arr.push("ab");
+    arr.push("");
+    
+    sortStringsByLengthDescending(arr);
+    
+    equal(arr.length, 4);
+    equal(arr[0], "abc");
+    equal(arr[1], "ab");
+    equal(arr[2], "a");
+    equal(arr[3], "");
+  });
+
+  test('sortStringsByLengthDescending empty and single element', (ctx: TestContext): void => {
+    let arrEmpty = new Array<String>();
+    sortStringsByLengthDescending(arrEmpty);
+    equal(arrEmpty.length, 0);
+
+    let arrSingle = new Array<String>();
+    arrSingle.push("hello");
+    sortStringsByLengthDescending(arrSingle);
+    equal(arrSingle.length, 1);
+    equal(arrSingle[0], "hello");
+  });
+
+  test('sortStringsByLengthDescending duplicate lengths', (ctx: TestContext): void => {
+    let arr = new Array<String>();
+    arr.push("abc");
+    arr.push("xy");
+    arr.push("z");
+    arr.push("def");
+    arr.push("ab");
+    
+    sortStringsByLengthDescending(arr);
+    
+    equal(arr.length, 5);
+    // Elements of length 3 should come first (in some order)
+    isTrue(arr[0].length == 3);
+    isTrue(arr[1].length == 3);
+    // Elements of length 2 should come next
+    isTrue(arr[2].length == 2);
+    isTrue(arr[3].length == 2);
+    // Elements of length 1 should come last
+    isTrue(arr[4].length == 1);
+  });
 });
+

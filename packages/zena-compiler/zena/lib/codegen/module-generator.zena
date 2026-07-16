@@ -4,7 +4,7 @@ import { WasmModule, WasmFunction, WasmSignature,
 } from './wasm-module.zena';
 import { ByteBuffer } from 'zena:byte-buffer';
 import { ReachabilityAnalysis } from './reachability/analysis.zena';
-import { getClassKey, getInterfaceKey, getInterfaceMemberKey } from './codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getInterfaceMemberKey, sortStringsByLengthDescending } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { Node, VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral, ThrowExpression, TryExpression, DeclareFunction, FunctionExpression, EnumDeclaration, ImportSpecifier, ImportDeclaration, Module, AccessorDeclaration, SetterInfo } from '../ast.zena';
@@ -115,20 +115,7 @@ export final class ModuleGenerator {
         while (let (true, val) = litKeys.next()) {
           sortedStrings.push(val);
         }
-        let sortedLen = sortedStrings.length;
-        for (var i = 0; i < sortedLen; i += 1) {
-          var maxIdx = i;
-          for (var j = i + 1; j < sortedLen; j += 1) {
-            if (sortedStrings[j].length > sortedStrings[maxIdx].length) {
-              maxIdx = j;
-            }
-          }
-          if (maxIdx != i) {
-            let temp = sortedStrings[i];
-            sortedStrings[i] = sortedStrings[maxIdx];
-            sortedStrings[maxIdx] = temp;
-          }
-        }
+        sortStringsByLengthDescending(sortedStrings);
 
         // Subsequence optimization
         let accumulatedBytes = new ByteBuffer();
