@@ -19,6 +19,10 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
+    /// Enable debug mode (disable compiler optimizations/inlining)
+    #[arg(short = 'g', long = "debug")]
+    debug: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -86,29 +90,29 @@ struct MyState {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Build { file, output, time, no_cache } => build_file(&file, &output, cli.verbose, time, no_cache),
+        Commands::Build { file, output, time, no_cache } => build_file(&file, &output, cli.verbose, time, no_cache, cli.debug),
         Commands::Run { file, invoke, dirs, time, no_cache, args } => {
             if file.ends_with(".wasm") {
-                run_wasm(&file, &invoke, cli.verbose, &dirs, &args)
+                run_wasm(&file, &invoke, cli.verbose, &dirs, &args, cli.debug)
             } else {
-                compile_and_run(&file, &invoke, cli.verbose, time, no_cache, &dirs, &args)
+                compile_and_run(&file, &invoke, cli.verbose, time, no_cache, &dirs, &args, cli.debug)
             }
         }
         Commands::Test { paths, filter } => {
-            run_all_tests(&paths, filter.as_deref(), cli.verbose)
+            run_all_tests(&paths, filter.as_deref(), cli.verbose, cli.debug)
         }
     }
 }
 
-fn build_file(file: &str, output: &str, verbose: bool, time: bool, no_cache: bool) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache)?;
+fn build_file(file: &str, output: &str, verbose: bool, time: bool, no_cache: bool, debug: bool) -> Result<()> {
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache, debug)?;
     std::fs::copy(&cached_wasm_path, output)?;
     Ok(())
 }
 
-fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache: bool, dirs: &[String], args: &[String]) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache)?;
-    run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args)
+fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache: bool, dirs: &[String], args: &[String], debug: bool) -> Result<()> {
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache, debug)?;
+    run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args, debug)
 }
 
 fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) -> Result<Module> {
@@ -160,6 +164,7 @@ fn compile_to_cache(
     test_mode: bool,
     capture_output: bool,
     no_cache: bool,
+    debug: bool,
 ) -> Result<std::path::PathBuf> {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -198,6 +203,7 @@ fn compile_to_cache(
     let mut hasher = DefaultHasher::new();
     abs_path.hash(&mut hasher);
     test_mode.hash(&mut hasher);
+    debug.hash(&mut hasher);
     if let Ok(compiler_bytes) = std::fs::read(&compiler_wasm) {
         compiler_bytes.hash(&mut hasher);
     }
@@ -278,7 +284,7 @@ fn compile_to_cache(
 
     let mut config = Config::new();
     config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-    config.compiler_inlining(Inlining::Yes);
+    config.compiler_inlining(if debug { Inlining::No } else { Inlining::Yes });
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
@@ -393,9 +399,10 @@ fn compile_to_cache(
     Ok(cached_wasm_path)
 }
 
-fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[String]) -> Result<()> {
+fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[String], debug: bool) -> Result<()> {
     let mut config = Config::new();
     config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+    config.compiler_inlining(if debug { Inlining::No } else { Inlining::Yes });
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
@@ -641,7 +648,7 @@ enum TestStatus {
     Skip(String),
 }
 
-fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool) -> Result<()> {
+fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: bool) -> Result<()> {
     let mut test_files = Vec::new();
 
     for path_str in paths {
@@ -698,6 +705,7 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool) -> Resul
 
     let mut config = Config::new();
     config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+    config.compiler_inlining(if debug { Inlining::No } else { Inlining::No });
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
@@ -729,7 +737,7 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool) -> Resul
         .par_iter()
         .map(|test_file| {
             let start = std::time::Instant::now();
-            let res = run_single_test(&engine, test_file, verbose);
+            let res = run_single_test(&engine, test_file, verbose, debug);
             let elapsed = start.elapsed();
             match res {
                 Ok((status, stdout, stderr, msg)) => TestRunResult {
@@ -800,10 +808,11 @@ fn run_single_test(
     engine: &Engine,
     test_file: &Path,
     verbose: bool,
+    debug: bool,
 ) -> Result<(TestStatus, String, String, Option<String>)> {
     let t_start = std::time::Instant::now();
     // Compile to cache (always capture compiler output during tests to prevent log flooding)
-    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true, false)?;
+    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true, false, debug)?;
     let t_compile = t_start.elapsed();
 
     let t_load_start = std::time::Instant::now();

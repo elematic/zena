@@ -56,7 +56,7 @@ for (const wasmFile of wasmFiles.sort()) {
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
   const result = spawnSync(
     zenaCli,
-    ['run', '--dir', repoRoot, '--invoke', 'main', wasmFile],
+    ['--debug', 'run', '--dir', repoRoot, '--invoke', 'main', wasmFile],
     {
       stdio: 'pipe',
       cwd: repoRoot,

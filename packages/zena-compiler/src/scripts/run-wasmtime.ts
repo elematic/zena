@@ -77,6 +77,7 @@ for (const wasmFile of wasmFiles.sort()) {
   const result = spawnSync(
     zenaCli,
     [
+      '--debug',
       'run',
       '--dir',
       `${repoRoot}::/`, // Map repo root to / so tests/language/ is accessible at /tests/language/
