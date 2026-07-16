@@ -1,6 +1,6 @@
 import { Node, InterfaceDeclaration, TypeAliasDeclaration, TypeParameter,
   ClassDeclaration, EnumDeclaration, MixinDeclaration,
-  ImportSpecifier, SealedVariant
+  ImportSpecifier, SealedVariant, IdGenerator
 } from '../ast.zena';
 
 /**
@@ -8,14 +8,6 @@ import { Node, InterfaceDeclaration, TypeAliasDeclaration, TypeParameter,
  * Prevents accidental use of arbitrary i32 values as symbol IDs.
  */
 export distinct type SymbolId = i32;
-
-// Auto-incrementing counter for Symbol.id.
-var _nextSymbolId: i32 = 0;
-let makeSymbolId = (): SymbolId => {
-  let id = _nextSymbolId;
-  _nextSymbolId += 1;
-  return id as SymbolId;
-};
 
 /**
  * Information about a declared name in a scope.
@@ -28,11 +20,10 @@ let makeSymbolId = (): SymbolId => {
  */
 export final class Symbol {
   /**
-   * Unique identity for this binding. Auto-incremented at
-   * construction time. Enables identity-keyed maps (HashMap<SymbolId, T>)
-   * without requiring object-identity hashing.
+   * Unique identity for this binding.
+   * Enables identity-keyed maps (HashMap<SymbolId, T>) without requiring object-identity hashing.
    */
-  id = makeSymbolId();
+  id: SymbolId;
 
   /**
    * Whether this binding can be reassigned (defined with `var` instead of `let`).
@@ -91,7 +82,8 @@ export final class Symbol {
     this.name: String,
     this.declaration: Node | null,
     this.modulePath: String,
-    this.isMutable: boolean = false);
+    this.isMutable: boolean = false,
+    this.id: SymbolId = 0 as SymbolId);
 
   resolveTarget(): Symbol {
     var current = this;

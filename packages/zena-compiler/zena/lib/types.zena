@@ -17,8 +17,11 @@ import { OrderedMap } from 'zena:ordered-map';
 import { HashSet } from 'zena:set';
 import { StringBuilder } from 'zena:string-builder';
 
+
 import { Expression, Statement } from './ast.zena';
 import { SymbolId } from './scope/symbol.zena';
+
+export distinct type TypeId = i32;
 
 export sealed class Type {
   var uniqueKeyCache: String | null = null;
@@ -141,7 +144,8 @@ export final class FunctionType extends Type {
 }
 
 export final class ClassType extends Type {
-  id: i32;
+  id: TypeId;
+  symbolId: SymbolId;
   name: String;
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
@@ -185,7 +189,7 @@ export final class ClassType extends Type {
   // that takes a generic class to copy. This will allow us to make as many
   // of these fields immutable as possible instead of reassigning them in
   // `instantiateClassType`.
-  new(id: i32, name: String) : id = id, name = name, super();
+  new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super();
 }
 
 let substituteInType = (
@@ -298,7 +302,7 @@ let substituteInType = (
           newArgs.push((sub ?? arg));
         }
 
-        let inst = new ClassType(ct.id, ct.name);
+        let inst = new ClassType(ct.id, ct.symbolId, ct.name);
         inst.typeParameters = ctParams;
         inst.typeArguments = newArgs;
         inst.genericSource = ct.genericSource ?? ct;
@@ -393,7 +397,7 @@ let substituteInType = (
           let sub = substituteInType(arg, typeParameters, typeArguments);
           newArgs.push((sub ?? arg));
         }
-        let inst = new InterfaceType(it.id, it.name);
+        let inst = new InterfaceType(it.id, it.symbolId, it.name);
         inst.typeParameters = itParams;
         inst.typeArguments = newArgs;
         inst.genericSource = it.genericSource ?? it;
@@ -521,7 +525,7 @@ export let instantiateClassType = (
   let result = if (let (true, cached) = source.instantiations.get(key)) {
     cached
   } else {
-    let res = new ClassType(source.id, source.name);
+    let res = new ClassType(source.id, source.symbolId, source.name);
     source.instantiations[key] = res;
     res
   };
@@ -615,7 +619,8 @@ export let instantiateFunctionType = (
 };
 
 export final class InterfaceType extends Type {
-  id: i32;
+  id: TypeId;
+  symbolId: SymbolId;
   name: String;
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
@@ -626,7 +631,7 @@ export final class InterfaceType extends Type {
   var sourcePath: String = "";
   instantiations = new HashMap<String, InterfaceType>();
 
-  new(id: i32, name: String) : id = id, name = name, super();
+  new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super();
 }
 
 /**
@@ -640,7 +645,7 @@ export let instantiateInterfaceType = (
   let result = if (let (true, cached) = source.instantiations.get(key)) {
     cached
   } else {
-    let res = new InterfaceType(source.id, source.name);
+    let res = new InterfaceType(source.id, source.symbolId, source.name);
     source.instantiations[key] = res;
     res
   };
@@ -740,7 +745,7 @@ export let instantiateTypeAliasType = (
 export type GenericNamedType = ClassType | InterfaceType | MixinType | TypeAliasType;
 
 export final class SymbolType(
-  id: i32,
+  id: TypeId,
   debugName: String | null
 ) extends Type
 

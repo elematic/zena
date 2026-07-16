@@ -10,12 +10,15 @@ import { Array } from 'zena:array';
  */
 export distinct type NodeId = i32;
 
-var _nextNodeId: i32 = 1;
-export let nextNodeId = (): NodeId => {
-  let id = _nextNodeId;
-  _nextNodeId += 1;
-  return id as NodeId;
-};
+export final class IdGenerator<T> {
+  var #nextId: i32;
+  new(nextId: i32 = 1) : #nextId = nextId;
+  next(): T {
+    let id = this.#nextId;
+    this.#nextId += 1;
+    return id as T;
+  }
+}
 
 export final class SourceLocation(
   /** 1-based line number */
@@ -66,11 +69,11 @@ export sealed class Node {
   abstract loc?: SourceLocation;
 
   /**
-   * Unique ID assigned to this node instance during construction.
+   * Unique ID assigned to this node instance.
    * Useful for mapping nodes to semantic information without relying on
    * object identity (which is tricky for case classes) or source location.
    */
-  id: NodeId = nextNodeId();
+  var id: NodeId = 0 as NodeId;
 }
 
 // ============================================================================

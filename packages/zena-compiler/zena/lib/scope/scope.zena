@@ -1,7 +1,7 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
-import { Node } from '../ast.zena';
-import {Symbol} from './symbol.zena';
+import { Node, IdGenerator } from '../ast.zena';
+import { Symbol, SymbolId } from './symbol.zena';
 
 /**
  * What kind of lexical scope this is.
@@ -24,8 +24,15 @@ export final class Scope {
   scopeKind: ScopeKind;
   parent: Scope | null;
   #bindings = new HashMap<String, Symbol>();
+  var #symbolIdGenerator = new IdGenerator<SymbolId>();
 
-  new(this.scopeKind: ScopeKind, this.parent: Scope | null);
+  new(this.scopeKind: ScopeKind, this.parent: Scope | null, symbolIdGenerator: IdGenerator<SymbolId> | null = null) {
+    if (symbolIdGenerator != null) {
+      this.#symbolIdGenerator = symbolIdGenerator as IdGenerator<SymbolId>;
+    } else if (parent != null) {
+      this.#symbolIdGenerator = (parent as Scope).#symbolIdGenerator;
+    }
+  }
 
   /**
    * Declare a name in this scope.
@@ -35,7 +42,8 @@ export final class Scope {
     name: String,
     isMutable: boolean,
     declaration: Node | null,
-    modulePath: String): boolean {
+    modulePath: String,
+    id: SymbolId = 0 as SymbolId): boolean {
       
     if (this.#bindings.has(name)) {
       // TODO: This should be an error, but we call declare() multiple times
@@ -43,7 +51,8 @@ export final class Scope {
       // We should refactor to only call declare() once per unique name.
       return false;
     }
-    this.#bindings[name] = new Symbol(name, declaration, modulePath, isMutable);
+    let actualId = if (id as i32 != 0) id else this.#symbolIdGenerator.next();
+    this.#bindings[name] = new Symbol(name, declaration, modulePath, isMutable, actualId);
     return true;
   }
 

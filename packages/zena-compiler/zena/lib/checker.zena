@@ -85,10 +85,10 @@ import {
   LetPatternCondition, BindingProperty, PropertySignature, CatchClause,
   CaseClassParam, FieldInitializer, SuperInitializer, EnumMember, MapEntry,
   MethodSignature, AccessorSignature, SetterInfo, SealedVariant,
-  ImportSpecifier, getMemberPropertyName
+  ImportSpecifier, getMemberPropertyName, IdGenerator
 } from './ast.zena';
 import {
-  Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
+  Type, TypeId, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
   BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType, AnyType,
   AnyRefType, EqRefType, ByteArrayType,
   BoolLiteralType, StringLiteralType, NumLiteralType,
@@ -131,7 +131,7 @@ import { ScopeResult, ModuleExports } from './scope/scope-builder.zena';
  * registerTypeParameter() as soon as each TypeParameterType is created.
  */
 export final class SharedCheckerState {
-  var nextTypeId: i32 = 0;
+  var typeIdGenerator = new IdGenerator<TypeId>();
   preludeTypes = new HashMap<String, Type>();
   preludeValues = new HashMap<String, Type>();
   var preludeRegistered: boolean = false;
@@ -291,6 +291,13 @@ final class CheckerContext {
     get { return this.#referrerStack; }
   }
 
+  currentReferrerNodeId(): i32 {
+    if (this.#referrerNodeStack.length > 0) {
+      return this.#referrerNodeStack[this.#referrerNodeStack.length - 1];
+    }
+    return -1;
+  }
+
   enterClosureReferrer(): void {
     this.#dependencyStack.push(new SymbolDependencies());
   }
@@ -401,10 +408,8 @@ final class CheckerContext {
   /**
    * Generate a fresh type ID.
    */
-  freshTypeId(): i32 {
-    let id = this.#sharedState.nextTypeId;
-    this.#sharedState.nextTypeId = this.#sharedState.nextTypeId + 1;
-    return id;
+  freshTypeId(): TypeId {
+    return this.#sharedState.typeIdGenerator.next();
   }
 
   // --- Scope management ---
@@ -922,22 +927,23 @@ final class CheckerContext {
     let node = decl as Node;
     match (node) {
       case ClassDeclaration as cd: {
-        var typeId = this.freshTypeId();
+        let typeId = this.freshTypeId();
+        var symbolId = -1 as SymbolId;
         let sym = this.model.resolve(cd);
         if (sym != null) {
-          typeId = (sym as Symbol).id as i32;
+          symbolId = (sym as Symbol).id;
         } else {
           let isPrelude = this.filePath.startsWith("zena:");
           if (isPrelude) {
             if (let (true, stub) = this.#sharedState.preludeTypes.get(cd.name.name)) {
               match (stub) {
-                case ClassType as pt: { typeId = pt.id; }
+                case ClassType as pt: { symbolId = pt.symbolId; }
                 case _: {}
               }
             }
           }
         }
-        let ct = new ClassType(typeId, cd.name.name);
+        let ct = new ClassType(typeId, symbolId, cd.name.name);
         let isPrelude = this.filePath.startsWith("zena:");
         if (isPrelude) { this.#sharedState.preludeTypes[cd.name.name] = ct; }
         ct.isFinal = cd.isFinal;
@@ -964,22 +970,23 @@ final class CheckerContext {
         return ct;
       }
       case InterfaceDeclaration as id: {
-        var typeId = this.freshTypeId();
+        let typeId = this.freshTypeId();
+        var symbolId = -1 as SymbolId;
         let sym = this.model.resolve(id);
         if (sym != null) {
-          typeId = (sym as Symbol).id as i32;
+          symbolId = (sym as Symbol).id;
         } else {
           let isPrelude = this.filePath.startsWith("zena:");
           if (isPrelude) {
             if (let (true, stub) = this.#sharedState.preludeTypes.get(id.name.name)) {
               match (stub) {
-                case InterfaceType as pt: { typeId = pt.id; }
+                case InterfaceType as pt: { symbolId = pt.symbolId; }
                 case _: {}
               }
             }
           }
         }
-        let it = new InterfaceType(typeId, id.name.name);
+        let it = new InterfaceType(typeId, symbolId, id.name.name);
         let isPrelude = this.filePath.startsWith("zena:");
         if (isPrelude) { this.#sharedState.preludeTypes[id.name.name] = it; }
         return it;
@@ -990,12 +997,13 @@ final class CheckerContext {
         return mt;
       }
       case SealedVariant as sv: {
-        var typeId = this.freshTypeId();
+        let typeId = this.freshTypeId();
+        var symbolId = -1 as SymbolId;
         let sym = this.model.resolve(sv);
         if (sym != null) {
-          typeId = (sym as Symbol).id as i32;
+          symbolId = (sym as Symbol).id;
         }
-        let ct = new ClassType(typeId, sv.name.name);
+        let ct = new ClassType(typeId, symbolId, sv.name.name);
         ct.isCaseClass = true;
         ct.isFinal = true;
         return ct;
@@ -1377,6 +1385,7 @@ export let checkModule = (
 ): CheckResult => {
   let state = if (sharedState != null) sharedState as SharedCheckerState else new SharedCheckerState();
   let ctx = new CheckerContext(state, ast.path, scopeResult, depExports, depModels, emitLocations, warnUnnecessaryCasts);
+  ctx.model.typeIdGenerator = state.typeIdGenerator;
 
   // Register standard prelude types only once per shared state.
   if (!state.preludeRegistered) {
@@ -1682,6 +1691,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
       }
       case _: {
         if (hasTypeArgs) {
+          console.log("resolveTypeAnnotation Type not generic: '" + name + "' resolved to: " + typeToString(resolved as Type));
           ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
         }
       }
@@ -2619,8 +2629,8 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
     if (deps != null) {
       let ct = sourceType as ClassType;
       let it = effectiveTarget as InterfaceType;
-      let classSymId = (ct.genericSource ?? ct).id as SymbolId;
-      let ifaceSymId = (it.genericSource ?? it).id as SymbolId;
+      let classSymId = (ct.genericSource ?? ct).symbolId;
+      let ifaceSymId = (it.genericSource ?? it).symbolId;
       let key = i32ToString(classSymId as i32) + "::" + i32ToString(ifaceSymId as i32);
       deps.usedInterfaceAdaptations.add(key);
     }
@@ -3937,7 +3947,7 @@ let findImplementedInterfaceTransitiveInChecker = (ct: ClassType, name: String):
     head += 1;
     
     let sourceName = if (it.genericSource != null) (it.genericSource as InterfaceType).name else it.name;
-    let key = sourceName + "_" + i32ToString(it.id);
+    let key = sourceName + "_" + i32ToString(it.id as i32);
     if (!seen.has(key)) {
       seen[key] = true;
       if (sourceName == name) {
@@ -4263,7 +4273,7 @@ case _: {
                             ctx.declareBinding(localTypeInfo, preludeType);
                           }
                         } else {
-                          let ct = new ClassType(ctx.freshTypeId(), name.name);
+                          let ct = new ClassType(ctx.freshTypeId(), -1 as SymbolId, name.name);
                           ctx.declareTypeName(localName, ct);
                           if (localTypeInfo != null) {
                             ctx.declareBinding(localTypeInfo, ct);
@@ -4271,14 +4281,14 @@ case _: {
                         }
                       }
                       case InterfaceDeclaration {name}: {
-                        let it = new InterfaceType(ctx.freshTypeId(), name.name);
+                        let it = new InterfaceType(ctx.freshTypeId(), -1 as SymbolId, name.name);
                         ctx.declareTypeName(localName, it);
                         if (localTypeInfo != null) {
                           ctx.declareBinding(localTypeInfo, it);
                         }
                       }
                       case SealedVariant {name}: {
-                        let ct = new ClassType(ctx.freshTypeId(), name.name);
+                        let ct = new ClassType(ctx.freshTypeId(), -1 as SymbolId, name.name);
                         ct.isCaseClass = true;
                         ctx.declareTypeName(localName, ct);
                         if (localTypeInfo != null) {
@@ -5096,7 +5106,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             } else {
               let deps = ctx.currentDependencies();
               if (deps != null) {
-                let classSymId = (ct.genericSource ?? ct).id as SymbolId;
+                let classSymId = (ct.genericSource ?? ct).symbolId;
                 deps.referencedSymbols.add(classSymId);
                 deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".[]=");
               }
@@ -5115,7 +5125,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             } else {
               let deps = ctx.currentDependencies();
               if (deps != null) {
-                let ifaceSymId = (it.genericSource ?? it).id as SymbolId;
+                let ifaceSymId = (it.genericSource ?? it).symbolId;
                 deps.referencedSymbols.add(ifaceSymId);
                 deps.referencedInterfaceMembers.add(i32ToString(ifaceSymId as i32) + ".[]=");
               }
@@ -5716,7 +5726,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       if (deps != null) {
         if (stringType is ClassType) {
           let stringCt = stringType as ClassType;
-          let classSymId = (stringCt.genericSource ?? stringCt).id as SymbolId;
+          let classSymId = (stringCt.genericSource ?? stringCt).symbolId;
           let sDeps = deps as SymbolDependencies;
           sDeps.referencedSymbols.add(classSymId);
           sDeps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".fromParts");
@@ -5926,7 +5936,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
   // Look up the pre-registered ClassType from the forward-declaration pass.
   // If not found (shouldn't happen), create one.
-  var classType: ClassType = new ClassType(ctx.freshTypeId(), className);
+  var classType: ClassType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, className);
   let preRegistered = ctx.resolveTypeName(className);
   if (preRegistered != null) {
     match (preRegistered as Type) {
@@ -6730,7 +6740,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         // declaration in scope analysis if this variant was referenced earlier.
         // If not, create a fresh ClassType.
         let existingType = ctx.resolveTypeName(variantName);
-        var variantType: ClassType = new ClassType(ctx.freshTypeId(), variantName);
+        var variantType: ClassType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, variantName);
         if (existingType != null) {
           // Check scope analysis: if the name's declaration is a SealedVariant,
           // the existing type was forward-materialized from this variant — reuse.
@@ -6843,7 +6853,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             sealedVars.push(ct);
           }
           case _: {
-            let unitType = new ClassType(ctx.freshTypeId(), variantName);
+            let unitType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, variantName);
             unitType.superType = classType;
             unitType.isCaseClass = true;
             unitType.isFinal = true;
@@ -6887,7 +6897,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   let className = cd.name.name;
 
   // Look up the ClassType registered by registerClassDeclaration.
-  var classType: ClassType = new ClassType(ctx.freshTypeId(), className);
+  var classType: ClassType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, className);
   let resolved = ctx.resolveTypeName(className);
   if (resolved != null) {
     match (resolved as Type) {
@@ -7496,7 +7506,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   let ifaceName = id.name.name;
 
   // Look up the pre-registered InterfaceType from the forward-declaration pass.
-  var ifaceType: InterfaceType = new InterfaceType(ctx.freshTypeId(), ifaceName);
+  var ifaceType: InterfaceType = new InterfaceType(ctx.freshTypeId(), -1 as SymbolId, ifaceName);
   let preRegistered = ctx.resolveTypeName(ifaceName);
   if (preRegistered != null) {
     match (preRegistered as Type) {
@@ -7896,7 +7906,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
 
   // 1. Create a synthetic ClassType for "this" inside the mixin early
-  let thisType = new ClassType(ctx.freshTypeId(), mixinName + "_This");
+  let thisType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, mixinName + "_This");
   
   let onType = mixinType.onType;
   if (onType != null) {
@@ -8296,9 +8306,7 @@ let checkNewExpression = (
       let deps = ctx.currentDependencies();
       if (deps != null) {
         deps.referencedTypes.add(instantiated as Type);
-        if (ctorType != null) {
-          deps.referencedClassMethods.add(i32ToString((ct.genericSource ?? ct).id) + ".<constructor>");
-        }
+           deps.referencedClassMethods.add(i32ToString((ct.genericSource ?? ct).symbolId as i32) + ".<constructor>");
       }
       if (ctorType == null) {
         // No explicit constructor — must have zero args.
@@ -8553,7 +8561,7 @@ let resolveMemberType = (
     case ClassType as ct: {
       let deps = ctx.currentDependencies();
       if (deps != null) {
-        var classSymId = (ct.genericSource ?? ct).id as SymbolId;
+        var classSymId = (ct.genericSource ?? ct).symbolId;
         if (ct.name.length >= 5 && ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
           let mixinName = ct.name.sliceBytes(0, ct.name.length - 5);
           var foundId = -1 as SymbolId;
@@ -8582,6 +8590,9 @@ let resolveMemberType = (
           }
         }
         deps.referencedSymbols.add(classSymId);
+        if (ct.isExtension) {
+          deps.referencedTypes.add(ct);
+        }
         if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
           deps.referencedClassMethods.add(i32ToString(classSymId as i32) + "." + propName);
         } else if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
@@ -8624,7 +8635,7 @@ let resolveMemberType = (
     case InterfaceType as it: {
       let deps = ctx.currentDependencies();
       if (deps != null) {
-        let ifaceSymId = (it.genericSource ?? it).id as SymbolId;
+        let ifaceSymId = (it.genericSource ?? it).symbolId;
         deps.referencedSymbols.add(ifaceSymId);
         if (it.members.has(propName) && it.members[propName] is MethodInfo) {
           deps.referencedInterfaceMembers.add(i32ToString(ifaceSymId as i32) + "." + propName);
@@ -8683,7 +8694,7 @@ let resolveMemberType = (
       if (faType != null) {
         match (faType as Type) {
           case ClassType as faCt: {
-            let classSymId = (faCt.genericSource ?? faCt).id as SymbolId;
+            let classSymId = (faCt.genericSource ?? faCt).symbolId;
             let deps = ctx.currentDependencies();
             if (deps != null) {
               deps.referencedSymbols.add(classSymId);
@@ -8900,7 +8911,7 @@ let resolveIndexType = (
       if (ct.members.has("[]")) {
         let deps = ctx.currentDependencies();
         if (deps != null) {
-          let classSymId = (ct.genericSource ?? ct).id as SymbolId;
+          let classSymId = (ct.genericSource ?? ct).symbolId;
           deps.referencedSymbols.add(classSymId);
           deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".[]");
         }
@@ -9048,7 +9059,7 @@ let checkBinaryExpression = (
           if (ct.members.has(operator)) {
             let deps = ctx.currentDependencies();
             if (deps != null) {
-              let classSymId = (ct.genericSource ?? ct).id as SymbolId;
+              let classSymId = (ct.genericSource ?? ct).symbolId;
               deps.referencedSymbols.add(classSymId);
               deps.referencedClassMethods.add(i32ToString(classSymId as i32) + "." + operator);
             }
@@ -9456,7 +9467,7 @@ let subtractClassFromType = (ctx: CheckerContext, t: Type, patClass: ClassType):
           return new NeverType();
         }
         // Return a synthetic sealed type with remaining variants.
-        let remainingType = new ClassType(scrutClass.id, scrutClass.name);
+        let remainingType = new ClassType(scrutClass.id, scrutClass.symbolId, scrutClass.name);
         remainingType.isSealed = true;
         remainingType.isAbstract = true;
         remainingType.superType = scrutClass.superType;
