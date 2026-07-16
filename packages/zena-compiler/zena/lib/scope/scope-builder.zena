@@ -3,7 +3,7 @@ import { HashMap } from 'zena:map';
 import { Iterator } from 'zena:iterator';
 import { NodeMap } from '../node-map.zena';
 import {
-  Node, NodeId, Module, SourceLocation,
+  Node, NodeId, Module, SourceLocation, IdGenerator,
   // Sealed base types
   Expression, Statement, Pattern, TypeAnnotation,
   // Expressions
@@ -35,7 +35,7 @@ import {
   AccessorSignature, CatchClause
 } from '../ast.zena';
 import { walkChildren } from '../visitor.zena';
-import {Symbol, SymbolId} from './symbol.zena';
+import { Symbol, SymbolId } from './symbol.zena';
 import {Scope, ScopeKind} from './scope.zena';
 
 
@@ -177,7 +177,8 @@ let populateParents = (ast: Node, parents: NodeMap<Node>): void => {
 export final class ScopeBuilder {
   #modulePath: String;
   #exports = new HashMap<String, Symbol>();
-  var #current: Scope;
+  var #current = new Scope(ScopeKind.Module, null);
+  var #symbolIdGenerator = new IdGenerator<SymbolId>();
   
   /**
    * Unresolved identifiers found during the walk.
@@ -191,9 +192,13 @@ export final class ScopeBuilder {
   #isWritten = new HashMap<SymbolId, boolean>();
   #allVariables = new Array<Symbol>();
 
-  new(modulePath: String, preludeScope: Scope | null = null)
-    : #modulePath = modulePath,
-      #current = new Scope(ScopeKind.Module, preludeScope);
+  new(modulePath: String, preludeScope: Scope | null = null, symbolIdGenerator: IdGenerator<SymbolId> | null = null)
+    : #modulePath = modulePath {
+    if (symbolIdGenerator != null) {
+      this.#symbolIdGenerator = symbolIdGenerator as IdGenerator<SymbolId>;
+    }
+    this.#current = new Scope(ScopeKind.Module, preludeScope, this.#symbolIdGenerator);
+  }
 
   #isUnusedButAllowed(sym: Symbol): boolean {
     if (sym.name == "_") return true;
@@ -262,7 +267,7 @@ export final class ScopeBuilder {
     // TODO: This is duplicated with the checker's built-in and intrinsics
     // seeding. We should unify this into a single shared prelude scope that
     // both the ScopeBuilder and Checker can use as a parent for all modules.
-    let builtins = new Scope(ScopeKind.Module, this.#current.parent);
+    let builtins = new Scope(ScopeKind.Module, this.#current.parent, this.#symbolIdGenerator);
     builtins.declare("i32", false, null, "");
     builtins.declare("u32", false, null, "");
     builtins.declare("i64", false, null, "");
@@ -275,7 +280,7 @@ export final class ScopeBuilder {
     builtins.declare("null", false, null, "");
 
     // Re-parent the module scope onto the builtins scope.
-    this.#current = new Scope(ScopeKind.Module, builtins);
+    this.#current = new Scope(ScopeKind.Module, builtins, this.#symbolIdGenerator);
   }
 
   /**
@@ -307,7 +312,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(name.name, stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath, false, this.#symbolIdGenerator.next());
           this.#exports[name.name] = info;
         }
         // Export sealed variant names so they can be imported individually.
@@ -317,7 +322,7 @@ export final class ScopeBuilder {
             this.#current.declare(variantName, false, variant, this.#modulePath);
             this.#symbols.record(variant, this.#current.getLocal(variantName) as Symbol);
             if (exported) {
-              let svInfo = new Symbol(variantName, variant, this.#modulePath);
+              let svInfo = new Symbol(variantName, variant, this.#modulePath, false, this.#symbolIdGenerator.next());
               this.#exports[variantName] = svInfo;
             }
           }
@@ -327,7 +332,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(name.name, stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath, false, this.#symbolIdGenerator.next());
           this.#exports[name.name] = info;
         }
       }
@@ -335,7 +340,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(name.name, stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath, false, this.#symbolIdGenerator.next());
           this.#exports[name.name] = info;
         }
       }
@@ -343,7 +348,7 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(name.name, stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath, false, this.#symbolIdGenerator.next());
           this.#exports[name.name] = info;
         }
       }
@@ -354,7 +359,7 @@ export final class ScopeBuilder {
         }
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(name.name, stmt, this.#modulePath);
+          let info = new Symbol(name.name, stmt, this.#modulePath, false, this.#symbolIdGenerator.next());
           this.#exports[name.name] = info;
         }
       }

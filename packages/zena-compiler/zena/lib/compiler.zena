@@ -34,14 +34,14 @@ import {
 } from './library-loader.zena';
 import { buildStdlibConfig, loadPackageMap } from './package-manifest.zena';
 import { getStandardPrelude } from './prelude.zena';
-import { Symbol } from './scope/symbol.zena';
+import { Symbol, SymbolId } from './scope/symbol.zena';
 import { Scope, ScopeKind } from './scope/scope.zena';
 import { ScopeBuilder, ScopeResult, ModuleExports as ScopeModuleExports, UnresolvedName } from './scope/scope-builder.zena';
 import {
   ImportDeclaration, ImportSpecifier, ExportFromDeclaration, ExportAllDeclaration,
   MemberExpression, FieldDefinition, MethodDefinition, ClassDeclaration,
   Identifier, CaseClassParam, Expression, ThisExpression,
-  Node, Module, SourceLocation
+  Node, Module, SourceLocation, IdGenerator, NodeId
 } from './ast.zena';
 import { parse } from './parser.zena';
 import { checkModule, CheckResult, SharedCheckerState } from './checker.zena';
@@ -217,6 +217,8 @@ export final class Compiler {
   #resolver: ModuleResolver;
   #loader: LibraryLoader;
   #options: CompilerOptions;
+  #nodeIdGenerator = new IdGenerator<NodeId>();
+  #symbolIdGenerator = new IdGenerator<SymbolId>();
 
   new(host: CompilerHost, options: CompilerOptions, resolver: ModuleResolver, loader: LibraryLoader)
     : #host = host,
@@ -287,11 +289,11 @@ export final class Compiler {
     let specifierIter = prelude.keys();
     while (let (true, specifier) = specifierIter.next()) {
       let resolved = this.#resolver.resolve(specifier, "");
-      entries.push(this.#loader.load(resolved.path));
+      entries.push(this.#loader.load(resolved.path, null, this.#nodeIdGenerator));
     }
 
     // Load the entry point and all transitive dependencies.
-    let entry = this.#loader.load(entryPoint, version);
+    let entry = this.#loader.load(entryPoint, version, this.#nodeIdGenerator);
     entries.push(entry);
 
     // Compute topological order.
@@ -354,7 +356,7 @@ export final class Compiler {
       }
 
       // Phase 1: Build file-local scopes.
-      let builder = new ScopeBuilder(lib.path, if (lib.isStdlib) { null } else { preludeScope });
+      let builder = new ScopeBuilder(lib.path, if (lib.isStdlib) { null } else { preludeScope }, this.#symbolIdGenerator);
       let result = builder.build(lib.ast);
       lib.scopeResult = result;
 
@@ -365,7 +367,7 @@ export final class Compiler {
 
   #buildPreludeScope(): Scope | null {
     let prelude = getStandardPrelude();
-    let scope = new Scope(ScopeKind.Module, null);
+    let scope = new Scope(ScopeKind.Module, null, this.#symbolIdGenerator);
 
     let specifierIter = prelude.keys();
     while (let (true, specifier) = specifierIter.next()) {

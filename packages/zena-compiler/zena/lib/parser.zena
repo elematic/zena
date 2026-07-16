@@ -3,10 +3,13 @@ import { console } from 'zena:console';
 import { Error } from 'zena:error';
 import { i32ToString, parseF64 } from 'zena:string-convert';
 import { Token, TokenType, Tokenizer } from './tokenizer.zena';
+import { walkEnter } from './visitor.zena';
 import { 
   SourceLocation,
   Comment,
   Node,
+  IdGenerator,
+  NodeId,
   Module,
   Statement,
   Expression,
@@ -3317,7 +3320,26 @@ export final class Parser {
 // Convenience function
 // ============================================================================
 
-export let parse = (source: String, path: String): Module => {
+export let assignNodeIds = (node: Node, gen: IdGenerator<NodeId>): void => {
+  walkEnter(node, (n: Node): void => {
+    n.id = gen.next();
+  });
+};
+
+/**
+ * Parse a source string into a Module AST.
+ *
+ * @param nodeIdGenerator An optional shared node ID generator.
+ *
+ * You would want to share a `nodeIdGenerator` across multiple parsing passes
+ * when compiling a whole program in a single run if you need globally unique
+ * AST Node IDs (e.g. for whole-program optimizations, global macro expansions,
+ * or unified graph-based compilers). If no generator is passed, each file's
+ * nodes are numbered starting from 1 locally.
+ */
+export let parse = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = new IdGenerator<NodeId>()): Module => {
   let parser = new Parser(source, path);
-  return parser.parse();
+  let mod = parser.parse();
+  assignNodeIds(mod, nodeIdGenerator);
+  return mod;
 };

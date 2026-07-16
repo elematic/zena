@@ -14,7 +14,7 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
-import { Module, Statement, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration } from './ast.zena';
+import { Module, Statement, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, NodeId } from './ast.zena';
 import { parse } from './parser.zena';
 import { ModuleResolver, ResolvedModule } from './module-resolver.zena';
 import { ScopeResult } from './scope/scope-builder.zena';
@@ -152,7 +152,7 @@ export class LibraryLoader {
    * A cached file with a different version is invalidated and re-loaded.
    * When omitted (or null), the cache is trusted unconditionally.
    */
-  load(path: String, version: String | null = null): SourceFile {
+  load(path: String, version: String | null = null, nodeIdGenerator: IdGenerator<NodeId> = new IdGenerator<NodeId>()): SourceFile {
     if (this.#cache.has(path)) {
       // Version check: if a version was provided and it matches, use cache.
       // If no version was provided, always trust the cache.
@@ -171,7 +171,7 @@ export class LibraryLoader {
     this.loadTime = this.loadTime + performance.end(tLoad);
 
     let tParse = performance.start("parse");
-    let ast = parse(source, path);
+    let ast = parse(source, path, nodeIdGenerator);
     this.parseTime = this.parseTime + performance.end(tParse);
 
     // Cache the record BEFORE resolving imports to handle circular imports.
@@ -187,19 +187,19 @@ export class LibraryLoader {
           let specifier = moduleSpecifier.value;
           let resolved = this.#resolver.resolve(specifier, path);
           record.imports[specifier] = resolved.path;
-          this.load(resolved.path);
+          this.load(resolved.path, null, nodeIdGenerator);
         }
         case ExportAllDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
           let resolved = this.#resolver.resolve(specifier, path);
           record.imports[specifier] = resolved.path;
-          this.load(resolved.path);
+          this.load(resolved.path, null, nodeIdGenerator);
         }
         case ExportFromDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
           let resolved = this.#resolver.resolve(specifier, path);
           record.imports[specifier] = resolved.path;
-          this.load(resolved.path);
+          this.load(resolved.path, null, nodeIdGenerator);
         }
         case _: {}
       }
