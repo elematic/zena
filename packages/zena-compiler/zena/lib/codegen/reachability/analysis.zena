@@ -403,7 +403,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let rawClassType = this.getClassDeclType(classDecl, model);
         if (rawClassType != null) {
           let classType = rawClassType as ClassType;
-
           if (classType.name == "String" && classType.sourcePath == "zena:string") {
             this.wasm.stringClass = classType;
           } else if (classType.name == "TemplateStringsArray" && classType.sourcePath == "zena:template-strings-array") {
@@ -664,21 +663,34 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     // Pass 0.8: Populate interface vtable fields
     let allInterfaces = new Array<InterfaceType>();
+    let allInterfaceModels = new Array<SemanticModel>();
     for (let pair in this.interfaceDecls) {
       let ifaceDecl = pair.value;
       let moduleModel = this.interfaceModels[pair.key];
       let ifaceType = moduleModel.getNodeType(ifaceDecl) as InterfaceType;
       allInterfaces.push(ifaceType);
+      allInterfaceModels.push(moduleModel);
     }
     for (let it in this.specializedInterfaces) {
       allInterfaces.push(it);
+      allInterfaceModels.push(this.program.units[0].model);
     }
 
-    for (let it in allInterfaces) {
+    for (var ifaceIdx = 0; ifaceIdx < allInterfaces.length; ifaceIdx += 1) {
+      let it = allInterfaces[ifaceIdx];
       let iName = getInterfaceKey(it);
       let vst = this.wasm.interfaceVTableStructs[iName];
       if (vst.fields.length > 0) {
         continue;
+      }
+      // Discover member types first so signatures resolve to concrete wasm
+      // types. Without this, types not yet lowered fall back to structref in
+      // the vtable field while the trampolines created later use the concrete
+      // type, producing an invalid module.
+      let itParams = getInterfaceTypeParameters(it);
+      for (let mPair in it.members) {
+        let resolvedType = substituteTypeParamsInCodegen(itParams, it.typeArguments, mPair.value.type);
+        this.typeLowerer.discoverType(resolvedType, allInterfaceModels[ifaceIdx]);
       }
       let keys = it.members.keys();
       while (let (true, key) = keys.next()) {
@@ -1754,7 +1766,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   getClassModel(ct: ClassType): SemanticModel {
     var curr: ClassType | null = ct;
     while (curr != null) {
-      let lookupId = (if ((curr as ClassType).genericSource != null) ((curr as ClassType).genericSource as ClassType).id else (curr as ClassType).id) as SymbolId;
+      let lookupId = ((curr as ClassType).genericSource ?? (curr as ClassType)).symbolId;
       if (this.classModels.has(lookupId)) {
         return this.classModels[lookupId];
       }
