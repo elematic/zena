@@ -295,6 +295,7 @@ fn compile_to_cache(
         config.native_unwind_info(false);
     }
 
+    apply_gc_config(&mut config);
     let engine = Engine::new(&config)?;
     let cwasm_path = compiler_wasm.with_extension("cwasm");
     let compiler_module = load_or_compile_module(&engine, &compiler_wasm, &cwasm_path)?;
@@ -399,6 +400,17 @@ fn compile_to_cache(
     Ok(cached_wasm_path)
 }
 
+/// Selects the wasmtime GC collector via the ZENA_GC env var
+/// (null | drc | copying). Defaults to wasmtime's Auto.
+fn apply_gc_config(config: &mut Config) {
+    match std::env::var("ZENA_GC").as_deref() {
+        Ok("null") => { config.collector(Collector::Null); }
+        Ok("drc") => { config.collector(Collector::DeferredReferenceCounting); }
+        Ok("copying") => { config.collector(Collector::Copying); }
+        _ => {}
+    }
+}
+
 fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[String], debug: bool) -> Result<()> {
     let mut config = Config::new();
     config.cranelift_opt_level(wasmtime::OptLevel::Speed);
@@ -413,6 +425,7 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
         config.native_unwind_info(false);
     }
 
+    apply_gc_config(&mut config);
     let engine = Engine::new(&config)?;
     let wasm_path = Path::new(file);
     let cwasm_path = wasm_path.with_extension("cwasm");
@@ -715,6 +728,7 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: b
     } else {
         config.native_unwind_info(false);
     }
+    apply_gc_config(&mut config);
     let engine = Engine::new(&config)?;
 
     // Sequential warm-up of compiler cwasm to avoid parallel write collisions
@@ -954,7 +968,8 @@ mod tests {
         let mut config = Config::new();
         config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
         config.wasm_gc(true);
-        let engine = Engine::new(&config)?;
+        apply_gc_config(&mut config);
+    let engine = Engine::new(&config)?;
 
         let wat = r#"
             (module

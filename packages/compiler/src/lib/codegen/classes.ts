@@ -7724,15 +7724,6 @@ function applyMixin(
 
         let funcIndex = -1;
         let typeIndex = -1;
-        if (checkerIntermediateType) {
-          const directUsed = ctx.isMethodUsed(checkerIntermediateType, methodName);
-          const isMixin = checkerIntermediateType.isMixinIntermediate;
-          const onType = checkerIntermediateType.onType;
-          const onTypeUsed = onType && (onType.kind === TypeKind.Class || onType.kind === TypeKind.Interface) ? ctx.isMethodUsed(onType as any, methodName) : false;
-          console.error(`Mixin check: ${intermediateName}.${methodName} -> directUsed: ${directUsed}, isMixin: ${isMixin}, onTypeUsed: ${onTypeUsed}, shouldRegister: ${shouldRegister}`);
-        } else {
-          console.error(`Mixin check: ${intermediateName}.${methodName} -> no checkerIntermediateType, shouldRegister: ${shouldRegister}`);
-        }
         if (shouldRegister) {
           typeIndex = ctx.module.addType(params, results);
           funcIndex = ctx.module.addFunction(typeIndex);

@@ -16,8 +16,25 @@ export enum SectionId {
   Tag = 13
 }
 
+var _nextWasmTypeUid: i32 = 1;
+export let nextWasmTypeUid = (): i32 => {
+  let id = _nextWasmTypeUid;
+  _nextWasmTypeUid += 1;
+  return id;
+};
+
 export class WasmType {
   var index: i32 = -1;
+  /** Process-unique id, used for identity-based cache keys. */
+  uid: i32 = nextWasmTypeUid();
+
+  /**
+   * Identity hash. Without this, HashMap/HashSet keyed by WasmType fall back
+   * to a constant hash and degenerate into linear scans.
+   */
+  hashCode(): i32 {
+    return this.uid;
+  }
 }
 
 export sealed class ValType {
