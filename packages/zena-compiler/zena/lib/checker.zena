@@ -5488,8 +5488,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
     }
   }
-  case NewExpression {callee, typeArguments, args, loc}: {
-    checkNewExpression(ctx, callee, typeArguments, args, loc)
+  case NewExpression as newExpr: {
+    checkNewExpression(ctx, newExpr, newExpr.callee, newExpr.typeArguments, newExpr.args, newExpr.loc)
   }
   case AsExpression {expression, typeAnnotation, loc}: {
     let sourceType = checkExpression(ctx, expression, null);
@@ -8259,6 +8259,7 @@ let checkSymbolDeclaration = (ctx: CheckerContext, sd: SymbolDeclaration): void 
 
 let checkNewExpression = (
   ctx: CheckerContext,
+  newExpr: NewExpression,
   callee: Identifier,
   typeArguments: Array<TypeAnnotation> | null,
   args: Array<Expression>,
@@ -8299,8 +8300,29 @@ let checkNewExpression = (
         );
       }
 
-      // Instantiate generic class (infers type arguments if not explicit).
-      let instantiated = instantiateGenericClass(ctx, ct, typeArguments, args, loc);
+      // Closure bodies can be checked more than once. If defaults were already
+      // spliced into this node's arguments on an earlier pass, restore the
+      // recorded caller-written argument count so the spliced initializers
+      // (already checked in the callee's scope at definition time) are not
+      // re-checked as caller-supplied arguments.
+      let previousOriginal = ctx.model.getOriginalArgCountDirect(newExpr);
+      let callerArgCount = if (previousOriginal != -1 && previousOriginal < args.length) {
+        previousOriginal
+      } else {
+        args.length
+      };
+
+      // Instantiate generic class (infers type arguments if not explicit),
+      // inferring only from caller-written arguments.
+      let inferArgs = if (callerArgCount < args.length) {
+        let trimmed = new Array<Expression>();
+        var ti = 0;
+        while (ti < callerArgCount) { trimmed.push(args[ti]); ti += 1; }
+        trimmed
+      } else {
+        args
+      };
+      let instantiated = instantiateGenericClass(ctx, ct, typeArguments, inferArgs, loc);
 
       let ctorType = instantiated.constructorType;
       let deps = ctx.currentDependencies();
@@ -8356,6 +8378,12 @@ let checkNewExpression = (
         }
       }
 
+      // Record the caller-written argument count so later re-checks of this
+      // node don't treat the spliced defaults as caller-supplied arguments.
+      if (args.length > callerArgCount) {
+        ctx.model.setOriginalArgCount(newExpr, callerArgCount);
+      }
+
       // Check argument count (accounting for optional parameters).
       let expectedCount = ctor.parameters.length;
       var requiredCount = expectedCount;
@@ -8368,22 +8396,24 @@ let checkNewExpression = (
           oi += 1;
         }
       }
-      if (args.length < requiredCount || args.length > expectedCount) {
+      if (callerArgCount < requiredCount || callerArgCount > expectedCount) {
         let expectedMsg = if (requiredCount == expectedCount) {
           `${expectedCount}`
         } else {
           `${requiredCount}-${expectedCount}`
         };
         ctx.error(
-          `Expected ${expectedMsg} arguments, got ${args.length}.`,
+          `Expected ${expectedMsg} arguments, got ${callerArgCount}.`,
           DiagnosticCode.ArgumentCountMismatch,
           loc
         );
       }
 
-      // Check argument types with substituted parameter types.
+      // Check argument types with substituted parameter types. Only check
+      // caller-written arguments: spliced defaults were already checked in
+      // the callee's scope when the constructor was defined.
       var ai = 0;
-      while (ai < args.length && ai < expectedCount) {
+      while (ai < callerArgCount && ai < expectedCount) {
         let paramType = ctor.parameters[ai];
         // Substitute type parameters with type arguments.
         let expectedParamType = substituteTypeParams(
@@ -10037,8 +10067,8 @@ let checkFunctionExpression = (
       bindPattern(ctx, param.pattern as Pattern, paramType);
     }
 
-    if (param.defaultValue != null) { 
-      hasInitializers = true; 
+    if (param.defaultValue != null) {
+      hasInitializers = true;
       let initExp = param.defaultValue as Expression;
       let initType = checkExpression(ctx, initExp, paramType);
       if (!isAssignableTo(ctx, initType, paramType)) {
@@ -10338,15 +10368,34 @@ let checkCallExpressionInner = (
     case FunctionType as ft: {
       var effectiveFt = ft;
 
-      // Evaluate argument types once for overload resolution
+      // Closure bodies can be checked more than once. If defaults were already
+      // spliced into this call node's arguments on an earlier pass, args now
+      // ends with the callee's initializer expressions. Those were checked in
+      // the callee's scope at definition time and must not be re-checked here
+      // (the caller's scope may not resolve them), so restore the recorded
+      // caller-written argument count.
+      let previousOriginal = ctx.model.getOriginalArgCountDirect(call);
+      let callerArgCount = if (previousOriginal != -1 && previousOriginal < args.length) {
+        previousOriginal
+      } else {
+        args.length
+      };
+
+      // Evaluate argument types once for overload resolution. Arguments at or
+      // beyond callerArgCount are previously-spliced defaults: use their
+      // declared parameter type instead of re-checking them in caller scope.
       let argTypes = new Array<Type>();
       for (var i = 0; i < args.length; i += 1) {
-        let expectedParamType = if (i < ft.parameters.length) {
-          ft.parameters[i]
+        if (i >= callerArgCount && i < ft.parameters.length) {
+          argTypes.push(ft.parameters[i]);
         } else {
-          null
-        };
-        argTypes.push(checkExpression(ctx, args[i], expectedParamType));
+          let expectedParamType = if (i < ft.parameters.length) {
+            ft.parameters[i]
+          } else {
+            null
+          };
+          argTypes.push(checkExpression(ctx, args[i], expectedParamType));
+        }
       }
 
       // Overload resolution
@@ -10456,7 +10505,7 @@ let checkCallExpressionInner = (
 
       // Check argument count.
       let expectedCount = effectiveFt.parameters.length;
-      let originalActualCount = args.length;
+      let originalActualCount = callerArgCount;
 
       // Fill in missing arguments with default values
       var hasDefaults = false;
