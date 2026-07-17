@@ -4,7 +4,7 @@ import {dirname, join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
 import {sep} from 'node:path';
-import {availableParallelism, cpus} from 'node:os';
+import {availableParallelism, cpus, freemem} from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
@@ -131,10 +131,35 @@ async function run() {
     console.log(
       `Compiling ${filesToCompile.length} execution tests in parallel...`,
     );
-    const pLimit = availableParallelism
-      ? availableParallelism()
-      : cpus().length;
+    // Each zena-cli child can peak well over 1 GiB when the compiler's cwasm
+    // cache is stale (every child Cranelift-compiles the compiler module), so
+    // bound workers by available memory as well as CPUs to avoid OOMing the
+    // machine. ZENA_TEST_PARALLELISM overrides.
+    const cpuLimit = availableParallelism ? availableParallelism() : cpus().length;
+    const memLimit = Math.max(1, Math.floor(freemem() / (2 * 1024 ** 3)));
+    const envLimit = parseInt(process.env.ZENA_TEST_PARALLELISM ?? '', 10);
+    const pLimit =
+      Number.isFinite(envLimit) && envLimit > 0
+        ? envLimit
+        : Math.min(cpuLimit, memLimit);
     console.log(`Using ${pLimit} parallel workers`);
+
+    // Warm the compiler cwasm cache with a single compile so the parallel
+    // children below don't all recompile the compiler module simultaneously.
+    {
+      const warmFile = filesToCompile[0];
+      const warmRel = relative(testsDir, warmFile);
+      const warmOut = join(pkgDir, 'zena', 'out', 'execution', `${warmRel}.wasm`);
+      const warm = spawnSync(zenaCli, ['build', warmFile, '-o', warmOut], {
+        cwd: repoRoot,
+        encoding: 'utf-8',
+      });
+      if (warm.status !== 0) {
+        throw new Error(
+          `Compilation failed for ${warmRel}:\n${warm.stdout ?? ''}${warm.stderr ?? ''}`,
+        );
+      }
+    }
 
     let fileIndex = 0;
     let activeCount = 0;
