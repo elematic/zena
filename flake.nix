@@ -42,6 +42,9 @@
             dontConfigure = true;
 
             nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
+            # The release binary links against libgcc_s.so.1; give autoPatchelf
+            # the gcc runtime libs to resolve it against.
+            buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.stdenv.cc.cc.lib ];
 
             installPhase = ''
               mkdir -p $out/bin
