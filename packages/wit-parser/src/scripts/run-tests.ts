@@ -568,9 +568,20 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
       for (const witFile of allFiles) {
         let content: string;
         if (witFile.endsWith('.wat') || witFile.endsWith('.wasm')) {
-          content = execSync(`wasm-tools component wit "${witFile}"`, {
-            encoding: 'utf-8',
-          });
+          // Decoding binary WIT deps requires the external wasm-tools CLI
+          // (provided by the flake devshell). Surface a clear error instead
+          // of a generic test failure when it isn't available.
+          try {
+            content = execSync(`wasm-tools component wit "${witFile}"`, {
+              encoding: 'utf-8',
+            });
+          } catch (e) {
+            const detail = (e as {code?: string}).code === 'ENOENT' ||
+              /not found/.test(String(e))
+              ? 'wasm-tools not found on PATH — enter the dev shell (nix develop / direnv) to run tests with .wat/.wasm deps'
+              : `wasm-tools failed on ${relative(testsDir, witFile)}: ${String(e)}`;
+            return {test, passed: false, error: detail};
+          }
         } else {
           content = await readFile(witFile, 'utf-8');
         }
