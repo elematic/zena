@@ -662,22 +662,22 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
 
     // Pass 0.8: Populate interface vtable fields
-    let allInterfaces = new Array<InterfaceType>();
-    let allInterfaceModels = new Array<SemanticModel>();
+    // Each interface is paired with the model to resolve its member types in:
+    // the declaring module's model for declared interfaces, the root unit's
+    // model for specializations.
+    let allInterfaces = new Array<(InterfaceType, SemanticModel)>();
     for (let pair in this.interfaceDecls) {
       let ifaceDecl = pair.value;
       let moduleModel = this.interfaceModels[pair.key];
       let ifaceType = moduleModel.getNodeType(ifaceDecl) as InterfaceType;
-      allInterfaces.push(ifaceType);
-      allInterfaceModels.push(moduleModel);
+      allInterfaces.push((ifaceType, moduleModel));
     }
     for (let it in this.specializedInterfaces) {
-      allInterfaces.push(it);
-      allInterfaceModels.push(this.program.units[0].model);
+      allInterfaces.push((it, this.program.units[0].model));
     }
 
-    for (var ifaceIdx = 0; ifaceIdx < allInterfaces.length; ifaceIdx += 1) {
-      let it = allInterfaces[ifaceIdx];
+    for (let ifaceEntry in allInterfaces) {
+      let (it, ifaceModel) = ifaceEntry;
       let iName = getInterfaceKey(it);
       let vst = this.wasm.interfaceVTableStructs[iName];
       if (vst.fields.length > 0) {
@@ -690,7 +690,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let itParams = getInterfaceTypeParameters(it);
       for (let mPair in it.members) {
         let resolvedType = substituteTypeParamsInCodegen(itParams, it.typeArguments, mPair.value.type);
-        this.typeLowerer.discoverType(resolvedType, allInterfaceModels[ifaceIdx]);
+        this.typeLowerer.discoverType(resolvedType, ifaceModel);
       }
       let keys = it.members.keys();
       while (let (true, key) = keys.next()) {
@@ -1766,14 +1766,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   getClassModel(ct: ClassType): SemanticModel {
     var curr: ClassType | null = ct;
     while (curr != null) {
-      let lookupId = ((curr as ClassType).genericSource ?? (curr as ClassType)).symbolId;
+      let lookupId = (curr.genericSource ?? curr).symbolId;
       if (this.classModels.has(lookupId)) {
         return this.classModels[lookupId];
       }
       if (this.program.symbolToModel.has(lookupId)) {
         return this.program.symbolToModel[lookupId];
       }
-      curr = (curr as ClassType).superType;
+      curr = curr.superType;
     }
     return this.program.units[0].model;
   }

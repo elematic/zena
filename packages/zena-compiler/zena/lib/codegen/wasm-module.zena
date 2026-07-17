@@ -72,6 +72,32 @@ export final class WasmField {
 
 
 /**
+ * Cache keys for WasmModule's structural type pools (getSignature / getStruct /
+ * getArray). Each is a compact string encoding of the requested type's
+ * identity, so that a HashMap lookup replaces a linear scan over all types.
+ *
+ * The shared building block is the ValType unit appended by appendValTypeKey:
+ *
+ *   <opcode>['#'<target uid> | '?'<target uid>]','
+ *
+ * i.e. the valtype's wasm opcode, plus the referenced WasmType's uid for
+ * concrete ref types ('#' non-null, '?' nullable). Two ValTypes produce the
+ * same unit iff valTypeEquals considers them equal.
+ *
+ * On top of that:
+ *   SignatureKey: <param unit>* '|' <result unit>*
+ *   StructKey:    [<struct name>] '\n' (<field name>('m'|'c')<field unit>'\n')*
+ *   ArrayKey:     ('m'|'c') <element unit>
+ *
+ * The keys are derived purely from the freshly-built inputs of each request
+ * (there is no pre-existing object to cache them on, unlike e.g. ClassKey
+ * which is memoized on the ClassType).
+ */
+distinct type SignatureKey = String;
+distinct type StructKey = String;
+distinct type ArrayKey = String;
+
+/**
  * Appends an identity key for a ValType: the wasm opcode, plus the target
  * type's uid for concrete ref types. Mirrors valTypeEquals exactly.
  */
@@ -89,6 +115,43 @@ let appendValTypeKey = (sb: StringBuilder, v: ValType): void => {
     case _: {}
   }
   sb.appendByte(44); // ','
+};
+
+let getSignatureKey = (params: Array<ValType>, returns: Array<ValType>): SignatureKey => {
+  let sb = new StringBuilder();
+  for (let p in params) {
+    appendValTypeKey(sb, p);
+  }
+  sb.appendByte(124); // '|'
+  for (let r in returns) {
+    appendValTypeKey(sb, r);
+  }
+  return sb.toString() as SignatureKey;
+};
+
+let getStructKey = (name: String | null, fields: Array<WasmField>): StructKey => {
+  let sb = new StringBuilder();
+  if (name != null) {
+    sb.append(name);
+  }
+  sb.appendByte(10); // newline: separates name from fields
+  for (let f in fields) {
+    let fieldName = f.name;
+    if (fieldName != null) {
+      sb.append(fieldName);
+    }
+    sb.appendByte(if (f.isMutable) 109 else 99); // 'm' / 'c'
+    appendValTypeKey(sb, f.type);
+    sb.appendByte(10);
+  }
+  return sb.toString() as StructKey;
+};
+
+let getArrayKey = (elementType: ValType, isMutable: boolean): ArrayKey => {
+  let sb = new StringBuilder();
+  sb.appendByte(if (isMutable) 109 else 99); // 'm' / 'c'
+  appendValTypeKey(sb, elementType);
+  return sb.toString() as ArrayKey;
 };
 
 export final class WasmStruct extends WasmType {
@@ -293,9 +356,9 @@ export final class WasmModule {
   interfaceStructs = new HashMap<InterfaceKey, WasmStruct>();
   interfaceVTableStructs = new HashMap<InterfaceKey, WasmStruct>();
   classInterfaceVTables = new HashMap<ClassInterfaceKey, WasmGlobal>();
-  #signatureCache = new HashMap<String, WasmSignature>();
-  #structCache = new HashMap<String, WasmStruct>();
-  #arrayCache = new HashMap<String, WasmArray>();
+  #signatureCache = new HashMap<SignatureKey, WasmSignature>();
+  #structCache = new HashMap<StructKey, WasmStruct>();
+  #arrayCache = new HashMap<ArrayKey, WasmArray>();
   usedInterfaceAdaptations = new HashMap<ClassInterfaceKey, boolean>();
   usedInterfaceMembers = new HashMap<InterfaceMemberKey, boolean>();
   classMethodMap = new HashMap<ClassMethodKey, WasmFunction>();
@@ -506,21 +569,12 @@ export final class WasmModule {
   /**
    * Gets an existing WasmSignature if one matches the given parameters and
    * returns, or creates a new one and adds it to the type pool.
-   * 
-   * This performs a linear search through the existing types to find a
-   * structural match, deduplicating identical signatures so they share the same
+   *
+   * Deduplicates by SignatureKey so identical signatures share the same
    * WebAssembly type index.
    */
   getSignature(params: Array<ValType>, returns: Array<ValType>): WasmSignature {
-    let sb = new StringBuilder();
-    for (let p in params) {
-      appendValTypeKey(sb, p);
-    }
-    sb.appendByte(124); // '|'
-    for (let r in returns) {
-      appendValTypeKey(sb, r);
-    }
-    let key = sb.toString();
+    let key = getSignatureKey(params, returns);
     if (let (true, cached) = this.#signatureCache.get(key)) {
       return cached;
     }
@@ -531,20 +585,7 @@ export final class WasmModule {
   }
 
   getStruct(name: String | null, fields: Array<WasmField>): WasmStruct {
-    let sb = new StringBuilder();
-    if (name != null) {
-      sb.append(name as String);
-    }
-    sb.appendByte(10); // newline: separates name from fields
-    for (let f in fields) {
-      if (f.name != null) {
-        sb.append(f.name as String);
-      }
-      sb.appendByte(if (f.isMutable) 109 else 99); // 'm' / 'c'
-      appendValTypeKey(sb, f.type);
-      sb.appendByte(10);
-    }
-    let key = sb.toString();
+    let key = getStructKey(name, fields);
     if (let (true, cached) = this.#structCache.get(key)) {
       return cached;
     }
@@ -735,10 +776,7 @@ export final class WasmModule {
   }
 
   getArray(elementType: ValType, isMutable: boolean): WasmArray {
-    let sb = new StringBuilder();
-    sb.appendByte(if (isMutable) 109 else 99); // 'm' / 'c'
-    appendValTypeKey(sb, elementType);
-    let key = sb.toString();
+    let key = getArrayKey(elementType, isMutable);
     if (let (true, cached) = this.#arrayCache.get(key)) {
       return cached;
     }

@@ -115,32 +115,49 @@ fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache
     run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args, debug)
 }
 
-fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) -> Result<Module> {
-    let needs_compile = if cwasm_path.exists() {
-        let wasm_meta = std::fs::metadata(wasm_path);
-        let cwasm_meta = std::fs::metadata(cwasm_path);
-        match (wasm_meta, cwasm_meta) {
-            (Ok(w), Ok(c)) => {
-                match (w.modified(), c.modified()) {
-                    (Ok(w_time), Ok(c_time)) => w_time > c_time,
-                    _ => true,
-                }
-            }
+/// True when the cached cwasm is missing or older than its source wasm.
+fn cwasm_is_stale(wasm_path: &Path, cwasm_path: &Path) -> bool {
+    if !cwasm_path.exists() {
+        return true;
+    }
+    let wasm_meta = std::fs::metadata(wasm_path);
+    let cwasm_meta = std::fs::metadata(cwasm_path);
+    match (wasm_meta, cwasm_meta) {
+        (Ok(w), Ok(c)) => match (w.modified(), c.modified()) {
+            (Ok(w_time), Ok(c_time)) => w_time > c_time,
             _ => true,
-        }
-    } else {
-        true
-    };
+        },
+        _ => true,
+    }
+}
 
-    if needs_compile {
-        let wasm_bytes = std::fs::read(wasm_path)?;
-        let serialized = engine.precompile_module(&wasm_bytes)?;
-        let temp_path = cwasm_path.with_extension(format!("tmp-{}", std::process::id()));
-        std::fs::write(&temp_path, serialized)?;
-        if let Err(e) = std::fs::rename(&temp_path, cwasm_path) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(e.into());
+fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) -> Result<Module> {
+    if cwasm_is_stale(wasm_path, cwasm_path) {
+        // Serialize concurrent compiles of the same module. Script runners can
+        // launch many zena-cli processes at once against a stale cache (e.g. a
+        // test fan-out right after the compiler was rebuilt), and each
+        // Cranelift compile of the compiler module costs on the order of a
+        // GiB of RSS. Let one process compile while the rest block on the
+        // lock and then reuse its output.
+        let lock_path = cwasm_path.with_extension("lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)?;
+        lock_file.lock()?;
+        // Re-check now that we hold the lock: another process may have
+        // refreshed the cache while we waited.
+        if cwasm_is_stale(wasm_path, cwasm_path) {
+            let wasm_bytes = std::fs::read(wasm_path)?;
+            let serialized = engine.precompile_module(&wasm_bytes)?;
+            let temp_path = cwasm_path.with_extension(format!("tmp-{}", std::process::id()));
+            std::fs::write(&temp_path, serialized)?;
+            if let Err(e) = std::fs::rename(&temp_path, cwasm_path) {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(e.into());
+            }
         }
+        // The lock is released when lock_file drops.
     }
 
     match unsafe { Module::deserialize_file(engine, cwasm_path) } {
@@ -404,9 +421,15 @@ fn compile_to_cache(
 /// (null | drc | copying). Defaults to wasmtime's Auto.
 fn apply_gc_config(config: &mut Config) {
     match std::env::var("ZENA_GC").as_deref() {
-        Ok("null") => { config.collector(Collector::Null); }
-        Ok("drc") => { config.collector(Collector::DeferredReferenceCounting); }
-        Ok("copying") => { config.collector(Collector::Copying); }
+        Ok("null") => {
+            config.collector(Collector::Null);
+        }
+        Ok("drc") => {
+            config.collector(Collector::DeferredReferenceCounting);
+        }
+        Ok("copying") => {
+            config.collector(Collector::Copying);
+        }
         _ => {}
     }
 }
@@ -969,7 +992,7 @@ mod tests {
         config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
         config.wasm_gc(true);
         apply_gc_config(&mut config);
-    let engine = Engine::new(&config)?;
+        let engine = Engine::new(&config)?;
 
         let wat = r#"
             (module
