@@ -9,6 +9,8 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
 import { checkCompilation } from '../lib/compiler.zena';
+import { parse } from '../lib/parser.zena';
+import { DiagnosticBag, DiagnosticCode, SourceSpan } from '../lib/diagnostics.zena';
 import { MockHost, makeCompiler, errorDiagnostics } from './test-utils.zena';
 
 export let tests = suite('Cross-Module Type Checking', () => {
@@ -49,6 +51,29 @@ export let tests = suite('Cross-Module Type Checking', () => {
       let checkResult = checkCompilation(result);
       let errors = errorDiagnostics(checkResult.diagnostics);
       equal(errors.length, 0);
+    });
+  });
+
+  suite('cross-module diagnostic locations', () => {
+
+    test('diagnostic against a foreign node reports that node\'s file', () => {
+      // A checker's DiagnosticBag is created for the module being checked,
+      // but errors can be reported against nodes that belong to another
+      // module (e.g. a callee's default-parameter expression). The reported
+      // span must carry the node's own file, not the bag's.
+      let modA = parse('let x = 1;', 'a.zena');
+      let bag = new DiagnosticBag('b.zena');
+      bag.reportError('test error', DiagnosticCode.UnknownError, modA.body[0].loc);
+      equal(bag.diagnostics.length, 1);
+      let span = bag.diagnostics[0].location as SourceSpan;
+      equal(span.file, 'a.zena');
+    });
+
+    test('diagnostic with no location falls back to the bag\'s file', () => {
+      let bag = new DiagnosticBag('b.zena');
+      bag.reportError('test error', DiagnosticCode.UnknownError, null);
+      let span = bag.diagnostics[0].location as SourceSpan;
+      equal(span.file, 'b.zena');
     });
   });
 });
