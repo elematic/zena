@@ -19,6 +19,7 @@ import {
 import {ExportDesc, GcOpcode, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
+  encodeHeapType,
   getTypeKeyForSpecialization,
   mapCheckerTypeToWasmType,
 } from './classes.js';
@@ -535,7 +536,6 @@ export function registerDeclaredFunction(
 
       // Build a wrapper function with the real GC result type.
       const wrapperTypeIndex = ctx.module.addType(params, results);
-      const targetTypeIdx = decodeTypeIndex(results[0]);
 
       ctx.pendingFunctionRegistrations.push(() => {
         funcIndex = ctx.module.addFunction(wrapperTypeIndex);
@@ -558,7 +558,7 @@ export function registerDeclaredFunction(
               0xfb,
               isNullable ? GcOpcode.ref_cast_null : GcOpcode.ref_cast,
             );
-            body.push(...WasmModule.encodeSignedLEB128(targetTypeIdx));
+            body.push(...encodeHeapType(results[0]));
           }
 
           body.push(Opcode.end);

@@ -576,10 +576,11 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
               encoding: 'utf-8',
             });
           } catch (e) {
-            const detail = (e as {code?: string}).code === 'ENOENT' ||
+            const detail =
+              (e as {code?: string}).code === 'ENOENT' ||
               /not found/.test(String(e))
-              ? 'wasm-tools not found on PATH — enter the dev shell (nix develop / direnv) to run tests with .wat/.wasm deps'
-              : `wasm-tools failed on ${relative(testsDir, witFile)}: ${String(e)}`;
+                ? 'wasm-tools not found on PATH — enter the dev shell (nix develop / direnv) to run tests with .wat/.wasm deps'
+                : `wasm-tools failed on ${relative(testsDir, witFile)}: ${String(e)}`;
             return {test, passed: false, error: detail};
           }
         } else {

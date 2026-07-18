@@ -19,15 +19,6 @@ const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const NC = '\x1b[0m';
 
-// Check wasmtime is available
-try {
-  execSync('which wasmtime', {stdio: 'pipe'});
-} catch {
-  console.error(`${RED}Error: wasmtime not found${NC}`);
-  console.error('Install wasmtime or run: nix develop');
-  process.exit(1);
-}
-
 // Find all .wasm files
 const pattern = join(outDir, '**/*.wasm');
 const wasmFiles = await glob(pattern);

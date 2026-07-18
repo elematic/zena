@@ -117,6 +117,7 @@ export class CodegenContext {
    */
   public currentModule: Module | null = null;
   public diagnostics = new DiagnosticBag();
+  public isInsideNullCheck = false;
 
   /**
    * Semantic context for type → struct index lookups.
@@ -1167,9 +1168,6 @@ export class CodegenContext {
     isCelled?: boolean,
   ): number {
     let finalType = type;
-    if (type[0] === ValType.ref) {
-      finalType = [ValType.ref_null, ...type.slice(1)];
-    }
     const index = this.#nextLocalIndex++;
     this.scopes[this.scopes.length - 1].set(name, {
       index,

@@ -109,6 +109,20 @@ import {
 import { Symbol, SymbolId } from './scope/symbol.zena';
 import { ScopeResult, ModuleExports } from './scope/scope-builder.zena';
 
+let lookupBindingTypeInDeps = (ctx: CheckerContext, sym: Symbol): Type | null => {
+  let models = ctx.depModels;
+  if (models != null) {
+    let depModels = models as HashMap<String, SemanticModel>;
+    for (let depKey in depModels.keys()) {
+      if (let (true, depModel) = depModels.get(depKey)) {
+        let dbt = depModel.getBindingTypeDirect(sym);
+        if (dbt != null) { return dbt; }
+      }
+    }
+  }
+  return null;
+};
+
 /**
  * Internal state for the type checker.
  *
@@ -3380,7 +3394,9 @@ let exprDefinitelyExits = (expr: Expression): boolean => {
       } else {
         exprDefinitelyExits(consequent as Expression)
       };
-      let altExits = if (alternate is Statement) {
+      let altExits = if (alternate == null) {
+        false
+      } else if (alternate is Statement) {
         branchDefinitelyExits(alternate as Statement)
       } else {
         exprDefinitelyExits(alternate as Expression)
@@ -4308,9 +4324,10 @@ case _: {
                 if (let (true, exp) = depMod.get(expKey)) {
                   if (exp.isValue()) {
                     let resolvedValType = if (depModel != null) {
-                      depModel.getBindingType(exp)
+                      let t = depModel.getBindingType(exp);
+                      if (t != null) { t } else { lookupBindingTypeInDeps(ctx, exp) }
                     } else {
-                      null
+                      lookupBindingTypeInDeps(ctx, exp)
                     };
                     if (resolvedValType != null) {
                       properties[expKey] = resolvedValType as Type;
@@ -4340,6 +4357,9 @@ case _: {
                   if (resolvedType == null) {
                     resolvedType = dm.getBindingType(typeExport);
                   }
+                }
+                if (resolvedType == null) {
+                  resolvedType = lookupBindingTypeInDeps(ctx, typeExport);
                 }
 
                 if (resolvedType != null) {
@@ -4407,9 +4427,10 @@ case _: {
                 let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
                 if (localValInfo != null) {
                   let resolvedValType = if (depModel != null) {
-                    depModel.getBindingType(valueExport as Symbol)
+                    let t = depModel.getBindingType(valueExport as Symbol);
+                    if (t != null) { t } else { lookupBindingTypeInDeps(ctx, valueExport as Symbol) }
                   } else {
-                    null
+                    lookupBindingTypeInDeps(ctx, valueExport as Symbol)
                   };
                   if (resolvedValType != null) {
                     ctx.declareBinding(localValInfo, resolvedValType);

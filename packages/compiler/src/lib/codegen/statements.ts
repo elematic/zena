@@ -33,6 +33,7 @@ import {
 import {GcOpcode, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
+  encodeHeapType,
   getSymbolMemberName,
   isErasedRefType,
   mapCheckerTypeToWasmType,
@@ -427,12 +428,21 @@ function generateIfLetStatement(
 
   // Store all values in temp locals (in reverse order since stack is LIFO)
   const tempLocals: number[] = [];
-  for (let i = tuplePattern.elements.length - 1; i >= 0; i--) {
+  for (let i = 0; i < tuplePattern.elements.length; i++) {
     const elemType = elementTypes[i];
     const wasmType = mapCheckerTypeToWasmType(ctx, elemType);
-    const tempLocal = ctx.declareLocal(`$$let_temp_${i}`, wasmType);
-    tempLocals.unshift(tempLocal); // prepend to maintain order
-    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempLocal));
+    const nullableWasmType =
+      wasmType[0] === ValType.ref
+        ? [ValType.ref_null, ...wasmType.slice(1)]
+        : wasmType;
+    const tempLocal = ctx.declareLocal(`$$let_temp_${i}`, nullableWasmType);
+    tempLocals.push(tempLocal);
+  }
+  for (let i = tuplePattern.elements.length - 1; i >= 0; i--) {
+    body.push(
+      Opcode.local_set,
+      ...WasmModule.encodeSignedLEB128(tempLocals[i]),
+    );
   }
 
   // Generate pattern check condition
@@ -502,7 +512,14 @@ function generateWhileLetStatement(
   for (let i = 0; i < tuplePattern.elements.length; i++) {
     const elemType = elementTypes[i];
     const wasmType = mapCheckerTypeToWasmType(ctx, elemType);
-    const tempLocal = ctx.declareLocal(`$$while_let_temp_${i}`, wasmType);
+    const nullableWasmType =
+      wasmType[0] === ValType.ref
+        ? [ValType.ref_null, ...wasmType.slice(1)]
+        : wasmType;
+    const tempLocal = ctx.declareLocal(
+      `$$while_let_temp_${i}`,
+      nullableWasmType,
+    );
     tempLocals.push(tempLocal);
   }
 
@@ -636,6 +653,9 @@ function generateForInStatement(
     body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(idxLocal));
     body.push(0xfb, GcOpcode.array_get);
     body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+    if (elemWasmType[0] === ValType.ref) {
+      body.push(Opcode.ref_as_non_null);
+    }
 
     // Bind element value via pattern
     ctx.enterForLoop();
@@ -733,12 +753,15 @@ function generateForInStatement(
     body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(idxLocal));
     body.push(0xfb, GcOpcode.array_get);
     body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+    const elemWasmType = mapCheckerTypeToWasmType(ctx, elementType);
+    if (elemWasmType[0] === ValType.ref) {
+      body.push(Opcode.ref_as_non_null);
+    }
 
     // Bind element value via pattern
     ctx.enterForLoop();
     ctx.pushScope();
 
-    const elemWasmType = mapCheckerTypeToWasmType(ctx, elementType);
     generatePatternBinding(ctx, stmt.pattern, elemWasmType, body);
 
     // Generate loop body
@@ -787,7 +810,11 @@ function generateForInStatement(
   // next() returns (true, T) | (false, _), which is (i32, T) in WASM
   const boolTemp = ctx.declareLocal('$$for_in_hasMore', [ValType.i32]);
   const elemWasmType = mapCheckerTypeToWasmType(ctx, elementType);
-  const elemTemp = ctx.declareLocal('$$for_in_elem', elemWasmType);
+  const elemNullableWasmType =
+    elemWasmType.length > 1 && elemWasmType[0] === ValType.ref
+      ? [ValType.ref_null, ...elemWasmType.slice(1)]
+      : elemWasmType;
+  const elemTemp = ctx.declareLocal('$$for_in_elem', elemNullableWasmType);
 
   // 4. Generate loop structure
   // block $break
@@ -800,7 +827,7 @@ function generateForInStatement(
 
   // Call iter.next() - pushes (i32, T) onto stack
   body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(iterLocal));
-  generateIteratorNextCall(ctx, iteratorType, elemWasmType, body);
+  generateIteratorNextCall(ctx, iteratorType, elemNullableWasmType, body);
 
   // Store values in temp locals (reverse order - elem first, then bool)
   body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(elemTemp));
@@ -818,6 +845,9 @@ function generateForInStatement(
 
   // Push element value and bind via pattern (identifier, record, tuple, etc.)
   body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(elemTemp));
+  if (elemWasmType[0] === ValType.ref) {
+    body.push(Opcode.ref_as_non_null);
+  }
   generatePatternBinding(ctx, stmt.pattern, elemWasmType, body);
 
   // Generate loop body
@@ -1129,9 +1159,12 @@ function generateIteratorNextCall(
   ) {
     // Reference type - cast from anyref to the concrete type
     // elemWasmType is [ref_null/ref, typeIndex...]
-    const typeIndex = decodeTypeIndex(elemWasmType);
-    body.push(0xfb, GcOpcode.ref_cast_null);
-    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+    const castOp =
+      elemWasmType[0] === ValType.ref
+        ? GcOpcode.ref_cast
+        : GcOpcode.ref_cast_null;
+    body.push(0xfb, castOp);
+    body.push(...encodeHeapType(elemWasmType));
   }
   // else: already anyref, nothing to do
 }
@@ -1225,6 +1258,9 @@ export function generateLetPatternBindings(
         Opcode.local_get,
         ...WasmModule.encodeSignedLEB128(tempLocals[i]),
       );
+      if (wasmType[0] === ValType.ref) {
+        body.push(Opcode.ref_as_non_null);
+      }
       body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(localIndex));
       continue;
     }
@@ -1422,9 +1458,10 @@ export function generateLocalVariableDeclaration(
       type.length > 1 &&
       (type[0] === ValType.ref_null || type[0] === ValType.ref)
     ) {
-      const targetIndex = decodeTypeIndex(type);
-      body.push(0xfb, GcOpcode.ref_cast_null);
-      body.push(...WasmModule.encodeSignedLEB128(targetIndex));
+      const castOp =
+        type[0] === ValType.ref ? GcOpcode.ref_cast : GcOpcode.ref_cast_null;
+      body.push(0xfb, castOp);
+      body.push(...encodeHeapType(type));
     }
 
     // Union boxing (i32 -> eqref/anyref)
@@ -1655,12 +1692,36 @@ export function getInlineTupleElementTypes(
 
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
-    // Find the first inline tuple in the union
-    for (const t of unionType.types) {
-      if (t.kind === TypeKind.InlineTuple) {
-        return (t as InlineTupleType).elementTypes;
+    const memberTuples = unionType.types.filter(
+      (t) => t.kind === TypeKind.InlineTuple,
+    ) as InlineTupleType[];
+
+    if (memberTuples.length === 0) return null;
+
+    const arity = memberTuples[0].elementTypes.length;
+    for (const t of memberTuples) {
+      if (t.elementTypes.length !== arity) return null;
+    }
+
+    const elementTypes: Type[] = [];
+    for (let i = 0; i < arity; i++) {
+      const typesAtPosition = memberTuples.map((t) => t.elementTypes[i]);
+      const uniqueTypes: Type[] = [];
+      for (const t of typesAtPosition) {
+        if (!uniqueTypes.some((u) => u === t)) {
+          uniqueTypes.push(t);
+        }
+      }
+      if (uniqueTypes.length === 1) {
+        elementTypes.push(uniqueTypes[0]);
+      } else {
+        elementTypes.push({
+          kind: TypeKind.Union,
+          types: uniqueTypes,
+        } as UnionType);
       }
     }
+    return elementTypes;
   }
 
   return null;

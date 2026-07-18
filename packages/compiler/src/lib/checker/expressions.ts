@@ -1418,6 +1418,29 @@ export function createUnionType(types: Type[], ctx?: CheckerContext): Type {
     }
   }
 
+  // Collapse subtypes if ctx is available
+  // e.g. B extends A -> B | A => A
+  if (ctx) {
+    const subsumedTypes: Type[] = [];
+    for (let i = 0; i < uniqueTypes.length; i++) {
+      const t1 = uniqueTypes[i];
+      let isSubsumed = false;
+      for (let j = 0; j < uniqueTypes.length; j++) {
+        if (i === j) continue;
+        const t2 = uniqueTypes[j];
+        if (isAssignableTo(ctx, t1, t2)) {
+          isSubsumed = true;
+          break;
+        }
+      }
+      if (!isSubsumed) {
+        subsumedTypes.push(t1);
+      }
+    }
+    uniqueTypes.length = 0;
+    uniqueTypes.push(...subsumedTypes);
+  }
+
   if (uniqueTypes.length === 1) return uniqueTypes[0];
 
   const resultType = {
@@ -2752,6 +2775,28 @@ function checkAssignmentExpression(
  * - If left is a literal and right is numeric: left gets right's type as context
  * - If right is a literal and left is numeric: right gets left's type as context
  */
+function isReferenceLikeType(t: Type): boolean {
+  switch (t.kind) {
+    case TypeKind.Class:
+    case TypeKind.Interface:
+    case TypeKind.Array:
+    case TypeKind.Record:
+    case TypeKind.Tuple:
+    case TypeKind.Function:
+    case TypeKind.Union:
+    case TypeKind.Null:
+    case TypeKind.ByteArray:
+    case TypeKind.Any:
+    case TypeKind.AnyRef:
+    case TypeKind.EqRef:
+      return true;
+    case TypeKind.TypeAlias:
+      return isReferenceLikeType((t as TypeAliasType).target);
+    default:
+      return false;
+  }
+}
+
 function checkBinaryExpression(
   ctx: CheckerContext,
   expr: BinaryExpression,
@@ -2989,6 +3034,11 @@ function checkBinaryExpression(
       // Allow comparing boolean literal types with each other
       if (isBooleanType(left) && isBooleanType(right)) {
         typesMatch = true;
+      } else if (
+        (left.kind === TypeKind.Null && isReferenceLikeType(right)) ||
+        (right.kind === TypeKind.Null && isReferenceLikeType(left))
+      ) {
+        typesMatch = true;
       } else {
         typesMatch =
           isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
@@ -3007,6 +3057,11 @@ function checkBinaryExpression(
     } else if (expr.operator === '===' || expr.operator === '!==') {
       // Allow comparing boolean literal types with each other
       if (isBooleanType(left) && isBooleanType(right)) {
+        typesMatch = true;
+      } else if (
+        (left.kind === TypeKind.Null && isReferenceLikeType(right)) ||
+        (right.kind === TypeKind.Null && isReferenceLikeType(left))
+      ) {
         typesMatch = true;
       } else {
         typesMatch =

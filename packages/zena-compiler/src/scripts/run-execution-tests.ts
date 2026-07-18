@@ -135,7 +135,9 @@ async function run() {
     // file lock, so parallel children won't all Cranelift-compile the compiler
     // module at once. Still bound workers by available memory as well as CPUs
     // to avoid OOMing the machine. ZENA_TEST_PARALLELISM overrides.
-    const cpuLimit = availableParallelism ? availableParallelism() : cpus().length;
+    const cpuLimit = availableParallelism
+      ? availableParallelism()
+      : cpus().length;
     const memLimit = Math.max(1, Math.floor(freemem() / (2 * 1024 ** 3)));
     const envLimit = parseInt(process.env.ZENA_TEST_PARALLELISM ?? '', 10);
     const pLimit =

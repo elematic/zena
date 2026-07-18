@@ -2025,20 +2025,14 @@ export function isAssignableTo(
   }
 
   if (source.kind === TypeKind.Null) {
-    switch (target.kind) {
-      case TypeKind.Class:
-      case TypeKind.Interface:
-      case TypeKind.Array:
-      case TypeKind.Record:
-      case TypeKind.Tuple:
-      case TypeKind.Function:
-      case TypeKind.Null:
-        return true;
-      case TypeKind.TypeAlias:
-        return isAssignableTo(ctx, source, (target as TypeAliasType).target);
-      default:
-        return false;
+    if (target.kind === TypeKind.Null) return true;
+    if (
+      target.kind === TypeKind.TypeAlias &&
+      !(target as TypeAliasType).isDistinct
+    ) {
+      return isAssignableTo(ctx, source, (target as TypeAliasType).target);
     }
+    return false;
   }
 
   if (source.kind === TypeKind.Class && target.kind === TypeKind.Class) {

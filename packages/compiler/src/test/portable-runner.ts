@@ -156,14 +156,14 @@ function parseDirectives(content: string): {
   const warnings: ExpectedError[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const errorMatch = line.match(/\/\/ @error: (.*)$/);
+    const errorMatch = line.match(/\/\/ @error:\s*(.*)$/);
     if (errorMatch) {
       errors.push({
         line: i + 1, // 1-based
         regex: new RegExp(errorMatch[1]),
       });
     }
-    const warningMatch = line.match(/\/\/ @warning: (.*)$/);
+    const warningMatch = line.match(/\/\/ @warning:\s*(.*)$/);
     if (warningMatch) {
       warnings.push({
         line: i + 1,
@@ -622,15 +622,22 @@ async function runExecutionTest(
     },
   };
 
-  const result = await WebAssembly.instantiate(bytes, {
-    ...imports,
-    env: {
-      getStackTrace: () => null,
-      captureStackTrace: () => null,
-      formatStackTrace: () => null,
-      ...imports?.env,
-    },
-  });
+  let result;
+  try {
+    result = await WebAssembly.instantiate(bytes, {
+      ...imports,
+      env: {
+        getStackTrace: () => null,
+        captureStackTrace: () => null,
+        formatStackTrace: () => null,
+        ...imports?.env,
+      },
+    });
+  } catch (e) {
+    writeFileSync('/Users/justin/Projects/Zena/zena/temp_error.wasm', bytes);
+    console.error('WASM INSTANTIATION FAILED, WRITING TO temp_error.wasm:', e);
+    throw e;
+  }
   instanceExports = (result as any).instance.exports;
   // Initialize reader immediately if exports are available
   try {

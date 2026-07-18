@@ -35,6 +35,7 @@ import {
 } from '../types.js';
 import {getGetterName, getSetterName, getSignatureKey} from '../names.js';
 import {WasmModule} from '../emitter.js';
+import {isNullableType} from '../checker/types.js';
 
 function substituteParameters(
   expr: Expression,
@@ -1469,7 +1470,14 @@ export function generateTrampoline(
 
   // Handle return type adaptation (boxing)
   // Get the class method's return types from its function type
-  const classResults = ctx.module.getFunctionTypeResults(classMethod.typeIndex);
+  const classResults = ctx.module
+    .getFunctionTypeResults(classMethod.typeIndex)
+    .map((type) => {
+      if (classMethod.intrinsic === 'array.get' && type[0] === ValType.ref) {
+        return [ValType.ref_null, ...type.slice(1)];
+      }
+      return type;
+    });
 
   if (interfaceResults.length > 0 && classResults.length > 0) {
     // Check if any return values need adaptation
@@ -1506,6 +1514,12 @@ export function generateTrampoline(
           classType.length > 1 &&
           (classType[0] === ValType.ref || classType[0] === ValType.ref_null)
         ) {
+          if (
+            interfaceType[0] === ValType.ref &&
+            classType[0] === ValType.ref_null
+          ) {
+            return true;
+          }
           return false; // Specific ref is subtype of anyref, no adaptation needed
         }
       }
@@ -1643,56 +1657,52 @@ export function generateTrampoline(
         const interfaceTypeIndex = decodeTypeIndex(interfaceResults[0]);
         const classTypeIndex = decodeTypeIndex(classReturnType);
 
+        let interfaceInfo: InterfaceInfo | undefined;
         if (
           interfaceTypeIndex !== -1 &&
           classTypeIndex !== -1 &&
           interfaceTypeIndex !== classTypeIndex
         ) {
-          const interfaceInfo =
-            ctx.getInterfaceInfoByStructIndex(interfaceTypeIndex);
+          interfaceInfo = ctx.getInterfaceInfoByStructIndex(interfaceTypeIndex);
+        }
 
-          if (interfaceInfo) {
-            const resultClassInfo =
-              ctx.getClassInfoByStructIndexDirect(classTypeIndex);
+        if (interfaceInfo) {
+          const resultClassInfo =
+            ctx.getClassInfoByStructIndexDirect(classTypeIndex);
 
-            if (resultClassInfo && resultClassInfo.implements) {
-              let impl: {vtableGlobalIndex: number} | undefined;
+          if (resultClassInfo && resultClassInfo.implements) {
+            let impl: {vtableGlobalIndex: number} | undefined;
 
-              if (interfaceInfo.checkerType) {
-                impl = resultClassInfo.implements.get(
-                  interfaceInfo.checkerType,
-                );
+            if (interfaceInfo.checkerType) {
+              impl = resultClassInfo.implements.get(interfaceInfo.checkerType);
 
-                if (!impl) {
-                  for (const [
-                    implInterface,
-                    implInfo,
-                  ] of resultClassInfo.implements) {
-                    if (
-                      ctx.checkerContext.isInterfaceAssignableTo(
-                        implInterface,
-                        interfaceInfo.checkerType,
-                      )
-                    ) {
-                      impl = implInfo;
-                      break;
-                    }
+              if (!impl) {
+                for (const [
+                  implInterface,
+                  implInfo,
+                ] of resultClassInfo.implements) {
+                  if (
+                    ctx.checkerContext.isInterfaceAssignableTo(
+                      implInterface,
+                      interfaceInfo.checkerType,
+                    )
+                  ) {
+                    impl = implInfo;
+                    break;
                   }
                 }
               }
+            }
 
-              if (impl) {
-                body.push(
-                  Opcode.global_get,
-                  ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
-                );
-                body.push(0xfb, GcOpcode.struct_new);
-                body.push(
-                  ...WasmModule.encodeSignedLEB128(
-                    interfaceInfo.structTypeIndex,
-                  ),
-                );
-              }
+            if (impl) {
+              body.push(
+                Opcode.global_get,
+                ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
+              );
+              body.push(0xfb, GcOpcode.struct_new);
+              body.push(
+                ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+              );
             }
           }
         } else {
@@ -1999,6 +2009,14 @@ export function decodeTypeIndex(type: number[]): number {
     if ((byte & 0x80) === 0) break;
   }
   return typeIndex;
+}
+
+export function encodeHeapType(wasmType: number[]): number[] {
+  if (wasmType.length === 2 && wasmType[1] >= 0x6a && wasmType[1] <= 0x73) {
+    return [wasmType[1]];
+  }
+  const typeIndex = decodeTypeIndex(wasmType);
+  return WasmModule.encodeSignedLEB128(typeIndex);
 }
 
 /**
@@ -4162,33 +4180,13 @@ export function generateClassMethods(
       // Skip for constructors with immutable fields (they don't have a 'this' param)
       const skipThisDowncast =
         methodName === CONSTRUCTOR_NAME &&
-        hasImmutableFields(classInfo) &&
-        !classInfo.isExtension;
+        (hasImmutableFields(classInfo) || classInfo.isExtension);
       if (
         !member.isStatic &&
         !skipThisDowncast &&
         methodInfo.paramTypes.length > 0
       ) {
-        const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
-        let targetTypeIndex = classInfo.structTypeIndex;
-        if (classInfo.isExtension && classInfo.onType) {
-          targetTypeIndex = decodeTypeIndex(classInfo.onType);
-        }
-
-        if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
-          const realThisType = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(targetTypeIndex),
-          ];
-          const realThisLocal = ctx.declareLocal('this', realThisType);
-
-          body.push(Opcode.local_get, 0);
-          body.push(0xfb, GcOpcode.ref_cast_null);
-          body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
-          body.push(Opcode.local_set, realThisLocal);
-
-          ctx.thisLocalIndex = realThisLocal;
-        }
+        generateThisDowncast(ctx, classInfo, methodInfo.paramTypes[0], body);
       }
 
       if (member.isAbstract) {
@@ -4436,80 +4434,132 @@ export function generateClassMethods(
             (a, b) => a[1].index - b[1].index,
           );
 
-          // Declare local variables for fields to support self-referential initializers (e.g. this.field)
-          const fieldLocals = new Map<number, number>();
+          // Check if any field initializer needs to refer to `this` via construction locals
+          let anyFieldNeedsLocal = false;
           for (const [name, info] of sortedFields) {
-            const caseParamIdx = caseParamLocals.get(name);
-            if (caseParamIdx !== undefined) {
-              ctx.activeConstructionLocals.set(info.index, caseParamIdx);
-              continue;
+            if (caseParamLocals.has(name)) continue;
+            if (name === '__vtable' || name.startsWith('__brand_')) continue;
+            const valueInfo = fieldValues.get(info.index);
+            if (valueInfo?.expr && containsThisExpression(valueInfo.expr)) {
+              anyFieldNeedsLocal = true;
+              break;
             }
-
-            let localType = info.type;
-            if (localType[0] === ValType.ref) {
-              localType = [ValType.ref_null, ...localType.slice(1)];
-            }
-            const localIndex = ctx.declareLocal(`$$field_${name}`, localType);
-            fieldLocals.set(info.index, localIndex);
-            ctx.activeConstructionLocals.set(info.index, localIndex);
           }
 
-          // Evaluate each field and store in its construction local variable
-          for (const [name, info] of sortedFields) {
-            const caseParamIdx = caseParamLocals.get(name);
-            if (caseParamIdx !== undefined) {
-              continue;
-            }
-
-            if (name === '__vtable') {
-              if (classInfo.vtableGlobalIndex !== undefined) {
-                body.push(Opcode.global_get);
-                body.push(
-                  ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
-                );
-              } else {
-                body.push(Opcode.ref_null);
-                body.push(HeapType.eq);
-              }
-            } else if (name.startsWith('__brand_')) {
-              generateDefaultValue(ctx, info.type, body);
-            } else {
-              const valueInfo = fieldValues.get(info.index);
-              if (valueInfo?.expr) {
-                generateExpression(ctx, valueInfo.expr, body);
-              } else {
+          if (!anyFieldNeedsLocal) {
+            // Push all field values back onto the stack in index order directly
+            for (const [name, info] of sortedFields) {
+              const caseParamIdx = caseParamLocals.get(name);
+              if (caseParamIdx !== undefined) {
+                body.push(Opcode.local_get);
+                body.push(...WasmModule.encodeSignedLEB128(caseParamIdx));
+              } else if (name === '__vtable') {
+                if (classInfo.vtableGlobalIndex !== undefined) {
+                  body.push(Opcode.global_get);
+                  body.push(
+                    ...WasmModule.encodeSignedLEB128(
+                      classInfo.vtableGlobalIndex,
+                    ),
+                  );
+                } else {
+                  body.push(Opcode.ref_null);
+                  body.push(HeapType.eq);
+                }
+              } else if (name.startsWith('__brand_')) {
                 generateDefaultValue(ctx, info.type, body);
+              } else {
+                const valueInfo = fieldValues.get(info.index);
+                if (valueInfo?.expr) {
+                  generateExpression(ctx, valueInfo.expr, body);
+                } else {
+                  generateDefaultValue(ctx, info.type, body);
+                }
               }
             }
 
-            const localIndex = fieldLocals.get(info.index)!;
-            body.push(Opcode.local_set);
-            body.push(...WasmModule.encodeSignedLEB128(localIndex));
-          }
+            // Call struct_new with all field values
+            body.push(0xfb, GcOpcode.struct_new);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            );
+          } else {
+            // Declare local variables for fields to support self-referential initializers (e.g. this.field)
+            const fieldLocals = new Map<number, number>();
+            for (const [name, info] of sortedFields) {
+              const caseParamIdx = caseParamLocals.get(name);
+              if (caseParamIdx !== undefined) {
+                ctx.activeConstructionLocals.set(info.index, caseParamIdx);
+                continue;
+              }
 
-          // Push all field values back onto the stack in index order
-          for (const [name, info] of sortedFields) {
-            const caseParamIdx = caseParamLocals.get(name);
-            if (caseParamIdx !== undefined) {
-              body.push(Opcode.local_get);
-              body.push(...WasmModule.encodeSignedLEB128(caseParamIdx));
-            } else {
+              let localType = info.type;
+              if (localType[0] === ValType.ref) {
+                localType = [ValType.ref_null, ...localType.slice(1)];
+              }
+              const localIndex = ctx.declareLocal(`$$field_${name}`, localType);
+              fieldLocals.set(info.index, localIndex);
+              ctx.activeConstructionLocals.set(info.index, localIndex);
+            }
+
+            // Evaluate each field and store in its construction local variable
+            for (const [name, info] of sortedFields) {
+              const caseParamIdx = caseParamLocals.get(name);
+              if (caseParamIdx !== undefined) {
+                continue;
+              }
+
+              if (name === '__vtable') {
+                if (classInfo.vtableGlobalIndex !== undefined) {
+                  body.push(Opcode.global_get);
+                  body.push(
+                    ...WasmModule.encodeSignedLEB128(
+                      classInfo.vtableGlobalIndex,
+                    ),
+                  );
+                } else {
+                  body.push(Opcode.ref_null);
+                  body.push(HeapType.eq);
+                }
+              } else if (name.startsWith('__brand_')) {
+                generateDefaultValue(ctx, info.type, body);
+              } else {
+                const valueInfo = fieldValues.get(info.index);
+                if (valueInfo?.expr) {
+                  generateExpression(ctx, valueInfo.expr, body);
+                } else {
+                  generateDefaultValue(ctx, info.type, body);
+                }
+              }
+
               const localIndex = fieldLocals.get(info.index)!;
-              body.push(Opcode.local_get);
+              body.push(Opcode.local_set);
               body.push(...WasmModule.encodeSignedLEB128(localIndex));
-              if (info.type[0] === ValType.ref) {
-                body.push(Opcode.ref_as_non_null);
+            }
+
+            // Push all field values back onto the stack in index order
+            for (const [name, info] of sortedFields) {
+              const caseParamIdx = caseParamLocals.get(name);
+              if (caseParamIdx !== undefined) {
+                body.push(Opcode.local_get);
+                body.push(...WasmModule.encodeSignedLEB128(caseParamIdx));
+              } else {
+                const localIndex = fieldLocals.get(info.index)!;
+                body.push(Opcode.local_get);
+                body.push(...WasmModule.encodeSignedLEB128(localIndex));
+                if (info.type[0] === ValType.ref) {
+                  body.push(Opcode.ref_as_non_null);
+                }
               }
             }
+
+            // Call struct_new with all field values
+            body.push(0xfb, GcOpcode.struct_new);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            );
+
+            ctx.activeConstructionLocals.clear();
           }
-
-          // Call struct_new with all field values
-          body.push(0xfb, GcOpcode.struct_new);
-          body.push(
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-          );
-
-          ctx.activeConstructionLocals.clear();
 
           // Store in 'this' local (use ref_null type since locals must be defaultable)
           const thisType = [
@@ -4963,26 +5013,7 @@ export function generateClassMethods(
           ctx.defineParam('this', methodInfo.paramTypes[0]);
 
           // Downcast 'this' if needed
-          const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
-          let targetTypeIndex = classInfo.structTypeIndex;
-          if (classInfo.isExtension && classInfo.onType) {
-            targetTypeIndex = decodeTypeIndex(classInfo.onType);
-          }
-
-          if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
-            const realThisType = [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(targetTypeIndex),
-            ];
-            const realThisLocal = ctx.declareLocal('this', realThisType);
-
-            body.push(Opcode.local_get, 0);
-            body.push(0xfb, GcOpcode.ref_cast_null);
-            body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
-            body.push(Opcode.local_set, realThisLocal);
-
-            ctx.thisLocalIndex = realThisLocal;
-          }
+          generateThisDowncast(ctx, classInfo, methodInfo.paramTypes[0], body);
 
           generateBlockStatement(ctx, member.getter, body);
           body.push(Opcode.end);
@@ -5020,26 +5051,7 @@ export function generateClassMethods(
           );
 
           // Downcast 'this' if needed
-          const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
-          let targetTypeIndex = classInfo.structTypeIndex;
-          if (classInfo.isExtension && classInfo.onType) {
-            targetTypeIndex = decodeTypeIndex(classInfo.onType);
-          }
-
-          if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
-            const realThisType = [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(targetTypeIndex),
-            ];
-            const realThisLocal = ctx.declareLocal('this', realThisType);
-
-            body.push(Opcode.local_get, 0);
-            body.push(0xfb, GcOpcode.ref_cast_null);
-            body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
-            body.push(Opcode.local_set, realThisLocal);
-
-            ctx.thisLocalIndex = realThisLocal;
-          }
+          generateThisDowncast(ctx, classInfo, methodInfo.paramTypes[0], body);
 
           generateBlockStatement(ctx, member.setter.body, body);
           body.push(Opcode.end);
@@ -5150,22 +5162,20 @@ export function generateClassMethods(
 
           // Downcast 'this' if getter type uses parent struct (abstract field override)
           let thisLocal = 0;
-          const thisTypeIndex = getHeapTypeIndex(ctx, getterInfo.paramTypes[0]);
-          if (
-            thisTypeIndex !== -1 &&
-            thisTypeIndex !== classInfo.structTypeIndex
-          ) {
-            const realThisType = [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            ];
-            extraLocals.push(realThisType);
+          const targetType = [
+            ValType.ref,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ];
+          if (!WasmTypesEqual(getterInfo.paramTypes[0], targetType)) {
+            extraLocals.push(targetType);
             const realThisLocal = 1; // first extra local after 'this' param
             getterBody.push(Opcode.local_get, 0);
-            getterBody.push(0xfb, GcOpcode.ref_cast_null);
-            getterBody.push(
-              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            );
+            const castOp =
+              targetType[0] === ValType.ref
+                ? GcOpcode.ref_cast
+                : GcOpcode.ref_cast_null;
+            getterBody.push(0xfb, castOp);
+            getterBody.push(...targetType.slice(1));
             getterBody.push(Opcode.local_set, realThisLocal);
             thisLocal = realThisLocal;
           }
@@ -5201,25 +5211,20 @@ export function generateClassMethods(
             // Downcast 'this' if setter type uses parent struct (abstract field override)
             let setterThisLocal = 0;
             let setterValLocal = 1;
-            const setterThisTypeIndex = getHeapTypeIndex(
-              ctx,
-              setterInfo.paramTypes[0],
-            );
-            if (
-              setterThisTypeIndex !== -1 &&
-              setterThisTypeIndex !== classInfo.structTypeIndex
-            ) {
-              const realThisType = [
-                ValType.ref_null,
-                ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-              ];
-              setterExtraLocals.push(realThisType);
+            const targetType = [
+              ValType.ref,
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ];
+            if (!WasmTypesEqual(setterInfo.paramTypes[0], targetType)) {
+              setterExtraLocals.push(targetType);
               const realThisLocal = 2; // after 'this' and 'val' params
               setterBody.push(Opcode.local_get, 0);
-              setterBody.push(0xfb, GcOpcode.ref_cast_null);
-              setterBody.push(
-                ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-              );
+              const castOp =
+                targetType[0] === ValType.ref
+                  ? GcOpcode.ref_cast
+                  : GcOpcode.ref_cast_null;
+              setterBody.push(0xfb, castOp);
+              setterBody.push(...targetType.slice(1));
               setterBody.push(Opcode.local_set, realThisLocal);
               setterThisLocal = realThisLocal;
             }
@@ -5262,22 +5267,20 @@ export function generateClassMethods(
 
         // Downcast 'this' if getter type uses parent struct (abstract field override)
         let thisLocal = 0;
-        const thisTypeIndex = getHeapTypeIndex(ctx, getterInfo.paramTypes[0]);
-        if (
-          thisTypeIndex !== -1 &&
-          thisTypeIndex !== classInfo.structTypeIndex
-        ) {
-          const realThisType = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-          ];
-          extraLocals.push(realThisType);
+        const targetType = [
+          ValType.ref,
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        ];
+        if (!WasmTypesEqual(getterInfo.paramTypes[0], targetType)) {
+          extraLocals.push(targetType);
           const realThisLocal = 1; // first extra local after 'this' param
           getterBody.push(Opcode.local_get, 0);
-          getterBody.push(0xfb, GcOpcode.ref_cast_null);
-          getterBody.push(
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-          );
+          const castOp =
+            targetType[0] === ValType.ref
+              ? GcOpcode.ref_cast
+              : GcOpcode.ref_cast_null;
+          getterBody.push(0xfb, castOp);
+          getterBody.push(...targetType.slice(1));
           getterBody.push(Opcode.local_set, realThisLocal);
           thisLocal = realThisLocal;
         }
@@ -5303,25 +5306,20 @@ export function generateClassMethods(
           // Downcast 'this' if setter type uses parent struct (abstract field override)
           let setterThisLocal = 0;
           const setterValLocal = 1;
-          const setterThisTypeIndex = getHeapTypeIndex(
-            ctx,
-            setterInfo.paramTypes[0],
-          );
-          if (
-            setterThisTypeIndex !== -1 &&
-            setterThisTypeIndex !== classInfo.structTypeIndex
-          ) {
-            const realThisType = [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            ];
-            setterExtraLocals.push(realThisType);
+          const targetType = [
+            ValType.ref,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ];
+          if (!WasmTypesEqual(setterInfo.paramTypes[0], targetType)) {
+            setterExtraLocals.push(targetType);
             const realThisLocal = 2; // after 'this' and 'val' params
             setterBody.push(Opcode.local_get, 0);
-            setterBody.push(0xfb, GcOpcode.ref_cast_null);
-            setterBody.push(
-              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            );
+            const castOp =
+              targetType[0] === ValType.ref
+                ? GcOpcode.ref_cast
+                : GcOpcode.ref_cast_null;
+            setterBody.push(0xfb, castOp);
+            setterBody.push(...targetType.slice(1));
             setterBody.push(Opcode.local_set, realThisLocal);
             setterThisLocal = realThisLocal;
           }
@@ -8299,9 +8297,114 @@ export function isErasedRefType(wasmType: number[]): boolean {
     (wasmType.length === 1 &&
       (wasmType[0] === ValType.anyref || wasmType[0] === ValType.eqref)) ||
     (wasmType.length === 2 &&
-      wasmType[0] === ValType.ref_null &&
+      (wasmType[0] === ValType.ref_null || wasmType[0] === ValType.ref) &&
       (wasmType[1] === ValType.anyref || wasmType[1] === ValType.eqref))
   );
+}
+
+export function adjustNullability(
+  wasmType: number[],
+  nullable: boolean,
+): number[] {
+  if (wasmType.length === 0) return wasmType;
+  if (nullable) {
+    if (wasmType[0] === ValType.ref) {
+      return [ValType.ref_null, ...wasmType.slice(1)];
+    }
+    if (wasmType[0] === ValType.eqref) {
+      return [ValType.ref_null, HeapType.eq];
+    }
+    if (wasmType[0] === ValType.anyref) {
+      return [ValType.ref_null, HeapType.any];
+    }
+  } else {
+    if (wasmType[0] === ValType.ref_null) {
+      if (wasmType.length === 2 && wasmType[1] === HeapType.none) {
+        return wasmType;
+      }
+      return [ValType.ref, ...wasmType.slice(1)];
+    }
+    if (wasmType[0] === ValType.eqref) {
+      return [ValType.ref, HeapType.eq];
+    }
+    if (wasmType[0] === ValType.anyref) {
+      return [ValType.ref, HeapType.any];
+    }
+  }
+  return wasmType;
+}
+
+export function WasmTypesEqual(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+export function generateThisDowncast(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+  paramType: number[],
+  body: number[],
+) {
+  const targetType =
+    classInfo.isExtension && classInfo.onType
+      ? classInfo.onType
+      : [
+          ValType.ref,
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        ];
+
+  if (!WasmTypesEqual(paramType, targetType)) {
+    const realThisLocal = ctx.declareLocal('this', targetType);
+    body.push(Opcode.local_get, 0);
+    const castOp =
+      targetType[0] === ValType.ref
+        ? GcOpcode.ref_cast
+        : GcOpcode.ref_cast_null;
+    body.push(0xfb, castOp);
+    body.push(...targetType.slice(1));
+    body.push(Opcode.local_set, realThisLocal);
+    ctx.thisLocalIndex = realThisLocal;
+  }
+}
+
+export function containsThisExpression(
+  expr: Expression,
+  seen = new Set<any>(),
+): boolean {
+  if (!expr || seen.has(expr)) return false;
+  seen.add(expr);
+
+  if (expr.type === NodeType.ThisExpression) {
+    return true;
+  }
+  for (const key of Object.keys(expr)) {
+    if (
+      key === 'parent' ||
+      key === 'inferredType' ||
+      key === 'typeAnnotation' ||
+      key === 'symbol' ||
+      key === 'scope' ||
+      key === 'loc'
+    ) {
+      continue;
+    }
+    const val = (expr as any)[key];
+    if (val && typeof val === 'object') {
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          if (item && typeof item === 'object' && 'type' in item) {
+            if (containsThisExpression(item as Expression, seen)) return true;
+          }
+        }
+      } else if ('type' in val) {
+        if (containsThisExpression(val as Expression, seen)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 export function mapCheckerTypeToWasmType(
@@ -8309,6 +8412,7 @@ export function mapCheckerTypeToWasmType(
   type: Type,
   nullable = false,
 ): number[] {
+  nullable = nullable || isNullableType(type);
   // Resolve type parameters via currentTypeArguments (contains Type values).
   if (type.kind === TypeKind.TypeParameter) {
     const typeParam = type as TypeParameterType;
@@ -8354,23 +8458,30 @@ export function mapCheckerTypeToWasmType(
     return [ValType.anyref];
   if (type.kind === TypeKind.EqRef) return [ValType.eqref];
   if (type.kind === TypeKind.ByteArray) {
-    return [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
-    ];
+    return adjustNullability(
+      [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
+      ],
+      nullable,
+    );
   }
-  if (type.kind === TypeKind.Error) return [ValType.eqref];
+  if (type.kind === TypeKind.Error)
+    return adjustNullability([ValType.eqref], nullable);
 
   // Handle This type - resolve to current class if available
   if (type.kind === TypeKind.This) {
     if (ctx.currentClass) {
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(ctx.currentClass.structTypeIndex),
-      ];
+      return adjustNullability(
+        [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(ctx.currentClass.structTypeIndex),
+        ],
+        nullable,
+      );
     }
     // In interface context (no currentClass), use eqref
-    return [ValType.eqref];
+    return adjustNullability([ValType.eqref], nullable);
   }
 
   // Handle ClassType directly using identity-based lookups
@@ -8418,16 +8529,15 @@ export function mapCheckerTypeToWasmType(
     if (classInfo) {
       // Extension classes (like FixedArray, String) return their onType
       if (classInfo.isExtension && classInfo.onType) {
-        const onType = classInfo.onType;
-        if (nullable && onType.length > 0 && onType[0] === ValType.ref) {
-          return [ValType.ref_null, ...onType.slice(1)];
-        }
-        return onType;
+        return adjustNullability(classInfo.onType, nullable);
       }
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-      ];
+      return adjustNullability(
+        [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        ],
+        nullable,
+      );
     }
 
     // Identity lookup failed - trigger instantiation while we still have the checker type
@@ -8471,16 +8581,15 @@ export function mapCheckerTypeToWasmType(
         }
         if (classInfo) {
           if (classInfo.isExtension && classInfo.onType) {
-            const onType = classInfo.onType;
-            if (nullable && onType.length > 0 && onType[0] === ValType.ref) {
-              return [ValType.ref_null, ...onType.slice(1)];
-            }
-            return onType;
+            return adjustNullability(classInfo.onType, nullable);
           }
-          return [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-          ];
+          return adjustNullability(
+            [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ],
+            nullable,
+          );
         }
       }
     }
@@ -8488,7 +8597,7 @@ export function mapCheckerTypeToWasmType(
     // classes are instantiated. Since interfaces use type erasure (everything
     // becomes eqref in the erased signature), we can safely return eqref here.
     // The concrete class struct type will be used in the actual implementations.
-    return [ValType.eqref];
+    return adjustNullability([ValType.eqref], nullable);
   }
 
   // Handle InterfaceType directly using identity-based lookups
@@ -8496,16 +8605,26 @@ export function mapCheckerTypeToWasmType(
     const interfaceType = type as InterfaceType;
     const structIndex = resolveInterfaceStructIndex(ctx, interfaceType);
     if (structIndex !== undefined) {
-      return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structIndex)];
+      return adjustNullability(
+        [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structIndex)],
+        nullable,
+      );
     }
     // Interface not registered yet - this can happen when an interface is used
     // in a method signature before registration. Erase to eqref.
-    return [ValType.eqref];
+    return adjustNullability([ValType.eqref], nullable);
   }
 
   // Handle Union types - use anyref for nullable reference types
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
+    if (
+      unionType.types.some(
+        (t) => t.kind === TypeKind.Null || t.kind === TypeKind.Hole,
+      )
+    ) {
+      nullable = true;
+    }
     // If union contains void (e.g., i32 | void from if-else with empty branch),
     // treat the entire type as void. This ensures expressions with this type
     // are correctly treated as producing no value.
@@ -8582,7 +8701,7 @@ export function mapCheckerTypeToWasmType(
     // For other unions (reference types), use eqref.
     // All Zena reference types (classes, interfaces, closures, strings, arrays)
     // compile to GC structs/arrays, which are subtypes of eqref.
-    return [ValType.eqref];
+    return adjustNullability([ValType.eqref], nullable);
   }
 
   // Handle Literal types - map to their base type
@@ -8594,10 +8713,13 @@ export function mapCheckerTypeToWasmType(
       // String literals map to the String type
       // Ensure string type is created lazily
       ctx.ensureStringType();
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-      ];
+      return adjustNullability(
+        [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+        ],
+        nullable,
+      );
     } else if (typeof litType.value === 'boolean') {
       return [ValType.i32];
     }
@@ -8611,7 +8733,10 @@ export function mapCheckerTypeToWasmType(
       arrayType.elementType,
     );
     const typeIndex = ctx.getArrayTypeIndex(elementWasmType);
-    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+    return adjustNullability(
+      [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)],
+      nullable,
+    );
   }
 
   // Handle RecordType directly
@@ -8620,10 +8745,13 @@ export function mapCheckerTypeToWasmType(
     const recordType = type as RecordType;
     // Pass the full RecordType to preserve optional field info
     const recordInfo = ensureRecordDispatchType(ctx, recordType);
-    return [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(recordInfo.fatPtrTypeIndex),
-    ];
+    return adjustNullability(
+      [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(recordInfo.fatPtrTypeIndex),
+      ],
+      nullable,
+    );
   }
 
   // Handle TupleType directly (boxed - allocates struct)
@@ -8633,7 +8761,10 @@ export function mapCheckerTypeToWasmType(
       mapCheckerTypeToWasmType(ctx, el),
     );
     const typeIndex = ctx.getTupleTypeIndex(elementTypes);
-    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+    return adjustNullability(
+      [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)],
+      nullable,
+    );
   }
 
   // Handle InlineTupleType directly (inline - multi-value)
@@ -8655,7 +8786,10 @@ export function mapCheckerTypeToWasmType(
     );
     const returnType = mapCheckerTypeToWasmType(ctx, funcType.returnType);
     const typeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
-    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+    return adjustNullability(
+      [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)],
+      nullable,
+    );
   }
 
   // Handle TypeAlias - resolve to target type

@@ -167,7 +167,7 @@ suite('CodeGenerator - Equality', () => {
     assert.strictEqual(
       await runEqualityTest(
         `
-      let a: A = null;
+      let a: A | null = null;
       ${check('a == null')}
     `,
         setup,

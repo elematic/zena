@@ -137,16 +137,13 @@ function getExpectedReturnTypes(ctx: CodegenContext, type: Type): number[][] {
   }
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
-    // For unions of inline tuples, find the first tuple and use its types
-    for (const t of unionType.types) {
-      if (t.kind === TypeKind.InlineTuple) {
-        const tupleType = t as InlineTupleType;
-        return tupleType.elementTypes.map((el) =>
-          mapCheckerTypeToWasmType(ctx, el),
-        );
-      }
+    const results = mapReturnTypeToWasmResults(ctx, unionType);
+    if (
+      results.length > 0 &&
+      unionType.types.some((t) => t.kind === TypeKind.InlineTuple)
+    ) {
+      return results;
     }
-    // Fall through to single value
   }
   // Single value
   return [mapCheckerTypeToWasmType(ctx, type)];
@@ -350,9 +347,13 @@ function generateTryExpression(
   // Allocate local for the result if we have a non-void result
   let resultLocal: number | null = null;
   if (resultType.length > 0) {
+    const nullableResultType =
+      resultType[0] === ValType.ref
+        ? [ValType.ref_null, ...resultType.slice(1)]
+        : resultType;
     resultLocal = ctx.declareLocal(
       `$$try_result_${ctx.nextLocalIndex}`,
-      resultType,
+      nullableResultType,
     );
   }
 
@@ -484,6 +485,9 @@ function generateTryExpression(
     if (resultLocal !== null) {
       body.push(Opcode.local_get);
       body.push(...WasmModule.encodeUnsignedLEB128(resultLocal));
+      if (resultType[0] === ValType.ref) {
+        body.push(Opcode.ref_as_non_null);
+      }
     }
   } else {
     // Only finally, no catch handler
@@ -1000,13 +1004,11 @@ function generateIsExpression(
 
   // If target is a reference type (ref null ...)
   if (targetType.length > 1 && targetType[0] === ValType.ref_null) {
-    const typeIndex = decodeTypeIndex(targetType);
     body.push(0xfb, GcOpcode.ref_test);
-    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+    body.push(...targetType.slice(1));
   } else if (targetType.length > 1 && targetType[0] === ValType.ref) {
-    const typeIndex = decodeTypeIndex(targetType);
     body.push(0xfb, GcOpcode.ref_test);
-    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+    body.push(...targetType.slice(1));
   } else if (targetType.length === 1) {
     // Primitive type check (e.g. x is i32, x is boolean)
     // We check if it is an instance of Box<T>
@@ -1554,7 +1556,10 @@ function generateOptionalIndexExpression(
   body: number[],
 ) {
   // Generate object and save to local
+  const wasInsideNullCheck = ctx.isInsideNullCheck;
+  ctx.isInsideNullCheck = true;
   generateExpression(ctx, expr.object, body);
+  ctx.isInsideNullCheck = wasInsideNullCheck;
   const objWasmType = inferType(ctx, expr.object);
   const tempObj = ctx.declareLocal('$$optional_idx_obj', objWasmType);
   body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempObj));
@@ -2969,7 +2974,10 @@ function generateOptionalMemberExpression(
   body: number[],
 ) {
   // Generate object and save to local
+  const wasInsideNullCheck = ctx.isInsideNullCheck;
+  ctx.isInsideNullCheck = true;
   generateExpression(ctx, expr.object, body);
+  ctx.isInsideNullCheck = wasInsideNullCheck;
   const objWasmType = inferType(ctx, expr.object);
   const tempObj = ctx.declareLocal('$$optional_obj', objWasmType);
   body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempObj));
@@ -3110,7 +3118,7 @@ function generateMemberFromBindingWithObjectOnStack(
     }
 
     // Cast to concrete type if needed (ref.cast without null)
-    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(0xfb, GcOpcode.ref_cast);
     body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
 
     // struct.get
@@ -3152,7 +3160,7 @@ function generateMemberFromBindingWithObjectOnStack(
     }
 
     // Cast and call
-    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(0xfb, GcOpcode.ref_cast);
     body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
 
     body.push(Opcode.call);
@@ -3306,6 +3314,12 @@ function generateMemberExpression(
       if (global) {
         body.push(Opcode.global_get);
         body.push(...WasmModule.encodeSignedLEB128(global.index));
+        if (expr.inferredType) {
+          const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+          if (wasmType[0] === ValType.ref) {
+            body.push(Opcode.ref_as_non_null);
+          }
+        }
         return;
       }
     }
@@ -3867,7 +3881,11 @@ function generateCallExpression(
                 (expectedType[0] === ValType.ref ||
                   expectedType[0] === ValType.ref_null)
               ) {
-                body.push(0xfb, GcOpcode.ref_cast_null);
+                const castOp =
+                  expectedType[0] === ValType.ref
+                    ? GcOpcode.ref_cast
+                    : GcOpcode.ref_cast_null;
+                body.push(0xfb, castOp);
                 body.push(...expectedType.slice(1));
               }
             }
@@ -3896,7 +3914,11 @@ function generateCallExpression(
               (expectedType[0] === ValType.ref ||
                 expectedType[0] === ValType.ref_null)
             ) {
-              body.push(0xfb, GcOpcode.ref_cast_null);
+              const castOp =
+                expectedType[0] === ValType.ref
+                  ? GcOpcode.ref_cast
+                  : GcOpcode.ref_cast_null;
+              body.push(0xfb, castOp);
               body.push(...expectedType.slice(1));
             }
           }
@@ -4193,7 +4215,7 @@ function generateCallExpression(
               (objectType[0] === ValType.anyref ||
                 objectType[0] === ValType.eqref);
             if (isAnyRef) {
-              body.push(0xfb, GcOpcode.ref_cast_null);
+              body.push(0xfb, GcOpcode.ref_cast);
               body.push(
                 ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
               );
@@ -4259,7 +4281,7 @@ function generateCallExpression(
               (objectType[0] === ValType.anyref ||
                 objectType[0] === ValType.eqref);
             if (isAnyRef) {
-              body.push(0xfb, GcOpcode.ref_cast_null);
+              body.push(0xfb, GcOpcode.ref_cast);
               body.push(
                 ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
               );
@@ -5438,7 +5460,7 @@ function generateAssignmentExpressionInner(
           }
 
           if (needsCast) {
-            body.push(0xfb, GcOpcode.ref_cast_null);
+            body.push(0xfb, GcOpcode.ref_cast);
             body.push(
               ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
             );
@@ -5463,8 +5485,12 @@ function generateAssignmentExpressionInner(
 
           body.push(Opcode.local_get);
           body.push(...WasmModule.encodeSignedLEB128(tempVal));
-          if (fieldInfo.type[0] === ValType.ref) {
-            body.push(Opcode.ref_as_non_null);
+          if (expr.inferredType) {
+            const expectedType = mapCheckerTypeToWasmType(
+              ctx,
+              expr.inferredType,
+            );
+            adaptResultType(ctx, fieldInfo.type, expectedType, body);
           }
           return;
         }
@@ -5621,8 +5647,9 @@ function generateAssignmentExpressionInner(
 
     body.push(Opcode.local_get);
     body.push(...WasmModule.encodeSignedLEB128(tempVal));
-    if (fieldInfo.type[0] === ValType.ref) {
-      body.push(Opcode.ref_as_non_null);
+    if (expr.inferredType) {
+      const expectedType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+      adaptResultType(ctx, fieldInfo.type, expectedType, body);
     }
   } else if (expr.left.type === NodeType.Identifier) {
     const local = ctx.getLocal(expr.left.name);
@@ -5837,14 +5864,8 @@ function generateBinaryExpression(
     // Then block (left is not null) - return left (possibly unboxed)
     body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLeft));
 
-    if (
-      results.length > 0 &&
-      results[0].length > 0 &&
-      results[0][0] === ValType.ref &&
-      leftWasmType.length > 0 &&
-      leftWasmType[0] === ValType.ref_null
-    ) {
-      body.push(Opcode.ref_as_non_null);
+    if (results.length > 0) {
+      adaptResultType(ctx, leftWasmType, results[0], body);
     }
 
     // Unbox if left was a boxed primitive and result is raw primitive
@@ -5873,7 +5894,10 @@ function generateBinaryExpression(
     expr.operator === '!=='
   ) {
     if (expr.right.type === NodeType.NullLiteral) {
+      const wasInsideNullCheck = ctx.isInsideNullCheck;
+      ctx.isInsideNullCheck = true;
       generateExpression(ctx, expr.left, body);
+      ctx.isInsideNullCheck = wasInsideNullCheck;
       body.push(Opcode.ref_is_null);
       if (expr.operator === '!=' || expr.operator === '!==') {
         body.push(Opcode.i32_eqz);
@@ -5881,7 +5905,10 @@ function generateBinaryExpression(
       return;
     }
     if (expr.left.type === NodeType.NullLiteral) {
+      const wasInsideNullCheck = ctx.isInsideNullCheck;
+      ctx.isInsideNullCheck = true;
       generateExpression(ctx, expr.right, body);
+      ctx.isInsideNullCheck = wasInsideNullCheck;
       body.push(Opcode.ref_is_null);
       if (expr.operator === '!=' || expr.operator === '!==') {
         body.push(Opcode.i32_eqz);
@@ -6850,6 +6877,9 @@ function generateFromBinding(
           body.push(0xfb, GcOpcode.struct_get);
           body.push(...WasmModule.encodeSignedLEB128(cellTypeIndex));
           body.push(0); // field index 0
+          if (local.unboxedType[0] === ValType.ref) {
+            body.push(Opcode.ref_as_non_null);
+          }
         }
         // If this is a boxed mutable capture, unbox it
         else if (local.isBoxed && local.unboxedType) {
@@ -6880,6 +6910,30 @@ function generateFromBinding(
           }
         }
 
+        if (expr.inferredType && !ctx.isInsideNullCheck) {
+          const expectedWasmType = mapCheckerTypeToWasmType(
+            ctx,
+            expr.inferredType,
+          );
+          if (
+            expectedWasmType.length > 0 &&
+            expectedWasmType[0] === ValType.ref
+          ) {
+            const stackType = local.isCelled
+              ? local.unboxedType
+              : local.isBoxed
+                ? local.unboxedType
+                : local.type;
+            if (
+              stackType &&
+              stackType.length > 0 &&
+              stackType[0] === ValType.ref_null
+            ) {
+              body.push(Opcode.ref_as_non_null);
+            }
+          }
+        }
+
         return true;
       }
       return false;
@@ -6890,6 +6944,12 @@ function generateFromBinding(
       if (index !== undefined) {
         body.push(Opcode.global_get);
         body.push(...WasmModule.encodeSignedLEB128(index));
+        if (expr.inferredType) {
+          const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+          if (wasmType[0] === ValType.ref) {
+            body.push(Opcode.ref_as_non_null);
+          }
+        }
         return true;
       }
       // Fall back to name-based lookup
@@ -6897,6 +6957,12 @@ function generateFromBinding(
       if (global) {
         body.push(Opcode.global_get);
         body.push(...WasmModule.encodeSignedLEB128(global.index));
+        if (expr.inferredType) {
+          const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+          if (wasmType[0] === ValType.ref) {
+            body.push(Opcode.ref_as_non_null);
+          }
+        }
         return true;
       }
       return false;
@@ -7102,6 +7168,10 @@ function generateFieldFromBinding(
     if (global) {
       body.push(Opcode.global_get);
       body.push(...WasmModule.encodeSignedLEB128(global.index));
+      const wasmType = mapCheckerTypeToWasmType(ctx, binding.type);
+      if (wasmType[0] === ValType.ref) {
+        body.push(Opcode.ref_as_non_null);
+      }
       return true;
     }
     // If no global found, fall through to return false (let caller handle error)
@@ -7445,7 +7515,7 @@ function generateFieldFromBinding(
         }
 
         if (needsCast) {
-          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(0xfb, GcOpcode.ref_cast);
           body.push(
             ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
           );
@@ -7533,7 +7603,7 @@ function generateFieldFromBinding(
     objectType.length === 1 &&
     (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
   if (isAnyRef) {
-    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(0xfb, GcOpcode.ref_cast);
     body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
   }
 
@@ -10826,6 +10896,12 @@ function generateGlobalIntrinsic(
         GcOpcode.array_get,
         ...WasmModule.encodeSignedLEB128(typeIndex),
       );
+      if (expr.inferredType) {
+        const resultType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+        if (resultType.length > 0 && resultType[0] === ValType.ref) {
+          body.push(Opcode.ref_as_non_null);
+        }
+      }
       break;
     }
     case '__array_set': {
@@ -11705,7 +11781,11 @@ function generateIndirectCall(
 
     if (closureInfo) {
       // Cast from anyref to the closure struct type
-      body.push(0xfb, GcOpcode.ref_cast_null);
+      const castOp =
+        closureType[0] === ValType.ref
+          ? GcOpcode.ref_cast
+          : GcOpcode.ref_cast_null;
+      body.push(0xfb, castOp);
       body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
     }
   }
@@ -12698,7 +12778,11 @@ export function generateAdaptedArgument(
 
         if (isSourceAnyRef && isTargetStruct) {
           // Cast from anyref to the specific struct type
-          funcBody.push(0xfb, GcOpcode.ref_cast_null);
+          const castOp =
+            targetType[0] === ValType.ref
+              ? GcOpcode.ref_cast
+              : GcOpcode.ref_cast_null;
+          funcBody.push(0xfb, castOp);
           funcBody.push(...targetType.slice(1)); // type index
         }
         // Interface Boxing
@@ -13218,12 +13302,21 @@ function generateIfLetExpression(
 
   // Store all values in temp locals (reverse order for LIFO stack)
   const tempLocals: number[] = [];
-  for (let i = tuplePattern.elements.length - 1; i >= 0; i--) {
+  for (let i = 0; i < tuplePattern.elements.length; i++) {
     const elemType = elementTypes[i];
     const wasmType = mapCheckerTypeToWasmType(ctx, elemType);
-    const tempLocal = ctx.declareLocal(`$$let_temp_${i}`, wasmType);
-    tempLocals.unshift(tempLocal);
-    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempLocal));
+    const nullableWasmType =
+      wasmType[0] === ValType.ref
+        ? [ValType.ref_null, ...wasmType.slice(1)]
+        : wasmType;
+    const tempLocal = ctx.declareLocal(`$$let_temp_${i}`, nullableWasmType);
+    tempLocals.push(tempLocal);
+  }
+  for (let i = tuplePattern.elements.length - 1; i >= 0; i--) {
+    body.push(
+      Opcode.local_set,
+      ...WasmModule.encodeSignedLEB128(tempLocals[i]),
+    );
   }
 
   // Generate pattern check condition
@@ -13264,10 +13357,25 @@ function adaptResultType(
   expectedType: number[],
   body: number[],
 ) {
+  if (!actualType || !expectedType) return;
+
+  // Downcast from general/erased reference type (like eqref) to specific reference type
   if (
-    actualType &&
+    isErasedRefType(actualType) &&
+    !isErasedRefType(expectedType) &&
+    isWasmRefType(expectedType)
+  ) {
+    const castOp =
+      expectedType[0] === ValType.ref
+        ? GcOpcode.ref_cast
+        : GcOpcode.ref_cast_null;
+    body.push(0xfb, castOp);
+    body.push(...expectedType.slice(1));
+    return;
+  }
+
+  if (
     actualType.length > 1 &&
-    expectedType &&
     expectedType.length > 1 &&
     actualType[0] === ValType.ref_null &&
     expectedType[0] === ValType.ref
