@@ -9,6 +9,157 @@ import { Type, baseType, isRefType, isFloatType, isBooleanLike, I32Type, Boolean
 import { getClassKey, unwrapAliases, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { Array } from 'zena:array';
 
+/**
+ * Folds the i64 on top of the stack to an i32 hash: wrap(x ^ (x >>> 32)), so
+ * values differing only in their high bits still hash differently.
+ */
+export let emitI64FoldToI32 = (ctx: FunctionContext): void => {
+  let tmp = ctx.allocLocal(new ValTypeI64());
+  ctx.emitter.emitLocalTee(tmp);
+  ctx.emitter.emitI64Const(32 as i64);
+  ctx.emitter.emitI64ShrU();
+  ctx.emitter.emitLocalGet(tmp);
+  ctx.emitter.emitI64Xor();
+  ctx.emitter.emitI32WrapI64();
+};
+
+/**
+ * Calls hashCode() on the class-typed value on top of the stack: a direct
+ * call when the class or method is final, a vtable dispatch otherwise.
+ * The caller must ensure `mInfo` is the class's hashCode MethodInfo.
+ */
+export let emitHashCodeDispatch = (
+  ctx: FunctionContext,
+  ct: ClassType,
+  mInfo: MethodInfo
+): void => {
+  if (ct.isFinal || mInfo.isFinal) {
+    // Direct call
+    var foundFunc: WasmFunction | null = null;
+    var currClass: ClassType | null = ct;
+    while (currClass != null && foundFunc == null) {
+      let key = getClassMethodKey(getClassKey(currClass as ClassType), "hashCode");
+      if (ctx.wasm.classMethodMap.has(key)) {
+        foundFunc = ctx.wasm.classMethodMap[key];
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (foundFunc == null) {
+      throw new Error("hashCode WasmFunction not found for class: " + ct.name);
+    }
+    ctx.emitter.emitCall(foundFunc as WasmFunction);
+  } else {
+    // Dynamic dispatch via vtable
+    var structInfoOpt: WasmStruct | null = null;
+    var vtableStructOpt: WasmStruct | null = null;
+    if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
+      structInfoOpt = info.structType;
+      vtableStructOpt = info.vtableStructType;
+    }
+    if (structInfoOpt == null || vtableStructOpt == null) {
+      throw new Error("Class struct or VTable struct not found for class: " + ct.name);
+    }
+    let structInfo = structInfoOpt as WasmStruct;
+    let vtableStruct = vtableStructOpt as WasmStruct;
+
+    var methodIndex = -1;
+    for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+      if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == "hashCode") {
+        methodIndex = i;
+      }
+    }
+    if (methodIndex == -1) {
+      throw new Error("hashCode method not found in vtable for class: " + ct.name);
+    }
+
+    var scratchLocal = ctx.getStructScratchLocal(structInfo);
+    ctx.emitter.emitLocalTee(scratchLocal);
+
+    ctx.emitter.emitLocalGet(scratchLocal);
+    ctx.emitter.emitRefCast(structInfo.index);
+    ctx.emitter.emitStructGet(structInfo.index, 0); // vtable is field 0
+    ctx.emitter.emitRefCast(vtableStruct.index);
+    ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
+
+    let sig = getClassMemberSignature(ctx.wasm, ct, "hashCode");
+    ctx.emitter.emitRefCast(sig.index);
+    ctx.emitter.emitCallRef(sig.index);
+  }
+};
+
+/**
+ * Calls operator == with the two class-typed values on the stack ([a, b]): a
+ * direct call when the class or method is final, a vtable dispatch (on `a`)
+ * otherwise. The caller must ensure `mInfo` is the class's == MethodInfo.
+ */
+export let emitEqDispatch = (
+  ctx: FunctionContext,
+  ct: ClassType,
+  mInfo: MethodInfo
+): void => {
+  if (ct.isFinal || mInfo.isFinal) {
+    // Direct call
+    var foundFunc: WasmFunction | null = null;
+    var currClass: ClassType | null = ct;
+    while (currClass != null && foundFunc == null) {
+      let key = getClassMethodKey(getClassKey(currClass as ClassType), "==");
+      if (ctx.wasm.classMethodMap.has(key)) {
+        foundFunc = ctx.wasm.classMethodMap[key];
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (foundFunc == null) {
+      throw new Error("operator == WasmFunction not found for class: " + ct.name);
+    }
+    ctx.emitter.emitCall(foundFunc as WasmFunction);
+    return;
+  }
+
+  // Dynamic dispatch via vtable
+  var structInfoOpt: WasmStruct | null = null;
+  var vtableStructOpt: WasmStruct | null = null;
+  if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
+    structInfoOpt = info.structType;
+    vtableStructOpt = info.vtableStructType;
+  }
+  if (structInfoOpt == null || vtableStructOpt == null) {
+    throw new Error("Class struct or VTable struct not found for class: " + ct.name);
+  }
+  let structInfo = structInfoOpt as WasmStruct;
+  let vtableStruct = vtableStructOpt as WasmStruct;
+
+  var methodIndex = -1;
+  for (var i = 0; i < vtableStruct.fields.length; i += 1) {
+    if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == "==") {
+      methodIndex = i;
+    }
+  }
+  if (methodIndex == -1) {
+    throw new Error("operator == not found in vtable for class: " + ct.name);
+  }
+
+  // Stack: [a, b]
+  let bLocal = ctx.allocLocal(new ValTypeRefNull(structInfo));
+  ctx.emitter.emitLocalSet(bLocal);
+  let aLocal = ctx.getStructScratchLocal(structInfo);
+  ctx.emitter.emitLocalTee(aLocal);
+
+  ctx.emitter.emitRefCast(structInfo.index);
+  ctx.emitter.emitStructGet(structInfo.index, 0); // vtable is field 0
+  ctx.emitter.emitRefCast(vtableStruct.index);
+  ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
+
+  let sig = getClassMemberSignature(ctx.wasm, ct, "==");
+  ctx.emitter.emitRefCast(sig.index);
+  let funcLocal = ctx.allocLocal(new ValTypeRefNull(sig));
+  ctx.emitter.emitLocalSet(funcLocal);
+
+  ctx.emitter.emitLocalGet(aLocal);
+  ctx.emitter.emitLocalGet(bLocal);
+  ctx.emitter.emitLocalGet(funcLocal);
+  ctx.emitter.emitCallRef(sig.index);
+};
+
 let isWasmRefType = (wasm: WasmModule, t: Type): boolean => {
   let v = typeToValType(wasm, t);
   return !(v is ValTypeI32 || v is ValTypeI64 || v is ValTypeF32 || v is ValTypeF64 || v is ValTypeVoid);
@@ -413,6 +564,21 @@ export let generateGlobalIntrinsic = (
       return;
     }
 
+    if ((leftBase is I64Type || leftBase is U64Type) &&
+        (rightBase is I64Type || rightBase is U64Type)) {
+      genExpr(left, false);
+      genExpr(right, false);
+      ctx.emitter.emitI64Eq();
+      return;
+    }
+
+    if (leftBase is F32Type && rightBase is F32Type) {
+      genExpr(left, false);
+      genExpr(right, false);
+      ctx.emitter.emitF32Eq();
+      return;
+    }
+
     if (leftBase is F64Type && rightBase is F64Type) {
       genExpr(left, false);
       genExpr(right, false);
@@ -434,6 +600,64 @@ export let generateGlobalIntrinsic = (
       genExpr(right, false);
       ctx.emitter.emitCall(foundFunc as WasmFunction);
       return;
+    }
+
+    // Class with a user-visible operator ==: null-safe dispatch. Only one
+    // side may resolve to the class type — inside specialized generics like
+    // HashMap.#findEntry, `entry.key`'s type parameter does not substitute
+    // while the direct `key` parameter does — so use whichever side did.
+    var classBase: ClassType | null = null;
+    if (leftBase is ClassType) {
+      classBase = leftBase as ClassType;
+    } else if (rightBase is ClassType) {
+      classBase = rightBase as ClassType;
+    }
+    if (classBase != null) {
+      let cb = classBase as ClassType;
+      if (cb.members.has("==")) {
+        let em = cb.members["=="];
+        if (em is MethodInfo) {
+          var structInfoOpt: WasmStruct | null = null;
+          if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(cb))) {
+            structInfoOpt = info.structType;
+          }
+          if (structInfoOpt != null) {
+            let structInfo = structInfoOpt as WasmStruct;
+
+            genExpr(left, false);
+            let aLocal = ctx.allocLocal(typeToValType(ctx.wasm, leftType as Type));
+            ctx.emitter.emitLocalSet(aLocal);
+            genExpr(right, false);
+            let bLocal = ctx.allocLocal(typeToValType(ctx.wasm, rightType as Type));
+            ctx.emitter.emitLocalSet(bLocal);
+
+            // Same reference (or both null): equal.
+            ctx.emitter.emitLocalGet(aLocal);
+            ctx.emitter.emitLocalGet(bLocal);
+            ctx.emitter.emitRefEq();
+            ctx.emitter.emitIf(new ValTypeI32());
+            ctx.emitter.emitI32Const(1);
+            ctx.emitter.emitElse();
+            // Exactly one null (both-null was covered by ref.eq): not equal.
+            ctx.emitter.emitLocalGet(aLocal);
+            ctx.emitter.emitRefIsNull();
+            ctx.emitter.emitLocalGet(bLocal);
+            ctx.emitter.emitRefIsNull();
+            ctx.emitter.emitI32Or();
+            ctx.emitter.emitIf(new ValTypeI32());
+            ctx.emitter.emitI32Const(0);
+            ctx.emitter.emitElse();
+            ctx.emitter.emitLocalGet(aLocal);
+            ctx.emitter.emitRefCast(structInfo.index);
+            ctx.emitter.emitLocalGet(bLocal);
+            ctx.emitter.emitRefCast(structInfo.index);
+            emitEqDispatch(ctx, cb, em as MethodInfo);
+            ctx.emitter.emitEnd();
+            ctx.emitter.emitEnd();
+            return;
+          }
+        }
+      }
     }
 
     // Default reference equality fallback
@@ -611,6 +835,29 @@ export let generateGlobalIntrinsic = (
       return;
     }
 
+    // Wider numerics: i64/u64 fold to i32; floats hash their bits, adding
+    // +0.0 first so -0.0 and +0.0 (which compare equal) hash equally.
+    if (baseT is I64Type || baseT is U64Type) {
+      genExpr(arg, false);
+      emitI64FoldToI32(ctx);
+      return;
+    }
+    if (baseT is F32Type) {
+      genExpr(arg, false);
+      ctx.emitter.emitF32Const(0.0);
+      ctx.emitter.emitF32Add();
+      ctx.emitter.emitI32ReinterpretF32();
+      return;
+    }
+    if (baseT is F64Type) {
+      genExpr(arg, false);
+      ctx.emitter.emitF64Const(0.0);
+      ctx.emitter.emitF64Add();
+      ctx.emitter.emitI64ReinterpretF64();
+      emitI64FoldToI32(ctx);
+      return;
+    }
+
     // String
     if (baseT is StringLiteralType || (baseT is ClassType && (baseT as ClassType).name == "String")) {
       genExpr(arg, false);
@@ -638,59 +885,7 @@ export let generateGlobalIntrinsic = (
       if (methodInfo != null) {
         let mInfo = methodInfo as MethodInfo;
         genExpr(arg, false);
-        
-        if (ct.isFinal || mInfo.isFinal) {
-          // Direct call
-          var foundFunc: WasmFunction | null = null;
-          var currClass: ClassType | null = ct;
-          while (currClass != null && foundFunc == null) {
-            let key = getClassMethodKey(getClassKey(currClass as ClassType), "hashCode");
-            if (ctx.wasm.classMethodMap.has(key)) {
-              foundFunc = ctx.wasm.classMethodMap[key];
-            }
-            currClass = (currClass as ClassType).superType;
-          }
-          if (foundFunc == null) {
-            throw new Error("hashCode WasmFunction not found for class: " + ct.name);
-          }
-          ctx.emitter.emitCall(foundFunc as WasmFunction);
-        } else {
-          // Dynamic dispatch via vtable
-          var structInfoOpt: WasmStruct | null = null;
-          var vtableStructOpt: WasmStruct | null = null;
-          if (let (true, info) = ctx.wasm.classInfos.get(getClassKey(ct))) {
-            structInfoOpt = info.structType;
-            vtableStructOpt = info.vtableStructType;
-          }
-          if (structInfoOpt == null || vtableStructOpt == null) {
-            throw new Error("Class struct or VTable struct not found for class: " + ct.name);
-          }
-          let structInfo = structInfoOpt as WasmStruct;
-          let vtableStruct = vtableStructOpt as WasmStruct;
-          
-          var methodIndex = -1;
-          for (var i = 0; i < vtableStruct.fields.length; i += 1) {
-            if (vtableStruct.fields[i].name != null && (vtableStruct.fields[i].name as String) == "hashCode") {
-              methodIndex = i;
-            }
-          }
-          if (methodIndex == -1) {
-            throw new Error("hashCode method not found in vtable for class: " + ct.name);
-          }
-          
-          var scratchLocal = ctx.getStructScratchLocal(structInfo);
-          ctx.emitter.emitLocalTee(scratchLocal);
-          
-          ctx.emitter.emitLocalGet(scratchLocal);
-          ctx.emitter.emitRefCast(structInfo.index);
-          ctx.emitter.emitStructGet(structInfo.index, 0); // vtable is field 0
-          ctx.emitter.emitRefCast(vtableStruct.index);
-          ctx.emitter.emitStructGet(vtableStruct.index, methodIndex);
-          
-          let sig = getClassMemberSignature(ctx.wasm, ct, "hashCode");
-          ctx.emitter.emitRefCast(sig.index);
-          ctx.emitter.emitCallRef(sig.index);
-        }
+        emitHashCodeDispatch(ctx, ct, mInfo);
         return;
       }
     }

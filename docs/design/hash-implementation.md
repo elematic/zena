@@ -141,9 +141,51 @@ Partially implemented, via a different route than proposed above:
 - The `hash`/`eq` intrinsics remain the implementation mechanism, but they are
   no longer exported from the stdlib — they are private declarations inside
   `zena:map` and `zena:ordered-map`.
-- Both checkers special-case constraint satisfaction for types that cannot
-  nominally implement an interface: `i32`/`u32`/`boolean`, enums, distinct
-  types (by underlying type), and case classes. `String` implements
-  `Hashable` nominally, delegating `hashCode()` to the intrinsic.
-- Replacing the intrinsics with pure-Zena dispatch (this document's proposal)
-  still requires `is` on primitives plus monomorphization-aware DCE.
+- All numeric primitives hash by value: i64/u64 fold high and low bits
+  (`wrap(x ^ (x >>> 32))`), floats hash their bits after adding `+0.0` so
+  that `-0.0` and `+0.0` (which compare equal) hash equally.
+- Case class `hashCode()`/`==` are structural: string fields hash/compare by
+  content, class-typed fields delegate to the field type's
+  `hashCode()`/`operator ==` (null-safely), other reference fields fall back
+  to identity.
+
+### How Hashable conformance works today
+
+Interface conformance is nominal, with layers for types that cannot declare
+an implements clause:
+
+- **Classes**: declare `implements Hashable` explicitly. `String` does this
+  in the stdlib, delegating `hashCode()` to the compiler's cached FNV-1a
+  helper.
+- **Case classes**: *nominally implement* `Hashable`. Both checkers append
+  the well-known interface to their implements list during member synthesis,
+  so case classes are assignable to `Hashable` (interface dispatch included)
+  without an explicit clause.
+- **Primitives, enums, distinct types**: these cannot implement interfaces
+  (no extension classes in the stdlib yet), so they get a special
+  *constraint-satisfaction* rule in both checkers: they satisfy
+  `K extends Hashable` but are **not** assignable to `Hashable` as values —
+  assignability would require boxing, while constraint satisfaction only
+  requires that the monomorphized intrinsics hash them correctly.
+
+### Future direction
+
+- **Bring back `operator ==` on `Hashable`**, likely as f-bounded
+  polymorphism (`interface Hashable<T> { operator ==(other: T): boolean }`)
+  so implementors keep their precise parameter types under invariant
+  interface-method checking.
+- **Swift-style `==` semantics**: a type must implement the `==` operator
+  overload to be used with `==`, making `==` regular method dispatch (open to
+  devirtualization and inlining). `===` remains reference equality on all
+  objects.
+- **Identity-keyed collections**: classes wanting identity semantics can
+  implement `==` as `===` and `hashCode` as a counter, but we should offer an
+  `IdentityMap` where the compiler injects an identity field for classes that
+  need one.
+- **Extension classes for all primitives**, to rationalize how primitives
+  declare and check the interfaces they implement (including `Hashable`) and
+  to hang utility methods off them. This would let the constraint-satisfaction
+  special case dissolve into ordinary nominal conformance.
+- Replacing the intrinsics with pure-Zena dispatch (this document's original
+  proposal) still requires `is` on primitives plus monomorphization-aware
+  DCE.

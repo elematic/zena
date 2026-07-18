@@ -1,5 +1,6 @@
 import { console } from 'zena:console';
 import { ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeAnyRef, ValTypeEqRef, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeVoid, valTypeEquals, ValTypeExternRef } from './wasm.zena';
+import { emitI64FoldToI32, emitHashCodeDispatch, emitEqDispatch } from './expr/intrinsics.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
   Identifier, NumberLiteral, BooleanLiteral, StringLiteral, NullLiteral, BlockStatement,
@@ -15,19 +16,19 @@ import {
   ThrowExpression, TryExpression, RangeExpression, PipelineExpression, PipePlaceholder,
   Module, getMemberPropertyName
 } from '../ast.zena';
-import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType, isVoidOrNeverType, FieldInfo, instantiateClassType } from '../types.zena';
+import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, ClassType, InterfaceType, typeToString, isRefType, AnyType, AnyRefType, EqRefType, isVoidOrNeverType, FieldInfo, MethodInfo, instantiateClassType } from '../types.zena';
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
-import { ValType, HeapType, heapTypeToSigned } from './wasm.zena';
+import { ValType, HeapType, heapTypeToSigned, WasmType } from './wasm.zena';
 import { WasmField, WasmStruct, WasmSignature, sortWasmFields, WasmGlobal, WasmFunction, WasmModule, WasmArray } from './wasm-module.zena';
 import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters, getNonNullableType, getInterfaceTypeParameters, substituteTypeParamsInClassContext } from './type-mapping.zena';
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
   getClassPrivateFieldKey, classInterfaceKeyToString,
-  MixinKey, ClassKey, ClassMethodKey, getClassMethodKey, ClosureSpecializationKey, getClosureSpecializationKey, getMemberRootClass, getTypeUniqueKey
+  MixinKey, ClassKey, ClassMethodKey, getClassMethodKey, ClosureSpecializationKey, getClosureSpecializationKey, getMemberRootClass, getTypeUniqueKey, unwrapAliases
 } from './codegen-utils.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
@@ -1761,13 +1762,7 @@ export final class FunctionGenerator {
         this.ctx.emitter.emitRefCast(structType.index);
         this.ctx.emitter.emitStructGet(structType.index, fi);
 
-        let ft = f.type;
-        match (ft) {
-          case ValTypeI32: this.ctx.emitter.emitI32Eq()
-          case ValTypeF64: this.ctx.emitter.emitF64Eq()
-          case ValTypeF32: this.ctx.emitter.emitF32Eq()
-          case _: this.ctx.emitter.emitRefEq()
-        }
+        this.#emitFieldValueEq(cType, f);
 
         if (!firstField) {
           this.ctx.emitter.emitI32And();
@@ -1778,6 +1773,105 @@ export final class FunctionGenerator {
     }
 
     this.ctx.emitter.emitReturn();
+  }
+
+  /**
+   * Compares the two field values on top of the stack ([a, b]) for equality,
+   * leaving an i32 boolean. Numerics compare by value. Strings compare by
+   * content and classes defining operator == dispatch to it, both null-safely
+   * (two nulls are equal, null never equals non-null). Other reference types
+   * compare by identity.
+   */
+  #emitFieldValueEq(cType: ClassType, f: WasmField): void {
+    let ft = f.type;
+    match (ft) {
+      case ValTypeI32: { this.ctx.emitter.emitI32Eq(); return; }
+      case ValTypeI64: { this.ctx.emitter.emitI64Eq(); return; }
+      case ValTypeF32: { this.ctx.emitter.emitF32Eq(); return; }
+      case ValTypeF64: { this.ctx.emitter.emitF64Eq(); return; }
+      case _: {}
+    }
+
+    var target: WasmType | null = null;
+    match (ft) {
+      case ValTypeRef as r: { target = r.target; }
+      case ValTypeRefNull as rn: { target = rn.target; }
+      case _: {}
+    }
+
+    if (target != null && f.name != null) {
+      let fieldName = f.name as String;
+
+      // String field? Detected by struct index so it also covers generic
+      // case classes specialized with String type arguments.
+      var stringEqFunc: WasmFunction | null = null;
+      let stringClass = this.ctx.wasm.stringClass;
+      if (stringClass != null) {
+        if (let (true, info) = this.ctx.wasm.classInfos.get(getClassKey(stringClass as ClassType))) {
+          let stringStruct = info.structType;
+          if (stringStruct != null && stringStruct.index == (target as WasmType).index) {
+            let key = getClassMethodKey(getClassKey(stringClass as ClassType), "==");
+            if (this.ctx.wasm.classMethodMap.has(key)) {
+              stringEqFunc = this.ctx.wasm.classMethodMap[key];
+            }
+          }
+        }
+      }
+
+      // Class field defining operator ==?
+      var fieldClass: ClassType | null = null;
+      var eqMethod: MethodInfo | null = null;
+      if (stringEqFunc == null && cType.members.has(fieldName)) {
+        let mt = unwrapAliases(cType.members[fieldName].type);
+        if (mt is ClassType) {
+          let fct = mt as ClassType;
+          if (fct.members.has("==")) {
+            let em = fct.members["=="];
+            if (em is MethodInfo) {
+              fieldClass = fct;
+              eqMethod = em as MethodInfo;
+            }
+          }
+        }
+      }
+
+      if (stringEqFunc != null || fieldClass != null) {
+        let bLocal = this.ctx.allocLocal(new ValTypeRefNull(target as WasmType));
+        this.ctx.emitter.emitLocalSet(bLocal);
+        let aLocal = this.ctx.allocLocal(new ValTypeRefNull(target as WasmType));
+        this.ctx.emitter.emitLocalSet(aLocal);
+
+        // Same reference (or both null): equal.
+        this.ctx.emitter.emitLocalGet(aLocal);
+        this.ctx.emitter.emitLocalGet(bLocal);
+        this.ctx.emitter.emitRefEq();
+        this.ctx.emitter.emitIf(new ValTypeI32());
+        this.ctx.emitter.emitI32Const(1);
+        this.ctx.emitter.emitElse();
+        // Exactly one null (both-null was covered by ref.eq): not equal.
+        this.ctx.emitter.emitLocalGet(aLocal);
+        this.ctx.emitter.emitRefIsNull();
+        this.ctx.emitter.emitLocalGet(bLocal);
+        this.ctx.emitter.emitRefIsNull();
+        this.ctx.emitter.emitI32Or();
+        this.ctx.emitter.emitIf(new ValTypeI32());
+        this.ctx.emitter.emitI32Const(0);
+        this.ctx.emitter.emitElse();
+        this.ctx.emitter.emitLocalGet(aLocal);
+        this.ctx.emitter.emitLocalGet(bLocal);
+        if (stringEqFunc != null) {
+          this.ctx.emitter.emitCall(stringEqFunc as WasmFunction);
+        } else {
+          emitEqDispatch(this.ctx, fieldClass as ClassType, eqMethod as MethodInfo);
+        }
+        this.ctx.emitter.emitEnd();
+        this.ctx.emitter.emitEnd();
+        return;
+      }
+    }
+
+    // Fallback: reference identity.
+    this.ctx.emitter.emitRefEq();
   }
 
   generateCaseClassHashBody(): void {
@@ -1801,14 +1895,7 @@ export final class FunctionGenerator {
         this.ctx.emitter.emitRefCast(structType.index);
         this.ctx.emitter.emitStructGet(structType.index, fi);
 
-        let ft = f.type;
-        match (ft) {
-          case ValTypeI32: {}
-          case _: {
-             this.ctx.emitter.emitDrop();
-             this.ctx.emitter.emitI32Const(0);
-          }
-        }
+        this.#emitFieldValueHash(cType, f);
 
         if (!firstField) {
           this.ctx.emitter.emitI32Add();
@@ -1818,6 +1905,106 @@ export final class FunctionGenerator {
     }
 
     this.ctx.emitter.emitReturn();
+  }
+
+  /**
+   * Hashes the field value on top of the stack, leaving an i32. Numerics
+   * hash by value (i64 folds to i32; floats hash their bits, adding +0.0
+   * first so -0.0 and +0.0, which compare equal, hash equally). Strings use
+   * the shared string hash helper, classes with a hashCode() dispatch to it,
+   * and null references hash to 0. Values of unsupported types are dropped
+   * and hash to 0.
+   */
+  #emitFieldValueHash(cType: ClassType, f: WasmField): void {
+    let ft = f.type;
+    match (ft) {
+      case ValTypeI32: { return; }
+      case ValTypeI64: {
+        emitI64FoldToI32(this.ctx);
+        return;
+      }
+      case ValTypeF32: {
+        this.ctx.emitter.emitF32Const(0.0);
+        this.ctx.emitter.emitF32Add();
+        this.ctx.emitter.emitI32ReinterpretF32();
+        return;
+      }
+      case ValTypeF64: {
+        this.ctx.emitter.emitF64Const(0.0);
+        this.ctx.emitter.emitF64Add();
+        this.ctx.emitter.emitI64ReinterpretF64();
+        emitI64FoldToI32(this.ctx);
+        return;
+      }
+      case _: {}
+    }
+
+    var target: WasmType | null = null;
+    match (ft) {
+      case ValTypeRef as r: { target = r.target; }
+      case ValTypeRefNull as rn: { target = rn.target; }
+      case _: {}
+    }
+
+    if (target != null && f.name != null) {
+      let fieldName = f.name as String;
+
+      // String field? Detected by struct index so it also covers generic
+      // case classes specialized with String type arguments.
+      var isStringField = false;
+      let stringClass = this.ctx.wasm.stringClass;
+      if (stringClass != null) {
+        if (let (true, info) = this.ctx.wasm.classInfos.get(getClassKey(stringClass as ClassType))) {
+          let stringStruct = info.structType;
+          if (stringStruct != null && stringStruct.index == (target as WasmType).index) {
+            isStringField = true;
+          }
+        }
+      }
+
+      // Class field with a hashCode()?
+      var fieldClass: ClassType | null = null;
+      var hashMethod: MethodInfo | null = null;
+      if (!isStringField && cType.members.has(fieldName)) {
+        let mt = unwrapAliases(cType.members[fieldName].type);
+        if (mt is ClassType) {
+          let fct = mt as ClassType;
+          if (fct.members.has("hashCode")) {
+            let hm = fct.members["hashCode"];
+            if (hm is MethodInfo) {
+              fieldClass = fct;
+              hashMethod = hm as MethodInfo;
+            }
+          }
+        }
+      }
+
+      if (isStringField || fieldClass != null) {
+        let tmp = this.ctx.allocLocal(new ValTypeRefNull(target as WasmType));
+        this.ctx.emitter.emitLocalTee(tmp);
+        this.ctx.emitter.emitRefIsNull();
+        this.ctx.emitter.emitIf(new ValTypeI32());
+        this.ctx.emitter.emitI32Const(0);
+        this.ctx.emitter.emitElse();
+        this.ctx.emitter.emitLocalGet(tmp);
+        if (isStringField) {
+          let hashFunc = this.ctx.wasm.stringHashFunc;
+          if (hashFunc == null) {
+            throw new Error("$stringHash helper function not found!");
+          }
+          this.ctx.emitter.emitRefCast((target as WasmType).index);
+          this.ctx.emitter.emitCall(hashFunc as WasmFunction);
+        } else {
+          emitHashCodeDispatch(this.ctx, fieldClass as ClassType, hashMethod as MethodInfo);
+        }
+        this.ctx.emitter.emitEnd();
+        return;
+      }
+    }
+
+    // Unsupported type: drop and use 0.
+    this.ctx.emitter.emitDrop();
+    this.ctx.emitter.emitI32Const(0);
   }
 
   generateDefaultConstructorBody(): void {

@@ -3845,6 +3845,18 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       returnType: Types.I32,
     });
     classType.vtable.push('hashCode');
+
+    // Case classes nominally implement Hashable: their synthesized
+    // hashCode()/== make them valid hash keys, so they are assignable to the
+    // well-known Hashable interface without an explicit implements clause.
+    const hashable = ctx.getWellKnownType(TypeNames.Hashable);
+    if (
+      hashable &&
+      hashable.kind === TypeKind.Interface &&
+      !classType.implements.includes(hashable as InterfaceType)
+    ) {
+      classType.implements.push(hashable as InterfaceType);
+    }
   }
 
   // 1. First pass: Collect members to build the ClassType

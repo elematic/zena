@@ -1226,9 +1226,8 @@ export function validateTypeArgumentConstraints(
  * hash correctly via the `hash`/`eq` intrinsics, so they satisfy a Hashable
  * constraint:
  *
- * - i32-representable primitives (i32, u32, boolean), which hash to their own
- *   value. Wider numerics (i64, f64, ...) are excluded — the hash intrinsic
- *   does not support them, so rejecting them keeps the failure at compile time.
+ * - Numeric primitives and boolean, which hash by value (i64/u64 fold to
+ *   i32, floats hash their bits with -0.0 normalized to +0.0).
  * - Enums and distinct type aliases, judged by their underlying type.
  * - Case classes, whose hashCode()/operator == are compiler-generated.
  */
@@ -1262,12 +1261,8 @@ function satisfiesHashableConstraint(
     return true;
   }
 
-  if (t.kind === TypeKind.Boolean) {
+  if (t.kind === TypeKind.Boolean || t.kind === TypeKind.Number) {
     return true;
-  }
-  if (t.kind === TypeKind.Number) {
-    const name = (t as NumberType).name;
-    return name === TypeNames.I32 || name === TypeNames.U32;
   }
   // Enum member types: i32-backed enums unwrap to number literals, string
   // enums to string literals. Both hash by value via the intrinsics.

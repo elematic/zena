@@ -10624,15 +10624,25 @@ function generateGlobalIntrinsic(
 
       const isI32 = (t: number[]) => t.length === 1 && t[0] === ValType.i32;
       const isF32 = (t: number[]) => t.length === 1 && t[0] === ValType.f32;
+      const isI64 = (t: number[]) => t.length === 1 && t[0] === ValType.i64;
+      const isF64 = (t: number[]) => t.length === 1 && t[0] === ValType.f64;
 
       if (isI32(leftType) && isI32(rightType)) {
         generateExpression(ctx, left, body);
         generateExpression(ctx, right, body);
         body.push(Opcode.i32_eq);
+      } else if (isI64(leftType) && isI64(rightType)) {
+        generateExpression(ctx, left, body);
+        generateExpression(ctx, right, body);
+        body.push(Opcode.i64_eq);
       } else if (isF32(leftType) && isF32(rightType)) {
         generateExpression(ctx, left, body);
         generateExpression(ctx, right, body);
         body.push(Opcode.f32_eq);
+      } else if (isF64(leftType) && isF64(rightType)) {
+        generateExpression(ctx, left, body);
+        generateExpression(ctx, right, body);
+        body.push(Opcode.f64_eq);
       } else if (isStringType(ctx, leftType) && isStringType(ctx, rightType)) {
         // Call String.operator==
         const stringEqIndex = getStringEqIndex(ctx);
@@ -10980,13 +10990,18 @@ function generateGlobalIntrinsic(
 function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
   const type = inferType(ctx, expr);
 
-  // Primitives
-  if (type.length === 1) {
-    if (type[0] === ValType.i32) {
-      generateExpression(ctx, expr, body);
-      return;
-    }
-    // Boolean is i32
+  // Primitives (boolean is i32). Wider numerics are folded/reinterpreted to
+  // i32 by generateStackValueHash.
+  if (
+    type.length === 1 &&
+    (type[0] === ValType.i32 ||
+      type[0] === ValType.i64 ||
+      type[0] === ValType.f32 ||
+      type[0] === ValType.f64)
+  ) {
+    generateExpression(ctx, expr, body);
+    generateStackValueHash(ctx, type, body);
+    return;
   }
 
   // String
@@ -11042,84 +11057,7 @@ function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
       const methodInfo = classInfo.methods.get(HASH_CODE_METHOD);
       if (methodInfo) {
         generateExpression(ctx, expr, body);
-
-        // Call hashCode
-        if (classInfo.isFinal || methodInfo.isFinal) {
-          body.push(
-            Opcode.call,
-            ...WasmModule.encodeSignedLEB128(methodInfo.index),
-          );
-        } else {
-          // Dynamic dispatch
-          // Stack: [this]
-
-          // 1. Tee 'this' for vtable lookup
-          const tempThis = ctx.declareLocal('$$temp_hash_this', type);
-          body.push(
-            Opcode.local_tee,
-            ...WasmModule.encodeSignedLEB128(tempThis),
-          );
-
-          // 2. Load VTable
-          body.push(
-            0xfb,
-            GcOpcode.struct_get,
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            ...WasmModule.encodeSignedLEB128(
-              classInfo.fields.get('__vtable')!.index,
-            ),
-          );
-
-          // Cast VTable
-          body.push(
-            0xfb,
-            GcOpcode.ref_cast_null,
-            ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
-          );
-
-          // 3. Load Function Pointer
-          const vtableIndex = classInfo.vtable!.indexOf('hashCode');
-          body.push(
-            0xfb,
-            GcOpcode.struct_get,
-            ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
-            ...WasmModule.encodeSignedLEB128(vtableIndex),
-          );
-
-          // 4. Cast Function
-          body.push(
-            0xfb,
-            GcOpcode.ref_cast_null,
-            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-          );
-
-          // Store funcRef in temp local
-          const funcRefType = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-          ];
-          const tempFuncRef = ctx.declareLocal('$$temp_hash_func', funcRefType);
-          body.push(
-            Opcode.local_set,
-            ...WasmModule.encodeSignedLEB128(tempFuncRef),
-          );
-
-          // 5. Prepare Stack for Call: [this, funcRef]
-          body.push(
-            Opcode.local_get,
-            ...WasmModule.encodeSignedLEB128(tempThis),
-          );
-          body.push(
-            Opcode.local_get,
-            ...WasmModule.encodeSignedLEB128(tempFuncRef),
-          );
-
-          // 6. Call
-          body.push(
-            Opcode.call_ref,
-            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-          );
-        }
+        generateHashCodeInvocation(ctx, classInfo, methodInfo, type, body);
         return;
       }
     }
@@ -11127,6 +11065,332 @@ function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
 
   // Fallback: evaluate and drop, return 0
   generateExpression(ctx, expr, body);
+  body.push(Opcode.drop);
+  body.push(Opcode.i32_const, 0);
+}
+
+type ClassMethodInfo = NonNullable<ReturnType<ClassInfo['methods']['get']>>;
+
+/**
+ * Calls hashCode() on the value on top of the stack: a direct call for final
+ * classes/methods, a vtable dispatch otherwise.
+ */
+function generateHashCodeInvocation(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+  methodInfo: ClassMethodInfo,
+  valueType: number[],
+  body: number[],
+) {
+  if (classInfo.isFinal || methodInfo.isFinal) {
+    body.push(Opcode.call, ...WasmModule.encodeSignedLEB128(methodInfo.index));
+  } else {
+    // Dynamic dispatch
+    // Stack: [this]
+
+    // 1. Tee 'this' for vtable lookup
+    const tempThis = ctx.declareLocal('$$temp_hash_this', valueType);
+    body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
+
+    // 2. Load VTable
+    body.push(
+      0xfb,
+      GcOpcode.struct_get,
+      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+      ...WasmModule.encodeSignedLEB128(
+        classInfo.fields.get('__vtable')!.index,
+      ),
+    );
+
+    // Cast VTable
+    body.push(
+      0xfb,
+      GcOpcode.ref_cast_null,
+      ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
+    );
+
+    // 3. Load Function Pointer
+    const vtableIndex = classInfo.vtable!.indexOf('hashCode');
+    body.push(
+      0xfb,
+      GcOpcode.struct_get,
+      ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
+      ...WasmModule.encodeSignedLEB128(vtableIndex),
+    );
+
+    // 4. Cast Function
+    body.push(
+      0xfb,
+      GcOpcode.ref_cast_null,
+      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    );
+
+    // Store funcRef in temp local
+    const funcRefType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    ];
+    const tempFuncRef = ctx.declareLocal('$$temp_hash_func', funcRefType);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempFuncRef));
+
+    // 5. Prepare Stack for Call: [this, funcRef]
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempFuncRef));
+
+    // 6. Call
+    body.push(
+      Opcode.call_ref,
+      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    );
+  }
+}
+
+/**
+ * Folds the i64 on top of the stack to an i32 hash: wrap(x ^ (x >>> 32)),
+ * so values differing only in their high bits still hash differently.
+ */
+function generateI64FoldToI32(ctx: CodegenContext, body: number[]) {
+  const tmp = ctx.declareLocal('$$hash_i64', [ValType.i64]);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tmp));
+  body.push(Opcode.i64_const, ...WasmModule.encodeSignedLEB128(32));
+  body.push(Opcode.i64_shr_u);
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tmp));
+  body.push(Opcode.i64_xor);
+  body.push(Opcode.i32_wrap_i64);
+}
+
+/**
+ * Calls operator == with the two values on the stack ([a, b]): a direct call
+ * for final classes/methods, a vtable dispatch (on `a`) otherwise.
+ */
+function generateEqInvocation(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+  methodInfo: ClassMethodInfo,
+  valueType: number[],
+  body: number[],
+) {
+  if (classInfo.isFinal || methodInfo.isFinal) {
+    body.push(Opcode.call, ...WasmModule.encodeSignedLEB128(methodInfo.index));
+    return;
+  }
+
+  // Dynamic dispatch. Stack: [a, b]
+  const tempB = ctx.declareLocal('$$eq_field_b', valueType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempB));
+  const tempA = ctx.declareLocal('$$eq_field_a', valueType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempA));
+
+  // Load vtable from `a`
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    ...WasmModule.encodeSignedLEB128(classInfo.fields.get('__vtable')!.index),
+  );
+  body.push(
+    0xfb,
+    GcOpcode.ref_cast_null,
+    ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
+  );
+  const vtableIndex = classInfo.vtable!.indexOf('==');
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
+    ...WasmModule.encodeSignedLEB128(vtableIndex),
+  );
+  body.push(
+    0xfb,
+    GcOpcode.ref_cast_null,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  );
+  const funcRefType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  ];
+  const tempFuncRef = ctx.declareLocal('$$eq_field_func', funcRefType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempFuncRef));
+
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempA));
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempB));
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempFuncRef));
+  body.push(
+    Opcode.call_ref,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  );
+}
+
+/**
+ * Compares the two values on top of the stack ([a, b]) for equality, leaving
+ * an i32 boolean. Numerics compare by value. Strings compare by content and
+ * classes defining operator == dispatch to it, both null-safely (two nulls
+ * are equal, null never equals non-null). Other reference types compare by
+ * identity.
+ */
+export function generateStackValuesEq(
+  ctx: CodegenContext,
+  valueType: number[],
+  body: number[],
+) {
+  if (valueType.length === 1) {
+    switch (valueType[0]) {
+      case ValType.i32:
+        body.push(Opcode.i32_eq);
+        return;
+      case ValType.i64:
+        body.push(Opcode.i64_eq);
+        return;
+      case ValType.f32:
+        body.push(Opcode.f32_eq);
+        return;
+      case ValType.f64:
+        body.push(Opcode.f64_eq);
+        return;
+    }
+  }
+
+  if (valueType[0] === ValType.ref || valueType[0] === ValType.ref_null) {
+    let eqCall: ((body: number[]) => void) | undefined;
+    if (isStringType(ctx, valueType)) {
+      const stringEqIndex = getStringEqIndex(ctx);
+      eqCall = (b) => {
+        b.push(Opcode.call, ...WasmModule.encodeSignedLEB128(stringEqIndex));
+      };
+    } else {
+      const heapTypeIndex = getHeapTypeIndex(ctx, valueType);
+      const classInfo =
+        heapTypeIndex === -1
+          ? undefined
+          : ctx.getClassInfoByStructIndexDirect(heapTypeIndex);
+      const methodInfo = classInfo?.methods.get('==');
+      if (
+        classInfo &&
+        methodInfo &&
+        (methodInfo.index >= 0 || !(classInfo.isFinal || methodInfo.isFinal))
+      ) {
+        eqCall = (b) =>
+          generateEqInvocation(ctx, classInfo, methodInfo, valueType, b);
+      }
+    }
+
+    if (eqCall) {
+      const localType =
+        valueType[0] === ValType.ref
+          ? [ValType.ref_null, ...valueType.slice(1)]
+          : valueType;
+      const fb = ctx.declareLocal('$$eq_ref_b', localType);
+      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(fb));
+      const fa = ctx.declareLocal('$$eq_ref_a', localType);
+      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(fa));
+
+      // Same reference (or both null): equal.
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(fa));
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(fb));
+      body.push(Opcode.ref_eq);
+      body.push(Opcode.if, ValType.i32);
+      body.push(Opcode.i32_const, 1);
+      body.push(Opcode.else);
+      // Exactly one null (both-null was covered by ref.eq): not equal.
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(fa));
+      body.push(Opcode.ref_is_null);
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(fb));
+      body.push(Opcode.ref_is_null);
+      body.push(Opcode.i32_or);
+      body.push(Opcode.if, ValType.i32);
+      body.push(Opcode.i32_const, 0);
+      body.push(Opcode.else);
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(fa));
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(fb));
+      eqCall(body);
+      body.push(Opcode.end);
+      body.push(Opcode.end);
+      return;
+    }
+  }
+
+  // Fallback: reference identity.
+  body.push(Opcode.ref_eq);
+}
+
+/**
+ * Hashes the value on top of the stack according to its WASM-level type,
+ * leaving an i32 hash. Numerics hash by value (floats add +0.0 first so that
+ * -0.0 and +0.0, which compare equal, hash equally). Strings use the shared
+ * FNV-1a helper, classes with a hashCode() method dispatch to it, and null
+ * references hash to 0. Values of unsupported types are dropped and hash
+ * to 0.
+ */
+export function generateStackValueHash(
+  ctx: CodegenContext,
+  valueType: number[],
+  body: number[],
+) {
+  if (valueType.length === 1) {
+    switch (valueType[0]) {
+      case ValType.i32:
+        return;
+      case ValType.i64:
+        generateI64FoldToI32(ctx, body);
+        return;
+      case ValType.f32:
+        body.push(Opcode.f32_const, ...WasmModule.encodeF32(0));
+        body.push(Opcode.f32_add);
+        body.push(Opcode.i32_reinterpret_f32);
+        return;
+      case ValType.f64:
+        body.push(Opcode.f64_const, ...WasmModule.encodeF64(0));
+        body.push(Opcode.f64_add);
+        body.push(Opcode.i64_reinterpret_f64);
+        generateI64FoldToI32(ctx, body);
+        return;
+    }
+  }
+
+  // Reference types: hash strings and classes with a hashCode(), guarding
+  // for null.
+  if (valueType[0] === ValType.ref || valueType[0] === ValType.ref_null) {
+    let hashRef: ((body: number[]) => void) | undefined;
+    if (isStringType(ctx, valueType)) {
+      hashRef = (b) => generateStringHash(ctx, b);
+    } else {
+      const heapTypeIndex = getHeapTypeIndex(ctx, valueType);
+      const classInfo =
+        heapTypeIndex === -1
+          ? undefined
+          : ctx.getClassInfoByStructIndexDirect(heapTypeIndex);
+      const methodInfo = classInfo?.methods.get(HASH_CODE_METHOD);
+      // methodInfo.index can be -1 when the method body was never allocated;
+      // vtable dispatch does not need the index, but a direct call does.
+      if (
+        classInfo &&
+        methodInfo &&
+        (methodInfo.index >= 0 || !(classInfo.isFinal || methodInfo.isFinal))
+      ) {
+        hashRef = (b) =>
+          generateHashCodeInvocation(ctx, classInfo, methodInfo, valueType, b);
+      }
+    }
+
+    if (hashRef) {
+      const localType =
+        valueType[0] === ValType.ref
+          ? [ValType.ref_null, ...valueType.slice(1)]
+          : valueType;
+      const tmp = ctx.declareLocal('$$hash_ref', localType);
+      body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tmp));
+      body.push(Opcode.ref_is_null);
+      body.push(Opcode.if, ValType.i32);
+      body.push(Opcode.i32_const, 0);
+      body.push(Opcode.else);
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tmp));
+      hashRef(body);
+      body.push(Opcode.end);
+      return;
+    }
+  }
+
+  // Fallback: drop and use 0.
   body.push(Opcode.drop);
   body.push(Opcode.i32_const, 0);
 }

@@ -2352,9 +2352,8 @@ let applyAndCheckTypeArguments = (
  * hash correctly via the `hash`/`eq` intrinsics, so they satisfy a Hashable
  * constraint:
  *
- * - i32-representable primitives (i32, u32, boolean), which hash to their own
- *   value. Wider numerics (i64, f64, ...) are excluded — the hash intrinsic
- *   does not support them, so rejecting them keeps the failure at compile time.
+ * - Numeric primitives and boolean, which hash by value (i64/u64 fold to
+ *   i32, floats hash their bits with -0.0 normalized to +0.0).
  * - Enums and distinct type aliases, judged by their underlying type.
  * - Case classes, whose hashCode()/operator == are compiler-generated.
  */
@@ -2386,6 +2385,10 @@ let satisfiesHashableConstraint = (
   match (t) {
     case I32Type: { return true; }
     case U32Type: { return true; }
+    case I64Type: { return true; }
+    case U64Type: { return true; }
+    case F32Type: { return true; }
+    case F64Type: { return true; }
     case BooleanType: { return true; }
     // Enum member types: i32-backed enums unwrap to number literals, string
     // enums to string literals. Both hash by value via the intrinsics.
@@ -6016,7 +6019,7 @@ let findMatchingOverload = (
  * and sealed variant types. Does NOT check method bodies, field
  * initializers, or accessor bodies — that happens in checkClassBodies.
  */
-let synthesizeCaseClassMembers = (ct: ClassType): void => {
+let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
   let hashType = new FunctionType(new Array<Type>(), null, new I32Type());
   ct.members["hashCode"] = new MethodInfo(hashType, false, false, false, false);
 
@@ -6024,6 +6027,21 @@ let synthesizeCaseClassMembers = (ct: ClassType): void => {
   eqParams.push(new AnyType());
   let eqType = new FunctionType(eqParams, null, new BooleanType());
   ct.members["=="] = new MethodInfo(eqType, false, false, false, false);
+
+  // Case classes nominally implement Hashable: their synthesized
+  // hashCode()/== make them valid hash keys, so they are assignable to the
+  // well-known Hashable interface without an explicit implements clause.
+  let hashable = ctx.resolvePreludeType("Hashable");
+  if (hashable != null && hashable is InterfaceType) {
+    let ht = hashable as InterfaceType;
+    var already = false;
+    for (let impl in ct.implementsList) {
+      if (impl === ht) { already = true; }
+    }
+    if (!already) {
+      ct.implementsList.push(ht);
+    }
+  }
 };
 
 let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void => {
@@ -6094,7 +6112,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   if (cd.caseParams != null && !cd.isSealed) {
     classType.isFinal = true;
     classType.isCaseClass = true;
-    synthesizeCaseClassMembers(classType);
+    synthesizeCaseClassMembers(ctx, classType);
   }
 
   // Sealed classes: register forward variant names.
@@ -6929,7 +6947,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         );
         vCtorType.optionalParameters = vCtorOptionalParams;
         variantType.constructorType = vCtorType;
-        synthesizeCaseClassMembers(variantType);
+        synthesizeCaseClassMembers(ctx, variantType);
 
         (classType.sealedVariants as Array<ClassType>).push(variantType);
 
@@ -6973,7 +6991,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                     new Array<Type>(), new Array<String>(), ct
                   );
                 }
-                synthesizeCaseClassMembers(ct);
+                synthesizeCaseClassMembers(ctx, ct);
               }
             }
             let sealedVars = classType.sealedVariants as Array<ClassType>;
@@ -6994,7 +7012,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             unitType.constructorType = new FunctionType(
               new Array<Type>(), new Array<String>(), unitType
             );
-            synthesizeCaseClassMembers(unitType);
+            synthesizeCaseClassMembers(ctx, unitType);
 
             (classType.sealedVariants as Array<ClassType>).push(unitType);
             ctx.declareModuleTypeName(variantName, unitType);

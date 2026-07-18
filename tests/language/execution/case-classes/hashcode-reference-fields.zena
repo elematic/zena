@@ -1,0 +1,35 @@
+// @mode: run
+// @result: 0
+// Regression test: the synthesized case-class hashCode() must hash reference
+// fields (strings by content, nested case classes via their hashCode) rather
+// than dropping them and returning a constant, and the synthesized == must
+// compare string fields by content. Strings are concatenated at runtime so
+// the test cannot pass via literal interning.
+import {HashMap} from 'zena:map';
+
+class CaseKey(name: String, id: i32)
+class NestedKey(inner: CaseKey, tag: String)
+
+export let main = (): i32 => {
+  let a = new CaseKey('al' + 'pha', 1);
+  let b = new CaseKey('alp' + 'ha', 1);
+  let c = new CaseKey('beta', 1);
+
+  // Equal values hash equally; different string fields hash differently.
+  if (a.hashCode() != b.hashCode()) { return 1; }
+  if (a.hashCode() == c.hashCode()) { return 2; }
+
+  // Nested case-class fields hash via their own hashCode.
+  let n1 = new NestedKey(new CaseKey('x' + '', 7), 'left');
+  let n2 = new NestedKey(new CaseKey('' + 'x', 7), 'left');
+  if (n1.hashCode() != n2.hashCode()) { return 3; }
+
+  // By-value HashMap lookups with distinct-but-equal keys.
+  let m = new HashMap<CaseKey, i32>();
+  m[a] = 42;
+  if (!m.has(b)) { return 4; }
+  if (m[b] != 42) { return 5; }
+  if (m.has(c)) { return 6; }
+
+  return 0;
+};

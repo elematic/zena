@@ -171,6 +171,8 @@ import {
   unboxPrimitive,
   getBoxClassInfo,
   generateAdaptedArgument,
+  generateStackValueHash,
+  generateStackValuesEq,
 } from './expressions.js';
 import {
   generateBlockStatement,
@@ -1830,10 +1832,6 @@ export function generateInterfaceVTable(
   decl: ClassDeclaration,
   typeContext?: Map<string, TypeAnnotation>,
 ) {
-  if (!decl.implements) return;
-
-  if (!classInfo.implements) classInfo.implements = new Map();
-
   // Get the checker's ClassType for identity-based interface lookups
   if (!decl.inferredType || decl.inferredType.kind !== TypeKind.Class) {
     throw new Error(
@@ -1842,20 +1840,15 @@ export function generateInterfaceVTable(
   }
   const classType = decl.inferredType as ClassType;
 
-  for (let i = 0; i < decl.implements.length; i++) {
-    const impl = decl.implements[i];
-    if (impl.type !== NodeType.TypeAnnotation) {
-      throw new Error('Interfaces cannot be union types');
-    }
+  // Iterate the checker's implements list, not the AST clause: it also
+  // contains synthesized implementations (e.g. case classes implicitly
+  // implement Hashable) that have no AST annotation.
+  if (classType.implements.length === 0) return;
 
-    // Get the checker's InterfaceType for this implementation (identity-based key)
-    // The checker's classType.implements is in the same order as decl.implements
+  if (!classInfo.implements) classInfo.implements = new Map();
+
+  for (let i = 0; i < classType.implements.length; i++) {
     const checkerInterfaceType = classType.implements[i];
-    if (!checkerInterfaceType) {
-      throw new Error(
-        `Missing checker InterfaceType for ${classInfo.name} implementing ${impl.name}`,
-      );
-    }
 
     // Look up interface info by identity (no name-based fallback)
     const interfaceInfo = ctx.getInterfaceInfo(checkerInterfaceType);
@@ -1866,9 +1859,11 @@ export function generateInterfaceVTable(
         ? ctx.getInterfaceInfo(genericSource)
         : undefined;
       if (!baseInterfaceInfo) {
-        throw new Error(
-          `Interface ${impl.name} not found via identity lookup for ${classInfo.name}`,
-        );
+        // The interface was never generated as a wasm entity — nothing uses
+        // it as an interface type, so no vtable is needed. This is routine
+        // for synthesized implements (e.g. case classes implicitly
+        // implementing Hashable) in programs that never mention Hashable.
+        continue;
       }
       // Use the generic interface's structure (all generic interfaces share vtable layout)
       const vtableSize =
@@ -1968,13 +1963,6 @@ export function generateInterfaceVTable(
       initExpr,
     );
 
-    // Store by InterfaceType identity - requires checker type
-    if (!checkerInterfaceType) {
-      throw new Error(
-        `Missing checker InterfaceType for ${classInfo.name} implementing ${impl.name}. ` +
-          `Ensure class declaration has inferredType set by the checker.`,
-      );
-    }
     classInfo.implements.set(checkerInterfaceType, {
       vtableGlobalIndex: globalIndex,
     });
@@ -2800,8 +2788,10 @@ export function registerClassMethods(
     }
   }
 
-  // Synthesize operator == for case classes
-  if (decl.caseParams && decl.caseParams.length > 0) {
+  // Synthesize operator == for case classes. Zero-param case classes (e.g.
+  // sealed unit variants) also get one — the checker synthesizes their
+  // type-level members and marks them as implementing Hashable.
+  if (decl.caseParams) {
     const hasEqOperator = members.some(
       (m) =>
         m.type === NodeType.MethodDefinition && getMemberName(m.name) === '==',
@@ -3976,8 +3966,9 @@ export function generateClassMethods(
     }
   }
 
-  // Add synthesized operator == for case classes (needs body generation)
-  if (decl.caseParams && decl.caseParams.length > 0) {
+  // Add synthesized operator == for case classes (needs body generation).
+  // Zero-param case classes (e.g. sealed unit variants) also get one.
+  if (decl.caseParams) {
     const hasEqOperator = members.some(
       (m) =>
         m.type === NodeType.MethodDefinition && getMemberName(m.name) === '==',
@@ -6281,8 +6272,9 @@ function instantiateClassImpl(
       }
     }
 
-    // Synthesize operator == for case classes
-    if (decl.caseParams && decl.caseParams.length > 0) {
+    // Synthesize operator == for case classes. Zero-param case classes
+    // (e.g. sealed unit variants) also get one.
+    if (decl.caseParams) {
       const hasEqOperator = members.some(
         (m) =>
           m.type === NodeType.MethodDefinition &&
@@ -7226,20 +7218,10 @@ function generateCaseClassEqBody(
     body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
     body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
 
-    // Compare based on WASM type
-    const fieldType = fieldInfo.type;
-    if (fieldType.length === 1 && fieldType[0] === ValType.i32) {
-      body.push(Opcode.i32_eq);
-    } else if (fieldType.length === 1 && fieldType[0] === ValType.i64) {
-      body.push(Opcode.i64_eq);
-    } else if (fieldType.length === 1 && fieldType[0] === ValType.f32) {
-      body.push(Opcode.f32_eq);
-    } else if (fieldType.length === 1 && fieldType[0] === ValType.f64) {
-      body.push(Opcode.f64_eq);
-    } else {
-      // Reference type - use ref.eq (identity comparison)
-      body.push(Opcode.ref_eq);
-    }
+    // Compare based on WASM type. Numerics compare by value, strings by
+    // content, classes defining operator == dispatch to it, and other
+    // reference types compare by identity.
+    generateStackValuesEq(ctx, fieldInfo.type, body);
 
     // AND with previous result (skip for the first field)
     if (!firstField) {
@@ -7293,25 +7275,10 @@ function generateCaseClassHashBody(
     body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
     body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
 
-    // Convert to i32 hash based on WASM type
-    const fieldType = fieldInfo.type;
-    if (fieldType.length === 1 && fieldType[0] === ValType.i32) {
-      // i32: use value directly
-    } else if (fieldType.length === 1 && fieldType[0] === ValType.i64) {
-      // i64: wrap to i32 (low 32 bits)
-      body.push(Opcode.i32_wrap_i64);
-    } else if (fieldType.length === 1 && fieldType[0] === ValType.f32) {
-      // f32: reinterpret as i32
-      body.push(Opcode.i32_reinterpret_f32);
-    } else if (fieldType.length === 1 && fieldType[0] === ValType.f64) {
-      // f64: reinterpret as i64, then wrap to i32
-      body.push(Opcode.i64_reinterpret_f64);
-      body.push(Opcode.i32_wrap_i64);
-    } else {
-      // Reference type - drop and use 0 (identity-based hashing not available)
-      body.push(Opcode.drop);
-      body.push(Opcode.i32_const, 0);
-    }
+    // Convert to i32 hash based on WASM type. Numerics hash by value,
+    // strings via the shared FNV-1a helper, classes via their hashCode();
+    // null and unsupported reference types hash to 0.
+    generateStackValueHash(ctx, fieldInfo.type, body);
 
     // Add to accumulated hash (skip for the first field)
     if (!firstField) {

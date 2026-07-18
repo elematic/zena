@@ -3159,8 +3159,10 @@ declare function hash<T>(val: T): i32;
 
 The behavior depends on the type `T`:
 
-- **Primitives (`i32`, `boolean`)**: Returns the value itself (or 1/0 for
-  boolean).
+- **`i32`, `u32`, `boolean`**: Returns the value itself (or 1/0 for boolean).
+- **`i64`, `u64`**: Folds high and low bits: `wrap(x ^ (x >>> 32))`.
+- **`f32`, `f64`**: Hashes the float's bits, adding `+0.0` first so `-0.0`
+  and `+0.0` (which compare equal) hash equally.
 - **Strings**: Computes the FNV-1a hash of the string bytes (cached on the
   string after the first computation).
 - **Classes**:
@@ -3194,15 +3196,20 @@ reference equality should return an identity hash (e.g. a per-instance
 counter assigned at construction).
 
 Classes must declare `implements Hashable` explicitly (interface conformance
-is nominal). In addition, the following types satisfy a `Hashable` constraint
-without a declaration, because the intrinsics hash them by value:
+is nominal), with two exceptions:
 
-- **`i32`, `u32`, and `boolean`** (wider numerics like `i64` and `f64` are
-  rejected — the hash intrinsic does not support them).
+- **`String`** implements `Hashable` in the standard library.
+- **Case classes** implicitly implement `Hashable`: their `hashCode()` and
+  `operator ==` are compiler-generated (structural, with reference-typed
+  fields hashed and compared by value where the field type supports it), and
+  they are assignable to `Hashable` without an explicit clause.
+
+In addition, the following types satisfy a `Hashable` constraint (though they
+are not assignable to `Hashable` as values, since that would require boxing):
+
+- **Numeric primitives** (`i32`, `u32`, `i64`, `u64`, `f32`, `f64`) and
+  **`boolean`**, which hash by value.
 - **Enums** and **distinct types**, judged by their underlying type.
-- **Case classes**, whose `hashCode()` and `operator ==` are
-  compiler-generated.
-- **`String`**, which implements `Hashable` in the standard library.
 
 ### Pure Accessor Decorator (`@pure`)
 

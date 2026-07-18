@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 0
+// HashMap keys of wider primitive types: i64 hashes by folding high and low
+// bits, floats hash their bits with -0.0 normalized to +0.0 (since
+// -0.0 == 0.0, they must be the same key).
+import {HashMap} from 'zena:map';
+
+export let main = (): i32 => {
+  let m64 = new HashMap<i64, i32>();
+  // Two keys that differ only in their high 32 bits.
+  let low = 5 as i64;
+  let high = 21474836485 as i64; // 5 * 2^32 + 5
+  m64[low] = 1;
+  m64[high] = 2;
+  if (m64[low] != 1) { return 1; }
+  if (m64[high] != 2) { return 2; }
+
+  let mf = new HashMap<f64, i32>();
+  mf[1.5] = 3;
+  mf[-0.0] = 4;
+  if (mf[1.5] != 3) { return 3; }
+  if (mf[0.0] != 4) { return 4; }
+  mf[0.0] = 5;
+  if (mf[-0.0] != 5) { return 5; }
+  if (mf.size != 2) { return 6; }
+
+  let mf32 = new HashMap<f32, i32>();
+  mf32[2.5 as f32] = 6;
+  if (mf32[2.5 as f32] != 6) { return 7; }
+
+  return 0;
+};
