@@ -184,8 +184,34 @@ an implements clause:
   need one.
 - **Extension classes for all primitives**, to rationalize how primitives
   declare and check the interfaces they implement (including `Hashable`) and
-  to hang utility methods off them. This would let the constraint-satisfaction
-  special case dissolve into ordinary nominal conformance.
+  to hang utility methods off them. Two things follow from Zena's
+  no-implicit-boxing rule:
+  - Extension classes on primitives are **erased — type aliases with
+    methods**. An extension class on `i32` *is* an `i32` at runtime (they are
+    already "indistinguishable" per the type-erasure rules), and its methods
+    compile to static calls that take the receiver by value. There is no
+    per-value vtable to hang dynamic dispatch off.
+  - Therefore `implements Hashable` on such a type grants **constraint
+    satisfaction, not assignability**. It makes the type usable where
+    `K extends Hashable` is required — monomorphization resolves
+    `key.hashCode()` to a direct call to the extension method, unboxed — but
+    `let h: Hashable = 42` remains a compile error. Converting a primitive to
+    an interface *value* requires representation change, so it must be an
+    explicit boxing step (e.g. a stdlib `Box<i32>` that itself implements
+    `Hashable` by delegation), never an implicit coercion.
+
+  This is Rust's model (traits on primitives are bounds first; trait objects
+  are an explicit, separate step) rather than Swift's (implicit existential
+  boxing via witness tables). It splits interface conformance into two
+  capabilities — satisfying constraints vs. being an interface-typed value —
+  and erased types simply only ever get the first. Today's hard-coded
+  constraint-satisfaction rule for primitives is exactly this semantics; once
+  extension classes land, it dissolves into stdlib declarations like
+  `extension class on i32 implements Hashable { hashCode(): i32 { return
+  this; } }`, and the `hash` intrinsic's primitive fast paths become an
+  optimization detail rather than language semantics. Distinct types over a
+  primitive would inherit conformance from their underlying type's extension
+  (as they do under today's rule).
 - Replacing the intrinsics with pure-Zena dispatch (this document's original
   proposal) still requires `is` on primitives plus monomorphization-aware
   DCE.
