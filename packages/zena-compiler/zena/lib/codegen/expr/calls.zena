@@ -5,7 +5,7 @@ import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16, valTypeToOpcode, valTypeEquals } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmSignature, ClassCodegenInfo } from '../wasm-module.zena';
-import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, getSpecializedFunctionKey, getTypeUniqueKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, getSpecializedFunctionKey, getSpecializedName, getTypeUniqueKey } from '../codegen-utils.zena';
 import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext, eraseTypeParameters, getExpressionType } from '../type-mapping.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
@@ -485,7 +485,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
                   for (let arg in methodTypeArgs as Array<Type>) {
                     resolvedArgsCall.push(substituteTypeParamsInFunctionContext(ctx.wasmFunction, arg));
                   }
-                  lookupName = getSpecializedFunctionKey(targetName, resolvedArgsCall) as String;
+                   lookupName = getSpecializedName(targetName, resolvedArgsCall);
                 }
               } else if (baseFt.overloads != null && ft != null) {
                 lookupName = targetName + getSignatureKey(ft as FunctionType);
@@ -518,7 +518,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           var debugInfo = "";
           let keys = ctx.wasm.classMethodMap.keys();
           while (let (true, k) = keys.next()) {
-            debugInfo = debugInfo + ", mapKey=" + (k as String);
+             debugInfo = debugInfo + ", mapKey=" + ((k.classKey as String) + "." + k.methodName);
           }
           throw new Error("Could not find static method: " + lookupName + " on class: " + ct.name + ", classKey=" + (getClassKey(ct) as String) + debugInfo);
         }

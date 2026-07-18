@@ -12,7 +12,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters } from '../type-mapping.zena';
 import { collectValueExports } from '../function-generator.zena';
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -109,7 +109,7 @@ export final class TypeLowerer implements TypeLowererInterface {
         var keyName = "";
         if (isSpecialized) {
           let specKey = getSpecializedFunctionKey(ft.functionSymbolName, resolvedArgs);
-          keyName = specKey as String;
+          keyName = getSpecializedName(ft.functionSymbolName, resolvedArgs);
           if (let (true, f) = this.pass.wasm.specializedFunctions.get(specKey)) {
             targetWasmFunc = f;
           }
@@ -138,7 +138,7 @@ export final class TypeLowerer implements TypeLowererInterface {
             }
             
             if (erasedTargetWasmFunc != null) {
-              visitor.registerWrapper(erasedSpecKey as String, erasedFt, erasedTargetWasmFunc as WasmFunction, model);
+              visitor.registerWrapper(getSpecializedName(ft.functionSymbolName, erasedArgs), erasedFt, erasedTargetWasmFunc as WasmFunction, model);
             }
           }
         }
@@ -764,7 +764,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     var keyName = "";
     if (isSpecialized) {
       let specKey = getSpecializedFunctionKey(ident.name, resolvedArgs);
-      keyName = specKey as String;
+      keyName = getSpecializedName(ident.name, resolvedArgs);
       if (let (true, f) = this.pass.wasm.specializedFunctions.get(specKey)) {
         targetWasmFunc = f;
       }
@@ -810,7 +810,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         }
         
         if (erasedTargetWasmFunc != null) {
-          this.registerWrapper(erasedSpecKey as String, erasedFt, erasedTargetWasmFunc as WasmFunction, model);
+          this.registerWrapper(getSpecializedName(ident.name, erasedArgs), erasedFt, erasedTargetWasmFunc as WasmFunction, model);
         }
       }
     }
@@ -865,7 +865,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     var keyName = "";
     if (isSpecialized) {
       let specKey = getSpecializedFunctionKey(ft.functionSymbolName, resolvedArgs);
-      keyName = specKey as String;
+      keyName = getSpecializedName(ft.functionSymbolName, resolvedArgs);
       if (let (true, f) = this.pass.wasm.specializedFunctions.get(specKey)) {
         targetWasmFunc = f;
       }
@@ -911,7 +911,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         }
         
         if (erasedTargetWasmFunc != null) {
-          this.registerWrapper(erasedSpecKey as String, erasedFt, erasedTargetWasmFunc as WasmFunction, model);
+          this.registerWrapper(getSpecializedName(ft.functionSymbolName, erasedArgs), erasedFt, erasedTargetWasmFunc as WasmFunction, model);
         }
       }
     }

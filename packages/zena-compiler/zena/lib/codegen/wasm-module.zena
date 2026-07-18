@@ -20,7 +20,6 @@ import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { ByteBuffer } from 'zena:byte-buffer';
 import { StringBuilder } from 'zena:string-builder';
-
 import { Program } from '../program.zena';
 
 import { 
@@ -30,6 +29,9 @@ import {
   SpecializedFunctionKey, getSpecializedFunctionKey, ClosureSpecializationKey, getClosureSpecializationKey,
   FunctionValueWrapperKey, getFunctionValueWrapperKey
 } from './codegen-utils.zena';
+
+@intrinsic('hash')
+declare function hash<T>(value: T): i32;
 
 export let sortWasmFields = (fields: Array<WasmField>): void => {
   let len = fields.length;
@@ -94,65 +96,129 @@ export final class WasmField {
  * (there is no pre-existing object to cache them on, unlike e.g. ClassKey
  * which is memoized on the ClassType).
  */
-distinct type SignatureKey = String;
-distinct type StructKey = String;
-distinct type ArrayKey = String;
+export final class SignatureKey implements Hashable {
+  params: Array<ValType>;
+  returns: Array<ValType>;
+  new(this.params, this.returns);
 
-/**
- * Appends an identity key for a ValType: the wasm opcode, plus the target
- * type's uid for concrete ref types. Mirrors valTypeEquals exactly.
- */
-let appendValTypeKey = (sb: StringBuilder, v: ValType): void => {
-  sb.appendI32(valTypeToOpcode(v));
-  match (v) {
-    case ValTypeRef as r: {
-      sb.appendByte(35); // '#'
-      sb.appendI32(r.target.uid);
+  hashCode(): i32 {
+    var h = 0;
+    for (let p in this.params) {
+      h = h ^ valTypeToOpcode(p);
+      h = h ^ match (p) {
+        case ValTypeRef as r: r.target.uid
+        case ValTypeRefNull as rn: rn.target.uid
+        case _: 0
+      };
     }
-    case ValTypeRefNull as rn: {
-      sb.appendByte(63); // '?'
-      sb.appendI32(rn.target.uid);
+    h = h ^ 12345;
+    for (let r in this.returns) {
+      h = h ^ valTypeToOpcode(r);
+      h = h ^ match (r) {
+        case ValTypeRef as tr: tr.target.uid
+        case ValTypeRefNull as trn: trn.target.uid
+        case _: 0
+      };
     }
-    case _: {}
+    return h;
   }
-  sb.appendByte(44); // ','
+
+  operator ==(other: SignatureKey): boolean {
+    if (this.params.length != other.params.length || this.returns.length != other.returns.length) {
+      return false;
+    }
+    for (var i = 0; i < this.params.length; i += 1) {
+      if (!valTypeEquals(this.params[i], other.params[i])) { return false; }
+    }
+    for (var j = 0; j < this.returns.length; j += 1) {
+      if (!valTypeEquals(this.returns[j], other.returns[j])) { return false; }
+    }
+    return true;
+  }
+}
+
+let stringEquals = (s1: String | null, s2: String | null): boolean => {
+  if (s1 == null) {
+    return s2 == null;
+  }
+  if (s2 == null) {
+    return false;
+  }
+  return s1 as String == s2 as String;
 };
 
+export final class StructKey implements Hashable {
+  name: String | null;
+  fields: Array<WasmField>;
+  new(this.name, this.fields);
+
+  hashCode(): i32 {
+    var h = if (this.name == null) 0 else hash(this.name as String);
+    for (let f in this.fields) {
+      if (f.name != null) {
+        h = h ^ hash(f.name as String);
+      }
+      h = h ^ valTypeToOpcode(f.type);
+      h = h ^ match (f.type) {
+        case ValTypeRef as r: r.target.uid
+        case ValTypeRefNull as rn: rn.target.uid
+        case _: 0
+      };
+      if (f.isMutable) {
+        h = h ^ 777;
+      }
+    }
+    return h;
+  }
+
+  operator ==(other: StructKey): boolean {
+    if (!stringEquals(this.name, other.name) || this.fields.length != other.fields.length) {
+      return false;
+    }
+    for (var i = 0; i < this.fields.length; i += 1) {
+      let f1 = this.fields[i];
+      let f2 = other.fields[i];
+      if (!stringEquals(f1.name, f2.name) || f1.isMutable != f2.isMutable || !valTypeEquals(f1.type, f2.type)) {
+        return false;
+      }
+    }
+    return true;
+  }
+}
+
+export final class ArrayKey implements Hashable {
+  elementType: ValType;
+  isMutable: boolean;
+  new(this.elementType, this.isMutable);
+
+  hashCode(): i32 {
+    var h = valTypeToOpcode(this.elementType);
+    h = h ^ match (this.elementType) {
+      case ValTypeRef as r: r.target.uid
+      case ValTypeRefNull as rn: rn.target.uid
+      case _: 0
+    };
+    if (this.isMutable) {
+      h = h ^ 999;
+    }
+    return h;
+  }
+
+  operator ==(other: ArrayKey): boolean {
+    return this.isMutable == other.isMutable && valTypeEquals(this.elementType, other.elementType);
+  }
+}
+
 let getSignatureKey = (params: Array<ValType>, returns: Array<ValType>): SignatureKey => {
-  let sb = new StringBuilder();
-  for (let p in params) {
-    appendValTypeKey(sb, p);
-  }
-  sb.appendByte(124); // '|'
-  for (let r in returns) {
-    appendValTypeKey(sb, r);
-  }
-  return sb.toString() as SignatureKey;
+  return new SignatureKey(params, returns);
 };
 
 let getStructKey = (name: String | null, fields: Array<WasmField>): StructKey => {
-  let sb = new StringBuilder();
-  if (name != null) {
-    sb.append(name);
-  }
-  sb.appendByte(10); // newline: separates name from fields
-  for (let f in fields) {
-    let fieldName = f.name;
-    if (fieldName != null) {
-      sb.append(fieldName);
-    }
-    sb.appendByte(if (f.isMutable) 109 else 99); // 'm' / 'c'
-    appendValTypeKey(sb, f.type);
-    sb.appendByte(10);
-  }
-  return sb.toString() as StructKey;
+  return new StructKey(name, fields);
 };
 
 let getArrayKey = (elementType: ValType, isMutable: boolean): ArrayKey => {
-  let sb = new StringBuilder();
-  sb.appendByte(if (isMutable) 109 else 99); // 'm' / 'c'
-  appendValTypeKey(sb, elementType);
-  return sb.toString() as ArrayKey;
+  return new ArrayKey(elementType, isMutable);
 };
 
 export final class WasmStruct extends WasmType {

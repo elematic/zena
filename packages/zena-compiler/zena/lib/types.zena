@@ -22,6 +22,9 @@ import { Expression, Statement } from './ast.zena';
 import { SymbolId } from './scope/symbol.zena';
 import { Hashable } from 'zena:hashable';
 
+@intrinsic('hash')
+declare function hash<T>(value: T): i32;
+
 export distinct type TypeId = i32;
 
 var _nextTypeUid: i32 = 1;
@@ -680,6 +683,27 @@ export let instantiateInterfaceType = (
   return result;
 };
 
+/**
+ * MixinKey serves as a mixin declaration key (uniquely identified by sourcePath
+ * and name) rather than a type key. While MixinType represents a specific type-parameterized
+ * instantiation (e.g. MyMixin<i32> vs MyMixin<String>), MixinKey is used during codegen layout
+ * and reachability analysis to identify the base mixin declaration itself, ensuring that
+ * mixin fields/methods are mixed in only once and RTA lookups find all target classes.
+ */
+export final class MixinKey implements Hashable {
+  sourcePath: String;
+  name: String;
+  new(this.sourcePath, this.name);
+
+  hashCode(): i32 {
+    return hash(this.sourcePath) ^ hash(this.name);
+  }
+
+  operator ==(other: MixinKey): boolean {
+    return this.sourcePath == other.sourcePath && this.name == other.name;
+  }
+}
+
 export final class MixinType extends Type {
   name: String;
   var typeParameters: Array<TypeParameterType> | null = null;
@@ -689,7 +713,7 @@ export final class MixinType extends Type {
   var genericSource: MixinType | null = null;
   var sourcePath: String = "";
   var mixins: Array<MixinType> = new Array<MixinType>();
-  var mixinKeyCache: String | null = null;
+  var mixinKeyCache: MixinKey | null = null;
   instantiations = new HashMap<String, MixinType>();
 
   new(name: String) : name = name, super();

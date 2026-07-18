@@ -5,7 +5,7 @@ import {
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, BooleanType, BoolLiteralType, 
   ByteArrayType, NullType, VoidType, ClassType, InterfaceType, ArrayType, RecordType, 
   TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
-  MixinType, instantiateClassType, TypeAliasType, AnyType, ErrorType, HoleType, NeverType, ThisType,
+  MixinType, MixinKey, instantiateClassType, TypeAliasType, AnyType, ErrorType, HoleType, NeverType, ThisType,
   AnyRefType, EqRefType, StringLiteralType, NumLiteralType, baseType
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -16,6 +16,12 @@ import { Array, FixedArray } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Program, CompilationUnit } from '../program.zena';
 import { console } from "zena:console";
+import { Hashable } from 'zena:hashable';
+
+export { MixinKey } from '../types.zena';
+
+@intrinsic('hash')
+declare function hash<T>(value: T): i32;
 
 // TODO: Add string comparison to the stdlib and use that instead.
 export let compareStrings = (a: String, b: String): i32 => {
@@ -62,18 +68,120 @@ export let getMemberRootClass = (ct: ClassType, memberName: String): ClassType =
 
 export distinct type ClassKey = String;
 export distinct type InterfaceKey = String;
-export distinct type ClassInterfaceKey = String;
-export distinct type InterfaceMemberKey = String;
 export distinct type CellKey = String;
 export distinct type ClosureKey = String;
 export distinct type ExportKey = String;
 export distinct type ExportGlobalKey = String;
-export distinct type MixinKey = String;
-export distinct type FunctionAdaptationKey = String;
-export distinct type ClassMethodKey = String;
-export distinct type SpecializedFunctionKey = String;
-export distinct type ClosureSpecializationKey = String;
-export distinct type FunctionValueWrapperKey = String;
+
+export final class ClassInterfaceKey implements Hashable {
+  classKey: ClassKey;
+  interfaceKey: InterfaceKey;
+  new(this.classKey, this.interfaceKey);
+
+  hashCode(): i32 {
+    return hash(this.classKey) ^ hash(this.interfaceKey);
+  }
+
+  operator ==(other: ClassInterfaceKey): boolean {
+    return this.classKey == other.classKey && this.interfaceKey == other.interfaceKey;
+  }
+}
+
+export final class InterfaceMemberKey implements Hashable {
+  interfaceKey: InterfaceKey;
+  memberName: String;
+  new(this.interfaceKey, this.memberName);
+
+  hashCode(): i32 {
+    return hash(this.interfaceKey) ^ hash(this.memberName);
+  }
+
+  operator ==(other: InterfaceMemberKey): boolean {
+    return this.interfaceKey == other.interfaceKey && this.memberName == other.memberName;
+  }
+}
+
+export final class ClassMethodKey implements Hashable {
+  classKey: ClassKey;
+  methodName: String;
+  new(this.classKey, this.methodName);
+
+  hashCode(): i32 {
+    return hash(this.classKey) ^ hash(this.methodName);
+  }
+
+  operator ==(other: ClassMethodKey): boolean {
+    return this.classKey == other.classKey && this.methodName == other.methodName;
+  }
+}
+
+export final class ClosureSpecializationKey implements Hashable {
+  closureId: NodeId;
+  classKey: ClassKey;
+  new(this.closureId, this.classKey);
+
+  hashCode(): i32 {
+    return (this.closureId as i32) ^ hash(this.classKey);
+  }
+
+  operator ==(other: ClosureSpecializationKey): boolean {
+    return this.closureId == other.closureId && this.classKey == other.classKey;
+  }
+}
+
+export final class FunctionAdaptationKey implements Hashable {
+  src: Type;
+  tgt: Type;
+  new(this.src, this.tgt);
+
+  hashCode(): i32 {
+    return hash(getTypeUniqueKey(this.src)) ^ hash(getTypeUniqueKey(this.tgt));
+  }
+
+  operator ==(other: FunctionAdaptationKey): boolean {
+    return getTypeUniqueKey(this.src) == getTypeUniqueKey(other.src) && getTypeUniqueKey(this.tgt) == getTypeUniqueKey(other.tgt);
+  }
+}
+
+export final class FunctionValueWrapperKey implements Hashable {
+  keyName: String;
+  signatureKey: String;
+  new(this.keyName, this.signatureKey);
+
+  hashCode(): i32 {
+    return hash(this.keyName) ^ hash(this.signatureKey);
+  }
+
+  operator ==(other: FunctionValueWrapperKey): boolean {
+    return this.keyName == other.keyName && this.signatureKey == other.signatureKey;
+  }
+}
+
+export final class SpecializedFunctionKey implements Hashable {
+  baseName: String;
+  typeArgs: Array<Type>;
+  new(this.baseName, this.typeArgs);
+
+  hashCode(): i32 {
+    var h = hash(this.baseName);
+    for (let arg in this.typeArgs) {
+      h = h ^ hash(getTypeKeyForSpecialization(arg));
+    }
+    return h;
+  }
+
+  operator ==(other: SpecializedFunctionKey): boolean {
+    if (this.baseName != other.baseName || this.typeArgs.length != other.typeArgs.length) {
+      return false;
+    }
+    for (var i = 0; i < this.typeArgs.length; i += 1) {
+      if (getTypeKeyForSpecialization(this.typeArgs[i]) != getTypeKeyForSpecialization(other.typeArgs[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+}
 
 export let typeContainsTypeParameter = (t: Type): boolean => {
   return match (t) {
@@ -426,13 +534,18 @@ export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
   return key;
 };
 
+/**
+ * Resolves or constructs the MixinKey for the generic mixin declaration.
+ * Note that this ignores any parameterized type arguments on the MixinType,
+ * since the layout and reachability caches care only about the base mixin declaration.
+ */
 export let getMixinKey = (mt: MixinType): MixinKey => {
   let cached = mt.mixinKeyCache;
   if (cached != null) {
     return cached as MixinKey;
   }
-  let key = `${mt.sourcePath}::${mt.name}` as MixinKey;
-  mt.mixinKeyCache = key as String;
+  let key = new MixinKey(mt.sourcePath, mt.name);
+  mt.mixinKeyCache = key;
   return key;
 };
 
@@ -445,11 +558,11 @@ export let getMixinKeyFromSymbol = (model: SemanticModel, sym: Symbol): MixinKey
 };
 
 export let getClassInterfaceKey = (classKey: ClassKey, interfaceKey: InterfaceKey): ClassInterfaceKey => {
-  return `${classKey as String}::${interfaceKey as String}` as ClassInterfaceKey;
+  return new ClassInterfaceKey(classKey, interfaceKey);
 };
 
 export let getInterfaceMemberKey = (interfaceKey: InterfaceKey, memberName: String): InterfaceMemberKey => {
-  return `${interfaceKey as String}::${memberName}` as InterfaceMemberKey;
+  return new InterfaceMemberKey(interfaceKey, memberName);
 };
 
 export let getClassPrivateFieldKey = (classKey: ClassKey, fieldName: String): String => {
@@ -935,23 +1048,23 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
 };
 
 export let getFunctionAdaptationKey = (src: Type, tgt: Type): FunctionAdaptationKey => {
-  return `${getTypeUniqueKey(src)}->${getTypeUniqueKey(tgt)}` as FunctionAdaptationKey;
+  return new FunctionAdaptationKey(src, tgt);
 };
 
 export let getClassMethodKey = (classKey: ClassKey, methodName: String): ClassMethodKey => {
-  return `${classKey as String}.${methodName}` as ClassMethodKey;
+  return new ClassMethodKey(classKey, methodName);
 };
 
 export let getSpecializedFunctionKey = (baseName: String, typeArgs: Array<Type>): SpecializedFunctionKey => {
-  return getSpecializedName(baseName, typeArgs) as SpecializedFunctionKey;
+  return new SpecializedFunctionKey(baseName, typeArgs);
 };
 
 export let getClosureSpecializationKey = (closureId: NodeId, classKey: ClassKey): ClosureSpecializationKey => {
-  return `${i32ToString(closureId as i32)}_${classKey as String}` as ClosureSpecializationKey;
+  return new ClosureSpecializationKey(closureId, classKey);
 };
 
 export let getFunctionValueWrapperKey = (keyName: String, ft: FunctionType): FunctionValueWrapperKey => {
-  return `${keyName}_wrapper_${getSignatureKey(ft)}` as FunctionValueWrapperKey;
+  return new FunctionValueWrapperKey(keyName, getSignatureKey(ft));
 };
 
 export let sortStringsByLengthDescending = (arr: Array<String>): void => {

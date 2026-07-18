@@ -11,7 +11,7 @@ import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, isConcrete, MixinKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature } from '../type-mapping.zena';
 
 /**
@@ -1360,7 +1360,7 @@ export final class Specializer implements SpecializerInterface {
     }
     
     let specKey = getSpecializedFunctionKey(originalName, typeArgs);
-    let specName = specKey as String;
+    let specName = getSpecializedName(originalName, typeArgs);
     if (this.pass.wasm.specializedFunctions.has(specKey)) {
       let func = this.pass.wasm.specializedFunctions[specKey];
       this.pass.markFunctionReached(func);
@@ -1400,7 +1400,7 @@ export final class Specializer implements SpecializerInterface {
   }
 
   instantiateGenericMethod(ct: ClassType, cd: Node | null, methName: String, methodNode: Node, typeArgs: Array<Type>, model: SemanticModel): WasmFunction {
-    let specKey = getSpecializedFunctionKey(methName, typeArgs) as String;
+    let specKey = getSpecializedName(methName, typeArgs);
     let registeredKey = getClassMethodKey(getClassKey(ct), specKey);
     if (this.pass.wasm.classMethodMap.has(registeredKey)) {
       return this.pass.wasm.classMethodMap[registeredKey];
