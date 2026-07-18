@@ -16,6 +16,23 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Compilers diverge on synthesized case-class hashCode overriding an explicit base hashCode
+
+- **Found**: 2026-07-18
+- **Severity**: low
+- **Workaround**: Don't rely on exact hashCode values for case-class leaves under a sealed base that declares its own hashCode; both compilers are internally consistent with the hash/eq contract.
+- **Details**: When a sealed base declares a concrete `hashCode()` and a case
+  leaf has case params, the bootstrap compiler synthesizes a structural
+  `hashCode()` on the leaf that overrides the base's, while the self-hosted
+  compiler keeps dispatching to the base implementation. See
+  `tests/language/execution/case-classes/sealed-base-hashcode-override.zena`
+  (which only asserts the shared behavior) and the bootstrap-only test in
+  `packages/compiler/src/test/codegen/case-class-hash_test.ts`. The language
+  should pick one semantic — arguably an explicitly declared (inherited)
+  hashCode should suppress synthesis. Relatedly, the self-hosted compiler
+  creates singleton case instances before module-level `var` initializers run,
+  so field initializers that read globals see their defaults.
+
 ### No syntax for constant byte arrays / data segments
 
 - **Found**: 2026-02-25

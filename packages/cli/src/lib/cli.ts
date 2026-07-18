@@ -325,7 +325,7 @@ const runCommand = async (
     }
     return 0;
   } catch (e: any) {
-    console.error('Run failed:', e.message);
+    console.error('Run failed:', e.stack ?? e);
     return 1;
   }
 };

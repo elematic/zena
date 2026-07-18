@@ -14,6 +14,10 @@
  * multi-byte UTF-8 sequences.
  */
 import {FixedArray} from 'zena:fixed-array';
+import {Hashable} from 'zena:hashable';
+
+@intrinsic('hash')
+declare function hash<T>(value: T): i32;
 
 export enum Encoding {
   WTF8,    // 0 - UTF-8 with unpaired surrogates allowed
@@ -42,7 +46,7 @@ export enum Encoding {
  * at code point boundaries. Use StringBuilder for efficient construction of
  * strings from parts.
  */
-export final class String {
+export final class String implements Hashable {
   // Internal storage - accessed by compiler intrinsics
   #data: ByteArray;    // Backing storage (may be shared with other Strings)
   #start: i32;         // Start offset into #data (inclusive)
@@ -399,6 +403,12 @@ export final class String {
     return this.#regionEquals(other, this.#start, other.#start, length);
   }
 
-  // String hash is implemented by the compiler in codegen/expressions.ts:
-  // - generateStringHashFunction: extracts #data, #start, #end, FNV-1a hash bytes
+  /**
+   * FNV-1a hash of the string's bytes, cached in #hashCode after the first
+   * computation. Delegates to the compiler's shared string hash helper
+   * (generateStringHashFunction), which reads and updates the cache field.
+   */
+  hashCode(): i32 {
+    return hash(this);
+  }
 }

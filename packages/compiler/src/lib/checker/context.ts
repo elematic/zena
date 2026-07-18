@@ -669,6 +669,7 @@ export class CheckerContext {
       [TypeNames.FixedArray, 'zena:fixed-array'],
       [TypeNames.HashMap, 'zena:map'],
       [TypeNames.Error, 'zena:error'],
+      [TypeNames.Hashable, 'zena:hashable'],
       [TypeNames.TemplateStringsArray, 'zena:template-strings-array'],
       [TypeNames.BoundedRange, 'zena:range'],
       [TypeNames.FromRange, 'zena:range'],

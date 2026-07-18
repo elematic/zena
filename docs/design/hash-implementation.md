@@ -131,3 +131,19 @@ Implementing `hash` in Zena is **feasible and desirable**, provided that the com
 1.  Implement `is` for primitives.
 2.  Ensure the optimizer runs on monomorphized function bodies to strip dead branches.
 3.  Move `hash` logic to `stdlib/hash.zena`.
+
+## Status (2026-07-18)
+
+Partially implemented, via a different route than proposed above:
+
+- `Hashable` (hashCode-only) lives in `zena:hashable`, and `HashMap`,
+  `HashSet`, and `OrderedMap` constrain their keys with `K extends Hashable`.
+- The `hash`/`eq` intrinsics remain the implementation mechanism, but they are
+  no longer exported from the stdlib — they are private declarations inside
+  `zena:map` and `zena:ordered-map`.
+- Both checkers special-case constraint satisfaction for types that cannot
+  nominally implement an interface: `i32`/`u32`/`boolean`, enums, distinct
+  types (by underlying type), and case classes. `String` implements
+  `Hashable` nominally, delegating `hashCode()` to the intrinsic.
+- Replacing the intrinsics with pure-Zena dispatch (this document's proposal)
+  still requires `is` on primitives plus monomorphization-aware DCE.

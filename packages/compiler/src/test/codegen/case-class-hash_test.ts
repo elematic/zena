@@ -91,4 +91,29 @@ suite('Case class hashCode', () => {
     `);
     assert.equal(result, 99);
   });
+
+  test('synthesized hashCode overriding a sealed base hashCode', async () => {
+    // Regression: the synthesized leaf hashCode overrides a base-class
+    // hashCode, so its vtable slot types 'this' as the base struct. The
+    // synthesized body must read fields through the downcast 'this' local
+    // or the module fails wasm validation.
+    const result = await compileAndRun(`
+      sealed class Ty implements Hashable {
+        hashCode(): i32 {
+          return -1;
+        }
+
+        case IntTy
+        case PairTy(a: i32, b: i32)
+      }
+
+      export let main = (): boolean => {
+        let t2: Ty = new PairTy(3, 4);
+        let t3: Ty = new PairTy(3, 4);
+        // The leaf's synthesized hashCode is structural.
+        return t2.hashCode() == t3.hashCode() && t2.hashCode() == 3 * 31 + 4;
+      };
+    `);
+    assert.equal(result, 1);
+  });
 });

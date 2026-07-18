@@ -7211,8 +7211,11 @@ function generateCaseClassEqBody(
     const fieldInfo = classInfo.fields.get(propName);
     if (!fieldInfo) continue; // eliminated by DCE
 
-    // this.field
-    body.push(Opcode.local_get, 0); // this
+    // this.field. Use thisLocalIndex, not param 0: when this method
+    // overrides a superclass ==, param 0 is typed as the superclass struct
+    // and the preamble downcasts it into a separate local.
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
     body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
@@ -7281,8 +7284,11 @@ function generateCaseClassHashBody(
       body.push(Opcode.i32_mul);
     }
 
-    // Get this.field
-    body.push(Opcode.local_get, 0); // this
+    // Get this.field. Use thisLocalIndex, not param 0: when this method
+    // overrides a superclass hashCode, param 0 is typed as the superclass
+    // struct and the preamble downcasts it into a separate local.
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
     body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));

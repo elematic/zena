@@ -292,6 +292,7 @@ export const TypeNames = {
   HashMap: 'HashMap',
   TemplateStringsArray: 'TemplateStringsArray',
   Error: 'Error',
+  Hashable: 'Hashable',
   BoundedRange: 'BoundedRange',
   FromRange: 'FromRange',
   ToRange: 'ToRange',

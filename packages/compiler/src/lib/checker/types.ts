@@ -1207,7 +1207,10 @@ export function validateTypeArgumentConstraints(
       }
 
       // Check if the type argument (or its constraint) is assignable to the constraint
-      if (!isAssignableTo(ctx, effectiveArg, substitutedConstraint)) {
+      if (
+        !isAssignableTo(ctx, effectiveArg, substitutedConstraint) &&
+        !satisfiesHashableConstraint(ctx, effectiveArg, substitutedConstraint)
+      ) {
         ctx.diagnostics.reportError(
           `Type '${typeToString(arg)}' does not satisfy constraint '${typeToString(substitutedConstraint)}' for type parameter '${param.name}'.`,
           DiagnosticCode.TypeMismatch,
@@ -1215,6 +1218,71 @@ export function validateTypeArgumentConstraints(
       }
     }
   }
+}
+
+/**
+ * Special satisfaction rule for the well-known `Hashable` interface
+ * (zena:hashable). Types that cannot nominally implement an interface still
+ * hash correctly via the `hash`/`eq` intrinsics, so they satisfy a Hashable
+ * constraint:
+ *
+ * - i32-representable primitives (i32, u32, boolean), which hash to their own
+ *   value. Wider numerics (i64, f64, ...) are excluded — the hash intrinsic
+ *   does not support them, so rejecting them keeps the failure at compile time.
+ * - Enums and distinct type aliases, judged by their underlying type.
+ * - Case classes, whose hashCode()/operator == are compiler-generated.
+ */
+function satisfiesHashableConstraint(
+  ctx: CheckerContext,
+  arg: Type,
+  constraint: Type,
+): boolean {
+  if (constraint.kind !== TypeKind.Interface) {
+    return false;
+  }
+  if ((constraint as InterfaceType).name !== TypeNames.Hashable) {
+    return false;
+  }
+  // Nominal identity check: the constraint must be the stdlib's Hashable, not
+  // a user-defined interface that happens to share the name.
+  const wellKnown = ctx.getWellKnownType(TypeNames.Hashable);
+  if (wellKnown !== constraint) {
+    return false;
+  }
+
+  // Unwrap type aliases (including distinct types and enums).
+  let t = arg;
+  while (t.kind === TypeKind.TypeAlias) {
+    t = (t as TypeAliasType).target;
+  }
+
+  // A distinct type over a nominally-Hashable type (e.g. distinct T = String)
+  // is hashable via its underlying type.
+  if (t !== arg && isAssignableTo(ctx, t, constraint)) {
+    return true;
+  }
+
+  if (t.kind === TypeKind.Boolean) {
+    return true;
+  }
+  if (t.kind === TypeKind.Number) {
+    const name = (t as NumberType).name;
+    return name === TypeNames.I32 || name === TypeNames.U32;
+  }
+  // Enum member types: i32-backed enums unwrap to number literals, string
+  // enums to string literals. Both hash by value via the intrinsics.
+  if (t.kind === TypeKind.Literal) {
+    return true;
+  }
+  if (t.kind === TypeKind.Union) {
+    return (t as UnionType).types.every((member) =>
+      satisfiesHashableConstraint(ctx, member, constraint),
+    );
+  }
+  if (t.kind === TypeKind.Class) {
+    return !!(t as ClassType).isCaseClass;
+  }
+  return false;
 }
 
 export function instantiateGenericClass(

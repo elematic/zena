@@ -2321,7 +2321,20 @@ let applyAndCheckTypeArguments = (
     let param = typeParams[j];
     if (param.constraint != null) {
       let expectedConstraint = substituteTypeParams(typeParams, typeArgs, param.constraint as Type);
-      if (!isAssignableTo(ctx, typeArgs[j], expectedConstraint)) {
+
+      // If the argument is itself a type parameter with a constraint, check
+      // whether its constraint satisfies the required constraint (e.g.
+      // `class HashMap<K extends Hashable> implements Map<K, V>`).
+      var effectiveArg = typeArgs[j];
+      if (effectiveArg is TypeParameterType) {
+        let argParam = effectiveArg as TypeParameterType;
+        if (argParam.constraint != null) {
+          effectiveArg = argParam.constraint as Type;
+        }
+      }
+
+      if (!isAssignableTo(ctx, effectiveArg, expectedConstraint) &&
+          !satisfiesHashableConstraint(ctx, effectiveArg, expectedConstraint)) {
         ctx.error(
           "Type '" + typeToString(typeArgs[j]) + "' does not satisfy constraint '" +
             typeToString(expectedConstraint) + "' for type parameter '" + param.name + "'.",
@@ -2330,6 +2343,65 @@ let applyAndCheckTypeArguments = (
         );
       }
     }
+  }
+};
+
+/**
+ * Special satisfaction rule for the well-known `Hashable` interface
+ * (zena:hashable). Types that cannot nominally implement an interface still
+ * hash correctly via the `hash`/`eq` intrinsics, so they satisfy a Hashable
+ * constraint:
+ *
+ * - i32-representable primitives (i32, u32, boolean), which hash to their own
+ *   value. Wider numerics (i64, f64, ...) are excluded — the hash intrinsic
+ *   does not support them, so rejecting them keeps the failure at compile time.
+ * - Enums and distinct type aliases, judged by their underlying type.
+ * - Case classes, whose hashCode()/operator == are compiler-generated.
+ */
+let satisfiesHashableConstraint = (
+  ctx: CheckerContext,
+  arg: Type,
+  constraint: Type
+): boolean => {
+  if (!(constraint is InterfaceType)) {
+    return false;
+  }
+  let iface = constraint as InterfaceType;
+  if (iface.name != "Hashable" || iface.sourcePath != "zena:hashable") {
+    return false;
+  }
+
+  // Unwrap type aliases (including distinct types and enums).
+  var t = arg;
+  while (t is TypeAliasType) {
+    t = (t as TypeAliasType).target;
+  }
+
+  // A distinct type over a nominally-Hashable type (e.g. distinct T = String)
+  // is hashable via its underlying type.
+  if (t !== arg && isAssignableTo(ctx, t, constraint)) {
+    return true;
+  }
+
+  match (t) {
+    case I32Type: { return true; }
+    case U32Type: { return true; }
+    case BooleanType: { return true; }
+    // Enum member types: i32-backed enums unwrap to number literals, string
+    // enums to string literals. Both hash by value via the intrinsics.
+    case BoolLiteralType: { return true; }
+    case NumLiteralType: { return true; }
+    case StringLiteralType: { return true; }
+    case UnionT as ut: {
+      for (let member in ut.types) {
+        if (!satisfiesHashableConstraint(ctx, member, constraint)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case ClassType as ct: { return ct.isCaseClass; }
+    case _: { return false; }
   }
 };
 

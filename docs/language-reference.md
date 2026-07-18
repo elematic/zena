@@ -3161,10 +3161,48 @@ The behavior depends on the type `T`:
 
 - **Primitives (`i32`, `boolean`)**: Returns the value itself (or 1/0 for
   boolean).
-- **Strings**: Computes the FNV-1a hash of the string bytes.
+- **Strings**: Computes the FNV-1a hash of the string bytes (cached on the
+  string after the first computation).
 - **Classes**:
   - If the class implements a `hashCode(): i32` method, it is called.
   - Otherwise, returns 0 (fallback).
+
+The `hash` and `eq` intrinsics are implementation details of the hash-based
+collections; they are not exported from the standard library. User code should
+rely on the `Hashable` interface and the `==` operator instead.
+
+### The `Hashable` Interface
+
+Hash-based collections constrain their key types to the `Hashable` interface
+from `zena:hashable`:
+
+```zena
+export interface Hashable {
+  hashCode(): i32;
+}
+
+// In zena:map and zena:set:
+class HashMap<K extends Hashable, V> { ... }
+class HashSet<T extends Hashable> { ... }
+class OrderedMap<K extends Hashable, V> { ... }
+```
+
+The contract: if two values are equal (per the `eq` intrinsic's semantics — a
+virtual call to `operator ==` when the class defines one, reference equality
+otherwise), they must return the same `hashCode()`. A class that uses
+reference equality should return an identity hash (e.g. a per-instance
+counter assigned at construction).
+
+Classes must declare `implements Hashable` explicitly (interface conformance
+is nominal). In addition, the following types satisfy a `Hashable` constraint
+without a declaration, because the intrinsics hash them by value:
+
+- **`i32`, `u32`, and `boolean`** (wider numerics like `i64` and `f64` are
+  rejected — the hash intrinsic does not support them).
+- **Enums** and **distinct types**, judged by their underlying type.
+- **Case classes**, whose `hashCode()` and `operator ==` are
+  compiler-generated.
+- **`String`**, which implements `Hashable` in the standard library.
 
 ### Pure Accessor Decorator (`@pure`)
 

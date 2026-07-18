@@ -1,0 +1,37 @@
+// @mode: run
+// @result: true
+// Regression test: a sealed base can declare a concrete hashCode() while its
+// case-class leaves synthesize their own. The generated module must validate
+// and dispatch through base-typed references without trapping — the leaf's
+// synthesized body must read fields through the downcast 'this' local, since
+// the vtable slot types 'this' as the base class.
+//
+// Note: the two compilers currently differ on whether a leaf's synthesized
+// structural hashCode overrides an explicit base hashCode, so this test only
+// asserts hashes are stable per instance, not their exact values.
+
+var nextUid = 1;
+let getUid = (): i32 => {
+  let id = nextUid;
+  nextUid += 1;
+  return id;
+};
+
+sealed class Ty implements Hashable {
+  uid: i32 = getUid();
+
+  hashCode(): i32 {
+    return this.uid;
+  }
+
+  case IntTy
+  case PairTy(a: i32, b: i32)
+}
+
+export let main = (): boolean => {
+  let t1: Ty = new IntTy();
+  let t2: Ty = new PairTy(3, 4);
+  let a = t1.hashCode();
+  let b = t2.hashCode();
+  return a == t1.hashCode() && b == t2.hashCode();
+};

@@ -2,10 +2,20 @@ import { FixedArray } from 'zena:fixed-array';
 import { KeyNotFoundError } from 'zena:error';
 import { Option, some, none } from 'zena:option';
 import { Iterable, Iterator } from 'zena:iterator';
-import { Hashable, hash, equals } from 'zena:hashable';
+import { Hashable } from 'zena:hashable';
 import { IterableUtils } from 'zena:iterable-utils';
 
 export * from 'zena:hashable';
+
+// Private implementation details: these intrinsics dispatch on the
+// monomorphized key type — primitives hash/compare by value, Strings by
+// content, and classes via hashCode()/operator ==. Keys are constrained to
+// Hashable so class keys are guaranteed to provide a real hashCode.
+@intrinsic('hash')
+declare function hash<T>(value: T): i32;
+
+@intrinsic('eq')
+declare function equals<T>(a: T, b: T): boolean;
 
 symbol entryNext;
 
@@ -46,7 +56,7 @@ export final class MapEntry<K, V> {
  * way to check for a key and get its value, returning an inline tuple of
  * (value, found) with zero allocations.
  */
-export interface Map<K, V> extends Iterable<MapEntry<K, V>> {
+export interface Map<K extends Hashable, V> extends Iterable<MapEntry<K, V>> {
   size: i32 { get; }
   operator [](key: K): V;
   operator []=(key: K, value: V): void;
@@ -118,7 +128,7 @@ final class HashMapKeyIterator<K, V> implements Iterator<K> {
   }
 }
 
-export final class HashMap<K, V> with IterableUtils<MapEntry<K, V>> implements Map<K, V> {
+export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> implements Map<K, V> {
   var #buckets: FixedArray<MapEntry<K, V> | null>;
   var #size = 0;
 

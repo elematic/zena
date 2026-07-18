@@ -1737,7 +1737,10 @@ let copy = arr[1..4].copy();  // Independent copy
 
 ### Map
 
-`Map<K, V>` is a hash map. Keys must implement equality and hashing.
+`Map<K, V>` is a hash map. Keys must satisfy the `Hashable` interface
+(`hashCode(): i32`): primitives (`i32`, `u32`, `boolean`), `String`, enums,
+distinct types, and case classes satisfy it automatically; other classes must
+declare `implements Hashable` and define `hashCode()`.
 
 Maps can be created using literal syntax with `=>`:
 

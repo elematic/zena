@@ -20,12 +20,31 @@ import { StringBuilder } from 'zena:string-builder';
 
 import { Expression, Statement } from './ast.zena';
 import { SymbolId } from './scope/symbol.zena';
+import { Hashable } from 'zena:hashable';
 
 export distinct type TypeId = i32;
 
-export sealed class Type {
+var _nextTypeUid: i32 = 1;
+let nextTypeUid = (): i32 => {
+  let id = _nextTypeUid;
+  _nextTypeUid += 1;
+  return id;
+};
+
+export sealed class Type implements Hashable {
   var uniqueKeyCache: String | null = null;
   var specializationKeyCache: String | null = null;
+
+  /** Process-unique id for identity hashing (type identity is equality). */
+  uid: i32 = nextTypeUid();
+
+  /**
+   * Identity hash. Without this, HashMap/HashSet keyed by Type fall back to a
+   * constant hash and degenerate into linear scans.
+   */
+  hashCode(): i32 {
+    return this.uid;
+  }
 
   // Numeric primitives
   case I32Type
