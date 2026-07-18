@@ -1,0 +1,274 @@
+import { Memory, defaultAllocator } from 'zena:memory';
+import { console } from 'zena:console';
+import { HashMap } from 'zena:map';
+import { String } from 'zena:string';
+import { i32ToString } from 'zena:string-convert';
+import { getArguments } from 'zena:cli';
+import { FixedArray } from 'zena:fixed-array';
+import { Hashable, hash, equals } from 'zena:hashable';
+import { Array } from 'zena:array';
+
+@external("wasi_snapshot_preview1", "clock_time_get")
+declare function __wasi_clock_time_get(
+  clockId: i32,
+  precision: i64,
+  timePtr: i32
+): i32;
+
+let getMonotonicTimeMs = (): f64 => {
+  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
+    // Clock ID 1 is CLOCK_MONOTONIC. Precision 1ns.
+    let res = __wasi_clock_time_get(1, 1 as i64, addr);
+    if (res == 0) {
+      let ns = Memory.default.getI64(addr);
+      defaultAllocator.free(addr);
+      return (ns as f64) / 1000000.0;
+    }
+    defaultAllocator.free(addr);
+  }
+  return 0.0;
+};
+
+let formatFloat = (n: f64): String => {
+  let total = n;
+  let integerPart = total as i32;
+  let fractionPart = ((total - (integerPart as f64)) * 100.0) as i32;
+  let fractionPartAbs = if (fractionPart < 0) -fractionPart else fractionPart;
+  let fracStr = if (fractionPartAbs < 10) "0" + i32ToString(fractionPartAbs) else i32ToString(fractionPartAbs);
+  return i32ToString(integerPart) + "." + fracStr;
+};
+
+let runTest = (name: String, testFunc: () => void, filter: String): void => {
+  if (filter.length > 0 && !name.contains(filter)) {
+    return;
+  }
+  let start = getMonotonicTimeMs();
+  testFunc();
+  let end = getMonotonicTimeMs();
+  console.log(name + ": " + formatFloat(end - start) + " ms");
+};
+
+final class CustomKey2 {
+  a: String;
+  b: String;
+  new(this.a, this.b);
+
+  hashCode(): i32 {
+    return hash(this.a) ^ hash(this.b);
+  }
+
+  operator ==(other: CustomKey2): boolean {
+    return this.a == other.a && this.b == other.b;
+  }
+}
+
+final class CustomKey3 {
+  a: String;
+  b: String;
+  c: String;
+  new(this.a, this.b, this.c);
+
+  hashCode(): i32 {
+    return hash(this.a) ^ hash(this.b) ^ hash(this.c);
+  }
+
+  operator ==(other: CustomKey3): boolean {
+    return this.a == other.a && this.b == other.b && this.c == other.c;
+  }
+}
+
+final class CaseKey2(a: String, b: String)
+final class CaseKey3(a: String, b: String, c: String)
+
+export let main = (): i32 => {
+  let args = getArguments();
+  var filter = "";
+  if (args.length > 1) {
+    filter = args[1];
+  }
+
+  console.log("==============================================");
+  console.log("Running Zena Map Key Benchmarks (Wasm GC)...");
+  if (filter.length > 0) {
+    console.log("Filter: " + filter);
+  }
+  console.log("==============================================");
+
+  let classNames = new Array<String>();
+  let interfaceNames = new Array<String>();
+  let memberNames = new Array<String>();
+
+  for (var i = 0; i < 100; i += 1) {
+    classNames.push("Class" + i32ToString(i));
+    interfaceNames.push("Interface" + i32ToString(i));
+    memberNames.push("member" + i32ToString(i));
+  }
+
+  // 1. MapStringKey2
+  runTest("MapStringKey2 (N=100,000)", () => {
+    let map = new HashMap<String, i32>();
+    
+    // Insert 10,000 keys
+    for (var i = 0; i < 100; i += 1) {
+      let cName = classNames[i];
+      for (var j = 0; j < 100; j += 1) {
+        let key = cName + "::" + interfaceNames[j];
+        map[key] = i * 100 + j;
+      }
+    }
+    
+    // Look up 100,000 keys on the fly
+    var sum = 0;
+    for (var k = 0; k < 100000; k += 1) {
+      let key = classNames[k % 100] + "::" + interfaceNames[((k / 100) as i32) % 100];
+      if (map.has(key)) {
+        sum = sum + map[key];
+      }
+    }
+    if (sum != 499950000) {
+      console.log("Error in sum: " + i32ToString(sum));
+    }
+  }, filter);
+
+  // 2. MapCustomKey2
+  runTest("MapCustomKey2 (N=100,000)", () => {
+    let map = new HashMap<CustomKey2, i32>();
+    
+    // Insert 10,000 keys
+    for (var i = 0; i < 100; i += 1) {
+      let cName = classNames[i];
+      for (var j = 0; j < 100; j += 1) {
+        let key = new CustomKey2(cName, interfaceNames[j]);
+        map[key] = i * 100 + j;
+      }
+    }
+    
+    // Look up 100,000 keys on the fly
+    var sum = 0;
+    for (var k = 0; k < 100000; k += 1) {
+      let key = new CustomKey2(classNames[k % 100], interfaceNames[((k / 100) as i32) % 100]);
+      if (map.has(key)) {
+        sum = sum + map[key];
+      }
+    }
+    if (sum != 499950000) {
+      console.log("Error in sum: " + i32ToString(sum));
+    }
+  }, filter);
+
+  // 3. MapCaseKey2
+  runTest("MapCaseKey2 (N=100,000)", () => {
+    let map = new HashMap<CaseKey2, i32>();
+    
+    // Insert 10,000 keys
+    for (var i = 0; i < 100; i += 1) {
+      let cName = classNames[i];
+      for (var j = 0; j < 100; j += 1) {
+        let key = new CaseKey2(cName, interfaceNames[j]);
+        map[key] = i * 100 + j;
+      }
+    }
+    
+    // Look up 100,000 keys on the fly
+    var sum = 0;
+    for (var k = 0; k < 100000; k += 1) {
+      let key = new CaseKey2(classNames[k % 100], interfaceNames[((k / 100) as i32) % 100]);
+      if (map.has(key)) {
+        sum = sum + map[key];
+      }
+    }
+    if (sum != 499950000) {
+      console.log("Error in sum: " + i32ToString(sum));
+    }
+  }, filter);
+
+  // 4. MapStringKey3
+  runTest("MapStringKey3 (N=80,000)", () => {
+    let map = new HashMap<String, i32>();
+    
+    // Insert 8,000 keys
+    for (var i = 0; i < 20; i += 1) {
+      let cName = classNames[i];
+      for (var j = 0; j < 20; j += 1) {
+        let iName = interfaceNames[j];
+        for (var l = 0; l < 20; l += 1) {
+          let key = cName + "::" + iName + "_" + memberNames[l];
+          map[key] = i * 400 + j * 20 + l;
+        }
+      }
+    }
+    
+    // Look up 80,000 keys on the fly
+    var sum = 0;
+    for (var k = 0; k < 80000; k += 1) {
+      let key = classNames[k % 20] + "::" + interfaceNames[((k / 20) as i32) % 20] + "_" + memberNames[((k / 400) as i32) % 20];
+      if (map.has(key)) {
+        sum = sum + map[key];
+      }
+    }
+    if (sum != 319960000) {
+      console.log("Error in sum: " + i32ToString(sum));
+    }
+  }, filter);
+
+  // 5. MapCustomKey3
+  runTest("MapCustomKey3 (N=80,000)", () => {
+    let map = new HashMap<CustomKey3, i32>();
+    
+    // Insert 8,000 keys
+    for (var i = 0; i < 20; i += 1) {
+      let cName = classNames[i];
+      for (var j = 0; j < 20; j += 1) {
+        let iName = interfaceNames[j];
+        for (var l = 0; l < 20; l += 1) {
+          let key = new CustomKey3(cName, iName, memberNames[l]);
+          map[key] = i * 400 + j * 20 + l;
+        }
+      }
+    }
+    
+    // Look up 80,000 keys on the fly
+    var sum = 0;
+    for (var k = 0; k < 80000; k += 1) {
+      let key = new CustomKey3(classNames[k % 20], interfaceNames[((k / 20) as i32) % 20], memberNames[((k / 400) as i32) % 20]);
+      if (map.has(key)) {
+        sum = sum + map[key];
+      }
+    }
+    if (sum != 319960000) {
+      console.log("Error in sum: " + i32ToString(sum));
+    }
+  }, filter);
+
+  // 6. MapCaseKey3
+  runTest("MapCaseKey3 (N=80,000)", () => {
+    let map = new HashMap<CaseKey3, i32>();
+    
+    // Insert 8,000 keys
+    for (var i = 0; i < 20; i += 1) {
+      let cName = classNames[i];
+      for (var j = 0; j < 20; j += 1) {
+        let iName = interfaceNames[j];
+        for (var l = 0; l < 20; l += 1) {
+          let key = new CaseKey3(cName, iName, memberNames[l]);
+          map[key] = i * 400 + j * 20 + l;
+        }
+      }
+    }
+    
+    // Look up 80,000 keys on the fly
+    var sum = 0;
+    for (var k = 0; k < 80000; k += 1) {
+      let key = new CaseKey3(classNames[k % 20], interfaceNames[((k / 20) as i32) % 20], memberNames[((k / 400) as i32) % 20]);
+      if (map.has(key)) {
+        sum = sum + map[key];
+      }
+    }
+    if (sum != 319960000) {
+      console.log("Error in sum: " + i32ToString(sum));
+    }
+  }, filter);
+
+  console.log("----------------------------------------------");
+  return 0;
+};

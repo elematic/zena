@@ -18,6 +18,7 @@ let iterations = 5;
 let runCompiler = false;
 let runStrings = false;
 let runBasic = false;
+let runMapKeys = false;
 let filter = '';
 
 const args = process.argv.slice(2);
@@ -35,16 +36,19 @@ for (let i = 0; i < args.length; i++) {
     runStrings = true;
   } else if (arg === '--basic') {
     runBasic = true;
+  } else if (arg === '--map-keys') {
+    runMapKeys = true;
   } else if (arg === '--filter' || arg === '-f') {
     filter = args[i + 1] || '';
     i++;
   }
 }
 
-if (!runCompiler && !runStrings && !runBasic) {
+if (!runCompiler && !runStrings && !runBasic && !runMapKeys) {
   runCompiler = true;
   runStrings = true;
   runBasic = true;
+  runMapKeys = true;
 }
 
 const ITERATIONS = iterations;
@@ -986,6 +990,199 @@ if (runBasic) {
     }
   } else {
     console.log('\nNo matching basic benchmarks were run.');
+  }
+  console.log('\n--------------------------------------------------\n');
+}
+
+if (runMapKeys) {
+  // --- Map Key Execution Benchmarks ---
+  console.log('==================================================');
+  console.log('Running Map Key Micro-Benchmark Suite (Execution)');
+  if (filter) {
+    console.log(`Filter: ${filter}`);
+  }
+  console.log('==================================================\n');
+
+  const mapKeyBenchSrc = join(benchmarksDir, 'map_key_bench.zena');
+  const mapKeyBenchWasm = join(outDir, 'map_key_bench.wasm');
+  const mapKeyBenchNode = join(
+    pkgDir,
+    'src',
+    'scripts',
+    'map-key-bench-node.js',
+  );
+
+  console.log('Compiling map_key_bench.zena...');
+  try {
+    execSync(
+      `node "${bootstrapCli}" build "${mapKeyBenchSrc}" --target wasi -o "${mapKeyBenchWasm}"`,
+      {cwd: repoRoot, stdio: 'pipe'},
+    );
+    console.log('Compilation successful.');
+  } catch (e) {
+    console.error('Failed to compile map_key_bench.zena:', e);
+    process.exit(1);
+  }
+
+  console.log('\nRunning Zena (wasmtime via zena-cli) benchmark...');
+  let zenaOut = '';
+  try {
+    const wasmFilterArg = filter ? ` -- "${filter}"` : '';
+    zenaOut = execSync(
+      `"${zenaCli}" run "${mapKeyBenchWasm}"${wasmFilterArg}`,
+      {cwd: repoRoot, encoding: 'utf-8', stdio: 'pipe'},
+    );
+  } catch (e) {
+    console.error('Failed to run Zena benchmark:', e);
+  }
+
+  console.log('Running Zena (Node.js WASI) benchmark...');
+  let zenaNodeOut = '';
+  try {
+    const wasmFilterArg = filter ? ` "${filter}"` : '';
+    zenaNodeOut = execSync(
+      `node --experimental-wasi-unstable-preview1 "${runWasiNode}" "${mapKeyBenchWasm}"${wasmFilterArg}`,
+      {cwd: repoRoot, encoding: 'utf-8', stdio: 'pipe'},
+    );
+  } catch (e) {
+    console.error('Failed to run Zena Node.js benchmark:', e);
+  }
+
+  console.log('Running Node.js (V8 JS) benchmark...');
+  let nodeOut = '';
+  try {
+    const nodeFilterArg = filter ? ` "${filter}"` : '';
+    nodeOut = execSync(`node "${mapKeyBenchNode}"${nodeFilterArg}`, {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+  } catch (e) {
+    console.error('Failed to run Node.js benchmark:', e);
+  }
+
+  // Parse timing data
+  const parseTimes = (output: string) => {
+    const map = new Map<string, number>();
+    const lines = output.split('\n');
+    for (const line of lines) {
+      if (line.includes(':') && line.includes('ms')) {
+        const parts = line.split(':');
+        const name = parts[0].trim();
+        const time = parseFloat(parts[1].replace('ms', '').trim());
+        if (name && !isNaN(time)) {
+          map.set(name, time);
+        }
+      }
+    }
+    return map;
+  };
+
+  const zenaTimes = parseTimes(zenaOut);
+  const zenaNodeTimes = parseTimes(zenaNodeOut);
+  const nodeTimes = parseTimes(nodeOut);
+
+  // Display table
+  if (zenaTimes.size > 0 || zenaNodeTimes.size > 0 || nodeTimes.size > 0) {
+    console.log('\nMap Key Micro-Benchmark Comparison:');
+    const colWidths = [42, 17, 17, 16, 15, 15];
+    const formatRow = (cells: string[]) => {
+      return (
+        '│ ' +
+        cells
+          .map((cell, i) => {
+            if (i === 0) {
+              return cell.padEnd(colWidths[i]);
+            } else {
+              return cell.padStart(colWidths[i]);
+            }
+          })
+          .join(' │ ') +
+        ' │'
+      );
+    };
+    const makeSeparator = (left: string, mid: string, right: string) => {
+      return left + colWidths.map((w) => '─'.repeat(w + 2)).join(mid) + right;
+    };
+
+    const categories = [
+      {
+        title: '2-Part Compound Keys (N=100,000)',
+        cases: [
+          {key: 'MapStringKey2 (N=100,000)', name: 'String key (concat)'},
+          {key: 'MapCustomKey2 (N=100,000)', name: 'CustomKey class'},
+          {key: 'MapCaseKey2 (N=100,000)', name: 'CaseKey class'},
+        ],
+      },
+      {
+        title: '3-Part Compound Keys (N=80,000)',
+        cases: [
+          {key: 'MapStringKey3 (N=80,000)', name: 'String key (concat)'},
+          {key: 'MapCustomKey3 (N=80,000)', name: 'CustomKey class'},
+          {key: 'MapCaseKey3 (N=80,000)', name: 'CaseKey class'},
+        ],
+      },
+    ];
+
+    for (const cat of categories) {
+      // Check if any case in this category was run
+      const matchingCases = cat.cases.filter(
+        (c) => zenaTimes.has(c.key) || nodeTimes.has(c.key),
+      );
+      if (matchingCases.length === 0) {
+        continue;
+      }
+
+      console.log(`\nCategory: ${cat.title}`);
+      console.log(makeSeparator('┌', '┬', '┐'));
+      console.log(
+        formatRow([
+          'Test Case',
+          'Zena (Wasmtime)',
+          'Zena (Node)',
+          'JS (Node)',
+          'Ratio (Wt/JS)',
+          'Ratio (Node/JS)',
+        ]),
+      );
+      console.log(makeSeparator('├', '┼', '┤'));
+
+      for (const c of cat.cases) {
+        const zenaTime = zenaTimes.get(c.key);
+        const zenaNodeTime = zenaNodeTimes.get(c.key);
+        const nodeTime = nodeTimes.get(c.key);
+
+        const zenaTimeStr =
+          zenaTime !== undefined ? `${zenaTime.toFixed(2)} ms` : 'N/A';
+        const zenaNodeTimeStr =
+          zenaNodeTime !== undefined ? `${zenaNodeTime.toFixed(2)} ms` : 'N/A';
+        const nodeTimeStr =
+          nodeTime !== undefined ? `${nodeTime.toFixed(2)} ms` : 'N/A';
+
+        const wtRatio =
+          zenaTime !== undefined && nodeTime !== undefined
+            ? `${(zenaTime / nodeTime).toFixed(2)}x`
+            : 'N/A';
+        const nodeRatio =
+          zenaNodeTime !== undefined && nodeTime !== undefined
+            ? `${(zenaNodeTime / nodeTime).toFixed(2)}x`
+            : 'N/A';
+
+        console.log(
+          formatRow([
+            c.name,
+            zenaTimeStr,
+            zenaNodeTimeStr,
+            nodeTimeStr,
+            wtRatio,
+            nodeRatio,
+          ]),
+        );
+      }
+      console.log(makeSeparator('└', '┴', '┘'));
+    }
+  } else {
+    console.log('\nNo matching map key benchmarks were run.');
   }
   console.log('\n--------------------------------------------------\n');
 }
