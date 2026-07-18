@@ -2002,11 +2002,17 @@ export function decodeTypeIndex(type: number[]): number {
   if (type.length < 2) return -1;
   let typeIndex = 0;
   let shift = 0;
+  let lastByte = 0;
   for (let i = 1; i < type.length; i++) {
     const byte = type[i];
+    lastByte = byte;
     typeIndex |= (byte & 0x7f) << shift;
     shift += 7;
     if ((byte & 0x80) === 0) break;
+  }
+  // Sign extend if it's a negative LEB128 number
+  if (shift < 32 && (lastByte & 0x40) !== 0) {
+    typeIndex |= ~0 << shift;
   }
   return typeIndex;
 }
@@ -3111,11 +3117,6 @@ export function registerClassMethods(
         }
 
         if (!isOverride) {
-          if (decl.name.name === 'String') {
-            console.log(
-              `addType for String.${methodName}: params=${JSON.stringify(params)}, results=${JSON.stringify(results)}`,
-            );
-          }
           typeIndex = ctx.module.addType(params, results);
         }
       }
@@ -4140,11 +4141,6 @@ export function generateClassMethods(
           !(methodName === CONSTRUCTOR_NAME && hasImmutableFields(classInfo));
         const paramTypeIndex = hasThisParam ? i + 1 : i;
         const paramType = methodInfo.paramTypes[paramTypeIndex];
-        if (classInfo.name === 'String') {
-          console.log(
-            `defineParam for String.${methodName}: paramName=${param.name.name}, paramType=${JSON.stringify(paramType)}`,
-          );
-        }
         ctx.defineParam(param.name.name, paramType, param);
       }
 

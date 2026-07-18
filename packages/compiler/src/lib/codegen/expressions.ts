@@ -11165,7 +11165,10 @@ function generateHashCodeInvocation(
     // Stack: [this]
 
     // 1. Tee 'this' for vtable lookup
-    const tempThis = ctx.declareLocal('$$temp_hash_this', valueType);
+    const tempThis = ctx.declareLocal(
+      '$$temp_hash_this',
+      methodInfo.paramTypes[0],
+    );
     body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
 
     // 2. Load VTable
@@ -11173,9 +11176,7 @@ function generateHashCodeInvocation(
       0xfb,
       GcOpcode.struct_get,
       ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-      ...WasmModule.encodeSignedLEB128(
-        classInfo.fields.get('__vtable')!.index,
-      ),
+      ...WasmModule.encodeSignedLEB128(classInfo.fields.get('__vtable')!.index),
     );
 
     // Cast VTable
@@ -11252,9 +11253,9 @@ function generateEqInvocation(
   }
 
   // Dynamic dispatch. Stack: [a, b]
-  const tempB = ctx.declareLocal('$$eq_field_b', valueType);
+  const tempB = ctx.declareLocal('$$eq_field_b', methodInfo.paramTypes[1]);
   body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempB));
-  const tempA = ctx.declareLocal('$$eq_field_a', valueType);
+  const tempA = ctx.declareLocal('$$eq_field_a', methodInfo.paramTypes[0]);
   body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempA));
 
   // Load vtable from `a`
@@ -11376,8 +11377,14 @@ export function generateStackValuesEq(
       body.push(Opcode.if, ValType.i32);
       body.push(Opcode.i32_const, 0);
       body.push(Opcode.else);
+      const expectedType =
+        valueType[0] === ValType.ref_null
+          ? [ValType.ref, ...valueType.slice(1)]
+          : valueType;
       body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(fa));
+      adaptResultType(ctx, localType, expectedType, body);
       body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(fb));
+      adaptResultType(ctx, localType, expectedType, body);
       eqCall(body);
       body.push(Opcode.end);
       body.push(Opcode.end);
@@ -11459,7 +11466,12 @@ export function generateStackValueHash(
       body.push(Opcode.if, ValType.i32);
       body.push(Opcode.i32_const, 0);
       body.push(Opcode.else);
+      const expectedType =
+        valueType[0] === ValType.ref_null
+          ? [ValType.ref, ...valueType.slice(1)]
+          : valueType;
       body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tmp));
+      adaptResultType(ctx, localType, expectedType, body);
       hashRef(body);
       body.push(Opcode.end);
       return;
