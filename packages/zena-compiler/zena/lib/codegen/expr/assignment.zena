@@ -6,8 +6,9 @@ import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
 import { WasmFunction, WasmArray, WasmStruct, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
-import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getNodeType } from '../type-mapping.zena';
+import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getNodeType, typeToValTypeWithSub } from '../type-mapping.zena';
 import { ValTypeRefNull, ValTypeRef, ValType } from '../wasm.zena';
+import { castValTypeRefNullIfNeeded } from './calls.zena';
 
 let isArrayType = (t: Type): boolean => {
   return match (t) {
@@ -663,16 +664,35 @@ export let generateAssignmentExpression = (
             tempLocal = ctx.allocLocal(valType);
           }
 
+          let objType = getNodeType(ctx, indexExpr.object) as Type;
+          let objWasmType = typeToValTypeWithSub(ctx.wasm, objType, ctx.wasmFunction);
+          let indexType = getNodeType(ctx, indexExpr.index) as Type;
+          let indexWasmType = typeToValTypeWithSub(ctx.wasm, indexType, ctx.wasmFunction);
+          let valueType = getNodeType(ctx, assign.value) as Type;
+          let valueWasmType = typeToValTypeWithSub(ctx.wasm, valueType, ctx.wasmFunction);
+
           if (ct.isExtension) {
             genExpr(indexExpr.object, false);
+            castValTypeRefNullIfNeeded(ctx, objWasmType, f.signature.params[0]);
+            
             genExpr(indexExpr.index, false);
+            castValTypeRefNullIfNeeded(ctx, indexWasmType, f.signature.params[1]);
+            
             genExpr(assign.value, false);
+            castValTypeRefNullIfNeeded(ctx, valueWasmType, f.signature.params[2]);
+            
             if (!discardValue) {
               ctx.emitter.emitLocalTee(tempLocal);
+              let localValType = match (valType) {
+                case ValTypeRef as r: new ValTypeRefNull(r.target) as ValType
+                case _: valType
+              };
+              castValTypeRefNullIfNeeded(ctx, localValType, f.signature.params[2]);
             }
             ctx.emitter.emitCall(f);
             if (!discardValue) {
               ctx.emitter.emitLocalGet(tempLocal);
+              castValTypeRefNullIfNeeded(ctx, valType, valType); // wait, not needed but keep simple
             }
             return;
           } else {
@@ -704,13 +724,23 @@ export let generateAssignmentExpression = (
             }
             
             genExpr(indexExpr.object, false);
+            castValTypeRefNullIfNeeded(ctx, objWasmType, f.signature.params[0]);
             var scratchLocal = ctx.getStructScratchLocal(structInfo);
             ctx.emitter.emitLocalTee(scratchLocal);
             
             genExpr(indexExpr.index, false);
+            castValTypeRefNullIfNeeded(ctx, indexWasmType, f.signature.params[1]);
+            
             genExpr(assign.value, false);
+            castValTypeRefNullIfNeeded(ctx, valueWasmType, f.signature.params[2]);
+            
             if (!discardValue) {
               ctx.emitter.emitLocalTee(tempLocal);
+              let localValType = match (valType) {
+                case ValTypeRef as r: new ValTypeRefNull(r.target) as ValType
+                case _: valType
+              };
+              castValTypeRefNullIfNeeded(ctx, localValType, f.signature.params[2]);
             }
             
             ctx.emitter.emitLocalGet(scratchLocal);

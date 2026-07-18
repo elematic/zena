@@ -7,15 +7,15 @@ suite('self-referential non-generic classes', () => {
     const source = `
 class Node {
   value: i32;
-  child: Node;
+  child: Node | null;
   
-  new(value: i32, child: Node) : value = value, child = child {}
+  new(value: i32, child: Node | null) : value = value, child = child {}
 }
 
 export let main = () => {
-  let leaf = new Node(1, null as Node);
+  let leaf = new Node(1, null);
   let parent = new Node(2, leaf);
-  return parent.child.value;
+  return (parent.child as Node).value;
 };
 `;
     const result = await compileAndRun(source);
@@ -26,16 +26,18 @@ export let main = () => {
     const source = `
 class ListNode {
   value: i32;
-  var next: ListNode;
+  var next: ListNode | null;
   
-  new(value: i32, next: ListNode) : value = value, next = next {}
+  new(value: i32, next: ListNode | null) : value = value, next = next {}
 }
 
 export let main = () => {
-  let n3 = new ListNode(30, null as ListNode);
+  let n3 = new ListNode(30, null);
   let n2 = new ListNode(20, n3);
   let n1 = new ListNode(10, n2);
-  return n1.next.next.value;
+  let next1 = n1.next as ListNode;
+  let next2 = next1.next as ListNode;
+  return next2.value;
 };
 `;
     const result = await compileAndRun(source);

@@ -10,6 +10,7 @@ import {
   type Identifier,
   type SymbolPropertyName,
   type InlineTupleTypeAnnotation,
+  type BlockStatement,
 } from '../ast.js';
 import {
   Decorators,
@@ -34,6 +35,34 @@ import {
 } from '../types.js';
 import {getGetterName, getSetterName, getSignatureKey} from '../names.js';
 import {WasmModule} from '../emitter.js';
+
+function substituteParameters(
+  expr: Expression,
+  paramMap: Map<string, Expression>,
+): Expression {
+  if (expr.type === NodeType.Identifier) {
+    const id = expr as Identifier;
+    if (paramMap.has(id.name)) {
+      return paramMap.get(id.name)!;
+    }
+  }
+  const clone = {...expr} as any;
+  for (const key of Object.keys(clone)) {
+    const val = clone[key];
+    if (val && typeof val === 'object') {
+      if (Array.isArray(val)) {
+        clone[key] = val.map((item) =>
+          item && (item as any).type !== undefined
+            ? substituteParameters(item as Expression, paramMap)
+            : item,
+        );
+      } else if ((val as any).type !== undefined) {
+        clone[key] = substituteParameters(val as Expression, paramMap);
+      }
+    }
+  }
+  return clone;
+}
 
 /**
  * Extracts the name from a TypeAnnotation.
@@ -72,13 +101,7 @@ export function getSymbolMemberName(symbolType: SymbolType): string {
  * Skips vtable and brand fields which are internal.
  */
 export function hasImmutableFields(classInfo: ClassInfo): boolean {
-  for (const [name, info] of classInfo.fields) {
-    // Skip internal fields
-    if (name === '__vtable' || name.startsWith('__brand_')) continue;
-    // mutable === false means immutable (let field)
-    if (info.mutable === false) return true;
-  }
-  return false;
+  return !classInfo.isExtension;
 }
 
 /**
@@ -147,6 +170,7 @@ import {
   boxPrimitive,
   unboxPrimitive,
   getBoxClassInfo,
+  generateAdaptedArgument,
 } from './expressions.js';
 import {
   generateBlockStatement,
@@ -194,6 +218,14 @@ export function generateDefaultValue(
     case ValType.eqref:
       body.push(Opcode.ref_null);
       body.push(HeapType.eq);
+      break;
+    case ValType.anyref:
+      body.push(Opcode.ref_null);
+      body.push(HeapType.any);
+      break;
+    case ValType.externref:
+      body.push(Opcode.ref_null);
+      body.push(HeapType.extern);
       break;
     default:
       throw new Error(
@@ -253,8 +285,12 @@ export function generateSuperCall(
   body.push(Opcode.local_get, 0);
 
   // Generate arguments
-  for (const arg of args) {
-    generateExpression(ctx, arg, body);
+  const params = ctx.module.getFunctionTypeParams(
+    ctx.module.getFunctionTypeIndex(methodInfo.index),
+  );
+  // params[0] is 'this'
+  for (let i = 0; i < args.length; i++) {
+    generateAdaptedArgument(ctx, args[i], params[i + 1], body);
   }
 
   // Static call to superclass constructor
@@ -816,19 +852,14 @@ export function defineInterfaceMethods(
         } else if (erasedReturnType.kind === TypeKind.Union) {
           // Check if it's a union of inline tuples
           const unionType = erasedReturnType as UnionType;
-          let foundTuple = false;
-          for (const t of unionType.types) {
-            if (t.kind === TypeKind.InlineTuple) {
-              const tupleType = t as InlineTupleType;
-              for (const el of tupleType.elementTypes) {
-                results.push(mapCheckerTypeToWasmType(ctx, el));
-              }
-              returnType = results.length > 0 ? results[0] : [];
-              foundTuple = true;
-              break;
-            }
-          }
-          if (!foundTuple) {
+          const tupleResults = mapUnionOfInlineTuplesToWasmResults(
+            ctx,
+            unionType,
+          );
+          if (tupleResults) {
+            results.push(...tupleResults);
+            returnType = results.length > 0 ? results[0] : [];
+          } else {
             const mapped = mapCheckerTypeToWasmType(ctx, erasedReturnType);
             if (mapped.length > 0) {
               results.push(mapped);
@@ -1004,7 +1035,9 @@ function adaptReference(body: number[], source: number[], target: number[]) {
     target.length > 1 &&
     (target[0] === ValType.ref || target[0] === ValType.ref_null)
   ) {
-    body.push(0xfb, GcOpcode.ref_cast_null);
+    const castOp =
+      target[0] === ValType.ref ? GcOpcode.ref_cast : GcOpcode.ref_cast_null;
+    body.push(0xfb, castOp);
     body.push(...target.slice(1));
   } else if (
     target.length === 1 &&
@@ -1137,6 +1170,12 @@ export function generateTrampoline(
     Opcode.local_get,
     ...WasmModule.encodeSignedLEB128(castedThisLocal),
   );
+  if (
+    classMethod.paramTypes[0] &&
+    classMethod.paramTypes[0][0] === ValType.ref
+  ) {
+    body.push(Opcode.ref_as_non_null);
+  }
 
   const interfaceParams = ctx.module.getFunctionTypeParams(typeIndex);
   const interfaceResults = ctx.module.getFunctionTypeResults(typeIndex);
@@ -2400,7 +2439,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
   // Use the brand type that was pre-generated in preRegisterClassStruct
   const brandTypeIndex = classInfo.brandTypeIndex!;
-  const brandFieldName = `__brand_${decl.name.name}`;
+  const brandFieldName = `__brand_${decl.name.name}_${brandTypeIndex}`;
   fields.set(brandFieldName, {
     index: fieldIndex++,
     type: [ValType.ref_null, ...WasmModule.encodeSignedLEB128(brandTypeIndex)],
@@ -2417,6 +2456,10 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const memberName = getMemberName(member.name);
+
+      if (member.isStatic) {
+        continue;
+      }
 
       // Abstract fields have no storage — skip struct allocation
       if (member.isAbstract) {
@@ -2460,7 +2503,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
         }
 
         // Check if field is immutable (let modifier)
-        const isMutable = member.mutability !== 'let';
+        const isMutable = member.mutability === 'var';
         fields.set(fieldName, {
           index: fieldIndex++,
           type: wasmType,
@@ -2735,11 +2778,20 @@ export function registerClassMethods(
           },
         });
       }
+      const hasSuperCtor = !!(
+        classType.superType && classType.superType.constructorType
+      );
       members.push({
         type: NodeType.MethodDefinition,
         name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
         params: synthParams,
         body: {type: NodeType.BlockStatement, body: bodyStmts},
+        superInitializer: hasSuperCtor
+          ? {
+              type: NodeType.SuperInitializer,
+              arguments: superInitArgs,
+            }
+          : undefined,
         isFinal: false,
         isAbstract: false,
         isStatic: false,
@@ -2930,17 +2982,13 @@ export function registerClassMethods(
         } else if (returnType.kind === TypeKind.Union) {
           // Check if it's a union of inline tuples
           const unionType = returnType as UnionType;
-          for (const t of unionType.types) {
-            if (t.kind === TypeKind.InlineTuple) {
-              const tupleType = t as InlineTupleType;
-              results = tupleType.elementTypes.map((el) =>
-                mapCheckerTypeToWasmType(ctx, el),
-              );
-              break;
-            }
-          }
-          // If not a union of tuples, fall back to regular handling
-          if (results.length === 0) {
+          const tupleResults = mapUnionOfInlineTuplesToWasmResults(
+            ctx,
+            unionType,
+          );
+          if (tupleResults) {
+            results = tupleResults;
+          } else {
             const mapped = mapCheckerTypeToWasmType(ctx, returnType);
             if (mapped.length > 0) results = [mapped];
           }
@@ -3055,6 +3103,11 @@ export function registerClassMethods(
         }
 
         if (!isOverride) {
+          if (decl.name.name === 'String') {
+            console.log(
+              `addType for String.${methodName}: params=${JSON.stringify(params)}, results=${JSON.stringify(results)}`,
+            );
+          }
           typeIndex = ctx.module.addType(params, results);
         }
       }
@@ -3439,7 +3492,7 @@ export function registerClassMethods(
         });
 
         // Setter (if mutable - skip for `let` fields which are immutable)
-        const isImmutableField = member.mutability === 'let';
+        const isImmutableField = member.mutability !== 'var';
         if (!member.isFinal && !isImmutableField) {
           const setterName = getSetterName(propName);
           // Method-level DCE: only add to vtable if setter is used
@@ -3677,9 +3730,12 @@ export function registerClassMethods(
 
   if (ctx.shouldExport(decl) && !decl.isExtension) {
     const ctorInfo = methods.get(CONSTRUCTOR_NAME)!;
+    const classHasImmutableFields = hasImmutableFields(classInfo);
 
     // Wrapper signature: params -> (ref null struct)
-    const params = ctorInfo.paramTypes.slice(1); // Skip 'this'
+    const params = classHasImmutableFields
+      ? ctorInfo.paramTypes
+      : ctorInfo.paramTypes.slice(1); // Skip 'this' if present
     const results = [
       [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
     ];
@@ -3698,41 +3754,50 @@ export function registerClassMethods(
       // Params are locals 0..N-1, so start nextLocalIndex after them
       ctx.pushFunctionScope(params.length);
 
-      // 1. Allocate
-      body.push(0xfb, GcOpcode.struct_new_default);
-      body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
-
-      // 2. Store in temp
-      const tempLocal = ctx.declareLocal('$$export_new', results[0]);
-      body.push(Opcode.local_tee);
-      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-
-      // 3. Init VTable (if needed)
-      if (classInfo.vtableGlobalIndex !== undefined) {
-        body.push(Opcode.global_get);
-        body.push(
-          ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
-        );
-        body.push(0xfb, GcOpcode.struct_set);
+      if (classHasImmutableFields) {
+        // Just call the constructor directly with all parameters
+        for (let i = 0; i < params.length; i++) {
+          body.push(Opcode.local_get, i);
+        }
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+      } else {
+        // 1. Allocate
+        body.push(0xfb, GcOpcode.struct_new_default);
         body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
-        body.push(...WasmModule.encodeSignedLEB128(0));
 
+        // 2. Store in temp
+        const tempLocal = ctx.declareLocal('$$export_new', results[0]);
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+        // 3. Init VTable (if needed)
+        if (classInfo.vtableGlobalIndex !== undefined) {
+          body.push(Opcode.global_get);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
+          );
+          body.push(0xfb, GcOpcode.struct_set);
+          body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+          body.push(...WasmModule.encodeSignedLEB128(0));
+
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+        }
+
+        // 4. Load args
+        for (let i = 0; i < params.length; i++) {
+          body.push(Opcode.local_get, i);
+        }
+
+        // 5. Call constructor
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+
+        // 6. Return
         body.push(Opcode.local_get);
         body.push(...WasmModule.encodeSignedLEB128(tempLocal));
       }
-
-      // 4. Load args
-      for (let i = 0; i < params.length; i++) {
-        body.push(Opcode.local_get, i);
-      }
-
-      // 5. Call constructor
-      body.push(Opcode.call);
-      body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
-
-      // 6. Return
-      body.push(Opcode.local_get);
-      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
 
       body.push(Opcode.end);
 
@@ -3749,7 +3814,8 @@ export function registerClassMethods(
   } as ClassDeclaration;
 
   // Pass the checker type for identity-based lookup (classType is already declared at function top)
-  const capturedModule = ctx.currentModule ?? ctx.stmtToModule.get(decl) ?? null;
+  const capturedModule =
+    ctx.currentModule ?? ctx.stmtToModule.get(decl) ?? null;
   ctx.bodyGenerators.push(() => {
     const savedModule = ctx.currentModule;
     ctx.currentModule = capturedModule;
@@ -3888,11 +3954,20 @@ export function generateClassMethods(
           },
         });
       }
+      const hasSuperCtor = !!(
+        lookupType.superType && lookupType.superType.constructorType
+      );
       members.push({
         type: NodeType.MethodDefinition,
         name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
         params: synthParams,
         body: {type: NodeType.BlockStatement, body: bodyStmts},
+        superInitializer: hasSuperCtor
+          ? {
+              type: NodeType.SuperInitializer,
+              arguments: superInitArgs,
+            }
+          : undefined,
         isFinal: false,
         isAbstract: false,
         isStatic: false,
@@ -4056,6 +4131,11 @@ export function generateClassMethods(
           !(methodName === CONSTRUCTOR_NAME && hasImmutableFields(classInfo));
         const paramTypeIndex = hasThisParam ? i + 1 : i;
         const paramType = methodInfo.paramTypes[paramTypeIndex];
+        if (classInfo.name === 'String') {
+          console.log(
+            `defineParam for String.${methodName}: paramName=${param.name.name}, paramType=${JSON.stringify(paramType)}`,
+          );
+        }
         ctx.defineParam(param.name.name, paramType, param);
       }
 
@@ -4156,12 +4236,29 @@ export function generateClassMethods(
           // Build field value expressions: fieldIndex -> Expression|null
           const fieldValues = new Map<
             number,
-            {expr: Expression | null; name: string}
+            {expr: Expression | null; name: string; decl: ClassDeclaration}
           >();
 
-          // Collect inline initializers and mixin field initializers from the class hierarchy
+          // Collect inline initializers and mixin field initializers from the class hierarchy,
+          // keeping track of the constructor chain and parameter mappings for substitution.
           let currentDecl: ClassDeclaration | undefined = decl;
+          let currentCtor: MethodDefinition | undefined = member;
+          let currentParamMap = new Map<string, Expression>();
+          const ctorBodies: {
+            body: BlockStatement;
+            paramMap: Map<string, Expression>;
+          }[] = [];
+
           while (currentDecl) {
+            if (
+              currentCtor?.body &&
+              currentCtor.body.type === NodeType.BlockStatement
+            ) {
+              ctorBodies.unshift({
+                body: currentCtor.body,
+                paramMap: new Map(currentParamMap),
+              });
+            }
             // Collect inline initializers from field definitions
             for (const m of currentDecl.body) {
               if (m.type === NodeType.FieldDefinition && !m.isStatic) {
@@ -4173,14 +4270,50 @@ export function generateClassMethods(
                 );
                 const fieldInfo = classInfo.fields.get(fieldName);
                 if (fieldInfo) {
+                  const existing = fieldValues.get(fieldInfo.index);
+                  if (existing && existing.decl !== currentDecl) {
+                    continue;
+                  }
+                  let exprVal = (m as any).value || null;
+                  if (exprVal && currentParamMap.size > 0) {
+                    exprVal = substituteParameters(exprVal, currentParamMap);
+                  }
                   fieldValues.set(fieldInfo.index, {
-                    expr: (m as any).value || null,
+                    expr: exprVal,
                     name: fieldName,
+                    decl: currentDecl,
                   });
                 }
               }
             }
 
+            // Override/set with initializer list values of the current constructor
+            if (currentCtor?.initializerList) {
+              for (const init of currentCtor.initializerList) {
+                const memberName = init.field.name;
+                const fieldName = manglePrivateName(
+                  (currentDecl.inferredType as ClassType) ||
+                    currentDecl.name.name,
+                  memberName,
+                );
+                const fieldInfo = classInfo.fields.get(fieldName);
+                if (fieldInfo) {
+                  const existing = fieldValues.get(fieldInfo.index);
+                  if (existing && existing.decl !== currentDecl) {
+                    continue;
+                  }
+                  let exprVal = init.value;
+                  if (exprVal && currentParamMap.size > 0) {
+                    exprVal = substituteParameters(exprVal, currentParamMap);
+                  }
+                  fieldValues.set(fieldInfo.index, {
+                    expr: exprVal,
+                    name: fieldName,
+                    decl: currentDecl,
+                  });
+                }
+              }
+            }
             // Also collect mixin field initializers
             if (currentDecl.mixins && currentDecl.mixins.length > 0) {
               let baseName = 'Object';
@@ -4225,9 +4358,21 @@ export function generateClassMethods(
                     );
                     const fieldInfo = classInfo.fields.get(fieldName);
                     if (fieldInfo) {
+                      const existing = fieldValues.get(fieldInfo.index);
+                      if (existing && existing.decl !== currentDecl) {
+                        continue;
+                      }
+                      let exprVal = (m as any).value;
+                      if (exprVal && currentParamMap.size > 0) {
+                        exprVal = substituteParameters(
+                          exprVal,
+                          currentParamMap,
+                        );
+                      }
                       fieldValues.set(fieldInfo.index, {
-                        expr: (m as any).value,
+                        expr: exprVal,
                         name: fieldName,
+                        decl: currentDecl,
                       });
                     }
                   }
@@ -4236,32 +4381,47 @@ export function generateClassMethods(
               }
             }
 
+            // Move up constructor chain and update param mapping before moving to superclass
             if (currentDecl.superClass) {
               const baseName =
                 (currentDecl.superClass as any).type === NodeType.TypeAnnotation
                   ? getTypeAnnotationName(currentDecl.superClass as any)
                   : (currentDecl.superClass as any).name;
-              currentDecl = ctx.findClassDeclaration(baseName);
+              const superDecl = ctx.findClassDeclaration(baseName);
+              if (superDecl) {
+                const superCtor = superDecl.body.find(
+                  (m) =>
+                    m.type === NodeType.MethodDefinition &&
+                    getMemberName(m.name) === CONSTRUCTOR_NAME,
+                ) as MethodDefinition | undefined;
+
+                if (currentCtor?.superInitializer && superCtor) {
+                  const newParamMap = new Map<string, Expression>();
+                  const superParams = superCtor.params;
+                  const superArgs = currentCtor.superInitializer.arguments;
+                  for (
+                    let i = 0;
+                    i < superParams.length && i < superArgs.length;
+                    i++
+                  ) {
+                    let argExpr = superArgs[i];
+                    if (currentParamMap.size > 0) {
+                      argExpr = substituteParameters(argExpr, currentParamMap);
+                    }
+                    newParamMap.set(superParams[i].name.name, argExpr);
+                  }
+                  currentCtor = superCtor;
+                  currentParamMap = newParamMap;
+                } else {
+                  currentCtor = undefined;
+                  currentParamMap = new Map();
+                }
+                currentDecl = superDecl;
+              } else {
+                currentDecl = undefined;
+              }
             } else {
               currentDecl = undefined;
-            }
-          }
-
-          // Override with initializer list values (they take precedence)
-          if (member.initializerList) {
-            for (const init of member.initializerList) {
-              const memberName = init.field.name;
-              const fieldName = manglePrivateName(
-                (decl.inferredType as ClassType) || decl.name.name,
-                memberName,
-              );
-              const fieldInfo = classInfo.fields.get(fieldName);
-              if (fieldInfo) {
-                fieldValues.set(fieldInfo.index, {
-                  expr: init.value,
-                  name: fieldName,
-                });
-              }
             }
           }
 
@@ -4285,43 +4445,70 @@ export function generateClassMethods(
             (a, b) => a[1].index - b[1].index,
           );
 
+          // Declare local variables for fields to support self-referential initializers (e.g. this.field)
+          const fieldLocals = new Map<number, number>();
           for (const [name, info] of sortedFields) {
-            // Handle internal fields specially
+            const caseParamIdx = caseParamLocals.get(name);
+            if (caseParamIdx !== undefined) {
+              ctx.activeConstructionLocals.set(info.index, caseParamIdx);
+              continue;
+            }
+
+            let localType = info.type;
+            if (localType[0] === ValType.ref) {
+              localType = [ValType.ref_null, ...localType.slice(1)];
+            }
+            const localIndex = ctx.declareLocal(`$$field_${name}`, localType);
+            fieldLocals.set(info.index, localIndex);
+            ctx.activeConstructionLocals.set(info.index, localIndex);
+          }
+
+          // Evaluate each field and store in its construction local variable
+          for (const [name, info] of sortedFields) {
+            const caseParamIdx = caseParamLocals.get(name);
+            if (caseParamIdx !== undefined) {
+              continue;
+            }
+
             if (name === '__vtable') {
-              // Push vtable global reference
               if (classInfo.vtableGlobalIndex !== undefined) {
                 body.push(Opcode.global_get);
                 body.push(
                   ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
                 );
               } else {
-                // No vtable - push null eqref
                 body.push(Opcode.ref_null);
                 body.push(HeapType.eq);
               }
-              continue;
-            }
-            if (name.startsWith('__brand_')) {
-              // Brand field - push null of the correct brand type from field info
+            } else if (name.startsWith('__brand_')) {
               generateDefaultValue(ctx, info.type, body);
-              continue;
+            } else {
+              const valueInfo = fieldValues.get(info.index);
+              if (valueInfo?.expr) {
+                generateExpression(ctx, valueInfo.expr, body);
+              } else {
+                generateDefaultValue(ctx, info.type, body);
+              }
             }
 
-            // Case class param field - emit local.get directly
+            const localIndex = fieldLocals.get(info.index)!;
+            body.push(Opcode.local_set);
+            body.push(...WasmModule.encodeSignedLEB128(localIndex));
+          }
+
+          // Push all field values back onto the stack in index order
+          for (const [name, info] of sortedFields) {
             const caseParamIdx = caseParamLocals.get(name);
             if (caseParamIdx !== undefined) {
               body.push(Opcode.local_get);
               body.push(...WasmModule.encodeSignedLEB128(caseParamIdx));
-              continue;
-            }
-
-            // Regular field - use initializer list, inline default, or zero/null
-            const valueInfo = fieldValues.get(info.index);
-            if (valueInfo?.expr) {
-              generateExpression(ctx, valueInfo.expr, body);
             } else {
-              // Generate default value based on type
-              generateDefaultValue(ctx, info.type, body);
+              const localIndex = fieldLocals.get(info.index)!;
+              body.push(Opcode.local_get);
+              body.push(...WasmModule.encodeSignedLEB128(localIndex));
+              if (info.type[0] === ValType.ref) {
+                body.push(Opcode.ref_as_non_null);
+              }
             }
           }
 
@@ -4330,6 +4517,8 @@ export function generateClassMethods(
           body.push(
             ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
           );
+
+          ctx.activeConstructionLocals.clear();
 
           // Store in 'this' local (use ref_null type since locals must be defaultable)
           const thisType = [
@@ -4341,9 +4530,16 @@ export function generateClassMethods(
           body.push(Opcode.local_set);
           body.push(...WasmModule.encodeSignedLEB128(thisLocal));
 
-          // Execute constructor body (if any)
-          if (member.body && member.body.type === NodeType.BlockStatement) {
-            generateBlockStatement(ctx, member.body, body);
+          // Execute all constructor bodies in hierarchy order (Base first, then Derived)
+          for (const {body: ctorBody, paramMap} of ctorBodies) {
+            let resolvedBody = ctorBody;
+            if (paramMap.size > 0) {
+              resolvedBody = substituteParameters(
+                ctorBody as any,
+                paramMap,
+              ) as any as BlockStatement;
+            }
+            generateBlockStatement(ctx, resolvedBody, body);
           }
 
           // Return the created instance (cast to non-null since struct_new never returns null)
@@ -4701,6 +4897,12 @@ export function generateClassMethods(
           // Return 'this'
           body.push(Opcode.local_get);
           body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
+          if (
+            methodInfo.returnType &&
+            methodInfo.returnType[0] === ValType.ref
+          ) {
+            body.push(Opcode.ref_as_non_null);
+          }
         }
       } else {
         // Check if this is a synthesized case class operator ==
@@ -4899,10 +5101,13 @@ export function generateClassMethods(
         member.decorators.some((d) => d.name === 'intrinsic')
       ) {
         const propName = getMemberName(member.name);
-        const intrinsicDecorator = member.decorators.find((d) => d.name === 'intrinsic');
-        const intrinsicName = intrinsicDecorator?.args?.[0]?.type === NodeType.StringLiteral
-          ? (intrinsicDecorator.args[0] as any).value
-          : undefined;
+        const intrinsicDecorator = member.decorators.find(
+          (d) => d.name === 'intrinsic',
+        );
+        const intrinsicName =
+          intrinsicDecorator?.args?.[0]?.type === NodeType.StringLiteral
+            ? (intrinsicDecorator.args[0] as any).value
+            : undefined;
 
         if (intrinsicName === 'array.len') {
           const getterName = getGetterName(propName);
@@ -4987,7 +5192,7 @@ export function generateClassMethods(
         }
 
         // Setter (skip for immutable `let` fields)
-        const isImmutableField = member.mutability === 'let';
+        const isImmutableField = member.mutability !== 'var';
         if (!member.isFinal && !isImmutableField) {
           const setterName = getSetterName(propName);
           const setterInfo = classInfo.methods.get(setterName);
@@ -5812,6 +6017,9 @@ function instantiateClassImpl(
 
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
+        if (member.isStatic) {
+          continue;
+        }
         const memberName = getMemberName(member.name);
         const wasmType = member.typeAnnotation
           ? resolveType(member.typeAnnotation)
@@ -5821,7 +6029,7 @@ function instantiateClassImpl(
           memberName,
         );
         // Check if field is immutable (let modifier)
-        const isMutable = member.mutability !== 'let';
+        const isMutable = member.mutability === 'var';
         fields.set(fieldName, {
           index: fieldIndex++,
           type: wasmType,
@@ -6312,17 +6520,13 @@ function instantiateClassImpl(
           ) {
             // Check if it's a union of inline tuples
             const unionType = checkerReturnType as UnionType;
-            for (const t of unionType.types) {
-              if (t.kind === TypeKind.InlineTuple) {
-                const tupleType = t as InlineTupleType;
-                results = tupleType.elementTypes.map((el) =>
-                  mapCheckerTypeToWasmType(ctx, el),
-                );
-                break;
-              }
-            }
-            // If not a union of tuples, fall back to regular handling
-            if (results.length === 0) {
+            const tupleResults = mapUnionOfInlineTuplesToWasmResults(
+              ctx,
+              unionType,
+            );
+            if (tupleResults) {
+              results = tupleResults;
+            } else {
               const mapped = resolveType(member.returnType);
               if (mapped.length > 0) results = [mapped];
             }
@@ -6545,7 +6749,8 @@ function instantiateClassImpl(
           });
 
           // Register Setter (if mutable)
-          if (!member.isFinal) {
+          const isImmutableField = member.mutability !== 'var';
+          if (!member.isFinal && !isImmutableField) {
             const regSetterName = getSetterName(propName);
             if (!intrinsic && !vtable.includes(regSetterName)) {
               vtable.push(regSetterName);
@@ -6758,7 +6963,9 @@ function instantiateClassImpl(
       const ctorInfo = methods.get(CONSTRUCTOR_NAME)!;
 
       // Wrapper signature: params -> (ref null struct)
-      const params = ctorInfo.paramTypes.slice(1); // Skip 'this'
+      const params = hasImmutableFields(classInfo)
+        ? ctorInfo.paramTypes
+        : ctorInfo.paramTypes.slice(1); // Skip 'this' if present
       const results = [
         [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
       ];
@@ -6779,44 +6986,50 @@ function instantiateClassImpl(
           // Params are locals 0..N-1, so start nextLocalIndex after them
           ctx.pushFunctionScope(params.length);
 
-          // 1. Allocate
-          body.push(0xfb, GcOpcode.struct_new_default);
-          body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
-
-          // 2. Store in temp
-          const tempLocal = ctx.declareLocal('$$export_new', results[0]);
-          body.push(Opcode.local_tee);
-          body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-
-          // 3. Init VTable (if needed)
-          if (classInfo.vtableGlobalIndex !== undefined) {
-            body.push(Opcode.global_get);
-            body.push(
-              ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
-            );
-            body.push(0xfb, GcOpcode.struct_set);
+          if (hasImmutableFields(classInfo)) {
+            // Just call the constructor directly with all parameters
+            for (let i = 0; i < params.length; i++) {
+              body.push(Opcode.local_get, i);
+            }
+            body.push(Opcode.call);
+            body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+          } else {
+            // 1. Allocate
+            body.push(0xfb, GcOpcode.struct_new_default);
             body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
-            body.push(...WasmModule.encodeSignedLEB128(0));
 
+            // 2. Store in temp
+            const tempLocal = ctx.declareLocal('$$export_new', results[0]);
+            body.push(Opcode.local_tee);
+            body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+            // 3. Init VTable (if needed)
+            if (classInfo.vtableGlobalIndex !== undefined) {
+              body.push(Opcode.global_get);
+              body.push(
+                ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
+              );
+              body.push(0xfb, GcOpcode.struct_set);
+              body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+              body.push(...WasmModule.encodeSignedLEB128(0));
+
+              body.push(Opcode.local_get);
+              body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+            }
+
+            // 4. Load args
+            for (let i = 0; i < params.length; i++) {
+              body.push(Opcode.local_get, i);
+            }
+
+            // 5. Call constructor
+            body.push(Opcode.call);
+            body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+
+            // 6. Return
             body.push(Opcode.local_get);
             body.push(...WasmModule.encodeSignedLEB128(tempLocal));
           }
-
-          // 4. Load args
-          for (let i = 0; i < params.length; i++) {
-            body.push(Opcode.local_get, i);
-          }
-
-          // 5. Call constructor
-          console.log(
-            `DEBUG: ctor wrapper bodygen specializedName=${specializedName} ctorInfo.index=${ctorInfo.index}`,
-          );
-          body.push(Opcode.call);
-          body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
-
-          // 6. Return
-          body.push(Opcode.local_get);
-          body.push(...WasmModule.encodeSignedLEB128(tempLocal));
 
           body.push(Opcode.end);
 
@@ -7262,6 +7475,32 @@ function preRegisterMixin(
   return classInfo;
 }
 
+function mapUnionOfInlineTuplesToWasmResults(
+  ctx: CodegenContext,
+  unionType: UnionType,
+): number[][] | null {
+  const memberTuples = unionType.types.filter(
+    (t) => t.kind === TypeKind.InlineTuple,
+  ) as InlineTupleType[];
+
+  if (memberTuples.length === 0) return null;
+
+  const results: number[][] = [];
+  const arity = memberTuples[0].elementTypes.length;
+  for (let i = 0; i < arity; i++) {
+    const elementTypes = memberTuples.map((t) => t.elementTypes[i]);
+    const hasHole = elementTypes.some(
+      (t) => t.kind === TypeKind.Hole || t.kind === TypeKind.Null,
+    );
+    const nonHoleType =
+      elementTypes.find(
+        (t) => t.kind !== TypeKind.Hole && t.kind !== TypeKind.Null,
+      ) ?? elementTypes[0];
+    results.push(mapCheckerTypeToWasmType(ctx, nonHoleType, hasHole));
+  }
+  return results;
+}
+
 function mapMixinReturnTypeToWasmResults(
   ctx: CodegenContext,
   type: Type,
@@ -7285,15 +7524,8 @@ function mapMixinReturnTypeToWasmResults(
     if (unionType.types.some((t) => t.kind === TypeKind.Void)) {
       return [];
     }
-    // Find the first inline tuple in the union to get the WASM signature
-    for (const t of unionType.types) {
-      if (t.kind === TypeKind.InlineTuple) {
-        const tupleType = t as InlineTupleType;
-        return tupleType.elementTypes.map((el) =>
-          mapCheckerTypeToWasmType(ctx, el),
-        );
-      }
-    }
+    const tupleResults = mapUnionOfInlineTuplesToWasmResults(ctx, unionType);
+    if (tupleResults) return tupleResults;
   }
   // For all other types, wrap in an array
   const mapped = mapCheckerTypeToWasmType(ctx, type);
@@ -7415,7 +7647,7 @@ function applyMixin(
 
       if (!fields.has(fieldName)) {
         // Check if field is immutable (let modifier)
-        const isMutable = member.mutability !== 'let';
+        const isMutable = member.mutability === 'var';
         fields.set(fieldName, {
           index: fieldIndex++,
           type: wasmType,
@@ -7718,9 +7950,7 @@ function applyMixin(
         }
 
         const shouldRegister =
-          methodName === CONSTRUCTOR_NAME ||
-          !checkerIntermediateType ||
-          isUsed;
+          methodName === CONSTRUCTOR_NAME || !checkerIntermediateType || isUsed;
 
         let funcIndex = -1;
         let typeIndex = -1;
@@ -7750,10 +7980,13 @@ function applyMixin(
     }
 
     // Register default constructor in methods so body generators/DCE can find it
-    const ctorParams: number[][] = [
-      [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
-    ];
-    const ctorResults: number[][] = [];
+    const classHasImmutableFields = hasImmutableFields(classInfo);
+    const ctorParams: number[][] = classHasImmutableFields
+      ? []
+      : [[ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)]];
+    const ctorResults: number[][] = classHasImmutableFields
+      ? [[ValType.ref, ...WasmModule.encodeSignedLEB128(structTypeIndex)]]
+      : [];
     const ctorTypeIndex = ctx.module.addType(ctorParams, ctorResults);
     const ctorFuncIndex = ctx.module.addFunction(ctorTypeIndex);
     ctx.setFunctionDebugName(
@@ -7762,7 +7995,9 @@ function applyMixin(
     );
     methods.set(CONSTRUCTOR_NAME, {
       index: ctorFuncIndex,
-      returnType: [],
+      returnType: classHasImmutableFields
+        ? [ValType.ref, ...WasmModule.encodeSignedLEB128(structTypeIndex)]
+        : [],
       typeIndex: ctorTypeIndex,
       paramTypes: ctorParams,
       isFinal: false,
@@ -8099,6 +8334,7 @@ export function isErasedRefType(wasmType: number[]): boolean {
 export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
+  nullable = false,
 ): number[] {
   // Resolve type parameters via currentTypeArguments (contains Type values).
   if (type.kind === TypeKind.TypeParameter) {
@@ -8109,7 +8345,7 @@ export function mapCheckerTypeToWasmType(
       const resolved = ctx.currentTypeArguments.get(typeParam.name)!;
       // If resolved to a non-type-parameter, use it directly
       if (resolved.kind !== TypeKind.TypeParameter) {
-        return mapCheckerTypeToWasmType(ctx, resolved);
+        return mapCheckerTypeToWasmType(ctx, resolved, nullable);
       }
       // If resolved to a DIFFERENT type parameter that's also in the map, chain
       const resolvedParam = resolved as TypeParameterType;
@@ -8117,7 +8353,7 @@ export function mapCheckerTypeToWasmType(
         resolvedParam.name !== typeParam.name &&
         ctx.currentTypeArguments.has(resolvedParam.name)
       ) {
-        return mapCheckerTypeToWasmType(ctx, resolved);
+        return mapCheckerTypeToWasmType(ctx, resolved, nullable);
       }
     }
 
@@ -8209,7 +8445,11 @@ export function mapCheckerTypeToWasmType(
     if (classInfo) {
       // Extension classes (like FixedArray, String) return their onType
       if (classInfo.isExtension && classInfo.onType) {
-        return classInfo.onType;
+        const onType = classInfo.onType;
+        if (nullable && onType.length > 0 && onType[0] === ValType.ref) {
+          return [ValType.ref_null, ...onType.slice(1)];
+        }
+        return onType;
       }
       return [
         ValType.ref_null,
@@ -8258,7 +8498,11 @@ export function mapCheckerTypeToWasmType(
         }
         if (classInfo) {
           if (classInfo.isExtension && classInfo.onType) {
-            return classInfo.onType;
+            const onType = classInfo.onType;
+            if (nullable && onType.length > 0 && onType[0] === ValType.ref) {
+              return [ValType.ref_null, ...onType.slice(1)];
+            }
+            return onType;
           }
           return [
             ValType.ref_null,
@@ -8304,12 +8548,16 @@ export function mapCheckerTypeToWasmType(
     if (nonNeverTypes.length < unionType.types.length) {
       // Had some never types - recurse with the filtered union or single type
       if (nonNeverTypes.length === 1) {
-        return mapCheckerTypeToWasmType(ctx, nonNeverTypes[0]);
+        return mapCheckerTypeToWasmType(ctx, nonNeverTypes[0], nullable);
       }
-      return mapCheckerTypeToWasmType(ctx, {
-        kind: TypeKind.Union,
-        types: nonNeverTypes,
-      } as UnionType);
+      return mapCheckerTypeToWasmType(
+        ctx,
+        {
+          kind: TypeKind.Union,
+          types: nonNeverTypes,
+        } as UnionType,
+        nullable,
+      );
     }
     // Check if it's a nullable reference type (T | null)
     const nonNullTypes = unionType.types.filter(
@@ -8348,7 +8596,7 @@ export function mapCheckerTypeToWasmType(
           }
         }
       }
-      return mapCheckerTypeToWasmType(ctx, innerType);
+      return mapCheckerTypeToWasmType(ctx, innerType, true);
     }
     // Check if all types are literals (e.g., enum values) - use the base type
     if (
@@ -8356,7 +8604,7 @@ export function mapCheckerTypeToWasmType(
       nonNullTypes.every((t) => t.kind === TypeKind.Literal)
     ) {
       // All literals should have the same base type, use the first one
-      return mapCheckerTypeToWasmType(ctx, nonNullTypes[0]);
+      return mapCheckerTypeToWasmType(ctx, nonNullTypes[0], nullable);
     }
     // For other unions (reference types), use eqref.
     // All Zena reference types (classes, interfaces, closures, strings, arrays)
@@ -8421,7 +8669,7 @@ export function mapCheckerTypeToWasmType(
     const tupleType = type as InlineTupleType;
     const result: number[] = [];
     for (const el of tupleType.elementTypes) {
-      result.push(...mapCheckerTypeToWasmType(ctx, el));
+      result.push(...mapCheckerTypeToWasmType(ctx, el, nullable));
     }
     return result;
   }
@@ -8440,7 +8688,7 @@ export function mapCheckerTypeToWasmType(
   // Handle TypeAlias - resolve to target type
   if (type.kind === TypeKind.TypeAlias) {
     const aliasType = type as TypeAliasType;
-    return mapCheckerTypeToWasmType(ctx, aliasType.target);
+    return mapCheckerTypeToWasmType(ctx, aliasType.target, nullable);
   }
 
   // All type kinds should be handled above

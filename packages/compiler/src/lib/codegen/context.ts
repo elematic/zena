@@ -44,6 +44,7 @@ export interface FunctionContextState {
   nextLocalIndex: number;
   thisLocalIndex: number;
   localIndices: Map<Node, number>;
+  activeConstructionLocals: Map<number, number>;
 }
 
 /**
@@ -97,6 +98,8 @@ export interface FunctionContextState {
  *   a nested WASM function (trampolines, closures) while preserving outer state.
  */
 export class CodegenContext {
+  static #nextId = 1;
+  public readonly id = CodegenContext.#nextId++;
   public module: WasmModule;
   /**
    * Ordered list of modules to generate code for.
@@ -146,6 +149,7 @@ export class CodegenContext {
    * Pushed/popped for blocks; replaced entirely for new functions.
    */
   public scopes: Map<string, LocalInfo>[] = [];
+  public activeConstructionLocals = new Map<number, number>();
   #extraLocals: number[][] = [];
   #nextLocalIndex = 0;
   #thisLocalIndex = 0;
@@ -446,9 +450,38 @@ export class CodegenContext {
     if (!this.#usageResult) {
       return false; // DCE disabled, keep everything
     }
+
+    // Traversal up the hierarchy (superclasses)
+    let current: ClassType | undefined =
+      classType.kind === TypeKind.Class ? (classType as ClassType) : undefined;
+    while (current) {
+      const usage = this.#usageResult.getFieldUsage(current, fieldName);
+      if (usage && usage.isRead) {
+        return false;
+      }
+      current = current.superType;
+    }
+
+    // Traversal down the hierarchy (subclasses)
+    if (classType.kind === TypeKind.Class) {
+      const classInfo = this.getClassInfo(classType as ClassType);
+      if (classInfo) {
+        const subclasses = this.getTransitiveSubclasses(classInfo);
+        for (const sub of subclasses) {
+          if (sub.classType) {
+            const usage = this.#usageResult.getFieldUsage(
+              sub.classType,
+              fieldName,
+            );
+            if (usage && usage.isRead) {
+              return false;
+            }
+          }
+        }
+      }
+    }
+
     const fieldUsage = this.#usageResult.getFieldUsage(classType, fieldName);
-    // Field is eliminable if it's never read (writes are unobservable)
-    // If fieldUsage is undefined (field not tracked), conservatively keep it
     return fieldUsage !== undefined && !fieldUsage.isRead;
   }
 
@@ -764,14 +797,23 @@ export class CodegenContext {
    * Find a class declaration by name across all modules.
    */
   findClassDeclaration(name: string): ClassDeclaration | undefined {
+    let baseName = name;
+    if (name.includes('<')) {
+      baseName = name.substring(0, name.indexOf('<'));
+    }
     for (const mod of this.modules) {
       for (const stmt of mod.body) {
         if (
           stmt.type === NodeType.ClassDeclaration &&
-          (stmt as ClassDeclaration).name.name === name
+          (stmt as ClassDeclaration).name.name === baseName
         ) {
           return stmt as ClassDeclaration;
         }
+      }
+    }
+    for (const decl of this.syntheticClasses) {
+      if (decl.name.name === name) {
+        return decl;
       }
     }
     return undefined;
@@ -894,6 +936,7 @@ export class CodegenContext {
     this.#nextLocalIndex = paramCount;
     this.#thisLocalIndex = 0;
     this.#localIndices = new Map();
+    this.activeConstructionLocals = new Map();
   }
 
   /**
@@ -908,6 +951,7 @@ export class CodegenContext {
       nextLocalIndex: this.#nextLocalIndex,
       thisLocalIndex: this.#thisLocalIndex,
       localIndices: new Map(this.#localIndices),
+      activeConstructionLocals: new Map(this.activeConstructionLocals),
     };
   }
 
@@ -920,6 +964,7 @@ export class CodegenContext {
     this.#nextLocalIndex = state.nextLocalIndex;
     this.#thisLocalIndex = state.thisLocalIndex;
     this.#localIndices = new Map(state.localIndices);
+    this.activeConstructionLocals = new Map(state.activeConstructionLocals);
   }
 
   public popScope() {
@@ -1121,15 +1166,19 @@ export class CodegenContext {
     unboxedType?: number[],
     isCelled?: boolean,
   ): number {
+    let finalType = type;
+    if (type[0] === ValType.ref) {
+      finalType = [ValType.ref_null, ...type.slice(1)];
+    }
     const index = this.#nextLocalIndex++;
     this.scopes[this.scopes.length - 1].set(name, {
       index,
-      type,
+      type: finalType,
       isBoxed,
       unboxedType,
       isCelled,
     });
-    this.#extraLocals.push(type);
+    this.#extraLocals.push(finalType);
     // Register by declaration for identity-based lookup (new name resolution)
     if (declaration) {
       this.registerLocalByDecl(declaration, index);
@@ -1138,11 +1187,15 @@ export class CodegenContext {
   }
 
   public getArrayTypeIndex(elementType: number[]): number {
-    const key = elementType.join(',');
+    let finalElementType = elementType;
+    if (elementType.length > 0 && elementType[0] === ValType.ref) {
+      finalElementType = [ValType.ref_null, ...elementType.slice(1)];
+    }
+    const key = finalElementType.join(',');
     if (this.arrayTypes.has(key)) {
       return this.arrayTypes.get(key)!;
     }
-    const index = this.module.addArrayType(elementType, true);
+    const index = this.module.addArrayType(finalElementType, true);
     this.arrayTypes.set(key, index);
     return index;
   }

@@ -23,7 +23,9 @@ const NC = '\x1b[0m';
 try {
   execSync('which wasmtime', {stdio: 'pipe'});
 } catch {
-  console.warn(`${YELLOW}Warning: wasmtime command-line utility not found, proceeding anyway${NC}`);
+  console.warn(
+    `${YELLOW}Warning: wasmtime command-line utility not found, proceeding anyway${NC}`,
+  );
 }
 
 // Find all .wasm files

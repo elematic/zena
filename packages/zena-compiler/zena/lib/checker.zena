@@ -2545,6 +2545,20 @@ let isReferenceType = (type: Type): boolean => {
   };
 };
 
+let isNullableType = (t: Type): boolean => match (t) {
+  case NullType: true
+  case UnionT as u: {
+    var hasNull = false;
+    for (let member in u.types) {
+      if (member is NullType) {
+        hasNull = true;
+      }
+    }
+    hasNull
+  }
+  case _: false
+};
+
 let isValidCast = (sourceType: Type, targetType: Type): boolean => {
   // Primitive → Primitive: VALID only if both are numeric or both are boolean
   if (isValuePrimitive(sourceType) && isValuePrimitive(targetType)) {
@@ -2602,6 +2616,11 @@ let isValidCast = (sourceType: Type, targetType: Type): boolean => {
 
   // Primitive → Reference (not an extension on primitive): INVALID
   if (isValuePrimitive(sourceType) && isReferenceType(targetType)) {
+    return false;
+  }
+
+  // Null → Non-nullable: INVALID
+  if (sourceType is NullType && !isNullableType(targetType)) {
     return false;
   }
 
@@ -5505,9 +5524,15 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       );
     }
     if (!isValidCast(sourceType, targetType)) {
+      var errorMsg = "Cannot cast type '" + typeToString(sourceType) + "' to '" + typeToString(targetType) + "'.";
+      if (sourceType is NullType && !isNullableType(targetType)) {
+        errorMsg = "Cannot cast 'null' to non-nullable type '" + typeToString(targetType) + "'.";
+      } else if (isValuePrimitive(sourceType) && !isValuePrimitive(targetType)) {
+        errorMsg = "Cannot cast primitive type '" + typeToString(sourceType) + "' to reference type '" + typeToString(targetType) + "'. " +
+                   "Use string concatenation or a conversion function instead.";
+      }
       ctx.error(
-        "Cannot cast primitive type '" + typeToString(sourceType) + "' to reference type '" + typeToString(targetType) + "'. " +
-        "Use string concatenation or a conversion function instead.",
+        errorMsg,
         DiagnosticCode.TypeMismatch,
         loc
       );
@@ -6290,7 +6315,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
           case _: "<unknown>"
         };
-        let fieldType = if (fd.typeAnnotation != null) {
+        var fieldType = if (fd.typeAnnotation != null) {
           let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
                     resolved
         } else {
@@ -6372,6 +6397,24 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 fd.loc
               );
             }
+            var alreadyNullable = false;
+            match (fieldType) {
+              case NullType: { alreadyNullable = true; }
+              case UnionT {types}: {
+                var ui = 0;
+                while (ui < types.length) {
+                  if (types[ui] is NullType) { alreadyNullable = true; }
+                  ui += 1;
+                }
+              }
+              case _: {}
+            }
+            if (!alreadyNullable) {
+              let unionTypes = new Array<Type>();
+              unionTypes.push(fieldType);
+              unionTypes.push(new NullType());
+              fieldType = createUnionType(unionTypes);
+            }
           }
 
           var actualFieldName = fieldName;
@@ -6421,6 +6464,18 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#", // isPrivate
             fd.value != null // hasInitializer
           );
+
+          if (fd.isDeclare) {
+            let df = classType.declaredFields;
+            let dfNonNull = if (df == null) {
+              let newSet = new HashSet<String>();
+              classType.declaredFields = newSet;
+              newSet
+            } else {
+              df as HashSet<String>
+            };
+            dfNonNull.add(actualFieldName);
+          }
 
           if (hasPrivateSetter) {
             let getterName = "get#" + fieldName;
@@ -7479,18 +7534,90 @@ let checkMethodBody = (
         checkExpression(ctx, arg, null);
       }
     }
+    let fieldsInInitializerList = new HashSet<String>();
     if (md.initializerList != null) {
       for (let item in md.initializerList as Array<Node>) {
         if (item is FieldInitializer) {
           let fi = item as FieldInitializer;
+          fieldsInInitializerList.add(fi.field.name);
           let fieldName = fi.field.name;
-          let fieldType = if (classType.members.has(fieldName)) {
+          let fieldType: Type | null = if (classType.members.has(fieldName)) {
             classType.members[fieldName].type
           } else {
-            null as Type
+            null
           };
           checkExpression(ctx, fi.value, fieldType);
         }
+      }
+    }
+    for (let param in md.params) {
+      if (param.isThisParam) {
+        let paramName = param.name.name;
+        let actualFieldName = if (classType.fieldSetterNames != null && (classType.fieldSetterNames as HashMap<String, String>).has(paramName)) {
+          (classType.fieldSetterNames as HashMap<String, String>)[paramName]
+        } else {
+          paramName
+        };
+        fieldsInInitializerList.add(actualFieldName);
+      }
+    }
+
+    // Validate that all non-nullable fields are initialized
+    let superType = classType.superType;
+    let keys = classType.members.keys();
+    while (let (true, fieldName) = keys.next()) {
+      let member = classType.members[fieldName];
+      if (member is FieldInfo && !fieldName.startsWith(":")) {
+        let fd = member as FieldInfo;
+
+        // Skip inherited fields (they're already initialized by superclass)
+        var isInherited = false;
+        if (superType != null) {
+          let st = superType as ClassType;
+          if (st.members.has(fieldName) && !fieldName.startsWith("#")) {
+            isInherited = true;
+          }
+        }
+        if (isInherited) {
+          continue;
+        }
+
+        // Skip declared fields (e.g., @intrinsic fields)
+        var isDeclared = false;
+        if (classType.declaredFields != null && (classType.declaredFields as HashSet<String>).has(fieldName)) {
+          isDeclared = true;
+        }
+        if (classType.genericSource != null) {
+          let gs = classType.genericSource as ClassType;
+          if (gs.declaredFields != null && (gs.declaredFields as HashSet<String>).has(fieldName)) {
+            isDeclared = true;
+          }
+        }
+        if (isDeclared) {
+          continue;
+        }
+
+        // Skip fields with inline initializers
+        if (fd.hasInitializer) {
+          continue;
+        }
+
+        // Skip fields initialized in the initializer list or via this.field parameters
+        if (fieldsInInitializerList.has(fieldName)) {
+          continue;
+        }
+
+        // Skip nullable fields (they default to null)
+        if (isNullableType(fd.type)) {
+          continue;
+        }
+
+        // Error: non-nullable field without initializer
+        ctx.error(
+          "Field '" + fieldName + "' must be initialized. Add an initializer or a constructor.",
+          DiagnosticCode.UninitializedField,
+          md.name.loc
+        );
       }
     }
   }

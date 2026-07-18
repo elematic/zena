@@ -47,10 +47,23 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   wasm: WasmModule;
   target: String;
 
-  var cha: ClassHierarchyAnalysis = null as ClassHierarchyAnalysis;
-  var specializer: SpecializerInterface = null as SpecializerInterface;
-  var typeLowerer: TypeLowererInterface = null as TypeLowererInterface;
-  var visitor: ReachabilityVisitorInterface = null as ReachabilityVisitorInterface;
+  var #chaBacking: ClassHierarchyAnalysis | null = null;
+  var #specializerBacking: SpecializerInterface | null = null;
+  var #typeLowererBacking: TypeLowererInterface | null = null;
+  var #visitorBacking: ReachabilityVisitorInterface | null = null;
+
+  cha: ClassHierarchyAnalysis {
+    get { return this.#chaBacking as ClassHierarchyAnalysis; }
+  }
+  specializer: SpecializerInterface {
+    get { return this.#specializerBacking as SpecializerInterface; }
+  }
+  typeLowerer: TypeLowererInterface {
+    get { return this.#typeLowererBacking as TypeLowererInterface; }
+  }
+  visitor: ReachabilityVisitorInterface {
+    get { return this.#visitorBacking as ReachabilityVisitorInterface; }
+  }
 
   // Global lookups
   classDecls = new HashMap<SymbolId, Node>();
@@ -119,10 +132,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.typeIdGenerator = gen as IdGenerator<TypeId>;
     }
 
-    this.cha = new ClassHierarchyAnalysis(this.program, this.instantiatedSpecializedClasses, this.wasm, this.classModels);
-    this.specializer = new Specializer(this);
-    this.typeLowerer = new TypeLowerer(this);
-    this.visitor = new ReachabilityVisitor(this);
+    this.#chaBacking = new ClassHierarchyAnalysis(this.program, this.instantiatedSpecializedClasses, this.wasm, this.classModels);
+    this.#specializerBacking = new Specializer(this);
+    this.#typeLowererBacking = new TypeLowerer(this);
+    this.#visitorBacking = new ReachabilityVisitor(this);
   }
 
   recordReachedClassMember(classSymId: SymbolId, nodeId: i32, model: SemanticModel, isReachable: boolean): void {
@@ -643,9 +656,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     for (let ct in classesToDiscover) {
       let model = this.getClassModel(ct);
-      let specIfaces = this.cha.collectAllImplementedInterfaces(ct);
-      for (let iface in specIfaces) {
-        this.typeLowerer.discoverType(iface, model);
+       let specIfaces = this.cha.collectAllImplementedInterfaces(ct);
+       for (let iface in specIfaces) {
+         this.typeLowerer.discoverType(iface, model);
       }
     }
 
@@ -1190,8 +1203,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   traverseDependencies(deps: SymbolDependencies, model: SemanticModel, classType: ClassType | null, typeArguments: Array<Type> | null = null, node: Node | null = null): void {
-    let ctParams = if (classType != null) getClassTypeParameters(classType as ClassType) else null as Array<TypeParameterType>;
-    let ctArgs = if (classType != null) (classType as ClassType).typeArguments else null as Array<Type>;
+    let ctParams: Array<TypeParameterType> | null = if (classType != null) getClassTypeParameters(classType as ClassType) else null;
+    let ctArgs: Array<Type> | null = if (classType != null) (classType as ClassType).typeArguments else null;
 
     let resolveType = (t: Type): Type => {
       var res = substituteTypeParamsInClassContext(classType, t);
@@ -1333,29 +1346,30 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           }
 
           if (targetClassType != null) {
+            let cha = this.cha;
             let list = new Array<ClassType>();
             if ((targetClassType as ClassType).isExtension) {
               list.push(targetClassType as ClassType);
             } else {
-              let subclasses = this.cha.findInstantiatedSubclasses(targetClassType as ClassType);
+              let subclasses = cha.findInstantiatedSubclasses(targetClassType as ClassType);
               for (let subCt in subclasses) {
                 list.push(subCt);
               }
             }
             for (let subCt in list) {
               let subModel = this.getClassModel(subCt);
-              let mds = this.cha.findImplementingMethods(subCt, mName);
+              let mds = cha.findImplementingMethods(subCt, mName);
               if (mds.length > 0) {
                 for (let md in mds) {
                   this.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.getNodeModel(md as Node, subModel), subCt, this.currentReachable));
                 }
               } else {
-                let acc = this.cha.findImplementingAccessor(subCt, mName);
+                let acc = cha.findImplementingAccessor(subCt, mName);
                 if (acc != null) {
                   this.queueReferrer(new Referrer(false, -1 as SymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable));
                 } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
                   let fieldName = mName.sliceBytes(4, mName.length);
-                  let fd = this.cha.findImplementingField(subCt, fieldName);
+                  let fd = cha.findImplementingField(subCt, fieldName);
                   if (fd != null) {
                     this.queueReferrer(new Referrer(false, -1 as SymbolId, (fd as Node).id as i32, this.getNodeModel(fd as Node, subModel), subCt, this.currentReachable));
                   }
@@ -1440,7 +1454,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       
       let rawFuncTypeNode = model.getNodeType(funcExpr);
       let funcTypeNode = if (classType != null && ctParams != null) {
-        substituteTypeParamsInCodegen(ctParams, ctArgs, rawFuncTypeNode as Type)
+        substituteTypeParamsInCodegen(ctParams as Array<TypeParameterType>, ctArgs, rawFuncTypeNode as Type)
       } else {
         rawFuncTypeNode
       };
@@ -1522,7 +1536,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       for (let symId in closureDep.captures) {
         let rawSymType = model.getBindingTypeById(symId);
         let symType = if (classType != null && ctParams != null) {
-          substituteTypeParamsInCodegen(ctParams, ctArgs, rawSymType as Type)
+          substituteTypeParamsInCodegen(ctParams as Array<TypeParameterType>, ctArgs, rawSymType as Type)
         } else {
           rawSymType
         };
@@ -1624,10 +1638,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
       
       let adaptKey = getFunctionAdaptationKey(src, tgt);
-      let existingWrapper = if (this.wasm.functionAdaptations.has(adaptKey)) {
+      let existingWrapper: WasmFunction | null = if (this.wasm.functionAdaptations.has(adaptKey)) {
         this.wasm.functionAdaptations[adaptKey]
       } else {
-        null as WasmFunction
+        null
       };
 
       if (existingWrapper != null) {
@@ -1723,23 +1737,24 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
         if (let (true, pairList) = this.instantiatedClassesByInterface.get(symId)) {
           for (let pair in pairList) {
+            let cha = this.cha;
             let cType = pair.classType;
             let ifaceType = pair.interfaceType;
             let unspecIName = getInterfaceKey(ifaceType.genericSource ?? ifaceType);
             this.wasm.usedInterfaceMembers[getInterfaceMemberKey(unspecIName, mName)] = true;
 
-            let mds = this.cha.findImplementingMethods(cType, mName);
+            let mds = cha.findImplementingMethods(cType, mName);
             if (mds.length > 0) {
               for (let md in mds) {
                 this.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.getNodeModel(md as Node, this.getClassModel(cType)), cType, this.currentReachable));
               }
             } else {
-              let acc = this.cha.findImplementingAccessor(cType, mName);
+              let acc = cha.findImplementingAccessor(cType, mName);
               if (acc != null) {
                 this.queueReferrer(new Referrer(false, -1 as SymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, this.getClassModel(cType)), cType, this.currentReachable));
               } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
                 let fieldName = mName.sliceBytes(4, mName.length);
-                let fd = this.cha.findImplementingField(cType, fieldName);
+                let fd = cha.findImplementingField(cType, fieldName);
                 if (fd != null) {
                   this.queueReferrer(new Referrer(false, -1 as SymbolId, (fd as Node).id as i32, this.getNodeModel(fd as Node, this.getClassModel(cType)), cType, this.currentReachable));
                 }
@@ -1779,13 +1794,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   getClassDeclType(classDecl: Node, model: SemanticModel): ClassType | null {
-    if (this.cha.classDeclTypeCache.has(classDecl.id)) {
-      return this.cha.classDeclTypeCache[classDecl.id];
+    let cha = this.cha;
+    if (cha.classDeclTypeCache.has(classDecl.id)) {
+      return cha.classDeclTypeCache[classDecl.id];
     }
     let raw = model.getNodeType(classDecl);
     if (raw != null && raw is ClassType) {
       let ct = raw as ClassType;
-      this.cha.classDeclTypeCache[classDecl.id] = ct;
+      cha.classDeclTypeCache[classDecl.id] = ct;
       return ct;
     }
     var sym = model.resolve(classDecl);
@@ -1796,7 +1812,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let bType = model.getBindingTypeDirect(sym);
       if (bType != null && bType is ClassType) {
         let ct = bType as ClassType;
-        this.cha.classDeclTypeCache[classDecl.id] = ct;
+        cha.classDeclTypeCache[classDecl.id] = ct;
         return ct;
       }
     }
@@ -1864,16 +1880,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             
             var funcExpr: Node | null = null;
             if (let (true, decl) = model.globalDeclarations.get(symId)) {
+              let visitor = this.visitor;
               let resolver = (t: Type): Type => t;
-              this.visitor.discoverNodeTypes(decl, model, resolver);
+              visitor.discoverNodeTypes(decl, model, resolver);
               if (decl is VariableDeclaration) {
                 let vd = decl as VariableDeclaration;
-                this.visitor.discoverVariableDeclaration(symId, vd, model);
+                visitor.discoverVariableDeclaration(symId, vd, model);
                 if (vd.init is FunctionExpression) {
                   funcExpr = vd.init;
                 }
               } else if (decl is DeclareFunction) {
-                this.visitor.discoverDeclareFunction(decl as DeclareFunction, model);
+                visitor.discoverDeclareFunction(decl as DeclareFunction, model);
               }
             }
             
@@ -1898,9 +1915,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             this.reachedMembers.add(memberKey);
             
             let nodeOpt = if (this.nodeIdToNode.has(nodeId)) this.nodeIdToNode[nodeId] else null;
-            if (nodeOpt != null) {
+             if (nodeOpt != null) {
               let node = nodeOpt as Node;
               let classType = ref.classType;
+              let visitor = this.visitor;
+              let specializer = this.specializer;
               let resolver = (t: Type): Type => {
                 var res = substituteTypeParamsInClassContext(classType, t);
                 if (ref.typeArguments != null && node is FunctionExpression) {
@@ -1913,7 +1932,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 return res;
               };
               if (!model.nodeDependencies.has(nodeId)) {
-                this.visitor.discoverNodeTypes(node, model, resolver);
+                visitor.discoverNodeTypes(node, model, resolver);
               }
               if (node is MethodDefinition && ref.classType != null) {
                 let mDef = node as MethodDefinition;
@@ -1922,7 +1941,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 let methName = getMethodName(mDef);
                 let lookupId = (ct.genericSource ?? ct).symbolId;
                 let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
-                this.specializer.registerClassMethod(ct, cd, methName, mDef, false, false, null, this.classModels[lookupId], null);
+                specializer.registerClassMethod(ct, cd, methName, mDef, false, false, null, this.classModels[lookupId], null);
               } else if (node is AccessorDeclaration && ref.classType != null) {
                 let acc = node as AccessorDeclaration;
                 let ct = ref.classType as ClassType;
@@ -1940,10 +1959,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   let lookupId = (ct.genericSource ?? ct).symbolId;
                   let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
                   if (acc.getter != null) {
-                    this.specializer.registerClassMethod(ct, cd, "get#" + accName, acc, false, false, null, this.classModels[lookupId], null);
+                    specializer.registerClassMethod(ct, cd, "get#" + accName, acc, false, false, null, this.classModels[lookupId], null);
                   }
                   if (acc.setter != null) {
-                    this.specializer.registerClassMethod(ct, cd, "set#" + accName, acc.setter, false, false, null, this.classModels[lookupId], null);
+                    specializer.registerClassMethod(ct, cd, "set#" + accName, acc.setter, false, false, null, this.classModels[lookupId], null);
                   }
                 }
               } else if (node is FieldDefinition && ref.classType != null) {

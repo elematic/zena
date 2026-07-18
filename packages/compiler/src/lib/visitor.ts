@@ -108,6 +108,8 @@ import {
   type LetPatternCondition,
   type CaseClassParam,
   type SealedVariant,
+  type FieldInitializer,
+  type SuperInitializer,
 } from './ast.js';
 
 /**
@@ -215,6 +217,8 @@ export interface Visitor<T = void> {
   visitLiteralTypeAnnotation?(node: LiteralTypeAnnotation, context: T): void;
 
   // ===== Other =====
+  visitFieldInitializer?(node: FieldInitializer, context: T): void;
+  visitSuperInitializer?(node: SuperInitializer, context: T): void;
   visitParameter?(node: Parameter, context: T): void;
   visitTypeParameter?(node: TypeParameter, context: T): void;
   visitMatchCase?(node: MatchCase, context: T): void;
@@ -592,6 +596,14 @@ export function visit<T>(
     case NodeType.MethodDefinition:
       visitor.visitMethodDefinition?.(node as MethodDefinition, context);
       visitMethodDefinitionChildren(node as MethodDefinition, visitor, context);
+      break;
+    case NodeType.FieldInitializer:
+      visitor.visitFieldInitializer?.(node as FieldInitializer, context);
+      visitFieldInitializerChildren(node as FieldInitializer, visitor, context);
+      break;
+    case NodeType.SuperInitializer:
+      visitor.visitSuperInitializer?.(node as SuperInitializer, context);
+      visitSuperInitializerChildren(node as SuperInitializer, visitor, context);
       break;
     case NodeType.AccessorDeclaration:
       visitor.visitAccessorDeclaration?.(node as AccessorDeclaration, context);
@@ -1062,7 +1074,32 @@ function visitMethodDefinitionChildren<T>(
     visit(param, visitor, context);
   }
   visitTypeAnnotation(node.returnType, visitor, context);
+  if (node.superInitializer) {
+    visit(node.superInitializer, visitor, context);
+  }
+  for (const init of node.initializerList ?? []) {
+    visit(init, visitor, context);
+  }
   visit(node.body, visitor, context);
+}
+
+function visitFieldInitializerChildren<T>(
+  node: FieldInitializer,
+  visitor: Visitor<T>,
+  context: T,
+): void {
+  visit(node.field, visitor, context);
+  visit(node.value, visitor, context);
+}
+
+function visitSuperInitializerChildren<T>(
+  node: SuperInitializer,
+  visitor: Visitor<T>,
+  context: T,
+): void {
+  for (const arg of node.arguments) {
+    visit(arg, visitor, context);
+  }
 }
 
 function visitAccessorDeclarationChildren<T>(

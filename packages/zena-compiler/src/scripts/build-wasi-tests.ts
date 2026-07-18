@@ -49,7 +49,9 @@ ${pushes}
 // Build all test files
 const testPattern = 'test/*_test.zena';
 
-console.log(`Building zena-compiler tests (${selfHosted ? 'self-hosted' : 'bootstrap'})...`);
+console.log(
+  `Building zena-compiler tests (${selfHosted ? 'self-hosted' : 'bootstrap'})...`,
+);
 console.log('');
 
 const fullPattern = join(zenaDir, testPattern);
@@ -86,14 +88,11 @@ if (selfHosted) {
 let failed = false;
 
 try {
-  execSync(
-    compileCommand(wrapperPath, wasmFile),
-    {
-      stdio: 'inherit', // Show compiler output so we see errors immediately
-      cwd: repoRoot,
-      env: runEnv,
-    },
-  );
+  execSync(compileCommand(wrapperPath, wasmFile), {
+    stdio: 'inherit', // Show compiler output so we see errors immediately
+    cwd: repoRoot,
+    env: runEnv,
+  });
   console.log(`  ✓ Combined tests built successfully`);
 } catch (e: unknown) {
   console.error(`  ✗ Combined tests failed to build`);
@@ -104,14 +103,11 @@ const syntaxSrc = join(zenaDir, 'test', 'portable_syntax.zena');
 const syntaxWasm = join(outDir, testSubdir, 'portable_syntax.wasm');
 try {
   console.log('Building portable syntax tests...');
-  execSync(
-    compileCommand(syntaxSrc, syntaxWasm),
-    {
-      stdio: 'inherit',
-      cwd: repoRoot,
-      env: runEnv,
-    },
-  );
+  execSync(compileCommand(syntaxSrc, syntaxWasm), {
+    stdio: 'inherit',
+    cwd: repoRoot,
+    env: runEnv,
+  });
   console.log(`  ✓ Portable syntax tests built successfully`);
 } catch (e: unknown) {
   console.error(`  ✗ Portable syntax tests failed to build`);
@@ -122,14 +118,11 @@ const semanticsSrc = join(zenaDir, 'test', 'portable_semantics.zena');
 const semanticsWasm = join(outDir, testSubdir, 'portable_semantics.wasm');
 try {
   console.log('Building portable semantics tests...');
-  execSync(
-    compileCommand(semanticsSrc, semanticsWasm),
-    {
-      stdio: 'inherit',
-      cwd: repoRoot,
-      env: runEnv,
-    },
-  );
+  execSync(compileCommand(semanticsSrc, semanticsWasm), {
+    stdio: 'inherit',
+    cwd: repoRoot,
+    env: runEnv,
+  });
   console.log(`  ✓ Portable semantics tests built successfully`);
 } catch (e: unknown) {
   console.error(`  ✗ Portable semantics tests failed to build`);

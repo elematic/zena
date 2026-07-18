@@ -28,8 +28,6 @@ if (process.env.HOST_PATH) {
   process.env.PATH = `${process.env.HOST_PATH}:${process.env.PATH ?? ''}`;
 }
 
-
-
 // Find all .wasm files
 const pattern = join(outDir, '**/*.wasm');
 const allWasmFiles = await glob(pattern);

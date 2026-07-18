@@ -610,7 +610,9 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
       try {
         const expectedJson = JSON.parse(expected);
         if (expectedJson && Array.isArray(expectedJson.packages)) {
-          packageOrder = expectedJson.packages.map((p: any) => p.name).join(',');
+          packageOrder = expectedJson.packages
+            .map((p: any) => p.name)
+            .join(',');
         }
       } catch {}
     }

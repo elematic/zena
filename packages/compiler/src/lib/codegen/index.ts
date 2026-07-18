@@ -390,32 +390,39 @@ export class CodeGenerator {
           ) {
             const name = `${classDecl.name.name}_${getMemberName(member.name)}`;
             const type = inferType(this.#ctx, member.value);
+            let finalType = type;
+            if (type[0] === ValType.ref) {
+              finalType = [ValType.ref_null, ...type.slice(1)];
+            }
             let initBytes: number[] = [];
 
             // Default initialization
-            if (type[0] === ValType.i32)
+            if (finalType[0] === ValType.i32)
               initBytes = [0x41, 0x00]; // i32.const 0
-            else if (type[0] === ValType.i64)
+            else if (finalType[0] === ValType.i64)
               initBytes = [0x42, 0x00]; // i64.const 0
-            else if (type[0] === ValType.f32)
+            else if (finalType[0] === ValType.f32)
               initBytes = [0x43, 0x00, 0x00, 0x00, 0x00]; // f32.const 0
-            else if (type[0] === ValType.f64)
+            else if (finalType[0] === ValType.f64)
               initBytes = [
                 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
               ];
             // f64.const 0
-            else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
+            else if (
+              finalType[0] === ValType.ref_null ||
+              finalType[0] === ValType.ref
+            ) {
               initBytes = [Opcode.ref_null, HeapType.none];
             } else {
               initBytes = [0x41, 0x00];
             }
 
             const globalIndex = this.#ctx.module.addGlobal(
-              type,
+              finalType,
               true, // Static fields are mutable
               initBytes,
             );
-            this.#ctx.defineGlobal(name, globalIndex, type);
+            this.#ctx.defineGlobal(name, globalIndex, finalType);
             globalInitializers.push({
               index: globalIndex,
               init: member.value,
@@ -451,22 +458,29 @@ export class CodeGenerator {
                     varDecl.typeAnnotation.inferredType!,
                   )
                 : inferType(this.#ctx, varDecl.init);
+            let finalType = type;
+            if (type[0] === ValType.ref) {
+              finalType = [ValType.ref_null, ...type.slice(1)];
+            }
             let initBytes: number[] = [];
 
             // Default initialization
             // Note: Do NOT include the 0x0b end opcode here - addGlobal adds it
-            if (type[0] === ValType.i32)
+            if (finalType[0] === ValType.i32)
               initBytes = [0x41, 0x00]; // i32.const 0
-            else if (type[0] === ValType.i64)
+            else if (finalType[0] === ValType.i64)
               initBytes = [0x42, 0x00]; // i64.const 0
-            else if (type[0] === ValType.f32)
+            else if (finalType[0] === ValType.f32)
               initBytes = [0x43, 0x00, 0x00, 0x00, 0x00]; // f32.const 0
-            else if (type[0] === ValType.f64)
+            else if (finalType[0] === ValType.f64)
               initBytes = [
                 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
               ];
             // f64.const 0
-            else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
+            else if (
+              finalType[0] === ValType.ref_null ||
+              finalType[0] === ValType.ref
+            ) {
               initBytes = [Opcode.ref_null, HeapType.none];
             } else {
               // Default to i32 0 if unknown (e.g. boolean)
@@ -474,11 +488,11 @@ export class CodeGenerator {
             }
 
             const globalIndex = this.#ctx.module.addGlobal(
-              type,
+              finalType,
               true,
               initBytes,
             );
-            this.#ctx.defineGlobal(name, globalIndex, type);
+            this.#ctx.defineGlobal(name, globalIndex, finalType);
             // Register by declaration for identity-based lookup (new name resolution)
             this.#ctx.registerGlobalByDecl(varDecl, globalIndex);
             globalInitializers.push({

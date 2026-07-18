@@ -1,4 +1,5 @@
-import { Referrer, ReachabilityContext, SpecializerInterface, ClassInterfacePair } from './context.zena';
+import { Referrer, ReachabilityContext, SpecializerInterface, ClassInterfacePair, TypeLowererInterface } from './context.zena';
+import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo } from '../../types.zena';
 import { Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, TypeAnnotation, InterfaceDeclaration, Expression, MixinDeclaration } from '../../ast.zena';
@@ -29,12 +30,14 @@ export final class Specializer implements SpecializerInterface {
     if (!isConcrete(classType)) {
       return;
     }
+    let cha = this.pass.cha;
+    let typeLowerer = this.pass.typeLowerer;
     let cKey = getClassKey(classType) as String;
     if (this.pass.instantiatedSpecializedClasses.has(cKey)) {
       return;
     }
     this.pass.instantiatedSpecializedClasses.add(cKey);
-    this.pass.cha.registerInstantiatedClass(classType);
+    cha.registerInstantiatedClass(classType);
 
     /*
     if (let (true, funcs) = this.pass.wasm.classMethods.get(cKey)) {
@@ -82,11 +85,11 @@ export final class Specializer implements SpecializerInterface {
         this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, memberNodeId, memberModel, classType, true));
       }
     }
-    let eqMethod = this.pass.cha.findImplementingMethod(classType, "==");
+    let eqMethod = cha.findImplementingMethod(classType, "==");
     if (eqMethod != null) {
       this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (eqMethod as Node).id as i32, this.pass.getNodeModel(eqMethod as Node, unspecModel), classType, this.pass.currentReachable));
     }
-    let hashMethod = this.pass.cha.findImplementingMethod(classType, "hashCode");
+    let hashMethod = cha.findImplementingMethod(classType, "hashCode");
     if (hashMethod != null) {
       this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (hashMethod as Node).id as i32, this.pass.getNodeModel(hashMethod as Node, unspecModel), classType, this.pass.currentReachable));
     }
@@ -96,7 +99,7 @@ export final class Specializer implements SpecializerInterface {
       this.instantiateClassType(superType, this.pass.getClassModel(superType));
     }
 
-    this.pass.typeLowerer.discoverType(classType, model);
+    typeLowerer.discoverType(classType, model);
 
     let classDecl = this.pass.classDecls[classId];
 
@@ -124,7 +127,7 @@ export final class Specializer implements SpecializerInterface {
               };
               let vType = typeToValType(this.pass.wasm, fType as Type);
               let name = cd.name.name + "_" + fieldName;
-              let initExp = if (fd.value != null) { fd.value as Expression } else { null as Expression };
+              let initExp: Expression | null = if (fd.value != null) { fd.value as Expression } else { null };
               let wasmGlobal = new WasmGlobal(name, fieldName, vType, true, initExp, null, model);
               this.pass.wasm.globals.push(wasmGlobal);
             }
@@ -173,7 +176,7 @@ export final class Specializer implements SpecializerInterface {
     }
     
     // Implements list logic
-    let allIfaces = this.pass.cha.collectAllImplementedInterfaces(classType);
+    let allIfaces = cha.collectAllImplementedInterfaces(classType);
     for (let iface in allIfaces) {
       let unspecI = iface.genericSource ?? iface;
       let ifaceId = unspecI.symbolId;
@@ -200,18 +203,18 @@ export final class Specializer implements SpecializerInterface {
             let targetModel = this.pass.getClassModel(targetClassType);
             let refMemKey = i32ToString(ifaceId as i32) + "." + mName;
             let isReachable = this.pass.referencedReachableInterfaceMembers.has(refMemKey);
-            let mds = this.pass.cha.findImplementingMethods(targetClassType, mName);
+            let mds = cha.findImplementingMethods(targetClassType, mName);
             if (mds.length > 0) {
               for (let md in mds) {
                 this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), targetClassType, isReachable));
               }
             } else {
-              let acc = this.pass.cha.findImplementingAccessor(targetClassType, mName);
+              let acc = cha.findImplementingAccessor(targetClassType, mName);
               if (acc != null) {
                 this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), targetClassType, isReachable));
               } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
                 let fieldName = mName.sliceBytes(4, mName.length);
-                let fd = this.pass.cha.findImplementingField(targetClassType, fieldName);
+                let fd = cha.findImplementingField(targetClassType, fieldName);
                 if (fd != null) {
                   this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (fd as Node).id as i32, this.pass.getNodeModel(fd as Node, targetModel), targetClassType, isReachable));
                 }
@@ -300,16 +303,18 @@ export final class Specializer implements SpecializerInterface {
     }
 
     // 3. Discover referenced types in members (fields)
+    let typeLowerer = this.pass.typeLowerer;
+    let cha = this.pass.cha;
     for (let pair in ct.members) {
       if (pair.value is FieldInfo) {
         let resolvedType = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, pair.value.type);
-        this.pass.typeLowerer.discoverType(resolvedType, sourceModel);
+        typeLowerer.discoverType(resolvedType, sourceModel);
       }
     }
 
-    let specIfaces = this.pass.cha.collectAllImplementedInterfaces(ct);
+    let specIfaces = cha.collectAllImplementedInterfaces(ct);
     for (let iface in specIfaces) {
-      this.pass.typeLowerer.discoverType(iface, sourceModel);
+      typeLowerer.discoverType(iface, sourceModel);
     }
 
     // 4. Populate VTable slots and structs

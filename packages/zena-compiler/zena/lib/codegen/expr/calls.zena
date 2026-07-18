@@ -23,14 +23,23 @@ export let castValTypeRefNullIfNeeded = (ctx: FunctionContext, initWasmType: Val
     case _: false
   };
   if (isTargetRef && !valTypeEquals(initWasmType, targetWasmType)) {
-    let targetIdx = match (targetWasmType) {
-      case ValTypeRefNull as trn: trn.target.index
-      case ValTypeRef as tr: tr.target.index
-      case ValTypeStructRef: heapTypeToSigned(HeapType.struct)
-      case _: -1
-    };
-    if (targetIdx != -1) {
-      ctx.emitter.emitRefCastNull(targetIdx);
+    match (targetWasmType) {
+      case ValTypeRefNull as trn: {
+        let targetIdx = trn.target.index;
+        if (targetIdx != -1) {
+          ctx.emitter.emitRefCastNull(targetIdx);
+        }
+      }
+      case ValTypeRef as tr: {
+        let targetIdx = tr.target.index;
+        if (targetIdx != -1) {
+          ctx.emitter.emitRefCast(targetIdx);
+        }
+      }
+      case ValTypeStructRef: {
+        ctx.emitter.emitRefCastNull(heapTypeToSigned(HeapType.struct));
+      }
+      case _: {}
     }
   }
 };
@@ -731,11 +740,13 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           currentGenExpr(member.object, false);
           var scratchLocal = ctx.getStructScratchLocal(fatPtr);
           ctx.emitter.emitLocalTee(scratchLocal);
+          ctx.emitter.emitRefCast(fatPtr.index);
           ctx.emitter.emitStructGet(fatPtr.index, 0); 
           
           generateCallArguments(ctx, call, ft, scratchLocal, currentGenExpr);
           
           ctx.emitter.emitLocalGet(scratchLocal);
+          ctx.emitter.emitRefCast(fatPtr.index);
           ctx.emitter.emitStructGet(fatPtr.index, 1); 
           ctx.emitter.emitStructGet(vst.index, methodIndex); 
           

@@ -1618,6 +1618,11 @@ function isValidCast(sourceType: Type, targetType: Type): boolean {
     return false;
   }
 
+  // Null → Non-nullable: INVALID
+  if (sourceType.kind === TypeKind.Null && !isNullableType(targetType)) {
+    return false;
+  }
+
   // All other casts are allowed (checked at runtime)
   return true;
 }
@@ -1653,9 +1658,16 @@ function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
 
   // Validate the cast is semantically valid
   if (!isValidCast(sourceType, targetType)) {
+    let errorMsg = `Cannot cast type '${typeToString(sourceType)}' to '${typeToString(targetType)}'.`;
+    if (sourceType.kind === TypeKind.Null && !isNullableType(targetType)) {
+      errorMsg = `Cannot cast 'null' to non-nullable type '${typeToString(targetType)}'.`;
+    } else if (isValuePrimitive(sourceType) && !isValuePrimitive(targetType)) {
+      errorMsg =
+        `Cannot cast primitive type '${typeToString(sourceType)}' to reference type '${typeToString(targetType)}'. ` +
+        `Use string concatenation or a conversion function instead.`;
+    }
     ctx.diagnostics.reportError(
-      `Cannot cast primitive type '${typeToString(sourceType)}' to reference type '${typeToString(targetType)}'. ` +
-        `Use string concatenation or a conversion function instead.`,
+      errorMsg,
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(expr.loc),
     );

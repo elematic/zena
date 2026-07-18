@@ -5,8 +5,9 @@ import { ValType } from '../wasm.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { WasmTag, WasmGlobal, WasmStruct } from '../wasm-module.zena';
-import { typeToValType } from '../type-mapping.zena';
+import { typeToValType, getExpressionType } from '../type-mapping.zena';
 import { generatePatternBinding } from '../stmt/bindings.zena';
+import { castRefNullIfNeeded } from './calls.zena';
 
 export let generateIfExpression = (
   ctx: FunctionContext, 
@@ -82,15 +83,17 @@ export let generateIfExpression = (
         }
       }
       
+      let expectedType = if (dropResult) null else (nodeType as Type);
+      
       // 6. Generate consequent branch
-      generateIfBranch(ctx, expr.consequent, dropResult, genExpr, genStmt);
+      generateIfBranch(ctx, expr.consequent, expectedType, genExpr, genStmt);
       let consReachable = ctx.isReachable;
       
       // 7. Generate alternate branch (else)
       ctx.isReachable = wasReachable;
       if (expr.alternate != null) {
         ctx.emitter.emitElse();
-        generateIfBranch(ctx, expr.alternate as Node, dropResult, genExpr, genStmt);
+        generateIfBranch(ctx, expr.alternate as Node, expectedType, genExpr, genStmt);
         let altReachable = ctx.isReachable;
         ctx.isReachable = consReachable || altReachable;
         if (!ctx.isReachable) {
@@ -115,13 +118,15 @@ export let generateIfExpression = (
 
   let wasReachable = ctx.isReachable;
 
-  generateIfBranch(ctx, expr.consequent, dropResult, genExpr, genStmt);
+  let expectedType = if (dropResult) null else (nodeType as Type);
+
+  generateIfBranch(ctx, expr.consequent, expectedType, genExpr, genStmt);
   let consReachable = ctx.isReachable;
   
   ctx.isReachable = wasReachable;
   if (expr.alternate != null) {
     ctx.emitter.emitElse();
-    generateIfBranch(ctx, expr.alternate as Node, dropResult, genExpr, genStmt);
+    generateIfBranch(ctx, expr.alternate as Node, expectedType, genExpr, genStmt);
     let altReachable = ctx.isReachable;
     ctx.isReachable = consReachable || altReachable;
     if (!ctx.isReachable) {
@@ -139,13 +144,13 @@ export let generateIfExpression = (
 export let generateIfBranch = (
   ctx: FunctionContext,
   branch: Node,
-  dropResult: boolean,
+  expectedType: Type | null,
   genExpr: (e: Expression, discardValue: boolean) => void,
   genStmt: (s: Statement) => void
 ): void => {
   if (branch is BlockStatement) {
     let block = branch as BlockStatement;
-    if (dropResult) {
+    if (expectedType == null) {
       genStmt(block);
     } else {
       // Evaluate all but last statement
@@ -157,14 +162,24 @@ export let generateIfBranch = (
         if (lastStmt is ExpressionStatement) {
           let exprStmt = lastStmt as ExpressionStatement;
           genExpr(exprStmt.expression, false);
-          // Don't drop it, it's the result
+          let argType = getExpressionType(ctx, exprStmt.expression);
+          if (argType != null) {
+            castRefNullIfNeeded(ctx, argType as Type, expectedType as Type);
+          }
         } else {
           genStmt(lastStmt);
         }
       }
     }
   } else if (branch is Expression) {
-    genExpr(branch as Expression, dropResult);
+    let expr = branch as Expression;
+    genExpr(expr, expectedType == null);
+    if (expectedType != null) {
+      let argType = getExpressionType(ctx, expr);
+      if (argType != null) {
+        castRefNullIfNeeded(ctx, argType as Type, expectedType as Type);
+      }
+    }
   } else {
     throw new Error("Invalid if branch type in codegen");
   }
@@ -206,6 +221,8 @@ export let generateTryExpression = (
     resultLocal = ctx.allocLocal(resultType);
   }
 
+  let expectedType = if (resultLocal == -1) null else (nodeType as Type);
+
   if (expr.handler != null) {
     // block $done
     ctx.emitter.emitBlock(new ValTypeVoid());
@@ -220,7 +237,7 @@ export let generateTryExpression = (
     ctx.enterBlockStructure();
 
     // Generate try body
-    generateIfBranch(ctx, expr.body as Node, resultLocal == -1, genExpr, genStmt);
+    generateIfBranch(ctx, expr.body as Node, expectedType, genExpr, genStmt);
     if (resultLocal != -1) {
       ctx.emitter.emitLocalSet(resultLocal);
     }
@@ -233,7 +250,7 @@ export let generateTryExpression = (
     if (expr.finalizer != null) {
       let tryReachable = ctx.isReachable;
       ctx.isReachable = wasReachable;
-      generateIfBranch(ctx, expr.finalizer as Node, true, genExpr, genStmt);
+      generateIfBranch(ctx, expr.finalizer as Node, null, genExpr, genStmt);
       ctx.isReachable = tryReachable;
     }
 
@@ -278,7 +295,7 @@ export let generateTryExpression = (
     }
 
     // Generate catch body
-    generateIfBranch(ctx, handler.body as Node, resultLocal == -1, genExpr, genStmt);
+    generateIfBranch(ctx, handler.body as Node, expectedType, genExpr, genStmt);
     if (resultLocal != -1) {
       ctx.emitter.emitLocalSet(resultLocal);
     }
@@ -287,7 +304,7 @@ export let generateTryExpression = (
     if (expr.finalizer != null) {
       let catchReachable = ctx.isReachable;
       ctx.isReachable = wasReachable;
-      generateIfBranch(ctx, expr.finalizer as Node, true, genExpr, genStmt);
+      generateIfBranch(ctx, expr.finalizer as Node, null, genExpr, genStmt);
       ctx.isReachable = catchReachable;
     }
 
@@ -325,7 +342,7 @@ export let generateTryExpression = (
     ctx.enterBlockStructure();
 
     // Generate try body
-    generateIfBranch(ctx, expr.body as Node, resultLocal == -1, genExpr, genStmt);
+    generateIfBranch(ctx, expr.body as Node, expectedType, genExpr, genStmt);
     if (resultLocal != -1) {
       ctx.emitter.emitLocalSet(resultLocal);
     }
@@ -355,7 +372,7 @@ export let generateTryExpression = (
 
     // Run finally (both paths end up here)
     ctx.isReachable = wasReachable;
-    generateIfBranch(ctx, expr.finalizer as Node, true, genExpr, genStmt);
+    generateIfBranch(ctx, expr.finalizer as Node, null, genExpr, genStmt);
 
     // If we caught an exception, restore payload and rethrow
     ctx.emitter.emitLocalGet(caughtLocal);

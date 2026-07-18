@@ -192,11 +192,6 @@ export class WasmModule {
     body: number[],
     debugInfo?: string,
   ) {
-    // Code entry: size (u32) + code
-    // code: vec(locals) + expr
-    // locals: vec(local)
-    // local: n (u32) + type (valtype)
-
     const definedIndex =
       this.#funcGlobalToDefinedIndex.get(index) ??
       index - this.#importedFunctionCount;

@@ -47,6 +47,32 @@ import type {ClassInfo} from './types.js';
  * the first tuple variant to determine the WASM signature. At runtime, all
  * variants must have the same WASM representation.
  */
+function mapUnionOfInlineTuplesToWasmResults(
+  ctx: CodegenContext,
+  unionType: UnionType,
+): number[][] | null {
+  const memberTuples = unionType.types.filter(
+    (t) => t.kind === TypeKind.InlineTuple,
+  ) as InlineTupleType[];
+
+  if (memberTuples.length === 0) return null;
+
+  const results: number[][] = [];
+  const arity = memberTuples[0].elementTypes.length;
+  for (let i = 0; i < arity; i++) {
+    const elementTypes = memberTuples.map((t) => t.elementTypes[i]);
+    const hasHole = elementTypes.some(
+      (t) => t.kind === TypeKind.Hole || t.kind === TypeKind.Null,
+    );
+    const nonHoleType =
+      elementTypes.find(
+        (t) => t.kind !== TypeKind.Hole && t.kind !== TypeKind.Null,
+      ) ?? elementTypes[0];
+    results.push(mapCheckerTypeToWasmType(ctx, nonHoleType, hasHole));
+  }
+  return results;
+}
+
 export function mapReturnTypeToWasmResults(
   ctx: CodegenContext,
   type: Type,
@@ -73,15 +99,8 @@ export function mapReturnTypeToWasmResults(
     if (unionType.types.some((t) => t.kind === TypeKind.Void)) {
       return [];
     }
-    // Find the first inline tuple in the union to get the WASM signature
-    for (const t of unionType.types) {
-      if (t.kind === TypeKind.InlineTuple) {
-        const tupleType = t as InlineTupleType;
-        return tupleType.elementTypes.map((el) =>
-          mapCheckerTypeToWasmType(ctx, el),
-        );
-      }
-    }
+    const tupleResults = mapUnionOfInlineTuplesToWasmResults(ctx, unionType);
+    if (tupleResults) return tupleResults;
   }
   // For all other types, wrap in an array
   const mapped = mapCheckerTypeToWasmType(ctx, type);
@@ -534,7 +553,11 @@ export function registerDeclaredFunction(
 
           body.push(0xfb, GcOpcode.any_convert_extern);
           if (results[0][0] !== ValType.anyref) {
-            body.push(0xfb, GcOpcode.ref_cast_null);
+            const isNullable = results[0][0] === ValType.ref_null;
+            body.push(
+              0xfb,
+              isNullable ? GcOpcode.ref_cast_null : GcOpcode.ref_cast,
+            );
             body.push(...WasmModule.encodeSignedLEB128(targetTypeIdx));
           }
 

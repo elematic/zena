@@ -178,17 +178,17 @@ suite('Generic Class Context Consistency', () => {
       const source = `
         class Node {
           value: i32;
-          #child: Node;
+          #child: Node | null;
           
-          new(value: i32, child: Node) : value = value, #child = child {}
+          new(value: i32, child: Node | null) : value = value, #child = child {}
           
           getChildValue(): i32 {
-            return this.#child.value;
+            return (this.#child as Node).value;
           }
         }
         
         export let main = (): i32 => {
-          let leaf = new Node(41, null as Node);
+          let leaf = new Node(41, null);
           let root = new Node(1, leaf);
           return root.value + root.getChildValue();
         };
@@ -207,17 +207,17 @@ suite('Generic Class Context Consistency', () => {
         
         class Node<T> {
           value: T;
-          #child: Node<T>;
+          #child: Node<T> | null;
           
-          new(value: T, child: Node<T>) : value = value, #child = child {}
+          new(value: T, child: Node<T> | null) : value = value, #child = child {}
           
           getChildValue(): T {
-            return this.#child.value;
+            return (this.#child as Node<T>).value;
           }
         }
         
         export let main = (): i32 => {
-          let leaf = new Node<Wrapper>(new Wrapper(41), null as Node<Wrapper>);
+          let leaf = new Node<Wrapper>(new Wrapper(41), null);
           let root = new Node<Wrapper>(new Wrapper(1), leaf);
           return root.value.val + root.getChildValue().val;
         };

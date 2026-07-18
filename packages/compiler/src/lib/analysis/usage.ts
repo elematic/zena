@@ -1439,9 +1439,13 @@ class UsageAnalyzer {
     classType: ClassType | InterfaceType,
     methodName: string,
   ): boolean {
-    const isTarget = classType.name?.includes('IterableUtils') || classType.name?.includes('Iterable');
+    const isTarget =
+      classType.name?.includes('IterableUtils') ||
+      classType.name?.includes('Iterable');
     if (isTarget) {
-      console.error(`  isMethodUsedInternal checking: ${classType.name}.${methodName}`);
+      console.error(
+        `  isMethodUsedInternal checking: ${classType.name}.${methodName}`,
+      );
     }
     // Check if directly marked as used
     const usedSet = this.#usedMethods.get(classType);
@@ -1458,7 +1462,8 @@ class UsageAnalyzer {
       if (ct.genericSource) {
         const sourceUsedSet = this.#usedMethods.get(ct.genericSource);
         if (sourceUsedSet?.has(methodName)) {
-          if (isTarget) console.error(`    Found in genericSource direct usedSet`);
+          if (isTarget)
+            console.error(`    Found in genericSource direct usedSet`);
           return true;
         }
       }
@@ -1467,7 +1472,10 @@ class UsageAnalyzer {
       if (it.genericSource) {
         const sourceUsedSet = this.#usedMethods.get(it.genericSource);
         if (sourceUsedSet?.has(methodName)) {
-          if (isTarget) console.error(`    Found in genericSource direct usedSet (interface)`);
+          if (isTarget)
+            console.error(
+              `    Found in genericSource direct usedSet (interface)`,
+            );
           return true;
         }
       }
@@ -1480,7 +1488,8 @@ class UsageAnalyzer {
       while (current) {
         const polySet = this.#polymorphicMethods.get(current);
         if (polySet?.has(methodName)) {
-          if (isTarget) console.error(`    Found polymorphic in super: ${current.name}`);
+          if (isTarget)
+            console.error(`    Found polymorphic in super: ${current.name}`);
           return true;
         }
         current = current.superType;
@@ -1489,7 +1498,8 @@ class UsageAnalyzer {
       // Also check implemented interfaces for polymorphic calls
       for (const iface of ct.implements) {
         if (this.#isMethodUsedViaInterface(iface, methodName)) {
-          if (isTarget) console.error(`    Found used via interface: ${iface.name}`);
+          if (isTarget)
+            console.error(`    Found used via interface: ${iface.name}`);
           return true;
         }
       }
@@ -1501,7 +1511,10 @@ class UsageAnalyzer {
       for (const parent of it.extends ?? []) {
         const polySet = this.#polymorphicMethods.get(parent);
         if (polySet?.has(methodName)) {
-          if (isTarget) console.error(`    Found polymorphic in extends parent interface: ${parent.name}`);
+          if (isTarget)
+            console.error(
+              `    Found polymorphic in extends parent interface: ${parent.name}`,
+            );
           return true;
         }
       }

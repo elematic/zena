@@ -22,6 +22,13 @@ functions, etc.). The `T | null` union handler unwraps to the inner type and
 recurses — but since the inner type already returns `ref_null`, the unwrapping
 is a no-op for reference types.
 
+## Compiler Target Status
+
+This optimization targets both compilers, but with different implementation scopes and phases:
+
+- **Bootstrap Compiler (`packages/compiler`)**: Currently, the bootstrap compiler maps all reference types to `ValType.ref_null` (nullable) at the Wasm GC level by default. Transitioning to non-nullable Wasm reference types would require refactoring multiple codegen blocks (such as `try/catch` block result allocation and `match` expression branch mergers) to trace definite assignment. Thus, the bootstrap compiler retains the simpler `ref_null` model to ensure compiler stability.
+- **Self-Hosted Compiler (`packages/zena-compiler`)**: The self-hosted compiler is the primary target for full non-nullable Wasm GC optimization. Since it tracks nullability semantics statically at the Zena type checker level, its code generator is designed to eventually map non-nullable types directly to Wasm `(ref $T)`. The self-hosted codegen already implements explicit `emitRefCast` (the equivalent of Wasm's non-null casting) during interface calls and record dispatch field access to handle conversions at non-nullable boundaries.
+
 ## Proposed Change
 
 Make `mapCheckerTypeToWasmType` return `[ValType.ref, typeIndex]` (non-nullable)
@@ -139,12 +146,22 @@ The checker already tracks which fields are `T | null` vs `T`.
 - **Casting chains** — downcasts from `anyref` (nullable) to concrete types
   need careful null handling.
 
-## Non-Goals
+## Wasm GC Validation Requirements
 
-- Using `(ref $T)` in function type signatures exported to JS hosts (JS can
-  always pass null/undefined). Exported boundaries should remain `ref_null`.
-- Optimizing `this` to non-nullable (always safe but would need separate
-  handling in method body generation).
+### Local Variable Initialization
+
+In WebAssembly GC, local variables of non-nullable types (like `(ref $T)`) do not have a default value. According to the Wasm specification:
+
+- Any local variable declared with a non-nullable type must be definitely assigned (written via `local.set` or `local.tee`) before it is read (`local.get`).
+- Since Zena strictly requires all local variables to be initialized upon declaration (e.g. `let x = ...`), this is naturally satisfied. However, the compiler must ensure it generates Wasm bytecode that initializes these locals immediately upon declaration to satisfy the Wasm validator.
+
+### Constructor Field Allocation
+
+In WebAssembly GC, a struct cannot be allocated in a partially uninitialized state if it has non-nullable fields. Crucially:
+
+- `struct.new_default` is only valid if all struct fields are defaultable (nullable references or primitives).
+- If a struct has a non-nullable field of type `(ref $T)`, `struct.new` must be called with a valid, non-null reference value.
+- Since Zena enforces that all non-nullable fields must be initialized via inline initializers or constructor initializer lists (including `this.` parameter properties) before the constructor body executes, the compiler must evaluate these initializer expressions first, store them in temporary Wasm locals, and call `struct.new` to allocate the object with its fields already initialized, instead of allocating a default-initialized object and assigning fields dynamically in the constructor body.
 
 ## Checker Support (Already Exists)
 

@@ -5692,7 +5692,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
           isFinal: false,
         });
 
-        if (!member.isFinal) {
+        if (member.mutability === 'var') {
           mixinType.methods.set(setterName, {
             kind: TypeKind.Function,
             parameters: [fieldType],

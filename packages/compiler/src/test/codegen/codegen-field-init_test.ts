@@ -65,16 +65,10 @@ suite('Codegen - Field Initialization', () => {
     assert.equal(result, 0);
   });
 
-  test('should demonstrate initialization hazard (virtual call from super constructor)', async () => {
-    // This test confirms the current behavior where virtual calls from super
-    // constructors execute BEFORE subclass field initializers. Base constructor
-    // calls setup() -> Derived.setup() -> accesses this.x. At this point,
-    // Derived.x has NOT been initialized yet (it defaults to 0 for i32).
-    //
-    // We capture the value of x during setup() by storing it in a boxed field
-    // (Box<i32>). The field is declared nullable WITHOUT an inline initializer
-    // so that the value set by setup() persists - if we used `= null`, that
-    // inline initializer would run AFTER setup() and overwrite our captured value.
+  test('should demonstrate initialization hazard avoidance (virtual call from super constructor)', async () => {
+    // Under the struct.new compilation pattern, all inline field initializers (including subclass ones)
+    // are evaluated and set during allocation before any constructor bodies run.
+    // Therefore, virtual method calls from super constructors see the fully initialized field values.
     const source = `
       class Box<T> {
         value: T;
@@ -93,15 +87,13 @@ suite('Codegen - Field Initialization', () => {
         var capturedX: Box<i32> | null;  // No initializer - defaults to null, then setup() sets it
 
         setup(): void {
-          // Hazard: this.x is not initialized yet!
-          // In WASM, uninitialized i32 fields are 0.
+          // subclass field x is already initialized to 100
           this.capturedX = new Box(this.x);
         }
       }
       
       export let run = (): i32 => {
         let d = new Derived();
-        // capturedX.value should be 0 because x was 0 when setup() ran
         let box = d.capturedX;
         if (box !== null) {
           return box.value;
@@ -110,7 +102,6 @@ suite('Codegen - Field Initialization', () => {
       };
     `;
     const result = await compileAndRun(source, 'run');
-    // x was 0 during setup() - demonstrates the initialization hazard
-    assert.equal(result, 0);
+    assert.equal(result, 100);
   });
 });
