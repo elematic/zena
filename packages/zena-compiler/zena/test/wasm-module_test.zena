@@ -1,0 +1,69 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { parse } from '../lib/parser.zena';
+import { ScopeBuilder } from '../lib/scope/scope-builder.zena';
+import { checkModule, SharedCheckerState } from '../lib/checker.zena';
+import { SemanticModel } from '../lib/semantic-model.zena';
+import { WasmModule, WasmGlobal } from '../lib/codegen/wasm-module.zena';
+import { ValTypeI32 } from '../lib/codegen/wasm.zena';
+import {
+  ClassKey, InterfaceKey, getClassInterfaceKey, classInterfaceKeyToString
+} from '../lib/codegen/codegen-utils.zena';
+
+/**
+ * A minimal SemanticModel: WasmGlobal requires one, but these tests never
+ * consult it.
+ */
+let makeModel = (): SemanticModel => {
+  let ast = parse("let _x = 1;", "<test>");
+  let scopeBuilder = new ScopeBuilder("<test>");
+  let scopeResult = scopeBuilder.build(ast);
+  return checkModule(ast, scopeResult, null, null, false, new SharedCheckerState()).model;
+};
+
+let makeGlobal = (name: String, model: SemanticModel): WasmGlobal => {
+  return new WasmGlobal(name, name, new ValTypeI32(), false, null, null, model);
+};
+
+export let tests = suite('WasmModule class-interface vtable keys', (): void => {
+  // These functions predate compound keys and used to cast the
+  // ClassInterfaceKey class to String, trapping the moment they ran.
+
+  test('classInterfaceKeyToString joins class and interface keys', (ctx: TestContext): void => {
+    let key = getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey);
+    equal(classInterfaceKeyToString(key), "Foo_i32::Iter_i32");
+  });
+
+  test('getClassInterfaceVTable returns an exact match', (ctx: TestContext): void => {
+    let model = makeModel();
+    let wasm = new WasmModule();
+    let key = getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey);
+    let g = makeGlobal("foo_iter_vt", model);
+    wasm.classInterfaceVTables[key] = g;
+
+    let found = wasm.getClassInterfaceVTable(getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey));
+    isTrue(found == g);
+  });
+
+  test('lookup miss falls back to a specialization-suffix match', (ctx: TestContext): void => {
+    let model = makeModel();
+    let wasm = new WasmModule();
+    let g = makeGlobal("foo_iter_vt", model);
+    wasm.classInterfaceVTables[getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey)] = g;
+
+    // The unspecialized request matches the entry whose keys extend it
+    // with a `_`-separated suffix.
+    let found = wasm.getClassInterfaceVTable(getClassInterfaceKey("Foo" as ClassKey, "Iter" as InterfaceKey));
+    isTrue(found == g);
+  });
+
+  test('lookup miss with no candidate returns null instead of trapping', (ctx: TestContext): void => {
+    let model = makeModel();
+    let wasm = new WasmModule();
+    wasm.classInterfaceVTables[getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey)] = makeGlobal("foo_iter_vt", model);
+
+    // Same-prefix names that are not `_`-suffix extensions must not match.
+    let found = wasm.getClassInterfaceVTable(getClassInterfaceKey("Fool" as ClassKey, "Iter" as InterfaceKey));
+    isTrue(found == null);
+  });
+});
