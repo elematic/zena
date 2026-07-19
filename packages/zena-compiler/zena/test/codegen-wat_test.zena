@@ -155,6 +155,39 @@ export let tests = suite('WatGenerator', (): void => {
     assertSnapshot('param_default_opt', result);
   });
 
+  test('parameter default dependency optimization skips locals when dependent default is not run', (ctx: TestContext): void => {
+    let host = new MockHost();
+    let source = "let testFn = (a: i32, b: i32 = a, c: i32 = 10): i32 => a + b + c;\nexport let foo = (): i32 => testFn(1, 2);";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = compiler.compile("test.zena");
+    let checkRes = checkCompilation(compResult, null, false);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    assertSnapshot('param_default_opt_run_check', result);
+  });
+
   test('record property access casting', (ctx: TestContext): void => {
     let host = new MockHost();
     let source = "export let main = (): i32 => {\n  let record = { a: 10, b: { c: 20 } };\n  return record.b.c;\n};";

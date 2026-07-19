@@ -14,11 +14,50 @@ import {
 } from '../ast.zena';
 import { Type, F64Type, F32Type, FunctionType, ErrorType } from '../types.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
+import { SemanticModel } from '../semantic-model.zena';
+import { walk } from '../visitor.zena';
 import { ValType } from './wasm.zena';
 import { Array } from 'zena:array';
 import { FunctionContext } from './function-context.zena';
 import { console } from 'zena:console';
 import { i32ToString } from 'zena:string-convert';
+
+let referencesSymbol = (node: Node, symId: SymbolId, model: SemanticModel): boolean => {
+  let isRef = new Array<boolean>();
+  isRef.push(false);
+  walk(node, (n: Node): boolean => {
+    match (n) {
+      case Identifier as id: {
+        let nSym = model.resolve(id);
+        if (nSym != null) {
+          if ((nSym as Symbol).id == symId) {
+            isRef[0] = true;
+          }
+        }
+      }
+      case PropertyAssignment as prop: {
+        walk(prop.value, (n2) => {
+          match (n2) {
+            case Identifier as id: {
+              let nSym = model.resolve(id);
+              if (nSym != null) {
+                if ((nSym as Symbol).id == symId) {
+                  isRef[0] = true;
+                }
+              }
+            }
+            case _: {}
+          }
+          return true;
+        }, (n2) => {});
+        return false;
+      }
+      case _: {}
+    }
+    return true;
+  }, (n) => {});
+  return isRef[0];
+};
 
 export let discoverLocalsFromExpr = (ctx: FunctionContext, expr: Expression, discExpr: (e: Expression) => void, discStmt: (s: Statement) => void): void => {
   match (expr) {
@@ -55,16 +94,31 @@ export let discoverLocalsFromExpr = (ctx: FunctionContext, expr: Expression, dis
       match (calleeType) {
         case FunctionType as ft: {
           if (ft.parameterSymbols != null) {
+            let model = ctx.wasmFunction.model;
+            let originalArgCount = model.getOriginalArgCount(expr);
+            let actualArgCount = args.length;
             let symbols = ft.parameterSymbols as Array<SymbolId>;
             var i = 0;
             while (i < symbols.length && i < ft.parameters.length) {
               let symId = symbols[i];
               if (symId != (-1 as SymbolId) && !ctx.localIndices.has(symId)) {
-                let paramType = ft.parameters[i];
-                var vType = typeToValTypeWithSub(ctx.wasm, paramType, ctx.wasmFunction);
-                let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
-                ctx.localIndices[symId] = index;
-                ctx.localTypes.push(vType);
+                var shouldSave = false;
+                if (originalArgCount < actualArgCount) {
+                  var j = originalArgCount;
+                  while (j < actualArgCount && !shouldSave) {
+                    if (j > i) {
+                      shouldSave = referencesSymbol(args[j], symId, model);
+                    }
+                    j += 1;
+                  }
+                }
+                if (shouldSave) {
+                  let paramType = ft.parameters[i];
+                  var vType = typeToValTypeWithSub(ctx.wasm, paramType, ctx.wasmFunction);
+                  let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
+                  ctx.localIndices[symId] = index;
+                  ctx.localTypes.push(vType);
+                }
               }
               i += 1;
             }

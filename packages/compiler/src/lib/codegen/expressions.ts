@@ -12401,6 +12401,60 @@ function findArrayIntrinsic(
 /**
  * Generates method call arguments, handling default parameter expressions that may
  * reference `this`, class members, or earlier parameters.
+ */
+function findReferencedIdentifiers(
+  node: any,
+  set: Set<string>,
+  visited = new Set<any>(),
+) {
+  if (!node) return;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      findReferencedIdentifiers(item, set, visited);
+    }
+    return;
+  }
+  if (typeof node !== 'object') return;
+  if (visited.has(node)) return;
+  visited.add(node);
+
+  switch (node.type) {
+    case NodeType.Identifier:
+      set.add(node.name);
+      break;
+    case NodeType.MemberExpression:
+      findReferencedIdentifiers(node.object, set, visited);
+      // Skip node.property since it's a property access
+      break;
+    case NodeType.PropertyAssignment:
+      findReferencedIdentifiers(node.value, set, visited);
+      // Skip node.name since it's the property name
+      break;
+    default:
+      // Traverse all child properties
+      const keysToSkip = new Set([
+        'parent',
+        'loc',
+        'type',
+        'inferredType',
+        'resolvedDeclaration',
+        'symbolInfo',
+        'scope',
+        'enclosingClass',
+        'target',
+        'defaultArgsOwner',
+        'defaultArgParamNames',
+      ]);
+      for (const key of Object.keys(node)) {
+        if (keysToSkip.has(key)) continue;
+        findReferencedIdentifiers(node[key], set, visited);
+      }
+      break;
+  }
+}
+
+/**
+ * Generates call arguments, handling adapter operations and default values.
  *
  * For default arguments (index >= originalArgCount), this function:
  * 1. Sets up the correct `this` context so that expressions like `this.#field` work
@@ -12425,10 +12479,13 @@ function generateCallArguments(
   const defaultArgsOwner = expr.defaultArgsOwner as ClassType | undefined;
   const parameterNames = expr.defaultArgParamNames;
 
-  // Check if any defaults might reference earlier parameters.
-  // We need to pre-generate earlier arguments to temp locals if so.
-  const hasDefaultsThatMayRefParams =
-    originalArgCount < expr.arguments.length && parameterNames;
+  // Find parameter names referenced by default expressions that are actually run
+  const referencedParams = new Set<string>();
+  if (parameterNames && originalArgCount < expr.arguments.length) {
+    for (let i = originalArgCount; i < expr.arguments.length; i++) {
+      findReferencedIdentifiers(expr.arguments[i], referencedParams);
+    }
+  }
 
   // Map from parameter name to temp local index (for defaults referencing earlier params)
   const paramLocals = new Map<string, {index: number; type: number[]}>();
@@ -12442,11 +12499,11 @@ function generateCallArguments(
 
     // Check if we need to save this argument to a temp local for later defaults to reference.
     // We need to save if:
-    // 1. There are defaults that may reference earlier params
+    // 1. A subsequent default parameter that is actually run references this parameter
     // 2. There are more arguments after this one
     // 3. This parameter has a name
     const shouldSaveToTempLocal =
-      hasDefaultsThatMayRefParams && hasMoreArgs && paramName;
+      paramName !== undefined && referencedParams.has(paramName) && hasMoreArgs;
 
     // For default arguments, we need to set up context (this and earlier params)
     if (isDefault && (defaultArgsOwner || paramLocals.size > 0)) {

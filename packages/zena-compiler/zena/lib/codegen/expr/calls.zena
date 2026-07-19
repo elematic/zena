@@ -1,4 +1,5 @@
-import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration, getMemberPropertyName, NewExpression } from '../../ast.zena';
+import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration, getMemberPropertyName, NewExpression, PropertyAssignment } from '../../ast.zena';
+import { walk } from '../../visitor.zena';
 import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, UnionType, TypeParameterType, typeToString, isVoidOrNeverType, instantiateClassType, isRefType, baseType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
@@ -48,9 +49,44 @@ export let castRefNullIfNeeded = (ctx: FunctionContext, argType: Type, targetTyp
   let initWasmType = typeToValTypeWithSub(ctx.wasm, argType, ctx.wasmFunction);
   let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetType, ctx.wasmFunction);
   castValTypeRefNullIfNeeded(ctx, initWasmType, targetWasmType);
+};let referencesSymbol = (node: Node, symId: SymbolId, model: SemanticModel): boolean => {
+  let isRef = new Array<boolean>();
+  isRef.push(false);
+  walk(node, (n: Node): boolean => {
+    match (n) {
+      case Identifier as id: {
+        let nSym = model.resolve(id);
+        if (nSym != null) {
+          if ((nSym as Symbol).id == symId) {
+            isRef[0] = true;
+          }
+        }
+      }
+      case PropertyAssignment as prop: {
+        walk(prop.value, (n2) => {
+          match (n2) {
+            case Identifier as id: {
+              let nSym = model.resolve(id);
+              if (nSym != null) {
+                if ((nSym as Symbol).id == symId) {
+                  isRef[0] = true;
+                }
+              }
+            }
+            case _: {}
+          }
+          return true;
+        }, (n2) => {});
+        return false;
+      }
+      case _: {}
+    }
+    return true;
+  }, (n) => {});
+  return isRef[0];
 };
 
-let generateCallArguments = (
+export let generateCallArguments = (
   ctx: FunctionContext,
   call: CallExpression,
   ft: FunctionType | null,
@@ -105,7 +141,18 @@ let generateCallArguments = (
     }
 
     // Save parameter value for subsequent default arguments if needed
-    if (symId != (-1 as SymbolId)) {
+    var shouldSave = false;
+    if (symId != (-1 as SymbolId) && originalArgCount < actualArgCount) {
+      var j = originalArgCount;
+      while (j < actualArgCount && !shouldSave) {
+        if (j > i) {
+          shouldSave = referencesSymbol(call.args[j], symId, model);
+        }
+        j += 1;
+      }
+    }
+
+    if (shouldSave) {
       let argTypeOpt = getExpressionType(ctx, arg);
       let expectedType = if (expectedParamType != null) (expectedParamType as Type) else (if (argTypeOpt == null) throw new Error("Missing parameter type for default arg save") else argTypeOpt as Type);
       let tempLocal = ctx.allocLocal(typeToValTypeWithSub(ctx.wasm, expectedType, ctx.wasmFunction));

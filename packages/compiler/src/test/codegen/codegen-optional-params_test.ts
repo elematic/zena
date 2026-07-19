@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compileAndRun} from './utils.js';
+import {compileAndRun, compileToWasm} from './utils.js';
 
 suite('CodeGenerator - Optional Parameters and Defaults', () => {
   test('should support optional parameters with defaults in functions', async () => {
@@ -79,5 +79,23 @@ suite('CodeGenerator - Optional Parameters and Defaults', () => {
     `;
     const result = await compileAndRun(source);
     assert.strictEqual(result, 1);
+  });
+
+  test('should not generate local.tee/locals for defaults with no parameter references', async () => {
+    const sourceDefaults = `
+      let testFn = (a: i32 = 1, b: i32 = 2): i32 => a + b;
+      export let main = (): i32 => testFn();
+    `;
+    const sourceExplicit = `
+      let testFn = (a: i32 = 1, b: i32 = 2): i32 => a + b;
+      export let main = (): i32 => testFn(1, 2);
+    `;
+    const wasmDefaults = compileToWasm(sourceDefaults);
+    const wasmExplicit = compileToWasm(sourceExplicit);
+    assert.strictEqual(
+      wasmDefaults.length,
+      wasmExplicit.length,
+      'Should compile identically to explicit arguments call (no extra locals/tees)',
+    );
   });
 });
