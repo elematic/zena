@@ -177,6 +177,11 @@ export final class ClassType extends Type {
   var classKey: String | null = null;
   var cachedParams: Array<TypeParameterType> | null = null;
   var cachedArgs: Array<Type> | null = null;
+  /**
+   * Memoized results of substituteTypeParamsInClassContext for this class,
+   * keyed by input type identity (codegen/type-mapping.zena).
+   */
+  var codegenSubstCache: HashMap<Type, Type> | null = null;
   
   /**
    * The members of the class (fields, methods, and accessors).
@@ -318,7 +323,7 @@ let substituteInType = (
         }
       }
       if (hasArgs && ctArgsVal.length > 0) {
-        let newArgs = new Array<Type>();
+        let newArgs = new Array<Type>(ctArgsVal.length);
         for (let arg in ctArgsVal) {
           let sub = substituteInType(arg, typeParameters, typeArguments);
           newArgs.push((sub ?? arg));
@@ -377,9 +382,11 @@ let substituteInType = (
           null
         };
         inst.fieldSetterNames = ct.fieldSetterNames;
+        let newVtable = new Array<String>(ct.vtable.length);
         for (let vt in ct.vtable) {
-          inst.vtable.push(vt);
+          newVtable.push(vt);
         }
+        inst.vtable = newVtable;
         inst.isFinal = ct.isFinal;
         inst.isCaseClass = ct.isCaseClass;
         inst.isAbstract = ct.isAbstract;
@@ -607,7 +614,7 @@ export let instantiateClassType = (
   result.forwardVariantNames = source.forwardVariantNames;
   
   // Copy vtable entries
-  result.vtable = new Array<String>();
+  result.vtable = new Array<String>(source.vtable.length);
   for (let f in source.vtable) {
     result.vtable.push(f);
   }
