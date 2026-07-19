@@ -16,6 +16,17 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Self-hosted checker does not surface inherited members on sealed variant types
+- **Found**: 2026-07-19
+- **Severity**: medium
+- **Workaround**: type the value as the sealed base (`let a: Ty = new Leaf(); a.uid`)
+- **Details**: Given `sealed class Ty { uid: i32 = next(); case Leaf }`, the
+  bootstrap accepts `new Leaf().uid`, but the self-hosted checker reports
+  "Property 'uid' does not exist on type 'Leaf'". Found while writing
+  tests/language/execution/case-classes/unit-variant-inherited-initializer.zena,
+  which uses the workaround.
+
+
 ### Compilers diverge on synthesized case-class hashCode overriding an explicit base hashCode
 
 - **Found**: 2026-07-18

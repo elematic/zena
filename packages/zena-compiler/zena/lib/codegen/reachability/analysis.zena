@@ -999,6 +999,26 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           if (info.singletonGlobal != null) {
             continue;
           }
+          // Mirror the bootstrap: only unit variants with no user fields
+          // (own or inherited) may be pre-allocated singletons. The
+          // singleton is built with struct.new of default values, which
+          // silently skips field initializers — e.g. a base-class
+          // `uid: i32 = nextUid()` would stay 0 on every instance.
+          var hasUserFields = false;
+          var curr: ClassType | null = cType;
+          while (curr != null && !hasUserFields) {
+            let cc = curr as ClassType;
+            for (let mPair in cc.members) {
+              if (mPair.value is FieldInfo && !mPair.value.isStatic) {
+                hasUserFields = true;
+                break;
+              }
+            }
+            curr = cc.superType;
+          }
+          if (hasUserFields) {
+            continue;
+          }
           let globalName = getClassSingletonName(cName);
           let globalType = new ValTypeRefNull(cStruct);
           let wasmGlobal = new WasmGlobal(

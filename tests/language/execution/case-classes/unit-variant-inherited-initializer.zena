@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 6
+
+// Unit variants of a sealed class must still run inherited field
+// initializers: the pre-allocated-singleton optimization only applies
+// when no user fields exist. (The self-hosted compiler used to build
+// such singletons with default field values, leaving `uid` at 0.)
+
+var counter: i32 = 0;
+let next = (): i32 => {
+  counter += 1;
+  return counter;
+};
+
+sealed class Ty {
+  uid: i32 = next();
+
+  case Leaf
+  case Node(x: i32)
+}
+
+export let main = (): i32 => {
+  // Typed as Ty: the self-hosted checker does not yet surface inherited
+  // members on the variant type itself.
+  let a: Ty = new Leaf();
+  let b: Ty = new Node(7);
+  return a.uid * 2 + b.uid * 2;  // 1*2 + 2*2 = 6
+};
