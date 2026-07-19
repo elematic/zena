@@ -138,7 +138,22 @@ if (runCompiler && targets.length > 0) {
       const t0 = performance.now();
       const output = execSync(
         `"${zenaCli}" build "${target.path}" -o "${selfOutWasm}" --time --no-cache`,
-        {cwd: repoRoot, encoding: 'utf-8', stdio: 'pipe'},
+        {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+          // Benchmark the tuned configuration each target would ship with:
+          // the self-compile uses build:self-hosted's GC headroom (without it
+          // the number measures wasmtime's collector, not the compiler), while
+          // the small targets skip the balloon since its ~1s page-commit cost
+          // would dominate them.
+          env: {
+            ...process.env,
+            ZENA_GC_RESERVE_MB:
+              process.env.ZENA_GC_RESERVE_MB ??
+              (target.name === 'self_compile.zena' ? '1536' : '0'),
+          },
+        },
       );
       const t1 = performance.now();
       selfTimes.push(t1 - t0);
