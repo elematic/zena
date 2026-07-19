@@ -45,25 +45,17 @@ export let tests = suite('WasmModule class-interface vtable keys', (): void => {
     isTrue(found == g);
   });
 
-  test('lookup miss falls back to a specialization-suffix match', (ctx: TestContext): void => {
-    let model = makeModel();
-    let wasm = new WasmModule();
-    let g = makeGlobal("foo_iter_vt", model);
-    wasm.classInterfaceVTables[getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey)] = g;
-
-    // The unspecialized request matches the entry whose keys extend it
-    // with a `_`-separated suffix.
-    let found = wasm.getClassInterfaceVTable(getClassInterfaceKey("Foo" as ClassKey, "Iter" as InterfaceKey));
-    isTrue(found == g);
-  });
-
-  test('lookup miss with no candidate returns null instead of trapping', (ctx: TestContext): void => {
+  test('lookup miss returns null, with no fuzzy matching', (ctx: TestContext): void => {
     let model = makeModel();
     let wasm = new WasmModule();
     wasm.classInterfaceVTables[getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey)] = makeGlobal("foo_iter_vt", model);
+    wasm.classInterfaceVTables[getClassInterfaceKey("Foo_string" as ClassKey, "Iter_string" as InterfaceKey)] = makeGlobal("foo_iter_vt2", model);
 
-    // Same-prefix names that are not `_`-suffix extensions must not match.
-    let found = wasm.getClassInterfaceVTable(getClassInterfaceKey("Fool" as ClassKey, "Iter" as InterfaceKey));
+    // An unspecialized request must not resolve to an arbitrary
+    // specialization's vtable: with several Foo_* entries registered, any
+    // prefix-based match would pick one silently and dispatch through the
+    // wrong vtable. A miss is a key-derivation bug the caller reports.
+    let found = wasm.getClassInterfaceVTable(getClassInterfaceKey("Foo" as ClassKey, "Iter" as InterfaceKey));
     isTrue(found == null);
   });
 });

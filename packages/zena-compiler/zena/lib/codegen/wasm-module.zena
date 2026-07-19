@@ -455,45 +455,19 @@ export final class WasmModule {
   functionAdaptations = new HashMap<FunctionAdaptationKey, WasmFunction>();
   var arrayMethods = new Array<WasmFunction>();
   
+  /**
+   * The vtable global registered for exactly this (class, interface) pair,
+   * or null. There is deliberately no fuzzy fallback here: a miss means the
+   * key derivation at the call site disagrees with the key derivation at
+   * registration, which is a bug to surface, not to paper over. (A previous
+   * fallback matched entries by `_`-suffix prefix, which is not unique
+   * across specializations — Foo would match both Foo_i32 and Foo_string —
+   * and it had trapped unconditionally since the compound-key migration,
+   * proving no passing path ever needed it.)
+   */
   getClassInterfaceVTable(key: ClassInterfaceKey): WasmGlobal | null {
     if (this.classInterfaceVTables.has(key)) {
       return this.classInterfaceVTables[key];
-    }
-    
-    // Fuzzy fallback: match an entry whose class/interface keys equal the
-    // requested ones or extend them with a `_`-separated specialization
-    // suffix. (This predates compound keys, when it sliced a "c::i" string;
-    // the casts it used trapped on the compound key class.)
-    let requestedClass = key.classKey as String;
-    let requestedInterface = key.interfaceKey as String;
-
-    for (let pair in this.classInterfaceVTables) {
-      let candidateClass = pair.key.classKey as String;
-      let candidateInterface = pair.key.interfaceKey as String;
-
-      var classMatches = false;
-      if (candidateClass == requestedClass) {
-        classMatches = true;
-      } else if (candidateClass.startsWith(requestedClass)) {
-        let charAfter = candidateClass.getByteAt(requestedClass.length);
-        if (charAfter == 95) {
-          classMatches = true;
-        }
-      }
-
-      var interfaceMatches = false;
-      if (candidateInterface == requestedInterface) {
-        interfaceMatches = true;
-      } else if (candidateInterface.startsWith(requestedInterface)) {
-        let charAfter = candidateInterface.getByteAt(requestedInterface.length);
-        if (charAfter == 95) {
-          interfaceMatches = true;
-        }
-      }
-
-      if (classMatches && interfaceMatches) {
-        return pair.value;
-      }
     }
     return null;
   }
