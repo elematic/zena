@@ -81,6 +81,13 @@ enum Commands {
         #[arg(short, long)]
         filter: Option<String>,
     },
+    /// Ahead-of-time compile a .wasm file to a .cwasm beside it, so later
+    /// invocations skip the in-process Cranelift compile. Build scripts run
+    /// this right after producing a compiler wasm.
+    Precompile {
+        /// The .wasm file to precompile
+        file: String,
+    },
 }
 
 struct MyState {
@@ -101,11 +108,57 @@ fn main() -> Result<()> {
         Commands::Test { paths, filter } => {
             run_all_tests(&paths, filter.as_deref(), cli.verbose, cli.debug)
         }
+        Commands::Precompile { file } => precompile_file(&file, cli.debug),
     }
 }
 
-fn build_file(file: &str, output: &str, verbose: bool, time: bool, no_cache: bool, debug: bool) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache, debug)?;
+/// Builds the wasmtime Config shared by every zena-cli engine. All engines
+/// that touch the same cwasm artifacts must agree on these settings: wasmtime
+/// refuses to deserialize a cwasm whose compile-affecting flags differ, and
+/// the fallback is a silent multi-second in-process recompile.
+fn base_config(debug: bool) -> Config {
+    let mut config = Config::new();
+    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+    config.compiler_inlining(if debug { Inlining::No } else { Inlining::Yes });
+    config.wasm_gc(true);
+    config.wasm_function_references(true);
+    config.wasm_exceptions(true);
+    config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+    if std::env::var("ZENA_PROFILE").is_ok() {
+        config.profiler(wasmtime::ProfilingStrategy::PerfMap);
+    } else {
+        config.native_unwind_info(false);
+    }
+    apply_gc_config(&mut config);
+    config
+}
+
+/// The cwasm cache path for a wasm file under the given config variant.
+/// Debug (no-inlining) engines cannot reuse release cwasm and vice versa, so
+/// each variant gets its own file instead of the two thrashing one path.
+fn cwasm_path_for(wasm_path: &Path, debug: bool) -> std::path::PathBuf {
+    if debug {
+        wasm_path.with_extension("debug.cwasm")
+    } else {
+        wasm_path.with_extension("cwasm")
+    }
+}
+
+fn precompile_file(file: &str, debug: bool) -> Result<()> {
+    let engine = Engine::new(&base_config(debug))?;
+    let wasm_path = Path::new(file);
+    let cwasm_path = cwasm_path_for(wasm_path, debug);
+    let _ = load_or_compile_module(&engine, wasm_path, &cwasm_path)?;
+    println!("Precompiled {}", cwasm_path.display());
+    Ok(())
+}
+
+fn build_file(file: &str, output: &str, verbose: bool, time: bool, _no_cache: bool, debug: bool) -> Result<()> {
+    // `build` is an explicit request to compile: invoking it at all expresses
+    // the staleness decision, and the build scripts that call it are gated by
+    // Wireit's own input tracking. Always compile rather than second-guessing
+    // with mtime heuristics.
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, true, debug)?;
     std::fs::copy(&cached_wasm_path, output)?;
     Ok(())
 }
@@ -131,43 +184,71 @@ fn cwasm_is_stale(wasm_path: &Path, cwasm_path: &Path) -> bool {
     }
 }
 
+/// Compiles wasm_path to cwasm_path atomically, holding a file lock.
+///
+/// The lock serializes concurrent compiles of the same module. Script runners
+/// can launch many zena-cli processes at once against a stale cache (e.g. a
+/// test fan-out right after the compiler was rebuilt), and each Cranelift
+/// compile of the compiler module costs on the order of a GiB of RSS. Let one
+/// process compile while the rest block on the lock and then reuse its
+/// output. `should_compile` is re-checked under the lock: another process may
+/// have refreshed the cache while we waited.
+fn write_cwasm(
+    engine: &Engine,
+    wasm_path: &Path,
+    cwasm_path: &Path,
+    should_compile: impl Fn() -> bool,
+) -> Result<()> {
+    let lock_path = cwasm_path.with_extension("lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)?;
+    lock_file.lock()?;
+    if should_compile() {
+        let wasm_bytes = std::fs::read(wasm_path)?;
+        let serialized = engine.precompile_module(&wasm_bytes)?;
+        let temp_path = cwasm_path.with_extension(format!("tmp-{}", std::process::id()));
+        std::fs::write(&temp_path, serialized)?;
+        if let Err(e) = std::fs::rename(&temp_path, cwasm_path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(e.into());
+        }
+    }
+    // The lock is released when lock_file drops.
+    Ok(())
+}
+
 fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) -> Result<Module> {
     if cwasm_is_stale(wasm_path, cwasm_path) {
-        // Serialize concurrent compiles of the same module. Script runners can
-        // launch many zena-cli processes at once against a stale cache (e.g. a
-        // test fan-out right after the compiler was rebuilt), and each
-        // Cranelift compile of the compiler module costs on the order of a
-        // GiB of RSS. Let one process compile while the rest block on the
-        // lock and then reuse its output.
-        let lock_path = cwasm_path.with_extension("lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&lock_path)?;
-        lock_file.lock()?;
-        // Re-check now that we hold the lock: another process may have
-        // refreshed the cache while we waited.
-        if cwasm_is_stale(wasm_path, cwasm_path) {
-            let wasm_bytes = std::fs::read(wasm_path)?;
-            let serialized = engine.precompile_module(&wasm_bytes)?;
-            let temp_path = cwasm_path.with_extension(format!("tmp-{}", std::process::id()));
-            std::fs::write(&temp_path, serialized)?;
-            if let Err(e) = std::fs::rename(&temp_path, cwasm_path) {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(e.into());
-            }
-        }
-        // The lock is released when lock_file drops.
+        write_cwasm(engine, wasm_path, cwasm_path, || {
+            cwasm_is_stale(wasm_path, cwasm_path)
+        })?;
     }
 
     match unsafe { Module::deserialize_file(engine, cwasm_path) } {
         Ok(m) => Ok(m),
-        Err(e) => {
-            eprintln!("WARNING: deserialization of cwasm failed: {:?}", e);
-            let wasm_bytes = std::fs::read(wasm_path)?;
-            Module::new(engine, &wasm_bytes)
-                .map_err(anyhow::Error::from)
-                .context("Failed to compile module from WASM bytes")
+        Err(first_err) => {
+            // A fresh-looking cwasm that will not deserialize was produced by
+            // an incompatible engine (different wasmtime version or config).
+            // Recompile it in place; without this, every invocation would
+            // silently repeat the multi-second in-process compile.
+            eprintln!(
+                "WARNING: recompiling {}: deserialization failed: {:?}",
+                cwasm_path.display(),
+                first_err
+            );
+            write_cwasm(engine, wasm_path, cwasm_path, || true)?;
+            match unsafe { Module::deserialize_file(engine, cwasm_path) } {
+                Ok(m) => Ok(m),
+                Err(e) => {
+                    eprintln!("WARNING: deserialization of cwasm failed again: {:?}", e);
+                    let wasm_bytes = std::fs::read(wasm_path)?;
+                    Module::new(engine, &wasm_bytes)
+                        .map_err(anyhow::Error::from)
+                        .context("Failed to compile module from WASM bytes")
+                }
+            }
         }
     }
 }
@@ -221,8 +302,14 @@ fn compile_to_cache(
     abs_path.hash(&mut hasher);
     test_mode.hash(&mut hasher);
     debug.hash(&mut hasher);
-    if let Ok(compiler_bytes) = std::fs::read(&compiler_wasm) {
-        compiler_bytes.hash(&mut hasher);
+    // Identify the compiler by (mtime, len) rather than hashing all of its
+    // bytes: reading tens of MiB on every invocation is measurable, and a
+    // rebuilt-but-identical compiler only costs one spurious recompile.
+    if let Ok(metadata) = std::fs::metadata(&compiler_wasm) {
+        if let Ok(modified) = metadata.modified() {
+            modified.hash(&mut hasher);
+        }
+        metadata.len().hash(&mut hasher);
     }
 
     // Walk packages/stdlib to include standard library files
@@ -299,22 +386,8 @@ fn compile_to_cache(
         return Ok(cached_wasm_path);
     }
 
-    let mut config = Config::new();
-    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-    config.compiler_inlining(if debug { Inlining::No } else { Inlining::Yes });
-    config.wasm_gc(true);
-    config.wasm_function_references(true);
-    config.wasm_exceptions(true);
-    config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
-    if std::env::var("ZENA_PROFILE").is_ok() {
-        config.profiler(wasmtime::ProfilingStrategy::PerfMap);
-    } else {
-        config.native_unwind_info(false);
-    }
-
-    apply_gc_config(&mut config);
-    let engine = Engine::new(&config)?;
-    let cwasm_path = compiler_wasm.with_extension("cwasm");
+    let engine = Engine::new(&base_config(debug))?;
+    let cwasm_path = cwasm_path_for(&compiler_wasm, debug);
     let compiler_module = load_or_compile_module(&engine, &compiler_wasm, &cwasm_path)?;
 
     let mut linker: Linker<MyState> = Linker::new(&engine);
@@ -487,23 +560,9 @@ fn apply_gc_config(config: &mut Config) {
 }
 
 fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[String], debug: bool) -> Result<()> {
-    let mut config = Config::new();
-    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-    config.compiler_inlining(if debug { Inlining::No } else { Inlining::Yes });
-    config.wasm_gc(true);
-    config.wasm_function_references(true);
-    config.wasm_exceptions(true);
-    config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
-    if std::env::var("ZENA_PROFILE").is_ok() {
-        config.profiler(wasmtime::ProfilingStrategy::PerfMap);
-    } else {
-        config.native_unwind_info(false);
-    }
-
-    apply_gc_config(&mut config);
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&base_config(debug))?;
     let wasm_path = Path::new(file);
-    let cwasm_path = wasm_path.with_extension("cwasm");
+    let cwasm_path = cwasm_path_for(wasm_path, debug);
     let module = load_or_compile_module(&engine, wasm_path, &cwasm_path)?;
 
     let mut linker: Linker<MyState> = Linker::new(&engine);
@@ -792,20 +851,11 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: b
 
     println!("Running {} tests...", test_files.len());
 
-    let mut config = Config::new();
-    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-    config.compiler_inlining(if debug { Inlining::No } else { Inlining::No });
-    config.wasm_gc(true);
-    config.wasm_function_references(true);
-    config.wasm_exceptions(true);
-    config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
-    if std::env::var("ZENA_PROFILE").is_ok() {
-        config.profiler(wasmtime::ProfilingStrategy::PerfMap);
-    } else {
-        config.native_unwind_info(false);
-    }
-    apply_gc_config(&mut config);
-    let engine = Engine::new(&config)?;
+    // The test command used to force inlining off, which meant its engine
+    // could never reuse the cwasm produced by build/run engines and silently
+    // recompiled the compiler module on every invocation. It now shares
+    // base_config; pass -g when debugging for un-inlined stack traces.
+    let engine = Engine::new(&base_config(debug))?;
 
     // Sequential warm-up of compiler cwasm to avoid parallel write collisions
     {
@@ -818,7 +868,7 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: b
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| repo_root.join("packages/zena-compiler/zena/out/cli.wasm"));
         if compiler_wasm.exists() {
-            let cwasm_path = compiler_wasm.with_extension("cwasm");
+            let cwasm_path = cwasm_path_for(&compiler_wasm, debug);
             let _ = load_or_compile_module(&engine, &compiler_wasm, &cwasm_path)?;
         }
     }
