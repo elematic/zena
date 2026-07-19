@@ -1002,6 +1002,30 @@ function generateIsExpression(
 
   generateExpression(ctx, expr.expression, body);
 
+  // Exact tests against final classes compile to an inline vtable-identity
+  // compare instead of a ref.test libcall.
+  if (targetCheckerType.kind === TypeKind.Class) {
+    const info = vtableIdentityTestInfo(
+      ctx,
+      targetCheckerType as ClassType,
+      sourceType,
+    );
+    if (info) {
+      body.push(
+        0xfb,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(info.structIdx),
+        ...WasmModule.encodeSignedLEB128(0),
+      );
+      body.push(
+        Opcode.global_get,
+        ...WasmModule.encodeSignedLEB128(info.vtableGlobalIndex),
+      );
+      body.push(Opcode.ref_eq);
+      return;
+    }
+  }
+
   // If target is a reference type (ref null ...)
   if (targetType.length > 1 && targetType[0] === ValType.ref_null) {
     body.push(0xfb, GcOpcode.ref_test);
@@ -13478,6 +13502,85 @@ function generateBlockExpressionCode(
   ctx.popScope();
 }
 
+/** Decodes the signed-LEB128 value at the start of `bytes`. */
+function decodeSignedLEB128(bytes: number[]): number {
+  let result = 0;
+  let shift = 0;
+  let i = 0;
+  let byte: number;
+  do {
+    byte = bytes[i++];
+    result |= (byte & 0x7f) << shift;
+    shift += 7;
+  } while (byte & 0x80);
+  if (shift < 32 && byte & 0x40) {
+    result |= -1 << shift;
+  }
+  return result;
+}
+
+/**
+ * Emits an exact-type test as a vtable-identity comparison, if legal here,
+ * leaving an i32 on the stack. Returns false (emitting nothing) when the
+ * caller must fall back to ref.test.
+ *
+ * Wasmtime dispatches ref.test on concrete struct types to an out-of-line
+ * is_subtype libcall, which sealed-class matches hit once per tested arm; a
+ * struct.get of the __vtable field plus ref.eq against the class's unique
+ * vtable global is an inline pointer compare with the same result. This is
+ * only an *exact* type test, so it requires a class that cannot have
+ * subclasses: final classes and case classes (implicitly final). The
+ * discriminant must be a non-nullable reference to a known class struct —
+ * struct.get traps on null, and only class structs are guaranteed to hold
+ * __vtable at field 0.
+ */
+function vtableIdentityTestInfo(
+  ctx: CodegenContext,
+  variantType: ClassType,
+  valueType: number[],
+): {structIdx: number; vtableGlobalIndex: number} | null {
+  if (!variantType.isFinal && !variantType.isCaseClass) return null;
+  // Generic classes are excluded: getClassInfo may resolve to the generic
+  // source's ClassInfo, whose vtable global is not this specialization's.
+  if (
+    variantType.genericSource ||
+    (variantType.typeParameters && variantType.typeParameters.length > 0)
+  ) {
+    return null;
+  }
+  const classInfo = ctx.getClassInfo(variantType);
+  if (!classInfo || classInfo.vtableGlobalIndex === undefined) return null;
+  if (valueType.length < 2 || valueType[0] !== ValType.ref) return null;
+  const structIdx = decodeSignedLEB128(valueType.slice(1));
+  if (structIdx < 0 || !ctx.getClassInfoByStructIndex(structIdx)) return null;
+  return {structIdx, vtableGlobalIndex: classInfo.vtableGlobalIndex};
+}
+
+function tryGenerateVtableIdentityTest(
+  ctx: CodegenContext,
+  variantType: ClassType,
+  valueLocal: number,
+  valueType: number[],
+  body: number[],
+): boolean {
+  const info = vtableIdentityTestInfo(ctx, variantType, valueType);
+  if (!info) return false;
+
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(valueLocal));
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(info.structIdx),
+    ...WasmModule.encodeSignedLEB128(0), // __vtable is field 0 of every class struct
+  );
+  body.push(
+    Opcode.global_get,
+    ...WasmModule.encodeSignedLEB128(info.vtableGlobalIndex),
+  );
+  body.push(Opcode.ref_eq);
+  return true;
+}
+
 function generateMatchPatternCheck(
   ctx: CodegenContext,
   pattern: Pattern,
@@ -13502,6 +13605,17 @@ function generateMatchPatternCheck(
         const variantType = (pattern as any).inferredType as ClassType;
         const classInfo = ctx.getClassInfo(variantType);
         if (classInfo) {
+          if (
+            tryGenerateVtableIdentityTest(
+              ctx,
+              variantType,
+              discriminantLocal,
+              discriminantType,
+              body,
+            )
+          ) {
+            break;
+          }
           // Generate ref.test for the variant's struct type
           body.push(
             Opcode.local_get,
@@ -13689,12 +13803,22 @@ function generateMatchPatternCheck(
       }
 
       // 1. Check type
-      body.push(
-        Opcode.local_get,
-        ...WasmModule.encodeSignedLEB128(discriminantLocal),
-      );
-      body.push(0xfb, GcOpcode.ref_test);
-      body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+      if (
+        !tryGenerateVtableIdentityTest(
+          ctx,
+          classPattern.inferredType as ClassType,
+          discriminantLocal,
+          discriminantType,
+          body,
+        )
+      ) {
+        body.push(
+          Opcode.local_get,
+          ...WasmModule.encodeSignedLEB128(discriminantLocal),
+        );
+        body.push(0xfb, GcOpcode.ref_test);
+        body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+      }
 
       // 2. Check properties
       if (classPattern.properties.length > 0) {
