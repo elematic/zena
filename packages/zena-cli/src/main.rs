@@ -264,11 +264,13 @@ fn compile_to_cache(
     no_cache: bool,
     debug: bool,
 ) -> Result<std::path::PathBuf> {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
+    let repo_root = std::fs::canonicalize(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(),
+    )?;
     let compiler_wasm = std::env::var("ZENA_COMPILER_WASM")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| repo_root.join("packages/zena-compiler/zena/out/cli.wasm"));
@@ -283,7 +285,7 @@ fn compile_to_cache(
     // Compute deterministic cache path based on absolute file source
     let abs_path = std::fs::canonicalize(file).context("Failed to resolve file path")?;
     let rel_path = abs_path
-        .strip_prefix(repo_root)
+        .strip_prefix(&repo_root)
         .context("File must be inside the Zena repository for now")?;
 
     // Create an absolute path into the cache directory
@@ -297,6 +299,7 @@ fn compile_to_cache(
         proj_dirs.cache_dir().join("wasm_objects")
     };
     std::fs::create_dir_all(&cache_dir)?;
+    let cache_dir = std::fs::canonicalize(cache_dir)?;
 
     let mut hasher = DefaultHasher::new();
     abs_path.hash(&mut hasher);
@@ -577,11 +580,13 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
     guest_args.extend_from_slice(args);
     wasi_builder.args(&guest_args);
 
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
+    let repo_root = std::fs::canonicalize(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(),
+    )?;
 
     for dir in dirs {
         // Handle format `HOST_DIR::GUEST_DIR` standard in wasmtime CLI
@@ -604,6 +609,7 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
         } else {
             std::path::PathBuf::from(host_dir)
         };
+        let host_dir_adjusted = std::fs::canonicalize(host_dir_adjusted)?;
 
         wasi_builder.preopened_dir(&host_dir_adjusted, guest_dir, DirPerms::all(), FilePerms::all())?;
     }
@@ -859,11 +865,13 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: b
 
     // Sequential warm-up of compiler cwasm to avoid parallel write collisions
     {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap();
+        let repo_root = std::fs::canonicalize(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap(),
+        )?;
         let compiler_wasm = std::env::var("ZENA_COMPILER_WASM")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| repo_root.join("packages/zena-compiler/zena/out/cli.wasm"));
@@ -967,12 +975,14 @@ fn run_single_test(
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
     add_stack_trace_helpers(&mut linker, engine, &module)?;
 
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
-    let stdlib_dir = repo_root.join("packages/stdlib/zena");
+    let repo_root = std::fs::canonicalize(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(),
+    )?;
+    let stdlib_dir = std::fs::canonicalize(repo_root.join("packages/stdlib/zena"))?;
 
     // Setup in-memory stdout and stderr capture
     let stdout_pipe = MemoryOutputPipe::new(1024 * 1024);
@@ -987,14 +997,15 @@ fn run_single_test(
     } else {
         std::path::PathBuf::from("/tmp")
     };
+    let tmp_host_dir = std::fs::canonicalize(tmp_host_dir)?;
 
     let wasi = WasiCtxBuilder::new()
         .stdout(stdout_pipe.clone())
         .stderr(stderr_pipe.clone())
         .inherit_env()
         .args(&[test_file.to_string_lossy().to_string()])
-        .preopened_dir(repo_root, ".", DirPerms::all(), FilePerms::all())?
-        .preopened_dir(stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
+        .preopened_dir(&repo_root, ".", DirPerms::all(), FilePerms::all())?
+        .preopened_dir(&stdlib_dir, "/stdlib", DirPerms::all(), FilePerms::all())?
         .preopened_dir(&tmp_host_dir, "/tmp", DirPerms::all(), FilePerms::all())?
         .build_p1();
 
