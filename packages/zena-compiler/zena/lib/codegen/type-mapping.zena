@@ -204,6 +204,32 @@ export let substituteTypeParamsInCodegen = (
           return ct;
         }
 
+        // Share one instantiation per argument list when the source is a
+        // pure generic template. Instantiations of a partially-substituted
+        // source have their outer context baked into their supertypes, so
+        // those are never shared.
+        // Share one instantiation per (source instance, argument uids).
+        // Method signatures mention the same generic classes over and over;
+        // without this every mention deep-copies the class (supertypes,
+        // constructor type). The result is determined by the source and the
+        // substituted arguments: names free in the source's supertypes are
+        // either its own parameters (bound through newArgs, which the key
+        // covers) or already concrete.
+        var instKey = "";
+        for (let arg in newArgs) {
+          instKey = instKey + i32ToString(arg.uid) + ",";
+        }
+        var icache = ct.codegenInstantiations;
+        if (icache == null) {
+          let fresh = new HashMap<String, ClassType>();
+          ct.codegenInstantiations = fresh;
+          icache = fresh;
+        }
+        let icacheVal = icache as HashMap<String, ClassType>;
+        if (let (true, hit) = icacheVal.get(instKey)) {
+          return hit;
+        }
+
         let inst = new ClassType(ct.id, ct.symbolId, ct.name);
         inst.typeParameters = ctParams;
         inst.typeArguments = newArgs;
@@ -271,6 +297,10 @@ export let substituteTypeParamsInCodegen = (
           inst.onType = substituteTypeParamsInCodegen(combinedParams, combinedArgs, ct.onType as Type);
         }
         inst.sourcePath = ct.sourcePath;
+        // Register only after the instantiation is fully built: a
+        // half-built instance escaping into identity-keyed caches would
+        // memoize wrong context for every later user.
+        icacheVal[instKey] = inst;
         inst
       } else {
         ct
