@@ -315,24 +315,26 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         }
       }
       
-      if (superCt.vtable != null) {
+      let ctVtable = this.wasm.classVtable(cKey);
+      let superVtable = this.wasm.classVtable(superKey);
+      if (superVtable.length > 0 || ctVtable.length > 0) {
         let newVTable = new Array<String>();
         let seen = new HashSet<String>();
-        for (let methName in superCt.vtable) {
+        for (let methName in superVtable) {
           newVTable.push(methName);
           seen.add(methName);
         }
-        for (let methName in ct.vtable) {
+        for (let methName in ctVtable) {
           if (!seen.has(methName)) {
             newVTable.push(methName);
             seen.add(methName);
           }
         }
-        while (ct.vtable.length > 0) {
-          ct.vtable.pop();
+        while (ctVtable.length > 0) {
+          ctVtable.pop();
         }
         for (let m in newVTable) {
-          ct.vtable.push(m);
+          ctVtable.push(m);
         }
       }
     }
@@ -750,7 +752,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let cStruct = cPair.value.structType;
       if (cStruct.classType != null) {
         let cType = cStruct.classType as ClassType;
-        for (let methName in cType.vtable) {
+        for (let methName in this.wasm.classVtable(cName)) {
           if (methName.startsWith("get#")) {
             let fieldName = methName.sliceBytes(4, methName.length);
             var hasPhysical = false;
@@ -829,7 +831,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let cStruct = cPair.value.structType;
       if (cStruct.classType != null) {
         let cType = cStruct.classType as ClassType;
-        for (let methName in cType.vtable) {
+        for (let methName in this.wasm.classVtable(cPair.key)) {
           var hasImpl = false;
           var curr: ClassType | null = cType;
           while (curr != null) {

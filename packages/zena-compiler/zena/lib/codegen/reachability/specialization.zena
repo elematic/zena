@@ -235,6 +235,7 @@ export final class Specializer implements SpecializerInterface {
     if (this.pass.wasm.classInfos.has(cKey)) {
       return;
     }
+    let ctVtable = this.pass.wasm.classVtable(cKey);
 
     let ctParams = getClassTypeParameters(ct);
 
@@ -263,13 +264,14 @@ export final class Specializer implements SpecializerInterface {
           emptyVTableStruct.superStruct = superInfo.vtableStructType as WasmStruct;
         }
       }
-      
-      if (superCt.vtable != null) {
+
+      let superVtable = this.pass.wasm.classVtable(superKey);
+      if (superVtable.length > 0 || ctVtable.length > 0) {
         let newVTable = new Array<String>();
-        for (let methName in superCt.vtable) {
+        for (let methName in superVtable) {
           newVTable.push(methName);
         }
-        for (let methName in ct.vtable) {
+        for (let methName in ctVtable) {
           var hasMeth = false;
           for (let existing in newVTable) {
             if (existing == methName) { hasMeth = true; break; }
@@ -278,11 +280,11 @@ export final class Specializer implements SpecializerInterface {
             newVTable.push(methName);
           }
         }
-        while (ct.vtable.length > 0) {
-          ct.vtable.pop();
+        while (ctVtable.length > 0) {
+          ctVtable.pop();
         }
         for (let m in newVTable) {
-          ct.vtable.push(m);
+          ctVtable.push(m);
         }
       }
     }
@@ -290,15 +292,15 @@ export final class Specializer implements SpecializerInterface {
     if (ct.isCaseClass) {
       var hasEq = false;
       var hasHash = false;
-      for (let existing in ct.vtable) {
+      for (let existing in ctVtable) {
         if (existing == "==") { hasEq = true; }
         if (existing == "hashCode") { hasHash = true; }
       }
       if (!hasEq) {
-        ct.vtable.push("==");
+        ctVtable.push("==");
       }
       if (!hasHash) {
-        ct.vtable.push("hashCode");
+        ctVtable.push("hashCode");
       }
     }
 
@@ -364,11 +366,11 @@ export final class Specializer implements SpecializerInterface {
           }
           
           var found = false;
-          for (let existing in ct.vtable) {
+          for (let existing in ctVtable) {
             if (existing == vtableMethName) { found = true; }
           }
           if (!found && methName != "<constructor>") {
-            ct.vtable.push(vtableMethName);
+            ctVtable.push(vtableMethName);
           }
         }
       } else if (ms is AccessorDeclaration) {
@@ -387,18 +389,18 @@ export final class Specializer implements SpecializerInterface {
           if (acc.getter != null) {
             let getterName = "get#" + accName;
             var found = false;
-            for (let existing in ct.vtable) {
+            for (let existing in ctVtable) {
               if (existing == getterName) { found = true; break; }
             }
-            if (!found) { ct.vtable.push(getterName); }
+            if (!found) { ctVtable.push(getterName); }
           }
           if (acc.setter != null) {
             let setterName = "set#" + accName;
             var found = false;
-            for (let existing in ct.vtable) {
+            for (let existing in ctVtable) {
               if (existing == setterName) { found = true; break; }
             }
-            if (!found) { ct.vtable.push(setterName); }
+            if (!found) { ctVtable.push(setterName); }
           }
         }
       } else if (ms is FieldDefinition) {
@@ -416,34 +418,34 @@ export final class Specializer implements SpecializerInterface {
         if (fd.setterName != null && fieldName != "") {
           let getterName = "get#" + fieldName;
           var found = false;
-          for (let existing in ct.vtable) {
+          for (let existing in ctVtable) {
             if (existing == getterName) { found = true; break; }
           }
-          if (!found) { ct.vtable.push(getterName); }
+          if (!found) { ctVtable.push(getterName); }
         }
         if (fd.isAbstract && fieldName != "") {
           let getterName = "get#" + fieldName;
           var found = false;
-          for (let existing in ct.vtable) {
+          for (let existing in ctVtable) {
             if (existing == getterName) { found = true; break; }
           }
-          if (!found) { ct.vtable.push(getterName); }
+          if (!found) { ctVtable.push(getterName); }
           if (fd.mutability != null && fd.mutability == "var") {
             let setterName = "set#" + fieldName;
             var foundS = false;
-            for (let existing in ct.vtable) {
+            for (let existing in ctVtable) {
               if (existing == setterName) { foundS = true; break; }
             }
-            if (!foundS) { ct.vtable.push(setterName); }
+            if (!foundS) { ctVtable.push(setterName); }
           }
         }
         if (fd.isDeclare && fieldName != "") {
           let getterName = "get#" + fieldName;
           var found = false;
-          for (let existing in ct.vtable) {
+          for (let existing in ctVtable) {
             if (existing == getterName) { found = true; break; }
           }
-          if (!found) { ct.vtable.push(getterName); }
+          if (!found) { ctVtable.push(getterName); }
         }
       }
     }
@@ -1030,6 +1032,7 @@ export final class Specializer implements SpecializerInterface {
 
   populateClassStructAndMethods(ct: ClassType, cd: Node | null, sourceModel: SemanticModel): void {
     let cKey = getClassKey(ct);
+    let ctVtable = this.pass.wasm.classVtable(cKey);
     var vstOpt: WasmStruct | null = null;
     var stOpt: WasmStruct | null = null;
     if (let (true, info) = this.pass.wasm.classInfos.get(cKey)) {
@@ -1046,7 +1049,7 @@ export final class Specializer implements SpecializerInterface {
     }
     
     let vtableSet = new HashSet<String>();
-    for (let existing in ct.vtable) {
+    for (let existing in ctVtable) {
       vtableSet.add(existing);
     }
 
@@ -1057,9 +1060,10 @@ export final class Specializer implements SpecializerInterface {
       let superModel = this.pass.getClassModel(superCt);
       this.populateClassStructAndMethods(superCt, superDecl, superModel);
 
-      for (let methName in superCt.vtable) {
+      let superVtable = this.pass.wasm.classVtable(getClassKey(superCt));
+      for (let methName in superVtable) {
         if (!vtableSet.has(methName)) {
-          ct.vtable.push(methName);
+          ctVtable.push(methName);
           vtableSet.add(methName);
         }
       }
@@ -1074,7 +1078,7 @@ export final class Specializer implements SpecializerInterface {
         ct.members["=="] = new MethodInfo(new FunctionType(eqParams, eqNames, new BooleanType()), false, false, false, false);
       }
       if (!vtableSet.has("==")) {
-        ct.vtable.push("==");
+        ctVtable.push("==");
         vtableSet.add("==");
       }
 
@@ -1082,7 +1086,7 @@ export final class Specializer implements SpecializerInterface {
         ct.members["hashCode"] = new MethodInfo(new FunctionType(new Array<Type>(), null, new I32Type()), false, false, false, false);
       }
       if (!vtableSet.has("hashCode")) {
-        ct.vtable.push("hashCode");
+        ctVtable.push("hashCode");
         vtableSet.add("hashCode");
       }
     }
@@ -1131,7 +1135,7 @@ export final class Specializer implements SpecializerInterface {
             }
             
             if (!mDef.isStatic && !vtableSet.has(vtableMethName) && methName != "<constructor>") {
-              ct.vtable.push(vtableMethName);
+              ctVtable.push(vtableMethName);
               vtableSet.add(vtableMethName);
             }
             this.registerClassMethod(ct, cdDecl, methName, mDef, false, false, null, sourceModel);
@@ -1152,7 +1156,7 @@ export final class Specializer implements SpecializerInterface {
              if (acc.getter != null) {
               let getterName = "get#" + accName;
               if (!vtableSet.has(getterName)) {
-                ct.vtable.push(getterName);
+                ctVtable.push(getterName);
                 vtableSet.add(getterName);
               }
               this.registerClassMethod(ct, cdDecl, getterName, acc as Node, false, false, null, sourceModel);
@@ -1160,7 +1164,7 @@ export final class Specializer implements SpecializerInterface {
             if (acc.setter != null) {
               let setterName = "set#" + accName;
               if (!vtableSet.has(setterName)) {
-                ct.vtable.push(setterName);
+                ctVtable.push(setterName);
                 vtableSet.add(setterName);
               }
               this.registerClassMethod(ct, cdDecl, setterName, acc.setter as Node, false, false, null, sourceModel);
@@ -1182,14 +1186,14 @@ export final class Specializer implements SpecializerInterface {
             if (!fieldName.startsWith("#")) {
               let getterName = "get#" + fieldName;
               if (!vtableSet.has(getterName)) {
-                ct.vtable.push(getterName);
+                ctVtable.push(getterName);
                 vtableSet.add(getterName);
               }
               this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, sourceModel);
               if (fd.mutability != null && fd.mutability == "var") {
                 let setterName = "set#" + fieldName;
                 if (!vtableSet.has(setterName)) {
-                  ct.vtable.push(setterName);
+                  ctVtable.push(setterName);
                   vtableSet.add(setterName);
                 }
                 this.registerClassMethod(ct, cdDecl, setterName, null, false, true, fieldName, sourceModel);
@@ -1198,21 +1202,21 @@ export final class Specializer implements SpecializerInterface {
               if (fd.setterName != null) {
                 let getterName = "get#" + fieldName;
                 if (!vtableSet.has(getterName)) {
-                  ct.vtable.push(getterName);
+                  ctVtable.push(getterName);
                   vtableSet.add(getterName);
                 }
               }
               if (fd.isAbstract) {
                 let getterName = "get#" + fieldName;
                 if (!vtableSet.has(getterName)) {
-                  ct.vtable.push(getterName);
+                  ctVtable.push(getterName);
                   vtableSet.add(getterName);
                 }
                 this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, sourceModel);
                 if (fd.mutability != null && fd.mutability == "var") {
                   let setterName = "set#" + fieldName;
                   if (!vtableSet.has(setterName)) {
-                    ct.vtable.push(setterName);
+                    ctVtable.push(setterName);
                     vtableSet.add(setterName);
                   }
                   this.registerClassMethod(ct, cdDecl, setterName, null, false, true, fieldName, sourceModel);
@@ -1221,7 +1225,7 @@ export final class Specializer implements SpecializerInterface {
               if (fd.isDeclare) {
                 let getterName = "get#" + fieldName;
                 if (!vtableSet.has(getterName)) {
-                  ct.vtable.push(getterName);
+                  ctVtable.push(getterName);
                   vtableSet.add(getterName);
                 }
                 this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, sourceModel);
@@ -1257,7 +1261,7 @@ export final class Specializer implements SpecializerInterface {
     }
 
     if (vst.fields.length == 0) {
-      for (let methName in ct.vtable) {
+      for (let methName in ctVtable) {
         vst.fields.push(new WasmField(methName, new ValTypeFuncRef(), false));
       }
     }
