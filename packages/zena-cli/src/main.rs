@@ -376,6 +376,7 @@ fn compile_to_cache(
             .build_p1();
 
         let mut store = Store::new(&engine, MyState { wasi });
+        reserve_gc_heap(&engine, &mut store)?;
 
         let compiler_instance = linker.instantiate(&mut store, &compiler_module)?;
         let compiler_main = compiler_instance
@@ -415,6 +416,57 @@ fn compile_to_cache(
         }
 
     Ok(cached_wasm_path)
+}
+
+/// How many MiB of GC heap headroom to reserve up front (see
+/// `reserve_gc_heap`). Overridable via the ZENA_GC_RESERVE_MB env var;
+/// 0 disables the reservation.
+const DEFAULT_GC_RESERVE_MB: u64 = 0;
+
+/// Pre-grows the store's GC heap by allocating, and immediately
+/// dropping, one large dummy array.
+///
+/// Wasmtime's copying collector only grows the GC heap when an
+/// allocation still does not fit after a full collection, so the heap
+/// hovers just above the size of the live set and allocation-heavy
+/// programs (like the self-hosted compiler) spend most of their time
+/// collecting: roughly one full live-set copy per live-set's worth of
+/// allocation. The GC heap never shrinks, so one oversized allocation
+/// up front leaves every later collection with ample headroom. The
+/// balloon array is dead as soon as the helper returns; only the
+/// grown heap capacity remains.
+///
+/// The allocation is done by a tiny auxiliary wasm module using
+/// `array.new_default` because the host-side `ArrayRef::new`
+/// initializes elements one `Val` at a time (~2.4s/GiB, versus
+/// memset speed here).
+fn reserve_gc_heap(engine: &Engine, store: &mut Store<MyState>) -> Result<()> {
+    let mb: u64 = match std::env::var("ZENA_GC_RESERVE_MB") {
+        Ok(v) => v
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("ZENA_GC_RESERVE_MB must be an integer, got {v:?}"))?,
+        Err(_) => DEFAULT_GC_RESERVE_MB,
+    };
+    // The GC heap is an i32-indexed memory capped at 4 GiB and split
+    // into two equal semi-spaces, and the balloon must fit in one
+    // semi-space. Above this cap the growth request would exceed the
+    // 4 GiB maximum and wasmtime would skip growing entirely.
+    let mb = mb.min(1900);
+    if mb == 0 {
+        return Ok(());
+    }
+    let wat = r#"(module
+      (type $balloon (array (mut i64)))
+      (func (export "balloon") (param $len i32)
+        (drop (array.new_default $balloon (local.get $len)))))"#;
+    let module = Module::new(engine, wat)?;
+    let instance = Linker::<MyState>::new(engine).instantiate(&mut *store, &module)?;
+    let balloon = instance.get_typed_func::<i32, ()>(&mut *store, "balloon")?;
+    let len = i32::try_from(mb * (1 << 20) / 8).unwrap();
+    // A failure here only means less headroom, not incorrectness.
+    let _ = balloon.call(&mut *store, len);
+    Ok(())
 }
 
 /// Selects the wasmtime GC collector via the ZENA_GC env var
@@ -500,6 +552,7 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
     let wasi = wasi_builder.build_p1();
 
     let mut store = Store::new(&engine, MyState { wasi });
+    reserve_gc_heap(&engine, &mut store)?;
 
     let instance = match linker.instantiate(&mut store, &module) {
         Ok(inst) => inst,
