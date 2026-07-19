@@ -117,16 +117,27 @@ export final class ModuleGenerator {
         }
         sortStringsByLengthDescending(sortedStrings);
 
-        // Subsequence optimization
+        // Subsequence optimization: place each literal at the first offset
+        // where its bytes already occur in the accumulated segment,
+        // appending it only when absent. Scanning the whole segment per
+        // literal is quadratic in program size, so index every 4-byte
+        // window of the segment and only verify offsets that share the
+        // literal's first four bytes; the first verified candidate is the
+        // same offset the full scan would have found.
         let accumulatedBytes = new ByteBuffer();
+        let windowIndex = new HashMap<i32, Array<i32>>();
+        // Window starts below this offset are indexed; it trails the end of
+        // the buffer by up to 3 bytes so windows spanning an append
+        // boundary are indexed once the bytes after them exist.
+        var indexedUpTo = 0;
         for (var idx = 0; idx < sortedStrings.length; idx += 1) {
           let s = sortedStrings[idx];
           let sLen = s.length;
-          
+
           var foundOffset = -1;
           if (sLen == 0) {
             foundOffset = 0;
-          } else {
+          } else if (sLen < 4) {
             let accumLen = accumulatedBytes.length;
             for (var i = 0; i <= accumLen - sLen; i += 1) {
               var match = true;
@@ -141,14 +152,47 @@ export final class ModuleGenerator {
                 break;
               }
             }
+          } else {
+            let key = s.getByteAt(0) | (s.getByteAt(1) << 8) | (s.getByteAt(2) << 16) | (s.getByteAt(3) << 24);
+            if (let (true, positions) = windowIndex.get(key)) {
+              let accumLen = accumulatedBytes.length;
+              for (let pos in positions) {
+                if (pos + sLen <= accumLen) {
+                  var match = true;
+                  for (var j = 4; j < sLen; j += 1) {
+                    if (accumulatedBytes.getByte(pos + j) != s.getByteAt(j)) {
+                      match = false;
+                      break;
+                    }
+                  }
+                  if (match) {
+                    foundOffset = pos;
+                    break;
+                  }
+                }
+              }
+            }
           }
-          
+
           if (foundOffset != -1) {
             wasm.stringLiteralLocations[s] = new StringLiteralLocation(foundOffset, sLen);
           } else {
             let offset = accumulatedBytes.length;
             for (var i = 0; i < sLen; i += 1) {
               accumulatedBytes.writeByte(s.getByteAt(i));
+            }
+            let newLen = accumulatedBytes.length;
+            while (indexedUpTo + 4 <= newLen) {
+              let w = indexedUpTo;
+              let wKey = accumulatedBytes.getByte(w) | (accumulatedBytes.getByte(w + 1) << 8) | (accumulatedBytes.getByte(w + 2) << 16) | (accumulatedBytes.getByte(w + 3) << 24);
+              if (let (true, list) = windowIndex.get(wKey)) {
+                list.push(w);
+              } else {
+                let list = new Array<i32>();
+                list.push(w);
+                windowIndex[wKey] = list;
+              }
+              indexedUpTo += 1;
             }
             wasm.stringLiteralLocations[s] = new StringLiteralLocation(offset, sLen);
           }
