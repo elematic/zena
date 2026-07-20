@@ -7,7 +7,7 @@ import { generateNumberLiteral, generateStringLiteral } from './primitives.zena'
 import { parseI32, i32ToString } from 'zena:string-convert';
 import { WasmField, WasmFunction, WasmArray, WasmStruct, WasmGlobal, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey, isConcrete } from '../codegen-utils.zena';
-import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType, getNodeType, eraseTypeParameters, substituteTypeParamsInClassContext, getExpressionType } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType, getNodeType, eraseTypeParameters, substituteTypeParamsInClassContext, getExpressionType, getValTypeKey } from '../type-mapping.zena';
 import { ValType, HeapType, heapTypeToSigned, ValTypeRefNull, ValTypeRef, ValTypeEqRef, valTypeEquals, ValTypeI8, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeStructRef } from '../wasm.zena';
 import { Array } from 'zena:array';
 
@@ -195,7 +195,16 @@ export let generateMemberExpression = (
         ctx.emitter.emitStructGet(dispatchInfo.vtableType.index, fieldIndex); // Get Func
         
         // Call the function reference
-        ctx.emitter.emitCallRef(dispatchInfo.getterTypes[fieldIndex].index);
+        let sig = dispatchInfo.getterTypes[fieldIndex];
+        if (sig.index < 0) {
+          var details = "Found getterType with index < 0! fieldIndex=" + i32ToString(fieldIndex);
+          details = details + " concreteType=" + (if (dispatchInfo.concreteType.name == null) "anon" else dispatchInfo.concreteType.name as String);
+          for (let f in dispatchInfo.concreteType.fields) {
+            details = details + " field:" + (if (f.name == null) "null" else f.name as String) + " typeKey:" + getValTypeKey(f.type);
+          }
+          throw new Error(details);
+        }
+        ctx.emitter.emitCallRef(sig.index);
       }
       case ClassType as ctVar: {
         let rawCt = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {

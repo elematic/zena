@@ -6428,10 +6428,40 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         };
         var fieldType = if (fd.typeAnnotation != null) {
           let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
-                    resolved
+          resolved
         } else {
           new ErrorType() as Type
         };
+
+        if (fd.isOptional) {
+          let isPrimitive = isNumericType(fieldType) || fieldType is BooleanType;
+          if (isPrimitive) {
+            ctx.error(
+              "Optional field '" + fieldName + "' cannot have primitive type '" +
+              typeToString(fieldType) + "'. Primitives are not nullable.",
+              DiagnosticCode.IncompatibleTypes,
+              fd.loc
+            );
+          }
+          var alreadyNullable = false;
+          match (fieldType) {
+            case NullType: { alreadyNullable = true; }
+            case UnionT {types}: {
+              var ui = 0;
+              while (ui < types.length) {
+                if (types[ui] is NullType) { alreadyNullable = true; }
+                ui += 1;
+              }
+            }
+            case _: {}
+          }
+          if (!alreadyNullable) {
+            let unionTypes = new Array<Type>();
+            unionTypes.push(fieldType);
+            unionTypes.push(new NullType());
+            fieldType = createUnionType(unionTypes);
+          }
+        }
 
         // Extension classes cannot have instance fields.
         if (cd.isExtension && !fd.isStatic && !fd.isDeclare) {
@@ -6497,36 +6527,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             // It replaces the abstract field.
           }
 
-          // Optional fields cannot have primitive types (primitives are not nullable).
-          if (fd.isOptional) {
-            let isPrimitive = isNumericType(fieldType) || fieldType is BooleanType;
-            if (isPrimitive) {
-              ctx.error(
-                "Optional field '" + fieldName + "' cannot have primitive type '" +
-                typeToString(fieldType) + "'. Primitives are not nullable.",
-                DiagnosticCode.IncompatibleTypes,
-                fd.loc
-              );
-            }
-            var alreadyNullable = false;
-            match (fieldType) {
-              case NullType: { alreadyNullable = true; }
-              case UnionT {types}: {
-                var ui = 0;
-                while (ui < types.length) {
-                  if (types[ui] is NullType) { alreadyNullable = true; }
-                  ui += 1;
-                }
-              }
-              case _: {}
-            }
-            if (!alreadyNullable) {
-              let unionTypes = new Array<Type>();
-              unionTypes.push(fieldType);
-              unionTypes.push(new NullType());
-              fieldType = createUnionType(unionTypes);
-            }
-          }
+
 
           var actualFieldName = fieldName;
           var hasPrivateSetter = false;

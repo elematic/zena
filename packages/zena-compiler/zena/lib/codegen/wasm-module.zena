@@ -628,6 +628,53 @@ export final class WasmModule {
     if (let (true, cached) = this.#signatureCache.get(key)) {
       return cached;
     }
+    if (this.isLayoutLocked) {
+      var pStr = "";
+      for (let p in params) {
+        pStr = pStr + match (p) {
+          case ValTypeRef as r: {
+            if (r.target is WasmStruct) {
+              let s = r.target as WasmStruct;
+              "ref_" + (if (s.name == null) "anon" else s.name as String) + "(uid=" + i32ToString(s.uid) + ",idx=" + i32ToString(s.index) + ")"
+            } else {
+              "ref_non_struct(uid=" + i32ToString(r.target.uid) + ",idx=" + i32ToString(r.target.index) + ")"
+            }
+          }
+          case ValTypeRefNull as rn: {
+            if (rn.target is WasmStruct) {
+              let s = rn.target as WasmStruct;
+              "refnull_" + (if (s.name == null) "anon" else s.name as String) + "(uid=" + i32ToString(s.uid) + ",idx=" + i32ToString(s.index) + ")"
+            } else {
+              "refnull_non_struct(uid=" + i32ToString(rn.target.uid) + ",idx=" + i32ToString(rn.target.index) + ")"
+            }
+          }
+          case _: i32ToString(valTypeToOpcode(p))
+        } + ",";
+      }
+      var rStr = "";
+      for (let r in returns) {
+        rStr = rStr + match (r) {
+          case ValTypeRef as r: {
+            if (r.target is WasmStruct) {
+              let s = r.target as WasmStruct;
+              "ref_" + (if (s.name == null) "anon" else s.name as String) + "(uid=" + i32ToString(s.uid) + ",idx=" + i32ToString(s.index) + ")"
+            } else {
+              "ref_non_struct(uid=" + i32ToString(r.target.uid) + ",idx=" + i32ToString(r.target.index) + ")"
+            }
+          }
+          case ValTypeRefNull as rn: {
+            if (rn.target is WasmStruct) {
+              let s = rn.target as WasmStruct;
+              "refnull_" + (if (s.name == null) "anon" else s.name as String) + "(uid=" + i32ToString(s.uid) + ",idx=" + i32ToString(s.index) + ")"
+            } else {
+              "refnull_non_struct(uid=" + i32ToString(rn.target.uid) + ",idx=" + i32ToString(rn.target.index) + ")"
+            }
+          }
+          case _: i32ToString(valTypeToOpcode(r))
+        } + ",";
+      }
+      throw new Error("Signature allocated after layout! Params: " + pStr + " Returns: " + rStr);
+    }
     let sig = new WasmSignature(params, returns);
     this.types.push(sig);
     this.#signatureCache[key] = sig;

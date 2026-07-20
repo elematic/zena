@@ -557,7 +557,21 @@ export final class FunctionGenerator {
         }
       }
     }
-    
+    if (bodyNode is MethodDefinition) {
+      let md = bodyNode as MethodDefinition;
+      let methName = match (md.name) {
+        case Identifier {name}: name
+        case _: ""
+      };
+      if (methName == "<constructor>" && md.initializerList != null) {
+        for (let init in md.initializerList as Array<Node>) {
+          if (init is FieldInitializer) {
+            let fi = init as FieldInitializer;
+            this.discoverLocalsFromExpr(fi.value);
+          }
+        }
+      }
+    }
     if (body != null) {
       match (body as Node) {
         case BlockStatement as blk: {

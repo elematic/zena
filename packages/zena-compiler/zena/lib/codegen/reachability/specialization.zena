@@ -4,7 +4,7 @@ import { SemanticModel } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo } from '../../types.zena';
 import { Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, TypeAnnotation, InterfaceDeclaration, Expression, MixinDeclaration } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, ClassCodegenInfo } from '../wasm-module.zena';
-import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeFuncRef } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeFuncRef, valTypeToOpcode } from '../wasm.zena';
 import { SymbolId } from '../../scope/symbol.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -228,8 +228,8 @@ export final class Specializer implements SpecializerInterface {
 
   registerSpecializedClass(ct: ClassType, classDecl: Node | null, sourceModel: SemanticModel): void {
 
-    if (ct.name == "Node") {
-      throw new Error("registerSpecializedClass called for Node! classDeclIsNull=" + (if (classDecl == null) "1" else "0") + ", ct.id=" + i32ToString(ct.id as i32));
+    if (ct.name == "Node" || ct.name.endsWith("Node")) {
+      throw new Error("registerSpecializedClass called for Node-like: " + ct.name + " id=" + i32ToString(ct.id as i32));
     }
     let cKey = getClassKey(ct);
     if (this.pass.wasm.classInfos.has(cKey)) {
@@ -893,6 +893,7 @@ export final class Specializer implements SpecializerInterface {
       }
     }
     
+
     let sig = this.pass.wasm.getSignature(params, returns);
     let wasmFunc = new WasmFunction(sig, methodNode, model);
     if (origMethodFt != null && origMethodFt.typeParameters != null) {
