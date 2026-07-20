@@ -1,5 +1,5 @@
 // Cache invalidation comment to force clean rebuild - 31
-import { getArguments, exit, ExitCode } from 'zena:cli';
+import { getArguments, getEnv, exit, ExitCode } from 'zena:cli';
 import { console } from 'zena:console';
 import { readFile, writeFileBytes, writeFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
@@ -130,11 +130,19 @@ export let main = (): i32 => {
     let tCodegen = performance.start("codegen");
     let program = new Program(units, entryUnit);
     
-    let generator = new BinaryGenerator(target);
+    // Experimental ZIR backend (docs/design/ir.md): supported function
+    // bodies go AST -> ZIR -> wasm; the rest use the streaming generator.
+    let backendEnv = getEnv("ZENA_BACKEND");
+    let backendName = if (backendEnv != null) backendEnv as String else "";
+    let zirStrict = backendName == "zir-strict";
+    let useZir = backendName == "zir" || zirStrict;
+    let zirStats = getEnv("ZENA_ZIR_STATS") != null;
+
+    let generator = new BinaryGenerator(target, useZir, zirStats, zirStrict);
     let wasmBytes = generator.generate(program).toByteArray();
     writeFileBytes(outPath, wasmBytes);
-    
-    let watGenerator = new WatGenerator(target);
+
+    let watGenerator = new WatGenerator(target, useZir, false, zirStrict);
     let watString = watGenerator.generate(program);
     writeFile(outPath + ".wat", watString);
     performance.end(tCodegen);

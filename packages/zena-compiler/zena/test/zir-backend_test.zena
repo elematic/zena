@@ -1,0 +1,115 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { Array } from 'zena:array';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { readFile, writeFile, exists, mkdir } from 'zena:fs';
+import { String } from 'zena:string';
+import { makeCompiler, MockHost } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+import { getEnv } from 'zena:cli';
+
+let assertSnapshot = (name: String, content: String): void => {
+  let snapDir = 'packages/zena-compiler/test-files/snapshots';
+  if (!exists(snapDir)) {
+    mkdir(snapDir);
+  }
+  let snapFile = snapDir + '/' + name + '.snap';
+  if (getEnv("UPDATE_SNAPSHOTS") != null) {
+    writeFile(snapFile, content);
+    equal(content, content);
+  } else if (exists(snapFile)) {
+    let expected = readFile(snapFile);
+    equal(content, expected);
+  } else {
+    writeFile(snapFile, content);
+    equal(content, content);
+  }
+};
+
+let compileWithZir = (source: String): String => {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile("test.zena");
+  let checkRes = checkCompilation(compResult, null, false);
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+
+  let program = new Program(units, entryUnit);
+  let generator = new WatGenerator("zena-cli", true, false);
+  return generator.generate(program);
+};
+
+export let tests = suite('zir backend', (): void => {
+  test('straight-line arithmetic function', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'export let main = (): i32 => { let a = 6; let b = 7; return a * b; };');
+    assertSnapshot('zir_straight_line', result);
+  });
+
+  test('if/else with merged assignment', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'export let main = (): i32 => {\n' +
+        '  var r = 0;\n' +
+        '  let x = 4;\n' +
+        '  if (x % 2 == 0) {\n' +
+        '    r = x * 2;\n' +
+        '  } else {\n' +
+        '    r = x + 1;\n' +
+        '  }\n' +
+        '  return r;\n' +
+        '};');
+    assertSnapshot('zir_if_else_merge', result);
+  });
+
+  test('while loop with break and continue', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'export let main = (): i32 => {\n' +
+        '  var acc = 0;\n' +
+        '  var i = 0;\n' +
+        '  while (i < 10) {\n' +
+        '    i += 1;\n' +
+        '    if (i == 3) {\n' +
+        '      continue;\n' +
+        '    }\n' +
+        '    if (i == 7) {\n' +
+        '      break;\n' +
+        '    }\n' +
+        '    acc += i;\n' +
+        '  }\n' +
+        '  return acc;\n' +
+        '};');
+    assertSnapshot('zir_while_break_continue', result);
+  });
+
+  test('short-circuit logic chains', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'let f = (x: i32, y: i32): boolean => x > 0 && y > 0 || x == -1;\n' +
+        'export let main = (): i32 => if (f(1, 2)) 1 else 0;');
+    assertSnapshot('zir_short_circuit', result);
+  });
+
+  test('zir output contains the lowered function', (ctx: TestContext): void => {
+    // Cheap structural sanity independent of snapshots: the ZIR-lowered
+    // function is emitted (every value a local, so at least one local).
+    let result = compileWithZir('export let main = (): i32 => 1 + 2;');
+    isTrue(result.contains('(func $main'));
+  });
+});

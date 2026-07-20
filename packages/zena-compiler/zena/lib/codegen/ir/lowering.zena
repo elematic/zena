@@ -1,0 +1,705 @@
+/**
+ * AST → ZIR lowering (docs/design/ir.md §6), M2 slice 1.
+ *
+ * Covers plain top-level functions over scalar wasm types (i32/i64/
+ * f32/f64, plus booleans as i32): literals, locals, assignments
+ * (including compound), signed arithmetic/comparison/bitwise operators,
+ * short-circuit && and ||, unary -/!/~, if/else, while with break and
+ * continue, and return.
+ *
+ * Everything else bails out by throwing ZirUnsupported, which
+ * tryLowerFunction converts to null; the caller then falls back to the
+ * streaming FunctionGenerator for that function. The bail is a migration
+ * mechanism, not a fuzzy fallback: coverage is tracked per module and the
+ * set of bails shrinks as lowering grows.
+ *
+ * SSA construction is the structured-AST form: an environment maps each
+ * variable symbol to its current value; control-flow joins introduce
+ * block parameters for the variables assigned in the joined regions
+ * (computed by a pre-scan), and loop headers carry parameters for every
+ * variable assigned anywhere in the loop.
+ */
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
+import { Error } from 'zena:error';
+import { parseF64, parseI32 } from 'zena:string-convert';
+import {
+  Node, Statement, Expression, FunctionExpression, BlockStatement,
+  ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
+  WhileStatement, ExpressionStatement, VariableDeclaration,
+  BinaryExpression, UnaryExpression, AssignmentExpression, Identifier,
+  NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern
+} from '../../ast.zena';
+import { Type, I32Type, I64Type, F32Type, F64Type, BooleanType, baseType } from '../../types.zena';
+import { SymbolId, Symbol } from '../../scope/symbol.zena';
+import { walkEnter } from '../../visitor.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, valTypeEquals } from '../wasm.zena';
+import { WasmModule, WasmFunction } from '../wasm-module.zena';
+import { typeToValTypeWithSub } from '../type-mapping.zena';
+import { parseI64OrU64Literal } from '../expr/primitives.zena';
+import { IrBody, IrOp } from './ir.zena';
+import { IrBuilder } from './builder.zena';
+
+export final class ZirUnsupported extends Error {
+  new(reason: String) : super('zir unsupported: ' + reason);
+}
+
+final class LoopCtx {
+  header: i32;
+  exit: i32;
+  carried: Array<SymbolId>;
+  new(this.header, this.exit, this.carried);
+}
+
+/**
+ * Attempts to lower `func` to ZIR. Returns null when the function uses
+ * anything outside the currently supported subset.
+ */
+export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boolean = false): IrBody | null => {
+  let name = if (func.name != null) func.name as String else "<unnamed>";
+  if (func.node == null || !(func.node is FunctionExpression)) {
+    if (strict) {
+      throw new ZirUnsupported("synthesized function " + name);
+    }
+    return null;
+  }
+  // Slice 1: plain top-level functions only — no methods, closures,
+  // adaptations, trampolines, accessors, imports, or generics.
+  if (func.classType != null || func.structType != null ||
+      func.isClosure || func.isImport || func.importWrapperTarget != null ||
+      func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
+      func.isClosureWrapper || func.isClosureTrampoline ||
+      func.getterStruct != null || func.setterStruct != null ||
+      func.captures.length > 0 || func.capturesThis ||
+      func.contextStruct != null || func.typeParameters != null ||
+      func.intrinsic != null) {
+    if (strict) {
+      throw new ZirUnsupported("function shape of " + name);
+    }
+    return null;
+  }
+  if (strict) {
+    // Strict mode (ZENA_BACKEND=zir-strict): let ZirUnsupported propagate
+    // with its reason instead of falling back — the migration ratchet for
+    // proving zero-fallback coverage before the streaming path is deleted
+    // (ir.md §14 M4).
+    let lowerer = new FunctionLowerer(wasm, func);
+    return lowerer.lower();
+  }
+  // ZirUnsupported means "fall back to the streaming generator"; any
+  // other exception is a lowering bug and propagates.
+  let result: IrBody | null = try {
+    let lowerer = new FunctionLowerer(wasm, func);
+    lowerer.lower()
+  } catch (e) {
+    if (e is ZirUnsupported) {
+      null
+    } else {
+      throw e
+    }
+  };
+  return result;
+};
+
+final class FunctionLowerer {
+  wasm: WasmModule;
+  func: WasmFunction;
+  b = new IrBuilder();
+  var env = new HashMap<SymbolId, i32>();
+  loops = new Array<LoopCtx>();
+  var reachable = true;
+
+  new(this.wasm, this.func);
+
+  lower(): IrBody {
+    let fExpr = this.func.node as FunctionExpression;
+    let sig = this.func.signature;
+    if (sig.returns.length > 1) {
+      this.#bail('multi-value return');
+    }
+    if (sig.returns.length == 1) {
+      this.#requireScalar(sig.returns[0], 'return type');
+    }
+    if (sig.params.length != fExpr.params.length) {
+      this.#bail('signature/param shape mismatch');
+    }
+
+    let entry = this.b.newBlock();
+    var i = 0;
+    while (i < fExpr.params.length) {
+      let p = fExpr.params[i];
+      if (p.pattern != null || p.isThisParam || p.defaultValue != null) {
+        this.#bail('parameter shape');
+      }
+      let sym = this.func.model.resolveDeclaration(p.name);
+      if (sym == null) {
+        this.#bail('unresolved parameter');
+      }
+      let vt = sig.params[i];
+      this.#requireScalar(vt, 'parameter type');
+      let value = this.b.blockParam(entry, vt);
+      this.env[(sym as Symbol).id] = value;
+      i += 1;
+    }
+    this.b.switchTo(entry);
+
+    let body = fExpr.body;
+    if (body is BlockStatement) {
+      this.#lowerStatement(body as Statement);
+      if (this.reachable) {
+        if (sig.returns.length == 0) {
+          this.b.retVoid();
+        } else {
+          // The checker guarantees a returning path; a reachable block end
+          // here means dead code we could not prove terminated.
+          this.b.unreachable();
+        }
+      }
+    } else {
+      // Expression-bodied function.
+      if (sig.returns.length == 0) {
+        this.#bail('void expression body');
+      }
+      let value = this.#lowerExpression(body as Expression);
+      this.b.ret(value);
+    }
+    return this.b.finish();
+  }
+
+  // -- Statements ------------------------------------------------------
+
+  #lowerStatement(stmt: Statement): void {
+    if (!this.reachable) {
+      // Statically dead statements after return/break/continue: skip.
+      return;
+    }
+    match (stmt) {
+      case BlockStatement {body}: {
+        for (let s in body) {
+          this.#lowerStatement(s);
+        }
+      }
+      case ExpressionStatement {expression}: {
+        this.#lowerExpression(expression);
+      }
+      case VariableDeclaration as vd: {
+        this.#lowerVariableDeclaration(vd);
+      }
+      case ReturnStatement {argument}: {
+        if (argument == null) {
+          this.b.retVoid();
+        } else {
+          let value = this.#lowerExpression(argument as Expression);
+          this.b.ret(value);
+        }
+        this.reachable = false;
+      }
+      case IfStatement as ifStmt: {
+        this.#lowerIf(ifStmt);
+      }
+      case WhileStatement as whileStmt: {
+        this.#lowerWhile(whileStmt);
+      }
+      case BreakStatement {}: {
+        if (this.loops.length == 0) {
+          this.#bail('break outside loop');
+        }
+        let loop = this.loops[this.loops.length - 1];
+        this.b.br(loop.exit, this.#envValues(loop.carried));
+        this.reachable = false;
+      }
+      case ContinueStatement {}: {
+        if (this.loops.length == 0) {
+          this.#bail('continue outside loop');
+        }
+        let loop = this.loops[this.loops.length - 1];
+        this.b.br(loop.header, this.#envValues(loop.carried));
+        this.reachable = false;
+      }
+      case _: {
+        this.#bail('statement kind');
+      }
+    }
+  }
+
+  #lowerVariableDeclaration(vd: VariableDeclaration): void {
+    var pat = vd.pattern;
+    if (pat is BindingPattern) {
+      pat = (pat as BindingPattern).pattern;
+    }
+    if (!(pat is IdentifierPattern)) {
+      this.#bail('destructuring declaration');
+    }
+    let sym = this.func.model.resolveDeclaration(pat);
+    if (sym == null) {
+      this.#bail('unresolved declaration');
+    }
+    let value = this.#lowerExpression(vd.init);
+    // Gate on the binding's wasm type so later merges stay scalar.
+    let bindingType = this.func.model.getBindingType(sym as Symbol);
+    if (bindingType == null) {
+      this.#bail('untyped binding');
+    }
+    this.#requireScalar(
+        typeToValTypeWithSub(this.wasm, bindingType as Type, this.func),
+        'binding type');
+    this.env[(sym as Symbol).id] = value;
+  }
+
+  #lowerIf(stmt: IfStatement): void {
+    if (!(stmt.test is Expression)) {
+      this.#bail('if-let');
+    }
+    let cond = this.#lowerExpression(stmt.test as Expression);
+
+    if (stmt.alternate == null) {
+      let mergeSyms = this.#assignedEnvSyms(stmt.consequent);
+      let thenB = this.b.newBlock();
+      let mergeB = this.b.newBlock();
+      let mergeParams = this.#addParams(mergeB, mergeSyms);
+      this.b.brIf(cond, thenB, this.#noArgs(), mergeB, this.#envValues(mergeSyms));
+
+      let saved = this.#copyEnv();
+      this.b.switchTo(thenB);
+      this.#lowerStatement(stmt.consequent);
+      if (this.reachable) {
+        this.b.br(mergeB, this.#envValues(mergeSyms));
+      }
+      this.env = saved;
+      this.#applyParams(mergeSyms, mergeParams);
+      this.b.switchTo(mergeB);
+      this.reachable = true;
+      return;
+    }
+
+    let alternate = stmt.alternate as Statement;
+    let mergeSyms = this.#assignedEnvSyms(stmt.consequent);
+    this.#appendAssignedEnvSyms(alternate, mergeSyms);
+    let thenB = this.b.newBlock();
+    let elseB = this.b.newBlock();
+    this.b.brIf(cond, thenB, this.#noArgs(), elseB, this.#noArgs());
+
+    // The merge block is created lazily: if both branches terminate, no
+    // merge exists (and an unreachable block would fail verification).
+    var mergeB = -1;
+    var mergeParams: Array<i32> | null = null;
+
+    let saved = this.#copyEnv();
+    this.b.switchTo(thenB);
+    this.#lowerStatement(stmt.consequent);
+    if (this.reachable) {
+      mergeB = this.b.newBlock();
+      mergeParams = this.#addParams(mergeB, mergeSyms);
+      this.b.br(mergeB, this.#envValues(mergeSyms));
+    }
+
+    this.env = this.#copyOf(saved);
+    this.reachable = true;
+    this.b.switchTo(elseB);
+    this.#lowerStatement(alternate);
+    if (this.reachable) {
+      if (mergeB < 0) {
+        mergeB = this.b.newBlock();
+        mergeParams = this.#addParams(mergeB, mergeSyms);
+      }
+      this.b.br(mergeB, this.#envValues(mergeSyms));
+    }
+
+    if (mergeB < 0) {
+      this.reachable = false;
+      return;
+    }
+    this.env = saved;
+    this.#applyParams(mergeSyms, mergeParams as Array<i32>);
+    this.b.switchTo(mergeB);
+    this.reachable = true;
+  }
+
+  #lowerWhile(stmt: WhileStatement): void {
+    if (!(stmt.test is Expression)) {
+      this.#bail('while-let');
+    }
+    let carried = this.#assignedEnvSyms(stmt.body);
+    this.#appendAssignedEnvSyms(stmt.test, carried);
+
+    let header = this.b.newBlock();
+    let headerParams = this.#addParams(header, carried);
+    this.b.br(header, this.#envValues(carried));
+
+    this.b.switchTo(header);
+    this.#applyParams(carried, headerParams);
+    let cond = this.#lowerExpression(stmt.test as Expression);
+
+    let bodyB = this.b.newBlock();
+    let exitB = this.b.newBlock();
+    let exitParams = this.#addParams(exitB, carried);
+    this.b.brIf(cond, bodyB, this.#noArgs(), exitB, this.#envValues(carried));
+
+    this.loops.push(new LoopCtx(header, exitB, carried));
+    this.b.switchTo(bodyB);
+    this.#lowerStatement(stmt.body);
+    if (this.reachable) {
+      this.b.br(header, this.#envValues(carried));
+    }
+    this.loops.pop();
+
+    this.#applyParams(carried, exitParams);
+    this.b.switchTo(exitB);
+    this.reachable = true;
+  }
+
+  // -- Expressions -----------------------------------------------------
+
+  #lowerExpression(expr: Expression): i32 {
+    return match (expr) {
+      case NumberLiteral as lit: this.#lowerNumberLiteral(lit)
+      case BooleanLiteral {value}: this.b.constI32(if (value) 1 else 0, new ValTypeI32())
+      case Identifier as ident: this.#lowerIdentifier(ident)
+      case BinaryExpression as bin: this.#lowerBinary(bin)
+      case UnaryExpression as un: this.#lowerUnary(un)
+      case AssignmentExpression as assign: this.#lowerAssignment(assign)
+      case _: this.#bailValue('expression kind')
+    };
+  }
+
+  #lowerNumberLiteral(lit: NumberLiteral): i32 {
+    let vt = this.#exprValType(lit);
+    if (vt is ValTypeI32) {
+      if (let (true, value) = parseI32(lit.raw)) {
+        return this.b.constI32(value, vt);
+      }
+      this.#bail('unparseable i32 literal');
+    }
+    if (vt is ValTypeI64) {
+      if (let (true, value) = parseI64OrU64Literal(lit.raw)) {
+        return this.b.constI64(value, vt);
+      }
+      this.#bail('unparseable i64 literal');
+    }
+    if (vt is ValTypeF64) {
+      return this.b.constF64(parseF64(lit.raw), vt);
+    }
+    if (vt is ValTypeF32) {
+      return this.b.constF32(parseF64(lit.raw), vt);
+    }
+    return this.#bailValue('literal type');
+  }
+
+  #lowerIdentifier(ident: Identifier): i32 {
+    let sym = this.func.model.resolve(ident);
+    if (sym == null) {
+      this.#bail('unresolved identifier');
+    }
+    let resolved = (sym as Symbol).resolveTarget();
+    if (!this.env.has(resolved.id)) {
+      this.#bail('non-local identifier');
+    }
+    return this.env[resolved.id];
+  }
+
+  #lowerBinary(bin: BinaryExpression): i32 {
+    if (bin.operator == "&&" || bin.operator == "||") {
+      return this.#lowerLogical(bin);
+    }
+    this.#requireScalarNode(bin.left);
+    this.#requireScalarNode(bin.right);
+    let left = this.#lowerExpression(bin.left);
+    let right = this.#lowerExpression(bin.right);
+    let leftType = this.#valueType(left);
+    let rightType = this.#valueType(right);
+    if (!valTypeEquals(leftType, rightType)) {
+      this.#bail('mixed operand types');
+    }
+    let op = this.#mapBinaryOp(bin.operator, leftType);
+    let isComparison = bin.operator == "==" || bin.operator == "!=" ||
+        bin.operator == "<" || bin.operator == "<=" ||
+        bin.operator == ">" || bin.operator == ">=";
+    let resultType = if (isComparison) new ValTypeI32() as ValType else leftType;
+    return this.b.binary(op, resultType, left, right);
+  }
+
+  #lowerLogical(bin: BinaryExpression): i32 {
+    let left = this.#lowerExpression(bin.left);
+    let evalRight = this.b.newBlock();
+    let merge = this.b.newBlock();
+    let result = this.b.blockParam(merge, new ValTypeI32());
+    if (bin.operator == "&&") {
+      let zero = this.b.constI32(0, new ValTypeI32());
+      this.b.brIf(left, evalRight, this.#noArgs(), merge, this.#oneArg(zero));
+    } else {
+      let one = this.b.constI32(1, new ValTypeI32());
+      this.b.brIf(left, merge, this.#oneArg(one), evalRight, this.#noArgs());
+    }
+    this.b.switchTo(evalRight);
+    let right = this.#lowerExpression(bin.right);
+    this.b.br(merge, this.#oneArg(right));
+    this.b.switchTo(merge);
+    return result;
+  }
+
+  #lowerUnary(un: UnaryExpression): i32 {
+    let value = this.#lowerExpression(un.argument);
+    let vt = this.#valueType(value);
+    if (un.operator == "!") {
+      if (!(vt is ValTypeI32)) {
+        this.#bail('logical not on non-i32');
+      }
+      return this.b.emit(IrOp.i32_eqz, new ValTypeI32(), value, -1);
+    }
+    if (un.operator == "-") {
+      if (vt is ValTypeI32) {
+        let zero = this.b.constI32(0, vt);
+        return this.b.binary(IrOp.i32_sub, vt, zero, value);
+      }
+      if (vt is ValTypeI64) {
+        let zero = this.b.constI64(0 as i64, vt);
+        return this.b.binary(IrOp.i64_sub, vt, zero, value);
+      }
+      if (vt is ValTypeF64) {
+        return this.b.emit(IrOp.f64_neg, vt, value, -1);
+      }
+      if (vt is ValTypeF32) {
+        return this.b.emit(IrOp.f32_neg, vt, value, -1);
+      }
+      this.#bail('negate type');
+    }
+    if (un.operator == "~") {
+      if (vt is ValTypeI32) {
+        let minusOne = this.b.constI32(-1, vt);
+        return this.b.binary(IrOp.i32_xor, vt, value, minusOne);
+      }
+      if (vt is ValTypeI64) {
+        let minusOne = this.b.constI64(-1 as i64, vt);
+        return this.b.binary(IrOp.i64_xor, vt, value, minusOne);
+      }
+      this.#bail('bitwise not type');
+    }
+    return this.#bailValue('unary operator');
+  }
+
+  #lowerAssignment(assign: AssignmentExpression): i32 {
+    if (!(assign.left is Identifier)) {
+      this.#bail('assignment target');
+    }
+    let sym = this.func.model.resolve(assign.left);
+    if (sym == null) {
+      this.#bail('unresolved assignment target');
+    }
+    let resolved = (sym as Symbol).resolveTarget();
+    if (!this.env.has(resolved.id)) {
+      this.#bail('non-local assignment target');
+    }
+    var value = -1;
+    if (assign.operator == null) {
+      value = this.#lowerExpression(assign.value);
+    } else {
+      // Compound assignment: current op= value.
+      this.#requireScalarNode(assign.left);
+      this.#requireScalarNode(assign.value);
+      let current = this.env[resolved.id];
+      let rhs = this.#lowerExpression(assign.value);
+      let vt = this.#valueType(current);
+      if (!valTypeEquals(vt, this.#valueType(rhs))) {
+        this.#bail('mixed compound assignment types');
+      }
+      let op = this.#mapBinaryOp(assign.operator as String, vt);
+      value = this.b.binary(op, vt, current, rhs);
+    }
+    this.env[resolved.id] = value;
+    return value;
+  }
+
+  // -- Helpers ---------------------------------------------------------
+
+  #mapBinaryOp(operator: String, vt: ValType): IrOp {
+    if (vt is ValTypeI32) {
+      if (operator == "+") { return IrOp.i32_add; }
+      if (operator == "-") { return IrOp.i32_sub; }
+      if (operator == "*") { return IrOp.i32_mul; }
+      if (operator == "/") { return IrOp.i32_div_s; }
+      if (operator == "%") { return IrOp.i32_rem_s; }
+      if (operator == "&") { return IrOp.i32_and; }
+      if (operator == "|") { return IrOp.i32_or; }
+      if (operator == "^") { return IrOp.i32_xor; }
+      if (operator == "<<") { return IrOp.i32_shl; }
+      if (operator == ">>") { return IrOp.i32_shr_s; }
+      if (operator == ">>>") { return IrOp.i32_shr_u; }
+      if (operator == "==") { return IrOp.i32_eq; }
+      if (operator == "!=") { return IrOp.i32_ne; }
+      if (operator == "<") { return IrOp.i32_lt_s; }
+      if (operator == "<=") { return IrOp.i32_le_s; }
+      if (operator == ">") { return IrOp.i32_gt_s; }
+      if (operator == ">=") { return IrOp.i32_ge_s; }
+    } else if (vt is ValTypeI64) {
+      if (operator == "+") { return IrOp.i64_add; }
+      if (operator == "-") { return IrOp.i64_sub; }
+      if (operator == "*") { return IrOp.i64_mul; }
+      if (operator == "/") { return IrOp.i64_div_s; }
+      if (operator == "%") { return IrOp.i64_rem_s; }
+      if (operator == "&") { return IrOp.i64_and; }
+      if (operator == "|") { return IrOp.i64_or; }
+      if (operator == "^") { return IrOp.i64_xor; }
+      if (operator == "<<") { return IrOp.i64_shl; }
+      if (operator == ">>") { return IrOp.i64_shr_s; }
+      if (operator == ">>>") { return IrOp.i64_shr_u; }
+      if (operator == "==") { return IrOp.i64_eq; }
+      if (operator == "!=") { return IrOp.i64_ne; }
+      if (operator == "<") { return IrOp.i64_lt_s; }
+      if (operator == "<=") { return IrOp.i64_le_s; }
+      if (operator == ">") { return IrOp.i64_gt_s; }
+      if (operator == ">=") { return IrOp.i64_ge_s; }
+    } else if (vt is ValTypeF64) {
+      if (operator == "+") { return IrOp.f64_add; }
+      if (operator == "-") { return IrOp.f64_sub; }
+      if (operator == "*") { return IrOp.f64_mul; }
+      if (operator == "/") { return IrOp.f64_div; }
+      if (operator == "==") { return IrOp.f64_eq; }
+      if (operator == "!=") { return IrOp.f64_ne; }
+      if (operator == "<") { return IrOp.f64_lt; }
+      if (operator == "<=") { return IrOp.f64_le; }
+      if (operator == ">") { return IrOp.f64_gt; }
+      if (operator == ">=") { return IrOp.f64_ge; }
+    } else if (vt is ValTypeF32) {
+      if (operator == "+") { return IrOp.f32_add; }
+      if (operator == "-") { return IrOp.f32_sub; }
+      if (operator == "*") { return IrOp.f32_mul; }
+      if (operator == "/") { return IrOp.f32_div; }
+      if (operator == "==") { return IrOp.f32_eq; }
+      if (operator == "!=") { return IrOp.f32_ne; }
+      if (operator == "<") { return IrOp.f32_lt; }
+      if (operator == "<=") { return IrOp.f32_le; }
+      if (operator == ">") { return IrOp.f32_gt; }
+      if (operator == ">=") { return IrOp.f32_ge; }
+    }
+    return this.#bailValue('operator ' + operator) as IrOp;
+  }
+
+  /** The wasm type of an already-lowered value. */
+  #valueType(value: i32): ValType {
+    return this.b.body.typeTable[this.b.body.typeId[value]];
+  }
+
+  #exprValType(expr: Expression): ValType {
+    let t = this.func.model.getNodeType(expr);
+    if (t == null) {
+      this.#bail('untyped expression');
+    }
+    let vt = typeToValTypeWithSub(this.wasm, t as Type, this.func);
+    this.#requireScalar(vt, 'expression type');
+    return vt;
+  }
+
+  /**
+   * Requires the checked type of `expr` to be a signed scalar the subset
+   * handles. Unsigned types share wasm representations but need _u
+   * operator variants; they bail until lowering learns them.
+   */
+  #requireScalarNode(expr: Expression): void {
+    let t = this.func.model.getNodeType(expr);
+    if (t == null) {
+      this.#bail('untyped operand');
+    }
+    let bt = baseType(t as Type);
+    let ok = bt is I32Type || bt is I64Type || bt is F32Type ||
+        bt is F64Type || bt is BooleanType;
+    if (!ok) {
+      this.#bail('operand type');
+    }
+  }
+
+  #requireScalar(vt: ValType, what: String): void {
+    let ok = vt is ValTypeI32 || vt is ValTypeI64 || vt is ValTypeF32 ||
+        vt is ValTypeF64;
+    if (!ok) {
+      this.#bail(what);
+    }
+  }
+
+  /** Symbols assigned anywhere inside `node` that are locals in scope. */
+  #assignedEnvSyms(node: Node): Array<SymbolId> {
+    let result = new Array<SymbolId>();
+    this.#appendAssignedEnvSyms(node, result);
+    return result;
+  }
+
+  #appendAssignedEnvSyms(node: Node, out: Array<SymbolId>): void {
+    let seen = new HashSet<SymbolId>();
+    for (let existing in out) {
+      seen.add(existing);
+    }
+    walkEnter(node, (n: Node): void => {
+      if (n is AssignmentExpression) {
+        let ae = n as AssignmentExpression;
+        if (ae.left is Identifier) {
+          let sym = this.func.model.resolve(ae.left);
+          if (sym != null) {
+            let resolved = (sym as Symbol).resolveTarget();
+            if (this.env.has(resolved.id) && !seen.has(resolved.id)) {
+              seen.add(resolved.id);
+              out.push(resolved.id);
+            }
+          }
+        }
+      }
+    });
+  }
+
+  /** Adds one block param per symbol, typed by the symbol's binding. */
+  #addParams(block: i32, syms: Array<SymbolId>): Array<i32> {
+    let params = new Array<i32>();
+    for (let symId in syms) {
+      // Use the current value's type: for SSA merges every incoming value
+      // has the binding's lowered type in the scalar subset.
+      let vt = this.#valueType(this.env[symId]);
+      params.push(this.b.blockParam(block, vt));
+    }
+    return params;
+  }
+
+  #applyParams(syms: Array<SymbolId>, params: Array<i32>): void {
+    var i = 0;
+    while (i < syms.length) {
+      this.env[syms[i]] = params[i];
+      i += 1;
+    }
+  }
+
+  #envValues(syms: Array<SymbolId>): Array<i32> {
+    let values = new Array<i32>();
+    for (let symId in syms) {
+      values.push(this.env[symId]);
+    }
+    return values;
+  }
+
+  #copyEnv(): HashMap<SymbolId, i32> {
+    return this.#copyOf(this.env);
+  }
+
+  #copyOf(source: HashMap<SymbolId, i32>): HashMap<SymbolId, i32> {
+    let copy = new HashMap<SymbolId, i32>();
+    for (let pair in source) {
+      copy[pair.key] = pair.value;
+    }
+    return copy;
+  }
+
+  #noArgs(): Array<i32> {
+    return new Array<i32>();
+  }
+
+  #oneArg(value: i32): Array<i32> {
+    let result = new Array<i32>();
+    result.push(value);
+    return result;
+  }
+
+  #bail(reason: String): never {
+    throw new ZirUnsupported(reason);
+  }
+
+  #bailValue(reason: String): i32 {
+    throw new ZirUnsupported(reason);
+  }
+}

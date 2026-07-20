@@ -87,22 +87,57 @@ export enum IrOp {
   i32_le_s,
   i32_gt_s,
   i32_ge_s,
-  // i64 (representative subset; extended as lowering needs them)
+  // i64
   i64_add,
   i64_sub,
   i64_mul,
+  i64_div_s,
+  i64_rem_s,
+  i64_and,
+  i64_or,
+  i64_xor,
+  i64_shl,
+  i64_shr_s,
+  i64_shr_u,
   i64_eq,
+  i64_ne,
+  i64_lt_s,
+  i64_le_s,
+  i64_gt_s,
+  i64_ge_s,
   // f64
   f64_add,
   f64_sub,
   f64_mul,
   f64_div,
   f64_eq,
+  f64_ne,
   f64_lt,
+  f64_le,
+  f64_gt,
+  f64_ge,
+  // f32
+  f32_add,
+  f32_sub,
+  f32_mul,
+  f32_div,
+  f32_eq,
+  f32_ne,
+  f32_lt,
+  f32_le,
+  f32_gt,
+  f32_ge,
+  // unary numerics
+  i64_eqz,
+  f64_neg,
+  f32_neg,
   // conversions
   i32_wrap_i64,
   i64_extend_i32_s,
   f64_convert_i32_s,
+  f32_convert_i32_s,
+  f64_promote_f32,
+  f32_demote_f64,
   // references
   ref_null,
   ref_is_null,
@@ -272,8 +307,11 @@ export final class IrBody {
     // Shape: one value in slot a. Slot b is free for the non-value payload
     // (a refTable index for global_set/struct_get/vt_*, a typeTable index
     // for ref_test/ref_cast, unused for the pure unary ops).
-    if (op == IrOp.i32_eqz || op == IrOp.i32_wrap_i64 ||
+    if (op == IrOp.i32_eqz || op == IrOp.i64_eqz || op == IrOp.f64_neg ||
+        op == IrOp.f32_neg || op == IrOp.i32_wrap_i64 ||
         op == IrOp.i64_extend_i32_s || op == IrOp.f64_convert_i32_s ||
+        op == IrOp.f32_convert_i32_s || op == IrOp.f64_promote_f32 ||
+        op == IrOp.f32_demote_f64 ||
         op == IrOp.ref_is_null || op == IrOp.ref_as_non_null ||
         op == IrOp.ref_test || op == IrOp.ref_cast || op == IrOp.array_len ||
         op == IrOp.global_set || op == IrOp.struct_get || op == IrOp.vt_load ||
@@ -371,7 +409,7 @@ export final class IrBody {
     let v = op as i32;
     return (v >= IrOp.i32_add as i32 && v <= IrOp.i32_ge_s as i32 &&
             v != IrOp.i32_eqz as i32) ||
-           (v >= IrOp.i64_add as i32 && v <= IrOp.f64_lt as i32);
+           (v >= IrOp.i64_add as i32 && v <= IrOp.f32_ge as i32);
   }
 
   /** Decodes the control-flow successors of a terminator instruction. */
@@ -459,16 +497,49 @@ export let irOpName = (op: IrOp): String => {
     case IrOp.i64_add: { name = 'i64.add'; }
     case IrOp.i64_sub: { name = 'i64.sub'; }
     case IrOp.i64_mul: { name = 'i64.mul'; }
+    case IrOp.i64_div_s: { name = 'i64.div_s'; }
+    case IrOp.i64_rem_s: { name = 'i64.rem_s'; }
+    case IrOp.i64_and: { name = 'i64.and'; }
+    case IrOp.i64_or: { name = 'i64.or'; }
+    case IrOp.i64_xor: { name = 'i64.xor'; }
+    case IrOp.i64_shl: { name = 'i64.shl'; }
+    case IrOp.i64_shr_s: { name = 'i64.shr_s'; }
+    case IrOp.i64_shr_u: { name = 'i64.shr_u'; }
     case IrOp.i64_eq: { name = 'i64.eq'; }
+    case IrOp.i64_ne: { name = 'i64.ne'; }
+    case IrOp.i64_lt_s: { name = 'i64.lt_s'; }
+    case IrOp.i64_le_s: { name = 'i64.le_s'; }
+    case IrOp.i64_gt_s: { name = 'i64.gt_s'; }
+    case IrOp.i64_ge_s: { name = 'i64.ge_s'; }
     case IrOp.f64_add: { name = 'f64.add'; }
     case IrOp.f64_sub: { name = 'f64.sub'; }
     case IrOp.f64_mul: { name = 'f64.mul'; }
     case IrOp.f64_div: { name = 'f64.div'; }
     case IrOp.f64_eq: { name = 'f64.eq'; }
+    case IrOp.f64_ne: { name = 'f64.ne'; }
     case IrOp.f64_lt: { name = 'f64.lt'; }
+    case IrOp.f64_le: { name = 'f64.le'; }
+    case IrOp.f64_gt: { name = 'f64.gt'; }
+    case IrOp.f64_ge: { name = 'f64.ge'; }
+    case IrOp.f32_add: { name = 'f32.add'; }
+    case IrOp.f32_sub: { name = 'f32.sub'; }
+    case IrOp.f32_mul: { name = 'f32.mul'; }
+    case IrOp.f32_div: { name = 'f32.div'; }
+    case IrOp.f32_eq: { name = 'f32.eq'; }
+    case IrOp.f32_ne: { name = 'f32.ne'; }
+    case IrOp.f32_lt: { name = 'f32.lt'; }
+    case IrOp.f32_le: { name = 'f32.le'; }
+    case IrOp.f32_gt: { name = 'f32.gt'; }
+    case IrOp.f32_ge: { name = 'f32.ge'; }
+    case IrOp.i64_eqz: { name = 'i64.eqz'; }
+    case IrOp.f64_neg: { name = 'f64.neg'; }
+    case IrOp.f32_neg: { name = 'f32.neg'; }
     case IrOp.i32_wrap_i64: { name = 'i32.wrap_i64'; }
     case IrOp.i64_extend_i32_s: { name = 'i64.extend_i32_s'; }
     case IrOp.f64_convert_i32_s: { name = 'f64.convert_i32_s'; }
+    case IrOp.f32_convert_i32_s: { name = 'f32.convert_i32_s'; }
+    case IrOp.f64_promote_f32: { name = 'f64.promote_f32'; }
+    case IrOp.f32_demote_f64: { name = 'f32.demote_f64'; }
     case IrOp.ref_null: { name = 'ref.null'; }
     case IrOp.ref_is_null: { name = 'ref.is_null'; }
     case IrOp.ref_as_non_null: { name = 'ref.as_non_null'; }

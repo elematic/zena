@@ -1,0 +1,362 @@
+/**
+ * ZIR → wasm emission (docs/design/ir.md §12), M2 form: every value gets
+ * a wasm local (no stack scheduling yet), and the CFG is reconstructed
+ * into wasm's structured control flow with the dominator-based stackifier
+ * (Ramsey, "Beyond Relooper" — reducible CFGs only, which lowering
+ * guarantees).
+ *
+ * Layout of the algorithm:
+ *  - doTree(X) emits the dominator subtree rooted at X. Loop headers wrap
+ *    themselves in `loop`; merge children (>= 2 forward preds) each get a
+ *    labeled `block` whose end is immediately followed by their own code.
+ *  - Branch edges either `br` to a label (backward edges to loop headers,
+ *    forward edges to merge nodes) or inline the target's subtree in
+ *    place (targets with a single forward predecessor).
+ *  - Branch arguments become local copies into the target's param locals,
+ *    via per-param temporaries when more than one argument could alias.
+ */
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+import { i32ToString } from 'zena:string-convert';
+import { ValType, ValTypeVoid } from '../wasm.zena';
+import { WasmModule, WasmFunction } from '../wasm-module.zena';
+import { WasmEmitter } from '../wasm-emitter.zena';
+import { IrBody, IrOp, IrSuccessor, irOpName } from './ir.zena';
+import { IrCfg } from './cfg.zena';
+
+final class EmitFrame {
+  /** CFG block this label is the branch target of; -1 for if/else frames. */
+  blockId: i32;
+  isLoop: boolean;
+  new(this.blockId, this.isLoop);
+}
+
+export final class ZirFunctionEmitter {
+  wasm: WasmModule;
+  emitter: WasmEmitter;
+  func: WasmFunction;
+  body: IrBody;
+  cfg: IrCfg;
+  /** Per instruction id: assigned wasm local index, or -1. */
+  localOf = new Array<i32>();
+  /** Per block-param instruction id: copy temp local, or -1. */
+  tempOf = new Array<i32>();
+  /** Locals beyond the signature params, in index order. */
+  localTypes = new Array<ValType>();
+  frames = new Array<EmitFrame>();
+
+  new(this.wasm, this.emitter, this.func, this.body, this.cfg);
+
+  emit(): void {
+    this.emitter.emitFunctionCodeStart(this.func);
+    var name = 'func' + i32ToString(this.func.index);
+    if (this.func.name != null) {
+      name = this.func.name as String;
+    }
+    this.emitter.emitFunctionSignatureStart(name, this.func.signature.index);
+    this.#allocLocals();
+    this.emitter.emitFunctionLocalsStart(this.localTypes);
+    this.#doTree(0);
+    // Every doTree leaf ends in a real terminator, but wasm validation
+    // resets to "reachable" after each block/if/loop `end`, so control
+    // structurally falls through to the function end with an empty
+    // stack. A trailing `unreachable` keeps result-typed functions valid.
+    if (this.func.signature.returns.length > 0) {
+      this.emitter.emitUnreachable();
+    }
+    this.emitter.emitFunctionEnd();
+    this.emitter.emitFunctionCodeEnd(this.func);
+  }
+
+  #allocLocals(): void {
+    let body = this.body;
+    let paramCount = this.func.signature.params.length;
+    var i = 0;
+    while (i < body.instCount()) {
+      this.localOf.push(-1);
+      this.tempOf.push(-1);
+      i += 1;
+    }
+    let entryParams = body.blocks[0].params;
+    if (entryParams.length != paramCount) {
+      throw new Error('zir emit: entry block params (' +
+          i32ToString(entryParams.length) + ') do not match signature (' +
+          i32ToString(paramCount) + ')');
+    }
+    i = 0;
+    while (i < entryParams.length) {
+      this.localOf[entryParams[i]] = i;
+      i += 1;
+    }
+    i = 0;
+    while (i < body.instCount()) {
+      if (body.producesValue(i) && this.localOf[i] < 0) {
+        this.localOf[i] = paramCount + this.localTypes.length;
+        this.localTypes.push(body.resultType(i) as ValType);
+      }
+      i += 1;
+    }
+    // Copy temporaries: any edge passing more than one argument routes the
+    // copies through per-param temps, so a swap of a loop's own params
+    // cannot clobber a source before it is read.
+    var blockId = 0;
+    while (blockId < body.blocks.length) {
+      let blk = body.blocks[blockId];
+      if (blk.insts.length == 0) {
+        blockId += 1;
+        continue;
+      }
+      let term = blk.insts[blk.insts.length - 1];
+      for (let s in body.successors(term)) {
+        if (s.argCount > 1) {
+          for (let p in body.blocks[s.target].params) {
+            if (this.tempOf[p] < 0) {
+              this.tempOf[p] = paramCount + this.localTypes.length;
+              this.localTypes.push(body.resultType(p) as ValType);
+            }
+          }
+        }
+      }
+      blockId += 1;
+    }
+  }
+
+  #doTree(x: i32): void {
+    let mergeChildren = new Array<i32>();
+    for (let c in this.cfg.domChildren[x]) {
+      if (this.cfg.isMergeNode(c)) {
+        mergeChildren.push(c);
+      }
+    }
+    if (this.cfg.isLoopHeader(x)) {
+      this.frames.push(new EmitFrame(x, true));
+      this.emitter.emitLoop(new ValTypeVoid());
+      this.#nodeWithin(x, mergeChildren, mergeChildren.length);
+      this.emitter.emitEnd();
+      this.frames.pop();
+    } else {
+      this.#nodeWithin(x, mergeChildren, mergeChildren.length);
+    }
+  }
+
+  #nodeWithin(x: i32, mergeChildren: Array<i32>, count: i32): void {
+    if (count > 0) {
+      let y = mergeChildren[count - 1];
+      this.frames.push(new EmitFrame(y, false));
+      this.emitter.emitBlock(new ValTypeVoid());
+      this.#nodeWithin(x, mergeChildren, count - 1);
+      this.emitter.emitEnd();
+      this.frames.pop();
+      this.#doTree(y);
+      return;
+    }
+    let blk = this.body.blocks[x];
+    var j = 0;
+    while (j < blk.insts.length - 1) {
+      this.#emitInst(blk.insts[j]);
+      j += 1;
+    }
+    this.#emitTerminator(blk.insts[blk.insts.length - 1], x);
+  }
+
+  #emitTerminator(inst: i32, from: i32): void {
+    let body = this.body;
+    let op = body.op(inst);
+    if (op == IrOp.ret) {
+      let value = body.a[inst];
+      if (value >= 0) {
+        this.emitter.emitLocalGet(this.localOf[value]);
+      }
+      this.emitter.emitReturn();
+      return;
+    }
+    if (op == IrOp.unreachable) {
+      this.emitter.emitUnreachable();
+      return;
+    }
+    let succs = body.successors(inst);
+    if (op == IrOp.br) {
+      this.#doBranch(from, succs[0]);
+      return;
+    }
+    if (op == IrOp.br_if) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      this.emitter.emitIf(new ValTypeVoid());
+      this.frames.push(new EmitFrame(-1, false));
+      this.#doBranch(from, succs[0]);
+      this.emitter.emitElse();
+      this.#doBranch(from, succs[1]);
+      this.emitter.emitEnd();
+      this.frames.pop();
+      return;
+    }
+    throw new Error('zir emit: unsupported terminator ' + irOpName(op));
+  }
+
+  #doBranch(from: i32, s: IrSuccessor): void {
+    this.#copyArgs(s);
+    if (this.cfg.rpoIndex[s.target] <= this.cfg.rpoIndex[from] ||
+        this.cfg.isMergeNode(s.target)) {
+      this.emitter.emitBr(this.#depthOf(s.target));
+      return;
+    }
+    // Single forward predecessor: place the target's subtree right here.
+    this.#doTree(s.target);
+  }
+
+  #copyArgs(s: IrSuccessor): void {
+    let body = this.body;
+    let params = body.blocks[s.target].params;
+    if (params.length == 0) {
+      return;
+    }
+    if (params.length == 1) {
+      let arg = body.extra[s.argStart];
+      if (this.localOf[arg] != this.localOf[params[0]]) {
+        this.emitter.emitLocalGet(this.localOf[arg]);
+        this.emitter.emitLocalSet(this.localOf[params[0]]);
+      }
+      return;
+    }
+    var i = 0;
+    while (i < params.length) {
+      this.emitter.emitLocalGet(this.localOf[body.extra[s.argStart + i]]);
+      this.emitter.emitLocalSet(this.tempOf[params[i]]);
+      i += 1;
+    }
+    i = 0;
+    while (i < params.length) {
+      this.emitter.emitLocalGet(this.tempOf[params[i]]);
+      this.emitter.emitLocalSet(this.localOf[params[i]]);
+      i += 1;
+    }
+  }
+
+  #depthOf(target: i32): i32 {
+    var i = this.frames.length - 1;
+    var depth = 0;
+    while (i >= 0) {
+      if (this.frames[i].blockId == target) {
+        return depth;
+      }
+      depth += 1;
+      i -= 1;
+    }
+    throw new Error('zir emit: no enclosing label for b' + i32ToString(target));
+  }
+
+  #emitInst(inst: i32): void {
+    let body = this.body;
+    let op = body.op(inst);
+    if (op == IrOp.nop || op == IrOp.param) {
+      return;
+    }
+    if (op == IrOp.const_i32) {
+      this.emitter.emitI32Const(body.a[inst]);
+    } else if (op == IrOp.const_i64) {
+      this.emitter.emitI64Const(body.constI64[body.a[inst]]);
+    } else if (op == IrOp.const_f32) {
+      this.emitter.emitF32Const(body.constF64[body.a[inst]]);
+    } else if (op == IrOp.const_f64) {
+      this.emitter.emitF64Const(body.constF64[body.a[inst]]);
+    } else if (this.#isUnaryNumeric(op)) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      this.#emitOp(op);
+    } else {
+      // Binary numerics: two inline value operands.
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
+      this.#emitOp(op);
+    }
+    if (body.producesValue(inst)) {
+      this.emitter.emitLocalSet(this.localOf[inst]);
+    }
+  }
+
+  #isUnaryNumeric(op: IrOp): boolean {
+    return op == IrOp.i32_eqz || op == IrOp.i64_eqz || op == IrOp.f64_neg ||
+        op == IrOp.f32_neg || op == IrOp.i32_wrap_i64 ||
+        op == IrOp.i64_extend_i32_s || op == IrOp.f64_convert_i32_s ||
+        op == IrOp.f32_convert_i32_s || op == IrOp.f64_promote_f32 ||
+        op == IrOp.f32_demote_f64;
+  }
+
+  #emitOp(op: IrOp): void {
+    let e = this.emitter;
+    match (op) {
+      case IrOp.i32_add: { e.emitI32Add(); }
+      case IrOp.i32_sub: { e.emitI32Sub(); }
+      case IrOp.i32_mul: { e.emitI32Mul(); }
+      case IrOp.i32_div_s: { e.emitI32DivS(); }
+      case IrOp.i32_rem_s: { e.emitI32RemS(); }
+      case IrOp.i32_and: { e.emitI32And(); }
+      case IrOp.i32_or: { e.emitI32Or(); }
+      case IrOp.i32_xor: { e.emitI32Xor(); }
+      case IrOp.i32_shl: { e.emitI32Shl(); }
+      case IrOp.i32_shr_s: { e.emitI32ShrS(); }
+      case IrOp.i32_shr_u: { e.emitI32ShrU(); }
+      case IrOp.i32_eqz: { e.emitI32Eqz(); }
+      case IrOp.i32_eq: { e.emitI32Eq(); }
+      case IrOp.i32_ne: { e.emitI32Ne(); }
+      case IrOp.i32_lt_s: { e.emitI32LtS(); }
+      case IrOp.i32_le_s: { e.emitI32LeS(); }
+      case IrOp.i32_gt_s: { e.emitI32GtS(); }
+      case IrOp.i32_ge_s: { e.emitI32GeS(); }
+      case IrOp.i64_add: { e.emitI64Add(); }
+      case IrOp.i64_sub: { e.emitI64Sub(); }
+      case IrOp.i64_mul: { e.emitI64Mul(); }
+      case IrOp.i64_div_s: { e.emitI64DivS(); }
+      case IrOp.i64_rem_s: { e.emitI64RemS(); }
+      case IrOp.i64_and: { e.emitI64And(); }
+      case IrOp.i64_or: { e.emitI64Or(); }
+      case IrOp.i64_xor: { e.emitI64Xor(); }
+      case IrOp.i64_shl: { e.emitI64Shl(); }
+      case IrOp.i64_shr_s: { e.emitI64ShrS(); }
+      case IrOp.i64_shr_u: { e.emitI64ShrU(); }
+      case IrOp.i64_eqz: { e.emitI64Eqz(); }
+      case IrOp.i64_eq: { e.emitI64Eq(); }
+      case IrOp.i64_ne: { e.emitI64Ne(); }
+      case IrOp.i64_lt_s: { e.emitI64LtS(); }
+      case IrOp.i64_le_s: { e.emitI64LeS(); }
+      case IrOp.i64_gt_s: { e.emitI64GtS(); }
+      case IrOp.i64_ge_s: { e.emitI64GeS(); }
+      case IrOp.f64_add: { e.emitF64Add(); }
+      case IrOp.f64_sub: { e.emitF64Sub(); }
+      case IrOp.f64_mul: { e.emitF64Mul(); }
+      case IrOp.f64_div: { e.emitF64Div(); }
+      case IrOp.f64_eq: { e.emitF64Eq(); }
+      case IrOp.f64_ne: { e.emitF64Ne(); }
+      case IrOp.f64_lt: { e.emitF64Lt(); }
+      case IrOp.f64_le: { e.emitF64Le(); }
+      case IrOp.f64_gt: { e.emitF64Gt(); }
+      case IrOp.f64_ge: { e.emitF64Ge(); }
+      case IrOp.f64_neg: { e.emitF64Neg(); }
+      case IrOp.f32_add: { e.emitF32Add(); }
+      case IrOp.f32_sub: { e.emitF32Sub(); }
+      case IrOp.f32_mul: { e.emitF32Mul(); }
+      case IrOp.f32_div: { e.emitF32Div(); }
+      case IrOp.f32_eq: { e.emitF32Eq(); }
+      case IrOp.f32_ne: { e.emitF32Ne(); }
+      case IrOp.f32_lt: { e.emitF32Lt(); }
+      case IrOp.f32_le: { e.emitF32Le(); }
+      case IrOp.f32_gt: { e.emitF32Gt(); }
+      case IrOp.f32_ge: { e.emitF32Ge(); }
+      case IrOp.f32_neg: { e.emitF32Neg(); }
+      case IrOp.i32_wrap_i64: { e.emitI32WrapI64(); }
+      case IrOp.i64_extend_i32_s: { e.emitI64ExtendI32S(); }
+      case IrOp.f64_convert_i32_s: { e.emitF64ConvertI32S(); }
+      case IrOp.f32_convert_i32_s: { e.emitF32ConvertI32S(); }
+      case IrOp.f64_promote_f32: { e.emitF64PromoteF32(); }
+      case IrOp.f32_demote_f64: { e.emitF32DemoteF64(); }
+      case _: {
+        throw new Error('zir emit: unsupported opcode ' + irOpName(op));
+      }
+    }
+  }
+}
+
+export let emitZirFunction = (wasm: WasmModule, emitter: WasmEmitter, func: WasmFunction, body: IrBody): void => {
+  let cfg = new IrCfg(body);
+  let zirEmitter = new ZirFunctionEmitter(wasm, emitter, func, body, cfg);
+  zirEmitter.emit();
+};

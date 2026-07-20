@@ -315,6 +315,10 @@ fn compile_to_cache(
         metadata.len().hash(&mut hasher);
     }
 
+    // Env vars that change compiler output must key the cache, or toggling
+    // them serves stale artifacts.
+    std::env::var("ZENA_BACKEND").unwrap_or_default().hash(&mut hasher);
+
     // Walk packages/stdlib to include standard library files
     let stdlib_dir = repo_root.join("packages/stdlib");
     for entry in WalkDir::new(&stdlib_dir)

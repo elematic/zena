@@ -979,13 +979,23 @@ until M4.
   Benchmark: compile-time within budget of the direct backend (target:
   ≤1.15×; the extra IR pass is offset by cheaper emission and the removal
   of per-emission rediscovery).
+  During migration, unsupported constructs fall back per function to the
+  streaming generator — scaffolding with a scheduled demolition, not a
+  permanent path. The enforcement ratchet is **strict mode**
+  (`ZENA_BACKEND=zir-strict`): fallback becomes a fatal error naming the
+  unsupported construct. M2's exit gate is the portable suite and
+  self-compile passing under strict mode (zero fallbacks); until then,
+  strict mode is the everyday tool for finding the next construct to
+  lower.
 - **M3 — the loop.** simplify/DCE/blockmerge, then inline, devirt, SRoA,
   SCCP; golden WAT tests per pass; `-O2`/`-Os` wired. §10 harvest pass.
   Success metric: measurable size *and* speed wins on the benchmark suite
   and on the compiler compiling itself (the compiler is our biggest, most
   interface-heavy program — it is the benchmark).
 - **M4 — flip the default.** Delete the direct `FunctionGenerator` emission
-  path; ZIR backend becomes the only backend.
+  path; ZIR backend becomes the only backend, and with it the fallback
+  (and strict mode) cease to exist — any lowering gap is a hard compile
+  error by construction, because there is nothing left to fall back to.
 - **M5 — template ZIR (v2 generics).** Per-source-function lowering +
   table-substitution specialization. Success metric: cold-compile of
   `assert_test.zena` and `zena:test`-heavy files (the 47s case) drops by

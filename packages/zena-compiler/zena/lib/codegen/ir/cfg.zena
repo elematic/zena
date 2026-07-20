@@ -1,0 +1,220 @@
+/**
+ * CFG analyses over a ZIR body: predecessors, reverse postorder, and
+ * dominators (Cooper–Harvey–Kennedy). Shared by the verifier and the
+ * emitter. Computed once per body on demand; bodies are not mutated
+ * between construction and use in the current pipeline.
+ */
+import { Array } from 'zena:array';
+import { IrBody } from './ir.zena';
+
+export final class IrCfg {
+  body: IrBody;
+  /** Predecessor block ids per block. */
+  preds = new Array<Array<i32>>();
+  /** Successor block ids per block (edge order, duplicates preserved). */
+  succs = new Array<Array<i32>>();
+  /** Blocks in reverse postorder (entry first). */
+  rpo = new Array<i32>();
+  /** Reverse-postorder number per block; -1 = unreachable from entry. */
+  rpoIndex = new Array<i32>();
+  /** Immediate dominator per block; entry's is itself; -1 = unreachable. */
+  idom = new Array<i32>();
+  /** Dominator-tree children per block, in ascending RPO order. */
+  domChildren = new Array<Array<i32>>();
+
+  new(this.body) {
+    this.#computePreds();
+    this.#computeRpo();
+    this.#computeDominators();
+    this.#computeDomChildren();
+  }
+
+  isReachable(block: i32): boolean {
+    return this.rpoIndex[block] >= 0;
+  }
+
+  /** True if `block` has a predecessor that appears later in RPO. */
+  isLoopHeader(block: i32): boolean {
+    for (let p in this.preds[block]) {
+      if (this.rpoIndex[p] >= this.rpoIndex[block]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** True if `block` has two or more forward-edge predecessors. */
+  isMergeNode(block: i32): boolean {
+    var forward = 0;
+    for (let p in this.preds[block]) {
+      if (this.rpoIndex[p] < this.rpoIndex[block]) {
+        forward += 1;
+      }
+    }
+    return forward >= 2;
+  }
+
+  dominates(a: i32, b: i32): boolean {
+    var blockId = b;
+    while (true) {
+      if (blockId == a) {
+        return true;
+      }
+      if (blockId == 0) {
+        return false;
+      }
+      blockId = this.idom[blockId];
+      if (blockId < 0) {
+        return false;
+      }
+    }
+  }
+
+  #computePreds(): void {
+    let body = this.body;
+    var blockId = 0;
+    while (blockId < body.blocks.length) {
+      this.preds.push(new Array<i32>());
+      this.succs.push(new Array<i32>());
+      blockId += 1;
+    }
+    blockId = 0;
+    while (blockId < body.blocks.length) {
+      let blk = body.blocks[blockId];
+      if (blk.insts.length == 0) {
+        blockId += 1;
+        continue;
+      }
+      let term = blk.insts[blk.insts.length - 1];
+      for (let s in body.successors(term)) {
+        if (s.target >= 0 && s.target < body.blocks.length) {
+          this.preds[s.target].push(blockId);
+          this.succs[blockId].push(s.target);
+        }
+      }
+      blockId += 1;
+    }
+  }
+
+  #computeRpo(): void {
+    let body = this.body;
+    var i = 0;
+    while (i < body.blocks.length) {
+      this.rpoIndex.push(-1);
+      i += 1;
+    }
+    if (body.blocks.length == 0) {
+      return;
+    }
+    // Iterative DFS postorder from the entry, then reverse. A node must
+    // finish only after all its (non-cyclic) successors have finished, so
+    // each stack entry keeps a cursor into its successor list — the
+    // simpler push-all-successors form finishes nodes too early and
+    // produces orderings where a forward edge looks like a back edge.
+    let postorder = new Array<i32>();
+    let stack = new Array<i32>();
+    let cursor = new Array<i32>();
+    let visited = new Array<boolean>();
+    i = 0;
+    while (i < body.blocks.length) {
+      visited.push(false);
+      i += 1;
+    }
+    stack.push(0);
+    cursor.push(0);
+    visited[0] = true;
+    while (stack.length > 0) {
+      let blockId = stack[stack.length - 1];
+      let next = cursor[cursor.length - 1];
+      let blockSuccs = this.succs[blockId];
+      if (next < blockSuccs.length) {
+        cursor[cursor.length - 1] = next + 1;
+        let target = blockSuccs[next];
+        if (!visited[target]) {
+          visited[target] = true;
+          stack.push(target);
+          cursor.push(0);
+        }
+        continue;
+      }
+      stack.pop();
+      cursor.pop();
+      postorder.push(blockId);
+    }
+    i = postorder.length - 1;
+    while (i >= 0) {
+      this.rpoIndex[postorder[i]] = this.rpo.length;
+      this.rpo.push(postorder[i]);
+      i -= 1;
+    }
+  }
+
+  /** Cooper–Harvey–Kennedy iterative dominator computation over RPO. */
+  #computeDominators(): void {
+    var i = 0;
+    while (i < this.body.blocks.length) {
+      this.idom.push(-1);
+      i += 1;
+    }
+    if (this.body.blocks.length == 0) {
+      return;
+    }
+    this.idom[0] = 0;
+    var changed = true;
+    while (changed) {
+      changed = false;
+      var r = 1;
+      while (r < this.rpo.length) {
+        let blockId = this.rpo[r];
+        var newIdom = -1;
+        for (let pred in this.preds[blockId]) {
+          if (this.rpoIndex[pred] < 0 || this.idom[pred] < 0) {
+            continue; // unreachable or not yet processed
+          }
+          if (newIdom < 0) {
+            newIdom = pred;
+          } else {
+            newIdom = this.#intersect(pred, newIdom);
+          }
+        }
+        if (newIdom >= 0 && this.idom[blockId] != newIdom) {
+          this.idom[blockId] = newIdom;
+          changed = true;
+        }
+        r += 1;
+      }
+    }
+  }
+
+  #intersect(x: i32, y: i32): i32 {
+    var a = x;
+    var b = y;
+    while (a != b) {
+      while (this.rpoIndex[a] > this.rpoIndex[b]) {
+        a = this.idom[a];
+      }
+      while (this.rpoIndex[b] > this.rpoIndex[a]) {
+        b = this.idom[b];
+      }
+    }
+    return a;
+  }
+
+  #computeDomChildren(): void {
+    var i = 0;
+    while (i < this.body.blocks.length) {
+      this.domChildren.push(new Array<i32>());
+      i += 1;
+    }
+    // Walk in RPO so children lists come out in ascending RPO order.
+    var r = 1;
+    while (r < this.rpo.length) {
+      let blockId = this.rpo[r];
+      let parent = this.idom[blockId];
+      if (parent >= 0 && parent != blockId) {
+        this.domChildren[parent].push(blockId);
+      }
+      r += 1;
+    }
+  }
+}

@@ -19,6 +19,7 @@ import { Array } from 'zena:array';
 import { i32ToString } from 'zena:string-convert';
 import { valTypeEquals } from '../wasm.zena';
 import { IrBody, IrOp, isIrTerminator, irOpName } from './ir.zena';
+import { IrCfg } from './cfg.zena';
 
 export final class IrVerifier {
   body: IrBody;
@@ -27,13 +28,7 @@ export final class IrVerifier {
   // Per-instruction position within its block: params get 0..paramCount-1,
   // body instructions follow. -1 = never placed in any block list.
   #instPos = new Array<i32>();
-  // Reverse-postorder number per block, -1 = unreachable.
-  #rpoIndex = new Array<i32>();
-  // Immediate dominator per block, indexed by block id. -1 = unknown.
-  #idom = new Array<i32>();
-  #preds = new Array<Array<i32>>();
-  // Blocks in reverse postorder.
-  #rpo = new Array<i32>();
+  var #cfg: IrCfg | null = null;
 
   new(this.body);
 
@@ -51,9 +46,8 @@ export final class IrVerifier {
     if (this.errors.length > 0) {
       return this.errors;
     }
-    this.#computeRpo();
+    this.#cfg = new IrCfg(this.body);
     this.#checkReachability();
-    this.#computeDominators();
     this.#checkUses();
     return this.errors;
   }
@@ -124,11 +118,6 @@ export final class IrVerifier {
     let body = this.body;
     var blockId = 0;
     while (blockId < body.blocks.length) {
-      this.#preds.push(new Array<i32>());
-      blockId += 1;
-    }
-    blockId = 0;
-    while (blockId < body.blocks.length) {
       let blk = body.blocks[blockId];
       let term = blk.insts[blk.insts.length - 1];
       let succs = body.successors(term);
@@ -138,7 +127,6 @@ export final class IrVerifier {
               i32ToString(s.target));
           continue;
         }
-        this.#preds[s.target].push(blockId);
         let targetParams = body.blocks[s.target].params;
         if (s.argCount != targetParams.length) {
           this.#error('b' + i32ToString(blockId) + ': branch to b' +
@@ -167,56 +155,11 @@ export final class IrVerifier {
     }
   }
 
-  #computeRpo(): void {
-    let body = this.body;
-    var i = 0;
-    while (i < body.blocks.length) {
-      this.#rpoIndex.push(-1);
-      i += 1;
-    }
-    // Iterative postorder DFS from the entry block, then reverse.
-    let postorder = new Array<i32>();
-    let stack = new Array<i32>();
-    let visited = new Array<boolean>();
-    let expanded = new Array<boolean>();
-    i = 0;
-    while (i < body.blocks.length) {
-      visited.push(false);
-      expanded.push(false);
-      i += 1;
-    }
-    stack.push(0);
-    visited[0] = true;
-    while (stack.length > 0) {
-      let blockId = stack[stack.length - 1];
-      if (expanded[blockId]) {
-        stack.pop();
-        postorder.push(blockId);
-        continue;
-      }
-      expanded[blockId] = true;
-      let blk = body.blocks[blockId];
-      let term = blk.insts[blk.insts.length - 1];
-      let succs = body.successors(term);
-      for (let s in succs) {
-        if (!visited[s.target]) {
-          visited[s.target] = true;
-          stack.push(s.target);
-        }
-      }
-    }
-    i = postorder.length - 1;
-    while (i >= 0) {
-      this.#rpoIndex[postorder[i]] = this.#rpo.length;
-      this.#rpo.push(postorder[i]);
-      i -= 1;
-    }
-  }
-
   #checkReachability(): void {
+    let cfg = this.#cfg as IrCfg;
     var blockId = 0;
     while (blockId < this.body.blocks.length) {
-      if (this.#rpoIndex[blockId] < 0) {
+      if (!cfg.isReachable(blockId)) {
         this.#error('b' + i32ToString(blockId) +
             ' is unreachable from the entry block');
       }
@@ -224,76 +167,13 @@ export final class IrVerifier {
     }
   }
 
-  /** Cooper–Harvey–Kennedy iterative dominator computation over RPO. */
-  #computeDominators(): void {
-    var i = 0;
-    while (i < this.body.blocks.length) {
-      this.#idom.push(-1);
-      i += 1;
-    }
-    this.#idom[0] = 0;
-    var changed = true;
-    while (changed) {
-      changed = false;
-      var r = 1;
-      while (r < this.#rpo.length) {
-        let blockId = this.#rpo[r];
-        var newIdom = -1;
-        for (let pred in this.#preds[blockId]) {
-          if (this.#rpoIndex[pred] < 0 || this.#idom[pred] < 0) {
-            continue; // unreachable or not yet processed
-          }
-          if (newIdom < 0) {
-            newIdom = pred;
-          } else {
-            newIdom = this.#intersect(pred, newIdom);
-          }
-        }
-        if (newIdom >= 0 && this.#idom[blockId] != newIdom) {
-          this.#idom[blockId] = newIdom;
-          changed = true;
-        }
-        r += 1;
-      }
-    }
-  }
-
-  #intersect(x: i32, y: i32): i32 {
-    var a = x;
-    var b = y;
-    while (a != b) {
-      while (this.#rpoIndex[a] > this.#rpoIndex[b]) {
-        a = this.#idom[a];
-      }
-      while (this.#rpoIndex[b] > this.#rpoIndex[a]) {
-        b = this.#idom[b];
-      }
-    }
-    return a;
-  }
-
-  #dominates(defBlock: i32, useBlock: i32): boolean {
-    var blockId = useBlock;
-    while (true) {
-      if (blockId == defBlock) {
-        return true;
-      }
-      if (blockId == 0) {
-        return false;
-      }
-      blockId = this.#idom[blockId];
-      if (blockId < 0) {
-        return false;
-      }
-    }
-  }
-
   #checkUses(): void {
     let body = this.body;
+    let cfg = this.#cfg as IrCfg;
     let operands = new Array<i32>();
     var blockId = 0;
     while (blockId < body.blocks.length) {
-      if (this.#rpoIndex[blockId] < 0) {
+      if (!cfg.isReachable(blockId)) {
         blockId += 1;
         continue; // already reported unreachable
       }
@@ -313,6 +193,7 @@ export final class IrVerifier {
 
   #checkUse(user: i32, value: i32, useBlock: i32): void {
     let body = this.body;
+    let cfg = this.#cfg as IrCfg;
     if (value < 0 || value >= body.instCount()) {
       this.#error('%' + i32ToString(user) + ' uses invalid value id %' +
           i32ToString(value));
@@ -331,7 +212,7 @@ export final class IrVerifier {
       }
       return;
     }
-    if (!this.#dominates(defBlock, useBlock)) {
+    if (!cfg.dominates(defBlock, useBlock)) {
       this.#error('%' + i32ToString(user) + ' in b' + i32ToString(useBlock) +
           ' uses %' + i32ToString(value) + ' from b' + i32ToString(defBlock) +
           ', which does not dominate it');
