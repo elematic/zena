@@ -29,7 +29,8 @@ import {
   ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ExpressionStatement, VariableDeclaration,
   BinaryExpression, UnaryExpression, AssignmentExpression, Identifier,
-  NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern
+  NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern,
+  CallExpression
 } from '../../ast.zena';
 import { Type, I32Type, I64Type, F32Type, F64Type, BooleanType, baseType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
@@ -38,7 +39,7 @@ import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, valTypeEquals 
 import { WasmModule, WasmFunction } from '../wasm-module.zena';
 import { typeToValTypeWithSub } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
-import { IrBody, IrOp } from './ir.zena';
+import { IrBody, IrOp, IrRefFunc } from './ir.zena';
 import { IrBuilder } from './builder.zena';
 
 export final class ZirUnsupported extends Error {
@@ -126,8 +127,7 @@ final class FunctionLowerer {
     }
 
     let entry = this.b.newBlock();
-    var i = 0;
-    while (i < fExpr.params.length) {
+    for (var i = 0; i < fExpr.params.length; i += 1) {
       let p = fExpr.params[i];
       if (p.pattern != null || p.isThisParam || p.defaultValue != null) {
         this.#bail('parameter shape');
@@ -140,7 +140,6 @@ final class FunctionLowerer {
       this.#requireScalar(vt, 'parameter type');
       let value = this.b.blockParam(entry, vt);
       this.env[(sym as Symbol).id] = value;
-      i += 1;
     }
     this.b.switchTo(entry);
 
@@ -359,6 +358,7 @@ final class FunctionLowerer {
       case BinaryExpression as bin: this.#lowerBinary(bin)
       case UnaryExpression as un: this.#lowerUnary(un)
       case AssignmentExpression as assign: this.#lowerAssignment(assign)
+      case CallExpression as call: this.#lowerCall(call)
       case _: this.#bailValue('expression kind')
     };
   }
@@ -476,6 +476,74 @@ final class FunctionLowerer {
       this.#bail('bitwise not type');
     }
     return this.#bailValue('unary operator');
+  }
+
+  /**
+   * Direct calls only: the callee is an identifier statically resolving
+   * to a non-generic, non-adapted top-level function (or import) whose
+   * signature is all scalars and whose arity matches the call exactly
+   * (an arity mismatch means default-argument adaptation). Everything
+   * else — methods, function values, generics, optional calls — bails.
+   *
+   * A void call returns its (valueless) instruction id; the checker
+   * rejects void values in operand position, and if one ever slipped
+   * through, the verifier's produces-no-value check fails loudly.
+   */
+  #lowerCall(call: CallExpression): i32 {
+    if (!(call.callee is Identifier)) {
+      this.#bail('call callee kind');
+    }
+    if (call.optional) {
+      this.#bail('optional call');
+    }
+    if (call.typeArguments != null) {
+      this.#bail('generic call');
+    }
+    let sym = this.func.model.resolve(call.callee);
+    if (sym == null) {
+      this.#bail('unresolved callee');
+    }
+    let resolved = (sym as Symbol).resolveTarget();
+    if (this.env.has(resolved.id)) {
+      // A local variable holding a function value: indirect call.
+      this.#bail('indirect call');
+    }
+    if (!this.wasm.functionMap.has(resolved.id)) {
+      this.#bail('callee not a known function');
+    }
+    let target = this.wasm.functionMap[resolved.id];
+    if (target.typeParameters != null || target.typeArguments != null ||
+        target.intrinsic != null || target.isFunctionAdaptation ||
+        target.isClosure || target.contextStruct != null ||
+        target.captures.length > 0 || target.capturesThis ||
+        target.classType != null || target.structType != null) {
+      this.#bail('callee shape');
+    }
+    let sig = target.signature;
+    if (sig.returns.length > 1) {
+      this.#bail('callee multi-value return');
+    }
+    if (sig.params.length != call.args.length) {
+      this.#bail('call arity adaptation');
+    }
+    for (var i = 0; i < sig.params.length; i += 1) {
+      this.#requireScalar(sig.params[i], 'call param type');
+    }
+    var resultType: ValType | null = null;
+    if (sig.returns.length == 1) {
+      this.#requireScalar(sig.returns[0], 'call result type');
+      resultType = sig.returns[0];
+    }
+    let args = new Array<i32>();
+    for (var i = 0; i < call.args.length; i += 1) {
+      let value = this.#lowerExpression(call.args[i]);
+      if (!valTypeEquals(this.#valueType(value), sig.params[i])) {
+        this.#bail('call argument type');
+      }
+      args.push(value);
+    }
+    let funcRef = this.b.addRef(new IrRefFunc(target));
+    return this.b.callFunc(funcRef, args, resultType);
   }
 
   #lowerAssignment(assign: AssignmentExpression): i32 {
@@ -658,10 +726,8 @@ final class FunctionLowerer {
   }
 
   #applyParams(syms: Array<SymbolId>, params: Array<i32>): void {
-    var i = 0;
-    while (i < syms.length) {
+    for (var i = 0; i < syms.length; i += 1) {
       this.env[syms[i]] = params[i];
-      i += 1;
     }
   }
 

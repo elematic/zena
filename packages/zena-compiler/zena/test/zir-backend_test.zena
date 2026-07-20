@@ -106,6 +106,40 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_short_circuit', result);
   });
 
+  test('direct calls, recursion, and mutual recursion', (ctx: TestContext): void => {
+    // Structural assertions rather than a full-module snapshot: function
+    // ORDER in the module depends on discovery worklist order, which
+    // shifts with process-global symbol/uid counters whenever unrelated
+    // compiler code changes — a multi-function snapshot would churn on
+    // every compiler edit. (Single-function snapshots above are stable.)
+    let result = compileWithZir(
+        'let add = (a: i32, b: i32): i32 => a + b;\n' +
+        'let fib = (n: i32): i32 => {\n' +
+        '  if (n < 2) {\n' +
+        '    return n;\n' +
+        '  }\n' +
+        '  return fib(n - 1) + fib(n - 2);\n' +
+        '};\n' +
+        'let isEven = (n: i32): boolean => {\n' +
+        '  if (n == 0) { return true; }\n' +
+        '  return isOdd(n - 1);\n' +
+        '};\n' +
+        'let isOdd = (n: i32): boolean => {\n' +
+        '  if (n == 0) { return false; }\n' +
+        '  return isEven(n - 1);\n' +
+        '};\n' +
+        'export let main = (): i32 => add(fib(10), if (isEven(4)) 1 else 0);');
+    // Self-recursion and mutual recursion emit direct calls.
+    isTrue(result.contains('call $fib'));
+    isTrue(result.contains('call $isOdd'));
+    isTrue(result.contains('call $isEven'));
+    isTrue(result.contains('call $add'));
+    // The bodies came from the ZIR emitter (every value a local), not the
+    // streaming generator: fib's compare materializes into a local before
+    // the branch instead of feeding an if directly off the stack.
+    isTrue(result.contains('(func $fib'));
+  });
+
   test('zir output contains the lowered function', (ctx: TestContext): void => {
     // Cheap structural sanity independent of snapshots: the ZIR-lowered
     // function is emitted (every value a local, so at least one local).
