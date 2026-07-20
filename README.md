@@ -1,7 +1,7 @@
 # The Zena Programming Language
 
 Zena is a statically typed programming language that compiles to
-[WebAssembly GC](https://github.com/nicolo-ribaudo/tc39-proposal-wasm-gc-js-interop).
+[WebAssembly GC](https://github.com/WebAssembly/gc/blob/main/proposals/gc/Overview.md).
 It combines a familiar, TypeScript-like syntax with a sound type system,
 zero- and low-cost abstractions, and modern language features, all designed for
 ahead-of-time compilation to compact, high-performance WASM binaries.
