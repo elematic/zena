@@ -1,0 +1,510 @@
+/**
+ * ZIR core data structures.
+ *
+ * See docs/design/ir.md. ZIR is a CFG-of-basic-blocks SSA IR with block
+ * parameters instead of phi nodes. The encoding is data-oriented (§4):
+ * instructions live in flat parallel i32 arrays indexed by instruction id,
+ * and a value id IS the id of its defining instruction (block parameters
+ * are `param` instructions, so the value namespace is uniform).
+ *
+ * Hot arrays hold only i32s. References to module entities (functions,
+ * globals, struct types, fields, literals) are corralled into the small
+ * per-function `refTable`; types go through `typeTable`. Instructions store
+ * indices into those tables, never object references.
+ *
+ * Operand encoding conventions ("a"/"b" are the two inline operand slots;
+ * "a -> [...]" means slot a holds an index into `extra` where the listed
+ * items are stored consecutively):
+ *
+ *   nop, param, unreachable:  no operands
+ *   const_i32:   a = the value itself
+ *   const_i64:   a = index into constI64
+ *   const_f32/const_f64: a = index into constF64
+ *   unary ops:   a = operand value
+ *   binary ops:  a, b = operand values
+ *   ref_null:    no operands (result type = typeId)
+ *   ref_test, ref_cast: a = value, b = target type (typeTable index)
+ *   ref_func:    b = ref (function)
+ *   str_lit:     b = ref (string literal)
+ *   global_get:  b = ref (global)
+ *   global_set:  a = value, b = ref (global)
+ *   struct_new:  a -> [argc, arg*],           b = ref (struct type)
+ *   struct_get:  a = receiver,                b = ref (field)
+ *   struct_set:  a -> [receiver, value],      b = ref (field)
+ *   array_new:   a -> [length, init or -1],   b = ref (array type)
+ *   array_get:   a = array, b = index
+ *   array_set:   a -> [array, index, value]
+ *   array_len:   a = array
+ *   vt_load:     a = receiver,                b = ref (class struct type)
+ *   vt_slot:     a = vtable value,            b = ref (member field)
+ *   iface_pack:  a = instance,                b = ref (class/interface pair)
+ *   iface_vtable, iface_instance: a = fat pointer
+ *   call:        a -> [argc, arg*],           b = ref (function)
+ *   call_ref:    a -> [callee, argc, arg*]
+ *   throw:       a -> [argc, arg*],           b = ref (tag) or -1
+ *   br:          a -> [target, argc, arg*]
+ *   br_if:       a = condition,
+ *                b -> [thenTarget, thenArgc, arg*, elseTarget, elseArgc, arg*]
+ *   br_on_cast, br_on_cast_fail:
+ *                a = value,
+ *                b -> [targetType (typeTable index),
+ *                      okTarget, okArgc, arg*, failTarget, failArgc, arg*]
+ *   br_table:    a = selector,
+ *                b -> [count, (target, argc, arg*)*]  (last entry = default)
+ *   ret:         a = value, or -1 for void
+ *
+ * A result type of -1 in `typeId` means the instruction produces no value.
+ * Instruction and block ids are plain i32 indices for now; -1 means "none".
+ */
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+import { ValType, WasmType } from '../wasm.zena';
+import { WasmStruct, WasmFunction, WasmGlobal } from '../wasm-module.zena';
+
+export enum IrOp {
+  nop,
+  param,
+  const_i32,
+  const_i64,
+  const_f32,
+  const_f64,
+  // i32 arithmetic and comparison (1:1 with wasm)
+  i32_add,
+  i32_sub,
+  i32_mul,
+  i32_div_s,
+  i32_rem_s,
+  i32_and,
+  i32_or,
+  i32_xor,
+  i32_shl,
+  i32_shr_s,
+  i32_shr_u,
+  i32_eqz,
+  i32_eq,
+  i32_ne,
+  i32_lt_s,
+  i32_le_s,
+  i32_gt_s,
+  i32_ge_s,
+  // i64 (representative subset; extended as lowering needs them)
+  i64_add,
+  i64_sub,
+  i64_mul,
+  i64_eq,
+  // f64
+  f64_add,
+  f64_sub,
+  f64_mul,
+  f64_div,
+  f64_eq,
+  f64_lt,
+  // conversions
+  i32_wrap_i64,
+  i64_extend_i32_s,
+  f64_convert_i32_s,
+  // references
+  ref_null,
+  ref_is_null,
+  ref_as_non_null,
+  ref_eq,
+  ref_test,
+  ref_cast,
+  ref_func,
+  // aggregates
+  struct_new,
+  struct_get,
+  struct_set,
+  array_new,
+  array_get,
+  array_set,
+  array_len,
+  // module-level accesses
+  global_get,
+  global_set,
+  str_lit,
+  // dispatch (docs/design/ir.md §5)
+  vt_load,
+  vt_slot,
+  iface_pack,
+  iface_vtable,
+  iface_instance,
+  call,
+  call_ref,
+  // Terminators. These must stay last and contiguous: isIrTerminator does a
+  // band check against IrOp.br.
+  br,
+  br_if,
+  br_table,
+  br_on_cast,
+  br_on_cast_fail,
+  ret,
+  throw,
+  unreachable
+}
+
+export let isIrTerminator = (op: IrOp): boolean => {
+  return op as i32 >= IrOp.br as i32;
+};
+
+/**
+ * A symbolic reference to a module entity. Instructions address these via
+ * refTable indices; numeric wasm indices, field offsets, and vtable slots
+ * are bound at layout time, after the optimization fixpoint (ir.md §10.2).
+ */
+export sealed class IrRef {
+  case IrRefFunc(target: WasmFunction)
+  case IrRefGlobal(target: WasmGlobal)
+  case IrRefType(target: WasmType)
+  /** A field named symbolically on a struct (object field or vtable slot). */
+  case IrRefField(owner: WasmStruct, fieldName: String)
+  /** A (class, interface) pair for fat-pointer construction. */
+  case IrRefClassInterface(classStruct: WasmStruct, ifaceStruct: WasmStruct)
+  case IrRefStringLit(value: String)
+}
+
+/**
+ * One basic block.
+ *
+ * A basic block is a straight-line run of instructions: execution can only
+ * enter at the top, and can only leave through the single *terminator*
+ * instruction at the end (a branch, return, throw, or unreachable) — there
+ * are no jumps into or out of the middle. A function body is a graph of
+ * these blocks, with the terminators' targets as the edges.
+ *
+ * Block *parameters* are how values flow between blocks in SSA form; they
+ * replace the phi nodes of textbook SSA. A block declares typed
+ * parameters, and every branch to it must pass matching arguments — think
+ * of branching to a block as calling it with values. For example, a
+ * loop-carried counter is a parameter of the loop-header block: the entry
+ * branch passes its initial value and the back-edge branch passes the
+ * incremented one. (docs/design/ir.md §3 has a worked example.)
+ *
+ * `params` holds the ids of this block's param instructions; `insts` holds
+ * the body instruction ids in order, the last of which must be a
+ * terminator. Blocks are objects (not flattened into IrBody arrays)
+ * because block counts are tiny relative to instruction counts; the flat
+ * blockStart/blockEnd form from ir.md §4 is the *compacted*
+ * representation, produced by compact() before serialization/emission
+ * (later milestone).
+ */
+export final class IrBlock {
+  params = new Array<i32>();
+  insts = new Array<i32>();
+}
+
+/** One decoded control-flow edge: target block + branch arguments. */
+export final class IrSuccessor {
+  target: i32;
+  /** Index into IrBody.extra of the first branch argument. */
+  argStart: i32;
+  argCount: i32;
+  new(this.target, this.argStart, this.argCount);
+}
+
+export final class IrBody {
+  // Parallel instruction arrays, indexed by instruction id. These always
+  // have identical lengths and grow in lockstep (only the builder's
+  // #newInst appends). A fused stride-N buffer or a rope could avoid the
+  // separate copies on growth, but passes overwhelmingly scan one or two
+  // of these fields linearly, which favors the struct-of-arrays split,
+  // and growth copies are amortized and cheap (array.copy). Lowering will
+  // pre-size them from the AST node count via a builder capacity hint
+  // (ir.md §4), which should make mid-build growth rare.
+  opcode = new Array<i32>();
+  typeId = new Array<i32>();
+  a = new Array<i32>();
+  b = new Array<i32>();
+  /** Block id owning each instruction. */
+  instBlock = new Array<i32>();
+  /** Overflow operand pool. */
+  extra = new Array<i32>();
+
+  blocks = new Array<IrBlock>();
+
+  // Indirection tables (ir.md §4).
+  typeTable = new Array<ValType>();
+  refTable = new Array<IrRef>();
+
+  // Constant pools.
+  constI64 = new Array<i64>();
+  constF64 = new Array<f64>();
+
+  instCount(): i32 {
+    return this.opcode.length;
+  }
+
+  op(inst: i32): IrOp {
+    return this.opcode[inst] as IrOp;
+  }
+
+  /** The result type of an instruction, or null if it produces no value. */
+  resultType(inst: i32): ValType | null {
+    let t = this.typeId[inst];
+    if (t < 0) {
+      return null;
+    }
+    return this.typeTable[t];
+  }
+
+  producesValue(inst: i32): boolean {
+    return this.typeId[inst] >= 0;
+  }
+
+  /**
+   * Appends every value operand of `inst` (instruction ids read by it,
+   * including branch arguments) to `out`.
+   */
+  appendValueOperands(inst: i32, out: Array<i32>): void {
+    let op = this.op(inst);
+    let av = this.a[inst];
+    // Each branch below corresponds to one shape from the operand-encoding
+    // table in the file header; a/b hold either value ids directly or an
+    // index into `extra`, depending on that shape.
+    // Shape: no value operands. Constants and params define values from
+    // payloads; ref_func/str_lit/global_get read module entities via b.
+    if (op == IrOp.nop || op == IrOp.param || op == IrOp.const_i32 ||
+        op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
+        op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
+        op == IrOp.global_get || op == IrOp.unreachable) {
+      return;
+    }
+    // Shape: one value in slot a. Slot b is free for the non-value payload
+    // (a refTable index for global_set/struct_get/vt_*, a typeTable index
+    // for ref_test/ref_cast, unused for the pure unary ops).
+    if (op == IrOp.i32_eqz || op == IrOp.i32_wrap_i64 ||
+        op == IrOp.i64_extend_i32_s || op == IrOp.f64_convert_i32_s ||
+        op == IrOp.ref_is_null || op == IrOp.ref_as_non_null ||
+        op == IrOp.ref_test || op == IrOp.ref_cast || op == IrOp.array_len ||
+        op == IrOp.global_set || op == IrOp.struct_get || op == IrOp.vt_load ||
+        op == IrOp.vt_slot || op == IrOp.iface_pack ||
+        op == IrOp.iface_vtable || op == IrOp.iface_instance) {
+      out.push(av);
+      return;
+    }
+    // Shape: two values, inline in slots a and b.
+    if (op == IrOp.array_get || op == IrOp.ref_eq || this.#isBinaryNumeric(op)) {
+      out.push(av);
+      out.push(this.b[inst]);
+      return;
+    }
+    // Shapes with more than two operands spill to `extra`; slot a holds the
+    // extra index (slot b keeps the refTable index where one is needed).
+    // struct_set: fixed pair [receiver, value].
+    if (op == IrOp.struct_set) {
+      out.push(this.extra[av]);
+      out.push(this.extra[av + 1]);
+      return;
+    }
+    // array_set: fixed triple [array, index, value].
+    if (op == IrOp.array_set) {
+      out.push(this.extra[av]);
+      out.push(this.extra[av + 1]);
+      out.push(this.extra[av + 2]);
+      return;
+    }
+    // array_new: [length, init], where init is -1 for default-initialized.
+    if (op == IrOp.array_new) {
+      out.push(this.extra[av]);
+      let init = this.extra[av + 1];
+      if (init >= 0) {
+        out.push(init);
+      }
+      return;
+    }
+    // Counted argument list: [argc, arg*].
+    if (op == IrOp.struct_new || op == IrOp.call || op == IrOp.throw) {
+      let argc = this.extra[av];
+      var i = 0;
+      while (i < argc) {
+        out.push(this.extra[av + 1 + i]);
+        i += 1;
+      }
+      return;
+    }
+    // call_ref: the callee value precedes the counted list: [callee, argc, arg*].
+    if (op == IrOp.call_ref) {
+      out.push(this.extra[av]);
+      let argc = this.extra[av + 1];
+      var i = 0;
+      while (i < argc) {
+        out.push(this.extra[av + 2 + i]);
+        i += 1;
+      }
+      return;
+    }
+    // ret: slot a is the value, or -1 for a void return.
+    if (op == IrOp.ret) {
+      if (av >= 0) {
+        out.push(av);
+      }
+      return;
+    }
+    // Branches: the operands are the branch arguments of every successor
+    // edge (decoded via successors()), plus — for the conditional forms —
+    // the condition/scrutinee/selector riding in slot a.
+    if (op == IrOp.br) {
+      this.#appendSuccessorArgs(inst, out);
+      return;
+    }
+    if (op == IrOp.br_if || op == IrOp.br_on_cast ||
+        op == IrOp.br_on_cast_fail || op == IrOp.br_table) {
+      out.push(av);
+      this.#appendSuccessorArgs(inst, out);
+      return;
+    }
+    throw new Error(`appendValueOperands: unhandled opcode ${irOpName(op)}`);
+  }
+
+  #appendSuccessorArgs(inst: i32, out: Array<i32>): void {
+    let succs = this.successors(inst);
+    for (let s in succs) {
+      var i = 0;
+      while (i < s.argCount) {
+        out.push(this.extra[s.argStart + i]);
+        i += 1;
+      }
+    }
+  }
+
+  #isBinaryNumeric(op: IrOp): boolean {
+    let v = op as i32;
+    return (v >= IrOp.i32_add as i32 && v <= IrOp.i32_ge_s as i32 &&
+            v != IrOp.i32_eqz as i32) ||
+           (v >= IrOp.i64_add as i32 && v <= IrOp.f64_lt as i32);
+  }
+
+  /** Decodes the control-flow successors of a terminator instruction. */
+  successors(inst: i32): Array<IrSuccessor> {
+    let result = new Array<IrSuccessor>();
+    let op = this.op(inst);
+    if (op == IrOp.ret || op == IrOp.throw || op == IrOp.unreachable) {
+      return result;
+    }
+    if (op == IrOp.br) {
+      let idx = this.a[inst];
+      let argc = this.extra[idx + 1];
+      result.push(new IrSuccessor(this.extra[idx], idx + 2, argc));
+      return result;
+    }
+    if (op == IrOp.br_if) {
+      var idx = this.b[inst];
+      var i = 0;
+      while (i < 2) {
+        let target = this.extra[idx];
+        let argc = this.extra[idx + 1];
+        result.push(new IrSuccessor(target, idx + 2, argc));
+        idx += 2 + argc;
+        i += 1;
+      }
+      return result;
+    }
+    if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail) {
+      var idx = this.b[inst] + 1; // skip target type
+      var i = 0;
+      while (i < 2) {
+        let target = this.extra[idx];
+        let argc = this.extra[idx + 1];
+        result.push(new IrSuccessor(target, idx + 2, argc));
+        idx += 2 + argc;
+        i += 1;
+      }
+      return result;
+    }
+    if (op == IrOp.br_table) {
+      var idx = this.b[inst];
+      let count = this.extra[idx];
+      idx += 1;
+      var i = 0;
+      while (i < count) {
+        let target = this.extra[idx];
+        let argc = this.extra[idx + 1];
+        result.push(new IrSuccessor(target, idx + 2, argc));
+        idx += 2 + argc;
+        i += 1;
+      }
+      return result;
+    }
+    throw new Error(`successors: not a terminator: ${irOpName(op)}`);
+  }
+}
+
+export let irOpName = (op: IrOp): String => {
+  var name = '';
+  match (op) {
+    case IrOp.nop: { name = 'nop'; }
+    case IrOp.param: { name = 'param'; }
+    case IrOp.const_i32: { name = 'const.i32'; }
+    case IrOp.const_i64: { name = 'const.i64'; }
+    case IrOp.const_f32: { name = 'const.f32'; }
+    case IrOp.const_f64: { name = 'const.f64'; }
+    case IrOp.i32_add: { name = 'i32.add'; }
+    case IrOp.i32_sub: { name = 'i32.sub'; }
+    case IrOp.i32_mul: { name = 'i32.mul'; }
+    case IrOp.i32_div_s: { name = 'i32.div_s'; }
+    case IrOp.i32_rem_s: { name = 'i32.rem_s'; }
+    case IrOp.i32_and: { name = 'i32.and'; }
+    case IrOp.i32_or: { name = 'i32.or'; }
+    case IrOp.i32_xor: { name = 'i32.xor'; }
+    case IrOp.i32_shl: { name = 'i32.shl'; }
+    case IrOp.i32_shr_s: { name = 'i32.shr_s'; }
+    case IrOp.i32_shr_u: { name = 'i32.shr_u'; }
+    case IrOp.i32_eqz: { name = 'i32.eqz'; }
+    case IrOp.i32_eq: { name = 'i32.eq'; }
+    case IrOp.i32_ne: { name = 'i32.ne'; }
+    case IrOp.i32_lt_s: { name = 'i32.lt_s'; }
+    case IrOp.i32_le_s: { name = 'i32.le_s'; }
+    case IrOp.i32_gt_s: { name = 'i32.gt_s'; }
+    case IrOp.i32_ge_s: { name = 'i32.ge_s'; }
+    case IrOp.i64_add: { name = 'i64.add'; }
+    case IrOp.i64_sub: { name = 'i64.sub'; }
+    case IrOp.i64_mul: { name = 'i64.mul'; }
+    case IrOp.i64_eq: { name = 'i64.eq'; }
+    case IrOp.f64_add: { name = 'f64.add'; }
+    case IrOp.f64_sub: { name = 'f64.sub'; }
+    case IrOp.f64_mul: { name = 'f64.mul'; }
+    case IrOp.f64_div: { name = 'f64.div'; }
+    case IrOp.f64_eq: { name = 'f64.eq'; }
+    case IrOp.f64_lt: { name = 'f64.lt'; }
+    case IrOp.i32_wrap_i64: { name = 'i32.wrap_i64'; }
+    case IrOp.i64_extend_i32_s: { name = 'i64.extend_i32_s'; }
+    case IrOp.f64_convert_i32_s: { name = 'f64.convert_i32_s'; }
+    case IrOp.ref_null: { name = 'ref.null'; }
+    case IrOp.ref_is_null: { name = 'ref.is_null'; }
+    case IrOp.ref_as_non_null: { name = 'ref.as_non_null'; }
+    case IrOp.ref_eq: { name = 'ref.eq'; }
+    case IrOp.ref_test: { name = 'ref.test'; }
+    case IrOp.ref_cast: { name = 'ref.cast'; }
+    case IrOp.ref_func: { name = 'ref.func'; }
+    case IrOp.struct_new: { name = 'struct.new'; }
+    case IrOp.struct_get: { name = 'struct.get'; }
+    case IrOp.struct_set: { name = 'struct.set'; }
+    case IrOp.array_new: { name = 'array.new'; }
+    case IrOp.array_get: { name = 'array.get'; }
+    case IrOp.array_set: { name = 'array.set'; }
+    case IrOp.array_len: { name = 'array.len'; }
+    case IrOp.global_get: { name = 'global.get'; }
+    case IrOp.global_set: { name = 'global.set'; }
+    case IrOp.str_lit: { name = 'str.lit'; }
+    case IrOp.vt_load: { name = 'vt.load'; }
+    case IrOp.vt_slot: { name = 'vt.slot'; }
+    case IrOp.iface_pack: { name = 'iface.pack'; }
+    case IrOp.iface_vtable: { name = 'iface.vtable'; }
+    case IrOp.iface_instance: { name = 'iface.instance'; }
+    case IrOp.call: { name = 'call'; }
+    case IrOp.call_ref: { name = 'call_ref'; }
+    case IrOp.br: { name = 'br'; }
+    case IrOp.br_if: { name = 'br_if'; }
+    case IrOp.br_table: { name = 'br_table'; }
+    case IrOp.br_on_cast: { name = 'br_on_cast'; }
+    case IrOp.br_on_cast_fail: { name = 'br_on_cast_fail'; }
+    case IrOp.ret: { name = 'ret'; }
+    case IrOp.throw: { name = 'throw'; }
+    case IrOp.unreachable: { name = 'unreachable'; }
+  }
+  if (name == '') {
+    let raw = op as i32;
+    return `op#${raw}`;
+  }
+  return name;
+};

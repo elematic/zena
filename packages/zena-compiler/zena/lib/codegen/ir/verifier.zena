@@ -1,0 +1,345 @@
+/**
+ * ZIR verifier (docs/design/ir.md §11).
+ *
+ * Checks the SSA and CFG invariants that lowering and every pass must
+ * preserve. Returns a list of human-readable errors; empty means valid.
+ * Failures are meant to be loud — callers in verify mode should treat any
+ * error as fatal rather than limping into emission.
+ *
+ * Checked here:
+ *   - every block is non-empty and ends with exactly one terminator
+ *   - params are param-instructions owned by their block
+ *   - branch targets are valid blocks; branch arg counts and types match
+ *     the target's parameters
+ *   - all blocks are reachable from the entry block (b0)
+ *   - every value operand is defined by a value-producing instruction that
+ *     dominates the use (same-block uses must come after the definition)
+ */
+import { Array } from 'zena:array';
+import { i32ToString } from 'zena:string-convert';
+import { valTypeEquals } from '../wasm.zena';
+import { IrBody, IrOp, isIrTerminator, irOpName } from './ir.zena';
+
+export final class IrVerifier {
+  body: IrBody;
+  errors = new Array<String>();
+
+  // Per-instruction position within its block: params get 0..paramCount-1,
+  // body instructions follow. -1 = never placed in any block list.
+  #instPos = new Array<i32>();
+  // Reverse-postorder number per block, -1 = unreachable.
+  #rpoIndex = new Array<i32>();
+  // Immediate dominator per block, indexed by block id. -1 = unknown.
+  #idom = new Array<i32>();
+  #preds = new Array<Array<i32>>();
+  // Blocks in reverse postorder.
+  #rpo = new Array<i32>();
+
+  new(this.body);
+
+  verify(): Array<String> {
+    if (this.body.blocks.length == 0) {
+      this.#error('function has no blocks');
+      return this.errors;
+    }
+    this.#checkBlockStructure();
+    if (this.errors.length > 0) {
+      // Structure is broken; successor decoding below may be meaningless.
+      return this.errors;
+    }
+    this.#checkEdges();
+    if (this.errors.length > 0) {
+      return this.errors;
+    }
+    this.#computeRpo();
+    this.#checkReachability();
+    this.#computeDominators();
+    this.#checkUses();
+    return this.errors;
+  }
+
+  #error(message: String): void {
+    this.errors.push(message);
+  }
+
+  #checkBlockStructure(): void {
+    let body = this.body;
+    var i = 0;
+    while (i < body.instCount()) {
+      this.#instPos.push(-1);
+      i += 1;
+    }
+    var blockId = 0;
+    while (blockId < body.blocks.length) {
+      let blk = body.blocks[blockId];
+      var pos = 0;
+      for (let p in blk.params) {
+        if (body.op(p) != IrOp.param) {
+          this.#error('b' + i32ToString(blockId) + ': param list entry %' +
+              i32ToString(p) + ' is not a param instruction');
+        }
+        if (body.instBlock[p] != blockId) {
+          this.#error('b' + i32ToString(blockId) + ': param %' +
+              i32ToString(p) + ' belongs to another block');
+        }
+        this.#instPos[p] = pos;
+        pos += 1;
+      }
+      if (blk.insts.length == 0) {
+        this.#error('b' + i32ToString(blockId) + ' is empty');
+        blockId += 1;
+        continue;
+      }
+      var j = 0;
+      while (j < blk.insts.length) {
+        let inst = blk.insts[j];
+        if (body.instBlock[inst] != blockId) {
+          this.#error('b' + i32ToString(blockId) + ': instruction %' +
+              i32ToString(inst) + ' belongs to another block');
+        }
+        this.#instPos[inst] = pos;
+        pos += 1;
+        let isTerm = isIrTerminator(body.op(inst));
+        let isLast = j == blk.insts.length - 1;
+        if (isTerm && !isLast) {
+          this.#error('b' + i32ToString(blockId) +
+              ': terminator in the middle of the block at %' +
+              i32ToString(inst));
+        }
+        if (!isTerm && isLast) {
+          this.#error('b' + i32ToString(blockId) +
+              ' does not end with a terminator');
+        }
+        if (body.op(inst) == IrOp.param) {
+          this.#error('b' + i32ToString(blockId) + ': param %' +
+              i32ToString(inst) + ' appears in instruction list');
+        }
+        j += 1;
+      }
+      blockId += 1;
+    }
+  }
+
+  #checkEdges(): void {
+    let body = this.body;
+    var blockId = 0;
+    while (blockId < body.blocks.length) {
+      this.#preds.push(new Array<i32>());
+      blockId += 1;
+    }
+    blockId = 0;
+    while (blockId < body.blocks.length) {
+      let blk = body.blocks[blockId];
+      let term = blk.insts[blk.insts.length - 1];
+      let succs = body.successors(term);
+      for (let s in succs) {
+        if (s.target < 0 || s.target >= body.blocks.length) {
+          this.#error('b' + i32ToString(blockId) + ': branch to missing b' +
+              i32ToString(s.target));
+          continue;
+        }
+        this.#preds[s.target].push(blockId);
+        let targetParams = body.blocks[s.target].params;
+        if (s.argCount != targetParams.length) {
+          this.#error('b' + i32ToString(blockId) + ': branch to b' +
+              i32ToString(s.target) + ' passes ' + i32ToString(s.argCount) +
+              ' args, expected ' + i32ToString(targetParams.length));
+          continue;
+        }
+        var i = 0;
+        while (i < s.argCount) {
+          let arg = body.extra[s.argStart + i];
+          let param = targetParams[i];
+          if (arg >= 0 && arg < body.instCount() &&
+              body.producesValue(arg) && body.producesValue(param)) {
+            let argType = body.typeTable[body.typeId[arg]];
+            let paramType = body.typeTable[body.typeId[param]];
+            if (!valTypeEquals(argType, paramType)) {
+              this.#error('b' + i32ToString(blockId) + ': branch arg %' +
+                  i32ToString(arg) + ' type does not match param %' +
+                  i32ToString(param) + ' of b' + i32ToString(s.target));
+            }
+          }
+          i += 1;
+        }
+      }
+      blockId += 1;
+    }
+  }
+
+  #computeRpo(): void {
+    let body = this.body;
+    var i = 0;
+    while (i < body.blocks.length) {
+      this.#rpoIndex.push(-1);
+      i += 1;
+    }
+    // Iterative postorder DFS from the entry block, then reverse.
+    let postorder = new Array<i32>();
+    let stack = new Array<i32>();
+    let visited = new Array<boolean>();
+    let expanded = new Array<boolean>();
+    i = 0;
+    while (i < body.blocks.length) {
+      visited.push(false);
+      expanded.push(false);
+      i += 1;
+    }
+    stack.push(0);
+    visited[0] = true;
+    while (stack.length > 0) {
+      let blockId = stack[stack.length - 1];
+      if (expanded[blockId]) {
+        stack.pop();
+        postorder.push(blockId);
+        continue;
+      }
+      expanded[blockId] = true;
+      let blk = body.blocks[blockId];
+      let term = blk.insts[blk.insts.length - 1];
+      let succs = body.successors(term);
+      for (let s in succs) {
+        if (!visited[s.target]) {
+          visited[s.target] = true;
+          stack.push(s.target);
+        }
+      }
+    }
+    i = postorder.length - 1;
+    while (i >= 0) {
+      this.#rpoIndex[postorder[i]] = this.#rpo.length;
+      this.#rpo.push(postorder[i]);
+      i -= 1;
+    }
+  }
+
+  #checkReachability(): void {
+    var blockId = 0;
+    while (blockId < this.body.blocks.length) {
+      if (this.#rpoIndex[blockId] < 0) {
+        this.#error('b' + i32ToString(blockId) +
+            ' is unreachable from the entry block');
+      }
+      blockId += 1;
+    }
+  }
+
+  /** Cooper–Harvey–Kennedy iterative dominator computation over RPO. */
+  #computeDominators(): void {
+    var i = 0;
+    while (i < this.body.blocks.length) {
+      this.#idom.push(-1);
+      i += 1;
+    }
+    this.#idom[0] = 0;
+    var changed = true;
+    while (changed) {
+      changed = false;
+      var r = 1;
+      while (r < this.#rpo.length) {
+        let blockId = this.#rpo[r];
+        var newIdom = -1;
+        for (let pred in this.#preds[blockId]) {
+          if (this.#rpoIndex[pred] < 0 || this.#idom[pred] < 0) {
+            continue; // unreachable or not yet processed
+          }
+          if (newIdom < 0) {
+            newIdom = pred;
+          } else {
+            newIdom = this.#intersect(pred, newIdom);
+          }
+        }
+        if (newIdom >= 0 && this.#idom[blockId] != newIdom) {
+          this.#idom[blockId] = newIdom;
+          changed = true;
+        }
+        r += 1;
+      }
+    }
+  }
+
+  #intersect(x: i32, y: i32): i32 {
+    var a = x;
+    var b = y;
+    while (a != b) {
+      while (this.#rpoIndex[a] > this.#rpoIndex[b]) {
+        a = this.#idom[a];
+      }
+      while (this.#rpoIndex[b] > this.#rpoIndex[a]) {
+        b = this.#idom[b];
+      }
+    }
+    return a;
+  }
+
+  #dominates(defBlock: i32, useBlock: i32): boolean {
+    var blockId = useBlock;
+    while (true) {
+      if (blockId == defBlock) {
+        return true;
+      }
+      if (blockId == 0) {
+        return false;
+      }
+      blockId = this.#idom[blockId];
+      if (blockId < 0) {
+        return false;
+      }
+    }
+  }
+
+  #checkUses(): void {
+    let body = this.body;
+    let operands = new Array<i32>();
+    var blockId = 0;
+    while (blockId < body.blocks.length) {
+      if (this.#rpoIndex[blockId] < 0) {
+        blockId += 1;
+        continue; // already reported unreachable
+      }
+      let blk = body.blocks[blockId];
+      for (let inst in blk.insts) {
+        while (operands.length > 0) {
+          operands.pop();
+        }
+        body.appendValueOperands(inst, operands);
+        for (let v in operands) {
+          this.#checkUse(inst, v, blockId);
+        }
+      }
+      blockId += 1;
+    }
+  }
+
+  #checkUse(user: i32, value: i32, useBlock: i32): void {
+    let body = this.body;
+    if (value < 0 || value >= body.instCount()) {
+      this.#error('%' + i32ToString(user) + ' uses invalid value id %' +
+          i32ToString(value));
+      return;
+    }
+    if (!body.producesValue(value)) {
+      this.#error('%' + i32ToString(user) + ' uses %' + i32ToString(value) +
+          ' (' + irOpName(body.op(value)) + '), which produces no value');
+      return;
+    }
+    let defBlock = body.instBlock[value];
+    if (defBlock == useBlock) {
+      if (this.#instPos[value] >= this.#instPos[user]) {
+        this.#error('%' + i32ToString(user) + ' uses %' + i32ToString(value) +
+            ' before its definition in b' + i32ToString(useBlock));
+      }
+      return;
+    }
+    if (!this.#dominates(defBlock, useBlock)) {
+      this.#error('%' + i32ToString(user) + ' in b' + i32ToString(useBlock) +
+          ' uses %' + i32ToString(value) + ' from b' + i32ToString(defBlock) +
+          ', which does not dominate it');
+    }
+  }
+}
+
+export let verifyIr = (body: IrBody): Array<String> => {
+  let verifier = new IrVerifier(body);
+  return verifier.verify();
+};

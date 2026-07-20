@@ -1,0 +1,216 @@
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+import { ValType, valTypeEquals } from '../wasm.zena';
+import { IrBody, IrBlock, IrOp, IrRef, isIrTerminator } from './ir.zena';
+
+/**
+ * ZIR construction API.
+ *
+ * The builder owns an IrBody under construction. Blocks are created with
+ * newBlock(); instructions append to the current block (switchTo) until a
+ * terminator is emitted, which closes the block. Types and refs are interned
+ * into the body's tables.
+ *
+ * The builder enforces only local well-formedness (no emission into a
+ * terminated or unselected block); global SSA invariants (dominance, branch
+ * arity) are the verifier's job.
+ */
+export final class IrBuilder {
+  body = new IrBody();
+  var #current: i32 = -1;
+
+  newBlock(): i32 {
+    this.body.blocks.push(new IrBlock());
+    return this.body.blocks.length - 1;
+  }
+
+  switchTo(block: i32): void {
+    if (block < 0 || block >= this.body.blocks.length) {
+      throw new Error('switchTo: no such block');
+    }
+    if (this.#isTerminated(block)) {
+      throw new Error('switchTo: block already terminated');
+    }
+    this.#current = block;
+  }
+
+  currentBlock(): i32 {
+    return this.#current;
+  }
+
+  /**
+   * Adds a parameter to a block. Parameters may be added until the block
+   * gains its terminator (on-demand params are how loop-carried values
+   * appear during lowering).
+   */
+  blockParam(block: i32, type: ValType): i32 {
+    if (this.#isTerminated(block)) {
+      throw new Error('blockParam: block already terminated');
+    }
+    let blk = this.body.blocks[block];
+    let inst = this.#newInst(IrOp.param, this.internType(type),
+        blk.params.length, -1, block);
+    blk.params.push(inst);
+    return inst;
+  }
+
+  internType(type: ValType): i32 {
+    let table = this.body.typeTable;
+    var i = 0;
+    while (i < table.length) {
+      if (valTypeEquals(table[i], type)) {
+        return i;
+      }
+      i += 1;
+    }
+    table.push(type);
+    return table.length - 1;
+  }
+
+  addRef(ref: IrRef): i32 {
+    this.body.refTable.push(ref);
+    return this.body.refTable.length - 1;
+  }
+
+  // -- Low-level emission ----------------------------------------------
+
+  /** Emits a value-producing instruction with inline operands. */
+  emit(op: IrOp, type: ValType, a: i32, b: i32): i32 {
+    return this.#emitInCurrent(op, this.internType(type), a, b);
+  }
+
+  /** Emits a void instruction with inline operands. */
+  emitVoid(op: IrOp, a: i32, b: i32): i32 {
+    return this.#emitInCurrent(op, -1, a, b);
+  }
+
+  /** Copies `values` into the extra pool, returning the start index. */
+  pushExtra(values: Array<i32>): i32 {
+    let start = this.body.extra.length;
+    for (let v in values) {
+      this.body.extra.push(v);
+    }
+    return start;
+  }
+
+  /** Copies [argc, args...] into the extra pool. */
+  pushArgList(args: Array<i32>): i32 {
+    let start = this.body.extra.length;
+    this.body.extra.push(args.length);
+    for (let v in args) {
+      this.body.extra.push(v);
+    }
+    return start;
+  }
+
+  // -- Typed helpers ------------------------------------------------------
+
+  constI32(value: i32, type: ValType): i32 {
+    return this.emit(IrOp.const_i32, type, value, -1);
+  }
+
+  constI64(value: i64, type: ValType): i32 {
+    this.body.constI64.push(value);
+    return this.emit(IrOp.const_i64, type, this.body.constI64.length - 1, -1);
+  }
+
+  constF64(value: f64, type: ValType): i32 {
+    this.body.constF64.push(value);
+    return this.emit(IrOp.const_f64, type, this.body.constF64.length - 1, -1);
+  }
+
+  binary(op: IrOp, type: ValType, x: i32, y: i32): i32 {
+    return this.emit(op, type, x, y);
+  }
+
+  callFunc(funcRef: i32, args: Array<i32>, resultType: ValType | null): i32 {
+    let argsIdx = this.pushArgList(args);
+    if (resultType == null) {
+      return this.#emitInCurrent(IrOp.call, -1, argsIdx, funcRef);
+    }
+    return this.#emitInCurrent(IrOp.call, this.internType(resultType),
+        argsIdx, funcRef);
+  }
+
+  // -- Terminators ---------------------------------------------------------
+
+  br(target: i32, args: Array<i32>): void {
+    let idx = this.body.extra.length;
+    this.body.extra.push(target);
+    this.body.extra.push(args.length);
+    for (let v in args) {
+      this.body.extra.push(v);
+    }
+    this.#emitInCurrent(IrOp.br, -1, idx, -1);
+  }
+
+  brIf(cond: i32, thenTarget: i32, thenArgs: Array<i32>,
+       elseTarget: i32, elseArgs: Array<i32>): void {
+    let idx = this.body.extra.length;
+    this.body.extra.push(thenTarget);
+    this.body.extra.push(thenArgs.length);
+    for (let v in thenArgs) {
+      this.body.extra.push(v);
+    }
+    this.body.extra.push(elseTarget);
+    this.body.extra.push(elseArgs.length);
+    for (let v in elseArgs) {
+      this.body.extra.push(v);
+    }
+    this.#emitInCurrent(IrOp.br_if, -1, cond, idx);
+  }
+
+  ret(value: i32): void {
+    this.#emitInCurrent(IrOp.ret, -1, value, -1);
+  }
+
+  retVoid(): void {
+    this.#emitInCurrent(IrOp.ret, -1, -1, -1);
+  }
+
+  unreachable(): void {
+    this.#emitInCurrent(IrOp.unreachable, -1, -1, -1);
+  }
+
+  /**
+   * Finishes construction and returns the body. Structural validity
+   * (all blocks terminated, SSA invariants) is checked by the verifier,
+   * not here, so tests can construct deliberately broken bodies.
+   */
+  finish(): IrBody {
+    this.#current = -1;
+    return this.body;
+  }
+
+  // -- Internals ------------------------------------------------------
+
+  #isTerminated(block: i32): boolean {
+    let insts = this.body.blocks[block].insts;
+    if (insts.length == 0) {
+      return false;
+    }
+    return isIrTerminator(this.body.op(insts[insts.length - 1]));
+  }
+
+  #newInst(op: IrOp, typeId: i32, a: i32, b: i32, block: i32): i32 {
+    let body = this.body;
+    body.opcode.push(op as i32);
+    body.typeId.push(typeId);
+    body.a.push(a);
+    body.b.push(b);
+    body.instBlock.push(block);
+    return body.opcode.length - 1;
+  }
+
+  #emitInCurrent(op: IrOp, typeId: i32, a: i32, b: i32): i32 {
+    if (this.#current < 0) {
+      throw new Error('emit: no current block');
+    }
+    if (this.#isTerminated(this.#current)) {
+      throw new Error('emit: current block already terminated');
+    }
+    let inst = this.#newInst(op, typeId, a, b, this.#current);
+    this.body.blocks[this.#current].insts.push(inst);
+    return inst;
+  }
+}

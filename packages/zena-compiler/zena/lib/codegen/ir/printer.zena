@@ -1,0 +1,270 @@
+/**
+ * Textual ZIR printer, for tests and debugging.
+ *
+ * Format (golden-tested in test/ir_test.zena — change deliberately):
+ *
+ *   fn @name {
+ *     b0(%0: i32, %1: i32):
+ *       %2 = i32.add %0, %1
+ *       ret %2
+ *   }
+ */
+import { Array } from 'zena:array';
+import { StringBuilder } from 'zena:string-builder';
+import { i32ToString, i64ToString, f64ToString } from 'zena:string-convert';
+import { ValType, ValTypeVoid, ValTypeFunc, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeFuncRef, ValTypeExternRef, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeOptRef, ValTypeRef, ValTypeRefNull, ValTypeI8, ValTypeI16 } from '../wasm.zena';
+import { WasmType } from '../wasm.zena';
+import { WasmStruct } from '../wasm-module.zena';
+import { IrBody, IrOp, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefClassInterface, IrRefStringLit, irOpName } from './ir.zena';
+
+let typeName = (t: ValType): String => {
+  return match (t) {
+    case ValTypeVoid: 'void'
+    case ValTypeFunc: 'func'
+    case ValTypeI32: 'i32'
+    case ValTypeI64: 'i64'
+    case ValTypeF32: 'f32'
+    case ValTypeF64: 'f64'
+    case ValTypeV128: 'v128'
+    case ValTypeFuncRef: 'funcref'
+    case ValTypeExternRef: 'externref'
+    case ValTypeAnyRef: 'anyref'
+    case ValTypeEqRef: 'eqref'
+    case ValTypeStructRef: 'structref'
+    case ValTypeOptRef: 'optref'
+    case ValTypeRef as r: '(ref ' + wasmTypeName(r.target) + ')'
+    case ValTypeRefNull as r: '(ref null ' + wasmTypeName(r.target) + ')'
+    case ValTypeI8: 'i8'
+    case ValTypeI16: 'i16'
+  };
+};
+
+let wasmTypeName = (t: WasmType): String => {
+  if (t is WasmStruct) {
+    return nameOrQuestion((t as WasmStruct).name);
+  }
+  return '?';
+};
+
+let nameOrQuestion = (name: String | null): String => {
+  if (name == null) {
+    return '?';
+  }
+  return name as String;
+};
+
+let refName = (r: IrRef): String => {
+  return match (r) {
+    case IrRefFunc as f: '@' + nameOrQuestion(f.target.name)
+    case IrRefGlobal as g: '$' + g.target.name
+    case IrRefType as t: wasmTypeName(t.target)
+    case IrRefField as f: nameOrQuestion(f.owner.name) + '.' + f.fieldName
+    case IrRefClassInterface as ci: nameOrQuestion(ci.classStruct.name) + '/' + nameOrQuestion(ci.ifaceStruct.name)
+    case IrRefStringLit as s: '"' + s.value + '"'
+  };
+};
+
+export final class IrPrinter {
+  body: IrBody;
+  sb = new StringBuilder();
+  new(this.body);
+
+  print(name: String): String {
+    this.sb.append('fn @').append(name).append(' {\n');
+    var blockId = 0;
+    while (blockId < this.body.blocks.length) {
+      this.#printBlock(blockId);
+      blockId += 1;
+    }
+    this.sb.append('}\n');
+    return this.sb.toString();
+  }
+
+  #printBlock(blockId: i32): void {
+    let blk = this.body.blocks[blockId];
+    this.sb.append('  b').append(i32ToString(blockId)).append('(');
+    var i = 0;
+    while (i < blk.params.length) {
+      if (i > 0) {
+        this.sb.append(', ');
+      }
+      let p = blk.params[i];
+      this.sb.append('%').append(i32ToString(p)).append(': ');
+      let t = this.body.resultType(p);
+      if (t == null) {
+        this.sb.append('?');
+      } else {
+        this.sb.append(typeName(t as ValType));
+      }
+      i += 1;
+    }
+    this.sb.append('):\n');
+    for (let inst in blk.insts) {
+      this.#printInst(inst);
+    }
+  }
+
+  #printInst(inst: i32): void {
+    this.sb.append('    ');
+    if (this.body.producesValue(inst)) {
+      this.sb.append('%').append(i32ToString(inst)).append(' = ');
+    }
+    let op = this.body.op(inst);
+    this.sb.append(irOpName(op));
+    this.#printOperands(inst, op);
+    this.sb.append('\n');
+  }
+
+  #printOperands(inst: i32, op: IrOp): void {
+    let body = this.body;
+    let av = body.a[inst];
+    let bv = body.b[inst];
+    if (op == IrOp.nop || op == IrOp.unreachable) {
+      return;
+    }
+    if (op == IrOp.const_i32) {
+      this.sb.append(' ').append(i32ToString(av));
+      return;
+    }
+    if (op == IrOp.const_i64) {
+      this.sb.append(' ').append(i64ToString(body.constI64[av]));
+      return;
+    }
+    if (op == IrOp.const_f32 || op == IrOp.const_f64) {
+      this.sb.append(' ').append(f64ToString(body.constF64[av]));
+      return;
+    }
+    if (op == IrOp.ref_null) {
+      return;
+    }
+    if (op == IrOp.ref_func || op == IrOp.str_lit || op == IrOp.global_get) {
+      this.sb.append(' ').append(refName(body.refTable[bv]));
+      return;
+    }
+    if (op == IrOp.global_set) {
+      this.#value(av);
+      this.sb.append(', ').append(refName(body.refTable[bv]));
+      return;
+    }
+    if (op == IrOp.ref_test || op == IrOp.ref_cast) {
+      this.#value(av);
+      this.sb.append(', ').append(typeName(body.typeTable[bv]));
+      return;
+    }
+    if (op == IrOp.struct_get || op == IrOp.vt_load || op == IrOp.vt_slot ||
+        op == IrOp.iface_pack) {
+      this.#value(av);
+      this.sb.append(', ').append(refName(body.refTable[bv]));
+      return;
+    }
+    if (op == IrOp.iface_vtable || op == IrOp.iface_instance ||
+        op == IrOp.i32_eqz || op == IrOp.i32_wrap_i64 ||
+        op == IrOp.i64_extend_i32_s || op == IrOp.f64_convert_i32_s ||
+        op == IrOp.ref_is_null || op == IrOp.ref_as_non_null ||
+        op == IrOp.array_len) {
+      this.#value(av);
+      return;
+    }
+    if (op == IrOp.struct_set) {
+      this.#value(body.extra[av]);
+      this.sb.append(',');
+      this.#value(body.extra[av + 1]);
+      this.sb.append(', ').append(refName(body.refTable[bv]));
+      return;
+    }
+    if (op == IrOp.struct_new) {
+      this.sb.append(' ').append(refName(body.refTable[bv]));
+      this.#argList(av + 1, body.extra[av]);
+      return;
+    }
+    if (op == IrOp.array_new) {
+      this.sb.append(' ').append(refName(body.refTable[bv]));
+      this.#value(body.extra[av]);
+      let init = body.extra[av + 1];
+      if (init >= 0) {
+        this.sb.append(',');
+        this.#value(init);
+      }
+      return;
+    }
+    if (op == IrOp.array_set) {
+      this.#value(body.extra[av]);
+      this.sb.append(',');
+      this.#value(body.extra[av + 1]);
+      this.sb.append(',');
+      this.#value(body.extra[av + 2]);
+      return;
+    }
+    if (op == IrOp.call) {
+      this.sb.append(' ').append(refName(body.refTable[bv]));
+      this.#argList(av + 1, body.extra[av]);
+      return;
+    }
+    if (op == IrOp.call_ref) {
+      this.#value(body.extra[av]);
+      this.#argList(av + 2, body.extra[av + 1]);
+      return;
+    }
+    if (op == IrOp.throw) {
+      this.#argList(av + 1, body.extra[av]);
+      return;
+    }
+    if (op == IrOp.ret) {
+      if (av >= 0) {
+        this.#value(av);
+      }
+      return;
+    }
+    if (op == IrOp.br || op == IrOp.br_if || op == IrOp.br_on_cast ||
+        op == IrOp.br_on_cast_fail || op == IrOp.br_table) {
+      if (op != IrOp.br) {
+        this.#value(av);
+      }
+      let succs = body.successors(inst);
+      var first = op == IrOp.br;
+      for (let s in succs) {
+        if (!first) {
+          this.sb.append(',');
+        }
+        first = false;
+        this.sb.append(' b').append(i32ToString(s.target)).append('(');
+        var i = 0;
+        while (i < s.argCount) {
+          if (i > 0) {
+            this.sb.append(', ');
+          }
+          this.sb.append('%').append(i32ToString(body.extra[s.argStart + i]));
+          i += 1;
+        }
+        this.sb.append(')');
+      }
+      return;
+    }
+    // Binary numeric ops and anything else with two inline value operands.
+    this.#value(av);
+    this.sb.append(',');
+    this.#value(bv);
+  }
+
+  #value(id: i32): void {
+    this.sb.append(' %').append(i32ToString(id));
+  }
+
+  #argList(start: i32, count: i32): void {
+    this.sb.append('(');
+    var i = 0;
+    while (i < count) {
+      if (i > 0) {
+        this.sb.append(', ');
+      }
+      this.sb.append('%').append(i32ToString(this.body.extra[start + i]));
+      i += 1;
+    }
+    this.sb.append(')');
+  }
+}
+
+export let printIr = (body: IrBody, name: String): String => {
+  let printer = new IrPrinter(body);
+  return printer.print(name);
+};

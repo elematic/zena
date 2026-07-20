@@ -1,0 +1,188 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal, greater, throws } from 'zena:assert';
+import { Array } from 'zena:array';
+import { ValType, ValTypeI32 } from '../lib/codegen/wasm.zena';
+import { IrOp } from '../lib/codegen/ir/ir.zena';
+import { IrBuilder } from '../lib/codegen/ir/builder.zena';
+import { printIr } from '../lib/codegen/ir/printer.zena';
+import { verifyIr } from '../lib/codegen/ir/verifier.zena';
+
+let i32Type = (): ValType => new ValTypeI32() as ValType;
+
+let noArgs = (): Array<i32> => new Array<i32>();
+
+let args1 = (a: i32): Array<i32> => {
+  let result = new Array<i32>();
+  result.push(a);
+  return result;
+};
+
+let args2 = (a: i32, b: i32): Array<i32> => {
+  let result = new Array<i32>();
+  result.push(a);
+  result.push(b);
+  return result;
+};
+
+export let tests = suite('ir: core', (): void => {
+  test('straight-line function prints and verifies', (ctx: TestContext): void => {
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    let x = b.blockParam(entry, i32Type());
+    let y = b.blockParam(entry, i32Type());
+    b.switchTo(entry);
+    let sum = b.binary(IrOp.i32_add, i32Type(), x, y);
+    b.ret(sum);
+    let body = b.finish();
+
+    equal(printIr(body, 'add'),
+        'fn @add {\n' +
+        '  b0(%0: i32, %1: i32):\n' +
+        '    %2 = i32.add %0, %1\n' +
+        '    ret %2\n' +
+        '}\n');
+    equal(verifyIr(body).length, 0);
+  });
+
+  test('loop with block params prints and verifies', (ctx: TestContext): void => {
+    // sum = 0; i = 0; while (i < n) { sum += i; i += 1; } return sum;
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    let header = b.newBlock();
+    let bodyBlk = b.newBlock();
+    let exit = b.newBlock();
+
+    let n = b.blockParam(entry, i32Type());          // %0
+    b.switchTo(entry);
+    let zero = b.constI32(0, i32Type());             // %1
+    b.br(header, args2(zero, zero));                 // %2
+
+    let i = b.blockParam(header, i32Type());         // %3
+    let acc = b.blockParam(header, i32Type());       // %4
+    b.switchTo(header);
+    let cond = b.binary(IrOp.i32_lt_s, i32Type(), i, n); // %5
+    b.brIf(cond, bodyBlk, noArgs(), exit, args1(acc));   // %6
+
+    let result = b.blockParam(exit, i32Type());      // %7
+
+    b.switchTo(bodyBlk);
+    let one = b.constI32(1, i32Type());              // %8
+    let acc2 = b.binary(IrOp.i32_add, i32Type(), acc, i); // %9
+    let i2 = b.binary(IrOp.i32_add, i32Type(), i, one);   // %10
+    b.br(header, args2(i2, acc2));                   // %11
+
+    b.switchTo(exit);
+    b.ret(result);                                   // %12
+    let body = b.finish();
+
+    equal(printIr(body, 'sum'),
+        'fn @sum {\n' +
+        '  b0(%0: i32):\n' +
+        '    %1 = const.i32 0\n' +
+        '    br b1(%1, %1)\n' +
+        '  b1(%3: i32, %4: i32):\n' +
+        '    %5 = i32.lt_s %3, %0\n' +
+        '    br_if %5, b2(), b3(%4)\n' +
+        '  b2():\n' +
+        '    %8 = const.i32 1\n' +
+        '    %9 = i32.add %4, %3\n' +
+        '    %10 = i32.add %3, %8\n' +
+        '    br b1(%10, %9)\n' +
+        '  b3(%7: i32):\n' +
+        '    ret %7\n' +
+        '}\n');
+    equal(verifyIr(body).length, 0);
+  });
+
+  test('types and refs are interned', (ctx: TestContext): void => {
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    b.switchTo(entry);
+    let c1 = b.constI32(1, i32Type());
+    let c2 = b.constI32(2, i32Type());
+    b.ret(b.binary(IrOp.i32_add, i32Type(), c1, c2));
+    let body = b.finish();
+    // Three uses of i32, one table entry.
+    equal(body.typeTable.length, 1);
+  });
+
+  test('builder rejects emission without a block', (ctx: TestContext): void => {
+    let b = new IrBuilder();
+    throws((): void => {
+      b.constI32(1, i32Type());
+    });
+  });
+
+  test('builder rejects emission after a terminator', (ctx: TestContext): void => {
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    b.switchTo(entry);
+    b.retVoid();
+    throws((): void => {
+      b.constI32(1, i32Type());
+    });
+  });
+
+  test('verifier accepts a minimal void function', (ctx: TestContext): void => {
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    b.switchTo(entry);
+    b.retVoid();
+    equal(verifyIr(b.finish()).length, 0);
+  });
+
+  test('verifier rejects an unterminated block', (ctx: TestContext): void => {
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    b.switchTo(entry);
+    b.constI32(1, i32Type());
+    greater(verifyIr(b.finish()).length, 0);
+  });
+
+  test('verifier rejects branch arg count mismatch', (ctx: TestContext): void => {
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    let next = b.newBlock();
+    b.switchTo(entry);
+    let c = b.constI32(1, i32Type());
+    b.br(next, args1(c)); // next has no params
+    b.switchTo(next);
+    b.retVoid();
+    greater(verifyIr(b.finish()).length, 0);
+  });
+
+  test('verifier rejects a use that is not dominated by its definition', (ctx: TestContext): void => {
+    // Diamond: the value is defined in one arm and used after the merge.
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    let left = b.newBlock();
+    let right = b.newBlock();
+    let merge = b.newBlock();
+
+    let cond = b.blockParam(entry, i32Type());
+    b.switchTo(entry);
+    b.brIf(cond, left, noArgs(), right, noArgs());
+
+    b.switchTo(left);
+    let v = b.constI32(7, i32Type());
+    b.br(merge, noArgs());
+
+    b.switchTo(right);
+    b.br(merge, noArgs());
+
+    b.switchTo(merge);
+    b.ret(v);
+    greater(verifyIr(b.finish()).length, 0);
+  });
+
+  test('verifier rejects unreachable blocks', (ctx: TestContext): void => {
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    let orphan = b.newBlock();
+    b.switchTo(entry);
+    b.retVoid();
+    b.switchTo(orphan);
+    b.retVoid();
+    greater(verifyIr(b.finish()).length, 0);
+  });
+});
