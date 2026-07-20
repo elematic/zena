@@ -14,7 +14,7 @@ interface Animal {
   sayHi(): String;
 }
 
-distinct type CatId = string; // Nominal type alias
+distinct type CatId = String; // Nominal type alias
 
 class Cat implements Animal {
   #greeting = 'Hi'; // Private field
@@ -306,102 +306,28 @@ let result = data |> parse($) |> transform($) |> validate($);
 // Equivalent to: validate(transform(parse(data)))
 ```
 
-## Feature Status
+## Roadmap & Status
 
-### Language
+Zena is currently in active development. Most of the core language features (classes, interfaces, generics, pattern matching, records and tuples, exceptions, and algebraic data types) are fully implemented and optimized (with dead-code elimination and zero-boxing generics).
 
-- [x] `let` / `var` bindings (immutable / mutable)
-- [x] Primitive types: `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `boolean`
-- [x] Strings (UTF-8, built-in class)
-- [x] Arrow functions, closures, first-class functions
-- [x] Classes with inheritance
-- [x] Abstract classes
-- [x] `final` modifier
-- [x] Interfaces
-- [x] Mixins with composition and constraints
-- [x] Constructors initializer lists
-- [x] `var` field modifier for mutable fields
-- [x] `var(#name)` for private setters
-- [x] Field type inference from initializers
-- [x] Optional class fields (`name?: Type`)
-- [x] Private `#` fields
-- [x] Accessors (getters/setters)
-- [x] Sealed class hierarchies with exhaustive pattern matching
-- [x] Case classes (auto-generated `==`, `hashCode`, constructor)
-- [x] Symbol-keyed field and method names
-- [x] Generics with constraints, defaults, and monomorphization
-- [x] Type aliases and function types
-- [x] Distinct types (zero-cost newtypes)
-- [x] Union types with control-flow narrowing (`is`, null checks)
-- [x] Pattern matching (literals, records, classes, guards, exhaustiveness)
-- [x] Multi-value returns and inline tuples
-- [x] Pipeline operator (`|>` with `$` placeholder)
-- [x] Enums (integer-backed and string-backed, nominal)
-- [x] Records and tuples (structural types)
-- [x] For loops, for-in loops, while loops
-- [x] Iterators and `Sequence` protocol
-- [x] Exceptions (`throw` / `try` / `catch`)
-- [x] `never` type
-- [x] Arrays and array literals (`[...]`)
-- [x] Index operator overloading (`[]`, `[]=`)
-- [x] Operator overloading (`==`, custom operators)
-- [x] Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`)
-- [x] Optional chaining (`?.`, `?[]`, `?()`)
-- [x] Null coalescing (`??`)
-- [x] Tagged template literals
-- [x] Modules, imports, exports, and re-exports (`export { X } from`)
-- [x] Boolean literal types (`true` / `false` as types)
-- [x] Let-pattern conditions (`if let`, `while let`)
-- [x] Destructured parameters in function signatures
-- [x] Trailing commas in all delimited lists
-- [x] Regexes
-- [x] `any` type with auto-boxing
-- [x] Contextual typing for closures
-- [x] Map literals (`{a => b}`)
-- [x] Range syntax `a..b` and slices
-- [ ] Tear-off methods
-- [ ] Block expressions
-- [ ] Extension methods
-- [ ] SIMD
-- [ ] Async functions
-- [ ] Intersection types
-- [ ] Decorators and macros
-- [ ] Numeric unit types
-- [ ] Context parameters
-- [ ] Pre and post conditions
+### Current Focus: Self-Hosted Compiler
 
-### Tooling
+The self-hosted compiler (`packages/zena-compiler`) is written in Zena itself and already passes all syntax, language, and execution tests. We are currently building a new IR-based backend to unlock advanced optimizations. Once development moves completely to the self-hosted compiler, the TypeScript bootstrap compiler will be retired.
 
-- [x] Compiler (TypeScript)
-- [x] CLI (`zena build`)
-- [x] Dead code elimination (functions, classes, methods, WASM types)
-- [x] WASI target support
-- [x] VS Code extension (syntax highlighting)
-- [x] Website and documentation
-- [ ] WASI P2 support
-- [ ] Import .wit files
-- [ ] Self-hosted compiler (in Zena)
-- [ ] Online playground
-- [ ] Package manager
-- [ ] WIT/Component Model support
+### Upcoming Platform Features
 
-### Standard Library
+- **WASI Component Model & WIT**: Direct integration with the WebAssembly Component Model, importing `.wit` files natively.
+- **Async Functions & Cooperative Multithreading**: Native support for asynchronous execution, targeting upcoming WASM P3 features with cooperative multithreading.
+- **Tooling & DX**: A package manager, online playground, and enhanced VS Code integration.
 
-- [x] `String`, `StringBuilder`
-- [x] `Array<T>`, `FixedArray<T>`, `ImmutableArray<T>`
-- [x] `Map<K, V>`, `Box<T>`
-- [x] `Option<T>` (`Some` / `None`)
-- [x] `Error`, `IndexOutOfBoundsError`
-- [x] `ByteBuffer`, `ByteArray`
-- [x] Ranges (`BoundedRange`, `FromRange`, `ToRange`, `FullRange`)
-- [x] `console.log`
-- [x] File I/O (WASI)
-- [x] Math functions
-- [x] `Set<T>`
-- [x] `OrderedMap<K, V>`
-- [ ] Extended math: trig, random, etc.
-- [ ] `DataView` for binary data
-- [ ] Built-in WASI P2 interfaces
+### Post-Bootstrap Roadmap
+
+After retiring the bootstrap compiler, we plan to implement headline features that distinguish Zena from TypeScript:
+
+- **Numeric Unit Types**: Statically verified physical units and units of measure (e.g. preventing adding meters to feet at compile time).
+- **SIMD**: Native WebAssembly vector instruction support for high-performance computing.
+- **Decorators and Macros**: Metaprogramming capabilities for compile-time code generation and extension.
+- **Contracts**: `requires` and `ensures` pre/post-conditions, enabling runtime assertion checks and future static verification using SMT solvers.
 
 ## WASM & WASI
 

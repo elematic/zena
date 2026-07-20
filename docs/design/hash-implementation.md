@@ -157,13 +157,13 @@ an implements clause:
 - **Classes**: declare `implements Hashable` explicitly. `String` does this
   in the stdlib, delegating `hashCode()` to the compiler's cached FNV-1a
   helper.
-- **Case classes**: *nominally implement* `Hashable`. Both checkers append
+- **Case classes**: _nominally implement_ `Hashable`. Both checkers append
   the well-known interface to their implements list during member synthesis,
   so case classes are assignable to `Hashable` (interface dispatch included)
   without an explicit clause.
 - **Primitives, enums, distinct types**: these cannot implement interfaces
   (no extension classes in the stdlib yet), so they get a special
-  *constraint-satisfaction* rule in both checkers: they satisfy
+  _constraint-satisfaction_ rule in both checkers: they satisfy
   `K extends Hashable` but are **not** assignable to `Hashable` as values —
   assignability would require boxing, while constraint satisfaction only
   requires that the monomorphized intrinsics hash them correctly.
@@ -187,7 +187,7 @@ an implements clause:
   to hang utility methods off them. Two things follow from Zena's
   no-implicit-boxing rule:
   - Extension classes on primitives are **erased — type aliases with
-    methods**. An extension class on `i32` *is* an `i32` at runtime (they are
+    methods**. An extension class on `i32` _is_ an `i32` at runtime (they are
     already "indistinguishable" per the type-erasure rules), and its methods
     compile to static calls that take the receiver by value. There is no
     per-value vtable to hang dynamic dispatch off.
@@ -196,7 +196,7 @@ an implements clause:
     `K extends Hashable` is required — monomorphization resolves
     `key.hashCode()` to a direct call to the extension method, unboxed — but
     `let h: Hashable = 42` remains a compile error. Converting a primitive to
-    an interface *value* requires representation change, so it must be an
+    an interface _value_ requires representation change, so it must be an
     explicit boxing step (e.g. a stdlib `Box<i32>` that itself implements
     `Hashable` by delegation), never an implicit coercion.
 
@@ -208,10 +208,11 @@ an implements clause:
   constraint-satisfaction rule for primitives is exactly this semantics; once
   extension classes land, it dissolves into stdlib declarations like
   `extension class on i32 implements Hashable { hashCode(): i32 { return
-  this; } }`, and the `hash` intrinsic's primitive fast paths become an
+this; } }`, and the `hash` intrinsic's primitive fast paths become an
   optimization detail rather than language semantics. Distinct types over a
   primitive would inherit conformance from their underlying type's extension
   (as they do under today's rule).
+
 - Replacing the intrinsics with pure-Zena dispatch (this document's original
   proposal) still requires `is` on primitives plus monomorphization-aware
   DCE.

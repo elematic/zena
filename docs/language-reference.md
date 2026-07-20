@@ -72,7 +72,7 @@ Trailing commas are allowed in all comma-separated lists enclosed by a delimiter
 - Type parameters: `class Pair<K, V,>`
 - Type arguments: `new Pair<i32, i32,>()`
 - Record types: `{a: i32, b: i32,}`
-- Tuple types: `(i32, string,)`
+- Tuple types: `(i32, String,)`
 - Function types: `(a: i32, b: i32,) => void`
 - Destructuring patterns: `let {x, y,} = point;`
 - Class/case class parameters: `class Point(x: f64, y: f64,)`
@@ -108,9 +108,9 @@ safety.
 - **`f64`**: 64-bit floating-point number. Constructed via casting (e.g., `1.0
 as f64`).
 - **`boolean`**: Boolean value (`true` or `false`).
-- **`string`**: UTF-8 string.
+- **`String`**: UTF-8 string.
 - **`anyref`**: The top type for all reference types. It can hold any object,
-  array, string, function, or `null`. It cannot hold unboxed primitives (`i32`,
+  array, String, function, or `null`. It cannot hold unboxed primitives (`i32`,
   `f32`, `boolean`).
 - **`never`**: The bottom type. It represents a value that never occurs (e.g.,
   the result of `throw` or a function that never returns). `never` is a subtype
@@ -135,10 +135,10 @@ safety guarantees.
 
 ```zena
 let x: any = 42;       // Auto-boxed to Box<i32>
-let y: any = "hello";  // Reference type (string)
+let y: any = "hello";  // Reference type (String)
 
 let n = x as i32;      // Unboxed to 42
-let s = y as string;   // Cast to string
+let s = y as String;   // Cast to String
 
 // let z = x + 1;      // Error: Operator '+' cannot be applied to type 'any'
 ```
@@ -146,6 +146,9 @@ let s = y as string;   // Cast to string
 The `any` type is useful for generic data structures or interop scenarios where
 the type is not known at compile time. Under the hood, it maps to the WASM
 `anyref` type.
+
+> [!NOTE]
+> We are strongly considering removing the `any` type and all auto-boxing in a future release. This will make boxing and heap-allocation costs explicit by requiring developers to perform manual boxing (e.g., using `Box<T>`) when passing primitive types to reference contexts.
 
 ## 2.1 Enums
 
@@ -223,7 +226,7 @@ Local variable types are inferred from their initializer expression.
 
 ```zena
 let x = 10; // Inferred as i32
-let s = 'hello'; // Inferred as string
+let s = 'hello'; // Inferred as String
 ```
 
 #### Contextual Typing for Numeric Literals
@@ -311,7 +314,7 @@ Type aliases create a new name for a type. They are defined using the `type`
 keyword.
 
 ```zena
-type ID = string;
+type ID = String;
 type Point = {x: i32; y: i32};
 type Callback = (result: String) => void;
 ```
@@ -618,7 +621,7 @@ equals(true, false);  // T = boolean (widened from conflicting true and false)
 - Unlike regular primitive types, literal types **can be used in unions**
   because they are distinguishable at runtime.
 - A literal value is assignable to its literal type and to the corresponding
-  base type (e.g., `'hello'` is assignable to both `'hello'` and `string`).
+  base type (e.g., `'hello'` is assignable to both `'hello'` and `String`).
 - `let` preserves literal types; `var` widens them to base types (unless
   explicitly annotated).
 - Literal types enable precise API contracts and exhaustive pattern matching.
@@ -1557,7 +1560,7 @@ When the piped value is an inline tuple (e.g., from a multi-return function),
 use tuple indexing to access elements:
 
 ```zena
-// getNames() returns (string, string)
+// getNames() returns (String, String)
 person.getNames() |> formatFullName($[0], $[1])
 
 // map.get() returns (V, bool)
@@ -2751,9 +2754,9 @@ The following pairs of types are indistinguishable at runtime:
 2.  **Distinct Types on the same type**:
 
     ```zena
-    distinct type IdA = string;
-    distinct type IdB = string;
-    // IdA and IdB are both string at runtime.
+    distinct type IdA = String;
+    distinct type IdB = String;
+    // IdA and IdB are both String at runtime.
     ```
 
 3.  **Generic Instantiations of Erased Types**:
@@ -2766,8 +2769,8 @@ The following pairs of types are indistinguishable at runtime:
 
 - **Classes**: `class A {}` and `class B {}` are always distinguishable.
 - **Reified Generics**: `Box<i32>` and `Box<String>` are distinguishable because
-  `i32` and `string` have different runtime representations.
-- **Primitives**: `i32` and `string` are distinguishable.
+  `i32` and `String` have different runtime representations.
+- **Primitives**: `i32` and `String` are distinguishable.
 
 ### Limitations
 
@@ -2861,7 +2864,7 @@ var i = 0;
 let x = t[i];  // Error: Tuple index must be a compile-time known value
 
 // ❌ Parameters are not compile-time known
-let getElement = (t: (i32, string), idx: i32) => t[idx];  // Error
+let getElement = (t: (i32, String), idx: i32) => t[idx];  // Error
 ```
 
 This restriction exists because tuples have a fixed structure where each

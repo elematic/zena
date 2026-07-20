@@ -12,7 +12,7 @@ the IR sketches in two earlier documents:
   format for link-time whole-program optimization.
 
 ZIR reconciles both: a **single CFG-based SSA IR** that is the substrate for
-optimization *and* (in a later milestone) the on-disk unit of incremental
+optimization _and_ (in a later milestone) the on-disk unit of incremental
 compilation. `self-hosted-compiler.md` §7 deliberately deferred an IR but
 required structuring the code so one could be inserted later between
 `AST + SemanticModel` and WASM emission; this document exercises that escape
@@ -42,17 +42,16 @@ The reasons the earlier docs deferred an IR no longer hold:
 3. **AOT engines don't save us.** Wasmtime/Cranelift performs no inlining and
    no devirtualization of `call_ref`. Every abstraction Zena encourages —
    interfaces, iterators, closures, small methods — survives to runtime unless
-   *we* remove it. (V8 recovers some of this with speculative inlining; the
+   _we_ remove it. (V8 recovers some of this with speculative inlining; the
    CLI and server targets get nothing.)
 
-4. **Compiler performance itself is the headline problem.** The documented
-   bottlenecks (`CODEGEN_PLAN.md` §Performance Bottlenecks) are
-   monomorphization code explosion (importing `zena:test` pulls 790+ WASM
-   functions; one test file compiles in ~47s cold vs 0.24s in the bootstrap
-   compiler) and repeated AST re-walking. An IR designed for cheap copying
-   gives us a structural fix: lower each generic function to IR **once** and
-   specialize by copying flat arrays, instead of re-walking the AST per
-   instantiation (§8).
+4. **Compiler performance itself is the headline problem.** The current
+   bottlenecks are monomorphization code explosion (importing `zena:test` pulls
+   790+ WASM functions; one test file compiles in ~47s cold vs 0.24s in the
+   bootstrap compiler) and repeated AST re-walking. An IR designed for cheap
+   copying gives us a structural fix: lower each generic function to IR
+   **once** and specialize by copying flat arrays, instead of re-walking the
+   AST per instantiation (§8).
 
 The design principle throughout: **the IR is a data-oriented, index-based
 structure** — flat `i32` arrays, side tables, no per-instruction heap objects —
@@ -64,7 +63,7 @@ node IDs, `self-hosted-compiler.md` §3).
 ### Non-goals
 
 - **Not a second checker.** The checker remains backend-agnostic and
-  authoritative; ZIR is constructed *from* the checked AST + `SemanticModel`
+  authoritative; ZIR is constructed _from_ the checked AST + `SemanticModel`
   and trusts them. The ZIR verifier (§11) checks IR invariants, not language
   rules.
 - **No register allocation.** Wasm locals are unbounded; we only coalesce.
@@ -86,7 +85,7 @@ Program (units + SemanticModels)
   → FunctionGenerator per function    AST walk → bytes, single pass
 ```
 
-With ZIR, only the *function-body* path changes. The structural model
+With ZIR, only the _function-body_ path changes. The structural model
 (`WasmModule`, `WasmStruct`, `WasmGlobal`, vtable globals) survives as-is;
 the `FunctionGenerator` AST walk is split into lowering and emission with the
 optimization loop between them:
@@ -124,27 +123,27 @@ scope analysis, incremental re-checking — is untouched, exactly as
 **RTA stays where it is, on the AST side.** This is a deliberate and important
 choice:
 
-- RTA's job is to decide *what exists*: which functions are reachable, which
+- RTA's job is to decide _what exists_: which functions are reachable, which
   classes are instantiated, which generic instantiations to materialize, and
-  which members are dispatch *candidates* (virtual and reached through
+  which members are dispatch _candidates_ (virtual and reached through
   dynamic dispatch). It does **not** decide final vtable layouts — those
   depend on what survives optimization and are assigned post-fixpoint
   (§10.2). Its inputs (`SymbolDependencies`) are computed by
   the checker (`semantic-model.zena:678`, `checker.zena:253–327`) and live in
-  the `SemanticModel`. Moving RTA onto ZIR would require lowering *every*
+  the `SemanticModel`. Moving RTA onto ZIR would require lowering _every_
   function — including never-reached ones — before knowing what's reachable,
   which is exactly backwards for compile time. Lowering only reached,
   already-monomorphized functions keeps the IR population minimal.
 - The `discovery.zena` index-allocation pass and the
   `Specializer`/`ClassHierarchyAnalysis` cluster keep their current roles.
   ZIR consumes their outputs: the set of `WasmFunction`s to lower, the
-  declared field and candidate-slot *membership* of each struct/vtable
+  declared field and candidate-slot _membership_ of each struct/vtable
   (symbolically — numbering comes later), and the CHA tables that
   devirtualization queries.
 
 **Why discovery is dispatch-aware at all.** Lowering emits exactly one
 uniform shape for every virtual call (`vt.load`/`vt.slot`/`call_ref`, §5),
-and *all* devirtualization happens against the IR (§9) — discovery resolves
+and _all_ devirtualization happens against the IR (§9) — discovery resolves
 no call site. Its dispatch-awareness serves only the liveness question.
 RTA's defining transfer function is a conjunction: a virtual method body is
 reachable iff (a dispatch site naming that member is reached) **and** (a
@@ -153,7 +152,7 @@ and discovery degrades to "any reference to an interface member reaches
 every implementation in the program" — sound, but it lowers and
 monomorphizes vast amounts of code that the §10 harvest then deletes.
 Correctness would survive that ordering; compile time would not: the
-over-approximation *is* the monomorphization explosion (§1, point 4)
+over-approximation _is_ the monomorphization explosion (§1, point 4)
 re-created deliberately. Dispatch-awareness in discovery is how the reached set — and
 therefore the lowering and optimization workload — stays proportional to
 the program that actually runs.
@@ -171,17 +170,17 @@ before Binaryen's closed-world type-directed devirt. The invariant across
 all of them: discovery is dispatch-aware wherever tree-shaking or
 monomorphization matters, it runs over whatever representation is cheapest
 to have at that point (for us, the checker's `SymbolDependencies`), and
-devirtualization as an *optimization* is always downstream, on the IR.
+devirtualization as an _optimization_ is always downstream, on the IR.
 
 **A second, much cheaper reachability pass runs on ZIR after optimization**
 (§10). Devirtualization and inlining strand things: a vtable global whose
 every slot load was folded away, a method body reachable only through
 now-devirtualized dispatch, an interface fat-pointer struct that SRoA
 evaporated at every use site. AST-level RTA cannot see this because it
-computed reachability against the *pre-optimization* dispatch structure. The
+computed reachability against the _pre-optimization_ dispatch structure. The
 IR-level sweep is trivial by comparison — a worklist over instruction operands
 (function refs, global refs, type refs), no CHA, no specialization — because
-by then all dispatch that could be resolved *has been* resolved into direct
+by then all dispatch that could be resolved _has been_ resolved into direct
 references.
 
 So: **discover on the AST, harvest on the IR.** The IR-side sweep also
@@ -214,7 +213,7 @@ function's input changes (scan the body's IR instead of reading
   argument.
 
 The ordering worry that would seem to block fusion — vtable slot numbers,
-struct layouts, and super-linking are only final *after* the fixpoint —
+struct layouts, and super-linking are only final _after_ the fixpoint —
 is already neutralized by design: ZIR stores symbolic `refTable` entries,
 never raw indices; layout binds numbers post-fixpoint (§10.2). So bodies
 lowered mid-fixpoint cannot bake in stale numbering. Fusion is a
@@ -245,7 +244,7 @@ different jobs sit on this ladder, and they deserve different rungs:
 - **Discovery (liveness):** RTA is the sweet spot and stays permanently.
   The dominant tree-shaking fact is "this class is never allocated",
   which RTA captures, near-linearly, from side tables that exist anyway.
-  Stronger analyses mostly sharpen *per-call-site* answers, not liveness.
+  Stronger analyses mostly sharpen _per-call-site_ answers, not liveness.
 - **Per-site devirtualization precision:** TFA's genuine edge — a site
   whose receiver can only be `Circle` devirtualizes even though five
   other implementations are instantiated elsewhere. But Dart needs that
@@ -254,7 +253,7 @@ different jobs sit on this ladder, and they deserve different rungs:
   monomorphizes, and the ZIR loop recovers much of the same precision
   locally: inlining propagates exact receiver types through SSA, and the
   §10.1 feedback narrows the global set as allocations die. What the
-  loop cannot see is types flowing through *non-inlined* call
+  loop cannot see is types flowing through _non-inlined_ call
   boundaries, fields, and collections — that residue is TFA's actual
   territory here, and it is an empirical question how much of it
   remains.
@@ -265,7 +264,7 @@ widening) and wants IR for everything up front, colliding with our
 lower-only-what's-reached ordering.
 
 **Decision:** RTA for discovery, forever. Call-site precision beyond the
-loop is an *optimization-side* pass, bought only on evidence: after M3,
+loop is an _optimization-side_ pass, bought only on evidence: after M3,
 instrument the compiler compiling itself and count surviving `call_ref`
 sites (weighted by profile hotness where available). If the residue
 matters, add sparse interprocedural type propagation over ZIR —
@@ -312,7 +311,7 @@ Core properties:
 - **Blocks end in exactly one terminator**: `br`, `br_if`, `br_table`,
   `br_on_cast` / `br_on_cast_fail`, `ret`, `throw`, `unreachable`.
 - **Instructions are typed** with the existing `ValType` from
-  `codegen/wasm.zena` — i.e. ZIR types are *lowered wasm-GC types*
+  `codegen/wasm.zena` — i.e. ZIR types are _lowered wasm-GC types_
   (`i32`/`i64`/`f32`/`f64`, `ref $Struct`, `ref null $Sig`, `anyref`, …), not
   semantic checker `Type`s. By lowering time, monomorphization has already
   produced concrete `WasmStruct`s, and reusing `ValType`/`WasmType` (with its
@@ -337,7 +336,7 @@ blocks). The Gemini-style textbook pipeline suggests mid + low tiers. We build
 - Every additional tier is a full extra data structure + lowering + tests,
   paid for in a compiler that's already fighting compile-time budgets.
 - What LIR would have done (local assignment, stack scheduling) is an
-  *emission algorithm* (§12), not a data structure worth materializing.
+  _emission algorithm_ (§12), not a data structure worth materializing.
 
 By the time code is in ZIR, all of the following are **already explicit**:
 operator overloads are calls, pattern matches are test/branch chains, for-in
@@ -351,7 +350,7 @@ right; it just lacked a CFG.
 
 This section is the performance heart of the design. **No per-instruction
 heap objects.** A function body is a handful of parallel flat arrays indexed
-by instruction id; a value id *is* the id of its defining instruction (block
+by instruction id; a value id _is_ the id of its defining instruction (block
 parameters get ids too, so the value namespace is uniform).
 
 ```zena
@@ -386,7 +385,7 @@ Design rules:
   Cranelift/`FIRM`-style layout and keeps the hot arrays dense.
 - **Module entities are referenced through `refTable`**, a small per-function
   array of `IrRef` (a sealed class over `WasmFunction | WasmGlobal |
-  WasmStruct | field | data-segment | …`). Instructions store an `i32` index
+WasmStruct | field | data-segment | …`). Instructions store an `i32` index
   into it. This keeps the instruction stream free of object references
   (cheap to copy — see §8 — and trivially serializable — see §13), while a
   single indirection resolves to the live object during a pass.
@@ -416,26 +415,26 @@ scan at memory bandwidth, and copy with `array.copy`.
 ### 4.1 Value types (inline classes) and this layout
 
 Zena has no non-heap objects yet — `inline` tuples give allocation-free
-*returns* (wasm multi-values), but there is no Valhalla-style `inline
-class` for allocation-free *storage*. Does that blunt the data-oriented
+_returns_ (wasm multi-values), but there is no Valhalla-style `inline
+class` for allocation-free _storage_. Does that blunt the data-oriented
 design? No, and the reason is a target-level fact worth stating plainly:
 
 - **The hot side of `IrBody` contains no references.** `opcode`, `typeId`,
   `a`, `b`, `extra`, the block arrays — all `FixedArray<i32>`, which
   monomorphizes to wasm `(array i32)`: unboxed scalars, no per-element
-  objects. Structure-of-arrays *is* the substitute for value types, and
+  objects. Structure-of-arrays _is_ the substitute for value types, and
   for pass workloads (linear scans touching two or three fields) it is
   generally the better layout than array-of-structs anyway.
 - **Wasm GC cannot express the alternative.** There is no inline struct
   storage in wasm GC: `(array (ref $S))` stores references, and no
   `(array $S)`-of-inline-structs exists. A future `inline class` on this
-  target must therefore *compile to* scalarization — multi-values in
+  target must therefore _compile to_ scalarization — multi-values in
   signatures, parallel scalars in storage — i.e., exactly the layout ZIR
   hand-writes. Language-level value types would improve the ergonomics of
   this file, not the achievable memory layout. We are not leaving
   performance on the table by not waiting for them.
 - **Where references legitimately remain** — `refTable`/`typeTable` — the
-  counts are per-*entity* (tens per function), not per-instruction, and
+  counts are per-_entity_ (tens per function), not per-instruction, and
   they're touched only at resolution points. Object population per
   function is one `IrBody` plus ~ten array objects: thousands of
   allocations per compile, not tens of millions.
@@ -456,14 +455,14 @@ ZIR forecloses the feature; adopting it is mechanical cleanup.
 **Should we build them now? No — decouple.** Inline classes still carry
 open language questions (identity and `==`, `is` on erased values,
 interaction with unions — which deliberately exclude primitives, and an
-inline class *is* primitives —, mutability, interface conformance), and
+inline class _is_ primitives —, mutability, interface conformance), and
 putting them on ZIR's critical path couples M1 to a language-design
 schedule. The two features also meet in the middle: ZIR's SRoA is
 "automatic value types for objects the optimizer proves non-escaping",
 which relieves some of the pressure for the language feature; and when
 `inline class` does land, lowering implements it with the same
 scalarization machinery ZIR already has (multi-values + parallel scalars),
-so building ZIR first makes the language feature *cheaper*, not harder —
+so building ZIR first makes the language feature _cheaper_, not harder —
 with this file as its natural first dogfood.
 
 ## 5. Instruction set
@@ -478,28 +477,28 @@ identity map.
 
 **Aggregates (classes, records, tuples, closures)**
 
-| Instruction | Meaning | Emits as |
-|---|---|---|
-| `struct.new S, args…` | allocate class/record/tuple/env `S` | `struct.new` |
-| `struct.get v, S.f` / `struct.set` | field resolved symbolically; index bound at layout (§10.2) | `struct.get/set` |
-| `array.new/get/set/len/copy E` | array intrinsics | 1:1 |
-| `null T` / `is_null` / `as_non_null` | | 1:1 |
+| Instruction                          | Meaning                                                    | Emits as         |
+| ------------------------------------ | ---------------------------------------------------------- | ---------------- |
+| `struct.new S, args…`                | allocate class/record/tuple/env `S`                        | `struct.new`     |
+| `struct.get v, S.f` / `struct.set`   | field resolved symbolically; index bound at layout (§10.2) | `struct.get/set` |
+| `array.new/get/set/len/copy E`       | array intrinsics                                           | 1:1              |
+| `null T` / `is_null` / `as_non_null` |                                                            | 1:1              |
 
 Classes are **already lowered** here: a `struct.new $Point_VTable…` for the
 vtable-carrying layout that `Specializer.populateClassStructAndMethods`
 computed, fields addressed by index. ZIR does not know what a "class" is —
-but it knows *which* struct a given allocation creates and keeps the
+but it knows _which_ struct a given allocation creates and keeps the
 class-key as metadata on the allocation for CHA queries.
 
 **Dispatch — vtables are represented, decomposed**
 
-Vtable *contents* are a compile-time-constant mapping the optimizer may
+Vtable _contents_ are a compile-time-constant mapping the optimizer may
 query: `(classKey, memberId) → implementation`, maintained by RTA/CHA.
 The physical artifacts — the vtable struct types and the immutable
 `WasmGlobal` initializers (today built eagerly in RTA Pass 1.5–2) — are
 **materialized only after the optimization fixpoint** (§10.2), from the
 slots that survive. ZIR therefore never references a numeric slot; vtable
-*operations* are explicit instructions carrying symbolic metadata:
+_operations_ are explicit instructions carrying symbolic metadata:
 
 ```
 %vt   = vt.load %obj                 ; struct.get of the vtable field;
@@ -588,15 +587,15 @@ the exception value. Constraints on passes:
 Emission reconstructs wasm `try_table` nesting from handler-edge structure;
 since lowering only ever produces properly nested handled regions and passes
 can't create new handler edges, this reconstruction is straightforward
-(§12). This is deliberately conservative — optimizing *across* try
-boundaries is out of scope for v1; optimizing *within* them (the common
+(§12). This is deliberately conservative — optimizing _across_ try
+boundaries is out of scope for v1; optimizing _within_ them (the common
 case: a hot loop inside a `try`) works fully.
 
 ### 5.2 Traps
 
 `array.get` out of bounds, `ref.cast` failure, integer division — wasm traps.
 ZIR marks these `can_trap`. Policy (matching wasm-opt's default and LLVM's
-practical stance): a trapping instruction whose *result is unused* may be
+practical stance): a trapping instruction whose _result is unused_ may be
 removed only if the pass proves it cannot trap (e.g. index provably in
 bounds, cast provably succeeds via dominating test); otherwise it stays.
 Trap-preserving is the correctness default; a later `--trap-relaxed` flag can
@@ -605,7 +604,7 @@ loosen this for size if we ever want it.
 ## 6. Lowering (AST → ZIR)
 
 A new `codegen/ir/lowering.zena` replaces the emission half of
-`FunctionGenerator` while keeping its *semantic* half — all the knowledge
+`FunctionGenerator` while keeping its _semantic_ half — all the knowledge
 currently in `codegen/expr/*` and `codegen/stmt/*` about how constructs
 translate (constructor prologues, cell-boxing for captured mutables,
 argument adaptation, match compilation) transfers over; the difference is
@@ -631,7 +630,7 @@ when ZIR reaches parity.
 
 ## 7. What ZIR deliberately does NOT contain
 
-- **Vtable/struct layout decisions** — RTA/Specializer own *membership*
+- **Vtable/struct layout decisions** — RTA/Specializer own _membership_
   (which fields/candidate slots exist); final numbering is assigned
   post-fixpoint (§10.2). ZIR holds only symbolic (class, member) and
   (class, field) references.
@@ -648,7 +647,7 @@ when ZIR reaches parity.
 ## 8. Generics: specialize the IR, not the AST (v2)
 
 The monomorphization explosion is the top compile-time bottleneck, and its
-cost is not the *number* of instantiations so much as **re-walking the AST
+cost is not the _number_ of instantiations so much as **re-walking the AST
 through `Specializer`/`FunctionGenerator` for every one of them**.
 
 ZIR's `typeTable` indirection is designed as the fix:
@@ -659,7 +658,7 @@ ZIR's `typeTable` indirection is designed as the fix:
   only in types. This is still faster than today per-instantiation (walking
   the small checked AST once instead of doing full emission logic), but it's
   the same asymptotics.
-- **v2 (template ZIR):** lower each *generic source function* *once* to a
+- **v2 (template ZIR):** lower each _generic source function_ _once_ to a
   polymorphic body whose `typeTable` entries may be symbolic (type-parameter
   slots) and whose `refTable` entries may name unspecialized members.
   Specialization becomes: `array.copy` the instruction arrays (they are
@@ -668,13 +667,13 @@ ZIR's `typeTable` indirection is designed as the fix:
   run one local simplify pass. That turns per-instantiation cost from "walk
   and re-emit a function" into "memcpy + patch a small table".
 
-  v2 requires that instruction *selection* not depend on the type argument.
+  v2 requires that instruction _selection_ not depend on the type argument.
   Where it genuinely does (e.g. `==` on `i32` vs a reference type inside a
   generic), lowering emits a `generic.op` instruction that specialization
   resolves — a small, enumerable set, because the checker already forces
   these operations through known interfaces/intrinsics.
 
-RTA still decides *which* instantiations exist (nothing changes in
+RTA still decides _which_ instantiations exist (nothing changes in
 discovery); v2 changes only how their bodies are produced. This is also the
 prerequisite for caching generic code on disk (§13) — you cannot cache what
 you can only produce whole-program-specialized.
@@ -685,11 +684,13 @@ Per `optimization-strategy.md`'s phasing, correctness and explicit wins
 first, then the implicit/global loop. Passes, in rough build order:
 
 **Foundation (with the IR itself):**
+
 - `verify` (§11), `simplify` (peephole + constant folding, table-driven off
   wasm opcodes), `dce` (use-count worklist; respects `can_trap`/effects),
   `blockmerge` (straightline block fusion, dead-edge removal after folding).
 
 **The semantic loop:**
+
 - `inline` — bottom-up over the callgraph (SCCs handled with a budget
   cutoff). Heuristics: always inline trivial bodies (accessors — the
   synthesized getter/setter functions, `vt.load`-only wrappers, single-call
@@ -721,7 +722,7 @@ stored funcref to match the slot's declared signature. Those keep a thin
 adapter with the slot's signature that tail-calls the specialized body;
 direct callers bypass the adapter. (This narrows the blanket "no fat-pointer
 flattening across ABI boundaries" rule in `interfaces.md`: the invariant is
-per-*slot*, not per-*function*, and adapters make it a non-restriction for
+per-_slot_, not per-_function_, and adapters make it a non-restriction for
 everything except the slot itself.)
 
 **Driver.** The classic fixpoint with a cap:
@@ -754,7 +755,7 @@ devirt capped. This slots into the flag matrix `optimizations.md` proposed.
 
 ## 10. Post-optimization reachability (the harvest pass)
 
-After the loop settles, a module sweep computes the *true* live set by
+After the loop settles, a module sweep computes the _true_ live set by
 scanning `refTable` entries reachable from exports/`main`/`__start`:
 
 - functions never referenced (dispatch fully devirtualized away, bodies
@@ -762,7 +763,7 @@ scanning `refTable` entries reachable from exports/`main`/`__start`:
 - struct/array types unreferenced by any live instruction, global, or other
   live type → dropped from the type section;
 - interface fat-pointer types with no surviving `iface.pack` → dropped;
-- vtables, trampolines, and accessors are handled by *not materializing*
+- vtables, trampolines, and accessors are handled by _not materializing_
   them in the first place — physical vtable artifacts don't exist yet at
   this point; §10.2 builds them from what the sweep found live.
 
@@ -775,11 +776,11 @@ free.
 ### 10.1 The sweep feeds back into devirtualization
 
 AST-side RTA computes its instantiated-class set against the
-*un-optimized* program, and optimization only ever shrinks the truth:
+_un-optimized_ program, and optimization only ever shrinks the truth:
 SCCP deletes a constant-false branch that held the only `new FooImpl(…)`;
 inlining + DCE remove the last call to the factory that allocated `Bar`.
-Pruning the output (above) handles the *liveness* consequence, but not the
-*precision* consequence: devirtualization decisions made with the stale
+Pruning the output (above) handles the _liveness_ consequence, but not the
+_precision_ consequence: devirtualization decisions made with the stale
 set are needlessly conservative — an interface call that saw two candidate
 implementations may in truth have one, and a `ref.test`/`br_on_cast`
 against a class with no surviving allocation site could fold to
@@ -801,7 +802,7 @@ decreasing — and fast in practice (one or two extra rounds; each round is
 cheap because only devirt-relevant rewrites remain).
 
 Note what we never do: re-run AST-side RTA. Its over-approximation is only
-used to decide *what to lower*, and soundness there is all that's needed;
+used to decide _what to lower_, and soundness there is all that's needed;
 every subsequent fact is recomputed from the strictly-more-precise IR. The
 residual cost we knowingly accept is compile time spent lowering and
 optimizing functions that later rounds prove dead; eliminating that would
@@ -815,7 +816,7 @@ loop changes what a vtable must contain: devirtualization can remove the
 last dynamic dispatch through a slot (the method may stay live via direct
 calls — it just no longer needs a slot), and can eliminate the need for a
 class's vtable entirely. A layout fixed at RTA time would carry every
-candidate slot into the binary. So layout is the *last* step of the
+candidate slot into the binary. So layout is the _last_ step of the
 harvest, computed from the settled IR:
 
 - **Slot sets:** for each hierarchy root, the surviving slots are the
@@ -826,8 +827,8 @@ harvest, computed from the settled IR:
   Subclass vtable struct types extend their superclass's — the wasm
   subtyping requirement falls out of the shared prefix.
 - **Vtable existence:** a class hierarchy with no live `vt.load` at all
-  drops its vtable globals, its vtable struct types, *and the hidden
-  vtable field in the object structs* — possible only because ZIR field
+  drops its vtable globals, its vtable struct types, _and the hidden
+  vtable field in the object structs_ — possible only because ZIR field
   references are symbolic and object-struct layout is also finalized
   here.
 - **Materialization:** vtable globals (`VTableInit`) are built now, only
@@ -873,7 +874,7 @@ invariant must never limp into emission.
    parity harness extends to the ZIR backend, and pass determinism is a hard
    requirement (no iteration-order-dependent rewrites; all worklists are
    index-ordered).
-4. The benchmark suite (`test-files/benchmarks/`) gates compile-time *and*
+4. The benchmark suite (`test-files/benchmarks/`) gates compile-time _and_
    output-size/speed regressions per level.
 
 ## 12. Emission (ZIR → wasm bytes)
@@ -886,7 +887,7 @@ Three sub-steps, all per-function, feeding the existing
    copies then dissolve in step 3's coalescing.
 2. **Control-flow reconstruction.** The reducible CFG is turned back into
    wasm's structured `block`/`loop`/`if`/`br_table`/`try_table` via the
-   dominator-based stackifier (Ramsey, *Beyond Relooper*, ICFP 2022 — the
+   dominator-based stackifier (Ramsey, _Beyond Relooper_, ICFP 2022 — the
    algorithm wasm-tooling has converged on). Reducibility is an IR
    invariant (§3), so no node-splitting path is needed.
 3. **Stack scheduling + local coalescing.** A value defined and used exactly
@@ -904,7 +905,7 @@ Three sub-steps, all per-function, feeding the existing
 
 Since there is no wasm-opt behind us, emission quality is on us: the
 combination of simplify/DCE (pre-emission) + stack scheduling + local
-coalescing (at emission) is the floor we own. What we consciously *don't*
+coalescing (at emission) is the floor we own. What we consciously _don't_
 build: instruction scheduling beyond stack-order (engines re-schedule),
 and binary-level tricks like code-section sorting (possible later).
 
@@ -1030,7 +1031,7 @@ What makes `IrBody` serialization-friendly by construction:
   type descriptions keyed the same way RTA's dedup caches already key them.
   Loading = resolve two small tables against the current compilation, then
   use the instruction stream untouched.
-- v2 template ZIR (§8) solves the *what-do-you-cache* problem for generics:
+- v2 template ZIR (§8) solves the _what-do-you-cache_ problem for generics:
   cache the polymorphic template per source function; instantiate at link
   time by table substitution. Without templates, a per-file cache can't
   hold monomorphized bodies (they depend on type arguments discovered
@@ -1045,7 +1046,7 @@ its `IRExpr` tree replaced by ZIR bodies:
   source hash, compiler version) + module summary (exports, class
   hierarchy fragment, interface impls — what link-time RTA needs without
   bodies) + per-function template bodies. Cache key: (source hash, ZIR
-  format version, compiler version, dependency *interface* hashes — the
+  format version, compiler version, dependency _interface_ hashes — the
   export-signature machinery in `compiler.zena:575` already computes
   exactly this).
 - **Phase 2 — whole-program link:** load summaries → RTA over summaries →
@@ -1094,7 +1095,7 @@ until M4.
   lower.
 - **M3 — the loop.** simplify/DCE/blockmerge, then inline, devirt, SRoA,
   SCCP; golden WAT tests per pass; `-O2`/`-Os` wired. §10 harvest pass.
-  Success metric: measurable size *and* speed wins on the benchmark suite
+  Success metric: measurable size _and_ speed wins on the benchmark suite
   and on the compiler compiling itself (the compiler is our biggest, most
   interface-heavy program — it is the benchmark).
 - **M4 — flip the default.** Delete the direct `FunctionGenerator` emission

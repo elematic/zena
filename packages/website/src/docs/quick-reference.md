@@ -166,6 +166,8 @@ use `as` to convert to other numeric types.
 | `any`     | `anyref`        | Can hold any value (primitives are auto-boxed)       |
 | `never`   | —               | Bottom type (e.g., result of `throw`)                |
 
+> **Note**: We are strongly considering removing the `any` type and all auto-boxing in a future release to make boxing/allocation costs explicit (requiring manual boxing using `Box<T>`).
+
 ```ts
 let i: i32 = 42;
 let n: i64 = 100 as i64;
@@ -1318,7 +1320,7 @@ class Dog extends Animal {
 ### Generic Classes
 
 Classes can have type parameters. Zena uses monomorphization—`Box<i32>` and
-`Box<string>` are completely separate types at runtime.
+`Box<String>` are completely separate types at runtime.
 
 ```ts
 class Box<T> {

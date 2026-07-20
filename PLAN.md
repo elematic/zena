@@ -1,281 +1,50 @@
 # Zena Development Plan
 
-This document tracks completed work and planned features. For project instructions
-and coding standards, see [AGENTS.md](./AGENTS.md).
+This document tracks completed work and planned features. For project instructions and coding standards, see [AGENTS.md](./AGENTS.md).
 
 ## Completed
 
-- [x] Initialize npm project with TypeScript.
-- [x] Set up project structure (`src`, `tests`).
-- [x] Implement the Lexer.
-- [x] Implement Parser (AST generation).
-- [x] Implement Type Checker (Basic).
-- [x] Implement Code Generator (WASM-GC) for:
-  - `i32` arithmetic.
-  - Function parameters.
-  - `while` loops.
-  - `if` statements.
-  - Variable assignment (`var`).
-  - Function calls and recursion.
-- [x] Implement Structs & Classes (WASM-GC structs).
-- [x] Implement Arrays (WASM-GC arrays).
-- [x] Implement Strings (UTF-8 bytes, concatenation, equality).
-- [x] Implement Generics:
-  - Generic Classes (`class Box<T>`).
-  - Multiple Type Parameters (`class Pair<K, V>`).
-  - Generic Functions (`<T>(x: T) => x`).
-  - Type Inference (`new Box(10)` -> `Box<i32>`).
-  - Default Type Parameters (`class Box<T = i32>`).
-  - Inheritance (Basic):
-    - `extends` keyword.
-    - Struct layout compatibility.
-    - Method/Field inheritance.
-    - Static dispatch for overridden methods.
-- [x] Implement Accessors (Parser, Checker, Codegen).
-- [x] Implement `final` modifier (Parser, Checker, Codegen).
-- [x] Implement Host Interop:
-  - Imports (`declare`, `@external`).
-  - Exports (Functions, Classes).
-  - Standard Library (`Console`).
-  - Runtime Helper.
-  - Function Overloading.
-- [x] Implement Closures:
-  - Parser (Generic Arrow Functions).
-  - Checker (Capture Analysis).
-  - Codegen (Context Structs, \`ref.func\`, Element Section).
-- [x] Implement Tagged Template Literals.
-- [x] Implement Type Aliases (`type` keyword).
-- [x] Implement Distinct Types (`distinct type` keyword).
-- [x] Implement Function Types (`(a: i32) => void`).
-- [x] Implement Records & Tuples:
-  - Parser: Literals (`{...}`, `[...]`) and Types.
-  - Checker: Structural typing and inference.
-  - Codegen (Boxed): Canonical WASM structs.
-  - Destructuring: Parser, Checker, Codegen.
-- [x] Implement Optional Parameters:
-  - Parser: `?` syntax.
-  - Checker: Union with `null`, assignability.
-  - Codegen: Default values.
-- [x] Implement `eq` intrinsic and `operator ==` overloading.
-- [x] Implement `Map` and `Box` in Standard Library.
-- [x] Implement `hash` intrinsic.
-- [x] Implement strict equality (`===`, `!==`).
-- [x] Implement bitwise XOR (`^`), AND (`&`), OR (`|`).
-- [x] Implement modulo operator (`%`).
-- [x] Implement `i64` and `f64` support (Codegen & Emitter).
-- [x] Allow identifiers to contain `$` and `_`.
-- [x] Implement `#[ ... ]` array literal syntax.
-- [x] Implement `map()` for `Array` and `FixedArray`.
-- [x] Implement Pattern Matching (Basic):
-  - `match` expression.
-  - Identifier patterns (binding & wildcards).
-  - Literal patterns (number, string, boolean).
-  - Record patterns (`{x: 1}`).
-  - Tuple patterns (`[1, 2]`) for Tuples.
-  - Class patterns (`Point {x}`).
-  - `as` patterns (`Point {x} as p`).
-  - Logical patterns (`|`, `&`).
-  - Match Guards (`case ... if ...`).
-  - Exhaustiveness Checking.
-- [x] Implement Record Spread (`{ ...p, z: 3 }`).
-- [x] Implement Exceptions (`throw`).
-- [x] Implement `never` type.
-- [x] Implement Super Calls (`super(...)`, `super.method()`, `super.field`).
-- [x] Implement Advanced Inheritance:
-  - Virtual Fields (Uniform Access Principle).
-  - Dynamic Dispatch (VTables).
-  - Casting (`as`, `is`).
-  - Mixins (Parser, Checker, Codegen).
-- [x] Implement Interfaces:
-  - Definition, Implementation, Inheritance.
-  - Fat Pointers & VTables.
-  - Interface Properties.
-- [x] Implement Abstract Classes (`abstract` keyword, abstract methods).
-- [x] Enforce Access Control (`#` private fields).
-- [x] Implement Generic Constraints (`T extends Animal`).
-- [x] Implement Blocks (Lexical Scoping).
-- [x] Implement Type Narrowing (control-flow-based null checks).
-- [x] Implement Method Overloading:
-  - Multiple methods with same name but different signatures.
-  - Signature-based name mangling for codegen.
-  - Overload resolution by parameter type and count.
-  - Inheritance: override specific overloads, inherit others.
-  - Operator overloading (`operator []` with multiple signatures).
-  - Virtual dispatch with overloaded methods.
-- [x] Implement Dead Code Elimination (DCE):
-  - AST Visitor infrastructure (`visitor.ts`) for reusable tree traversal.
-  - Usage analysis pass (`analysis/usage.ts`) to determine reachable declarations.
-  - Declaration-level DCE: skip codegen for unused functions, classes, and interfaces.
-  - Type-level DCE: skip WASM type/function creation for intrinsic methods and fields.
-  - VTable elimination: skip vtable creation for extension classes with empty vtables.
-  - Method-level DCE: fully eliminate unused methods (no function allocation, no vtable entry).
-    - Tracks method calls via `SemanticContext.getResolvedBinding()`.
-    - Handles polymorphic dispatch: if a method is called through a base class/interface, all overrides are kept.
-    - Subclass tracking: propagates polymorphic calls to known subclasses.
-    - Covers regular methods, accessors (getters/setters), and implicit field accessors.
-    - Constructors (`new()`) are always kept if the class is used.
-  - Binary size results: 21% reduction on string programs, minimal programs at 41 bytes.
-- [x] Implement untagged enums with nominal typing.
-- [x] Checker-Driven Type Instantiation (Phases 1-9 completed)
-- [x] Multi-Return Values & Zero-Allocation Iteration (completed)
-- [x] For-In Loops
-- [x] `if (let pattern = expr)` and `while (let pattern = expr)`
-- [x] Contextual typing for closures (infer parameter types from expected function type)
-- [x] Immutable-by-default class fields (`var` for mutable, bare/`let` for immutable)
-- [x] Dart-style initializer lists (`: field = expr` in constructors)
-- [x] `this.field` constructor parameters
-- [x] `var(#name)` private setter syntax
-- [x] Sealed class hierarchies with exhaustive pattern matching
-- [x] Case classes with auto-generated `==`, `hashCode`, constructor
-- [x] Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`)
-- [x] Trailing commas in all delimited lists
-- [x] Optional case class parameters (`name?: Type`)
-- [x] Abstract fields for abstract and sealed classes
-- [x] Field type inference from initializer expressions
-- [x] Pipeline operator (`|>`) with `$` placeholder
-- [x] Destructured parameters in function signatures
-- [x] `export { X } from` re-export syntax
-- [x] Self-hosted compiler: lexer, parser, scope analysis, early type checker
-- [x] Language service: goto-definition for class fields, methods, case class params,
-      inherited members, `this.member` access
-- [x] Incremental type checking:
-  - ScopeResult caching — reuse scope analysis for unchanged files.
-  - Export signature comparison — deep structural type comparison to detect
-    when a module's public API actually changed.
-  - Per-import-name invalidation — only re-check dependents when the specific
-    names they import have changed types.
-  - Push/pull invalidation split — `invalidate(path)` for IDE (targeted, single
-    file) and `refreshCache()` for CLI (batch, content comparison).
-  - Language service wired to push-based `invalidate()` for efficient editor
-    integration.
+- **Core Infrastructure**: Project setup with TypeScript compiler, CLI, and portable test suites.
+- **Language Syntax & Semantics**: Arrow functions, lexical blocks, and control flow.
+- **WASM-GC Native Code Generation**: Implemented natively targeting WebAssembly GC.
+- **Data Structures & Types**:
+  - Primitives (`i32`, `i64`, `u32`, `f32`, `f64`, `boolean`, `String`).
+  - Records & Tuples (boxed canonical WASM structs, destructured bindings, and unboxed multi-value returns).
+  - Arrays (Fixed-size WASM arrays and growable array implementations).
+- **Generics & Polymorphism**:
+  - Reified generics with complete monomorphization (no auto-boxing overhead for primitives).
+  - Single inheritance, abstract classes, mixins, and interfaces (fat pointer representation with vtables).
+- **Functional Programming**: Closures and captures, inline tuples, and the pipeline operator (`|>`).
+- **Control Flow & Pattern Matching**:
+  - Exhaustive pattern matching (`match` expression) supporting literals, variables, records, classes, logical combinators, and guards.
+  - Pattern conditions (`if let`, `while let`) and `for-in` loops over `Iterator`/`Sequence`.
+- **Error Handling**: WASM-GC exception handling (`throw` and `try`/`catch`).
+- **Standard Library**: Core library modules (`String`, `StringBuilder`, `Array`, `Map`, `HashSet`, `Option`, `JSON`, `Regex`, file I/O).
+- **Optimization**: Compiler-driven dead code elimination (DCE) for functions, classes, methods, and WASM types.
+- **Tooling & IDE**: Incremental type-checking (ScopeResult caching, export signature comparison) and language service support.
 
-## Planned
+## Planned / Next Milestones
 
-### Boxing & Generics Design Refactoring
+### Phase 1: Self-Hosted Compiler (Current Focus)
 
-1.  **Elimination of Auto-Boxing & Complete Monomorphization**:
-    - **Remove `any` Type**: Deprecate the dynamically-typed `any` type in favor of a strictly reference-only `anyref` type (e.g. mapping directly to WASM `anyref`/`eqref` with no implicit boxing of primitives).
-    - **Ban Optional Chaining on Primitive Fields**: Prohibit optional chaining expressions returning `T | null` where `T` is a primitive type (since unions of primitives and null are disallowed). If a primitive field is optionally chained, it must either be immediately coalesced via a fused nullish coalescing operator (`p?.x ?? 0`), or check for null explicitly beforehand.
-    - **Monomorphize Virtual VTable Methods**: Complete reachability analysis (RTA) for generic method type argument specialization. Every class/interface vtable will have specialized concrete slots for each reached type instantiation (e.g. `map_spec_i32` and `map_spec_string`), removing the need to erase method type parameters to `anyref` and eliminating vtable trampolines and auto-boxing.
+- **Goal**: Retire the TypeScript bootstrap compiler and move entirely to the self-hosted compiler (`packages/zena-compiler`).
+- **Current Status**: The self-hosted compiler already passes all syntax, language, and execution tests.
+- **New IR Backend**: Building a new IR-based backend to unlock advanced optimizations (devirtualization, specialization, and size reductions).
+- **Performance Optimizations**:
+  - Solve quadratic JIT compilation/lookups. Introduce hashed lookup indices for WASM functions in the code generator to eliminate $O(N)$ linear scans.
+  - Implement hybrid monomorphization: share specialized reference type methods (e.g. `Box<anyref>`) to reduce compiled WASM code size.
 
-### Near-Term
+### Phase 2: Platform Features (Post-Retirement)
 
-1.  **Visitor Infrastructure Improvements**:
-    - **Ensure new syntax is visited**: When adding new AST node types, always add corresponding visit methods to `visitor.ts` to ensure DCE and other analyses cover them.
-    - **Type Object Visitor**: Consider implementing a `TypeVisitor` for traversing checker `Type` objects (ClassType, FunctionType, etc.), which would be useful for type-level analyses.
-    - **Migrate existing passes to visitors**: Convert capture analysis (`captures.ts`) and other AST-traversing code to use the generic visitor infrastructure for consistency and maintainability.
+- **Async Functions & Cooperative Multithreading**: Native support for asynchronous execution, targeting upcoming WASM P3 features with cooperative multithreading.
+- **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
+- **Tooling & DX**: A package manager, online playground, and enhanced VS Code integration.
 
-2.  **Type Checker Refactoring**:
-    - **`ctx.currentClass` consistency**: Inside a generic class `Foo<T>`, `ctx.currentClass` should have `typeArguments = typeParameters` (i.e., represent `Foo<T>`, not just `Foo`). Currently, `checkThisExpression` creates a type with `typeArguments`, but `ctx.currentClass` doesn't have them, requiring a workaround in `isAssignableTo` to handle self-referential generic class comparisons. Fixing this at the source would eliminate that special case.
-    - **Reject index assignment without `operator []=`**: Currently `x[0] = y` compiles even if the type only has `operator []` (getter). The checker should require `operator []=` for index assignment.
-    - **Reject assignment to getter-only properties**: Currently `x.length = 5` compiles even if `length` only has a getter. The checker should require a setter for property assignment.
+### Phase 3: Post-Bootstrap Headline Features
 
-3.  **Host Interop**:
-    - **WASM GC Interop Notes**:
-      - WASM GC structs and arrays are OPAQUE from JavaScript.
-      - JS cannot access struct fields or iterate GC arrays.
-      - Use byte streaming (start/byte/end pattern) for string I/O.
-      - See `docs/design/host-interop.md` for details.
-    - **`@expose` Decorator**: Allow marking class methods as callable from JS hosts.
-      - Syntax: `@expose` or `@expose("customName")` on methods.
-      - Generates a WASM export wrapper that takes `this` as first parameter.
-      - Example: `@expose` on `Suite.run()` exports `Suite.run(self: Suite): i32`.
-      - JS usage: `exports['Suite.run'](suiteInstance)`.
-      - The inverse of `@external` - exposes Zena methods to hosts instead of importing host functions.
+Features that distinguish Zena from TypeScript:
 
-4.  **Data Structures**:
-    - ~~**Maps**: Map literals (`{key => value}`) implemented. `Map` is unordered; `OrderedMap` available when insertion order is needed.~~
-    - **Sets**: Implement mutable sets.
-
-5.  **Top-Level Statement Execution**:
-    - Currently, top-level expression statements (like `test('name', fn)`) are ignored in codegen.
-    - Only global variable initializers run via the WASM start function.
-    - This blocks DSL-style test registration. See `docs/design/testing.md` for workaround.
-    - **Solution**: Extend the start function to execute top-level statements, or add module initialization support.
-
-6.  **Standard Library**:
-    - Math functions (`sqrt`, `abs`, etc.).
-    - String manipulation (`substring`, `indexOf`).
-    - Regexes.
-
-7.  **Pattern Matching (Advanced)**:
-    - Array element matching (requires `FixedArray` support or `Sequence` interface).
-    - Rest patterns (`...tail`).
-
-### Long-Term (Self-Hosting Path)
-
-8.  **Self-Hosting** (in progress):
-    - Self-hosted compiler (`packages/zena-compiler`) written in Zena.
-    - See `docs/design/self-hosted-compiler.md` for architecture.
-    - Current status: lexer, parser, scope analysis, and early type checker implemented.
-    - Both compilers should pass the same portable tests in `tests/language/`.
-    - Write new tests as portable tests (in `tests/language/`) when possible.
-
-9.  **Standard Library for Self-Hosting**:
-
-    **Data Structures** (no language changes required):
-    - [ ] `Set<T>` - Hash set using existing hash infrastructure
-    - [ ] `Deque<T>` - Double-ended queue for BFS/work queues
-    - [ ] Insertion-order `Map` - Or make current Map preserve insertion order
-    - [ ] `SortedMap<K, V>` - Sorted key iteration (tree-based)
-
-    **I/O & Binary Data** (partially complete):
-    - [x] `ByteBuffer` - Growable binary buffer for WASM emission
-    - [x] `ByteArray` intrinsics - Low-level byte operations
-    - [ ] `DataView` - Typed views over ByteBuffer (read/write at offset)
-    - [ ] File I/O - Read/write files (WASI target)
-
-    **String Utilities**:
-    - [ ] `StringReader` enhancements - `peek()`, `peekN()`, better position tracking
-    - [ ] `StringBuilder` enhancements - `writeChar()`, `repeat()`, padding
-    - [ ] `StringPool` / interning - Fast identifier comparison
-
-    **Language Features** (requires compiler work):
-    - ~~Tagged enums~~ — Sealed classes with case classes fill this role
-    - [ ] Exhaustive match on enums - Compiler error if case missing
-    - [ ] `EnumSet<E>` - Efficient set of enum values
-
-### Future Features
-
-- **Syntax**:
-  - Tuple indexing (`expr[0]` for inline tuples).
-  - Block expressions (blocks that return their last expression).
-  - JSX-like builder syntax.
-- **Type System**:
-  - Numeric unit types.
-  - Intersection types.
-- **OOP & Functions**:
-  - Extension methods.
-  - Operator overloading.
-  - `operator is` overloading (zero-cost for non-overriders).
-  - `TypeId<T>` intrinsic (compile-time type identifier).
-  - Mixin constructors.
-  - Async functions.
-- **Optimization**:
-  - Compile-time constant expressions (string literals, immutable arrays, records/tuples, TemplateStringsArray as WASM constant globals instead of lazy initialization).
-- **Standard Library & Runtime**:
-  - More operators: exponentiation.
-  - Workers.
-
-## Future Considerations
-
-- **Strings**:
-  - **Design**: See `docs/design/strings.md` for the full design (including unified
-    String architecture with internal implementations like GCString, LinearString).
-  - **Multi-Encoding**: Track encoding per string (UTF-8 or UTF-16). Compiler flag
-    `--default-encoding` controls literal encoding. UTF-16 enables efficient JS interop.
-  - **StringBuilder**: ✅ Done. See `zena:string-builder`.
-  - **Interning**: Implement runtime string interning for fast literal equality.
-  - **Iterators**: Implement Unicode-aware iteration over code points.
-- **Numeric Literals**:
-  - **Defaults**: Revisit default types for literals. Consider making `f64` the default for floating-point literals (matching JS).
-  - **Suffixes**: Implement syntax for numeric suffixes (e.g., `1L` for `i64`, `1f` for `f32`) to avoid verbose casting (`1 as i64`).
-
-## Technical Debt
-
-### Remaining Checker-Driven Type Instantiation Work
-
-- [ ] `instantiateClass` - still builds `context: Map<string, TypeAnnotation>` for `typeToTypeAnnotation` and `resolveAnnotation`
-- [ ] Remove `ClassInfo.typeArguments` (deprecated) and `typeToTypeAnnotation()` helper
-- [ ] Remove `ctx.functions` Map - requires identity-based generic function instantiation tracking
-- [ ] Remove `ctx.classes` Map entirely - migrate to identity-only registration via `ctx.registerClassInfoByType()`
+- **Numeric Unit Types & Units of Measure**: Statically verified physical units and units of measure (e.g. preventing adding meters to feet at compile time).
+- **SIMD**: Native WebAssembly vector instruction support for high-performance computing.
+- **Decorators and Macros**: Metaprogramming capabilities for compile-time code generation and extension.
+- **Contracts**: `requires` and `ensures` pre/post-conditions, enabling runtime assertion checks and future static verification using SMT solvers.

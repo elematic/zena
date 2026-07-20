@@ -1,6 +1,6 @@
 # Self-Hosted Compiler Design
 
-_For the active WebAssembly code generation implementation roadmap, see [CODEGEN_PLAN.md](../../packages/zena-compiler/CODEGEN_PLAN.md)._
+_We completed the first codegen implementation and we're moving on to a new IR-based backend. See [ir.md](./ir.md)._
 
 ## Strategy: Informed Port
 

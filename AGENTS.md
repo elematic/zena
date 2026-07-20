@@ -2,7 +2,7 @@
 
 This document guides AI agents working on the Zena project. For a complete
 language description, see `docs/language-reference.md`. For completed features
-and planned work, see `PLAN.md` (and `packages/zena-compiler/CODEGEN_PLAN.md` for self-hosted codegen).
+and planned work, see `PLAN.md`.
 
 ## Project Overview
 
@@ -82,7 +82,7 @@ Key things that differ from TypeScript:
 - **Dart-style constructors** — initializer lists (`: x = x, y = y`), `this.`
   params, semicolon bodies.
 - **`String` not `string`** — capital S (it's a class, not a primitive alias).
-- for/in loops iterator on iterables and iterators: `for (let item of items)`.
+- for/in loops iterate on iterables and iterators: `for (let item in items)`.
   They are like for/of loops in TypeScript.
 - **No `++`/`--`** — use `+= 1` instead.
 - **Sound type system** — no `any` escape hatch (well, `any` exists but requires
@@ -97,8 +97,7 @@ The project has **two compiler implementations**:
 1. **Bootstrap compiler** (`packages/compiler`): Written in TypeScript. Mostly
    working. Package name: `@zena-lang/compiler`.
 2. **Self-hosted compiler** (`packages/zena-compiler`): Written in Zena.
-   Partially implemented — currently has lexer, parser, and early type checker
-   stages. Package name: `@zena-lang/zena-compiler`. See
+   Fully passes all syntax, language, and execution tests, with active development on the new IR-based backend. Package name: `@zena-lang/zena-compiler`. See
    `docs/design/self-hosted-compiler.md` for the architecture.
 
 Both compilers should pass the same **portable tests** in `tests/language/`.
@@ -165,7 +164,7 @@ zena build main.zena -o main.wasm --target wasi
 wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
 ```
 
-To run a Zena program with the self-hosted compiler, which is currently very limited, use:
+To run a Zena program with the self-hosted compiler, use:
 
 ```bash
 npm run zena -w @zena-lang/zena-cli -- run main.zena
