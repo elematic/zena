@@ -1,5 +1,10 @@
 # Compiler Optimizations
 
+> **Note:** The IR/SSA architecture discussion in this document (and its
+> wasm-opt division-of-labor assumption) is superseded by [ir.md](ir.md),
+> which specifies ZIR — a CFG+SSA IR for a fully self-contained toolchain.
+> The optimization catalog below remains current.
+
 ## Overview
 
 This document catalogs Zena's compiler optimizations and discusses the compiler

@@ -1,5 +1,10 @@
 # Separate Compilation and Zena IR
 
+> **Note:** The `IRExpr` expression-tree format sketched here is superseded
+> by [ir.md](ir.md) §13, which reuses this document's two-phase
+> compile/link model and `.zir` naming but serializes the ZIR CFG+SSA form
+> instead. The caching, summary, and CLI design below remains current.
+
 This document describes a design for separate compilation in Zena, enabling
 parallel builds, package caching, and cross-version compatibility.
 
