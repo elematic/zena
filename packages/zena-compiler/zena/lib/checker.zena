@@ -3988,39 +3988,88 @@ let extractIsPathNarrowing = (
   }
 };
 
+enum NullGuardAssignKind {
+  NotAnAssignment,
+  AssignsNonNull,
+  AssignsMaybeNull
+}
+
 /**
- * Check if a statement (or block) contains an assignment to a variable
- * identified by its Symbol id. Used to detect patterns like:
+ * True if `node` contains, anywhere inside it (expression positions,
+ * nested statements), an assignment to the variable identified by
+ * targetId.
+ */
+let containsAssignmentToVariable = (ctx: CheckerContext, node: Node, targetId: SymbolId): boolean => {
+  var found = false;
+  walkEnter(node, (n: Node): void => {
+    if (n is AssignmentExpression) {
+      let ae = n as AssignmentExpression;
+      if (ae.left is Identifier) {
+        let info = ctx.model.resolve(ae.left);
+        if (info != null && (info as Symbol).id == targetId) {
+          found = true;
+        }
+      }
+    }
+  });
+  return found;
+};
+
+/**
+ * Classifies a top-level statement of a null-guard body with respect to
+ * assignments to the variable identified by targetId. A plain
+ * `x = value;` statement is classified by the checked type of `value`
+ * (the outermost assignment stores last, so it governs even if `value`
+ * contains further assignments to x). Any OTHER statement containing an
+ * assignment to x — in an expression position or nested control flow —
+ * is conservatively AssignsMaybeNull: it may run conditionally or leave
+ * x null.
+ */
+let classifyNullGuardAssignment = (ctx: CheckerContext, stmt: Statement, targetId: SymbolId): NullGuardAssignKind => {
+  if (stmt is ExpressionStatement) {
+    let expression = (stmt as ExpressionStatement).expression;
+    if (expression is AssignmentExpression) {
+      let ae = expression as AssignmentExpression;
+      if (ae.left is Identifier) {
+        let info = ctx.model.resolve(ae.left);
+        if (info != null && (info as Symbol).id == targetId) {
+          let vt = ctx.model.getNodeType(ae.value);
+          if (vt != null && !isNullableType(vt as Type) && !(vt is NullType)) {
+            return NullGuardAssignKind.AssignsNonNull;
+          }
+          return NullGuardAssignKind.AssignsMaybeNull;
+        }
+      }
+    }
+  }
+  if (containsAssignmentToVariable(ctx, stmt, targetId)) {
+    return NullGuardAssignKind.AssignsMaybeNull;
+  }
+  return NullGuardAssignKind.NotAnAssignment;
+};
+
+/**
+ * Check if a statement (or block) definitely assigns a NON-NULL value to
+ * a variable identified by its Symbol id. Used to detect patterns like:
  *   if (x == null) { x = value; }
- * for post-if narrowing.
+ * for post-if narrowing — sound only when `value` cannot itself be null,
+ * and only for assignments at the top level of the guarded block (nested
+ * or expression-position assignments may not run on every path, so they
+ * defeat the narrowing). When several top-level assignments exist, the
+ * last one governs.
  */
 let bodyAssignsToVariable = (ctx: CheckerContext, stmt: Statement, targetId: SymbolId): boolean => {
-  return match (stmt) {
-    case BlockStatement {body}: {
-      for (let s in body) {
-        if (bodyAssignsToVariable(ctx, s, targetId)) { return true; }
-      }
-      false
-    }
-    case ExpressionStatement {expression}: {
-      match (expression) {
-        case AssignmentExpression {left}: {
-          match (left) {
-            case Identifier: {
-              let info = ctx.model.resolve(left);
-              if (info != null && (info as Symbol).id == targetId) {
-                return true;
-              }
-              false
-            }
-            case _: false
-          }
-        }
-        case _: false
+  if (stmt is BlockStatement) {
+    var state = NullGuardAssignKind.NotAnAssignment;
+    for (let s in (stmt as BlockStatement).body) {
+      let c = classifyNullGuardAssignment(ctx, s, targetId);
+      if (c != NullGuardAssignKind.NotAnAssignment) {
+        state = c;
       }
     }
-    case _: false
-  };
+    return state == NullGuardAssignKind.AssignsNonNull;
+  }
+  return classifyNullGuardAssignment(ctx, stmt, targetId) == NullGuardAssignKind.AssignsNonNull;
 };
 let unwrapAliases = (t: Type): Type => {
   var curr = t;

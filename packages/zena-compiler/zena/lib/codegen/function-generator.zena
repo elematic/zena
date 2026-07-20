@@ -841,6 +841,32 @@ export final class FunctionGenerator {
                 if (fieldIndex >= 0) {
                   this.ctx.emitter.emitLocalGet(0);
                   this.generateExpression(fi.value);
+                  // Reconcile the initializer's wasm type with the field's
+                  // declared type (mirrors loadValueAndCast in
+                  // stmt/bindings.zena): e.g. a match expression typed as a
+                  // union of case classes lowers to eqref, which needs a
+                  // downcast before the struct.set.
+                  let fieldValType = structType.fields[fieldIndex].type;
+                  let initValueType = getNodeType(this.ctx, fi.value);
+                  if (initValueType != null) {
+                    let valueWasmType = typeToValTypeWithSub(
+                        this.ctx.wasm, initValueType as Type, this.ctx.wasmFunction);
+                    if (!valTypeEquals(valueWasmType, fieldValType)) {
+                      match (fieldValType) {
+                        case ValTypeRefNull as trn: {
+                          if (trn.target.index != -1) {
+                            this.ctx.emitter.emitRefCastNull(trn.target.index);
+                          }
+                        }
+                        case ValTypeRef as tr: {
+                          if (tr.target.index != -1) {
+                            this.ctx.emitter.emitRefCast(tr.target.index);
+                          }
+                        }
+                        case _: {}
+                      }
+                    }
+                  }
                   this.ctx.emitter.emitStructSet(structType.index, fieldIndex);
                 }
               }
@@ -1017,10 +1043,23 @@ export final class FunctionGenerator {
       case MapLiteral: generateMapLiteral(this.ctx, expr as MapLiteral, (e: Expression, d: boolean = false) => this.generateExpression(e, d))
       case UnaryExpression: generateUnaryExpression(this.ctx, expr as UnaryExpression, (e: Expression) => this.generateExpression(e))
       case ThisExpression: {
+        var thisSlot = 0;
         if (this.ctx.thisLocalIndex >= 0) {
-          this.ctx.emitter.emitLocalGet(this.ctx.thisLocalIndex);
+          thisSlot = this.ctx.thisLocalIndex;
+        }
+        this.ctx.emitter.emitLocalGet(thisSlot);
+        // The receiver slot is declared nullable in method signatures (for
+        // vtable signature compatibility), but `this` is never null. Emit
+        // the non-null assertion so the value composes with the
+        // non-nullable locals that 8fae4045 introduced.
+        let paramCount = this.ctx.wasmFunction.signature.params.length;
+        let slotType = if (thisSlot < paramCount) {
+          this.ctx.wasmFunction.signature.params[thisSlot]
         } else {
-          this.ctx.emitter.emitLocalGet(0);
+          this.ctx.localTypes[thisSlot - paramCount]
+        };
+        if (slotType is ValTypeRefNull) {
+          this.ctx.emitter.emitRefAsNonNull();
         }
       }
       case FunctionExpression: {

@@ -1020,7 +1020,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             continue;
           }
           let globalName = getClassSingletonName(cName);
-          let globalType = new ValTypeRefNull(cStruct);
+          // Non-nullable: the singleton is immutable and initialized in
+          // place with a constant struct.new (the vtable global it reads
+          // is always declared earlier). Reads flow directly into the
+          // non-nullable locals that 8fae4045 introduced, with no cast.
+          let globalType = new ValTypeRef(cStruct);
           let wasmGlobal = new WasmGlobal(
             globalName,
             globalName,
@@ -1031,6 +1035,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             this.program.units[0].model
           );
           wasmGlobal.initSingletonStruct = cType;
+          // The WasmGlobal constructor nullifies ref types for globals it
+          // cannot prove initialized in place (initSingletonStruct is only
+          // attached after construction), so re-tighten here: the singleton
+          // is immutable with a constant struct.new initializer, and its
+          // reads flow into non-nullable locals with no cast.
+          wasmGlobal.type = globalType;
           this.wasm.globals.push(wasmGlobal);
           info.singletonGlobal = wasmGlobal;
         }

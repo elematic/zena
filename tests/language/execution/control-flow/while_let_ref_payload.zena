@@ -1,0 +1,46 @@
+// @mode: run
+// @result: 9
+// Regression: while-let destructuring of `inline (true, T) | inline (false, _)`
+// where T is a REFERENCE type. The value slot of the multi-value result is
+// nullable at the wasm level (the false arm carries no value), so the
+// temp local receiving it must be nullable, with a cast on binding.
+// The self-hosted compiler used to type the temp non-nullable, producing
+// invalid wasm (surfaced compiling the compiler's own typeToString).
+
+import {HashMap} from 'zena:map';
+
+class Words {
+  var index: i32;
+  new() : index = 0 {}
+
+  next(): inline (true, String) | inline (false, _) {
+    this.index = this.index + 1;
+    if (this.index == 1) {
+      return (true, 'ab');
+    }
+    if (this.index == 2) {
+      return (true, 'cde');
+    }
+    return (false, _);
+  }
+}
+
+export let main = (): i32 => {
+  var total = 0;
+
+  // Direct class receiver.
+  let words = new Words();
+  while (let (true, w) = words.next()) {
+    total += w.length;
+  }
+
+  // Interface-dispatched receiver (fat pointer), as in Map.keys().
+  let map = new HashMap<String, i32>();
+  map['wxyz'] = 1;
+  let keys = map.keys();
+  while (let (true, k) = keys.next()) {
+    total += k.length;
+  }
+
+  return total; // 2 + 3 + 4 = 9
+};

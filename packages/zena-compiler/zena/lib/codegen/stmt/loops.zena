@@ -5,8 +5,8 @@ import {
   Node, BreakStatement, ContinueStatement, WhileStatement, ForStatement, Statement, Expression,
   ForInStatement, BindingPattern, IdentifierPattern, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral, SourceLocation
 } from '../../ast.zena';
-import { VoidType, Type, InterfaceType, ClassType, ArrayType, ThisType, UnionType, NullType, instantiateClassType, MethodInfo, FunctionType, InlineTupleType, baseType, typeToString } from '../../types.zena';
-import { ValType } from "../wasm.zena";
+import { VoidType, Type, InterfaceType, ClassType, ArrayType, ThisType, UnionType, NullType, HoleType, instantiateClassType, MethodInfo, FunctionType, InlineTupleType, baseType, typeToString } from '../../types.zena';
+import { ValType, valTypeEquals } from "../wasm.zena";
 import { FunctionContext } from '../function-context.zena';
 import { typeToValType, getInterfaceMemberSignature, substituteTypeParamsInCodegen, typeToValTypeWithSub, getNodeType, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInFunctionContext, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { 
@@ -86,11 +86,36 @@ export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement,
       }
       let elemTypes = elementTypes as Array<Type>;
       
-      // 1. Allocate temp locals (same types as tuple elements)
+      // 1. Allocate temp locals (same types as tuple elements). When the
+      // init is a union of inline tuples and some member has a hole or
+      // null at position i (e.g. Iterator.next(): inline (true, T) |
+      // inline (false, _)), the raw wasm value can be null there, so the
+      // temp local must be nullable; the pattern bindings below cast back
+      // to non-null, and only run after the discriminant check matched.
       let tempLocals = new Array<i32>();
       for (var i = 0; i < tp.elements.length; i += 1) {
         let elType = elemTypes[i];
-        let valType = typeToValType(ctx.wasm, elType);
+        var valType = typeToValTypeWithSub(ctx.wasm, elType, ctx.wasmFunction);
+        if (baseT is UnionType) {
+          var hasHoleOrNull = false;
+          for (let ut in (baseT as UnionType).types) {
+            if (ut is InlineTupleType) {
+              let tupleTypes = (ut as InlineTupleType).elementTypes;
+              if (i < tupleTypes.length) {
+                let t_i = tupleTypes[i];
+                if (t_i is HoleType || t_i is NullType) {
+                  hasHoleOrNull = true;
+                }
+              }
+            }
+          }
+          if (hasHoleOrNull) {
+            valType = match (valType) {
+              case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+              case _: valType
+            };
+          }
+        }
         let temp = ctx.allocLocal(valType);
         tempLocals.push(temp);
       }
@@ -117,13 +142,23 @@ export let generateWhileStatement = (ctx: FunctionContext, stmt: WhileStatement,
       let wasReachable = ctx.isReachable;
       ctx.enterLoop();
       
-      // 5. Bind pattern variables
+      // 5. Bind pattern variables. The temp local may be nullable (see
+      // step 1) while the binding's type is non-nullable, so cast on load.
       for (var i = 0; i < tp.elements.length; i += 1) {
         let el = tp.elements[i];
         if (el != null && !(el is LiteralPattern) && !(el is BooleanLiteral) && !(el is NumberLiteral) && !(el is StringLiteral) && !(el is NullLiteral)) {
           let temp = tempLocals[i];
+          let localOffset = temp - ctx.wasmFunction.signature.params.length;
+          let tempValType = ctx.localTypes[localOffset];
           let loadValue = (): void => {
             ctx.emitter.emitLocalGet(temp);
+            let targetValType = typeToValTypeWithSub(ctx.wasm, elemTypes[i], ctx.wasmFunction);
+            if (!valTypeEquals(tempValType, targetValType)) {
+              match (targetValType) {
+                case ValTypeRef as tr: { ctx.emitter.emitRefCast(tr.target.index); }
+                case _: {}
+              }
+            }
           };
           generatePatternBinding(ctx, el as Node, elemTypes[i], loadValue);
         }

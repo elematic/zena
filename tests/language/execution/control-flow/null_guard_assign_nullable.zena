@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 7
+// Regression: `if (v == null) { v = b; }` where b may itself be null must
+// NOT narrow v to non-null. The self-hosted compiler used to emit a
+// non-null cast on the later `v != null` test, trapping when both were
+// null (surfaced compiling the compiler's own checkModule).
+
+let pick = (a: String | null, b: String | null): i32 => {
+  var v: String | null = a;
+  if (v == null) {
+    v = b;
+  }
+  if (v != null) {
+    return v.length;
+  }
+  return 7;
+};
+
+export let main = (): i32 => {
+  if (pick(null, null) != 7) {
+    return 1;
+  }
+  if (pick('abc', null) != 3) {
+    return 2;
+  }
+  if (pick(null, 'zena!') != 5) {
+    return 3;
+  }
+  return 7;
+};

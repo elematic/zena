@@ -7,8 +7,49 @@ import { generateBinaryExpression } from './operators.zena';
 import { WasmFunction, WasmArray, WasmStruct, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getNodeType, typeToValTypeWithSub } from '../type-mapping.zena';
-import { ValTypeRefNull, ValTypeRef, ValType } from '../wasm.zena';
+import { ValTypeRefNull, ValTypeRef, ValType, ValTypeStructRef, valTypeEquals, HeapType, heapTypeToSigned } from '../wasm.zena';
 import { castValTypeRefNullIfNeeded } from './calls.zena';
+
+/**
+ * Reconciles the wasm type of an assigned value with the binding's wasm
+ * type, mirroring loadValueAndCast in stmt/bindings.zena. Needed when the
+ * value's static type lowers to a wider wasm type than the target local,
+ * cell field, or global — e.g. a match expression typed as a union of case
+ * classes lowers to eqref, while the target local is a non-nullable
+ * concrete ref (bindings became non-nullable by default in 8fae4045).
+ */
+let castAssignedValueIfNeeded = (ctx: FunctionContext, value: Expression, targetType: Type): void => {
+  let vType = getNodeType(ctx, value);
+  if (vType == null) {
+    return;
+  }
+  let valueWasmType = typeToValTypeWithSub(ctx.wasm, vType as Type, ctx.wasmFunction);
+  let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetType, ctx.wasmFunction);
+  let isTargetRef = match (targetWasmType) {
+    case ValTypeRef: true
+    case ValTypeRefNull: true
+    case ValTypeStructRef: true
+    case _: false
+  };
+  if (isTargetRef && !valTypeEquals(valueWasmType, targetWasmType)) {
+    match (targetWasmType) {
+      case ValTypeRefNull as trn: {
+        if (trn.target.index != -1) {
+          ctx.emitter.emitRefCastNull(trn.target.index);
+        }
+      }
+      case ValTypeRef as tr: {
+        if (tr.target.index != -1) {
+          ctx.emitter.emitRefCast(tr.target.index);
+        }
+      }
+      case ValTypeStructRef: {
+        ctx.emitter.emitRefCastNull(heapTypeToSigned(HeapType.struct));
+      }
+      case _: {}
+    }
+  }
+};
 
 let isArrayType = (t: Type): boolean => {
   return match (t) {
@@ -42,13 +83,21 @@ export let generateAssignmentExpression = (
   if (assign.operator != null) {
     let binOp = assign.operator as String;
     let binExpr = new BinaryExpression(binOp, assign.left, assign.value, assign.loc);
-    let leftType = getNodeType(ctx, assign.left);
-    if (leftType != null) {
-      ctx.wasmFunction.model.setNodeType(binExpr, leftType);
+    // Prefer the checked type of the whole compound assignment: for `??=`
+    // it is the NON-null result type, while the left side's type stays
+    // nullable. Typing the synthetic nodes with the nullable left type
+    // made the assignment-as-expression value (and its temp local)
+    // nullable, which no longer composes with non-nullable bindings.
+    var resultType = getNodeType(ctx, assign);
+    if (resultType == null) {
+      resultType = getNodeType(ctx, assign.left);
+    }
+    if (resultType != null) {
+      ctx.wasmFunction.model.setNodeType(binExpr, resultType as Type);
     }
     let newAssign = new AssignmentExpression(assign.left, binExpr, null, assign.loc);
-    if (leftType != null) {
-      ctx.wasmFunction.model.setNodeType(newAssign, leftType);
+    if (resultType != null) {
+      ctx.wasmFunction.model.setNodeType(newAssign, resultType as Type);
     }
     generateAssignmentExpression(ctx, newAssign, discardValue, genExpr);
     return;
@@ -64,8 +113,9 @@ export let generateAssignmentExpression = (
           let symType = ctx.wasmFunction.model.getBindingType(s);
           let valType = typeToValType(ctx.wasm, symType as Type);
           let cellStruct = getCellStruct(ctx.wasm, valType);
-          
+
           genExpr(assign.value, false);
+          castAssignedValueIfNeeded(ctx, assign.value, symType as Type);
           let valLocal = ctx.allocLocal(valType);
           if (discardValue) {
             ctx.emitter.emitLocalSet(valLocal);
@@ -77,6 +127,10 @@ export let generateAssignmentExpression = (
           ctx.emitter.emitStructSet(cellStruct.index, 0);
         } else {
           genExpr(assign.value, false);
+          let symType = ctx.wasmFunction.model.getBindingType(s);
+          if (symType != null) {
+            castAssignedValueIfNeeded(ctx, assign.value, symType as Type);
+          }
           if (discardValue) {
             ctx.emitter.emitLocalSet(ctx.localIndices[(sym as Symbol).id]);
           } else {
@@ -87,6 +141,10 @@ export let generateAssignmentExpression = (
       }
       if (ctx.wasm.globalMap.has((sym as Symbol).id)) {
         genExpr(assign.value, false);
+        let symType = ctx.wasmFunction.model.getBindingType(sym as Symbol);
+        if (symType != null) {
+          castAssignedValueIfNeeded(ctx, assign.value, symType as Type);
+        }
         let index = ctx.wasm.globalMap[(sym as Symbol).id].index;
         ctx.emitter.emitGlobalSet(index);
         if (!discardValue) {

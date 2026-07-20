@@ -1,0 +1,74 @@
+// @mode: check
+// Narrowing after `if (x == null) { x = value; }`:
+// x is non-null afterwards ONLY when the assigned value cannot be null.
+
+let useString = (s: String): i32 => s.length;
+
+// Sound: the guard body assigns a definitely non-null value.
+let soundGuard = (a: String | null): i32 => {
+  var v: String | null = a;
+  if (v == null) {
+    v = 'fallback';
+  }
+  return useString(v);
+};
+
+// Unsound if narrowed: the assigned value may itself be null,
+// so v must stay `String | null` after the guard.
+let unsoundGuard = (a: String | null, b: String | null): i32 => {
+  var v: String | null = a;
+  if (v == null) {
+    v = b;
+  }
+  return useString(v); // @error: Type mismatch
+};
+
+// Conditional (nested) assignment does not run on every path,
+// so it must not narrow either.
+let conditionalGuard = (a: String | null, cond: boolean): i32 => {
+  var v: String | null = a;
+  if (v == null) {
+    if (cond) {
+      v = 'fallback';
+    }
+  }
+  return useString(v); // @error: Type mismatch
+};
+
+// When several top-level assignments exist, the last one governs.
+let lastAssignmentWins = (a: String | null, b: String | null): i32 => {
+  var v: String | null = a;
+  if (v == null) {
+    v = 'first';
+    v = b;
+  }
+  return useString(v); // @error: Type mismatch
+};
+
+let consume = (s: String | null): void => {};
+
+// An assignment in expression position after the non-null one must
+// defeat the narrowing too — it stores after the top-level assignment.
+let expressionPositionAssignment = (a: String | null, b: String | null): i32 => {
+  var v: String | null = a;
+  if (v == null) {
+    v = 'first';
+    consume(v = b);
+  }
+  return useString(v); // @error: Type mismatch
+};
+
+// A nested conditional re-assignment after the non-null one must defeat
+// the narrowing as well.
+let nestedReassignment = (a: String | null, b: String | null, cond: boolean): i32 => {
+  var v: String | null = a;
+  if (v == null) {
+    v = 'first';
+    if (cond) {
+      v = b;
+    }
+  }
+  return useString(v); // @error: Type mismatch
+};
+
+export let main = (): i32 => 0;
