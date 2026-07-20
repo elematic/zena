@@ -7,7 +7,7 @@ import {
   RecordType, TupleType, MixinType
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
-import { Node, Identifier } from '../ast.zena';
+import { Node, Identifier, ThisExpression } from '../ast.zena';
 import { FunctionContext } from './function-context.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
@@ -638,7 +638,15 @@ export let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
 
 export let getExpressionType = (ctx: FunctionContext, node: Node): Type | null => {
   let t = getNodeType(ctx, node);
-  if (t != null) { return t; }
+  if (t != null) {
+    if (node is ThisExpression) {
+      let types = new Array<Type>();
+      types.push(t);
+      types.push(new NullType());
+      return new UnionType(types);
+    }
+    return t;
+  }
   if (node is Identifier) {
     let sym = ctx.wasmFunction.model.resolve(node as Identifier);
     if (sym != null) {
@@ -1075,7 +1083,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
       }
     }
     if (stringStruct != null) {
-      new ValTypeRefNull(stringStruct as WasmStruct)
+      new ValTypeRef(stringStruct as WasmStruct)
     } else {
       new ValTypeStructRef()
     }
@@ -1095,7 +1103,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
     sortWasmFields(fields);
     let info_opt = wasm.findRecordDispatch(fields);
     match (info_opt) {
-      case RecordDispatchInfo as info: new ValTypeRefNull(info.fatPtrType)
+      case RecordDispatchInfo as info: new ValTypeRef(info.fatPtrType)
       case null: {
         var errStr = "";
         for (let f in fields) {
@@ -1112,22 +1120,22 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
       fields.push(new WasmField(i32ToString(i), typeToValType(wasm, t_i), false));
     }
     let structDef = wasm.getStruct(null, fields);
-    new ValTypeRefNull(structDef);
+    new ValTypeRef(structDef);
   }
   case ClassType as ct: {
     if (ct.name == "array" && ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
       let elemValType = typeToValType(wasm, (ct.typeArguments as Array<Type>)[0]);
-      return new ValTypeRefNull(wasm.getArray(elemValType, true));
+      return new ValTypeRef(wasm.getArray(elemValType, true));
     }
     if (ct.name == "ByteArray") {
-      return new ValTypeRefNull(wasm.getByteArrayType());
+      return new ValTypeRef(wasm.getByteArrayType());
     }
     if (ct.isExtension && ct.onType != null) {
       let subOn = substituteTypeParamsInClassContext(ct, ct.onType as Type);
       return typeToValType(wasm, subOn);
     }
     if (let (true, ctInfo) = wasm.classInfos.get(getClassKey(ct))) {
-      new ValTypeRefNull(ctInfo.structType)
+      new ValTypeRef(ctInfo.structType)
     } else {
       new ValTypeStructRef()
     }
@@ -1135,17 +1143,17 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   case InterfaceType as it: {
     let key = getInterfaceKey(it);
     if (wasm.interfaceStructs.has(key)) {
-      new ValTypeRefNull(wasm.interfaceStructs[key])
+      new ValTypeRef(wasm.interfaceStructs[key])
     } else {
       new ValTypeStructRef()
     }
   }
   case ArrayType as at: {
     let elemValType = typeToValType(wasm, at.elementType);
-    new ValTypeRefNull(wasm.getArray(elemValType, true))
+    new ValTypeRef(wasm.getArray(elemValType, true))
   }
   case ByteArrayType: {
-    new ValTypeRefNull(wasm.getByteArrayType())
+    new ValTypeRef(wasm.getByteArrayType())
   }
   case VoidType: new ValTypeVoid()
   case NullType: new ValTypeStructRef()
@@ -1160,7 +1168,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   case NeverType: new ValTypeVoid()
   case HoleType: new ValTypeI32()
   case FunctionType: {
-    new ValTypeRefNull(getClosureStruct(wasm, t))
+    new ValTypeRef(getClosureStruct(wasm, t))
   }
   case UnionType as ut: {
     var hasVoid = false;
@@ -1238,6 +1246,53 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   };
 };
 
+let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionType, returns: Array<ValType>): boolean => {
+  let memberTuples = new Array<InlineTupleType>();
+  for (let t in unionType.types) {
+    if (t is InlineTupleType) {
+      memberTuples.push(t as InlineTupleType);
+    }
+  }
+  if (memberTuples.length == 0) return false;
+
+  let arity = memberTuples[0].elementTypes.length;
+  var i = 0;
+  while (i < arity) {
+    let elementTypes = new Array<Type>();
+    for (let t in memberTuples) {
+      elementTypes.push(t.elementTypes[i]);
+    }
+    var hasHole = false;
+    for (let t in elementTypes) {
+      if (t is HoleType || t is NullType) {
+        hasHole = true;
+      }
+    }
+    var nonHoleType: Type | null = null;
+    for (let t in elementTypes) {
+      if (!(t is HoleType || t is NullType)) {
+        nonHoleType = t;
+        break;
+      }
+    }
+    let finalType = if (nonHoleType != null) nonHoleType as Type else elementTypes[0];
+    
+    let vType = typeToValType(wasm, finalType);
+    let finalVType = if (hasHole) {
+      match (vType) {
+        case ValTypeRef as r: new ValTypeRefNull(r.target)
+        case _: vType
+      }
+    } else {
+      vType
+    };
+    returns.push(finalVType);
+    
+    i += 1;
+  }
+  return true;
+};
+
 export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: Array<ValType>): void => {
   if (type is VoidType || type is NeverType || type is HoleType) {
     return;
@@ -1260,15 +1315,8 @@ export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: 
     if (hasVoid) {
       return;
     }
-    // Find the first inline tuple in the union to get the WASM signature
-    for (let t in unionType.types) {
-      if (t is InlineTupleType) {
-        let tupleType = t as InlineTupleType;
-        for (let el in tupleType.elementTypes) {
-          returns.push(typeToValType(wasm, el));
-        }
-        return;
-      }
+    if (mapUnionOfInlineTuplesToWasmResults(wasm, unionType, returns)) {
+      return;
     }
   }
   returns.push(typeToValType(wasm, type));

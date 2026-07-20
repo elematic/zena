@@ -167,6 +167,28 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     // 5. Then block: return left (and cast if types don't match exactly)
     ctx.emitter.emitLocalGet(leftLocal);
     
+    // Unbox if left is reference but overall is primitive
+    let isLeftRef = leftValType is ValTypeRefNull || leftValType is ValTypeRef;
+    let isOverallPrimitive = overallValType is ValTypeI32 || overallValType is ValTypeI64 || overallValType is ValTypeF32 || overallValType is ValTypeF64;
+    if (isLeftRef && isOverallPrimitive) {
+      let boxClass = ctx.wasm.boxClass;
+      if (boxClass != null) {
+        let typeArgs = new Array<Type>();
+        typeArgs.push(overallType);
+        let concreteBoxType = instantiateClassType(boxClass as ClassType, typeArgs);
+        let cKey = getClassKey(concreteBoxType);
+        var structTypeOpt: WasmStruct | null = null;
+        if (let (true, info) = ctx.wasm.classInfos.get(cKey)) {
+          structTypeOpt = info.structType;
+        }
+        if (structTypeOpt != null) {
+          let structType = structTypeOpt as WasmStruct;
+          ctx.emitter.emitRefCast(structType.index);
+          ctx.emitter.emitStructGet(structType.index, 1);
+        }
+      }
+    }
+    
     // Cast if needed
     if (leftValType is ValTypeRefNull && overallValType is ValTypeRefNull) {
       let lRef = leftValType as ValTypeRefNull;
@@ -207,7 +229,7 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
       let rRef = rightValType as ValTypeRef;
       let oRef = overallValType as ValTypeRef;
       if (rRef.target.index != oRef.target.index) {
-        ctx.emitter.emitRefCast(rRef.target.index);
+        ctx.emitter.emitRefCast(oRef.target.index);
       }
     } else if (rightValType is ValTypeRef && overallValType is ValTypeRefNull) {
       let rRef = rightValType as ValTypeRef;

@@ -156,6 +156,7 @@ export let emitEqDispatch = (
 
   ctx.emitter.emitLocalGet(aLocal);
   ctx.emitter.emitLocalGet(bLocal);
+  ctx.emitter.emitRefAsNonNull();
   ctx.emitter.emitLocalGet(funcLocal);
   ctx.emitter.emitCallRef(sig.index);
 };
@@ -1353,6 +1354,16 @@ export let generateArrayIntrinsic = (
       ctx.emitter.emitArrayGetU(typeIndex);
     } else {
       ctx.emitter.emitArrayGet(typeIndex);
+      let nodeType = getNodeType(ctx, call);
+      if (nodeType != null) {
+        let expectedValType = typeToValTypeWithSub(ctx.wasm, nodeType as Type, ctx.wasmFunction);
+        match (expectedValType) {
+          case ValTypeRef as r: {
+            ctx.emitter.emitRefAsNonNull();
+          }
+          case _: {}
+        }
+      }
     }
     return;
   }

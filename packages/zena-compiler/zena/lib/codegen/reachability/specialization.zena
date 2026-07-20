@@ -1337,7 +1337,12 @@ export final class Specializer implements SpecializerInterface {
           pair.key
         };
         let resolvedType = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, pair.value.type);
-        fields.push(new WasmField(fName, typeToValType(this.pass.wasm, resolvedType), true));
+        let valType = typeToValType(this.pass.wasm, resolvedType);
+        let nullableValType = match (valType) {
+          case ValTypeRef {target}: new ValTypeRefNull(target)
+          case _: valType
+        };
+        fields.push(new WasmField(fName, nullableValType, true));
       }
     }
     for (let f in fields) {

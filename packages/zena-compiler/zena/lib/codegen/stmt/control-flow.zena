@@ -1,4 +1,4 @@
-import { ValTypeVoid, ValType, ValTypeRefNull, ValTypeRef, ValTypeEqRef } from '../wasm.zena';
+import { ValTypeVoid, ValType, ValTypeRefNull, ValTypeRef, ValTypeEqRef, valTypeEquals } from '../wasm.zena';
 import { Error } from 'zena:error';
 import { console } from 'zena:console';
 import { 
@@ -6,9 +6,9 @@ import {
   LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral,
   IdentifierPattern, BindingPattern, Identifier
 } from '../../ast.zena';
-import { VoidType, Type, UnionType, InlineTupleType, baseType, HoleType, ClassType, F64Type, F32Type, I64Type, U64Type, isRefType } from '../../types.zena';
+import { VoidType, Type, UnionType, InlineTupleType, baseType, HoleType, ClassType, F64Type, F32Type, I64Type, U64Type, isRefType, NullType } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
-import { typeToValType, typeToValTypeWithSub, mapReturnTypeToWasmResults, getNodeType, substituteTypeParamsInFunctionContext } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, mapReturnTypeToWasmResults, getNodeType, substituteTypeParamsInFunctionContext, getExpressionType } from '../type-mapping.zena';
 import { generatePatternBinding } from './bindings.zena';
 import { Array } from 'zena:array';
 import { InterfaceAdaptation, RecordAdaptation } from '../../semantic-model.zena';
@@ -18,7 +18,7 @@ export let generateValueReturn = (ctx: FunctionContext, arg: Expression, genExpr
 
   let expectedReturns = ctx.wasmFunction.signature.returns;
   if (expectedReturns.length > 0) {
-    let argType = getNodeType(ctx, arg);
+    let argType = getExpressionType(ctx, arg);
     if (argType != null) {
       var effectiveType = argType as Type;
       let interfaceAdaptation = ctx.wasmFunction.model.getInterfaceAdaptation(arg);
@@ -254,7 +254,27 @@ export let generateIfStatement = (ctx: FunctionContext, stmt: IfStatement, genEx
       let tempLocals = new Array<i32>();
       for (var i = 0; i < tp.elements.length; i += 1) {
         let elType = elemTypes[i];
-        let valType = typeToValTypeWithSub(ctx.wasm, elType, ctx.wasmFunction);
+        var valType = typeToValTypeWithSub(ctx.wasm, elType, ctx.wasmFunction);
+        if (baseT is UnionType) {
+          var hasHoleOrNull = false;
+          for (let ut in (baseT as UnionType).types) {
+            if (ut is InlineTupleType) {
+              let tupleTypes = (ut as InlineTupleType).elementTypes;
+              if (i < tupleTypes.length) {
+                let t_i = tupleTypes[i];
+                if (t_i is HoleType || t_i is NullType) {
+                  hasHoleOrNull = true;
+                }
+              }
+            }
+          }
+          if (hasHoleOrNull) {
+            valType = match (valType) {
+              case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+              case _: valType
+            };
+          }
+        }
         let temp = ctx.allocLocal(valType);
         tempLocals.push(temp);
       }
@@ -281,9 +301,18 @@ export let generateIfStatement = (ctx: FunctionContext, stmt: IfStatement, genEx
       for (var i = 0; i < tp.elements.length; i += 1) {
         let el = tp.elements[i];
         if (el != null && !(el is LiteralPattern) && !(el is BooleanLiteral) && !(el is NumberLiteral) && !(el is StringLiteral) && !(el is NullLiteral)) {
-          let temp = tempLocals[i];
+          let tempIndex = tempLocals[i];
+          let localOffset = tempIndex - ctx.wasmFunction.signature.params.length;
+          let tempValType = ctx.localTypes[localOffset];
           let loadValue = (): void => {
-            ctx.emitter.emitLocalGet(temp);
+            ctx.emitter.emitLocalGet(tempIndex);
+            let targetValType = typeToValTypeWithSub(ctx.wasm, elemTypes[i], ctx.wasmFunction);
+            if (!valTypeEquals(tempValType, targetValType)) {
+              match (targetValType) {
+                case ValTypeRef as tr: { ctx.emitter.emitRefCast(tr.target.index); }
+                case _: {}
+              }
+            }
           };
           generatePatternBinding(ctx, el as Node, elemTypes[i], loadValue);
         }

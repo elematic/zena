@@ -16,6 +16,9 @@ import { String } from 'zena:string';
 // locals, and globals, which is semantically distinct from emitting static
 // primitives.
 let castIdentifierIfNeeded = (ctx: FunctionContext, ident: Identifier, resolvedSym: Symbol): void => {
+  if (ctx.ignoreCasts) {
+    return;
+  }
   let unionCalleeType = ctx.wasmFunction.model.getUnionCallCalleeType(ident);
   if (unionCalleeType != null) {
     return;
@@ -23,7 +26,12 @@ let castIdentifierIfNeeded = (ctx: FunctionContext, ident: Identifier, resolvedS
   let symType = ctx.wasmFunction.model.getBindingType(resolvedSym);
   let nodeType = ctx.wasmFunction.model.getNodeType(ident);
   if (symType != null && nodeType != null) {
-    let initWasmType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
+    var initWasmType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
+    if (ctx.wasm.globalMap.has(resolvedSym.id)) {
+      initWasmType = ctx.wasm.globalMap[resolvedSym.id].type;
+    } else if (ctx.wasm.exportGlobalMap.has(resolvedSym.name as ExportGlobalKey)) {
+      initWasmType = ctx.wasm.exportGlobalMap[resolvedSym.name as ExportGlobalKey].type;
+    }
     let targetWasmType = typeToValTypeWithSub(ctx.wasm, nodeType as Type, ctx.wasmFunction);
     let isTargetRef = match (targetWasmType) {
       case ValTypeRef: true
@@ -39,7 +47,10 @@ let castIdentifierIfNeeded = (ctx: FunctionContext, ident: Identifier, resolvedS
         case _: -1
       };
       if (targetIdx != -1) {
-        ctx.emitter.emitRefCastNull(targetIdx);
+        match (targetWasmType) {
+          case ValTypeRef: ctx.emitter.emitRefCast(targetIdx)
+          case _: ctx.emitter.emitRefCastNull(targetIdx)
+        }
       }
     }
   }
@@ -292,6 +303,7 @@ export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): 
 
   // 8. Return the String instance by getting it to the stack
   ctx.emitter.emitLocalGet(tempLocal);
+  ctx.emitter.emitRefAsNonNull();
 };
 
 export let generateTemplateLiteral = (
@@ -517,6 +529,7 @@ export let generateTaggedTemplateExpression = (
 
   // Push TSA onto stack
   ctx.emitter.emitGlobalGet(wasmGlobal.index);
+  ctx.emitter.emitRefAsNonNull();
 
   // 6. Push values array
   var expectedValueType: Type = new AnyType();
@@ -598,10 +611,10 @@ export let generateTaggedTemplateExpression = (
         let funcFieldType = closureStruct.fields[0].type as ValTypeRef;
         let implSig = funcFieldType.target as WasmSignature;
 
-        let valuesLocal = ctx.allocLocal(new ValTypeRefNull(wasmValuesArray));
+        let valuesLocal = ctx.allocLocal(new ValTypeRef(wasmValuesArray));
         ctx.emitter.emitLocalSet(valuesLocal);
         
-        let tsaLocal = ctx.allocLocal(new ValTypeRefNull(tsaStruct));
+        let tsaLocal = ctx.allocLocal(new ValTypeRef(tsaStruct));
         ctx.emitter.emitLocalSet(tsaLocal);
         
         generateIdentifier(ctx, ident);
@@ -638,10 +651,10 @@ export let generateTaggedTemplateExpression = (
         let funcFieldType = closureStruct.fields[0].type as ValTypeRef;
         let implSig = funcFieldType.target as WasmSignature;
 
-        let valuesLocal = ctx.allocLocal(new ValTypeRefNull(wasmValuesArray));
+        let valuesLocal = ctx.allocLocal(new ValTypeRef(wasmValuesArray));
         ctx.emitter.emitLocalSet(valuesLocal);
         
-        let tsaLocal = ctx.allocLocal(new ValTypeRefNull(tsaStruct));
+        let tsaLocal = ctx.allocLocal(new ValTypeRef(tsaStruct));
         ctx.emitter.emitLocalSet(tsaLocal);
 
         genExpr(expr.tag, false);

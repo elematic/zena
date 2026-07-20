@@ -375,6 +375,14 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       
       let closureStruct = getClosureStruct(ctx.wasm, fType);
       currentGenExpr(call.callee, false);
+      let calleeType = getNodeType(ctx, call.callee);
+      if (calleeType != null) {
+        let calleeWasmType = typeToValTypeWithSub(ctx.wasm, calleeType as Type, ctx.wasmFunction);
+        let targetWasmType = new ValTypeRefNull(closureStruct);
+        if (!valTypeEquals(calleeWasmType, targetWasmType)) {
+          ctx.emitter.emitRefCastNull(closureStruct.index);
+        }
+      }
       let closureLocal = ctx.allocLocal(new ValTypeRefNull(closureStruct));
       ctx.emitter.emitLocalSet(closureLocal);
       
@@ -796,6 +804,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           ctx.emitter.emitRefCast(fatPtr.index);
           ctx.emitter.emitStructGet(fatPtr.index, 1); 
           ctx.emitter.emitStructGet(vst.index, methodIndex); 
+          ctx.emitter.emitRefCast(sig.index);
           
           ctx.emitter.emitCallRef(sig.index);
           return;
@@ -917,12 +926,19 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
   };
 
   if (call.optional) {
+    let savedIgnoreCasts = ctx.ignoreCasts;
+    ctx.ignoreCasts = true;
     genExpr(call.callee, false);
+    ctx.ignoreCasts = savedIgnoreCasts;
 
     let calleeType = getNodeType(ctx, call.callee);
     if (calleeType == null) throw new Error("Missing callee type info in semantic model");
     let calleeValType = typeToValTypeWithSub(ctx.wasm, calleeType as Type, ctx.wasmFunction);
-    let calleeLocal = ctx.allocLocal(calleeValType);
+    let calleeNullableValType = match (calleeValType) {
+      case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+      case _: calleeValType
+    };
+    let calleeLocal = ctx.allocLocal(calleeNullableValType);
     ctx.emitter.emitLocalSet(calleeLocal);
 
     ctx.emitter.emitLocalGet(calleeLocal);
@@ -939,6 +955,10 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
 
     genCallee = (): void => {
       ctx.emitter.emitLocalGet(calleeLocal);
+      match (calleeValType) {
+        case ValTypeRef as vr: ctx.emitter.emitRefCast(vr.target.index)
+        case _: {}
+      }
     };
 
     ctx.emitter.emitI32Const(0);

@@ -433,6 +433,9 @@ export let generateForInStatement = (
 
     let arrWasmType = typeToValTypeWithSub(ctx.wasm, resolvedIterableType, ctx.wasmFunction);
     let arrLocal = ctx.allocLocal(arrWasmType);
+    if (arrWasmType is ValTypeRef) {
+      ctx.emitter.emitRefAsNonNull();
+    }
     ctx.emitter.emitLocalSet(arrLocal);
 
     ctx.emitter.emitLocalGet(arrLocal);
@@ -472,6 +475,13 @@ export let generateForInStatement = (
       ctx.emitter.emitLocalGet(arrLocal);
       ctx.emitter.emitLocalGet(idxLocal);
       ctx.emitter.emitArrayGet(wasmArray.index);
+      let expectedValType = typeToValTypeWithSub(ctx.wasm, loopElemType, ctx.wasmFunction);
+      match (expectedValType) {
+        case ValTypeRef as r: {
+          ctx.emitter.emitRefAsNonNull();
+        }
+        case _: {}
+      }
     };
 
     var patternNode = stmt.pattern;
@@ -555,6 +565,9 @@ export let generateForInStatement = (
     genExpr(stmt.iterable, false, true);
     let arrWasmType = typeToValTypeWithSub(ctx.wasm, resolvedIterableType, ctx.wasmFunction);
     let arrLocal = ctx.allocLocal(arrWasmType);
+    if (arrWasmType is ValTypeRef) {
+      ctx.emitter.emitRefAsNonNull();
+    }
     ctx.emitter.emitLocalSet(arrLocal);
 
     ctx.emitter.emitLocalGet(arrLocal);
@@ -586,6 +599,13 @@ export let generateForInStatement = (
       ctx.emitter.emitLocalGet(bufLocal);
       ctx.emitter.emitLocalGet(idxLocal);
       ctx.emitter.emitArrayGet(wasmArray.index);
+      let expectedValType = typeToValTypeWithSub(ctx.wasm, loopElemType, ctx.wasmFunction);
+      match (expectedValType) {
+        case ValTypeRef as r: {
+          ctx.emitter.emitRefAsNonNull();
+        }
+        case _: {}
+      }
     };
 
     var patternNode = stmt.pattern;
@@ -715,6 +735,7 @@ export let generateForInStatement = (
     ctx.emitter.emitStructGet(vst.index, methodIndex); // Get function ref
     
     let sig = getInterfaceMemberSignature(ctx.wasm, it as InterfaceType, targetName);
+    ctx.emitter.emitRefCast(sig.index);
     ctx.emitter.emitCallRef(sig.index);
   } else {
     // resolvedIterableType is already an Iterator
@@ -766,7 +787,11 @@ export let generateForInStatement = (
   var elemWasmType: ValType = new ValTypeAnyRef();
   if (iteratorType.typeArguments != null && (iteratorType.typeArguments as Array<Type>).length > 0) {
     let elemType = (iteratorType.typeArguments as Array<Type>)[0];
-    elemWasmType = typeToValTypeWithSub(ctx.wasm, elemType, ctx.wasmFunction);
+    let baseWasmType = typeToValTypeWithSub(ctx.wasm, elemType, ctx.wasmFunction);
+    elemWasmType = match (baseWasmType) {
+      case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+      case _: baseWasmType
+    };
   }
   let elemTemp = ctx.allocLocal(elemWasmType);
 
@@ -798,6 +823,7 @@ export let generateForInStatement = (
   ctx.emitter.emitStructGet(iterVst.index, nextMethodIndex); // Get next function ref
   
   let nextSig = getInterfaceMemberSignature(ctx.wasm, iteratorType, nextMethodName);
+  ctx.emitter.emitRefCast(nextSig.index);
   ctx.emitter.emitCallRef(nextSig.index);
 
   // Store values (reverse order)

@@ -7,8 +7,8 @@ import { generateNumberLiteral, generateStringLiteral } from './primitives.zena'
 import { parseI32, i32ToString } from 'zena:string-convert';
 import { WasmField, WasmFunction, WasmArray, WasmStruct, WasmGlobal, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey, isConcrete } from '../codegen-utils.zena';
-import { typeToValType, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType, getNodeType, eraseTypeParameters } from '../type-mapping.zena';
-import { ValTypeRefNull, ValTypeRef, ValTypeI8, ValTypeVoid, HeapType, heapTypeToSigned, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeEqRef, ValTypeAnyRef, ValTypeStructRef } from '../wasm.zena';
+import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getClassTypeParameters, getNonNullableType, getNodeType, eraseTypeParameters, substituteTypeParamsInClassContext, getExpressionType } from '../type-mapping.zena';
+import { ValType, HeapType, heapTypeToSigned, ValTypeRefNull, ValTypeRef, ValTypeEqRef, valTypeEquals, ValTypeI8, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeStructRef } from '../wasm.zena';
 import { Array } from 'zena:array';
 
 let isArrayType = (t: Type): boolean => {
@@ -77,6 +77,23 @@ let parseI32WithHex = (s: String): (boolean, i32) => {
   if (!hasDigits) return (false, 0);
   let finalVal = if (isNeg) 0 - res else res;
   return (true, finalVal);
+};
+
+let adjustFieldGetNullability = (ctx: FunctionContext, expectedType: Type | null, fieldValType: ValType): void => {
+  if (expectedType != null) {
+    let expectedValType = typeToValTypeWithSub(ctx.wasm, expectedType as Type, ctx.wasmFunction);
+    match (fieldValType) {
+      case ValTypeRefNull as fn: {
+        match (expectedValType) {
+          case ValTypeRef as r: {
+            ctx.emitter.emitRefAsNonNull();
+          }
+          case _: {}
+        }
+      }
+      case _: {}
+    }
+  }
 };
 
 export let generateMemberExpression = (
@@ -225,7 +242,21 @@ export let generateMemberExpression = (
           }
 
           if (foundGlobalIndex != -1) {
-            ctx.emitter.emitGlobalGet(foundGlobalIndex);
+            let glob = ctx.wasm.globals[foundGlobalIndex];
+            ctx.emitter.emitGlobalGet(glob.index);
+            let nodeType = getExpressionType(ctx, expr);
+            if (nodeType != null) {
+              let initWasmType = glob.type;
+              let targetWasmType = typeToValTypeWithSub(ctx.wasm, nodeType as Type, ctx.wasmFunction);
+              if (!valTypeEquals(initWasmType, targetWasmType)) {
+                match (targetWasmType) {
+                  case ValTypeRefNull as trn: { ctx.emitter.emitRefCastNull(trn.target.index); }
+                  case ValTypeRef as tr: { ctx.emitter.emitRefCast(tr.target.index); }
+                  case ValTypeEqRef: { ctx.emitter.emitRefCastEqNull(); }
+                  case _: {}
+                }
+              }
+            }
             return;
           }
 
@@ -378,15 +409,21 @@ export let generateMemberExpression = (
             }
           }
         }
-
         if (fieldIndex != -1 && !hasOverride && !(expr.object is SuperExpression)) {
           genObject();
           ctx.emitter.emitRefCast(structInfo.index);
           ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
+          
+          var expectedType = getNodeType(ctx, expr);
+          if (expectedType == null) {
+            if (fieldDeclaringClass.members.has(propName) && fieldDeclaringClass.members[propName] is FieldInfo) {
+              let fInfo = fieldDeclaringClass.members[propName] as FieldInfo;
+              expectedType = substituteTypeParamsInClassContext(fieldDeclaringClass, fInfo.type);
+            }
+          }
+          adjustFieldGetNullability(ctx, expectedType, structInfo.fields[fieldIndex].type);
           return;
-        }
-
-        if (expr.object is SuperExpression) {
+        }        if (expr.object is SuperExpression) {
           if (ctx.wasmFunction.classType == null) {
             throw new Error("Super property access outside of class");
           }
@@ -432,10 +469,21 @@ export let generateMemberExpression = (
           throw new Error("Could not find property " + propName + " or virtual getter " + getterName + " on class " + ct.name);
         }
         
+
+
         genObject();
         
         ctx.emitter.emitRefCast(structInfo.index);
         ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
+        
+        var expectedType = getNodeType(ctx, expr);
+        if (expectedType == null) {
+          if (fieldDeclaringClass.members.has(propName) && fieldDeclaringClass.members[propName] is FieldInfo) {
+            let fInfo = fieldDeclaringClass.members[propName] as FieldInfo;
+            expectedType = substituteTypeParamsInClassContext(fieldDeclaringClass, fInfo.type);
+          }
+        }
+        adjustFieldGetNullability(ctx, expectedType, structInfo.fields[fieldIndex].type);
       }
       case InterfaceType as it: {
         let iName = getInterfaceKey(it);
@@ -711,6 +759,16 @@ export let generateIndexExpression = (
             ctx.emitter.emitArrayGetU(wasmArray.index);
           } else {
             ctx.emitter.emitArrayGet(wasmArray.index);
+            let nodeType = getNodeType(ctx, expr);
+            if (nodeType != null) {
+              let expectedValType = typeToValTypeWithSub(ctx.wasm, nodeType as Type, ctx.wasmFunction);
+              match (expectedValType) {
+                case ValTypeRef as r: {
+                  ctx.emitter.emitRefAsNonNull();
+                }
+                case _: {}
+              }
+            }
           }
           return;
         }
@@ -777,7 +835,10 @@ export let generateIndexExpression = (
   };
 
   if (expr.optional) {
+    let savedIgnoreCasts = ctx.ignoreCasts;
+    ctx.ignoreCasts = true;
     genExpr(expr.object, false);
+    ctx.ignoreCasts = savedIgnoreCasts;
 
     let objectValType = typeToValType(ctx.wasm, objectType);
     let objLocal = ctx.allocLocal(objectValType);

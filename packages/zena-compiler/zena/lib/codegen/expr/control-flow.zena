@@ -1,11 +1,11 @@
-import { ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeEqRef } from '../wasm.zena';
+import { ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeEqRef, ValTypeRef, valTypeEquals } from '../wasm.zena';
 import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement, ThrowExpression, TryExpression, CatchClause, Identifier, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral, PipelineExpression, PipePlaceholder } from '../../ast.zena';
-import { Type, F64Type, F32Type, VoidType, InlineTupleType, UnionType, baseType, isVoidOrNeverType } from '../../types.zena';
+import { Type, F64Type, F32Type, VoidType, InlineTupleType, UnionType, baseType, isVoidOrNeverType, NullType, HoleType, typeToString } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { WasmTag, WasmGlobal, WasmStruct } from '../wasm-module.zena';
-import { typeToValType, getExpressionType } from '../type-mapping.zena';
+import { typeToValType, getExpressionType, typeToValTypeWithSub } from '../type-mapping.zena';
 import { generatePatternBinding } from '../stmt/bindings.zena';
 import { castRefNullIfNeeded } from './calls.zena';
 
@@ -28,9 +28,8 @@ export let generateIfExpression = (
     let pattern = lpc.pattern;
     if (pattern is TuplePattern) {
       let tp = pattern as TuplePattern;
-      let initType = ctx.wasmFunction.model.getNodeType(lpc.init);
-      
-      var baseT = baseType(initType as Type);
+      let initType = ctx.wasmFunction.model.getNodeType(lpc.init) as Type;
+      var baseT = baseType(initType);
       var elementTypes: Array<Type> | null = null;
       if (baseT is InlineTupleType) {
         elementTypes = (baseT as InlineTupleType).elementTypes;
@@ -56,7 +55,27 @@ export let generateIfExpression = (
       let tempLocals = new Array<i32>();
       for (var i = tp.elements.length - 1; i >= 0; i -= 1) {
         let elType = elemTypes[i];
-        let valType = typeToValType(ctx.wasm, elType);
+        var valType = typeToValType(ctx.wasm, elType);
+        if (baseT is UnionType) {
+          var hasHoleOrNull = false;
+          for (let ut in (baseT as UnionType).types) {
+            if (ut is InlineTupleType) {
+              let tupleTypes = (ut as InlineTupleType).elementTypes;
+              if (i < tupleTypes.length) {
+                let t_i = tupleTypes[i];
+                if (t_i is HoleType || t_i is NullType) {
+                  hasHoleOrNull = true;
+                }
+              }
+            }
+          }
+          if (hasHoleOrNull) {
+            valType = match (valType) {
+              case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+              case _: valType
+            };
+          }
+        }
         let temp = ctx.allocLocal(valType);
         tempLocals.push(temp);
         ctx.emitter.emitLocalSet(temp);
@@ -75,9 +94,18 @@ export let generateIfExpression = (
       for (var i = 0; i < tp.elements.length; i += 1) {
         let el = tp.elements[i];
         if (el != null && !(el is LiteralPattern) && !(el is BooleanLiteral) && !(el is NumberLiteral) && !(el is StringLiteral) && !(el is NullLiteral)) {
-          let temp = tempLocals[tp.elements.length - 1 - i];
+          let tempIndex = tempLocals[tp.elements.length - 1 - i];
+          let localOffset = tempIndex - ctx.wasmFunction.signature.params.length;
+          let tempValType = ctx.localTypes[localOffset];
           let loadValue = (): void => {
-            ctx.emitter.emitLocalGet(temp);
+            ctx.emitter.emitLocalGet(tempIndex);
+            let targetValType = typeToValTypeWithSub(ctx.wasm, elemTypes[i], ctx.wasmFunction);
+            if (!valTypeEquals(tempValType, targetValType)) {
+              match (targetValType) {
+                case ValTypeRef as tr: { ctx.emitter.emitRefCast(tr.target.index); }
+                case _: {}
+              }
+            }
           };
           generatePatternBinding(ctx, el as Node, elemTypes[i], loadValue);
         }
@@ -217,8 +245,13 @@ export let generateTryExpression = (
   let resultType = typeToValType(ctx.wasm, nodeType as Type);
 
   var resultLocal: i32 = -1;
+  var resultLocalType = resultType;
   if (!discardValue && !(resultType is ValTypeVoid)) {
-    resultLocal = ctx.allocLocal(resultType);
+    if (resultType is ValTypeRef) {
+      let vr = resultType as ValTypeRef;
+      resultLocalType = new ValTypeRefNull(vr.target);
+    }
+    resultLocal = ctx.allocLocal(resultLocalType);
   }
 
   let expectedType = if (resultLocal == -1) null else (nodeType as Type);
@@ -315,6 +348,9 @@ export let generateTryExpression = (
     // Load result on stack
     if (resultLocal != -1) {
       ctx.emitter.emitLocalGet(resultLocal);
+      if (resultType is ValTypeRef) {
+        ctx.emitter.emitRefAsNonNull();
+      }
     }
   } else {
     // Only finally, no catch handler

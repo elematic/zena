@@ -338,7 +338,22 @@ export final class WasmGlobal {
   var initArraySize: i32 = -1;
   var namespaceImport: ImportSpecifier | null = null;
   model: SemanticModel;
-  new(this.name, this.zenaName, this.type, this.isMutable, this.initExpr, this.initVTable, this.model);
+  new(
+    this.name,
+    this.zenaName,
+    type: ValType,
+    this.isMutable,
+    this.initExpr,
+    this.initVTable,
+    this.model
+  ) : type = if (isMutable || (initExpr == null && initVTable == null)) {
+        match (type) {
+          case ValTypeRef {target}: new ValTypeRefNull(target)
+          case _: type
+        }
+      } else {
+        type
+      } {}
 }
 
 export final class RecordDispatchInfo {
@@ -821,11 +836,15 @@ export final class WasmModule {
   }
 
   getArray(elementType: ValType, isMutable: boolean): WasmArray {
-    let key = getArrayKey(elementType, isMutable);
+    let finalElemType = match (elementType) {
+      case ValTypeRef {target}: new ValTypeRefNull(target)
+      case _: elementType
+    };
+    let key = getArrayKey(finalElemType, isMutable);
     if (let (true, cached) = this.#arrayCache.get(key)) {
       return cached;
     }
-    let arr = new WasmArray(elementType, isMutable);
+    let arr = new WasmArray(finalElemType, isMutable);
     this.types.push(arr);
     this.#arrayCache[key] = arr;
     return arr;

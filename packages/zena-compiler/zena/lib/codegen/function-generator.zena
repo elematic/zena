@@ -24,7 +24,7 @@ import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned, WasmType } from './wasm.zena';
 import { WasmField, WasmStruct, WasmSignature, sortWasmFields, WasmGlobal, WasmFunction, WasmModule, WasmArray } from './wasm-module.zena';
-import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters, getNonNullableType, getInterfaceTypeParameters, substituteTypeParamsInClassContext } from './type-mapping.zena';
+import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters, getNonNullableType, getInterfaceTypeParameters, substituteTypeParamsInClassContext, getExpressionType } from './type-mapping.zena';
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
   getClassPrivateFieldKey, classInterfaceKeyToString,
@@ -1066,7 +1066,7 @@ export final class FunctionGenerator {
       }
       case IsExpression: {
         let isExpr = expr as IsExpression;
-        let sourceType = this.ctx.wasmFunction.model.getNodeType(isExpr.expression);
+        let sourceType = getExpressionType(this.ctx, isExpr.expression);
         if (sourceType == null) {
           throw new Error("IsExpression source type not found in semantic model!");
         }
@@ -1150,7 +1150,7 @@ export final class FunctionGenerator {
         if (!handledLiteral) {
           this.generateExpression(asExpr.expression);
           
-          let rawSourceType = this.ctx.wasmFunction.model.getNodeType(asExpr.expression);
+          let rawSourceType = getExpressionType(this.ctx, asExpr.expression);
           var sourceType: Type = new AnyType() as Type;
           if (rawSourceType != null) {
             sourceType = rawSourceType as Type;
@@ -1859,6 +1859,7 @@ export final class FunctionGenerator {
         this.ctx.emitter.emitElse();
         this.ctx.emitter.emitLocalGet(aLocal);
         this.ctx.emitter.emitLocalGet(bLocal);
+        this.ctx.emitter.emitRefAsNonNull();
         if (stringEqFunc != null) {
           this.ctx.emitter.emitCall(stringEqFunc as WasmFunction);
         } else {

@@ -15,7 +15,7 @@ import { Array } from 'zena:array';
 import { RecordDispatchInfo, WasmField, sortWasmFields, WasmStruct } from '../wasm-module.zena';
 import { getClassKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
 import { i32ToString } from 'zena:string-convert';
-import { ValTypeRefNull, ValTypeRef, ValType, ValTypeAnyRef, valTypeToOpcode, ValTypeStructRef, HeapType, heapTypeToSigned, valTypeEquals } from '../wasm.zena';
+import { ValTypeVoid, ValType, ValTypeRefNull, ValTypeRef, ValTypeEqRef, valTypeEquals, ValTypeAnyRef, valTypeToOpcode, ValTypeStructRef, HeapType, heapTypeToSigned } from '../wasm.zena';
 
 let loadValueAndCast = (
   ctx: FunctionContext,
@@ -33,14 +33,23 @@ let loadValueAndCast = (
     case _: false
   };
   if (isTargetRef && !valTypeEquals(initWasmType, targetWasmType)) {
-    let targetIdx = match (targetWasmType) {
-      case ValTypeRefNull as trn: trn.target.index
-      case ValTypeRef as tr: tr.target.index
-      case ValTypeStructRef: heapTypeToSigned(HeapType.struct)
-      case _: -1
-    };
-    if (targetIdx != -1) {
-      ctx.emitter.emitRefCastNull(targetIdx);
+    match (targetWasmType) {
+      case ValTypeRefNull as trn: {
+        let targetIdx = trn.target.index;
+        if (targetIdx != -1) {
+          ctx.emitter.emitRefCastNull(targetIdx);
+        }
+      }
+      case ValTypeRef as tr: {
+        let targetIdx = tr.target.index;
+        if (targetIdx != -1) {
+          ctx.emitter.emitRefCast(targetIdx);
+        }
+      }
+      case ValTypeStructRef: {
+        ctx.emitter.emitRefCastNull(heapTypeToSigned(HeapType.struct));
+      }
+      case _: {}
     }
   }
 };
@@ -145,7 +154,11 @@ export let generatePatternBinding = (
         let tempLocals = new Array<i32>();
         for (let elType in itt.elementTypes) {
           let vType = typeToValTypeWithSub(ctx.wasm, elType, ctx.wasmFunction);
-          tempLocals.push(ctx.allocLocal(vType));
+          let finalVType = match (vType) {
+            case ValTypeRef as r: new ValTypeRefNull(r.target)
+            case _: vType
+          };
+          tempLocals.push(ctx.allocLocal(finalVType));
         }
         
         loadValue();
@@ -161,8 +174,19 @@ export let generatePatternBinding = (
           let el = tp.elements[idx];
           if (el != null) {
             let elType = itt.elementTypes[idx];
+            let targetIdx = idx;
             let loadElem = (): void => {
-              ctx.emitter.emitLocalGet(tempLocals[idx]);
+              let tempIndex = tempLocals[targetIdx];
+              ctx.emitter.emitLocalGet(tempIndex);
+              
+              let tempValType = ctx.localTypes[tempIndex - ctx.wasmFunction.signature.params.length];
+              let targetValType = typeToValTypeWithSub(ctx.wasm, elType, ctx.wasmFunction);
+              if (!valTypeEquals(tempValType, targetValType)) {
+                match (targetValType) {
+                  case ValTypeRef as tr: { ctx.emitter.emitRefCast(tr.target.index); }
+                  case _: {}
+                }
+              }
             };
             generatePatternBinding(ctx, el as Node, elType, loadElem);
           }
@@ -297,8 +321,8 @@ export let generatePatternBinding = (
             ctx.emitter.emitStructGet(structInfo.index, targetFieldIndex);
             
             let fieldWasmType = structInfo.fields[targetFieldIndex].type;
-            if (fieldWasmType is ValTypeAnyRef) {
-              let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetFieldType, ctx.wasmFunction);
+            let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetFieldType, ctx.wasmFunction);
+            if (!valTypeEquals(fieldWasmType, targetWasmType)) {
               match (targetWasmType) {
                 case ValTypeRefNull as refNull: {
                   ctx.emitter.emitRefCast(refNull.target.index);
@@ -369,8 +393,8 @@ export let generatePatternBinding = (
             ctx.emitter.emitStructGet(structInfo.index, targetFieldIndex);
             
             let fieldWasmType = structInfo.fields[targetFieldIndex].type;
-            if (fieldWasmType is ValTypeAnyRef) {
-              let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetFieldType, ctx.wasmFunction);
+            let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetFieldType, ctx.wasmFunction);
+            if (!valTypeEquals(fieldWasmType, targetWasmType)) {
               match (targetWasmType) {
                 case ValTypeRefNull as refNull: {
                   ctx.emitter.emitRefCast(refNull.target.index);

@@ -521,7 +521,12 @@ export final class ModuleGenerator {
         emitted = true;
       } else if (g.initArraySize >= 0) {
         this.emitter.emitI32Const(g.initArraySize);
-        this.emitter.emitArrayNewDefault((g.type as ValTypeRef).target.index);
+        let targetIndex = match (g.type) {
+          case ValTypeRef {target}: target.index
+          case ValTypeRefNull {target}: target.index
+          case _: throw new Error("Expected ValTypeRef or ValTypeRefNull for array global initialization")
+        };
+        this.emitter.emitArrayNewDefault(targetIndex);
         emitted = true;
       }
       
