@@ -367,10 +367,11 @@ final class FunctionLowerer {
       }
       let superKey = getClassMethodKey(
           getClassKey(ct.superType as ClassType), '<constructor>');
-      if (!this.wasm.classMethodMap.has(superKey)) {
+      let superCtorOpt = if (let (true, sc) = this.wasm.classMethodMap.get(superKey)) sc else null;
+      if (superCtorOpt == null) {
         this.#bail('super constructor not found');
       }
-      let superCtor = this.wasm.classMethodMap[superKey];
+      let superCtor = superCtorOpt as WasmFunction;
       let superSig = superCtor.signature;
       if (superSig.params.length != si.args.length + 1) {
         this.#bail('super constructor arity');
@@ -401,20 +402,15 @@ final class FunctionLowerer {
     var actualName = fieldName;
     if (ct.fieldSetterNames != null) {
       let mapping = ct.fieldSetterNames as HashMap<String, String>;
-      if (mapping.has(fieldName)) {
-        actualName = mapping[fieldName];
+      if (let (true, mapped) = mapping.get(fieldName)) {
+        actualName = mapped;
       }
     }
     var lookupName = actualName;
     if (actualName.length > 0 && actualName.sliceBytes(0, 1) == "#") {
       lookupName = getClassPrivateFieldKey(getClassKey(ct), actualName);
     }
-    var found = false;
-    for (let f in structType.fields) {
-      if (f.name != null && (f.name as String) == lookupName) {
-        found = true;
-      }
-    }
+    let found = structType.fieldIndexByName(lookupName) >= 0;
     if (!found) {
       return;
     }
@@ -926,10 +922,11 @@ final class FunctionLowerer {
     if (vtOpt == null) {
       this.#bail('interface vtable global not found');
     }
-    if (!this.wasm.interfaceStructs.has(iName)) {
+    let fatPtrOpt = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
+    if (fatPtrOpt == null) {
       this.#bail('interface struct not found');
     }
-    let fatPtr = this.wasm.interfaceStructs[iName];
+    let fatPtr = fatPtrOpt as WasmStruct;
     let globalRef = this.b.addRef(new IrRefGlobal(vtOpt as WasmGlobal));
     return this.b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr) as ValType,
         value, globalRef);
@@ -1720,10 +1717,11 @@ final class FunctionLowerer {
     }
     let key = getClassMethodKey(
         getClassKey(this.wasm.stringClass as ClassType), "==");
-    if (!this.wasm.classMethodMap.has(key)) {
+    let eqFuncOpt = if (let (true, f) = this.wasm.classMethodMap.get(key)) f else null;
+    if (eqFuncOpt == null) {
       this.#bail('string pattern without String.==');
     }
-    let eqFunc = this.wasm.classMethodMap[key];
+    let eqFunc = eqFuncOpt as WasmFunction;
     let sig = eqFunc.signature;
     if (sig.returns.length != 1 || sig.params.length != 2) {
       this.#bail('String.== shape');
@@ -1738,13 +1736,7 @@ final class FunctionLowerer {
   }
 
   #structFieldIndex(st: WasmStruct, name: String): i32 {
-    for (var i = 0; i < st.fields.length; i += 1) {
-      let fn = st.fields[i].name;
-      if (fn != null && (fn as String) == name) {
-        return i;
-      }
-    }
-    return -1;
+    return st.fieldIndexByName(name);
   }
 
   #classStructOf(ct: ClassType): WasmStruct {
@@ -1992,13 +1984,11 @@ final class FunctionLowerer {
   }
 
   #fieldValType(owner: WasmStruct, name: String): ValType {
-    for (let f in owner.fields) {
-      if (f.name != null && (f.name as String) == name) {
-        return f.type;
-      }
+    let idx = owner.fieldIndexByName(name);
+    if (idx < 0) {
+      this.#bail('field not found on struct');
     }
-    this.#bail('field not found on struct');
-    return this.b.body.typeTable[0];
+    return owner.fields[idx].type;
   }
 
   /**
@@ -2177,19 +2167,14 @@ final class FunctionLowerer {
   #lowerInterfaceDispatch(it: InterfaceType, memberName: String,
       receiverExpr: Expression, argExprs: Array<Expression> | null): i32 {
     let iName = getInterfaceKey(it);
-    if (!this.wasm.interfaceVTableStructs.has(iName) ||
-        !this.wasm.interfaceStructs.has(iName)) {
+    let vstOpt = if (let (true, v) = this.wasm.interfaceVTableStructs.get(iName)) v else null;
+    let fatPtrOpt = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
+    if (vstOpt == null || fatPtrOpt == null) {
       this.#bail('interface not discovered');
     }
-    let vst = this.wasm.interfaceVTableStructs[iName];
-    let fatPtr = this.wasm.interfaceStructs[iName];
-    var slot = -1;
-    for (var i = 0; i < vst.fields.length; i += 1) {
-      let fn = vst.fields[i].name;
-      if (fn != null && (fn as String) == memberName) {
-        slot = i;
-      }
-    }
+    let vst = vstOpt as WasmStruct;
+    let fatPtr = fatPtrOpt as WasmStruct;
+    let slot = vst.fieldIndexByName(memberName);
     if (slot < 0) {
       // Function-typed interface fields called as methods land here
       // (streaming falls back to a closure call); closures bail.
@@ -2343,18 +2328,15 @@ final class FunctionLowerer {
       }
       curr = c.superType;
     }
-    var defaultAccessor: WasmFunction | null = null;
     let defKey = getClassMethodKey(getClassKey(fieldDeclaringClass), accessorName);
-    if (this.wasm.classMethodMap.has(defKey)) {
-      defaultAccessor = this.wasm.classMethodMap[defKey];
-    }
+    let defaultAccessor = if (let (true, d) = this.wasm.classMethodMap.get(defKey)) d else null;
     var resolved: WasmFunction | null = null;
     var currClass: ClassType | null = ct;
     while (currClass != null && resolved == null) {
       let key = getClassMethodKey(
           getClassKey(currClass as ClassType), accessorName);
-      if (this.wasm.classMethodMap.has(key)) {
-        resolved = this.wasm.classMethodMap[key];
+      if (let (true, r) = this.wasm.classMethodMap.get(key)) {
+        resolved = r;
       }
       currClass = (currClass as ClassType).superType;
     }
@@ -2393,7 +2375,8 @@ final class FunctionLowerer {
    * which also knows how to build one-off strings inline.
    */
   #lowerStringLiteral(lit: StringLiteral): i32 {
-    if (!this.wasm.stringLiteralIds.has(lit.value)) {
+    let litId = if (let (true, id) = this.wasm.stringLiteralIds.get(lit.value)) id else -1;
+    if (litId < 0) {
       this.#bail('unregistered string literal');
     }
     if (this.wasm.getStringLiteralFunc == null) {
@@ -2403,7 +2386,7 @@ final class FunctionLowerer {
     if (helper.signature.returns.length != 1) {
       this.#bail('string helper shape');
     }
-    let id = this.b.constI32(this.wasm.stringLiteralIds[lit.value], new ValTypeI32());
+    let id = this.b.constI32(litId, new ValTypeI32());
     let funcRef = this.b.addRef(new IrRefFunc(helper));
     let call = this.b.callFunc(funcRef, this.#oneArg(id), helper.signature.returns[0]);
     // The literal's checked type is a non-null String; the helper returns
@@ -2447,12 +2430,13 @@ final class FunctionLowerer {
       // A local variable holding a function value: closure call.
       return this.#lowerClosureCall(call);
     }
-    if (!this.wasm.functionMap.has(resolved.id)) {
+    let targetOpt = if (let (true, t) = this.wasm.functionMap.get(resolved.id)) t else null;
+    if (targetOpt == null) {
       // Not a compiled function: a binding holding a closure value
       // (global function values still bail when the callee lowers).
       return this.#lowerClosureCall(call);
     }
-    let target = this.wasm.functionMap[resolved.id];
+    let target = targetOpt as WasmFunction;
     if (target.typeParameters != null || target.typeArguments != null ||
         target.intrinsic != null || target.isFunctionAdaptation ||
         target.isClosure || target.contextStruct != null ||
@@ -2504,10 +2488,10 @@ final class FunctionLowerer {
     };
     let closureKey = getClosureSpecializationKey(fExpr.id, classKey);
     var implOpt: WasmFunction | null = null;
-    if (this.wasm.specializedClosures.has(closureKey)) {
-      implOpt = this.wasm.specializedClosures[closureKey];
-    } else if (this.wasm.closureFunctions.has(fExpr)) {
-      implOpt = this.wasm.closureFunctions[fExpr];
+    if (let (true, sc) = this.wasm.specializedClosures.get(closureKey)) {
+      implOpt = sc;
+    } else if (let (true, cf) = this.wasm.closureFunctions.get(fExpr)) {
+      implOpt = cf;
     }
     if (implOpt == null) {
       this.#bail('closure not registered');
