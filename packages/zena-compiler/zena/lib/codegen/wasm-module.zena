@@ -226,7 +226,34 @@ export final class WasmStruct extends WasmType {
   var classType: ClassType | null = null;
   name: String | null;
   fields: Array<WasmField>;
+  /** Lazy name→index cache; sized-guarded because RTA appends fields. */
+  var #fieldIndexCache: HashMap<String, i32> | null = null;
+  var #fieldIndexCacheSize = -1;
   new(this.name, this.fields) : super();
+
+  /**
+   * Index of the named field, or -1. Memoized: field lookups by name
+   * happen once per field access during lowering and emission, and a
+   * per-access linear scan would multiply out to O(accesses × fields)
+   * on wide structs. The cache rebuilds if fields were appended since
+   * it was built (interface vtable structs gain fields during RTA).
+   */
+  fieldIndexByName(fieldName: String): i32 {
+    if (this.#fieldIndexCache == null ||
+        this.#fieldIndexCacheSize != this.fields.length) {
+      let cache = new HashMap<String, i32>();
+      for (var i = 0; i < this.fields.length; i += 1) {
+        let n = this.fields[i].name;
+        if (n != null) {
+          cache[n] = i;
+        }
+      }
+      this.#fieldIndexCache = cache;
+      this.#fieldIndexCacheSize = this.fields.length;
+    }
+    let cache = this.#fieldIndexCache as HashMap<String, i32>;
+    return if (let (true, idx) = cache.get(fieldName)) idx else -1;
+  }
 }
 
 export final class WasmArray extends WasmType {

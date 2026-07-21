@@ -21,7 +21,8 @@ import { i32ToString } from 'zena:string-convert';
 import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, heapTypeToSigned, HeapType } from '../wasm.zena';
 import { WasmModule, WasmFunction } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
-import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, irOpName, isUnaryNumericOp } from './ir.zena';
+import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, irOpName, isUnaryNumericOp } from './ir.zena';
+import { WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
 
 final class EmitFrame {
@@ -310,6 +311,28 @@ export final class ZirFunctionEmitter {
           throw new Error('zir emit: call ref is not a function');
         }
       }
+    } else if (op == IrOp.global_get) {
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefGlobal)) {
+        throw new Error('zir emit: global_get ref kind');
+      }
+      this.emitter.emitGlobalGet((ref as IrRefGlobal).target.index);
+    } else if (op == IrOp.struct_new_default) {
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefType)) {
+        throw new Error('zir emit: struct_new_default ref kind');
+      }
+      this.emitter.emitStructNewDefault((ref as IrRefType).target.index);
+    } else if (op == IrOp.struct_get) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      let field = this.#fieldRef(body.b[inst]);
+      this.emitter.emitStructGet(field.owner.index, this.#fieldIndexOf(field));
+    } else if (op == IrOp.struct_set) {
+      let pairIdx = body.a[inst];
+      this.emitter.emitLocalGet(this.localOf[body.extra[pairIdx]]);
+      this.#pushValue(body.extra[pairIdx + 1]);
+      let field = this.#fieldRef(body.b[inst]);
+      this.emitter.emitStructSet(field.owner.index, this.#fieldIndexOf(field));
     } else if (op == IrOp.ref_null) {
       let vt = body.resultType(inst) as ValType;
       match (vt) {
@@ -340,6 +363,22 @@ export final class ZirFunctionEmitter {
     }
   }
 
+
+  #fieldRef(refIdx: i32): IrRefField {
+    let ref = this.body.refTable[refIdx];
+    if (ref is IrRefField) {
+      return ref as IrRefField;
+    }
+    throw new Error('zir emit: expected field ref');
+  }
+
+  #fieldIndexOf(field: IrRefField): i32 {
+    let idx = field.owner.fieldIndexByName(field.fieldName);
+    if (idx < 0) {
+      throw new Error('zir emit: field not found: ' + field.fieldName);
+    }
+    return idx;
+  }
 
   #emitOp(op: IrOp): void {
     let e = this.emitter;

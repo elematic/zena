@@ -1,0 +1,50 @@
+// @mode: run
+// @result: 78
+// Classes driven from top-level functions: new, field reads, and
+// statically-dispatched method calls (exercises ZIR's devirtualized
+// paths under ZENA_BACKEND=zir).
+
+final class Point {
+  x: i32;
+  y: i32;
+  new(this.x, this.y);
+
+  manhattan(): i32 {
+    return this.x + this.y;
+  }
+
+  scaled(factor: i32): Point {
+    return new Point(this.x * factor, this.y * factor);
+  }
+}
+
+class Counter {
+  var count: i32 = 0;
+  new();
+
+  bump(by: i32): i32 {
+    this.count += by;
+    return this.count;
+  }
+}
+
+let sumPoints = (a: Point, b: Point): i32 => a.manhattan() + b.manhattan();
+
+let makeAndMeasure = (x: i32, y: i32, factor: i32): i32 => {
+  let p = new Point(x, y);
+  let q = p.scaled(factor);
+  return q.x + q.y + p.manhattan();
+};
+
+export let main = (): i32 => {
+  var total = 0;
+  let a = new Point(1, 2);
+  let b = new Point(3, 4);
+  total += sumPoints(a, b);            // 3 + 7 = 10
+  total += makeAndMeasure(2, 3, 10);   // 20+30+5 = 55 -> 65
+  total += a.x;                        // +1 -> 66
+  let c = new Counter();
+  total += c.bump(5);                  // +5 -> 71
+  total += c.bump(2);                  // +7 -> 78
+  return total;
+};

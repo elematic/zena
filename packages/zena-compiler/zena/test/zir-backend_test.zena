@@ -223,6 +223,22 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('ref.as_non_null'));
   });
 
+  test('new, field reads, and devirtualized method calls', (ctx: TestContext): void => {
+    // Structural: multi-function modules are discovery-order sensitive.
+    let result = compileWithZir(
+        'final class Point {\n' +
+        '  x: i32;\n' +
+        '  y: i32;\n' +
+        '  new(this.x, this.y);\n' +
+        '  manhattan(): i32 { return this.x + this.y; }\n' +
+        '}\n' +
+        'let measure = (p: Point): i32 => p.manhattan() + p.x;\n' +
+        'export let main = (): i32 => measure(new Point(1, 2));');
+    isTrue(result.contains('struct.new_default'));
+    isTrue(result.contains('struct.get'));
+    isTrue(result.contains('call $Point'));
+  });
+
   test('zir output contains the lowered function', (ctx: TestContext): void => {
     // Cheap structural sanity independent of snapshots: the ZIR-lowered
     // function is emitted (every value a local, so at least one local).

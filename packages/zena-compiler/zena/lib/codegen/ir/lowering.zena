@@ -31,20 +31,31 @@ import {
   BinaryExpression, UnaryExpression, AssignmentExpression, Identifier,
   NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern,
   CallExpression, IfExpression, AsExpression, ForStatement,
-  NullLiteral, StringLiteral
+  NullLiteral, StringLiteral, NewExpression, MemberExpression,
+  getMemberPropertyName
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, baseType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, FunctionType, baseType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, valTypeEquals, isRefValType } from '../wasm.zena';
-import { WasmModule, WasmFunction, isValSubtype } from '../wasm-module.zena';
-import { typeToValTypeWithSub } from '../type-mapping.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
+import { typeToValTypeWithSub, eraseTypeParameters } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
-import { IrBody, IrOp, IrRefFunc } from './ir.zena';
+import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
+import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 
 export final class ZirUnsupported extends Error {
   new(reason: String) : super('zir unsupported: ' + reason);
+}
+
+final class MemberTarget {
+  owner: WasmStruct;
+  /** Set for physical-field reads. */
+  fieldName: String | null;
+  /** Set for direct getter calls. */
+  getter: WasmFunction | null;
+  new(this.owner, this.fieldName, this.getter);
 }
 
 final class LoopCtx {
@@ -437,6 +448,8 @@ final class FunctionLowerer {
       case IfExpression as ifExpr: this.#lowerIfExpression(ifExpr)
       case AsExpression as asExpr: this.#lowerAs(asExpr)
       case StringLiteral as strLit: this.#lowerStringLiteral(strLit)
+      case NewExpression as newExpr: this.#lowerNew(newExpr)
+      case MemberExpression as member: this.#lowerMemberRead(member)
       case NullLiteral: this.#bailValue('null without context')
       case _: this.#bailValue('expression kind')
     };
@@ -812,6 +825,285 @@ final class FunctionLowerer {
   }
 
   /**
+   * `new C(args)` for plain (non-extension) classes: struct.new_default,
+   * store the vtable when the class has one, call the constructor
+   * directly. Zero-field case classes read their pre-allocated
+   * singleton global instead.
+   */
+  #lowerNew(expr: NewExpression): i32 {
+    let nodeType = this.func.model.getNodeType(expr);
+    if (nodeType == null || !(nodeType is ClassType)) {
+      this.#bail('new of non-class');
+    }
+    let classType = eraseTypeParameters(nodeType as Type);
+    if (!(classType is ClassType)) {
+      this.#bail('new erased kind');
+    }
+    let ct = classType as ClassType;
+    if (ct.isExtension) {
+      this.#bail('new extension class');
+    }
+    let cKey = getClassKey(ct);
+    let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
+    if (infoOpt == null) {
+      this.#bail('class not discovered');
+    }
+    let classInfo = infoOpt as ClassCodegenInfo;
+    let structType = classInfo.structType;
+    let resultVt: ValType = new ValTypeRef(structType);
+
+    if (classInfo.singletonGlobal != null) {
+      let singleton = classInfo.singletonGlobal as WasmGlobal;
+      let globalRef = this.b.addRef(new IrRefGlobal(singleton));
+      return this.b.emit(IrOp.global_get, singleton.type, -1, globalRef);
+    }
+
+    let typeRef = this.b.addRef(new IrRefType(structType));
+    let inst = this.b.emit(IrOp.struct_new_default, resultVt, -1, typeRef);
+
+    if (classInfo.vtableGlobal != null) {
+      let vtGlobal = classInfo.vtableGlobal as WasmGlobal;
+      let vtRef = this.b.addRef(new IrRefGlobal(vtGlobal));
+      let vtValue = this.b.emit(IrOp.global_get, vtGlobal.type, -1, vtRef);
+      let fieldRef = this.b.addRef(new IrRefField(structType, '<vtable>'));
+      let pairIdx = this.b.pushExtra(this.#twoValues(inst, vtValue));
+      this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+    }
+
+    let ctorKey = getClassMethodKey(cKey, '<constructor>');
+    if (let (true, ctor) = this.wasm.classMethodMap.get(ctorKey)) {
+      let sig = ctor.signature;
+      if (sig.params.length != expr.args.length + 1) {
+        this.#bail('constructor arity adaptation');
+      }
+      let args = new Array<i32>();
+      args.push(inst);
+      for (var i = 0; i < expr.args.length; i += 1) {
+        let paramVt = sig.params[i + 1];
+        this.#requireSupported(paramVt, 'constructor param type');
+        let value = this.#lowerExpressionCtx(expr.args[i], paramVt);
+        if (!isValSubtype(this.#valueType(value), paramVt)) {
+          this.#bail('constructor argument type');
+        }
+        args.push(value);
+      }
+      let ctorRef = this.b.addRef(new IrRefFunc(ctor));
+      this.b.callFunc(ctorRef, args, null);
+    } else if (expr.args.length > 0) {
+      this.#bail('constructor missing');
+    }
+    return inst;
+  }
+
+  /**
+   * Member reads on class-typed receivers: a direct struct.get when the
+   * property is a physical field on the receiver's struct and no
+   * subclass overrides its accessor; otherwise a direct call to a
+   * non-overridden getter. Interfaces, statics, optional chains, and
+   * anything needing dynamic dispatch bail.
+   */
+  #lowerMemberRead(member: MemberExpression): i32 {
+    if (member.optional) {
+      this.#bail('optional member access');
+    }
+    let target = this.#resolveMemberTarget(member);
+    let receiver = this.#lowerExpression(member.object);
+    let receiverVt = this.#valueType(receiver);
+    let isStructRef = receiverVt is ValTypeRef || receiverVt is ValTypeRefNull;
+    if (!isStructRef) {
+      this.#bail('member receiver kind');
+    }
+    if (target.fieldName != null) {
+      let fieldRef = this.b.addRef(
+          new IrRefField(target.owner, target.fieldName as String));
+      let resultVt = this.#exprValType(member);
+      return this.b.emit(IrOp.struct_get, resultVt, receiver, fieldRef);
+    }
+    let getter = target.getter as WasmFunction;
+    let sig = getter.signature;
+    if (sig.returns.length != 1) {
+      this.#bail('getter shape');
+    }
+    let getterRef = this.b.addRef(new IrRefFunc(getter));
+    let call = this.b.callFunc(getterRef, this.#oneArg(receiver), sig.returns[0]);
+    // Getter signatures return the field's (nullable) storage type; the
+    // member's checked type may be non-null.
+    let want = this.#exprValType(member);
+    if (want is ValTypeRef && sig.returns[0] is ValTypeRefNull) {
+      return this.b.emit(IrOp.ref_as_non_null, want, call, -1);
+    }
+    return call;
+  }
+
+  /**
+   * Devirtualized method calls only: the receiver's class (or an
+   * ancestor) provides the method, no transitive subclass overrides it,
+   * the name resolves directly (overloads use mangled keys and miss),
+   * and arity matches exactly. Everything else — statics, interfaces,
+   * generic methods, optional calls, dynamic dispatch — bails.
+   */
+  #lowerMethodCall(call: CallExpression, member: MemberExpression): i32 {
+    if (member.optional || call.optional) {
+      this.#bail('optional method call');
+    }
+    if (call.typeArguments != null) {
+      this.#bail('generic method call');
+    }
+    if (this.func.model.isStaticAccess(member)) {
+      this.#bail('static method call');
+    }
+    let objectType = this.func.model.getNodeType(member.object);
+    if (objectType == null || !(baseType(objectType as Type) is ClassType)) {
+      this.#bail('method receiver kind');
+    }
+    let ct = eraseTypeParameters(baseType(objectType as Type)) as ClassType;
+    let cKey = getClassKey(ct);
+    let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
+    if (infoOpt == null) {
+      this.#bail('method receiver not discovered');
+    }
+    let classInfo = infoOpt as ClassCodegenInfo;
+    let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+
+    var methodOpt: WasmFunction | null = null;
+    var currClass: ClassType | null = ct;
+    while (currClass != null && methodOpt == null) {
+      let key = getClassMethodKey(getClassKey(currClass as ClassType), propName);
+      if (let (true, m) = this.wasm.classMethodMap.get(key)) {
+        methodOpt = m;
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (methodOpt == null) {
+      this.#bail('method not found');
+    }
+    let method = methodOpt as WasmFunction;
+    if (method.isStatic || method.typeParameters != null ||
+        method.intrinsic != null) {
+      this.#bail('method shape');
+    }
+    if (this.#memberProvidedBySubclass(classInfo, propName)) {
+      this.#bail('overridden method');
+    }
+    let sig = method.signature;
+    if (sig.returns.length > 1) {
+      this.#bail('method multi-value return');
+    }
+    if (sig.params.length != call.args.length + 1) {
+      this.#bail('method arity adaptation');
+    }
+
+    let receiver = this.#lowerExpression(member.object);
+    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
+      this.#bail('method receiver type');
+    }
+    let args = new Array<i32>();
+    args.push(receiver);
+    for (var i = 0; i < call.args.length; i += 1) {
+      let paramVt = sig.params[i + 1];
+      this.#requireSupported(paramVt, 'method param type');
+      let value = this.#lowerExpressionCtx(call.args[i], paramVt);
+      if (!isValSubtype(this.#valueType(value), paramVt)) {
+        this.#bail('method argument type');
+      }
+      args.push(value);
+    }
+    let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
+    if (resultType != null) {
+      this.#requireSupported(resultType, 'method result type');
+    }
+    let methodRef = this.b.addRef(new IrRefFunc(method));
+    let result = this.b.callFunc(methodRef, args, resultType);
+    if (resultType != null) {
+      let nodeType = this.func.model.getNodeType(call);
+      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
+        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+        if (want is ValTypeRef && (resultType as ValType) is ValTypeRefNull) {
+          return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Resolves a member read against the receiver's class: either a
+   * physical field (fieldName set) or a non-overridden getter function.
+   */
+  #resolveMemberTarget(member: MemberExpression): MemberTarget {
+    let objectType = this.func.model.getNodeType(member.object);
+    if (objectType == null || !(baseType(objectType as Type) is ClassType)) {
+      this.#bail('member on non-class');
+    }
+    let ct = eraseTypeParameters(baseType(objectType as Type)) as ClassType;
+    let cKey = getClassKey(ct);
+    let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
+    if (infoOpt == null) {
+      this.#bail('receiver class not discovered');
+    }
+    let classInfo = infoOpt as ClassCodegenInfo;
+    let structType = classInfo.structType;
+    let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+
+    // Physical field with the property's name? (Memoized on the
+    // struct: this runs once per member access.)
+    let hasField = structType.fieldIndexByName(propName) >= 0;
+    if (hasField) {
+      // Direct read is only sound if no subclass turns this into an
+      // accessor; the synthesized getter is named get#<prop>.
+      if (this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
+        this.#bail('field with overriding accessor');
+      }
+      return new MemberTarget(structType, propName, null);
+    }
+
+    // Getter?
+    let getterKey = getClassMethodKey(cKey, 'get#' + propName);
+    var getter: WasmFunction | null = null;
+    var currClass: ClassType | null = ct;
+    while (currClass != null && getter == null) {
+      let key = getClassMethodKey(getClassKey(currClass as ClassType), 'get#' + propName);
+      if (let (true, g) = this.wasm.classMethodMap.get(key)) {
+        getter = g;
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (getter == null) {
+      this.#bail('member not found');
+    }
+    if ((getter as WasmFunction).isStatic) {
+      this.#bail('static member');
+    }
+    if (this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
+      this.#bail('overridden getter');
+    }
+    return new MemberTarget(structType, null, getter);
+  }
+
+  /** True if any transitive subclass provides its own `methodName`. */
+  #memberProvidedBySubclass(classInfo: ClassCodegenInfo, methodName: String): boolean {
+    let subclasses = new Array<ClassCodegenInfo>();
+    classInfo.getTransitiveSubclasses(subclasses);
+    for (let sub in subclasses) {
+      let subClassType = sub.structType.classType;
+      if (subClassType != null) {
+        let key = getClassMethodKey(getClassKey(subClassType as ClassType), methodName);
+        if (this.wasm.classMethodMap.has(key)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  #twoValues(a: i32, b: i32): Array<i32> {
+    let result = new Array<i32>();
+    result.push(a);
+    result.push(b);
+    return result;
+  }
+
+  /**
    * String literals: the fast path only — RTA pre-registers every
    * literal reached through checker dependencies, so the shared-data
    * helper call covers it (i32.const id; call $get_string_literal).
@@ -853,6 +1145,9 @@ final class FunctionLowerer {
    * through, the verifier's produces-no-value check fails loudly.
    */
   #lowerCall(call: CallExpression): i32 {
+    if (call.callee is MemberExpression) {
+      return this.#lowerMethodCall(call, call.callee as MemberExpression);
+    }
     if (!(call.callee is Identifier)) {
       this.#bail('call callee kind');
     }
