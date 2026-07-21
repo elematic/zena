@@ -32,9 +32,10 @@ import {
   NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern,
   CallExpression, IfExpression, AsExpression, ForStatement,
   NullLiteral, StringLiteral, NewExpression, MemberExpression,
+  MethodDefinition, ThisExpression, Parameter,
   getMemberPropertyName
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, FunctionType, baseType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, ThisType, FunctionType, baseType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, valTypeEquals, isRefValType } from '../wasm.zena';
@@ -42,12 +43,36 @@ import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, ClassCodegenInfo, isV
 import { typeToValTypeWithSub, eraseTypeParameters } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
-import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 
+/**
+ * Thrown for constructs lowering does not model YET: tryLowerFunction
+ * catches exactly this type and falls back to the streaming generator
+ * (fatal under zir-strict). States the checker guarantees impossible
+ * are NOT ZirUnsupported — throw a plain Error for those, which
+ * propagates and fails the compile: a silent fallback would hide a
+ * lowering bug.
+ */
 export final class ZirUnsupported extends Error {
   new(reason: String) : super('zir unsupported: ' + reason);
 }
+
+/**
+ * Synthesized or adapted machinery lowering does not model: wrappers,
+ * trampolines, accessor thunks, case-class equality/hash synthesis,
+ * generics, and intrinsics. The direct-call gate in #lowerCall shares
+ * several of these tests but intentionally differs — imports and class
+ * methods are callable, just not lowerable.
+ */
+let usesSynthesizedMachinery = (func: WasmFunction): boolean => {
+  return func.importWrapperTarget != null ||
+      func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
+      func.isClosureWrapper || func.isClosureTrampoline ||
+      func.getterStruct != null || func.setterStruct != null ||
+      func.isCaseClassEq || func.isCaseClassHash ||
+      func.typeParameters != null || func.intrinsic != null;
+};
 
 final class MemberTarget {
   owner: WasmStruct;
@@ -72,22 +97,47 @@ final class LoopCtx {
  */
 export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boolean = false): IrBody | null => {
   let name = if (func.name != null) func.name as String else "<unnamed>";
-  if (func.node == null || !(func.node is FunctionExpression)) {
+  if (func.node == null) {
     if (strict) {
       throw new ZirUnsupported("synthesized function " + name);
     }
     return null;
   }
-  // Slice 1: plain top-level functions only — no methods, closures,
-  // adaptations, trampolines, accessors, imports, or generics.
-  if (func.classType != null || func.structType != null ||
-      func.isClosure || func.isImport || func.importWrapperTarget != null ||
-      func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
-      func.isClosureWrapper || func.isClosureTrampoline ||
-      func.getterStruct != null || func.setterStruct != null ||
+  // No closures, adaptations, trampolines, synthesized accessors,
+  // imports, or generics. Plain top-level functions and written-out
+  // method bodies (except constructors) are eligible.
+  if (func.isClosure || func.isImport || usesSynthesizedMachinery(func) ||
       func.captures.length > 0 || func.capturesThis ||
-      func.contextStruct != null || func.typeParameters != null ||
-      func.intrinsic != null) {
+      func.contextStruct != null) {
+    if (strict) {
+      throw new ZirUnsupported("function shape of " + name);
+    }
+    return null;
+  }
+  if (func.node is MethodDefinition) {
+    let md = func.node as MethodDefinition;
+    var methName = "";
+    if (md.name is Identifier) {
+      methName = (md.name as Identifier).name;
+    }
+    // Constructors have initializer lists and super-init prologues that
+    // lowering does not model yet; declares/abstracts have no body.
+    if (methName == "<constructor>" || md.initializerList != null ||
+        md.superInitializer != null || md.isDeclare || md.isAbstract ||
+        md.body == null || md.typeParameters != null) {
+      if (strict) {
+        throw new ZirUnsupported("method shape of " + name);
+      }
+      return null;
+    }
+  } else if (!(func.node is FunctionExpression)) {
+    if (strict) {
+      throw new ZirUnsupported("synthesized function " + name);
+    }
+    return null;
+  } else if (func.classType != null || func.structType != null) {
+    // A FunctionExpression carrying class context (extension methods,
+    // class-scoped lambdas) still bails.
     if (strict) {
       throw new ZirUnsupported("function shape of " + name);
     }
@@ -125,11 +175,12 @@ final class FunctionLowerer {
   symbols = new HashMap<SymbolId, Symbol>();
   loops = new Array<LoopCtx>();
   var reachable = true;
+  /** The receiver value for instance methods; -1 elsewhere. */
+  var thisValue = -1;
 
   new(this.wasm, this.func);
 
   lower(): IrBody {
-    let fExpr = this.func.node as FunctionExpression;
     let sig = this.func.signature;
     if (sig.returns.length > 1) {
       this.#bail('multi-value return');
@@ -137,13 +188,35 @@ final class FunctionLowerer {
     if (sig.returns.length == 1) {
       this.#requireSupported(sig.returns[0], 'return type');
     }
-    if (sig.params.length != fExpr.params.length) {
+
+    var params: Array<Parameter> | null = null;
+    var bodyNode: Node | null = null;
+    var paramOffset = 0;
+    let node = this.func.node as Node;
+    if (node is MethodDefinition) {
+      let md = node as MethodDefinition;
+      params = md.params;
+      bodyNode = md.body;
+      if (!md.isStatic) {
+        paramOffset = 1;
+      }
+    } else {
+      let fExpr = node as FunctionExpression;
+      params = fExpr.params;
+      bodyNode = fExpr.body;
+    }
+    let paramList = params as Array<Parameter>;
+    if (sig.params.length != paramList.length + paramOffset) {
       this.#bail('signature/param shape mismatch');
     }
 
     let entry = this.b.newBlock();
-    for (var i = 0; i < fExpr.params.length; i += 1) {
-      let p = fExpr.params[i];
+    if (paramOffset == 1) {
+      this.#requireSupported(sig.params[0], 'receiver type');
+      this.thisValue = this.b.blockParam(entry, sig.params[0]);
+    }
+    for (var i = 0; i < paramList.length; i += 1) {
+      let p = paramList[i];
       if (p.pattern != null || p.isThisParam || p.defaultValue != null) {
         this.#bail('parameter shape');
       }
@@ -151,7 +224,7 @@ final class FunctionLowerer {
       if (sym == null) {
         this.#bail('unresolved parameter');
       }
-      let vt = sig.params[i];
+      let vt = sig.params[i + paramOffset];
       this.#requireSupported(vt, 'parameter type');
       let value = this.b.blockParam(entry, vt);
       this.env[(sym as Symbol).id] = value;
@@ -159,7 +232,7 @@ final class FunctionLowerer {
     }
     this.b.switchTo(entry);
 
-    let body = fExpr.body;
+    let body = bodyNode as Node;
     if (body is BlockStatement) {
       this.#lowerStatement(body as Statement);
       if (this.reachable) {
@@ -176,10 +249,28 @@ final class FunctionLowerer {
       if (sig.returns.length == 0) {
         this.#bail('void expression body');
       }
-      let value = this.#lowerExpression(body as Expression);
-      this.b.ret(value);
+      let value = this.#lowerExpressionCtx(body as Expression, sig.returns[0]);
+      this.#emitCheckedRet(value);
     }
     return this.b.finish();
+  }
+
+  /**
+   * Emits a return after checking the value is a wasm subtype of the
+   * declared return type. A mismatch means an implicit conversion the
+   * lowering doesn't model yet — most commonly packing a class instance
+   * into an interface fat pointer — so the function bails rather than
+   * emitting invalid wasm.
+   */
+  #emitCheckedRet(value: i32): void {
+    let sig = this.func.signature;
+    if (sig.returns.length != 1) {
+      this.#bail('return value in void function');
+    }
+    if (!isValSubtype(this.#valueType(value), sig.returns[0])) {
+      this.#bail('return requires conversion');
+    }
+    this.b.ret(value);
   }
 
   // -- Statements ------------------------------------------------------
@@ -208,7 +299,7 @@ final class FunctionLowerer {
           let sig = this.func.signature;
           let ctx = if (sig.returns.length == 1) sig.returns[0] else null;
           let value = this.#lowerExpressionCtx(argument as Expression, ctx);
-          this.b.ret(value);
+          this.#emitCheckedRet(value);
         }
         this.reachable = false;
       }
@@ -450,6 +541,7 @@ final class FunctionLowerer {
       case StringLiteral as strLit: this.#lowerStringLiteral(strLit)
       case NewExpression as newExpr: this.#lowerNew(newExpr)
       case MemberExpression as member: this.#lowerMemberRead(member)
+      case ThisExpression: this.#lowerThis(expr)
       case NullLiteral: this.#bailValue('null without context')
       case _: this.#bailValue('expression kind')
     };
@@ -825,6 +917,52 @@ final class FunctionLowerer {
   }
 
   /**
+   * `this` in an instance method: the receiver block param, re-asserted
+   * non-null when the checked type demands it (receiver signature slots
+   * are nullable for vtable compatibility, but `this` is never null).
+   */
+  #lowerThis(expr: Expression): i32 {
+    if (this.thisValue < 0) {
+      // NOT checker-impossible: default-parameter expressions are
+      // supplied by the CALLER (desugared into the call's argument
+      // list), so `this` in a default like `end = this.length - start`
+      // reaches the lowering of a call site in a plain function, where
+      // it means the callee's receiver. Until #lowerMethodCall binds
+      // the receiver for default-argument expressions, bail.
+      this.#bail('this outside instance method');
+    }
+    let haveVt = this.#valueType(this.thisValue);
+    if (haveVt is ValTypeRefNull) {
+      let want: ValType = new ValTypeRef(haveVt.target);
+      return this.b.emit(IrOp.ref_as_non_null, want, this.thisValue, -1);
+    }
+    return this.thisValue;
+  }
+
+  /**
+   * Maps ThisType (and the checker's `<Name>_This` marker classes) to
+   * the enclosing method's concrete class.
+   */
+  #resolveSelfType(t: Type): Type {
+    let bt = baseType(t);
+    var isSelf = bt is ThisType;
+    if (!isSelf && bt is ClassType) {
+      let ct = bt as ClassType;
+      if (ct.name.length >= 5 &&
+          ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
+        isSelf = true;
+      }
+    }
+    if (isSelf) {
+      if (this.func.classType == null) {
+        this.#bail('self type outside method');
+      }
+      return this.func.classType as Type;
+    }
+    return bt;
+  }
+
+  /**
    * `new C(args)` for plain (non-extension) classes: struct.new_default,
    * store the vtable when the class has one, call the constructor
    * directly. Zero-field case classes read their pre-allocated
@@ -832,10 +970,16 @@ final class FunctionLowerer {
    */
   #lowerNew(expr: NewExpression): i32 {
     let nodeType = this.func.model.getNodeType(expr);
-    if (nodeType == null || !(nodeType is ClassType)) {
+    if (nodeType == null) {
+      this.#bail('untyped new');
+    }
+    // Inside a class body, `new Point(...)` may be typed via the checker's
+    // Point_This marker; resolve to the concrete class first.
+    let selfResolved = this.#resolveSelfType(nodeType as Type);
+    if (!(selfResolved is ClassType)) {
       this.#bail('new of non-class');
     }
-    let classType = eraseTypeParameters(nodeType as Type);
+    let classType = eraseTypeParameters(selfResolved);
     if (!(classType is ClassType)) {
       this.#bail('new erased kind');
     }
@@ -896,6 +1040,76 @@ final class FunctionLowerer {
   }
 
   /**
+   * Member writes: direct struct.set when the property is a physical
+   * field and no transitive subclass provides a setter for it. Setter
+   * dispatch and static writes bail. Compound assignments read through
+   * the same receiver value, so the object expression evaluates once.
+   */
+  #lowerMemberAssign(assign: AssignmentExpression): i32 {
+    let member = assign.left as MemberExpression;
+    if (member.optional) {
+      this.#bail('optional member write');
+    }
+    if (this.func.model.isStaticAccess(member)) {
+      this.#bail('static member write');
+    }
+    let target = this.#resolveMemberTarget(member);
+    if (target.fieldName == null) {
+      this.#bail('write through accessor');
+    }
+    let fieldName = target.fieldName as String;
+    // Setter-side override check (the read-side resolve checked get#).
+    let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+    var infoOpt: ClassCodegenInfo | null = null;
+    if (let (true, info) = this.wasm.classInfos.get(getClassKey(
+        eraseTypeParameters(this.#resolveSelfType(
+            this.func.model.getNodeType(member.object) as Type)) as ClassType))) {
+      infoOpt = info;
+    }
+    if (infoOpt != null &&
+        this.#memberProvidedBySubclass(infoOpt as ClassCodegenInfo, 'set#' + propName)) {
+      this.#bail('field with overriding setter');
+    }
+
+    let receiver = this.#lowerExpression(member.object);
+    let fieldVt = this.#fieldValType(target.owner, fieldName);
+    var value = -1;
+    if (assign.operator == null) {
+      value = this.#lowerExpressionCtx(assign.value, fieldVt);
+    } else {
+      let fieldRefRead = this.b.addRef(new IrRefField(target.owner, fieldName));
+      let readVt = this.#exprValType(member);
+      let current = this.b.emit(IrOp.struct_get, readVt, receiver, fieldRefRead);
+      let rhs = this.#lowerExpression(assign.value);
+      let vt = this.#valueType(current);
+      if (!valTypeEquals(vt, this.#valueType(rhs))) {
+        this.#bail('mixed member compound types');
+      }
+      let unsigned = this.#isUnsignedNode(member as Expression) ||
+          this.#isUnsignedNode(assign.value);
+      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
+      value = this.b.binary(op, vt, current, rhs);
+    }
+    if (!isValSubtype(this.#valueType(value), fieldVt)) {
+      this.#bail('member write type');
+    }
+    let fieldRef = this.b.addRef(new IrRefField(target.owner, fieldName));
+    let pairIdx = this.b.pushExtra(this.#twoValues(receiver, value));
+    this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+    return value;
+  }
+
+  #fieldValType(owner: WasmStruct, name: String): ValType {
+    for (let f in owner.fields) {
+      if (f.name != null && (f.name as String) == name) {
+        return f.type;
+      }
+    }
+    this.#bail('field not found on struct');
+    return this.b.body.typeTable[0];
+  }
+
+  /**
    * Member reads on class-typed receivers: a direct struct.get when the
    * property is a physical field on the receiver's struct and no
    * subclass overrides its accessor; otherwise a direct call to a
@@ -953,10 +1167,14 @@ final class FunctionLowerer {
       this.#bail('static method call');
     }
     let objectType = this.func.model.getNodeType(member.object);
-    if (objectType == null || !(baseType(objectType as Type) is ClassType)) {
+    if (objectType == null) {
+      this.#bail('untyped method receiver');
+    }
+    let selfResolved = this.#resolveSelfType(objectType as Type);
+    if (!(selfResolved is ClassType)) {
       this.#bail('method receiver kind');
     }
-    let ct = eraseTypeParameters(baseType(objectType as Type)) as ClassType;
+    let ct = eraseTypeParameters(selfResolved) as ClassType;
     let cKey = getClassKey(ct);
     let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
     if (infoOpt == null) {
@@ -1032,10 +1250,14 @@ final class FunctionLowerer {
    */
   #resolveMemberTarget(member: MemberExpression): MemberTarget {
     let objectType = this.func.model.getNodeType(member.object);
-    if (objectType == null || !(baseType(objectType as Type) is ClassType)) {
+    if (objectType == null) {
+      this.#bail('untyped member receiver');
+    }
+    let selfResolved = this.#resolveSelfType(objectType as Type);
+    if (!(selfResolved is ClassType)) {
       this.#bail('member on non-class');
     }
-    let ct = eraseTypeParameters(baseType(objectType as Type)) as ClassType;
+    let ct = eraseTypeParameters(selfResolved) as ClassType;
     let cKey = getClassKey(ct);
     let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
     if (infoOpt == null) {
@@ -1043,18 +1265,28 @@ final class FunctionLowerer {
     }
     let classInfo = infoOpt as ClassCodegenInfo;
     let structType = classInfo.structType;
-    let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+    var propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+    var lookupName = propName;
+    if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+      // Private fields are stored under class-mangled names; private
+      // access is only legal from the declaring class.
+      if (this.func.classType == null) {
+        this.#bail('private access outside class');
+      }
+      lookupName = getClassPrivateFieldKey(
+          getClassKey(this.func.classType as ClassType), propName);
+    }
 
     // Physical field with the property's name? (Memoized on the
     // struct: this runs once per member access.)
-    let hasField = structType.fieldIndexByName(propName) >= 0;
+    let hasField = structType.fieldIndexByName(lookupName) >= 0;
     if (hasField) {
       // Direct read is only sound if no subclass turns this into an
       // accessor; the synthesized getter is named get#<prop>.
       if (this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
         this.#bail('field with overriding accessor');
       }
-      return new MemberTarget(structType, propName, null);
+      return new MemberTarget(structType, lookupName, null);
     }
 
     // Getter?
@@ -1205,6 +1437,9 @@ final class FunctionLowerer {
   }
 
   #lowerAssignment(assign: AssignmentExpression): i32 {
+    if (assign.left is MemberExpression) {
+      return this.#lowerMemberAssign(assign);
+    }
     if (!(assign.left is Identifier)) {
       this.#bail('assignment target');
     }
