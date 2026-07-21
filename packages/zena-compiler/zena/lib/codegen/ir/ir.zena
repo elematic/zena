@@ -42,6 +42,8 @@
  *   iface_vtable, iface_instance: a = fat pointer
  *   call:        a -> [argc, arg*],           b = ref (function)
  *   call_ref:    a -> [callee, argc, arg*]
+ *   mv_get:      a = multi-result call value,  b = result index
+ *   ret_multi:   a -> [argc, value*]
  *   throw:       a -> [argc, arg*],           b = ref (tag) or -1
  *   br:          a -> [target, argc, arg*]
  *   br_if:       a = condition,
@@ -186,6 +188,10 @@ export enum IrOp {
   iface_instance,
   call,
   call_ref,
+  /** Projects one result out of a multi-result call (which itself
+   * produces no single value). Projections are emitted immediately
+   * after their call, in ascending result order. */
+  mv_get,
   // Terminators. These must stay last and contiguous: isIrTerminator does a
   // band check against IrOp.br.
   br,
@@ -194,6 +200,8 @@ export enum IrOp {
   br_on_cast,
   br_on_cast_fail,
   ret,
+  /** Multi-value return: all result values at once. */
+  ret_multi,
   throw,
   unreachable
 }
@@ -232,7 +240,8 @@ export let isSingleValueOp = (op: IrOp): boolean => {
       op == IrOp.ref_test || op == IrOp.ref_cast || op == IrOp.array_len ||
       op == IrOp.global_set || op == IrOp.struct_get || op == IrOp.vt_load ||
       op == IrOp.vt_slot || op == IrOp.iface_pack ||
-      op == IrOp.iface_vtable || op == IrOp.iface_instance;
+      op == IrOp.iface_vtable || op == IrOp.iface_instance ||
+      op == IrOp.mv_get;
 };
 
 /**
@@ -434,6 +443,16 @@ export final class IrBody {
       }
       return;
     }
+    // ret_multi: counted value list.
+    if (op == IrOp.ret_multi) {
+      let argc = this.extra[av];
+      var i = 0;
+      while (i < argc) {
+        out.push(this.extra[av + 1 + i]);
+        i += 1;
+      }
+      return;
+    }
     // Branches: the operands are the branch arguments of every successor
     // edge (decoded via successors()), plus — for the conditional forms —
     // the condition/scrutinee/selector riding in slot a.
@@ -466,7 +485,8 @@ export final class IrBody {
   successors(inst: i32): Array<IrSuccessor> {
     let result = new Array<IrSuccessor>();
     let op = this.op(inst);
-    if (op == IrOp.ret || op == IrOp.throw || op == IrOp.unreachable) {
+    if (op == IrOp.ret || op == IrOp.ret_multi || op == IrOp.throw ||
+        op == IrOp.unreachable) {
       return result;
     }
     if (op == IrOp.br) {
@@ -633,12 +653,14 @@ export let irOpName = (op: IrOp): String => {
     case IrOp.iface_instance: { name = 'iface.instance'; }
     case IrOp.call: { name = 'call'; }
     case IrOp.call_ref: { name = 'call_ref'; }
+    case IrOp.mv_get: { name = 'mv.get'; }
     case IrOp.br: { name = 'br'; }
     case IrOp.br_if: { name = 'br_if'; }
     case IrOp.br_table: { name = 'br_table'; }
     case IrOp.br_on_cast: { name = 'br_on_cast'; }
     case IrOp.br_on_cast_fail: { name = 'br_on_cast_fail'; }
     case IrOp.ret: { name = 'ret'; }
+    case IrOp.ret_multi: { name = 'ret.multi'; }
     case IrOp.throw: { name = 'throw'; }
     case IrOp.unreachable: { name = 'unreachable'; }
   }

@@ -16,6 +16,7 @@
  *    via per-param temporaries when more than one argument could alias.
  */
 import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
 import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, WasmType, heapTypeToSigned, HeapType } from '../wasm.zena';
@@ -44,6 +45,8 @@ export final class ZirFunctionEmitter {
   tempOf = new Array<i32>();
   /** Locals beyond the signature params, in index order. */
   localTypes = new Array<ValType>();
+  /** Multi-result call -> its mv_get projections, ascending index. */
+  #mvProjections = new HashMap<i32, Array<i32>>();
   frames = new Array<EmitFrame>();
 
   new(this.wasm, this.emitter, this.func, this.body, this.cfg);
@@ -94,6 +97,18 @@ export final class ZirFunctionEmitter {
       if (body.producesValue(i) && this.localOf[i] < 0) {
         this.localOf[i] = paramCount + this.localTypes.length;
         this.localTypes.push(this.#localTypeFor(body.resultType(i) as ValType));
+      }
+      if (body.op(i) == IrOp.mv_get) {
+        // Instruction ids ascend, and the builder emits projections in
+        // ascending result order, so each list arrives sorted.
+        let callInst = body.a[i];
+        if (let (true, list) = this.#mvProjections.get(callInst)) {
+          list.push(i);
+        } else {
+          let list = new Array<i32>();
+          list.push(i);
+          this.#mvProjections[callInst] = list;
+        }
       }
       i += 1;
     }
@@ -207,6 +222,15 @@ export final class ZirFunctionEmitter {
       this.emitter.emitReturn();
       return;
     }
+    if (op == IrOp.ret_multi) {
+      let idx = body.a[inst];
+      let argc = body.extra[idx];
+      for (var k = 0; k < argc; k += 1) {
+        this.#pushValue(body.extra[idx + 1 + k]);
+      }
+      this.emitter.emitReturn();
+      return;
+    }
     if (op == IrOp.unreachable) {
       this.emitter.emitUnreachable();
       return;
@@ -296,6 +320,9 @@ export final class ZirFunctionEmitter {
       this.emitter.emitF32Const(body.constF64[body.a[inst]]);
     } else if (op == IrOp.const_f64) {
       this.emitter.emitF64Const(body.constF64[body.a[inst]]);
+    } else if (op == IrOp.mv_get) {
+      // The multi-result call already stored this projection's local.
+      return;
     } else if (op == IrOp.call) {
       let argsIdx = body.a[inst];
       let argc = body.extra[argsIdx];
@@ -311,6 +338,7 @@ export final class ZirFunctionEmitter {
           throw new Error('zir emit: call ref is not a function');
         }
       }
+      this.#storeMultiResults(inst);
     } else if (op == IrOp.global_get) {
       let ref = body.refTable[body.b[inst]];
       if (!(ref is IrRefGlobal)) {
@@ -389,6 +417,7 @@ export final class ZirFunctionEmitter {
       }
       this.#pushValue(callee);
       this.emitter.emitCallRef(this.#signatureOf(callee).index);
+      this.#storeMultiResults(inst);
     } else if (op == IrOp.iface_pack) {
       this.#pushValue(body.a[inst]);
       match (body.refTable[body.b[inst]]) {
@@ -480,6 +509,20 @@ export final class ZirFunctionEmitter {
       return target as WasmStruct;
     }
     throw new Error('zir emit: fat-pointer operand is not struct-typed');
+  }
+
+  /**
+   * After a multi-result call, the results sit on the stack with the
+   * LAST on top; store them into the projections' locals in reverse.
+   */
+  #storeMultiResults(callInst: i32): void {
+    if (let (true, projs) = this.#mvProjections.get(callInst)) {
+      var k = projs.length - 1;
+      while (k >= 0) {
+        this.emitter.emitLocalSet(this.localOf[projs[k]]);
+        k -= 1;
+      }
+    }
   }
 
   #fieldRef(refIdx: i32): IrRefField {

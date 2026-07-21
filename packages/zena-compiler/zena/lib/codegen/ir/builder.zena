@@ -138,6 +138,32 @@ export final class IrBuilder {
         argsIdx, funcRef);
   }
 
+  /**
+   * Multi-result call: the call itself produces no single value; one
+   * mv_get projection per result is emitted immediately after it, in
+   * ascending result order (emission relies on that adjacency+order).
+   */
+  callFuncMulti(funcRef: i32, args: Array<i32>, resultTypes: Array<ValType>): Array<i32> {
+    let argsIdx = this.pushArgList(args);
+    let call = this.#emitInCurrent(IrOp.call, -1, argsIdx, funcRef);
+    let projections = new Array<i32>();
+    for (var k = 0; k < resultTypes.length; k += 1) {
+      projections.push(this.#emitInCurrent(IrOp.mv_get,
+          this.internType(resultTypes[k]), call, k));
+    }
+    return projections;
+  }
+
+  /** Multi-value return. */
+  retMulti(values: Array<i32>): void {
+    let idx = this.body.extra.length;
+    this.body.extra.push(values.length);
+    for (let v in values) {
+      this.body.extra.push(v);
+    }
+    this.#emitInCurrent(IrOp.ret_multi, -1, idx, -1);
+  }
+
   /** call_ref through a funcref value: extra = [callee, argc, arg*]. */
   callRef(callee: i32, args: Array<i32>, resultType: ValType | null): i32 {
     let start = this.body.extra.length;

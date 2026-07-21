@@ -182,8 +182,7 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
     b.unreachable();
     return b.finish();
   }
-  if (func.signature.params.length != target.signature.params.length ||
-      target.signature.returns.length > 1) {
+  if (func.signature.params.length != target.signature.params.length) {
     throw new ZirUnsupported('trampoline shape');
   }
   let args = new Array<i32>();
@@ -195,8 +194,17 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
     }
     args.push(v);
   }
-  let resultType = if (target.signature.returns.length == 1) target.signature.returns[0] else null;
   let funcRef = b.addRef(new IrRefFunc(target));
+  if (target.signature.returns.length > 1) {
+    // Multi-result target (e.g. Iterator.next): project and re-return.
+    if (func.signature.returns.length != target.signature.returns.length) {
+      throw new ZirUnsupported('trampoline result shape');
+    }
+    let projs = b.callFuncMulti(funcRef, args, target.signature.returns);
+    b.retMulti(projs);
+    return b.finish();
+  }
+  let resultType = if (target.signature.returns.length == 1) target.signature.returns[0] else null;
   let result = b.callFunc(funcRef, args, resultType);
   if (func.signature.returns.length == 1) {
     if (resultType == null) {
@@ -289,8 +297,7 @@ let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
     throw new ZirUnsupported('closure wrapper without target');
   }
   let target = func.closureWrapperTarget as WasmFunction;
-  if (func.signature.params.length != target.signature.params.length + 1 ||
-      target.signature.returns.length > 1) {
+  if (func.signature.params.length != target.signature.params.length + 1) {
     throw new ZirUnsupported('closure wrapper shape');
   }
   let b = new IrBuilder();
@@ -299,8 +306,16 @@ let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
   for (var i = 1; i < params.length; i += 1) {
     args.push(params[i]);
   }
-  let resultType = if (target.signature.returns.length == 1) target.signature.returns[0] else null;
   let funcRef = b.addRef(new IrRefFunc(target));
+  if (target.signature.returns.length > 1) {
+    if (func.signature.returns.length != target.signature.returns.length) {
+      throw new ZirUnsupported('closure wrapper result shape');
+    }
+    let projs = b.callFuncMulti(funcRef, args, target.signature.returns);
+    b.retMulti(projs);
+    return b.finish();
+  }
+  let resultType = if (target.signature.returns.length == 1) target.signature.returns[0] else null;
   let result = b.callFunc(funcRef, args, resultType);
   if (func.signature.returns.length == 1) {
     if (resultType == null) {

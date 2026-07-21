@@ -201,9 +201,15 @@ export final class IrVerifier {
       return;
     }
     if (!body.producesValue(value)) {
-      this.#error('%' + i32ToString(user) + ' uses %' + i32ToString(value) +
-          ' (' + irOpName(body.op(value)) + '), which produces no value');
-      return;
+      // Exception: mv_get projects results out of a multi-result call,
+      // which itself produces no single value.
+      let mvOk = body.op(user) == IrOp.mv_get &&
+          (body.op(value) == IrOp.call || body.op(value) == IrOp.call_ref);
+      if (!mvOk) {
+        this.#error('%' + i32ToString(user) + ' uses %' + i32ToString(value) +
+            ' (' + irOpName(body.op(value)) + '), which produces no value');
+        return;
+      }
     }
     let defBlock = body.instBlock[value];
     if (defBlock == useBlock) {
