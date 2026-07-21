@@ -16,6 +16,54 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Host mutations after a read-only capture are invisible to the closure
+- **Found**: 2026-07-21
+- **Severity**: medium
+- **Workaround**: mutate the variable somewhere inside a closure that
+  captures it (forcing cell capture), or restructure so the closure reads
+  state through an object field.
+- **Details**: A captured variable is only heap-celled when a CLOSURE
+  mutates it (`mutableCaptures` / `wasm.mutableCapturedSymbols` track
+  closure-side assignments only). If only the HOST mutates the variable
+  after creating a read-only closure over it, the closure keeps a by-value
+  copy from creation time:
+
+  ```zena
+  export let main = (): i32 => {
+    var x = 10;
+    let read = (): i32 => x;
+    x = 42;
+    return read();  // returns 10; expected 42
+  };
+  ```
+
+  Both compilers agree (bootstrap and self-hosted, streaming and ZIR
+  backends — all consume the same capture analysis), so this is a
+  checker/semantic-model bug, not a codegen one: the celling predicate
+  should be "captured AND mutated anywhere", not "mutated by the
+  closure". Fixing it in the capture analysis fixes every backend at
+  once; it is a user-visible semantics change (currently diverges from
+  JS-style closure capture), so it deserves its own change with tests.
+  Pinned (at the current shared behavior, with a comment) in
+  tests/language/execution/closures/celled_captures.zena.
+
+### Self-hosted codegen fails member access on &&-narrowed values
+- **Found**: 2026-07-21
+- **Severity**: medium
+- **Workaround**: hoist the narrowing to a statement (`if (x is T) {
+  ... x.member ... }`) or use an explicit cast after the `is` test.
+- **Details**: `x is T && x.member ...` — the checker narrows `x` in the
+  right-hand side of `&&`, and the BOOTSTRAP codegen compiles it, but the
+  SELF-HOSTED streaming codegen resolves `x.member` against the
+  unnarrowed declared type and throws at compile time ("Could not find
+  property `member` or virtual getter get#`member` on class ...").
+  Found in build:self-hosted when compiler source used
+  `vt is ValTypeRef && vt.target is WasmStruct`; the generateMemberExpression
+  path in zena/lib/codegen/expr/member.zena uses the node's declared type
+  where the bootstrap consults the narrowed type. Statement-level `is`
+  narrowing (including member access in the if-body) works in both.
+
+
 ### Self-hosted checker does not surface inherited members on sealed variant types
 - **Found**: 2026-07-19
 - **Severity**: medium
