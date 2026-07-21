@@ -138,6 +138,21 @@ export final class IrBuilder {
         argsIdx, funcRef);
   }
 
+  /** call_ref through a funcref value: extra = [callee, argc, arg*]. */
+  callRef(callee: i32, args: Array<i32>, resultType: ValType | null): i32 {
+    let start = this.body.extra.length;
+    this.body.extra.push(callee);
+    this.body.extra.push(args.length);
+    for (let v in args) {
+      this.body.extra.push(v);
+    }
+    if (resultType == null) {
+      return this.#emitInCurrent(IrOp.call_ref, -1, start, -1);
+    }
+    return this.#emitInCurrent(IrOp.call_ref, this.internType(resultType),
+        start, -1);
+  }
+
   // -- Terminators ---------------------------------------------------------
 
   br(target: i32, args: Array<i32>): void {

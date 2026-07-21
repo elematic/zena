@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 75
+// Interface packing and vtable dispatch end to end under
+// ZENA_BACKEND=zir: class-to-interface adaptation at argument,
+// return, and binding positions (iface_pack), plus method and
+// field-getter dispatch through the fat pointer's vtable (call_ref).
+interface Shape {
+  name: i32;
+  area(): i32;
+  scaled(k: i32): i32;
+}
+
+class Circle implements Shape {
+  name: i32 = 1;
+  r: i32;
+  new(this.r);
+  area(): i32 { return 3 * this.r * this.r; }
+  scaled(k: i32): i32 { return this.area() * k; }
+}
+
+class Square implements Shape {
+  name: i32 = 2;
+  s: i32;
+  new(this.s);
+  area(): i32 { return this.s * this.s; }
+  scaled(k: i32): i32 { return this.area() * k; }
+}
+
+let describe = (sh: Shape): i32 => {
+  return sh.area() + sh.scaled(2) + sh.name;
+};
+
+let pickShape = (which: i32): Shape => {
+  if (which == 0) {
+    return new Circle(2);
+  }
+  return new Square(3);
+};
+
+export let main = (): i32 => {
+  let c = new Circle(2);
+  let sq = new Square(3);
+  var acc = describe(c);
+  acc += describe(sq);
+  let indirect: Shape = pickShape(1);
+  acc += indirect.area();
+  return acc;
+};

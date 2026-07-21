@@ -18,8 +18,8 @@
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
-import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, heapTypeToSigned, HeapType } from '../wasm.zena';
-import { WasmModule, WasmFunction } from '../wasm-module.zena';
+import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, WasmType, heapTypeToSigned, HeapType } from '../wasm.zena';
+import { WasmModule, WasmFunction, WasmSignature } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
 import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, irOpName, isUnaryNumericOp } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
@@ -361,6 +361,35 @@ export final class ZirFunctionEmitter {
           throw new Error('zir emit: ref.test target kind');
         }
       }
+    } else if (op == IrOp.call_ref) {
+      let idx = body.a[inst];
+      let callee = body.extra[idx];
+      let argc = body.extra[idx + 1];
+      for (var k = 0; k < argc; k += 1) {
+        this.#pushValue(body.extra[idx + 2 + k]);
+      }
+      this.#pushValue(callee);
+      this.emitter.emitCallRef(this.#signatureOf(callee).index);
+    } else if (op == IrOp.iface_pack) {
+      this.#pushValue(body.a[inst]);
+      match (body.refTable[body.b[inst]]) {
+        case IrRefGlobal as g: { this.emitter.emitGlobalGet(g.target.index); }
+        case _: { throw new Error('zir emit: iface_pack ref kind'); }
+      }
+      match (body.resultType(inst)) {
+        case ValTypeRef as r: {
+          if (!(r.target is WasmStruct)) {
+            throw new Error('zir emit: iface_pack result kind');
+          }
+          this.emitter.emitStructNew((r.target as WasmStruct).index);
+        }
+        case _: { throw new Error('zir emit: iface_pack result kind'); }
+      }
+    } else if (op == IrOp.iface_instance || op == IrOp.iface_vtable) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      let fatPtr = this.#structTargetOf(body.a[inst]);
+      let fieldIdx = if (op == IrOp.iface_instance) 0 else 1;
+      this.emitter.emitStructGet(fatPtr.index, fieldIdx);
     } else if (op == IrOp.ref_is_null) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.emitter.emitRefIsNull();
@@ -381,6 +410,36 @@ export final class ZirFunctionEmitter {
     }
   }
 
+
+  /** The wasm signature behind a funcref-typed value (call_ref callee). */
+  #signatureOf(inst: i32): WasmSignature {
+    let vt = this.body.resultType(inst) as ValType;
+    var target: WasmType | null = null;
+    match (vt) {
+      case ValTypeRef as r: { target = r.target; }
+      case ValTypeRefNull as rn: { target = rn.target; }
+      case _: {}
+    }
+    if (target is WasmSignature) {
+      return target as WasmSignature;
+    }
+    throw new Error('zir emit: call_ref callee is not signature-typed');
+  }
+
+  /** The struct behind a reference-typed value (fat-pointer projections). */
+  #structTargetOf(inst: i32): WasmStruct {
+    let vt = this.body.resultType(inst) as ValType;
+    var target: WasmType | null = null;
+    match (vt) {
+      case ValTypeRef as r: { target = r.target; }
+      case ValTypeRefNull as rn: { target = rn.target; }
+      case _: {}
+    }
+    if (target is WasmStruct) {
+      return target as WasmStruct;
+    }
+    throw new Error('zir emit: fat-pointer operand is not struct-typed');
+  }
 
   #fieldRef(refIdx: i32): IrRefField {
     let ref = this.body.refTable[refIdx];

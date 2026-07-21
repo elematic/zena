@@ -37,15 +37,16 @@ import {
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   getMemberPropertyName
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, ThisType, FunctionType, baseType, isVoidOrNeverType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, baseType, isVoidOrNeverType } from '../../types.zena';
+import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, valTypeEquals, isRefValType } from '../wasm.zena';
-import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
-import { typeToValTypeWithSub, eraseTypeParameters } from '../type-mapping.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
+import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 
 /**
@@ -73,7 +74,8 @@ let usesSynthesizedMachinery = (func: WasmFunction): boolean => {
       func.isClosureWrapper || func.isClosureTrampoline ||
       func.getterStruct != null || func.setterStruct != null ||
       func.isCaseClassEq || func.isCaseClassHash ||
-      func.typeParameters != null || func.intrinsic != null;
+      func.typeParameters != null || func.typeArguments != null ||
+      func.intrinsic != null;
 };
 
 final class MemberTarget {
@@ -699,6 +701,71 @@ final class FunctionLowerer {
   // -- Expressions -----------------------------------------------------
 
   #lowerExpression(expr: Expression): i32 {
+    let value = this.#lowerExpressionDispatch(expr);
+    return this.#applyAdaptations(expr, value);
+  }
+
+  /**
+   * Post-expression adaptations, mirroring the streaming generator's
+   * hook after generateExpression: the model marks expressions whose
+   * value must be repacked for the consuming context. Interface
+   * adaptations pack a class instance into a fat pointer (iface_pack);
+   * record and function adaptations are not lowered yet and bail —
+   * loudly, since silently skipping a required repack would miscompile.
+   */
+  #applyAdaptations(expr: Expression, value: i32): i32 {
+    if (this.func.model.getRecordAdaptation(expr) != null) {
+      this.#bail('record adaptation');
+    }
+    if (this.func.model.getFunctionAdaptation(expr) != null) {
+      this.#bail('function adaptation');
+    }
+    let iaOpt = this.func.model.getInterfaceAdaptation(expr);
+    if (iaOpt == null) {
+      return value;
+    }
+    if (value < 0 || this.b.body.typeId[value] < 0) {
+      this.#bail('interface adaptation without value');
+    }
+    let ia = iaOpt as InterfaceAdaptation;
+    var srcType = ia.source as Type;
+    var tgtType = ia.target as Type;
+    // Mixin-intermediate and `_This`-marker sources stand in for the
+    // enclosing class (mirrors the streaming hook).
+    if (srcType is ClassType) {
+      let sct = srcType as ClassType;
+      let n = sct.name;
+      if (sct.isMixinIntermediate ||
+          (n.length >= 5 && n.sliceBytes(n.length - 5, n.length) == "_This")) {
+        if (this.func.classType != null) {
+          srcType = this.func.classType as ClassType;
+        }
+      }
+    }
+    if (this.func.classType != null) {
+      let ct = this.func.classType as ClassType;
+      srcType = substituteTypeParamsInClassContext(ct, srcType);
+      tgtType = substituteTypeParamsInClassContext(ct, tgtType);
+    }
+    if (!(srcType is ClassType) || !(tgtType is InterfaceType)) {
+      this.#bail('interface adaptation shape');
+    }
+    let iName = getInterfaceKey(tgtType as InterfaceType);
+    let key = getClassInterfaceKey(getClassKey(srcType as ClassType), iName);
+    let vtOpt = this.wasm.getClassInterfaceVTable(key);
+    if (vtOpt == null) {
+      this.#bail('interface vtable global not found');
+    }
+    if (!this.wasm.interfaceStructs.has(iName)) {
+      this.#bail('interface struct not found');
+    }
+    let fatPtr = this.wasm.interfaceStructs[iName];
+    let globalRef = this.b.addRef(new IrRefGlobal(vtOpt as WasmGlobal));
+    return this.b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr) as ValType,
+        value, globalRef);
+  }
+
+  #lowerExpressionDispatch(expr: Expression): i32 {
     return match (expr) {
       case NumberLiteral as lit: this.#lowerNumberLiteral(lit)
       case BooleanLiteral {value}: this.b.constI32(if (value) 1 else 0, new ValTypeI32())
@@ -1711,12 +1778,17 @@ final class FunctionLowerer {
       this.#bail('write through accessor');
     }
     let fieldName = target.fieldName as String;
-    // Setter-side override check (the read-side resolve checked get#).
+    // Setter-side override checks (the read-side resolve checked get#):
+    // neither a redefined setter between receiver and declarer nor a
+    // transitive-subclass setter may exist for a direct struct.set.
     let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+    let receiverCt = eraseTypeParameters(this.#resolveSelfType(
+        this.func.model.getNodeType(member.object) as Type)) as ClassType;
+    if (this.#accessorRedefined(receiverCt, propName, 'set#' + propName)) {
+      this.#bail('field with redefined setter');
+    }
     var infoOpt: ClassCodegenInfo | null = null;
-    if (let (true, info) = this.wasm.classInfos.get(getClassKey(
-        eraseTypeParameters(this.#resolveSelfType(
-            this.func.model.getNodeType(member.object) as Type)) as ClassType))) {
+    if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
       infoOpt = info;
     }
     if (infoOpt != null &&
@@ -1725,6 +1797,10 @@ final class FunctionLowerer {
     }
 
     let receiver = this.#lowerExpression(member.object);
+    if (!isValSubtype(this.#valueType(receiver),
+        new ValTypeRefNull(target.owner) as ValType)) {
+      this.#bail('member receiver struct mismatch');
+    }
     let fieldVt = this.#fieldValType(target.owner, fieldName);
     var value = -1;
     if (assign.operator == null) {
@@ -1773,12 +1849,32 @@ final class FunctionLowerer {
     if (member.optional) {
       this.#bail('optional member access');
     }
+    let objectType = this.func.model.getNodeType(member.object);
+    if (objectType != null &&
+        this.#resolveSelfType(objectType as Type) is InterfaceType) {
+      if (this.func.model.isStaticAccess(member)) {
+        this.#bail('static interface access');
+      }
+      let it = this.#resolveSelfType(objectType as Type) as InterfaceType;
+      let propName = getMemberPropertyName(
+          member.isSymbolAccess, member.property.name);
+      let result = this.#lowerInterfaceDispatch(
+          it, 'get#' + propName, member.object, null);
+      return this.#reassertNonNull(result, this.#exprValType(member));
+    }
     let target = this.#resolveMemberTarget(member);
     let receiver = this.#lowerExpression(member.object);
     let receiverVt = this.#valueType(receiver);
     let isStructRef = receiverVt is ValTypeRef || receiverVt is ValTypeRefNull;
     if (!isStructRef) {
       this.#bail('member receiver kind');
+    }
+    // The receiver value must actually be (a subtype of) the struct the
+    // member resolved against — mismatched specialization keys (e.g.
+    // intrinsic array classes) would otherwise emit invalid struct.gets.
+    if (!isValSubtype(receiverVt,
+        new ValTypeRefNull(target.owner) as ValType)) {
+      this.#bail('member receiver struct mismatch');
     }
     if (target.fieldName != null) {
       let fieldName = target.fieldName as String;
@@ -1823,6 +1919,19 @@ final class FunctionLowerer {
       this.#bail('untyped method receiver');
     }
     let selfResolved = this.#resolveSelfType(objectType as Type);
+    if (selfResolved is InterfaceType) {
+      let propName = getMemberPropertyName(
+          member.isSymbolAccess, member.property.name);
+      let result = this.#lowerInterfaceDispatch(
+          selfResolved as InterfaceType, propName, member.object, call.args);
+      let nodeType = this.func.model.getNodeType(call);
+      if (nodeType != null && !(baseType(nodeType as Type) is VoidType) &&
+          this.b.body.typeId[result] >= 0) {
+        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+        return this.#reassertNonNull(result, want);
+      }
+      return result;
+    }
     if (!(selfResolved is ClassType)) {
       this.#bail('method receiver kind');
     }
@@ -1897,6 +2006,94 @@ final class FunctionLowerer {
   }
 
   /**
+   * Interface vtable dispatch (ir.md §5): unpack the fat pointer, load
+   * the member's funcref slot from the vtable, and call_ref through it.
+   * `memberName` is the vtable slot name — a method name or a get#/set#
+   * accessor. `argExprs` is null for accessor reads (receiver only).
+   */
+  #lowerInterfaceDispatch(it: InterfaceType, memberName: String,
+      receiverExpr: Expression, argExprs: Array<Expression> | null): i32 {
+    let iName = getInterfaceKey(it);
+    if (!this.wasm.interfaceVTableStructs.has(iName) ||
+        !this.wasm.interfaceStructs.has(iName)) {
+      this.#bail('interface not discovered');
+    }
+    let vst = this.wasm.interfaceVTableStructs[iName];
+    let fatPtr = this.wasm.interfaceStructs[iName];
+    var slot = -1;
+    for (var i = 0; i < vst.fields.length; i += 1) {
+      let fn = vst.fields[i].name;
+      if (fn != null && (fn as String) == memberName) {
+        slot = i;
+      }
+    }
+    if (slot < 0) {
+      // Function-typed interface fields called as methods land here
+      // (streaming falls back to a closure call); closures bail.
+      this.#bail('interface member not in vtable');
+    }
+    // The vtable slot's declared type IS the signature (the RTA pass
+    // types slots as exact (ref $sig)); using it keeps the callee value
+    // consistent with what emission derives the call_ref type from.
+    var sigOpt: WasmSignature | null = null;
+    match (vst.fields[slot].type) {
+      case ValTypeRef as r: {
+        if (r.target is WasmSignature) {
+          sigOpt = r.target as WasmSignature;
+        }
+      }
+      case _: {}
+    }
+    if (sigOpt == null) {
+      this.#bail('interface slot shape');
+    }
+    let sig = sigOpt as WasmSignature;
+    if (sig.returns.length > 1) {
+      this.#bail('interface member multi-value return');
+    }
+    let argCount = if (argExprs == null) 0
+        else (argExprs as Array<Expression>).length;
+    if (sig.params.length != argCount + 1) {
+      this.#bail('interface call arity adaptation');
+    }
+
+    let recv = this.#lowerExpression(receiverExpr);
+    if (!isValSubtype(this.#valueType(recv),
+        new ValTypeRefNull(fatPtr) as ValType)) {
+      this.#bail('interface receiver type');
+    }
+    let inst = this.b.emit(
+        IrOp.iface_instance, fatPtr.fields[0].type, recv, -1);
+    if (!isValSubtype(this.#valueType(inst), sig.params[0])) {
+      this.#bail('interface receiver adaptation');
+    }
+    let args = new Array<i32>();
+    args.push(inst);
+    if (argExprs != null) {
+      let list = argExprs as Array<Expression>;
+      for (var i = 0; i < list.length; i += 1) {
+        let paramVt = sig.params[i + 1];
+        this.#requireSupported(paramVt, 'interface param type');
+        let value = this.#lowerExpressionCtx(list[i], paramVt);
+        if (!isValSubtype(this.#valueType(value), paramVt)) {
+          this.#bail('interface argument type');
+        }
+        args.push(value);
+      }
+    }
+    let vt = this.b.emit(IrOp.iface_vtable, fatPtr.fields[1].type, recv, -1);
+    let fieldRef = this.b.addRef(new IrRefField(vst, memberName));
+    let callee = this.b.emit(
+        IrOp.struct_get, vst.fields[slot].type, vt, fieldRef);
+    var resultType: ValType | null = null;
+    if (sig.returns.length == 1) {
+      this.#requireSupported(sig.returns[0], 'interface result type');
+      resultType = sig.returns[0];
+    }
+    return this.b.callRef(callee, args, resultType);
+  }
+
+  /**
    * Resolves a member read against the receiver's class: either a
    * physical field (fieldName set) or a non-overridden getter function.
    */
@@ -1930,11 +2127,13 @@ final class FunctionLowerer {
     }
 
     // Physical field with the property's name? (Memoized on the
-    // struct: this runs once per member access.)
+    // struct: this runs once per member access.) A direct read is only
+    // sound when no class between the receiver and the field's declarer
+    // redefined the accessor (a subclass shadowing an inherited field
+    // with a getter leaves the parent's physical field in the struct),
+    // and no transitive subclass overrides it either.
     let hasField = structType.fieldIndexByName(lookupName) >= 0;
-    if (hasField) {
-      // Direct read is only sound if no subclass turns this into an
-      // accessor; the synthesized getter is named get#<prop>.
+    if (hasField && !this.#accessorRedefined(ct, propName, 'get#' + propName)) {
       if (this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
         this.#bail('field with overriding accessor');
       }
@@ -1962,6 +2161,42 @@ final class FunctionLowerer {
       this.#bail('overridden getter');
     }
     return new MemberTarget(structType, null, getter);
+  }
+
+  /**
+   * True when a class between the receiver and the property's declaring
+   * class redefines the accessor: the field-declaring class provides the
+   * DEFAULT accessor, and if the nearest definition walking up from the
+   * receiver differs, physical field access is wrong (mirrors the
+   * streaming generator's hasOverride computation).
+   */
+  #accessorRedefined(ct: ClassType, propName: String, accessorName: String): boolean {
+    var fieldDeclaringClass = ct;
+    var curr: ClassType | null = ct;
+    while (curr != null) {
+      let c = curr as ClassType;
+      if (c.members.has(propName) && c.members[propName] is FieldInfo) {
+        fieldDeclaringClass = c;
+      }
+      curr = c.superType;
+    }
+    var defaultAccessor: WasmFunction | null = null;
+    let defKey = getClassMethodKey(getClassKey(fieldDeclaringClass), accessorName);
+    if (this.wasm.classMethodMap.has(defKey)) {
+      defaultAccessor = this.wasm.classMethodMap[defKey];
+    }
+    var resolved: WasmFunction | null = null;
+    var currClass: ClassType | null = ct;
+    while (currClass != null && resolved == null) {
+      let key = getClassMethodKey(
+          getClassKey(currClass as ClassType), accessorName);
+      if (this.wasm.classMethodMap.has(key)) {
+        resolved = this.wasm.classMethodMap[key];
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    return resolved != null && defaultAccessor != null &&
+        resolved != defaultAccessor;
   }
 
   /** True if any transitive subclass provides its own `methodName`. */

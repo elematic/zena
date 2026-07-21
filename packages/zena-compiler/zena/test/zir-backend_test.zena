@@ -296,6 +296,51 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('unreachable'));
   });
 
+  test('interface packing and vtable dispatch', (ctx: TestContext): void => {
+    // Structural: multi-function modules are discovery-order sensitive.
+    let result = compileWithZir(
+        'interface Greeter { greet(): i32; }\n' +
+        'class Loud implements Greeter {\n' +
+        '  volume: i32;\n' +
+        '  new(this.volume);\n' +
+        '  greet(): i32 { return this.volume * 2; }\n' +
+        '}\n' +
+        'let run = (g: Greeter): i32 => g.greet();\n' +
+        'export let main = (): i32 => {\n' +
+        '  let loud = new Loud(21);\n' +
+        '  return run(loud);\n' +
+        '};');
+    // Packing: vtable global + fat-pointer struct.new at the call site.
+    isTrue(result.contains('global.get'));
+    isTrue(result.contains('struct.new'));
+    // Dispatch: the vtable slot is signature-typed, so the loaded
+    // funcref feeds call_ref directly (no ref.cast needed).
+    isTrue(result.contains('call_ref'));
+  });
+
+  test('field shadowed by subclass accessor uses the getter', (ctx: TestContext): void => {
+    // Regression: a subclass redefining an inherited physical field as
+    // an accessor must dispatch through the getter, not struct.get the
+    // parent's field (classes/super-fields.zena caught this).
+    let result = compileWithZir(
+        'class Base { x: i32; new(this.x); }\n' +
+        'final class Derived extends Base {\n' +
+        '  new(x: i32) : super(x);\n' +
+        '  x: i32 {\n' +
+        '    get {\n' +
+        '      return 99;\n' +
+        '    }\n' +
+        '  }\n' +
+        '}\n' +
+        'export let main = (): i32 => {\n' +
+        '  let d = new Derived(13);\n' +
+        '  return d.x;\n' +
+        '};');
+    // The read must call the accessor.
+    isTrue(result.contains('call $Derived.get#x') ||
+        result.contains('get#x'));
+  });
+
   test('zir output contains the lowered function', (ctx: TestContext): void => {
     // Cheap structural sanity independent of snapshots: the ZIR-lowered
     // function is emitted (every value a local, so at least one local).
