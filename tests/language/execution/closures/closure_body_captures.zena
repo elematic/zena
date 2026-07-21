@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 164
+// Closure implementation BODIES under ZENA_BACKEND=zir: the context
+// prologue (structref cast + capture loads), this-capturing closures
+// inside methods, and multi-capture value closures with control flow.
+class Counter {
+  base: i32;
+  new(this.base);
+
+  makeAdder(): ((x: i32) => i32) {
+    let f = (x: i32): i32 => x + this.base;
+    return f;
+  }
+}
+
+let apply = (f: (x: i32) => i32, v: i32): i32 => f(v);
+
+let compose = (k: i32): ((x: i32) => i32) => {
+  let scale = k * 2;
+  let f = (x: i32): i32 => {
+    var acc = x * scale;
+    if (acc > 100) {
+      acc -= k;
+    }
+    return acc;
+  };
+  return f;
+};
+
+export let main = (): i32 => {
+  let c = new Counter(7);
+  let addBase = c.makeAdder();
+  var acc = apply(addBase, 10);
+  let scaled = compose(3);
+  acc += apply(scaled, 5);
+  acc += apply(scaled, 20);
+  return acc;
+};

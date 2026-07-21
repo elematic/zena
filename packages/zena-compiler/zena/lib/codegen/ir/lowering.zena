@@ -107,12 +107,35 @@ export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boo
     }
     return null;
   }
-  // No closures, adaptations, trampolines, synthesized accessors,
-  // imports, or generics. Plain top-level functions and written-out
-  // method bodies (except constructors) are eligible.
-  if (func.isClosure || func.isImport || usesSynthesizedMachinery(func) ||
-      func.captures.length > 0 || func.capturesThis ||
-      func.contextStruct != null) {
+  // No adaptations, trampolines, synthesized accessors, imports, or
+  // generics. Plain top-level functions, written-out method bodies,
+  // constructors, and closure implementation bodies are eligible.
+  if (func.isImport || usesSynthesizedMachinery(func)) {
+    if (strict) {
+      throw new ZirUnsupported("function shape of " + name);
+    }
+    return null;
+  }
+  if (func.isClosure) {
+    if (func.contextStruct == null) {
+      if (strict) {
+        throw new ZirUnsupported("closure without context struct " + name);
+      }
+      return null;
+    }
+    // Celled captures (mutated on either side of the closure boundary)
+    // are heap cells the SSA environment does not model yet.
+    for (let symId in func.captures) {
+      if (wasm.mutableCapturedSymbols.has(symId)) {
+        if (strict) {
+          throw new ZirUnsupported("celled capture in " + name);
+        }
+        return null;
+      }
+    }
+  } else if (func.captures.length > 0 || func.capturesThis ||
+             func.contextStruct != null) {
+    // Capture state on a non-closure is a shape lowering doesn't know.
     if (strict) {
       throw new ZirUnsupported("function shape of " + name);
     }
@@ -143,9 +166,11 @@ export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boo
       throw new ZirUnsupported("synthesized function " + name);
     }
     return null;
-  } else if (func.classType != null || func.structType != null) {
-    // A FunctionExpression carrying class context (extension methods,
-    // class-scoped lambdas) still bails.
+  } else if (!func.isClosure &&
+             (func.classType != null || func.structType != null)) {
+    // A non-closure FunctionExpression carrying class context
+    // (extension methods) still bails; closures keep their enclosing
+    // class context for `this` captures and type substitution.
     if (strict) {
       throw new ZirUnsupported("function shape of " + name);
     }
@@ -220,6 +245,10 @@ final class FunctionLowerer {
       let fExpr = node as FunctionExpression;
       params = fExpr.params;
       bodyNode = fExpr.body;
+      if (this.func.isClosure) {
+        // Closure implementations take their context as param 0.
+        paramOffset = 1;
+      }
     }
     let paramList = params as Array<Parameter>;
     if (sig.params.length != paramList.length + paramOffset) {
@@ -227,12 +256,18 @@ final class FunctionLowerer {
     }
 
     let entry = this.b.newBlock();
+    var ctxParam = -1;
     if (paramOffset == 1) {
       this.#requireSupported(sig.params[0], 'receiver type');
-      this.thisValue = this.b.blockParam(entry, sig.params[0]);
+      let p0 = this.b.blockParam(entry, sig.params[0]);
+      if (this.func.isClosure) {
+        ctxParam = p0;
+      } else {
+        this.thisValue = p0;
+      }
     }
     var needsThisDowncast = false;
-    if (paramOffset == 1 && ctorDef == null &&
+    if (paramOffset == 1 && ctorDef == null && !this.func.isClosure &&
         this.func.classType != null && this.func.methodName != null) {
       // Override methods receive the ROOT class's receiver type (vtable
       // signature compatibility) and must downcast to their own class.
@@ -272,6 +307,9 @@ final class FunctionLowerer {
       this.thisValue = this.b.emit(IrOp.ref_cast, castVt, this.thisValue,
           this.b.internType(castVt));
     }
+    if (this.func.isClosure) {
+      this.#lowerClosurePrologue(ctxParam);
+    }
 
     if (ctorDef != null) {
       this.#lowerConstructorPrologue(ctorDef as MethodDefinition);
@@ -305,6 +343,48 @@ final class FunctionLowerer {
       this.#emitCheckedRet(value);
     }
     return this.b.finish();
+  }
+
+  /**
+   * Closure implementation prologue, mirroring the streaming
+   * generator: cast the structref context parameter to the context
+   * struct and bind `this` (when captured) and each captured value
+   * into the SSA environment. Celled captures bailed in pre-flight,
+   * and captured symbols are never assigned in a lowered body (an
+   * assignment would have made them celled), so plain environment
+   * entries are sound — they never need merge parameters.
+   */
+  #lowerClosurePrologue(ctxParam: i32): void {
+    let cs = this.func.contextStruct as WasmStruct;
+    if (cs.fields.length == 0) {
+      return;
+    }
+    let castVt: ValType = new ValTypeRef(cs);
+    let casted = this.b.emit(IrOp.ref_cast, castVt, ctxParam,
+        this.b.internType(castVt));
+    var fieldIdx = 0;
+    if (this.func.capturesThis) {
+      let field = cs.fields[0];
+      let fieldName = field.name;
+      if (fieldName == null) {
+        this.#bail('unnamed context field');
+      }
+      let fieldRef = this.b.addRef(new IrRefField(cs, fieldName as String));
+      this.thisValue = this.b.emit(IrOp.struct_get, field.type, casted, fieldRef);
+      fieldIdx = 1;
+    }
+    for (let symId in this.func.captures) {
+      let field = cs.fields[fieldIdx];
+      let fieldName = field.name;
+      if (fieldName == null) {
+        this.#bail('unnamed context field');
+      }
+      this.#requireSupported(field.type, 'capture type');
+      let fieldRef = this.b.addRef(new IrRefField(cs, fieldName as String));
+      let value = this.b.emit(IrOp.struct_get, field.type, casted, fieldRef);
+      this.env[symId] = value;
+      fieldIdx += 1;
+    }
   }
 
   /**
