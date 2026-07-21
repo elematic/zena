@@ -6,10 +6,10 @@ import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { Hashable } from 'zena:hashable';
-import { 
-  ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef, 
-  ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32, valTypeToOpcode,
-  nextWasmTypeUid
+import {
+  ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef,
+  ValTypeAnyRef, ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32,
+  valTypeToOpcode, nextWasmTypeUid
 } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
@@ -245,6 +245,66 @@ export final class WasmSignature extends WasmType {
   returns: Array<ValType>;
   new(this.params, this.returns) : super();
 }
+
+/**
+ * Wasm-level assignability between value types: may a value of type `a`
+ * flow where `b` is expected? Conservative: scalar types must match
+ * exactly; reference types allow dropping non-nullability, walking
+ * struct supertype chains, and widening struct or array targets to
+ * eqref/anyref (all Zena heap values are eq).
+ */
+export let isValSubtype = (a: ValType, b: ValType): boolean => {
+  if (valTypeEquals(a, b)) {
+    return true;
+  }
+  let aTarget = refTargetOf(a);
+  if (aTarget == null) {
+    return false;
+  }
+  // a is a concrete ref; non-null may widen to nullable, never the reverse.
+  let aNullable = a is ValTypeRefNull;
+  if (b is ValTypeAnyRef || b is ValTypeEqRef) {
+    return true;
+  }
+  if (b is ValTypeStructRef) {
+    return (aTarget as WasmType) is WasmStruct;
+  }
+  let bTarget = refTargetOf(b);
+  if (bTarget == null) {
+    return false;
+  }
+  let bNullable = b is ValTypeRefNull;
+  if (aNullable && !bNullable) {
+    return false;
+  }
+  return heapSubtype(aTarget as WasmType, bTarget as WasmType);
+};
+
+/** The heap type behind a concrete reference ValType, else null. */
+let refTargetOf = (t: ValType): WasmType | null => {
+  return match (t) {
+    case ValTypeRef {target}: target
+    case ValTypeRefNull {target}: target
+    case _: null
+  };
+};
+
+/** Declared-subtype check between heap types (struct super chains). */
+let heapSubtype = (a: WasmType, b: WasmType): boolean => {
+  if (a == b) {
+    return true;
+  }
+  if (a is WasmStruct) {
+    var current: WasmStruct | null = (a as WasmStruct).superStruct;
+    while (current != null) {
+      if ((current as WasmStruct) == b) {
+        return true;
+      }
+      current = (current as WasmStruct).superStruct;
+    }
+  }
+  return false;
+};
 
 /**
  * Represents a single compiled WebAssembly function.

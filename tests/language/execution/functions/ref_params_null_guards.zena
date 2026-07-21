@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 5
+// Reference values flowing through top-level functions: nullable params,
+// null-guard narrowing, identity comparison, and string literals.
+// (Also exercises the ZIR backend's reference plumbing when run with
+// ZENA_BACKEND=zir.)
+
+let pickName = (primary: String | null, fallback: String): String => {
+  if (primary != null) {
+    return primary;
+  }
+  return fallback;
+};
+
+let sameRef = (a: String, b: String): boolean => a === b;
+
+let greeting = (): String => 'hello';
+
+let describe = (s: String | null): i32 => {
+  if (s == null) {
+    return 0;
+  }
+  return 1;
+};
+
+export let main = (): i32 => {
+  var total = 0;
+  let name = pickName(null, 'zena');
+  total += describe(name);                 // 1
+  total += describe(null);                 // 1 total stays: describe(null) = 0
+  let a = 'shared';
+  if (sameRef(a, a)) { total += 1; }       // 2
+  let b = pickName(a, 'other');
+  if (sameRef(a, b)) { total += 1; }       // 3
+  total += describe(greeting());           // 4
+  total += describe(pickName(greeting(), 'x')); // 5
+  return total;
+};

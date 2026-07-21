@@ -18,7 +18,7 @@
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
-import { ValType, ValTypeVoid } from '../wasm.zena';
+import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, heapTypeToSigned, HeapType } from '../wasm.zena';
 import { WasmModule, WasmFunction } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
 import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, irOpName, isUnaryNumericOp } from './ir.zena';
@@ -92,7 +92,7 @@ export final class ZirFunctionEmitter {
     while (i < body.instCount()) {
       if (body.producesValue(i) && this.localOf[i] < 0) {
         this.localOf[i] = paramCount + this.localTypes.length;
-        this.localTypes.push(body.resultType(i) as ValType);
+        this.localTypes.push(this.#localTypeFor(body.resultType(i) as ValType));
       }
       i += 1;
     }
@@ -112,12 +112,48 @@ export final class ZirFunctionEmitter {
           for (let p in body.blocks[s.target].params) {
             if (this.tempOf[p] < 0) {
               this.tempOf[p] = paramCount + this.localTypes.length;
-              this.localTypes.push(body.resultType(p) as ValType);
+              this.localTypes.push(this.#localTypeFor(body.resultType(p) as ValType));
             }
           }
         }
       }
       blockId += 1;
+    }
+  }
+
+  /**
+   * Non-nullable reference values are stored in nullable locals, and
+   * #pushValue re-asserts non-nullness on reads that need the declared
+   * type (docs/design/ir.md §12). Wasm locals CAN be non-defaultable
+   * when definitely assigned before use, but the validator's
+   * initialization tracking rolls back at each block `end` — and this
+   * every-value-a-local scheme routinely defines a value inside one
+   * structured block and reads it after that block closes (merge
+   * params are set on in-edges; values flow into dominated subtrees).
+   * Stack scheduling / local coalescing (ir.md §12) is the point where
+   * same-scope values can graduate to non-null locals.
+   */
+  #localTypeFor(vt: ValType): ValType {
+    return match (vt) {
+      case ValTypeRef as r: new ValTypeRefNull(r.target)
+      case _: vt
+    };
+  }
+
+  /** True if the value's IR type is non-null but its local is nullable. */
+  #storedNullable(inst: i32): boolean {
+    if (!(this.body.resultType(inst) is ValTypeRef)) {
+      return false;
+    }
+    // Signature params keep their declared (possibly non-null) types.
+    return this.localOf[inst] >= this.func.signature.params.length;
+  }
+
+  /** Loads a value at its declared IR type. */
+  #pushValue(inst: i32): void {
+    this.emitter.emitLocalGet(this.localOf[inst]);
+    if (this.#storedNullable(inst)) {
+      this.emitter.emitRefAsNonNull();
     }
   }
 
@@ -165,7 +201,7 @@ export final class ZirFunctionEmitter {
     if (op == IrOp.ret) {
       let value = body.a[inst];
       if (value >= 0) {
-        this.emitter.emitLocalGet(this.localOf[value]);
+        this.#pushValue(value);
       }
       this.emitter.emitReturn();
       return;
@@ -263,7 +299,7 @@ export final class ZirFunctionEmitter {
       let argsIdx = body.a[inst];
       let argc = body.extra[argsIdx];
       for (var k = 0; k < argc; k += 1) {
-        this.emitter.emitLocalGet(this.localOf[body.extra[argsIdx + 1 + k]]);
+        this.#pushValue(body.extra[argsIdx + 1 + k]);
       }
       let ref = body.refTable[body.b[inst]];
       match (ref) {
@@ -274,6 +310,22 @@ export final class ZirFunctionEmitter {
           throw new Error('zir emit: call ref is not a function');
         }
       }
+    } else if (op == IrOp.ref_null) {
+      let vt = body.resultType(inst) as ValType;
+      match (vt) {
+        case ValTypeRefNull as r: { this.emitter.emitRefNull(r.target.index); }
+        case ValTypeAnyRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.any)); }
+        case ValTypeEqRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.eq)); }
+        case _: {
+          throw new Error('zir emit: ref.null type');
+        }
+      }
+    } else if (op == IrOp.ref_is_null) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      this.emitter.emitRefIsNull();
+    } else if (op == IrOp.ref_as_non_null) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      this.emitter.emitRefAsNonNull();
     } else if (isUnaryNumericOp(op)) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.#emitOp(op);
@@ -362,6 +414,7 @@ export final class ZirFunctionEmitter {
       case IrOp.f32_gt: { e.emitF32Gt(); }
       case IrOp.f32_ge: { e.emitF32Ge(); }
       case IrOp.f32_neg: { e.emitF32Neg(); }
+      case IrOp.ref_eq: { e.emitRefEq(); }
       case IrOp.i32_wrap_i64: { e.emitI32WrapI64(); }
       case IrOp.i64_extend_i32_s: { e.emitI64ExtendI32S(); }
       case IrOp.f64_convert_i32_s: { e.emitF64ConvertI32S(); }

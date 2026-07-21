@@ -198,6 +198,31 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('i32.gt_u'));
   });
 
+  test('reference plumbing: null tests, narrowing, identity', (ctx: TestContext): void => {
+    // Structural: multi-function modules are discovery-order sensitive.
+    // A local class supplies the reference type (the MockHost harness has
+    // no stdlib, so String is unavailable here); string-literal lowering
+    // is covered by the portable execution suite under ZENA_BACKEND=zir.
+    let result = compileWithZir(
+        'class Box { x: i32; new(this.x); }\n' +
+        'let pick = (primary: Box | null, fallback: Box): Box => {\n' +
+        '  if (primary != null) {\n' +
+        '    return primary;\n' +
+        '  }\n' +
+        '  return fallback;\n' +
+        '};\n' +
+        'let same = (a: Box, b: Box): boolean => a === b;\n' +
+        'export let main = (): i32 => {\n' +
+        '  let b = new Box(1);\n' +
+        '  if (same(pick(null, b), b)) { return 1; }\n' +
+        '  return 0;\n' +
+        '};');
+    isTrue(result.contains('ref.is_null'));
+    isTrue(result.contains('ref.eq'));
+    // The narrowed `return primary` re-asserts non-nullness.
+    isTrue(result.contains('ref.as_non_null'));
+  });
+
   test('zir output contains the lowered function', (ctx: TestContext): void => {
     // Cheap structural sanity independent of snapshots: the ZIR-lowered
     // function is emitted (every value a local, so at least one local).

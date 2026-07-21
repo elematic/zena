@@ -30,13 +30,14 @@ import {
   WhileStatement, ExpressionStatement, VariableDeclaration,
   BinaryExpression, UnaryExpression, AssignmentExpression, Identifier,
   NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern,
-  CallExpression, IfExpression, AsExpression, ForStatement
+  CallExpression, IfExpression, AsExpression, ForStatement,
+  NullLiteral, StringLiteral
 } from '../../ast.zena';
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, baseType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
-import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, valTypeEquals } from '../wasm.zena';
-import { WasmModule, WasmFunction } from '../wasm-module.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, valTypeEquals, isRefValType } from '../wasm.zena';
+import { WasmModule, WasmFunction, isValSubtype } from '../wasm-module.zena';
 import { typeToValTypeWithSub } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc } from './ir.zena';
@@ -109,6 +110,8 @@ final class FunctionLowerer {
   func: WasmFunction;
   b = new IrBuilder();
   var env = new HashMap<SymbolId, i32>();
+  /** Symbols behind env entries, for binding-type lookups at merges. */
+  symbols = new HashMap<SymbolId, Symbol>();
   loops = new Array<LoopCtx>();
   var reachable = true;
 
@@ -121,7 +124,7 @@ final class FunctionLowerer {
       this.#bail('multi-value return');
     }
     if (sig.returns.length == 1) {
-      this.#requireScalar(sig.returns[0], 'return type');
+      this.#requireSupported(sig.returns[0], 'return type');
     }
     if (sig.params.length != fExpr.params.length) {
       this.#bail('signature/param shape mismatch');
@@ -138,9 +141,10 @@ final class FunctionLowerer {
         this.#bail('unresolved parameter');
       }
       let vt = sig.params[i];
-      this.#requireScalar(vt, 'parameter type');
+      this.#requireSupported(vt, 'parameter type');
       let value = this.b.blockParam(entry, vt);
       this.env[(sym as Symbol).id] = value;
+      this.symbols[(sym as Symbol).id] = sym as Symbol;
     }
     this.b.switchTo(entry);
 
@@ -190,7 +194,9 @@ final class FunctionLowerer {
         if (argument == null) {
           this.b.retVoid();
         } else {
-          let value = this.#lowerExpression(argument as Expression);
+          let sig = this.func.signature;
+          let ctx = if (sig.returns.length == 1) sig.returns[0] else null;
+          let value = this.#lowerExpressionCtx(argument as Expression, ctx);
           this.b.ret(value);
         }
         this.reachable = false;
@@ -238,16 +244,15 @@ final class FunctionLowerer {
     if (sym == null) {
       this.#bail('unresolved declaration');
     }
-    let value = this.#lowerExpression(vd.init);
-    // Gate on the binding's wasm type so later merges stay scalar.
     let bindingType = this.func.model.getBindingType(sym as Symbol);
     if (bindingType == null) {
       this.#bail('untyped binding');
     }
-    this.#requireScalar(
-        typeToValTypeWithSub(this.wasm, bindingType as Type, this.func),
-        'binding type');
+    let bindingVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
+    this.#requireSupported(bindingVt, 'binding type');
+    let value = this.#lowerExpressionCtx(vd.init, bindingVt);
     this.env[(sym as Symbol).id] = value;
+    this.symbols[(sym as Symbol).id] = sym as Symbol;
   }
 
   #lowerIf(stmt: IfStatement): void {
@@ -431,6 +436,8 @@ final class FunctionLowerer {
       case CallExpression as call: this.#lowerCall(call)
       case IfExpression as ifExpr: this.#lowerIfExpression(ifExpr)
       case AsExpression as asExpr: this.#lowerAs(asExpr)
+      case StringLiteral as strLit: this.#lowerStringLiteral(strLit)
+      case NullLiteral: this.#bailValue('null without context')
       case _: this.#bailValue('expression kind')
     };
   }
@@ -473,12 +480,84 @@ final class FunctionLowerer {
     if (!this.env.has(resolved.id)) {
       this.#bail('non-local identifier');
     }
-    return this.env[resolved.id];
+    let value = this.env[resolved.id];
+    // Narrowing arrives as explicit coercions (ir.md §5): the checker may
+    // have narrowed this reference's type at this use site — most
+    // commonly `x != null` making a nullable binding non-null. Re-assert
+    // non-nullness when the narrowed type demands it; subtype narrowing
+    // (casts to a subclass) is not lowered yet and bails.
+    let nodeType = this.func.model.getNodeType(ident);
+    if (nodeType == null) {
+      return value;
+    }
+    let wantVt = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+    let haveVt = this.#valueType(value);
+    if (valTypeEquals(haveVt, wantVt)) {
+      return value;
+    }
+    if (wantVt is ValTypeRef && haveVt is ValTypeRefNull) {
+      let wantTarget = (wantVt as ValTypeRef).target;
+      let haveTarget = (haveVt as ValTypeRefNull).target;
+      if (wantTarget == haveTarget) {
+        return this.b.emit(IrOp.ref_as_non_null, wantVt, value, -1);
+      }
+      this.#bail('narrowed to subtype');
+    }
+    if (isValSubtype(haveVt, wantVt)) {
+      // Widening (e.g. a non-null value read at a nullable type): the
+      // value passes as-is under wasm subtyping.
+      return value;
+    }
+    return this.#bailValue('identifier type shift');
   }
 
   #lowerBinary(bin: BinaryExpression): i32 {
     if (bin.operator == "&&" || bin.operator == "||") {
       return this.#lowerLogical(bin);
+    }
+    // Null comparisons: x == null / x != null (either side).
+    let leftIsNull = bin.left is NullLiteral;
+    let rightIsNull = bin.right is NullLiteral;
+    if ((leftIsNull || rightIsNull) &&
+        (bin.operator == "==" || bin.operator == "!=" ||
+         bin.operator == "===" || bin.operator == "!==")) {
+      if (leftIsNull && rightIsNull) {
+        // null == null needs no test at all.
+        let same = bin.operator == "==" || bin.operator == "===";
+        return this.b.constI32(if (same) 1 else 0, new ValTypeI32());
+      }
+      let other = if (leftIsNull) bin.right else bin.left;
+      let value = this.#lowerExpression(other);
+      let vt = this.#valueType(value);
+      if (!isRefValType(vt)) {
+        // The checker rejects null comparisons against non-nullable
+        // scalars, so this only guards lowering bugs.
+        this.#bail('null compare on non-ref');
+      }
+      let isNull = this.b.emit(IrOp.ref_is_null, new ValTypeI32(), value, -1);
+      if (bin.operator == "!=" || bin.operator == "!==") {
+        return this.b.emit(IrOp.i32_eqz, new ValTypeI32(), isNull, -1);
+      }
+      return isNull;
+    }
+    // Reference identity: === / !== between eq-typed references.
+    if (bin.operator == "===" || bin.operator == "!==") {
+      let left = this.#lowerExpression(bin.left);
+      let right = this.#lowerExpression(bin.right);
+      let lt = this.#valueType(left);
+      let rt = this.#valueType(right);
+      let bothRefs = (lt is ValTypeRef || lt is ValTypeRefNull ||
+          lt is ValTypeAnyRef || lt is ValTypeEqRef) &&
+          (rt is ValTypeRef || rt is ValTypeRefNull ||
+          rt is ValTypeAnyRef || rt is ValTypeEqRef);
+      if (!bothRefs) {
+        this.#bail('identity compare on non-refs');
+      }
+      let same = this.b.binary(IrOp.ref_eq, new ValTypeI32(), left, right);
+      if (bin.operator == "!==") {
+        return this.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+      }
+      return same;
     }
     this.#requireScalarNode(bin.left);
     this.#requireScalarNode(bin.right);
@@ -733,6 +812,36 @@ final class FunctionLowerer {
   }
 
   /**
+   * String literals: the fast path only — RTA pre-registers every
+   * literal reached through checker dependencies, so the shared-data
+   * helper call covers it (i32.const id; call $get_string_literal).
+   * Literals missing from the registry bail to the streaming path,
+   * which also knows how to build one-off strings inline.
+   */
+  #lowerStringLiteral(lit: StringLiteral): i32 {
+    if (!this.wasm.stringLiteralIds.has(lit.value)) {
+      this.#bail('unregistered string literal');
+    }
+    if (this.wasm.getStringLiteralFunc == null) {
+      this.#bail('no string literal helper');
+    }
+    let helper = this.wasm.getStringLiteralFunc as WasmFunction;
+    if (helper.signature.returns.length != 1) {
+      this.#bail('string helper shape');
+    }
+    let id = this.b.constI32(this.wasm.stringLiteralIds[lit.value], new ValTypeI32());
+    let funcRef = this.b.addRef(new IrRefFunc(helper));
+    let call = this.b.callFunc(funcRef, this.#oneArg(id), helper.signature.returns[0]);
+    // The literal's checked type is a non-null String; the helper returns
+    // nullable. Re-assert non-nullness so merges and returns type-check.
+    let want = this.#exprValType(lit);
+    if (want is ValTypeRef && helper.signature.returns[0] is ValTypeRefNull) {
+      return this.b.emit(IrOp.ref_as_non_null, want, call, -1);
+    }
+    return call;
+  }
+
+  /**
    * Direct calls only: the callee is an identifier statically resolving
    * to a non-generic, non-adapted top-level function (or import) whose
    * signature is all scalars and whose arity matches the call exactly
@@ -781,17 +890,17 @@ final class FunctionLowerer {
       this.#bail('call arity adaptation');
     }
     for (var i = 0; i < sig.params.length; i += 1) {
-      this.#requireScalar(sig.params[i], 'call param type');
+      this.#requireSupported(sig.params[i], 'call param type');
     }
     var resultType: ValType | null = null;
     if (sig.returns.length == 1) {
-      this.#requireScalar(sig.returns[0], 'call result type');
+      this.#requireSupported(sig.returns[0], 'call result type');
       resultType = sig.returns[0];
     }
     let args = new Array<i32>();
     for (var i = 0; i < call.args.length; i += 1) {
-      let value = this.#lowerExpression(call.args[i]);
-      if (!valTypeEquals(this.#valueType(value), sig.params[i])) {
+      let value = this.#lowerExpressionCtx(call.args[i], sig.params[i]);
+      if (!isValSubtype(this.#valueType(value), sig.params[i])) {
         this.#bail('call argument type');
       }
       args.push(value);
@@ -814,7 +923,12 @@ final class FunctionLowerer {
     }
     var value = -1;
     if (assign.operator == null) {
-      value = this.#lowerExpression(assign.value);
+      var assignCtx: ValType | null = null;
+      let targetBinding = this.func.model.getBindingType(resolved);
+      if (targetBinding != null) {
+        assignCtx = typeToValTypeWithSub(this.wasm, targetBinding as Type, this.func);
+      }
+      value = this.#lowerExpressionCtx(assign.value, assignCtx);
     } else {
       // Compound assignment: current op= value.
       this.#requireScalarNode(assign.left);
@@ -940,6 +1054,42 @@ final class FunctionLowerer {
     }
   }
 
+  /**
+   * Types values may HAVE in the lowered subset: scalars plus reference
+   * types (concrete, anyref, eqref). Reference values only flow — the
+   * operations on them are limited to null tests, identity, calls, and
+   * assignment; anything else still bails at its own site.
+   */
+  #requireSupported(vt: ValType, what: String): void {
+    let ok = vt is ValTypeI32 || vt is ValTypeI64 || vt is ValTypeF32 ||
+        vt is ValTypeF64 || vt is ValTypeRef || vt is ValTypeRefNull ||
+        vt is ValTypeAnyRef || vt is ValTypeEqRef;
+    if (!ok) {
+      this.#bail(what);
+    }
+  }
+
+  /**
+   * Lowers an expression with a contextual wasm type: null literals take
+   * the context's (nullable) type, and non-null results coerce is not
+   * needed — wasm subtyping covers widening at use sites.
+   */
+  #lowerExpressionCtx(expr: Expression, contextVt: ValType | null): i32 {
+    if (expr is NullLiteral) {
+      if (contextVt == null) {
+        this.#bail('null without context');
+      }
+      let vt = contextVt as ValType;
+      let nullable = vt is ValTypeRefNull || vt is ValTypeAnyRef ||
+          vt is ValTypeEqRef;
+      if (!nullable) {
+        this.#bail('null into non-nullable context');
+      }
+      return this.b.emit(IrOp.ref_null, vt, -1, -1);
+    }
+    return this.#lowerExpression(expr);
+  }
+
   /** Symbols assigned anywhere inside `node` that are locals in scope. */
   #assignedEnvSyms(node: Node): Array<SymbolId> {
     let result = new Array<SymbolId>();
@@ -962,6 +1112,7 @@ final class FunctionLowerer {
             if (this.env.has(resolved.id) && !seen.has(resolved.id)) {
               seen.add(resolved.id);
               out.push(resolved.id);
+              this.symbols[resolved.id] = resolved;
             }
           }
         }
@@ -973,12 +1124,25 @@ final class FunctionLowerer {
   #addParams(block: i32, syms: Array<SymbolId>): Array<i32> {
     let params = new Array<i32>();
     for (let symId in syms) {
-      // Use the current value's type: for SSA merges every incoming value
-      // has the binding's lowered type in the scalar subset.
-      let vt = this.#valueType(this.env[symId]);
-      params.push(this.b.blockParam(block, vt));
+      // The binding's declared type is the stable merge type: incoming
+      // values may be wasm subtypes (non-null refs, subclass structs,
+      // typed nulls), which the verifier's subtype check admits.
+      params.push(this.b.blockParam(block, this.#bindingValType(symId)));
     }
     return params;
+  }
+
+  #bindingValType(symId: SymbolId): ValType {
+    if (!this.symbols.has(symId)) {
+      this.#bail('unknown merge symbol');
+    }
+    let t = this.func.model.getBindingType(this.symbols[symId]);
+    if (t == null) {
+      this.#bail('untyped merge binding');
+    }
+    let vt = typeToValTypeWithSub(this.wasm, t as Type, this.func);
+    this.#requireSupported(vt, 'merge binding type');
+    return vt;
   }
 
   #applyParams(syms: Array<SymbolId>, params: Array<i32>): void {
