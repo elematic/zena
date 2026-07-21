@@ -43,7 +43,7 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, valTypeEquals, isRefValType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
-import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct } from '../type-mapping.zena';
+import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct, getCellStruct } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, ClassKey } from '../codegen-utils.zena';
@@ -122,16 +122,6 @@ export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boo
         throw new ZirUnsupported("closure without context struct " + name);
       }
       return null;
-    }
-    // Celled captures (mutated on either side of the closure boundary)
-    // are heap cells the SSA environment does not model yet.
-    for (let symId in func.captures) {
-      if (wasm.mutableCapturedSymbols.has(symId)) {
-        if (strict) {
-          throw new ZirUnsupported("celled capture in " + name);
-        }
-        return null;
-      }
     }
   } else if (func.captures.length > 0 || func.capturesThis ||
              func.contextStruct != null) {
@@ -293,6 +283,16 @@ final class FunctionLowerer {
       this.symbols[(sym as Symbol).id] = sym as Symbol;
     }
     this.b.switchTo(entry);
+    // Celled parameters (captured and mutated through a closure) move
+    // into their heap cells before any body code runs.
+    for (var i = 0; i < paramList.length; i += 1) {
+      let sym = this.func.model.resolveDeclaration(paramList[i].name);
+      if (sym != null && this.#isCelled((sym as Symbol).id)) {
+        let symId = (sym as Symbol).id;
+        this.env[symId] = this.#cellAlloc(
+            sig.params[i + paramOffset], this.env[symId]);
+      }
+    }
     if (needsThisDowncast) {
       let ct = this.func.classType as ClassType;
       var infoOpt: ClassCodegenInfo | null = null;
@@ -605,7 +605,13 @@ final class FunctionLowerer {
     let bindingVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
     this.#requireSupported(bindingVt, 'binding type');
     let value = this.#lowerExpressionCtx(vd.init, bindingVt);
-    this.env[(sym as Symbol).id] = value;
+    if (this.#isCelled((sym as Symbol).id)) {
+      // The binding lives in a heap cell shared with capturing
+      // closures; the environment holds the (invariant) cell ref.
+      this.env[(sym as Symbol).id] = this.#cellAlloc(bindingVt, value);
+    } else {
+      this.env[(sym as Symbol).id] = value;
+    }
     this.symbols[(sym as Symbol).id] = sym as Symbol;
   }
 
@@ -1072,7 +1078,10 @@ final class FunctionLowerer {
     if (!this.env.has(resolved.id)) {
       this.#bail('non-local identifier');
     }
-    let value = this.env[resolved.id];
+    var value = this.env[resolved.id];
+    if (this.#isCelled(resolved.id)) {
+      value = this.#cellRead(value);
+    }
     // Narrowing arrives as explicit coercions (ir.md §5): the checker may
     // have narrowed this reference's type at this use site — most
     // commonly `x != null` making a nullable binding non-null. Re-assert
@@ -1712,8 +1721,70 @@ final class FunctionLowerer {
       bound = this.b.emit(IrOp.ref_cast, bindingVt, value,
           this.b.internType(bindingVt));
     }
-    this.env[sym.id] = bound;
+    if (this.#isCelled(sym.id)) {
+      this.env[sym.id] = this.#cellAlloc(bindingVt, bound);
+    } else {
+      this.env[sym.id] = bound;
+    }
     this.symbols[sym.id] = sym;
+  }
+
+  /**
+   * Celled = captured by a closure and mutated on either side of the
+   * boundary. The variable lives in a heap cell shared through closure
+   * contexts; the environment maps the symbol to the cell REFERENCE,
+   * which is an invariant SSA value — so celled bindings never
+   * participate in merge parameters, and reads/writes go through the
+   * cell's `value` field.
+   */
+  #isCelled(symId: SymbolId): boolean {
+    return this.wasm.mutableCapturedSymbols.has(symId);
+  }
+
+  /** Allocates a fresh cell holding `value` for a celled binding. */
+  #cellAlloc(bindingVt: ValType, value: i32): i32 {
+    if (!isValSubtype(this.#valueType(value), bindingVt)) {
+      this.#bail('cell init type');
+    }
+    let cellStruct = getCellStruct(this.wasm, bindingVt);
+    let typeRef = this.b.addRef(new IrRefType(cellStruct));
+    return this.b.emit(IrOp.struct_new,
+        new ValTypeRef(cellStruct) as ValType,
+        this.b.pushArgList(this.#oneArg(value)), typeRef);
+  }
+
+  /** The cell struct behind a celled environment entry. */
+  #cellStructOf(cell: i32): WasmStruct {
+    match (this.#valueType(cell)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) {
+          return r.target as WasmStruct;
+        }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) {
+          return rn.target as WasmStruct;
+        }
+      }
+      case _: {}
+    }
+    throw new ZirUnsupported('celled binding shape');
+  }
+
+  #cellRead(cell: i32): i32 {
+    let cs = this.#cellStructOf(cell);
+    let fieldRef = this.b.addRef(new IrRefField(cs, 'value'));
+    return this.b.emit(IrOp.struct_get, cs.fields[0].type, cell, fieldRef);
+  }
+
+  #cellWrite(cell: i32, value: i32): void {
+    let cs = this.#cellStructOf(cell);
+    if (!isValSubtype(this.#valueType(value), cs.fields[0].type)) {
+      this.#bail('cell write type');
+    }
+    let fieldRef = this.b.addRef(new IrRefField(cs, 'value'));
+    let pairIdx = this.b.pushExtra(this.#twoValues(cell, value));
+    this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
   }
 
   /** Whether `pattern` can fail to match (needs a fail edge). */
@@ -2554,11 +2625,10 @@ final class FunctionLowerer {
   /**
    * Closure creation: ref.func of the (separately compiled, streaming
    * or ZIR) implementation, a context struct holding the captured
-   * values, and the closure pair struct. Captures are BY VALUE here;
-   * a celled capture (mutated on either side) expects a cell reference
-   * in the context field, which the by-value env entry fails the
-   * subtype check for — bailing the whole function to streaming, which
-   * models the shared cell correctly.
+   * values, and the closure pair struct. Non-celled captures are BY
+   * VALUE; celled captures pass the heap cell ref the environment
+   * already holds — the context-field subtype check verifies each
+   * capture matches what the closure body expects either way.
    */
   #lowerFunctionExpression(fExpr: FunctionExpression): i32 {
     let classKey = if (this.func.classType != null) {
@@ -2734,6 +2804,7 @@ final class FunctionLowerer {
     if (!this.env.has(resolved.id)) {
       this.#bail('non-local assignment target');
     }
+    let celled = this.#isCelled(resolved.id);
     var value = -1;
     if (assign.operator == null) {
       var assignCtx: ValType | null = null;
@@ -2746,7 +2817,8 @@ final class FunctionLowerer {
       // Compound assignment: current op= value.
       this.#requireScalarNode(assign.left);
       this.#requireScalarNode(assign.value);
-      let current = this.env[resolved.id];
+      let current = if (celled) this.#cellRead(this.env[resolved.id])
+          else this.env[resolved.id];
       let rhs = this.#lowerExpression(assign.value);
       let vt = this.#valueType(current);
       if (!valTypeEquals(vt, this.#valueType(rhs))) {
@@ -2756,7 +2828,13 @@ final class FunctionLowerer {
       let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
       value = this.b.binary(op, vt, current, rhs);
     }
-    this.env[resolved.id] = value;
+    if (celled) {
+      // Mutation goes through the heap cell; the env binding (the cell
+      // ref) is invariant.
+      this.#cellWrite(this.env[resolved.id], value);
+    } else {
+      this.env[resolved.id] = value;
+    }
     return value;
   }
 
@@ -2937,7 +3015,10 @@ final class FunctionLowerer {
           let sym = this.func.model.resolve(ae.left);
           if (sym != null) {
             let resolved = (sym as Symbol).resolveTarget();
-            if (this.env.has(resolved.id) && !seen.has(resolved.id)) {
+            // Celled bindings mutate their heap cell, not the env
+            // entry, so they never need merge parameters.
+            if (this.env.has(resolved.id) && !seen.has(resolved.id) &&
+                !this.#isCelled(resolved.id)) {
               seen.add(resolved.id);
               out.push(resolved.id);
               this.symbols[resolved.id] = resolved;

@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 344
+// Celled captures under ZENA_BACKEND=zir: closure-mutated variables
+// live in shared heap cells — counter closures called through
+// function-typed params, host reads of closure-mutated locals, and
+// the by-value semantics of captures the closure never mutates.
+let makeCounter = (start: i32): (() => i32) => {
+  var count = start;
+  let next = (): i32 => {
+    count += 1;
+    return count;
+  };
+  return next;
+};
+
+let callTwice = (f: () => i32): i32 => {
+  let a = f();
+  let b = f();
+  return a + b;
+};
+
+let hostMutatesAfterCapture = (): i32 => {
+  var x = 10;
+  let read = (): i32 => x;
+  x = 42;
+  return read();
+};
+
+let celledParam = (seed: i32): i32 => {
+  var n = seed;
+  let bump = (): i32 => {
+    n += 5;
+    return n;
+  };
+  var acc = bump();
+  acc += bump();
+  acc += n;
+  return acc;
+};
+
+export let main = (): i32 => {
+  let c = makeCounter(100);
+  var acc = callTwice(c);
+  acc += c();
+  acc += hostMutatesAfterCapture();
+  acc += celledParam(1);
+  return acc;
+};
