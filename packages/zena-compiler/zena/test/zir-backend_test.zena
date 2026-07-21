@@ -341,6 +341,17 @@ export let tests = suite('zir backend', (): void => {
         result.contains('get#x'));
   });
 
+  test('calls through closure-typed values', (ctx: TestContext): void => {
+    // Structural: multi-function modules are discovery-order sensitive.
+    let result = compileWithZir(
+        'let apply = (f: (x: i32) => i32, v: i32): i32 => f(v);\n' +
+        'let double = (x: i32): i32 => x * 2;\n' +
+        'export let main = (): i32 => apply(double, 21);');
+    // The closure call unpacks ctx + func and call_refs the impl sig.
+    isTrue(result.contains('call_ref'));
+    isTrue(result.contains('(func $apply'));
+  });
+
   test('zir output contains the lowered function', (ctx: TestContext): void => {
     // Cheap structural sanity independent of snapshots: the ZIR-lowered
     // function is emitted (every value a local, so at least one local).

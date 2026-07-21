@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 158
+// Closure CALLS under ZENA_BACKEND=zir: functions receiving
+// function-typed parameters call through the closure struct
+// (ctx as arg 0, call_ref via the exact-signature func field).
+// Closure creation sites still compile via the streaming backend.
+let apply = (f: (x: i32) => i32, v: i32): i32 => f(v);
+
+let applyTwice = (f: (x: i32) => i32, v: i32): i32 => f(f(v));
+
+let sumWith = (f: (x: i32) => i32): i32 => {
+  var acc = 0;
+  for (var i = 1; i <= 3; i += 1) {
+    acc += f(i);
+  }
+  return acc;
+};
+
+export let main = (): i32 => {
+  let double = (x: i32): i32 => x * 2;
+  var base = 5;
+  let addBase = (x: i32): i32 => x + base;
+  var acc = apply(double, 10);
+  acc += applyTwice(double, 3);
+  acc += sumWith(addBase);
+  acc += apply(addBase, 100);
+  return acc;
+};

@@ -41,9 +41,9 @@ import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
-import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, valTypeEquals, isRefValType } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, valTypeEquals, isRefValType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
-import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext } from '../type-mapping.zena';
+import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey } from '../codegen-utils.zena';
@@ -2442,17 +2442,22 @@ final class FunctionLowerer {
     if (call.typeArguments != null) {
       this.#bail('generic call');
     }
+    if (this.func.model.getUnionCallCalleeType(call.callee) != null) {
+      this.#bail('union callee');
+    }
     let sym = this.func.model.resolve(call.callee);
     if (sym == null) {
       this.#bail('unresolved callee');
     }
     let resolved = (sym as Symbol).resolveTarget();
     if (this.env.has(resolved.id)) {
-      // A local variable holding a function value: indirect call.
-      this.#bail('indirect call');
+      // A local variable holding a function value: closure call.
+      return this.#lowerClosureCall(call);
     }
     if (!this.wasm.functionMap.has(resolved.id)) {
-      this.#bail('callee not a known function');
+      // Not a compiled function: a binding holding a closure value
+      // (global function values still bail when the callee lowers).
+      return this.#lowerClosureCall(call);
     }
     let target = this.wasm.functionMap[resolved.id];
     if (target.typeParameters != null || target.typeArguments != null ||
@@ -2487,6 +2492,79 @@ final class FunctionLowerer {
     }
     let funcRef = this.b.addRef(new IrRefFunc(target));
     return this.b.callFunc(funcRef, args, resultType);
+  }
+
+  /**
+   * Calls through a closure value {func: (ref $implSig), ctx: structref}:
+   * the context rides as argument 0, and call_ref goes through the
+   * exact-signature func field. Only the CALLING side is lowered —
+   * closure creation and closure bodies still bail.
+   */
+  #lowerClosureCall(call: CallExpression): i32 {
+    let calleeType = this.func.model.getNodeType(call.callee);
+    if (calleeType == null) {
+      this.#bail('untyped callee');
+    }
+    let bt = baseType(calleeType as Type);
+    if (!(bt is FunctionType)) {
+      this.#bail('indirect callee kind');
+    }
+    let closureStruct = getClosureStruct(this.wasm, bt as FunctionType);
+    let callee = this.#lowerExpression(call.callee);
+    if (!isValSubtype(this.#valueType(callee),
+        new ValTypeRefNull(closureStruct) as ValType)) {
+      this.#bail('closure callee type');
+    }
+    var sigOpt: WasmSignature | null = null;
+    match (closureStruct.fields[0].type) {
+      case ValTypeRef as r: {
+        if (r.target is WasmSignature) {
+          sigOpt = r.target as WasmSignature;
+        }
+      }
+      case _: {}
+    }
+    if (sigOpt == null) {
+      this.#bail('closure func slot shape');
+    }
+    let sig = sigOpt as WasmSignature;
+    if (sig.returns.length > 1) {
+      this.#bail('closure multi-value return');
+    }
+    if (sig.params.length != call.args.length + 1) {
+      this.#bail('closure arity adaptation');
+    }
+    let ctxRef = this.b.addRef(new IrRefField(closureStruct, 'ctx'));
+    let ctxVal = this.b.emit(IrOp.struct_get,
+        closureStruct.fields[1].type, callee, ctxRef);
+    let args = new Array<i32>();
+    args.push(ctxVal);
+    for (var i = 0; i < call.args.length; i += 1) {
+      let paramVt = sig.params[i + 1];
+      this.#requireSupported(paramVt, 'closure param type');
+      let value = this.#lowerExpressionCtx(call.args[i], paramVt);
+      if (!isValSubtype(this.#valueType(value), paramVt)) {
+        this.#bail('closure argument type');
+      }
+      args.push(value);
+    }
+    let funcRef = this.b.addRef(new IrRefField(closureStruct, 'func'));
+    let funcVal = this.b.emit(IrOp.struct_get,
+        closureStruct.fields[0].type, callee, funcRef);
+    var resultType: ValType | null = null;
+    if (sig.returns.length == 1) {
+      this.#requireSupported(sig.returns[0], 'closure result type');
+      resultType = sig.returns[0];
+    }
+    let result = this.b.callRef(funcVal, args, resultType);
+    if (resultType != null) {
+      let nodeType = this.func.model.getNodeType(call);
+      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
+        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+        return this.#reassertNonNull(result, want);
+      }
+    }
+    return result;
   }
 
   #lowerAssignment(assign: AssignmentExpression): i32 {
@@ -2661,7 +2739,7 @@ final class FunctionLowerer {
   #requireSupported(vt: ValType, what: String): void {
     let ok = vt is ValTypeI32 || vt is ValTypeI64 || vt is ValTypeF32 ||
         vt is ValTypeF64 || vt is ValTypeRef || vt is ValTypeRefNull ||
-        vt is ValTypeAnyRef || vt is ValTypeEqRef;
+        vt is ValTypeAnyRef || vt is ValTypeEqRef || vt is ValTypeStructRef;
     if (!ok) {
       this.#bail(what);
     }
