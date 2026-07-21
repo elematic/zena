@@ -908,6 +908,111 @@ coalescing (at emission) is the floor we own. What we consciously *don't*
 build: instruction scheduling beyond stack-order (engines re-schedule),
 and binary-level tricks like code-section sorting (possible later).
 
+### 12.1 Type-accurate locals: no nullable widening
+
+Declared wasm types must equal Zena types everywhere a value is
+stored — in particular, Zena non-nullable references land in
+`(ref $T)` locals, never `(ref null $T)`. Engines don't null-check
+`local.get`/`local.set` themselves, but inaccurate local types cost
+real money at the *uses*: an explicit `ref.as_non_null` re-assert
+compiles to a compare-and-trap (there is no dereference for the
+trap-handler trick to ride), and a nullable declared type pessimizes
+engine-side redundant-check elimination, `call_ref` handling, and
+inlining even where the hardware makes the check itself free.
+
+The obstacle is wasm's *scoped* initialization tracking for
+non-defaultable locals (all rules below verified against wasm-tools):
+a `local.set` is forgotten at the `end` of the block containing it,
+even when control provably flowed through it — and the rollback is
+uniform, not a join: setting the local in BOTH arms of an `if`/`else`
+still counts as uninitialized after the `end`. Only a set in an
+enclosing scope persists (into nested blocks and past their ends).
+Structured init visibility is strictly weaker than CFG dominance.
+This is exactly why the interim every-value-a-local emitter stores
+non-null values in nullable locals: its synthetic merge labels
+routinely sit between a def and its uses, and a merge parameter's
+copies *always* sit inside the label they branch to, with the reads
+after its `end`.
+
+The reason full accuracy is reachable at all is a source-language
+theorem: Zena scoping puts every source local's single initialization
+point lexically before all reads, in the same or an enclosing scope —
+so a wasm structure mirroring the source always has the set in a
+block enclosing every get, which the persistence rule accepts (this
+is why the streaming backend's non-null locals work). ZIR's CFGs only
+ever come from lowering structured source, so that structure is
+always recoverable. Emission owes every local an accurate type,
+through five mechanisms:
+
+1. **Signature params** are exact already, non-null receivers included.
+2. **Stack scheduling** (step 3) removes the locals entirely for
+   single-use values in def order — the operand stack is typed exactly
+   by the IR.
+3. **Label elision**: a merge whose predecessors all reach it by
+   structural fallthrough (both arms of an `if` running off their
+   ends) needs no labeled block at all; eliding the label — and first
+   the `br`s that a naive translation aims at it — restores the
+   source-shaped scoping in which defs before the construct stay
+   init-visible after it. The uniform wrap-every-merge form is the
+   M2 simplification, not a requirement.
+4. **Typed labels and phi-web coalescing**: Zena has no deferred-init
+   locals — every declaration carries its initializer — so "a value
+   set on multiple paths" is never a source construct; it is a shape
+   LOWERING manufactures when it flattens the two idioms that produce
+   join values. Each maps back to a single-init encoding:
+   - A conditional-expression initializer
+     (`let x = if (y) foo else bar`, match expressions) becomes a
+     merge parameter in ZIR; the wasm-native encoding un-flattens it —
+     the value rides out as a construct result / typed-label operand
+     (`(if (result (ref $T)))`, `(block (param …))`,
+     `(loop (param …))` for loop-carried values), and if multi-use,
+     SSA destruction (step 1) materializes ONE `local.set` at the
+     join, in the scope enclosing all reads.
+   - A `var` reassigned across arms phi-joins in SSA, but local
+     coalescing (step 3), by assigning the whole phi web to one
+     local, reconstructs the source variable: its first set is the
+     declaration's init in the enclosing scope, and arm assignments
+     are re-sets, which init tracking ignores.
+   The naive per-SSA-value emission that sets a local on each arm —
+   the shape the validator rejects even when both arms set (per
+   above) — is therefore always avoidable for source-derived CFGs;
+   it only exists if the emitter chooses it.
+5. **Init-discipline typing** as the backstop: type every local
+   `(ref $T)` and demote to nullable only what a one-pass simulation
+   of the validator's scoped init tracking rejects. Demotions are
+   counted and reported under `ZENA_ZIR_STATS` — the same ratchet
+   philosophy as `zir-strict`. For source-derived CFGs the expected
+   steady state is exactly zero; the counter exists for shapes the
+   OPTIMIZER invents later (post-M3 code motion and CSE can hand a
+   temporary a live range no lexical scope ever had), so a pass that
+   breaks the invariant shows up as a number, not as silent widening.
+
+For a demoted local that does survive, `ref.as_non_null` is inserted
+only where the consumer's type discipline demands non-null (call and
+branch arguments, non-null struct fields); dereferencing consumers
+accept nullable refs with identical trap semantics and hardware-priced
+checks, so they read the local raw. What we deliberately do *not* do
+is thread multi-use live-across values through label results (full
+multi-value stackification): that trades cheap-or-free null checks for
+real operand shuffling on every path. If the demotion counter ever
+shows a hot residue, that decision gets revisited with data.
+
+**Fields are the third leg** (after params — already accurate — and
+locals, above), and the last piece of `non-nullable-refs.md` still
+outstanding: struct fields today stay `(ref null $T)` because
+`struct.new_default` requires every field defaultable, and the
+allocate-then-mutate constructor protocol depends on it. The plan is
+to move construction to **single-shot `struct.new`** — constructors
+evaluate field defaults, the initializer list, and the super chain's
+contributions into values, then allocate fully initialized — at which
+point field types flip to `(ref $T)` and `struct.get` on a non-null
+field returns non-null with no re-assert. This is deliberately
+scheduled **after M4** (§14): struct types are module-global and the
+construction protocol is a cross-backend ABI under per-function
+fallback, so the flip cannot be made for one backend at a time; doing
+it while streaming exists would mean building the value-collection
+protocol twice, once in a backend scheduled for deletion.
+
 ## 13. ZIR as a disk format for incremental compilation
 
 Short answer: **yes — this design is chosen partly to make that cheap — but
@@ -996,6 +1101,16 @@ until M4.
   path; ZIR backend becomes the only backend, and with it the fallback
   (and strict mode) cease to exist — any lowering gap is a hard compile
   error by construction, because there is nothing left to fall back to.
+  Streaming's deletion also unblocks the deferred tail of
+  `non-nullable-refs.md`: **non-null struct fields and single-shot
+  `struct.new` construction** (§12.1). Field types are module-global and
+  the construction protocol is a cross-backend ABI (a ZIR call site can
+  invoke a streaming-compiled constructor and vice versa), so neither can
+  flip while two backends coexist; once ZIR is the only backend, the flip
+  is a single-backend change: constructors evaluate field defaults, the
+  initializer list, and the super chain's contributions into values and
+  allocate with one `struct.new` — `struct.new_default` retires along
+  with the nullable field types it required.
 - **M5 — template ZIR (v2 generics).** Per-source-function lowering +
   table-substitution specialization. Success metric: cold-compile of
   `assert_test.zena` and `zena:test`-heavy files (the 47s case) drops by
