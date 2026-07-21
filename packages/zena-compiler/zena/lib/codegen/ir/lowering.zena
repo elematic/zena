@@ -30,19 +30,19 @@ import {
   WhileStatement, ExpressionStatement, VariableDeclaration,
   BinaryExpression, UnaryExpression, AssignmentExpression, Identifier,
   NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern,
-  CallExpression, IfExpression, AsExpression, ForStatement,
+  CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement,
   NullLiteral, StringLiteral, NewExpression, MemberExpression,
   MethodDefinition, ThisExpression, Parameter, ClassDeclaration,
   FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation,
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   getMemberPropertyName
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, baseType, isVoidOrNeverType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, baseType, isVoidOrNeverType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, valTypeEquals, isRefValType } from '../wasm.zena';
-import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
@@ -485,6 +485,9 @@ final class FunctionLowerer {
       case ForStatement as forStmt: {
         this.#lowerFor(forStmt);
       }
+      case ForInStatement as forIn: {
+        this.#lowerForIn(forIn);
+      }
       case BreakStatement {}: {
         if (this.loops.length == 0) {
           this.#bail('break outside loop');
@@ -692,6 +695,173 @@ final class FunctionLowerer {
       this.#lowerExpression(stmt.update as Expression);
     }
     this.b.br(header, this.#envValues(carried));
+
+    this.#applyParams(carried, exitParams);
+    this.b.switchTo(exitB);
+    this.reachable = true;
+  }
+
+  /**
+   * for-in over FixedArray/ImmutableArray values (a wasm array) and
+   * Array instances (#buffer + #length struct): an index loop mirroring
+   * the streaming fast paths, with the element re-bound each iteration.
+   * The general iterator protocol needs multi-value next() calls, which
+   * ZIR does not carry yet, so everything else bails.
+   *
+   * TODO(coverage): a Sequence whose `:iterator` is NOT overridden away
+   * from the default (CHA query, same machinery as devirt) can compile
+   * to a `.length` + `[]` indexed loop against the interface — no
+   * multi-value needed — and M3 inlining then collapses those calls to
+   * the #buffer/#length fast path. That splits the remaining bails into
+   * genuinely-custom iterators (which do need multi-value) and
+   * default-iterator sequences (which don't).
+   */
+  #lowerForIn(stmt: ForInStatement): void {
+    let iterableType = this.func.model.getNodeType(stmt.iterable);
+    if (iterableType == null) {
+      this.#bail('untyped for-in iterable');
+    }
+
+    // FIXED = a bare wasm array value; ARRAY = the Array class struct.
+    var isFixed = false;
+    var isArray = false;
+    var elemType: Type | null = null;
+    var arrayCt: ClassType | null = null;
+    if (iterableType is ArrayType) {
+      isFixed = true;
+      elemType = (iterableType as ArrayType).elementType;
+    } else {
+      let resolved = this.#resolveSelfType(iterableType as Type);
+      if (resolved is ClassType) {
+        let ct = resolved as ClassType;
+        var canonical = ct;
+        while (canonical.genericSource != null) {
+          canonical = canonical.genericSource as ClassType;
+        }
+        if (canonical.name == 'FixedArray' ||
+            canonical.name == 'ImmutableArray') {
+          isFixed = true;
+        } else if (canonical.name == 'Array') {
+          isArray = true;
+          arrayCt = ct;
+        }
+        if ((isFixed || isArray) && ct.typeArguments != null &&
+            (ct.typeArguments as Array<Type>).length > 0) {
+          elemType = (ct.typeArguments as Array<Type>)[0];
+        }
+      }
+    }
+    if ((!isFixed && !isArray) || elemType == null) {
+      this.#bail('for-in iterator protocol');
+    }
+
+    // The fast paths consume the raw value; skip the top-level Iterable
+    // adaptation the checker may have recorded on the iterable (the
+    // streaming generator's ignoreAdaptations flag).
+    let iterable = this.#lowerExpressionDispatch(stmt.iterable);
+
+    var buf = -1;
+    var len = -1;
+    if (isFixed) {
+      buf = iterable;
+      len = this.b.emit(IrOp.array_len, new ValTypeI32(), buf, -1);
+    } else {
+      let ct = arrayCt as ClassType;
+      let cKey = getClassKey(ct);
+      var infoOpt: ClassCodegenInfo | null = null;
+      if (let (true, info) = this.wasm.classInfos.get(cKey)) {
+        infoOpt = info;
+      }
+      if (infoOpt == null) {
+        this.#bail('for-in Array not discovered');
+      }
+      let structType = (infoOpt as ClassCodegenInfo).structType;
+      if (!isValSubtype(this.#valueType(iterable),
+          new ValTypeRefNull(structType) as ValType)) {
+        this.#bail('for-in receiver struct mismatch');
+      }
+      let bufferName = getClassPrivateFieldKey(cKey, '#buffer');
+      let lengthName = getClassPrivateFieldKey(cKey, '#length');
+      let lenRef = this.b.addRef(new IrRefField(structType, lengthName));
+      len = this.b.emit(IrOp.struct_get,
+          this.#fieldValType(structType, lengthName), iterable, lenRef);
+      let bufRef = this.b.addRef(new IrRefField(structType, bufferName));
+      buf = this.b.emit(IrOp.struct_get,
+          this.#fieldValType(structType, bufferName), iterable, bufRef);
+    }
+    var bufTarget: WasmArray | null = null;
+    match (this.#valueType(buf)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmArray) {
+          bufTarget = r.target as WasmArray;
+        }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmArray) {
+          bufTarget = rn.target as WasmArray;
+        }
+      }
+      case _: {}
+    }
+    if (bufTarget == null) {
+      this.#bail('for-in buffer kind');
+    }
+    let elemVt = (bufTarget as WasmArray).elementType;
+    this.#requireSupported(elemVt, 'for-in element type');
+
+    var pat = stmt.pattern;
+    if (pat is BindingPattern) {
+      pat = (pat as BindingPattern).pattern;
+    }
+    var symOpt: Symbol | null = null;
+    if (pat is IdentifierPattern || pat is Identifier) {
+      symOpt = this.func.model.resolveDeclaration(pat);
+    }
+    if (symOpt == null) {
+      this.#bail('for-in pattern');
+    }
+
+    // Index loop. The index rides as an extra header/update block param
+    // (it is not an env symbol); loop-carried env symbols work as in
+    // #lowerFor.
+    let carried = this.#assignedEnvSyms(stmt.body);
+    let header = this.b.newBlock();
+    let headerParams = this.#addParams(header, carried);
+    let idxParam = this.b.blockParam(header, new ValTypeI32());
+    var initArgs = this.#envValues(carried);
+    initArgs.push(this.b.constI32(0, new ValTypeI32()));
+    this.b.br(header, initArgs);
+
+    this.b.switchTo(header);
+    this.#applyParams(carried, headerParams);
+    let done = this.b.binary(IrOp.i32_ge_s, new ValTypeI32(), idxParam, len);
+
+    let bodyB = this.b.newBlock();
+    let exitB = this.b.newBlock();
+    let exitParams = this.#addParams(exitB, carried);
+    this.b.brIf(done, exitB, this.#envValues(carried), bodyB, this.#noArgs());
+
+    this.b.switchTo(bodyB);
+    let elem = this.b.emit(IrOp.array_get, elemVt, buf, idxParam);
+    this.#bindPatternSym(symOpt as Symbol, elem);
+
+    let updateB = this.b.newBlock();
+    let updateParams = this.#addParams(updateB, carried);
+    this.loops.push(new LoopCtx(updateB, exitB, carried));
+    this.#lowerStatement(stmt.body);
+    if (this.reachable) {
+      this.b.br(updateB, this.#envValues(carried));
+    }
+    this.loops.pop();
+
+    this.b.switchTo(updateB);
+    this.reachable = true;
+    this.#applyParams(carried, updateParams);
+    let one = this.b.constI32(1, new ValTypeI32());
+    let next = this.b.binary(IrOp.i32_add, new ValTypeI32(), idxParam, one);
+    var backArgs = this.#envValues(carried);
+    backArgs.push(next);
+    this.b.br(header, backArgs);
 
     this.#applyParams(carried, exitParams);
     this.b.switchTo(exitB);

@@ -19,7 +19,7 @@ import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
 import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, WasmType, heapTypeToSigned, HeapType } from '../wasm.zena';
-import { WasmModule, WasmFunction, WasmSignature } from '../wasm-module.zena';
+import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
 import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, irOpName, isUnaryNumericOp } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
@@ -390,6 +390,13 @@ export final class ZirFunctionEmitter {
       let fatPtr = this.#structTargetOf(body.a[inst]);
       let fieldIdx = if (op == IrOp.iface_instance) 0 else 1;
       this.emitter.emitStructGet(fatPtr.index, fieldIdx);
+    } else if (op == IrOp.array_len) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      this.emitter.emitArrayLen();
+    } else if (op == IrOp.array_get) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
+      this.emitter.emitArrayGet(this.#arrayTargetOf(body.a[inst]).index);
     } else if (op == IrOp.ref_is_null) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.emitter.emitRefIsNull();
@@ -424,6 +431,21 @@ export final class ZirFunctionEmitter {
       return target as WasmSignature;
     }
     throw new Error('zir emit: call_ref callee is not signature-typed');
+  }
+
+  /** The wasm array behind a reference-typed value (array_get/len). */
+  #arrayTargetOf(inst: i32): WasmArray {
+    let vt = this.body.resultType(inst) as ValType;
+    var target: WasmType | null = null;
+    match (vt) {
+      case ValTypeRef as r: { target = r.target; }
+      case ValTypeRefNull as rn: { target = rn.target; }
+      case _: {}
+    }
+    if (target is WasmArray) {
+      return target as WasmArray;
+    }
+    throw new Error('zir emit: array operand is not array-typed');
   }
 
   /** The struct behind a reference-typed value (fat-pointer projections). */
