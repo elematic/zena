@@ -128,8 +128,234 @@ export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boo
   return result;
 };
 
+/** Entry block with one param per signature slot; leaves it current. */
+let synthEntryParams = (b: IrBuilder, func: WasmFunction): Array<i32> => {
+  let entry = b.newBlock();
+  let params = new Array<i32>();
+  for (let vt in func.signature.params) {
+    params.push(b.blockParam(entry, vt));
+  }
+  b.switchTo(entry);
+  return params;
+};
+
+/**
+ * Casts a value to a concrete-ref parameter type. Mirrors streaming's
+ * trampoline casts, which are NON-null (emitRefCast) even when the
+ * target slot is declared nullable. Non-concrete targets pass through.
+ */
+let castToConcreteRef = (b: IrBuilder, value: i32, targetVt: ValType): i32 => {
+  var castVt: ValType | null = null;
+  match (targetVt) {
+    case ValTypeRef as r: { castVt = new ValTypeRef(r.target); }
+    case ValTypeRefNull as rn: { castVt = new ValTypeRef(rn.target); }
+    case _: {}
+  }
+  if (castVt == null) {
+    return value;
+  }
+  let vt = castVt as ValType;
+  return b.emit(IrOp.ref_cast, vt, value, b.internType(vt));
+};
+
+/**
+ * Interface trampoline: cast the erased receiver to the target's
+ * concrete type, cast any erased params likewise, and tail into the
+ * target (docs: FunctionGenerator's interfaceTrampolineTarget arm).
+ */
+let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
+  let target = func.interfaceTrampolineTarget as WasmFunction;
+  let b = new IrBuilder();
+  let params = synthEntryParams(b, func);
+  if (target.intrinsic != null) {
+    if ((target.intrinsic as String) == 'array.len') {
+      let recv = castToConcreteRef(b, params[0], target.signature.params[0]);
+      let len = b.emit(IrOp.array_len, new ValTypeI32(), recv, -1);
+      b.ret(len);
+      return b.finish();
+    }
+    b.unreachable();
+    return b.finish();
+  }
+  if (target.index == -1) {
+    // Target never reached; streaming emits the same trap.
+    b.unreachable();
+    return b.finish();
+  }
+  if (func.signature.params.length != target.signature.params.length ||
+      target.signature.returns.length > 1) {
+    throw new ZirUnsupported('trampoline shape');
+  }
+  let args = new Array<i32>();
+  args.push(castToConcreteRef(b, params[0], target.signature.params[0]));
+  for (var i = 1; i < params.length; i += 1) {
+    var v = params[i];
+    if (!valTypeEquals(func.signature.params[i], target.signature.params[i])) {
+      v = castToConcreteRef(b, v, target.signature.params[i]);
+    }
+    args.push(v);
+  }
+  let resultType = if (target.signature.returns.length == 1) target.signature.returns[0] else null;
+  let funcRef = b.addRef(new IrRefFunc(target));
+  let result = b.callFunc(funcRef, args, resultType);
+  if (func.signature.returns.length == 1) {
+    if (resultType == null) {
+      throw new ZirUnsupported('trampoline result shape');
+    }
+    b.ret(result);
+  } else {
+    b.retVoid();
+  }
+  return b.finish();
+};
+
+/**
+ * Synthesized default accessors: cast the erased receiver to the
+ * declaring struct and read (getter) or write (setter) the field,
+ * with the getter's vtable-signature compat casts mirrored from
+ * streaming. A field index of -1 means the accessor is a vtable slot
+ * for a member no reachable class stores physically — it traps.
+ */
+let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
+  let st = if (isGetter) func.getterStruct as WasmStruct
+      else func.setterStruct as WasmStruct;
+  let idx = if (isGetter) func.getterFieldIndex else func.setterFieldIndex;
+  let b = new IrBuilder();
+  let params = synthEntryParams(b, func);
+  if (idx == -1) {
+    b.unreachable();
+    return b.finish();
+  }
+  let fieldName = st.fields[idx].name;
+  if (fieldName == null) {
+    throw new ZirUnsupported('unnamed accessor field');
+  }
+  let castVt: ValType = new ValTypeRef(st);
+  let casted = b.emit(IrOp.ref_cast, castVt, params[0], b.internType(castVt));
+  let fieldRef = b.addRef(new IrRefField(st, fieldName));
+  if (!isGetter) {
+    let pairIdx = b.pushExtra(twoValuesOf(casted, params[1]));
+    b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+    b.retVoid();
+    return b.finish();
+  }
+  let actual = st.fields[idx].type;
+  var read = b.emit(IrOp.struct_get, actual, casted, fieldRef);
+  if (func.signature.returns.length == 0) {
+    b.retVoid();
+    return b.finish();
+  }
+  // The getter's declared return is the vtable slot's erased type; cast
+  // when the field's storage type differs (mirrors streaming).
+  let expected = func.signature.returns[0];
+  match (expected) {
+    case ValTypeRefNull as r: {
+      var same = false;
+      match (actual) {
+        case ValTypeRefNull as a: { same = a.target == r.target; }
+        case _: {}
+      }
+      if (!same) {
+        let vt: ValType = new ValTypeRefNull(r.target);
+        read = b.emit(IrOp.ref_cast, vt, read, b.internType(vt));
+      }
+    }
+    case ValTypeRef as r: {
+      var same = false;
+      match (actual) {
+        case ValTypeRef as a: { same = a.target == r.target; }
+        case _: {}
+      }
+      if (!same) {
+        let vt: ValType = new ValTypeRef(r.target);
+        read = b.emit(IrOp.ref_cast, vt, read, b.internType(vt));
+      }
+    }
+    case ValTypeEqRef: {
+      if (!(actual is ValTypeEqRef)) {
+        let vt: ValType = new ValTypeEqRef();
+        read = b.emit(IrOp.ref_cast, vt, read, b.internType(vt));
+      }
+    }
+    case _: {}
+  }
+  b.ret(read);
+  return b.finish();
+};
+
+/** Closure wrapper: forward params[1..] (dropping the ctx) to the target. */
+let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
+  if (func.closureWrapperTarget == null) {
+    throw new ZirUnsupported('closure wrapper without target');
+  }
+  let target = func.closureWrapperTarget as WasmFunction;
+  if (func.signature.params.length != target.signature.params.length + 1 ||
+      target.signature.returns.length > 1) {
+    throw new ZirUnsupported('closure wrapper shape');
+  }
+  let b = new IrBuilder();
+  let params = synthEntryParams(b, func);
+  let args = new Array<i32>();
+  for (var i = 1; i < params.length; i += 1) {
+    args.push(params[i]);
+  }
+  let resultType = if (target.signature.returns.length == 1) target.signature.returns[0] else null;
+  let funcRef = b.addRef(new IrRefFunc(target));
+  let result = b.callFunc(funcRef, args, resultType);
+  if (func.signature.returns.length == 1) {
+    if (resultType == null) {
+      throw new ZirUnsupported('closure wrapper result shape');
+    }
+    b.ret(result);
+  } else {
+    b.retVoid();
+  }
+  return b.finish();
+};
+
+/** The one intrinsic with a body streaming synthesizes: array.len. */
+let synthesizeIntrinsic = (func: WasmFunction): IrBody => {
+  if ((func.intrinsic as String) != 'array.len' ||
+      func.signature.params.length != 1 || func.signature.returns.length != 1) {
+    throw new ZirUnsupported('intrinsic');
+  }
+  let b = new IrBuilder();
+  let params = synthEntryParams(b, func);
+  let len = b.emit(IrOp.array_len, new ValTypeI32(), params[0], -1);
+  b.ret(len);
+  return b.finish();
+};
+
+let twoValuesOf = (a: i32, bVal: i32): Array<i32> => {
+  let result = new Array<i32>();
+  result.push(a);
+  result.push(bVal);
+  return result;
+};
+
 let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  // Metadata-only functions first: no AST, but their bodies are tiny
+  // fixed shapes ZIR synthesizes directly (they are half of all
+  // fallbacks on the compiler itself). The node==null gate matters:
+  // DECLARED accessors also carry getterStruct/setterStruct, but they
+  // have real bodies (and often no physical field), so they take the
+  // normal lowering path below.
   if (func.node == null) {
+    if (func.interfaceTrampolineTarget != null) {
+      return synthesizeInterfaceTrampoline(func);
+    }
+    if (func.getterStruct != null) {
+      return synthesizeAccessor(func, true);
+    }
+    if (func.setterStruct != null) {
+      return synthesizeAccessor(func, false);
+    }
+    if (func.isClosureWrapper) {
+      return synthesizeClosureWrapper(func);
+    }
+    if (func.intrinsic != null) {
+      return synthesizeIntrinsic(func);
+    }
     throw new ZirUnsupported("synthesized function");
   }
   // No adaptations, trampolines, synthesized accessors, imports, or
