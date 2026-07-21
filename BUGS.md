@@ -16,6 +16,33 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Checker does not narrow after calls to never-returning functions
+- **Found**: 2026-07-21
+- **Severity**: low (ergonomics; forces redundant casts)
+- **Workaround**: inline `throw`, or keep an `as` cast after the guard.
+- **Details**: An inline `throw` in a guard branch narrows the guarded
+  binding afterward, but a call to a function declared `: never` does
+  not terminate control flow for narrowing purposes:
+
+  ```zena
+  let bail = (msg: String): never => { throw new Error(msg); };
+
+  let f = (b: Box | null): i32 => {
+    if (b == null) { throw new Error('x'); }
+    return b.x;                      // OK: narrowed
+  };
+  let g = (b: Box | null): i32 => {
+    if (b == null) { bail('x'); }
+    return b.x;                      // Error: "Object may be null"
+  };
+  ```
+
+  The ZIR lowering code is full of `#bail(...): never` guards followed
+  by `as` casts that would all disappear if never-returning calls were
+  treated like throw for reachability/narrowing. Both compilers agree
+  (checked with the bootstrap checker).
+
+
 ### Host mutations after a read-only capture are invisible to the closure
 - **Found**: 2026-07-21
 - **Severity**: medium
