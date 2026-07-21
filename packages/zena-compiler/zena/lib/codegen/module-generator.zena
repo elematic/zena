@@ -674,9 +674,11 @@ export final class ModuleGenerator {
     this.emitter.emitCodeSectionStart(wasm.functions.length);
     var zirLowered = 0;
     var zirFellBack = 0;
+    let zirBailReasons: HashMap<String, i32> | null =
+        if (this.useZir && this.zirStats) new HashMap<String, i32>() else null;
      for (let wasmFunc in wasm.functions) {
         if (this.useZir) {
-          let irBody = tryLowerFunction(wasm, wasmFunc, this.zirStrict);
+          let irBody = tryLowerFunction(wasm, wasmFunc, this.zirStrict, zirBailReasons);
           if (irBody != null) {
             let body = irBody as IrBody;
             // Loud on verifier failure: a broken lowering must never limp
@@ -702,6 +704,33 @@ export final class ModuleGenerator {
     if (this.useZir && this.zirStats) {
       console.log("zir backend: " + i32ToString(zirLowered) + " lowered, " +
           i32ToString(zirFellBack) + " fell back");
+      if (zirBailReasons != null) {
+        // Top bail reasons, most frequent first: the coverage worklist.
+        let reasons = zirBailReasons as HashMap<String, i32>;
+        let keys = new Array<String>();
+        let counts = new Array<i32>();
+        for (let pair in reasons) {
+          keys.push(pair.key);
+          counts.push(pair.value);
+        }
+        for (var i = 1; i < keys.length; i += 1) {
+          let k = keys[i];
+          let c = counts[i];
+          var j = i - 1;
+          while (j >= 0 && counts[j] < c) {
+            keys[j + 1] = keys[j];
+            counts[j + 1] = counts[j];
+            j -= 1;
+          }
+          keys[j + 1] = k;
+          counts[j + 1] = c;
+        }
+        var shown = 0;
+        for (var i = 0; i < keys.length && shown < 15; i += 1) {
+          console.log("  bail x" + i32ToString(counts[i]) + ": " + keys[i]);
+          shown += 1;
+        }
+      }
     }
     if (wasm.datas.length > 0) {
       this.emitter.emitDataCountSection(wasm.datas.length);

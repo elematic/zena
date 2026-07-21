@@ -97,39 +97,55 @@ final class LoopCtx {
 
 /**
  * Attempts to lower `func` to ZIR. Returns null when the function uses
- * anything outside the currently supported subset.
+ * anything outside the currently supported subset; in strict mode
+ * (ZENA_BACKEND=zir-strict) the ZirUnsupported propagates instead —
+ * the migration ratchet for proving zero-fallback coverage before the
+ * streaming path is deleted (ir.md §14 M4). When `bailReasons` is
+ * provided (ZENA_ZIR_STATS=1), each fallback increments its reason so
+ * coverage work can chase the biggest blockers first.
  */
-export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boolean = false): IrBody | null => {
-  let name = if (func.name != null) func.name as String else "<unnamed>";
-  if (func.node == null) {
-    if (strict) {
-      throw new ZirUnsupported("synthesized function " + name);
+export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boolean = false, bailReasons: HashMap<String, i32> | null = null): IrBody | null => {
+  if (strict) {
+    return lowerFunctionOrThrow(wasm, func);
+  }
+  // ZirUnsupported means "fall back to the streaming generator"; any
+  // other exception is a lowering bug and propagates.
+  let result: IrBody | null = try {
+    lowerFunctionOrThrow(wasm, func)
+  } catch (e) {
+    if (e is ZirUnsupported) {
+      if (bailReasons != null) {
+        let reasons = bailReasons as HashMap<String, i32>;
+        let key = (e as ZirUnsupported).message;
+        let count = if (let (true, c) = reasons.get(key)) c else 0;
+        reasons[key] = count + 1;
+      }
+      null
+    } else {
+      throw e
     }
-    return null;
+  };
+  return result;
+};
+
+let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  if (func.node == null) {
+    throw new ZirUnsupported("synthesized function");
   }
   // No adaptations, trampolines, synthesized accessors, imports, or
   // generics. Plain top-level functions, written-out method bodies,
   // constructors, and closure implementation bodies are eligible.
   if (func.isImport || usesSynthesizedMachinery(func)) {
-    if (strict) {
-      throw new ZirUnsupported("function shape of " + name);
-    }
-    return null;
+    throw new ZirUnsupported("function shape");
   }
   if (func.isClosure) {
     if (func.contextStruct == null) {
-      if (strict) {
-        throw new ZirUnsupported("closure without context struct " + name);
-      }
-      return null;
+      throw new ZirUnsupported("closure without context struct");
     }
   } else if (func.captures.length > 0 || func.capturesThis ||
              func.contextStruct != null) {
     // Capture state on a non-closure is a shape lowering doesn't know.
-    if (strict) {
-      throw new ZirUnsupported("function shape of " + name);
-    }
-    return null;
+    throw new ZirUnsupported("function shape");
   }
   if (func.node is MethodDefinition) {
     let md = func.node as MethodDefinition;
@@ -146,47 +162,19 @@ export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boo
         (!isCtor && (md.body == null || md.initializerList != null ||
                      md.superInitializer != null)) ||
         (isCtor && md.decorators.length > 0)) {
-      if (strict) {
-        throw new ZirUnsupported("method shape of " + name);
-      }
-      return null;
+      throw new ZirUnsupported("method shape");
     }
   } else if (!(func.node is FunctionExpression)) {
-    if (strict) {
-      throw new ZirUnsupported("synthesized function " + name);
-    }
-    return null;
+    throw new ZirUnsupported("synthesized function");
   } else if (!func.isClosure &&
              (func.classType != null || func.structType != null)) {
     // A non-closure FunctionExpression carrying class context
     // (extension methods) still bails; closures keep their enclosing
     // class context for `this` captures and type substitution.
-    if (strict) {
-      throw new ZirUnsupported("function shape of " + name);
-    }
-    return null;
+    throw new ZirUnsupported("function shape");
   }
-  if (strict) {
-    // Strict mode (ZENA_BACKEND=zir-strict): let ZirUnsupported propagate
-    // with its reason instead of falling back — the migration ratchet for
-    // proving zero-fallback coverage before the streaming path is deleted
-    // (ir.md §14 M4).
-    let lowerer = new FunctionLowerer(wasm, func);
-    return lowerer.lower();
-  }
-  // ZirUnsupported means "fall back to the streaming generator"; any
-  // other exception is a lowering bug and propagates.
-  let result: IrBody | null = try {
-    let lowerer = new FunctionLowerer(wasm, func);
-    lowerer.lower()
-  } catch (e) {
-    if (e is ZirUnsupported) {
-      null
-    } else {
-      throw e
-    }
-  };
-  return result;
+  let lowerer = new FunctionLowerer(wasm, func);
+  return lowerer.lower();
 };
 
 final class FunctionLowerer {
