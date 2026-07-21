@@ -239,6 +239,25 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('call $Point'));
   });
 
+  test('constructor prologue: defaults, this params, super', (ctx: TestContext): void => {
+    // Structural: multi-function modules are discovery-order sensitive.
+    let result = compileWithZir(
+        'class Base { tag: i32; new(this.tag); }\n' +
+        'final class Derived extends Base {\n' +
+        '  var extra: i32 = 7;\n' +
+        '  new(t: i32) : super(t) {\n' +
+        '    this.extra += t;\n' +
+        '  }\n' +
+        '}\n' +
+        'export let main = (): i32 => {\n' +
+        '  let d = new Derived(3);\n' +
+        '  return d.tag + d.extra;\n' +
+        '};');
+    isTrue(result.contains('call $Base'));
+    isTrue(result.contains('struct.new_default'));
+    isTrue(result.contains('struct.set'));
+  });
+
   test('zir output contains the lowered function', (ctx: TestContext): void => {
     // Cheap structural sanity independent of snapshots: the ZIR-lowered
     // function is emitted (every value a local, so at least one local).

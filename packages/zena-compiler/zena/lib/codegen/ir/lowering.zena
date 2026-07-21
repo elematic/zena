@@ -32,7 +32,8 @@ import {
   NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern,
   CallExpression, IfExpression, AsExpression, ForStatement,
   NullLiteral, StringLiteral, NewExpression, MemberExpression,
-  MethodDefinition, ThisExpression, Parameter,
+  MethodDefinition, ThisExpression, Parameter, ClassDeclaration,
+  FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation,
   getMemberPropertyName
 } from '../../ast.zena';
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, ThisType, FunctionType, baseType } from '../../types.zena';
@@ -43,7 +44,7 @@ import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, ClassCodegenInfo, isV
 import { typeToValTypeWithSub, eraseTypeParameters } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 
 /**
@@ -120,11 +121,15 @@ export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boo
     if (md.name is Identifier) {
       methName = (md.name as Identifier).name;
     }
-    // Constructors have initializer lists and super-init prologues that
-    // lowering does not model yet; declares/abstracts have no body.
-    if (methName == "<constructor>" || md.initializerList != null ||
-        md.superInitializer != null || md.isDeclare || md.isAbstract ||
-        md.body == null || md.typeParameters != null) {
+    let isCtor = methName == "<constructor>";
+    // Declares/abstracts have no body; non-constructor methods with
+    // initializer machinery would be malformed; decorated constructors
+    // (synthetic case-class ctors) have argument-forwarding rules the
+    // prologue lowering does not model.
+    if (md.isDeclare || md.isAbstract || md.typeParameters != null ||
+        (!isCtor && (md.body == null || md.initializerList != null ||
+                     md.superInitializer != null)) ||
+        (isCtor && md.decorators.length > 0)) {
       if (strict) {
         throw new ZirUnsupported("method shape of " + name);
       }
@@ -192,6 +197,7 @@ final class FunctionLowerer {
     var params: Array<Parameter> | null = null;
     var bodyNode: Node | null = null;
     var paramOffset = 0;
+    var ctorDef: MethodDefinition | null = null;
     let node = this.func.node as Node;
     if (node is MethodDefinition) {
       let md = node as MethodDefinition;
@@ -199,6 +205,13 @@ final class FunctionLowerer {
       bodyNode = md.body;
       if (!md.isStatic) {
         paramOffset = 1;
+      }
+      var methName = "";
+      if (md.name is Identifier) {
+        methName = (md.name as Identifier).name;
+      }
+      if (methName == "<constructor>") {
+        ctorDef = md;
       }
     } else {
       let fExpr = node as FunctionExpression;
@@ -214,6 +227,17 @@ final class FunctionLowerer {
     if (paramOffset == 1) {
       this.#requireSupported(sig.params[0], 'receiver type');
       this.thisValue = this.b.blockParam(entry, sig.params[0]);
+    }
+    var needsThisDowncast = false;
+    if (paramOffset == 1 && ctorDef == null &&
+        this.func.classType != null && this.func.methodName != null) {
+      // Override methods receive the ROOT class's receiver type (vtable
+      // signature compatibility) and must downcast to their own class.
+      let ct = this.func.classType as ClassType;
+      let rootClass = getMemberRootClass(ct, this.func.methodName as String);
+      if (ct != rootClass) {
+        needsThisDowncast = true;
+      }
     }
     for (var i = 0; i < paramList.length; i += 1) {
       let p = paramList[i];
@@ -231,6 +255,31 @@ final class FunctionLowerer {
       this.symbols[(sym as Symbol).id] = sym as Symbol;
     }
     this.b.switchTo(entry);
+    if (needsThisDowncast) {
+      let ct = this.func.classType as ClassType;
+      var infoOpt: ClassCodegenInfo | null = null;
+      if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) {
+        infoOpt = info;
+      }
+      if (infoOpt == null) {
+        this.#bail('override class not discovered');
+      }
+      let ownStruct = (infoOpt as ClassCodegenInfo).structType;
+      let castVt = new ValTypeRef(ownStruct) as ValType;
+      this.thisValue = this.b.emit(IrOp.ref_cast, castVt, this.thisValue,
+          this.b.internType(castVt));
+    }
+
+    if (ctorDef != null) {
+      this.#lowerConstructorPrologue(ctorDef as MethodDefinition);
+      if (bodyNode != null) {
+        this.#lowerStatement(bodyNode as Statement);
+      }
+      if (this.reachable) {
+        this.b.retVoid();
+      }
+      return this.b.finish();
+    }
 
     let body = bodyNode as Node;
     if (body is BlockStatement) {
@@ -253,6 +302,127 @@ final class FunctionLowerer {
       this.#emitCheckedRet(value);
     }
     return this.b.finish();
+  }
+
+  /**
+   * Constructor prologue, mirroring FunctionGenerator's order exactly:
+   * field default initializers (class body FieldDefinitions with
+   * values), then the initializer list (which also carries desugared
+   * `this.x` parameters), then the super-initializer call, then the
+   * body. Mixins and decorated (synthetic) constructors bail before we
+   * get here.
+   */
+  #lowerConstructorPrologue(md: MethodDefinition): void {
+    if (this.func.classType == null || this.func.structType == null) {
+      this.#bail('constructor without class');
+    }
+    let ct = this.func.classType as ClassType;
+    let structType = this.func.structType as WasmStruct;
+    if (ct.isExtension) {
+      this.#bail('extension constructor');
+    }
+    let classDecl = this.func.classDecl;
+    if (classDecl == null || !(classDecl is ClassDeclaration)) {
+      this.#bail('constructor declaration shape');
+    }
+    let cd = classDecl as ClassDeclaration;
+    if (cd.mixins != null && (cd.mixins as Array<TypeAnnotation>).length > 0) {
+      this.#bail('constructor with mixins');
+    }
+
+    // 1. Field defaults, in declaration order.
+    for (let member in cd.body) {
+      if (member is FieldDefinition) {
+        let fd = member as FieldDefinition;
+        if (fd.value != null && !fd.isStatic) {
+          if (!(fd.name is Identifier)) {
+            this.#bail('field name shape');
+          }
+          this.#storeCtorField(ct, structType, (fd.name as Identifier).name,
+              fd.value as Expression);
+        }
+      }
+    }
+
+    // 2. Initializer list (includes desugared this.x params).
+    if (md.initializerList != null) {
+      for (let init in md.initializerList as Array<Node>) {
+        if (init is FieldInitializer) {
+          let fi = init as FieldInitializer;
+          this.#storeCtorField(ct, structType, fi.field.name, fi.value);
+        } else {
+          this.#bail('initializer kind');
+        }
+      }
+    }
+
+    // 3. Super-initializer.
+    if (md.superInitializer != null) {
+      let si = md.superInitializer as SuperInitializer;
+      if (ct.superType == null) {
+        this.#bail('super without superclass');
+      }
+      let superKey = getClassMethodKey(
+          getClassKey(ct.superType as ClassType), '<constructor>');
+      if (!this.wasm.classMethodMap.has(superKey)) {
+        this.#bail('super constructor not found');
+      }
+      let superCtor = this.wasm.classMethodMap[superKey];
+      let superSig = superCtor.signature;
+      if (superSig.params.length != si.args.length + 1) {
+        this.#bail('super constructor arity');
+      }
+      let args = new Array<i32>();
+      args.push(this.thisValue);
+      for (var i = 0; i < si.args.length; i += 1) {
+        let paramVt = superSig.params[i + 1];
+        this.#requireSupported(paramVt, 'super arg type');
+        let value = this.#lowerExpressionCtx(si.args[i], paramVt);
+        if (!isValSubtype(this.#valueType(value), paramVt)) {
+          this.#bail('super argument type');
+        }
+        args.push(value);
+      }
+      let superRef = this.b.addRef(new IrRefFunc(superCtor));
+      this.b.callFunc(superRef, args, null);
+    }
+  }
+
+  /**
+   * Stores one constructor field initialization, applying the public
+   * name -> private storage mapping (var(#x) x) and private-field key
+   * mangling. Fields absent from the struct are skipped WITHOUT
+   * evaluating the value, matching the streaming backend.
+   */
+  #storeCtorField(ct: ClassType, structType: WasmStruct, fieldName: String, value: Expression): void {
+    var actualName = fieldName;
+    if (ct.fieldSetterNames != null) {
+      let mapping = ct.fieldSetterNames as HashMap<String, String>;
+      if (mapping.has(fieldName)) {
+        actualName = mapping[fieldName];
+      }
+    }
+    var lookupName = actualName;
+    if (actualName.length > 0 && actualName.sliceBytes(0, 1) == "#") {
+      lookupName = getClassPrivateFieldKey(getClassKey(ct), actualName);
+    }
+    var found = false;
+    for (let f in structType.fields) {
+      if (f.name != null && (f.name as String) == lookupName) {
+        found = true;
+      }
+    }
+    if (!found) {
+      return;
+    }
+    let fieldVt = this.#fieldValType(structType, lookupName);
+    let lowered = this.#lowerExpressionCtx(value, fieldVt);
+    if (!isValSubtype(this.#valueType(lowered), fieldVt)) {
+      this.#bail('constructor field type');
+    }
+    let fieldRef = this.b.addRef(new IrRefField(structType, lookupName));
+    let pairIdx = this.b.pushExtra(this.#twoValues(this.thisValue, lowered));
+    this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
   }
 
   /**

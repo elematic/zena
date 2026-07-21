@@ -343,6 +343,24 @@ export final class ZirFunctionEmitter {
           throw new Error('zir emit: ref.null type');
         }
       }
+    } else if (op == IrOp.ref_cast) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      match (body.typeTable[body.b[inst]]) {
+        case ValTypeRef as r: { this.emitter.emitRefCast(r.target.index); }
+        case ValTypeRefNull as rn: { this.emitter.emitRefCastNull(rn.target.index); }
+        case _: {
+          throw new Error('zir emit: ref.cast target kind');
+        }
+      }
+    } else if (op == IrOp.ref_test) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      match (body.typeTable[body.b[inst]]) {
+        case ValTypeRef as r: { this.emitter.emitRefTest(r.target.index); }
+        case ValTypeRefNull as rn: { this.emitter.emitRefTestNull(rn.target.index); }
+        case _: {
+          throw new Error('zir emit: ref.test target kind');
+        }
+      }
     } else if (op == IrOp.ref_is_null) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.emitter.emitRefIsNull();

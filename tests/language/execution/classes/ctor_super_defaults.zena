@@ -1,0 +1,56 @@
+// @mode: run
+// @result: 424
+// Constructor prologues end to end: field defaults, initializer lists
+// (including desugared this.x params), super-init calls, and override
+// methods that downcast their receiver. Exercises ZIR's constructor
+// lowering under ZENA_BACKEND=zir.
+
+class Animal {
+  legs: i32;
+  var name: String;
+  new(this.legs, this.name);
+
+  describe(): i32 {
+    return this.legs;
+  }
+}
+
+final class Dog extends Animal {
+  var tricks: i32 = 0;
+  new(name: String) : super(4, name);
+
+  describe(): i32 {
+    return this.legs * 100 + this.tricks;
+  }
+
+  learn(): i32 {
+    this.tricks += 1;
+    return this.tricks;
+  }
+}
+
+class Accumulator {
+  var total: i32 = 10;
+  var step: i32;
+  new(this.step) {
+    this.total += this.step;
+  }
+
+  advance(): i32 {
+    this.total += this.step;
+    return this.total;
+  }
+}
+
+export let main = (): i32 => {
+  var result = 0;
+  let a = new Animal(2, 'biped');
+  result += a.describe();          // 2
+  let d = new Dog('rex');
+  d.learn();
+  d.learn();
+  result += d.describe();          // 402 -> 404
+  let acc = new Accumulator(5);    // total = 15
+  result += acc.advance();         // 20 -> 424
+  return result;
+};
