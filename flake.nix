@@ -59,9 +59,33 @@
 
           src = ./.;
 
-          npmDepsHash = "sha256-2bFhkmc2bAS/ITyf2WO4Za0gH229Do9+b+s8byqD+6c=";
+          npmDepsHash = "sha256-JWWaf3MFCMi7f+U0zuG7Sr2zIXBwJz5DqgQH0Ga7Pjo=";
 
-          nativeBuildInputs = [ nodejs ];
+          # Don't compile native addons. buildNpmPackage runs `npm rebuild`
+          # after the install, which tries to build keytar's native binding
+          # (`prebuild-install || node-gyp rebuild`) — pulled in transitively
+          # for the VS Code extension's credential storage. It needs network
+          # (prebuild-install) or pkg-config + libsecret (node-gyp), neither of
+          # which exists in the hermetic sandbox, and nothing the compiler or
+          # its test suite imports actually uses it. Without this the build only
+          # ever succeeded by substituting a cached output.
+          npmRebuildFlags = [ "--ignore-scripts" ];
+
+          # `npm run build` compiles the Rust self-hosted CLI
+          # (packages/zena-cli, `cargo build --release`). Vendor its crates
+          # from Cargo.lock so cargo runs offline in the sandbox; cargoSetupHook
+          # wires up CARGO_HOME + the vendored registry. (No git sources in the
+          # lockfile, so no per-crate outputHashes are needed.)
+          cargoDeps = pkgs.rustPlatform.importCargoLock {
+            lockFile = ./Cargo.lock;
+          };
+
+          nativeBuildInputs = [
+            nodejs
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.rustPlatform.cargoSetupHook
+          ];
 
           buildPhase = ''
             runHook preBuild
@@ -94,11 +118,46 @@
             mainProgram = "zena";
           };
         };
+
+        # Hermetic test suite: reuse the compiler's vendored npm deps and build,
+        # then run the full `npm test` (all package suites via wireit) with
+        # wasmtime + wasm-tools on PATH so the WASI/self-hosted suites actually
+        # execute rather than being skipped (run-wasmtime.js only *warns* when
+        # `which wasmtime` fails). `nix flake check` builds this, so CI gets a
+        # real test signal, not just "the compiler compiles".
+        zena-tests = zena.overrideAttrs (old: {
+          pname = "zena-tests";
+
+          nativeBuildInputs = old.nativeBuildInputs ++ [
+            wasmtime
+            pkgs.wasm-tools
+          ];
+
+          # Run the suite after the existing build phase. wireit rebuilds into a
+          # fresh .wireit cache inside the sandbox, so this is self-contained.
+          postBuild = ''
+            npm test
+          '';
+
+          # We only care that the tests passed; nothing downstream consumes the
+          # output, so keep it minimal instead of packaging the CLI.
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out
+            echo "zena test suite passed" > $out/result
+            runHook postInstall
+          '';
+        });
       in
       {
         packages = {
           default = zena;
           zena = zena;
+        };
+
+        checks = {
+          inherit zena;
+          test = zena-tests;
         };
 
         apps = {
