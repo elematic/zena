@@ -258,6 +258,44 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('struct.set'));
   });
 
+  test('scalar match with literals, or-patterns, and guards', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'export let main = (): i32 => {\n' +
+        '  let x = 5;\n' +
+        '  return match (x) {\n' +
+        '    case 0: 10\n' +
+        '    case 1 | 2: 20\n' +
+        '    case n if (n > 4): 30\n' +
+        '    case _: 40\n' +
+        '  };\n' +
+        '};');
+    assertSnapshot('zir_match_scalar', result);
+  });
+
+  test('match with class patterns and as-bindings', (ctx: TestContext): void => {
+    // Structural: multi-function modules are discovery-order sensitive.
+    let result = compileWithZir(
+        'class Base { tag: i32; new(this.tag); }\n' +
+        'final class One extends Base {\n' +
+        '  extra: i32;\n' +
+        '  new(t: i32, this.extra) : super(t);\n' +
+        '}\n' +
+        'let pick = (b: Base): i32 => match (b) {\n' +
+        '  case One as o: o.extra\n' +
+        '  case _: b.tag\n' +
+        '};\n' +
+        'export let main = (): i32 => {\n' +
+        '  let one = new One(1, 5);\n' +
+        '  let base = new Base(9);\n' +
+        '  return pick(one) + pick(base);\n' +
+        '};');
+    // The type test and the guarded downcast for the as-binding.
+    isTrue(result.contains('ref.test'));
+    isTrue(result.contains('ref.cast'));
+    // The checker-proven-impossible no-match path traps.
+    isTrue(result.contains('unreachable'));
+  });
+
   test('zir output contains the lowered function', (ctx: TestContext): void => {
     // Cheap structural sanity independent of snapshots: the ZIR-lowered
     // function is emitted (every value a local, so at least one local).

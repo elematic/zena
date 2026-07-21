@@ -1,0 +1,67 @@
+// @mode: run
+// @result: 1050
+// Match lowering end to end under ZENA_BACKEND=zir: sealed-class
+// property patterns with recursion, scalar literal and or-patterns,
+// guards, string patterns, null patterns with as-bindings, and
+// statement-position matches.
+sealed class Tree {
+  case Leaf(value: i32)
+  case Pair(left: Tree, right: Tree)
+}
+
+let sum = (n: Tree): i32 => match (n) {
+  case Leaf {value}: value
+  case Pair {left, right}: sum(left) + sum(right)
+};
+
+let classify = (x: i32): i32 => match (x) {
+  case 0: 100
+  case 1 | 2: 200
+  case n if (n < 0): 300
+  case _: 400
+};
+
+let describe = (s: String): i32 => match (s) {
+  case "a": 1
+  case "b": 2
+  case _: 3
+};
+
+class Box {
+  x: i32;
+  new(this.x);
+}
+
+let boxOrNull = (b: Box | null): i32 => match (b) {
+  case null: -1
+  case Box as bb: bb.x
+};
+
+let sideEffects = (x: i32): i32 => {
+  var acc = 0;
+  match (x) {
+    case 1: {
+      acc += 10;
+    }
+    case _: {
+      acc += 20;
+    }
+  }
+  return acc;
+};
+
+export let main = (): i32 => {
+  let tree = new Pair(new Leaf(3), new Pair(new Leaf(4), new Leaf(5)));
+  var acc = sum(tree);
+  acc += classify(0);
+  acc += classify(2);
+  acc += classify(-5);
+  acc += classify(9);
+  acc += describe("b");
+  acc += boxOrNull(null);
+  let box = new Box(7);
+  acc += boxOrNull(box);
+  acc += sideEffects(1);
+  acc += sideEffects(2);
+  return acc;
+};

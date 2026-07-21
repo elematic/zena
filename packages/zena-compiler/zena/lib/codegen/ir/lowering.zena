@@ -34,9 +34,10 @@ import {
   NullLiteral, StringLiteral, NewExpression, MemberExpression,
   MethodDefinition, ThisExpression, Parameter, ClassDeclaration,
   FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation,
+  MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   getMemberPropertyName
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, ThisType, FunctionType, baseType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, ThisType, FunctionType, baseType, isVoidOrNeverType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, valTypeEquals, isRefValType } from '../wasm.zena';
@@ -707,6 +708,7 @@ final class FunctionLowerer {
       case AssignmentExpression as assign: this.#lowerAssignment(assign)
       case CallExpression as call: this.#lowerCall(call)
       case IfExpression as ifExpr: this.#lowerIfExpression(ifExpr)
+      case MatchExpression as matchExpr: this.#lowerMatch(matchExpr)
       case AsExpression as asExpr: this.#lowerAs(asExpr)
       case StringLiteral as strLit: this.#lowerStringLiteral(strLit)
       case NewExpression as newExpr: this.#lowerNew(newExpr)
@@ -926,10 +928,7 @@ final class FunctionLowerer {
       this.#bail('untyped if expression');
     }
     let isVoid = baseType(nodeType as Type) is VoidType;
-    var resultVt: ValType | null = null;
-    if (!isVoid) {
-      resultVt = this.#exprValType(expr);
-    }
+    let resultVt = if (!isVoid) this.#exprValType(expr) else null;
     if (expr.alternate == null && !isVoid) {
       this.#bail('value if without else');
     }
@@ -950,8 +949,12 @@ final class FunctionLowerer {
 
     let saved = this.#copyEnv();
     this.b.switchTo(thenB);
-    let thenValue = this.#lowerValueNode(expr.consequent, isVoid);
+    let thenValue = this.#lowerValueNode(expr.consequent, isVoid, resultVt);
     if (this.reachable) {
+      if (!isVoid &&
+          !isValSubtype(this.#valueType(thenValue), resultVt as ValType)) {
+        this.#bail('if arm type');
+      }
       mergeB = this.b.newBlock();
       mergeParams = this.#addParams(mergeB, mergeSyms);
       if (!isVoid) {
@@ -968,8 +971,12 @@ final class FunctionLowerer {
     this.reachable = true;
     this.b.switchTo(elseB);
     if (expr.alternate != null) {
-      let elseValue = this.#lowerValueNode(expr.alternate as Node, isVoid);
+      let elseValue = this.#lowerValueNode(expr.alternate as Node, isVoid, resultVt);
       if (this.reachable) {
+        if (!isVoid &&
+            !isValSubtype(this.#valueType(elseValue), resultVt as ValType)) {
+          this.#bail('if arm type');
+        }
         if (mergeB < 0) {
           mergeB = this.b.newBlock();
           mergeParams = this.#addParams(mergeB, mergeSyms);
@@ -1004,13 +1011,15 @@ final class FunctionLowerer {
   }
 
   /**
-   * Lowers an if-expression arm: a plain expression, or a value-block
-   * whose trailing expression statement supplies the value. Returns -1
-   * when the arm ends unreachable (or the context is void).
+   * Lowers an if-expression or match-case arm: a plain expression, or a
+   * value-block whose trailing expression statement supplies the value.
+   * `ctxVt` is the arm's contextual result type (for null literals);
+   * null when the context is void. Returns -1 when the arm ends
+   * unreachable (or the context is void).
    */
-  #lowerValueNode(node: Node, isVoid: boolean): i32 {
+  #lowerValueNode(node: Node, isVoid: boolean, ctxVt: ValType | null): i32 {
     if (node is Expression) {
-      let value = this.#lowerExpression(node as Expression);
+      let value = this.#lowerExpressionCtx(node as Expression, ctxVt);
       return if (isVoid) -1 else value;
     }
     if (node is BlockStatement) {
@@ -1029,7 +1038,8 @@ final class FunctionLowerer {
       }
       let last = body[body.length - 1];
       if (last is ExpressionStatement) {
-        let value = this.#lowerExpression((last as ExpressionStatement).expression);
+        let value = this.#lowerExpressionCtx(
+            (last as ExpressionStatement).expression, ctxVt);
         return if (isVoid) -1 else value;
       }
       if (isVoid) {
@@ -1038,7 +1048,480 @@ final class FunctionLowerer {
       }
       this.#bail('value block tail');
     }
-    return this.#bailValue('if arm kind');
+    return this.#bailValue('value arm kind');
+  }
+
+  // -- Match expressions -------------------------------------------------
+
+  /**
+   * Match lowering. Each case chains its tests so the first failure
+   * branches to the next case's entry block — which also keeps nested
+   * property tests guarded behind their enclosing ref.test (the
+   * streaming backend gets the same guarantee from if/else
+   * accumulators) — then binds pattern variables into the SSA
+   * environment, tests the guard, and lowers the body. Completed arms
+   * branch to a lazily created merge block carrying a result parameter
+   * when the match produces a value. The final fail block only traps:
+   * the checker proves exhaustiveness, mirroring streaming's trailing
+   * unreachable.
+   */
+  #lowerMatch(expr: MatchExpression): i32 {
+    let nodeType = this.func.model.getNodeType(expr);
+    if (nodeType == null) {
+      this.#bail('untyped match');
+    }
+    let isVoid = isVoidOrNeverType(nodeType as Type);
+    let resultVt = if (!isVoid) {
+      let vt = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+      this.#requireSupported(vt, 'match result type');
+      vt
+    } else {
+      null
+    };
+
+    let disc = this.#lowerExpression(expr.discriminant);
+
+    let mergeSyms = new Array<SymbolId>();
+    for (let mc in expr.cases) {
+      this.#appendAssignedEnvSyms(mc.body, mergeSyms);
+      if (mc.guard != null) {
+        this.#appendAssignedEnvSyms(mc.guard as Node, mergeSyms);
+      }
+    }
+
+    var mergeB = -1;
+    var mergeParams: Array<i32> | null = null;
+    var resultParam = -1;
+    let saved = this.#copyEnv();
+
+    var exhausted = false;
+    var i = 0;
+    while (i < expr.cases.length && !exhausted) {
+      let mc = expr.cases[i];
+      this.env = this.#copyOf(saved);
+      // An irrefutable, guardless case consumes everything; later cases
+      // are statically dead (and their blocks, having no predecessors,
+      // would fail verification).
+      var failB = -1;
+      if (mc.guard != null || this.#patternRefutable(mc.pattern)) {
+        failB = this.b.newBlock();
+      } else {
+        exhausted = true;
+      }
+      this.#lowerPatternTest(mc.pattern, disc, failB);
+      this.#lowerPatternBindings(mc.pattern, disc);
+      if (mc.guard != null) {
+        let cond = this.#lowerExpression(mc.guard as Expression);
+        this.#branchUnless(cond, failB);
+      }
+      let value = this.#lowerValueNode(mc.body, isVoid, resultVt);
+      if (this.reachable) {
+        if (!isVoid &&
+            !isValSubtype(this.#valueType(value), resultVt as ValType)) {
+          this.#bail('match arm type');
+        }
+        if (mergeB < 0) {
+          mergeB = this.b.newBlock();
+          mergeParams = this.#addParams(mergeB, mergeSyms);
+          if (!isVoid) {
+            resultParam = this.b.blockParam(mergeB, resultVt as ValType);
+          }
+        }
+        let args = this.#envValues(mergeSyms);
+        if (!isVoid) {
+          args.push(value);
+        }
+        this.b.br(mergeB, args);
+      }
+      if (failB >= 0) {
+        this.b.switchTo(failB);
+        this.reachable = true;
+      }
+      i += 1;
+    }
+
+    if (!exhausted) {
+      this.b.unreachable();
+    }
+
+    if (mergeB < 0) {
+      this.reachable = false;
+      return -1;
+    }
+    this.env = saved;
+    this.#applyParams(mergeSyms, mergeParams as Array<i32>);
+    this.b.switchTo(mergeB);
+    this.reachable = true;
+    return resultParam;
+  }
+
+  /**
+   * Emits the refutable tests for `pattern` against `value`, branching
+   * to `failB` at the first failure; on success execution falls through
+   * in the current block. Pattern kinds not lowered yet (tuples,
+   * records) bail here, falling the whole function back to streaming.
+   */
+  #lowerPatternTest(pattern: Node, value: i32, failB: i32): void {
+    match (pattern) {
+      case IdentifierPattern: {}
+      case Identifier as ident: {
+        if (ident.name != "_") {
+          // `case Foo:` where Foo names a class is a type test; any
+          // other identifier is an irrefutable binding (mirrors
+          // streaming's check emitter).
+          let patType = this.func.model.getNodeType(pattern);
+          if (patType is ClassType) {
+            let st = this.#classStructOf(patType as ClassType);
+            this.#emitRefTest(value, st, failB);
+          }
+        }
+      }
+      case AsPattern as ap: {
+        this.#lowerPatternTest(ap.pattern, value, failB);
+      }
+      case BindingPattern as bp: {
+        this.#lowerPatternTest(bp.pattern, value, failB);
+      }
+      case LiteralPattern as lp: {
+        this.#lowerPatternTest(lp.value, value, failB);
+      }
+      case ClassPattern as cp: {
+        let ct = this.func.model.getNodeType(cp.name);
+        if (!(ct is ClassType)) {
+          this.#bail('untyped class pattern');
+        }
+        let st = this.#classStructOf(ct as ClassType);
+        this.#emitRefTest(value, st, failB);
+        let castVt = new ValTypeRef(st) as ValType;
+        var casted = -1;
+        for (let prop in cp.properties) {
+          // Streaming parity on both filters: irrefutable property
+          // patterns contribute no test, and properties without a
+          // physical struct field are skipped.
+          if (this.#patternRefutable(prop.value)) {
+            let fieldIdx = this.#structFieldIndex(st, prop.name.name);
+            if (fieldIdx >= 0) {
+              if (casted < 0) {
+                casted = this.b.emit(IrOp.ref_cast, castVt, value,
+                    this.b.internType(castVt));
+              }
+              let fieldRef = this.b.addRef(new IrRefField(st, prop.name.name));
+              let fieldVal = this.b.emit(
+                  IrOp.struct_get, st.fields[fieldIdx].type, casted, fieldRef);
+              this.#lowerPatternTest(prop.value, fieldVal, failB);
+            }
+          }
+        }
+      }
+      case LogicalPattern as lp: {
+        if (lp.operator == "||") {
+          if (this.#patternBinds(lp.left) || this.#patternBinds(lp.right)) {
+            // Bindings under an or-pattern would need the per-side
+            // values merged into the arm; not lowered yet.
+            this.#bail('or-pattern bindings');
+          }
+          if (this.#patternRefutable(lp.left) &&
+              this.#patternRefutable(lp.right)) {
+            let tryRight = this.b.newBlock();
+            let successB = this.b.newBlock();
+            this.#lowerPatternTest(lp.left, value, tryRight);
+            this.b.br(successB, this.#noArgs());
+            this.b.switchTo(tryRight);
+            this.#lowerPatternTest(lp.right, value, failB);
+            this.b.br(successB, this.#noArgs());
+            this.b.switchTo(successB);
+          }
+          // Otherwise one side always matches, so the whole pattern does.
+        } else {
+          this.#lowerPatternTest(lp.left, value, failB);
+          this.#lowerPatternTest(lp.right, value, failB);
+        }
+      }
+      case NumberLiteral as num: {
+        let vt = this.#valueType(value);
+        var cond = -1;
+        if (vt is ValTypeI32) {
+          if (let (true, parsed) = parseI64OrU64Literal(num.raw)) {
+            let lit = this.b.constI32(parsed as i32, vt);
+            cond = this.b.binary(IrOp.i32_eq, new ValTypeI32(), value, lit);
+          } else {
+            this.#bail('unparseable pattern literal');
+          }
+        } else if (vt is ValTypeI64) {
+          if (let (true, parsed) = parseI64OrU64Literal(num.raw)) {
+            let lit = this.b.constI64(parsed, vt);
+            cond = this.b.binary(IrOp.i64_eq, new ValTypeI32(), value, lit);
+          } else {
+            this.#bail('unparseable pattern literal');
+          }
+        } else if (vt is ValTypeF64) {
+          let lit = this.b.constF64(parseF64(num.raw), vt);
+          cond = this.b.binary(IrOp.f64_eq, new ValTypeI32(), value, lit);
+        } else if (vt is ValTypeF32) {
+          let lit = this.b.constF32(parseF64(num.raw), vt);
+          cond = this.b.binary(IrOp.f32_eq, new ValTypeI32(), value, lit);
+        } else {
+          this.#bail('number pattern operand');
+        }
+        this.#branchUnless(cond, failB);
+      }
+      case BooleanLiteral as bl: {
+        let vt = this.#valueType(value);
+        if (!(vt is ValTypeI32)) {
+          this.#bail('boolean pattern operand');
+        }
+        let lit = this.b.constI32(if (bl.value) 1 else 0, vt);
+        let cond = this.b.binary(IrOp.i32_eq, new ValTypeI32(), value, lit);
+        this.#branchUnless(cond, failB);
+      }
+      case NullLiteral: {
+        let vt = this.#valueType(value);
+        let nullable = vt is ValTypeRefNull || vt is ValTypeAnyRef ||
+            vt is ValTypeEqRef;
+        if (!nullable) {
+          this.#bail('null pattern operand');
+        }
+        let cond = this.b.emit(IrOp.ref_is_null, new ValTypeI32(), value, -1);
+        this.#branchUnless(cond, failB);
+      }
+      case StringLiteral as sl: {
+        let cond = this.#stringPatternEq(value, sl);
+        this.#branchUnless(cond, failB);
+      }
+      case MemberExpression as me: {
+        // Enum constants and other member reads: compare by value.
+        let expected = this.#lowerExpression(me as Expression);
+        let vt = this.#valueType(value);
+        if (!valTypeEquals(vt, this.#valueType(expected))) {
+          this.#bail('member pattern type');
+        }
+        var op = IrOp.i32_eq;
+        if (vt is ValTypeI32) {
+          op = IrOp.i32_eq;
+        } else if (vt is ValTypeI64) {
+          op = IrOp.i64_eq;
+        } else if (vt is ValTypeF32) {
+          op = IrOp.f32_eq;
+        } else if (vt is ValTypeF64) {
+          op = IrOp.f64_eq;
+        } else {
+          this.#bail('member pattern operand');
+        }
+        let cond = this.b.binary(op, new ValTypeI32(), value, expected);
+        this.#branchUnless(cond, failB);
+      }
+      case _: {
+        this.#bail('pattern kind');
+      }
+    }
+  }
+
+  /** Binds `pattern`'s variables against `value` in the current block. */
+  #lowerPatternBindings(pattern: Node, value: i32): void {
+    match (pattern) {
+      case IdentifierPattern as pat: {
+        if (pat.name != "_") {
+          let sym = this.func.model.resolveDeclaration(pat);
+          if (sym != null) {
+            this.#bindPatternSym(sym as Symbol, value);
+          }
+        }
+      }
+      case Identifier as ident: {
+        if (ident.name != "_") {
+          let sym = this.func.model.resolveDeclaration(ident);
+          if (sym != null && !(sym as Symbol).isType()) {
+            this.#bindPatternSym(sym as Symbol, value);
+          }
+        }
+      }
+      case AsPattern as ap: {
+        let sym = this.func.model.resolveDeclaration(ap.name);
+        if (sym != null) {
+          this.#bindPatternSym(sym as Symbol, value);
+        }
+        this.#lowerPatternBindings(ap.pattern, value);
+      }
+      case BindingPattern as bp: {
+        this.#lowerPatternBindings(bp.pattern, value);
+      }
+      case ClassPattern as cp: {
+        let ct = this.func.model.getNodeType(cp.name);
+        if (!(ct is ClassType)) {
+          this.#bail('untyped class pattern');
+        }
+        let st = this.#classStructOf(ct as ClassType);
+        let castVt = new ValTypeRef(st) as ValType;
+        var casted = -1;
+        for (let prop in cp.properties) {
+          if (this.#patternBinds(prop.value)) {
+            let fieldIdx = this.#structFieldIndex(st, prop.name.name);
+            if (fieldIdx >= 0) {
+              if (casted < 0) {
+                casted = this.b.emit(IrOp.ref_cast, castVt, value,
+                    this.b.internType(castVt));
+              }
+              let fieldRef = this.b.addRef(new IrRefField(st, prop.name.name));
+              let fieldVal = this.b.emit(
+                  IrOp.struct_get, st.fields[fieldIdx].type, casted, fieldRef);
+              this.#lowerPatternBindings(prop.value, fieldVal);
+            }
+          }
+        }
+      }
+      case LogicalPattern as lp: {
+        if (lp.operator != "||") {
+          this.#lowerPatternBindings(lp.left, value);
+          this.#lowerPatternBindings(lp.right, value);
+        }
+        // Or-patterns with bindings bailed during the test phase.
+      }
+      case _: {}
+    }
+  }
+
+  /**
+   * Binds a pattern symbol, downcasting to the (narrowed) binding type
+   * when needed — the preceding ref.test guarantees the cast succeeds.
+   */
+  #bindPatternSym(sym: Symbol, value: i32): void {
+    let bindingType = this.func.model.getBindingType(sym);
+    if (bindingType == null) {
+      this.#bail('untyped match binding');
+    }
+    let bindingVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
+    this.#requireSupported(bindingVt, 'match binding type');
+    var bound = value;
+    let have = this.#valueType(value);
+    if (!valTypeEquals(have, bindingVt) && !isValSubtype(have, bindingVt)) {
+      let haveRef = have is ValTypeRef || have is ValTypeRefNull ||
+          have is ValTypeAnyRef || have is ValTypeEqRef;
+      let wantRef = bindingVt is ValTypeRef || bindingVt is ValTypeRefNull;
+      if (!haveRef || !wantRef) {
+        this.#bail('match binding coercion');
+      }
+      bound = this.b.emit(IrOp.ref_cast, bindingVt, value,
+          this.b.internType(bindingVt));
+    }
+    this.env[sym.id] = bound;
+    this.symbols[sym.id] = sym;
+  }
+
+  /** Whether `pattern` can fail to match (needs a fail edge). */
+  #patternRefutable(pattern: Node): boolean {
+    return match (pattern) {
+      case IdentifierPattern: false
+      case Identifier as ident: {
+        if (ident.name == "_") {
+          false
+        } else {
+          let t = this.func.model.getNodeType(pattern);
+          t is ClassType
+        }
+      }
+      case AsPattern as ap: this.#patternRefutable(ap.pattern)
+      case BindingPattern as bp: this.#patternRefutable(bp.pattern)
+      case LogicalPattern as lp: {
+        if (lp.operator == "||") {
+          this.#patternRefutable(lp.left) && this.#patternRefutable(lp.right)
+        } else {
+          this.#patternRefutable(lp.left) || this.#patternRefutable(lp.right)
+        }
+      }
+      case _: true
+    };
+  }
+
+  /** Whether `pattern` introduces any bindings. */
+  #patternBinds(pattern: Node): boolean {
+    return match (pattern) {
+      case IdentifierPattern as pat: pat.name != "_"
+      case Identifier as ident: {
+        if (ident.name == "_") {
+          false
+        } else {
+          let sym = this.func.model.resolveDeclaration(ident);
+          sym != null && !(sym as Symbol).isType()
+        }
+      }
+      case AsPattern: true
+      case BindingPattern as bp: this.#patternBinds(bp.pattern)
+      case LiteralPattern: false
+      case ClassPattern as cp: {
+        var binds = false;
+        for (let prop in cp.properties) {
+          if (this.#patternBinds(prop.value)) {
+            binds = true;
+          }
+        }
+        binds
+      }
+      case LogicalPattern as lp:
+          this.#patternBinds(lp.left) || this.#patternBinds(lp.right)
+      case _: false
+    };
+  }
+
+  /** Branches to `failB` when `cond` is false; continues in a new block. */
+  #branchUnless(cond: i32, failB: i32): void {
+    let contB = this.b.newBlock();
+    this.b.brIf(cond, contB, this.#noArgs(), failB, this.#noArgs());
+    this.b.switchTo(contB);
+  }
+
+  /** ref.test `value` against `st`, branching to `failB` on failure. */
+  #emitRefTest(value: i32, st: WasmStruct, failB: i32): void {
+    let vt = this.#valueType(value);
+    let isRef = vt is ValTypeRef || vt is ValTypeRefNull ||
+        vt is ValTypeAnyRef || vt is ValTypeEqRef;
+    if (!isRef) {
+      this.#bail('type test operand');
+    }
+    let targetVt = new ValTypeRef(st) as ValType;
+    let cond = this.b.emit(IrOp.ref_test, new ValTypeI32(), value,
+        this.b.internType(targetVt));
+    this.#branchUnless(cond, failB);
+  }
+
+  /** `case "lit":` — a direct call to String.==, mirroring streaming. */
+  #stringPatternEq(value: i32, sl: StringLiteral): i32 {
+    if (this.wasm.stringClass == null) {
+      this.#bail('string pattern without String class');
+    }
+    let key = getClassMethodKey(
+        getClassKey(this.wasm.stringClass as ClassType), "==");
+    if (!this.wasm.classMethodMap.has(key)) {
+      this.#bail('string pattern without String.==');
+    }
+    let eqFunc = this.wasm.classMethodMap[key];
+    let sig = eqFunc.signature;
+    if (sig.returns.length != 1 || sig.params.length != 2) {
+      this.#bail('String.== shape');
+    }
+    let lit = this.#lowerStringLiteral(sl);
+    if (!isValSubtype(this.#valueType(value), sig.params[0]) ||
+        !isValSubtype(this.#valueType(lit), sig.params[1])) {
+      this.#bail('string pattern operand');
+    }
+    let funcRef = this.b.addRef(new IrRefFunc(eqFunc));
+    return this.b.callFunc(funcRef, this.#twoValues(value, lit), sig.returns[0]);
+  }
+
+  #structFieldIndex(st: WasmStruct, name: String): i32 {
+    for (var i = 0; i < st.fields.length; i += 1) {
+      let fn = st.fields[i].name;
+      if (fn != null && (fn as String) == name) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  #classStructOf(ct: ClassType): WasmStruct {
+    if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) {
+      return info.structType;
+    }
+    throw new ZirUnsupported('pattern class not discovered');
   }
 
   /**
@@ -1298,10 +1781,13 @@ final class FunctionLowerer {
       this.#bail('member receiver kind');
     }
     if (target.fieldName != null) {
-      let fieldRef = this.b.addRef(
-          new IrRefField(target.owner, target.fieldName as String));
-      let resultVt = this.#exprValType(member);
-      return this.b.emit(IrOp.struct_get, resultVt, receiver, fieldRef);
+      let fieldName = target.fieldName as String;
+      let fieldRef = this.b.addRef(new IrRefField(target.owner, fieldName));
+      // The struct.get result carries the field's STORAGE type; the
+      // member's checked type may be narrower (non-null).
+      let fieldVt = this.#fieldValType(target.owner, fieldName);
+      let read = this.b.emit(IrOp.struct_get, fieldVt, receiver, fieldRef);
+      return this.#reassertNonNull(read, this.#exprValType(member));
     }
     let getter = target.getter as WasmFunction;
     let sig = getter.signature;
@@ -1312,11 +1798,7 @@ final class FunctionLowerer {
     let call = this.b.callFunc(getterRef, this.#oneArg(receiver), sig.returns[0]);
     // Getter signatures return the field's (nullable) storage type; the
     // member's checked type may be non-null.
-    let want = this.#exprValType(member);
-    if (want is ValTypeRef && sig.returns[0] is ValTypeRefNull) {
-      return this.b.emit(IrOp.ref_as_non_null, want, call, -1);
-    }
-    return call;
+    return this.#reassertNonNull(call, this.#exprValType(member));
   }
 
   /**
@@ -1528,11 +2010,7 @@ final class FunctionLowerer {
     let call = this.b.callFunc(funcRef, this.#oneArg(id), helper.signature.returns[0]);
     // The literal's checked type is a non-null String; the helper returns
     // nullable. Re-assert non-nullness so merges and returns type-check.
-    let want = this.#exprValType(lit);
-    if (want is ValTypeRef && helper.signature.returns[0] is ValTypeRefNull) {
-      return this.b.emit(IrOp.ref_as_non_null, want, call, -1);
-    }
-    return call;
+    return this.#reassertNonNull(call, this.#exprValType(lit));
   }
 
   /**
@@ -1717,13 +2195,28 @@ final class FunctionLowerer {
     return this.b.body.typeTable[this.b.body.typeId[value]];
   }
 
+  /**
+   * Re-asserts non-nullness when the checked type is non-null but the
+   * value's storage type is nullable with the same heap target. Other
+   * shape differences pass through unchanged — downstream subtype
+   * checks bail on actual misuse.
+   */
+  #reassertNonNull(value: i32, want: ValType): i32 {
+    let have = this.#valueType(value);
+    if (want is ValTypeRef && have is ValTypeRefNull &&
+        (want as ValTypeRef).target == (have as ValTypeRefNull).target) {
+      return this.b.emit(IrOp.ref_as_non_null, want, value, -1);
+    }
+    return value;
+  }
+
   #exprValType(expr: Expression): ValType {
     let t = this.func.model.getNodeType(expr);
     if (t == null) {
       this.#bail('untyped expression');
     }
     let vt = typeToValTypeWithSub(this.wasm, t as Type, this.func);
-    this.#requireScalar(vt, 'expression type');
+    this.#requireSupported(vt, 'expression type');
     return vt;
   }
 
