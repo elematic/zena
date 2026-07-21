@@ -1,10 +1,6 @@
 # The Zena Programming Language
 
-Zena is a statically typed programming language that compiles to
-[WebAssembly GC](https://github.com/WebAssembly/gc/blob/main/proposals/gc/Overview.md).
-It combines a familiar, TypeScript-like syntax with a sound type system,
-zero- and low-cost abstractions, and modern language features, all designed for
-ahead-of-time compilation to compact, high-performance WASM binaries.
+Zena is a statically typed programming language designed from the ground up to compile to compact, high-performance [WebAssembly GC](https://github.com/WebAssembly/gc/blob/main/proposals/gc/Overview.md) binaries with a fast, integrated toolchain. It combines a familiar, TypeScript-like syntax with the best features of modern languages—Swift, Dart, Scala, Go, and Kotlin—and a sound, correctness-focused type system.
 
 ```typescript
 let x = 42; // Immutable variable, inferred type
@@ -51,29 +47,66 @@ let formatTitle = (title: String) => title
 
 ## Why Zena?
 
-There are lots of languages that can target WASM, but most treat it as a
-secondary backend. Zena is built **WASM-first**: every language feature maps
-directly and efficiently as possible to WASM GC features.
+### The Wasm GC Sweet Spot
 
-- **Familiar syntax.** If you know TypeScript, you can read Zena. The type
-  annotations, arrow functions, classes, and generics all look the way you'd
-  expect.
-- **Modern features.** Pattern matching with exhaustiveness checking, pipelines,
-  multi-value returns, enums, distinct types, expression-oriented control
-  flow, and more.
-- **Sound type system.** Types are checked at compile time with no escape
-  hatches. If it compiles, it won't throw a type error at runtime (except for
-  possibly checked downcasts).
-- **Zero- and low-cost abstractions.** Primitives and operators map directly to
-  WASM. FixedArray is just a WASM Array, and indexing is exactly WASM's
-  `array.get`/`array.set`. Generics are monomorphized (no boxing), multi-value
-  returns go on the WASM stack (no allocation), and unused code is aggressively
-  tree-shaken out of the binary. Classes and interfaces use vtables only when
-  dynamic dispatch is needed.
-- **Immutability-friendly.** `let` bindings, records, and tuples are immutable.
-  Use `var` to opt in to mutability when you need it.
-- **Tiny binaries.** Dead code elimination removes unused functions, classes,
-  and even WASM types. Minimal programs compile to as little as 37 bytes.
+While languages like Rust excel at targeting Wasm linear memory, Zena is designed specifically for WebAssembly's managed object model (Wasm GC). This eliminates the need to ship an allocator or garbage collector with Zena modules. This direct mapping shapes Zena's design:
+
+- **Wasm-Only Primitives:** Primitive types map directly to Wasm primitives for zero conversion overhead.
+- **Native Arrays:** Zena arrays compile directly to native Wasm GC arrays without wrappers or boxing.
+- **Zero-boxing generics** are monomorphized directly to concrete Wasm types.
+- **Structural records and tuples** compile directly to native Wasm GC structs and multi-value stack returns.
+- **Wasm GC exceptions** drive zero-overhead error handling.
+- **String encoding transparency:** Strings hide their encoding, working transparently with host-specific string encodings (vital for diverse Wasm hosts).
+- **Nominal enums** map to efficient wrapper types.
+
+### Predictable & Consistent Semantics
+
+Zena provides simple, expected behavior with no magical surprises or implicit coercions:
+
+- **Consistent scoping:** Variable declarations are block-scoped and immutable (`let`) by default, with explicit mutable `var`.
+- **Strict primitive types:** Distinct primitive numeric types (`i32`, `i64`, `u32`, `u64`, `f32`, `f64`) rather than a single runtime representation.
+- **No implicit type coercions:** Preventing accidental conversions at compile time.
+- **Clear separation:** Clear distinction between structural records (for plain data) and classes (for nominal types with behavior).
+- **Safer semantics:** Clean, consistent `for-in` loop iteration over iterables and iterators.
+
+### Prioritizing Correctness
+
+Zena places a strong emphasis on reliability and type safety:
+
+- **Sound type system:** Statically checked with no escape hatches, ensuring Zena programs cannot have runtime type errors.
+- **Safety by default:** Immutability by default, exhaustiveness checking for pattern matching, checked casts, and distinct types.
+- **Contracts:** Future support for pre/post-condition contracts and numeric unit types to verify physical quantities at compile time.
+
+### Modern Ergonomics
+
+Developer productivity features inspired by Swift, Dart, Scala, Go, and Kotlin:
+
+- **Algebraic Data Types:** Natively supported via sealed class hierarchies, union types, and records.
+- **Expression-oriented:** Control flow constructs like `if`, `try`, and `throw` are expressions that evaluate to values.
+- **Pattern Matching:** Exhaustive `match` expressions with destructuring.
+- **Pipelines:** The `|>` pipeline operator for clean, readable function chaining.
+- **Rich object model:** Dart-style constructors, mixins, and extension classes.
+- **Tiny & Fast Binaries:** Aggressive dead-code elimination removes unused functions, classes, and types, producing minimal binaries (as little as 37 bytes for small programs).
+
+### Integrated Toolchain
+
+A unified development experience built directly into a single CLI tool:
+
+- **All-in-one:** Includes the compiler, test runner, LSP language server, formatter, and future linting/MCP tools.
+- **Self-contained:** The entire toolchain is written in Zena itself and compiled to run natively on Wasm.
+
+### WASI & WIT Integration (In Progress)
+
+First-class support for the WebAssembly Component Model:
+
+- **Direct import/export:** Import and export WASI components directly without intermediate "bindgen" wrapper tools.
+- **Native WIT parsing:** Zena's compiler understands WebAssembly Interface Type (`.wit`) files natively to generate type-safe bindings.
+
+### Rich Standard Library (In Progress)
+
+A Python-inspired "batteries included" standard library built on top of WASI:
+
+- **Core modules:** Includes built-in support for unit testing, command-line arguments parsing, file system access, HTTP networking, regular expressions, and JSON parsing.
 
 ## Status
 
