@@ -1061,11 +1061,7 @@ final class FunctionLowerer {
       let right = this.#lowerExpression(bin.right);
       let lt = this.#valueType(left);
       let rt = this.#valueType(right);
-      let bothRefs = (lt is ValTypeRef || lt is ValTypeRefNull ||
-          lt is ValTypeAnyRef || lt is ValTypeEqRef) &&
-          (rt is ValTypeRef || rt is ValTypeRefNull ||
-          rt is ValTypeAnyRef || rt is ValTypeEqRef);
-      if (!bothRefs) {
+      if (!isRefValType(lt) || !isRefValType(rt)) {
         this.#bail('identity compare on non-refs');
       }
       let same = this.b.binary(IrOp.ref_eq, new ValTypeI32(), left, right);
@@ -1632,10 +1628,8 @@ final class FunctionLowerer {
     var bound = value;
     let have = this.#valueType(value);
     if (!valTypeEquals(have, bindingVt) && !isValSubtype(have, bindingVt)) {
-      let haveRef = have is ValTypeRef || have is ValTypeRefNull ||
-          have is ValTypeAnyRef || have is ValTypeEqRef;
       let wantRef = bindingVt is ValTypeRef || bindingVt is ValTypeRefNull;
-      if (!haveRef || !wantRef) {
+      if (!isRefValType(have) || !wantRef) {
         this.#bail('match binding coercion');
       }
       bound = this.b.emit(IrOp.ref_cast, bindingVt, value,
@@ -1710,9 +1704,7 @@ final class FunctionLowerer {
   /** ref.test `value` against `st`, branching to `failB` on failure. */
   #emitRefTest(value: i32, st: WasmStruct, failB: i32): void {
     let vt = this.#valueType(value);
-    let isRef = vt is ValTypeRef || vt is ValTypeRefNull ||
-        vt is ValTypeAnyRef || vt is ValTypeEqRef;
-    if (!isRef) {
+    if (!isRefValType(vt)) {
       this.#bail('type test operand');
     }
     let targetVt = new ValTypeRef(st) as ValType;
