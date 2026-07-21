@@ -358,7 +358,8 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     }
     if (func.methodName != null &&
         (func.methodName as String) == '<constructor>') {
-      throw new ZirUnsupported("synthesized constructor");
+      let lowerer = new FunctionLowerer(wasm, func);
+      return lowerer.lowerSynthesizedConstructor();
     }
     throw new ZirUnsupported("synthesized function");
   }
@@ -564,6 +565,151 @@ final class FunctionLowerer {
   }
 
   /**
+   * Synthesized (node-less) constructors: the DEFAULT constructor of a
+   * class with no written one, and the decorated case-class
+   * constructor. Streaming's shapes differ from written constructors:
+   * the default constructor calls super FIRST (forwarding its own
+   * params) and then stores field defaults by RAW name; the case-class
+   * constructor calls super with the receiver only, stores each case
+   * parameter into its field, then stores field defaults with the
+   * accessor rename applied. Both mirrored exactly.
+   */
+  lowerSynthesizedConstructor(): IrBody {
+    let sig = this.func.signature;
+    if (sig.returns.length != 0 || sig.params.length == 0) {
+      this.#bail('constructor shape');
+    }
+    if (this.func.classType == null || this.func.structType == null) {
+      this.#bail('constructor without class');
+    }
+    let ct = this.func.classType as ClassType;
+    let structType = this.func.structType as WasmStruct;
+    if (ct.isExtension) {
+      this.#bail('extension constructor');
+    }
+    let classDecl = this.func.classDecl;
+    if (classDecl == null || !(classDecl is ClassDeclaration)) {
+      this.#bail('constructor declaration shape');
+    }
+    let cd = classDecl as ClassDeclaration;
+    if (cd.mixins != null && (cd.mixins as Array<TypeAnnotation>).length > 0) {
+      this.#bail('constructor with mixins');
+    }
+
+    let entry = this.b.newBlock();
+    let params = new Array<i32>();
+    for (let vt in sig.params) {
+      this.#requireSupported(vt, 'constructor param type');
+      params.push(this.b.blockParam(entry, vt));
+    }
+    this.b.switchTo(entry);
+    this.thisValue = params[0];
+
+    if (ct.isCaseClass) {
+      this.#lowerCaseClassCtorBody(ct, structType, cd, params);
+    } else {
+      this.#lowerDefaultCtorBody(ct, structType, cd, params);
+    }
+    this.b.retVoid();
+    return this.b.finish();
+  }
+
+  #lowerDefaultCtorBody(ct: ClassType, structType: WasmStruct,
+      cd: ClassDeclaration, params: Array<i32>): void {
+    if (ct.superType != null) {
+      let superType = ct.superType as ClassType;
+      let ctorKey = getClassMethodKey(getClassKey(superType), '<constructor>');
+      if (let (true, superCtor) = this.wasm.classMethodMap.get(ctorKey)) {
+        // The default constructor forwards its own params to super.
+        if (superCtor.signature.params.length > params.length ||
+            superCtor.signature.returns.length != 0) {
+          this.#bail('super constructor shape');
+        }
+        let args = new Array<i32>();
+        for (var i = 0; i < superCtor.signature.params.length; i += 1) {
+          if (!isValSubtype(this.#valueType(params[i]),
+              superCtor.signature.params[i])) {
+            this.#bail('super constructor arg type');
+          }
+          args.push(params[i]);
+        }
+        let fr = this.b.addRef(new IrRefFunc(superCtor));
+        this.b.callFunc(fr, args, null);
+      }
+    }
+    for (let member in cd.body) {
+      if (member is FieldDefinition) {
+        let fd = member as FieldDefinition;
+        if (fd.value != null && !fd.isStatic) {
+          if (!(fd.name is Identifier)) {
+            this.#bail('field name shape');
+          }
+          this.#storeCtorField(ct, structType, (fd.name as Identifier).name,
+              fd.value as Expression, false);
+        }
+      }
+    }
+  }
+
+  #lowerCaseClassCtorBody(ct: ClassType, structType: WasmStruct,
+      cd: ClassDeclaration, params: Array<i32>): void {
+    if (ct.superType != null) {
+      let superType = ct.superType as ClassType;
+      let ctorKey = getClassMethodKey(getClassKey(superType), '<constructor>');
+      if (let (true, superCtor) = this.wasm.classMethodMap.get(ctorKey)) {
+        // The case-class constructor passes ONLY the receiver to super.
+        if (superCtor.signature.params.length != 1 ||
+            superCtor.signature.returns.length != 0 ||
+            !isValSubtype(this.#valueType(params[0]),
+                superCtor.signature.params[0])) {
+          this.#bail('case super constructor shape');
+        }
+        let fr = this.b.addRef(new IrRefFunc(superCtor));
+        this.b.callFunc(fr, this.#oneArg(params[0]), null);
+      }
+    }
+    if (ct.constructorType != null) {
+      let ctorType = ct.constructorType as FunctionType;
+      if (ctorType.parameterNames != null) {
+        let names = ctorType.parameterNames as Array<String>;
+        for (var pi = 0; pi < ctorType.parameters.length; pi += 1) {
+          if (pi + 1 >= params.length || pi >= names.length) {
+            this.#bail('case constructor arity');
+          }
+          let pName = names[pi];
+          var lookupName = pName;
+          if (pName.length > 0 && pName.sliceBytes(0, 1) == "#") {
+            lookupName = getClassPrivateFieldKey(getClassKey(ct), pName);
+          }
+          let fieldIdx = structType.fieldIndexByName(lookupName);
+          if (fieldIdx >= 0) {
+            let fieldVt = structType.fields[fieldIdx].type;
+            if (!isValSubtype(this.#valueType(params[pi + 1]), fieldVt)) {
+              this.#bail('case constructor param type');
+            }
+            let fieldRef = this.b.addRef(new IrRefField(structType, lookupName));
+            let pairIdx = this.b.pushExtra(
+                this.#twoValues(this.thisValue, params[pi + 1]));
+            this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+          }
+        }
+      }
+    }
+    for (let member in cd.body) {
+      if (member is FieldDefinition) {
+        let fd = member as FieldDefinition;
+        if (fd.value != null && !fd.isStatic) {
+          // Streaming skips (not bails) non-identifier field names here.
+          if (fd.name is Identifier) {
+            this.#storeCtorField(ct, structType,
+                (fd.name as Identifier).name, fd.value as Expression);
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Closure implementation prologue, mirroring the streaming
    * generator: cast the structref context parameter to the context
    * struct and bind `this` (when captured) and each captured value
@@ -696,9 +842,12 @@ final class FunctionLowerer {
    * mangling. Fields absent from the struct are skipped WITHOUT
    * evaluating the value, matching the streaming backend.
    */
-  #storeCtorField(ct: ClassType, structType: WasmStruct, fieldName: String, value: Expression): void {
+  #storeCtorField(ct: ClassType, structType: WasmStruct, fieldName: String, value: Expression, mapSetterNames: boolean = true): void {
     var actualName = fieldName;
-    if (ct.fieldSetterNames != null) {
+    // Streaming's DEFAULT-constructor path stores by the raw field name;
+    // the written-constructor and case-class paths apply the accessor
+    // rename first. Mirror whichever the caller mirrors.
+    if (mapSetterNames && ct.fieldSetterNames != null) {
       let mapping = ct.fieldSetterNames as HashMap<String, String>;
       if (let (true, mapped) = mapping.get(fieldName)) {
         actualName = mapped;
