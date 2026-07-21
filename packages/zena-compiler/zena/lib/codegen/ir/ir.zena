@@ -87,6 +87,12 @@ export enum IrOp {
   i32_le_s,
   i32_gt_s,
   i32_ge_s,
+  i32_div_u,
+  i32_rem_u,
+  i32_lt_u,
+  i32_le_u,
+  i32_gt_u,
+  i32_ge_u,
   // i64
   i64_add,
   i64_sub,
@@ -105,6 +111,12 @@ export enum IrOp {
   i64_le_s,
   i64_gt_s,
   i64_ge_s,
+  i64_div_u,
+  i64_rem_u,
+  i64_lt_u,
+  i64_le_u,
+  i64_gt_u,
+  i64_ge_u,
   // f64
   f64_add,
   f64_sub,
@@ -136,6 +148,12 @@ export enum IrOp {
   i64_extend_i32_s,
   f64_convert_i32_s,
   f32_convert_i32_s,
+  f64_convert_i64_s,
+  f32_convert_i64_s,
+  i32_trunc_sat_f64_s,
+  i32_trunc_sat_f32_s,
+  i64_trunc_sat_f64_s,
+  i64_trunc_sat_f32_s,
   f64_promote_f32,
   f32_demote_f64,
   // references
@@ -180,6 +198,50 @@ export enum IrOp {
 
 export let isIrTerminator = (op: IrOp): boolean => {
   return op as i32 >= IrOp.br as i32;
+};
+
+/**
+ * Unary numeric and conversion ops: exactly one value operand (slot a),
+ * no payload. Shared by the operand decoder, the emitter, and (soon)
+ * the simplify/constant-folding pass.
+ */
+export let isUnaryNumericOp = (op: IrOp): boolean => {
+  return op == IrOp.i32_eqz || op == IrOp.i64_eqz || op == IrOp.f64_neg ||
+      op == IrOp.f32_neg || op == IrOp.i32_wrap_i64 ||
+      op == IrOp.i64_extend_i32_s || op == IrOp.f64_convert_i32_s ||
+      op == IrOp.f32_convert_i32_s || op == IrOp.f64_convert_i64_s ||
+      op == IrOp.f32_convert_i64_s || op == IrOp.i32_trunc_sat_f64_s ||
+      op == IrOp.i32_trunc_sat_f32_s || op == IrOp.i64_trunc_sat_f64_s ||
+      op == IrOp.i64_trunc_sat_f32_s || op == IrOp.f64_promote_f32 ||
+      op == IrOp.f32_demote_f64;
+};
+
+/**
+ * Ops taking exactly ONE value operand (slot a): the unary numerics
+ * plus the single-receiver reference/aggregate/dispatch ops — null
+ * tests and casts, array_len, field and vtable loads, fat-pointer
+ * unpacking — whose slot b (where used) holds a refTable or typeTable
+ * index rather than a value. global_set is here too: its one value
+ * operand is the stored value; the target global rides in slot b.
+ */
+export let isSingleValueOp = (op: IrOp): boolean => {
+  return isUnaryNumericOp(op) ||
+      op == IrOp.ref_is_null || op == IrOp.ref_as_non_null ||
+      op == IrOp.ref_test || op == IrOp.ref_cast || op == IrOp.array_len ||
+      op == IrOp.global_set || op == IrOp.struct_get || op == IrOp.vt_load ||
+      op == IrOp.vt_slot || op == IrOp.iface_pack ||
+      op == IrOp.iface_vtable || op == IrOp.iface_instance;
+};
+
+/**
+ * Binary numeric ops: two inline value operands (slots a and b), no
+ * payload. Relies on the enum's contiguous numeric bands.
+ */
+export let isBinaryNumericOp = (op: IrOp): boolean => {
+  let v = op as i32;
+  return (v >= IrOp.i32_add as i32 && v <= IrOp.i32_ge_u as i32 &&
+          v != IrOp.i32_eqz as i32) ||
+         (v >= IrOp.i64_add as i32 && v <= IrOp.f32_ge as i32);
 };
 
 /**
@@ -306,22 +368,13 @@ export final class IrBody {
     }
     // Shape: one value in slot a. Slot b is free for the non-value payload
     // (a refTable index for global_set/struct_get/vt_*, a typeTable index
-    // for ref_test/ref_cast, unused for the pure unary ops).
-    if (op == IrOp.i32_eqz || op == IrOp.i64_eqz || op == IrOp.f64_neg ||
-        op == IrOp.f32_neg || op == IrOp.i32_wrap_i64 ||
-        op == IrOp.i64_extend_i32_s || op == IrOp.f64_convert_i32_s ||
-        op == IrOp.f32_convert_i32_s || op == IrOp.f64_promote_f32 ||
-        op == IrOp.f32_demote_f64 ||
-        op == IrOp.ref_is_null || op == IrOp.ref_as_non_null ||
-        op == IrOp.ref_test || op == IrOp.ref_cast || op == IrOp.array_len ||
-        op == IrOp.global_set || op == IrOp.struct_get || op == IrOp.vt_load ||
-        op == IrOp.vt_slot || op == IrOp.iface_pack ||
-        op == IrOp.iface_vtable || op == IrOp.iface_instance) {
+    // for ref_test/ref_cast, unused for the pure unary numerics).
+    if (isSingleValueOp(op)) {
       out.push(av);
       return;
     }
     // Shape: two values, inline in slots a and b.
-    if (op == IrOp.array_get || op == IrOp.ref_eq || this.#isBinaryNumeric(op)) {
+    if (op == IrOp.array_get || op == IrOp.ref_eq || isBinaryNumericOp(op)) {
       out.push(av);
       out.push(this.b[inst]);
       return;
@@ -405,12 +458,6 @@ export final class IrBody {
     }
   }
 
-  #isBinaryNumeric(op: IrOp): boolean {
-    let v = op as i32;
-    return (v >= IrOp.i32_add as i32 && v <= IrOp.i32_ge_s as i32 &&
-            v != IrOp.i32_eqz as i32) ||
-           (v >= IrOp.i64_add as i32 && v <= IrOp.f32_ge as i32);
-  }
 
   /** Decodes the control-flow successors of a terminator instruction. */
   successors(inst: i32): Array<IrSuccessor> {
@@ -494,6 +541,12 @@ export let irOpName = (op: IrOp): String => {
     case IrOp.i32_le_s: { name = 'i32.le_s'; }
     case IrOp.i32_gt_s: { name = 'i32.gt_s'; }
     case IrOp.i32_ge_s: { name = 'i32.ge_s'; }
+    case IrOp.i32_div_u: { name = 'i32.div_u'; }
+    case IrOp.i32_rem_u: { name = 'i32.rem_u'; }
+    case IrOp.i32_lt_u: { name = 'i32.lt_u'; }
+    case IrOp.i32_le_u: { name = 'i32.le_u'; }
+    case IrOp.i32_gt_u: { name = 'i32.gt_u'; }
+    case IrOp.i32_ge_u: { name = 'i32.ge_u'; }
     case IrOp.i64_add: { name = 'i64.add'; }
     case IrOp.i64_sub: { name = 'i64.sub'; }
     case IrOp.i64_mul: { name = 'i64.mul'; }
@@ -511,6 +564,12 @@ export let irOpName = (op: IrOp): String => {
     case IrOp.i64_le_s: { name = 'i64.le_s'; }
     case IrOp.i64_gt_s: { name = 'i64.gt_s'; }
     case IrOp.i64_ge_s: { name = 'i64.ge_s'; }
+    case IrOp.i64_div_u: { name = 'i64.div_u'; }
+    case IrOp.i64_rem_u: { name = 'i64.rem_u'; }
+    case IrOp.i64_lt_u: { name = 'i64.lt_u'; }
+    case IrOp.i64_le_u: { name = 'i64.le_u'; }
+    case IrOp.i64_gt_u: { name = 'i64.gt_u'; }
+    case IrOp.i64_ge_u: { name = 'i64.ge_u'; }
     case IrOp.f64_add: { name = 'f64.add'; }
     case IrOp.f64_sub: { name = 'f64.sub'; }
     case IrOp.f64_mul: { name = 'f64.mul'; }
@@ -538,6 +597,12 @@ export let irOpName = (op: IrOp): String => {
     case IrOp.i64_extend_i32_s: { name = 'i64.extend_i32_s'; }
     case IrOp.f64_convert_i32_s: { name = 'f64.convert_i32_s'; }
     case IrOp.f32_convert_i32_s: { name = 'f32.convert_i32_s'; }
+    case IrOp.f64_convert_i64_s: { name = 'f64.convert_i64_s'; }
+    case IrOp.f32_convert_i64_s: { name = 'f32.convert_i64_s'; }
+    case IrOp.i32_trunc_sat_f64_s: { name = 'i32.trunc_sat_f64_s'; }
+    case IrOp.i32_trunc_sat_f32_s: { name = 'i32.trunc_sat_f32_s'; }
+    case IrOp.i64_trunc_sat_f64_s: { name = 'i64.trunc_sat_f64_s'; }
+    case IrOp.i64_trunc_sat_f32_s: { name = 'i64.trunc_sat_f32_s'; }
     case IrOp.f64_promote_f32: { name = 'f64.promote_f32'; }
     case IrOp.f32_demote_f64: { name = 'f32.demote_f64'; }
     case IrOp.ref_null: { name = 'ref.null'; }

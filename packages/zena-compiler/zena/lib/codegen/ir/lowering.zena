@@ -30,9 +30,9 @@ import {
   WhileStatement, ExpressionStatement, VariableDeclaration,
   BinaryExpression, UnaryExpression, AssignmentExpression, Identifier,
   NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern,
-  CallExpression
+  CallExpression, IfExpression, AsExpression, ForStatement
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, F32Type, F64Type, BooleanType, baseType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, baseType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, valTypeEquals } from '../wasm.zena';
@@ -47,10 +47,11 @@ export final class ZirUnsupported extends Error {
 }
 
 final class LoopCtx {
-  header: i32;
+  /** Where `continue` jumps: the header for while, the update block for for. */
+  continueTarget: i32;
   exit: i32;
   carried: Array<SymbolId>;
-  new(this.header, this.exit, this.carried);
+  new(this.continueTarget, this.exit, this.carried);
 }
 
 /**
@@ -200,6 +201,9 @@ final class FunctionLowerer {
       case WhileStatement as whileStmt: {
         this.#lowerWhile(whileStmt);
       }
+      case ForStatement as forStmt: {
+        this.#lowerFor(forStmt);
+      }
       case BreakStatement {}: {
         if (this.loops.length == 0) {
           this.#bail('break outside loop');
@@ -213,7 +217,7 @@ final class FunctionLowerer {
           this.#bail('continue outside loop');
         }
         let loop = this.loops[this.loops.length - 1];
-        this.b.br(loop.header, this.#envValues(loop.carried));
+        this.b.br(loop.continueTarget, this.#envValues(loop.carried));
         this.reachable = false;
       }
       case _: {
@@ -348,6 +352,72 @@ final class FunctionLowerer {
     this.reachable = true;
   }
 
+  #lowerFor(stmt: ForStatement): void {
+    // C-style for. The init runs in the current block; the update gets its
+    // own block so `continue` can route through it.
+    if (stmt.init != null) {
+      let init = stmt.init as Node;
+      if (init is VariableDeclaration) {
+        this.#lowerVariableDeclaration(init as VariableDeclaration);
+      } else if (init is ExpressionStatement) {
+        this.#lowerExpression((init as ExpressionStatement).expression);
+      } else if (init is Expression) {
+        this.#lowerExpression(init as Expression);
+      } else {
+        this.#bail('for-init kind');
+      }
+    }
+
+    let carried = new Array<SymbolId>();
+    if (stmt.test != null) {
+      this.#appendAssignedEnvSyms(stmt.test as Node, carried);
+    }
+    if (stmt.update != null) {
+      this.#appendAssignedEnvSyms(stmt.update as Node, carried);
+    }
+    this.#appendAssignedEnvSyms(stmt.body, carried);
+
+    let header = this.b.newBlock();
+    let headerParams = this.#addParams(header, carried);
+    this.b.br(header, this.#envValues(carried));
+
+    this.b.switchTo(header);
+    this.#applyParams(carried, headerParams);
+    var cond = -1;
+    if (stmt.test != null) {
+      cond = this.#lowerExpression(stmt.test as Expression);
+    } else {
+      cond = this.b.constI32(1, new ValTypeI32());
+    }
+
+    let bodyB = this.b.newBlock();
+    let updateB = this.b.newBlock();
+    let updateParams = this.#addParams(updateB, carried);
+    let exitB = this.b.newBlock();
+    let exitParams = this.#addParams(exitB, carried);
+    this.b.brIf(cond, bodyB, this.#noArgs(), exitB, this.#envValues(carried));
+
+    this.loops.push(new LoopCtx(updateB, exitB, carried));
+    this.b.switchTo(bodyB);
+    this.#lowerStatement(stmt.body);
+    if (this.reachable) {
+      this.b.br(updateB, this.#envValues(carried));
+    }
+    this.loops.pop();
+
+    this.b.switchTo(updateB);
+    this.reachable = true;
+    this.#applyParams(carried, updateParams);
+    if (stmt.update != null) {
+      this.#lowerExpression(stmt.update as Expression);
+    }
+    this.b.br(header, this.#envValues(carried));
+
+    this.#applyParams(carried, exitParams);
+    this.b.switchTo(exitB);
+    this.reachable = true;
+  }
+
   // -- Expressions -----------------------------------------------------
 
   #lowerExpression(expr: Expression): i32 {
@@ -359,6 +429,8 @@ final class FunctionLowerer {
       case UnaryExpression as un: this.#lowerUnary(un)
       case AssignmentExpression as assign: this.#lowerAssignment(assign)
       case CallExpression as call: this.#lowerCall(call)
+      case IfExpression as ifExpr: this.#lowerIfExpression(ifExpr)
+      case AsExpression as asExpr: this.#lowerAs(asExpr)
       case _: this.#bailValue('expression kind')
     };
   }
@@ -368,6 +440,12 @@ final class FunctionLowerer {
     if (vt is ValTypeI32) {
       if (let (true, value) = parseI32(lit.raw)) {
         return this.b.constI32(value, vt);
+      }
+      // u32 literals above i32.max: parse wide and truncate.
+      if (let (true, wide) = parseI64OrU64Literal(lit.raw)) {
+        if (wide >= (0 as i64) && wide <= (4294967295 as i64)) {
+          return this.b.constI32(wide as i32, vt);
+        }
       }
       this.#bail('unparseable i32 literal');
     }
@@ -411,7 +489,8 @@ final class FunctionLowerer {
     if (!valTypeEquals(leftType, rightType)) {
       this.#bail('mixed operand types');
     }
-    let op = this.#mapBinaryOp(bin.operator, leftType);
+    let unsigned = this.#isUnsignedNode(bin.left) || this.#isUnsignedNode(bin.right);
+    let op = this.#mapBinaryOp(bin.operator, leftType, unsigned);
     let isComparison = bin.operator == "==" || bin.operator == "!=" ||
         bin.operator == "<" || bin.operator == "<=" ||
         bin.operator == ">" || bin.operator == ">=";
@@ -476,6 +555,181 @@ final class FunctionLowerer {
       this.#bail('bitwise not type');
     }
     return this.#bailValue('unary operator');
+  }
+
+  /**
+   * If-expressions: like #lowerIf, plus one extra merge parameter carrying
+   * the arm value. Arms may be plain expressions or value-blocks (a block
+   * whose trailing expression statement is the value). Void-typed
+   * if-expressions lower like statements and yield no value.
+   */
+  #lowerIfExpression(expr: IfExpression): i32 {
+    if (!(expr.test is Expression)) {
+      this.#bail('if-let expression');
+    }
+    let nodeType = this.func.model.getNodeType(expr);
+    if (nodeType == null) {
+      this.#bail('untyped if expression');
+    }
+    let isVoid = baseType(nodeType as Type) is VoidType;
+    var resultVt: ValType | null = null;
+    if (!isVoid) {
+      resultVt = this.#exprValType(expr);
+    }
+    if (expr.alternate == null && !isVoid) {
+      this.#bail('value if without else');
+    }
+
+    let cond = this.#lowerExpression(expr.test as Expression);
+    let mergeSyms = this.#assignedEnvSyms(expr.consequent);
+    if (expr.alternate != null) {
+      this.#appendAssignedEnvSyms(expr.alternate as Node, mergeSyms);
+    }
+
+    let thenB = this.b.newBlock();
+    let elseB = this.b.newBlock();
+    this.b.brIf(cond, thenB, this.#noArgs(), elseB, this.#noArgs());
+
+    var mergeB = -1;
+    var mergeParams: Array<i32> | null = null;
+    var resultParam = -1;
+
+    let saved = this.#copyEnv();
+    this.b.switchTo(thenB);
+    let thenValue = this.#lowerValueNode(expr.consequent, isVoid);
+    if (this.reachable) {
+      mergeB = this.b.newBlock();
+      mergeParams = this.#addParams(mergeB, mergeSyms);
+      if (!isVoid) {
+        resultParam = this.b.blockParam(mergeB, resultVt as ValType);
+      }
+      let args = this.#envValues(mergeSyms);
+      if (!isVoid) {
+        args.push(thenValue);
+      }
+      this.b.br(mergeB, args);
+    }
+
+    this.env = this.#copyOf(saved);
+    this.reachable = true;
+    this.b.switchTo(elseB);
+    if (expr.alternate != null) {
+      let elseValue = this.#lowerValueNode(expr.alternate as Node, isVoid);
+      if (this.reachable) {
+        if (mergeB < 0) {
+          mergeB = this.b.newBlock();
+          mergeParams = this.#addParams(mergeB, mergeSyms);
+          if (!isVoid) {
+            resultParam = this.b.blockParam(mergeB, resultVt as ValType);
+          }
+        }
+        let args = this.#envValues(mergeSyms);
+        if (!isVoid) {
+          args.push(elseValue);
+        }
+        this.b.br(mergeB, args);
+      }
+    } else {
+      // Void if-expression without else: fall through to the merge.
+      if (mergeB < 0) {
+        mergeB = this.b.newBlock();
+        mergeParams = this.#addParams(mergeB, mergeSyms);
+      }
+      this.b.br(mergeB, this.#envValues(mergeSyms));
+    }
+
+    if (mergeB < 0) {
+      this.reachable = false;
+      return -1;
+    }
+    this.env = saved;
+    this.#applyParams(mergeSyms, mergeParams as Array<i32>);
+    this.b.switchTo(mergeB);
+    this.reachable = true;
+    return resultParam;
+  }
+
+  /**
+   * Lowers an if-expression arm: a plain expression, or a value-block
+   * whose trailing expression statement supplies the value. Returns -1
+   * when the arm ends unreachable (or the context is void).
+   */
+  #lowerValueNode(node: Node, isVoid: boolean): i32 {
+    if (node is Expression) {
+      let value = this.#lowerExpression(node as Expression);
+      return if (isVoid) -1 else value;
+    }
+    if (node is BlockStatement) {
+      let body = (node as BlockStatement).body;
+      if (body.length == 0) {
+        if (isVoid) {
+          return -1;
+        }
+        this.#bail('empty value block');
+      }
+      for (var i = 0; i < body.length - 1; i += 1) {
+        this.#lowerStatement(body[i]);
+        if (!this.reachable) {
+          return -1;
+        }
+      }
+      let last = body[body.length - 1];
+      if (last is ExpressionStatement) {
+        let value = this.#lowerExpression((last as ExpressionStatement).expression);
+        return if (isVoid) -1 else value;
+      }
+      if (isVoid) {
+        this.#lowerStatement(last);
+        return -1;
+      }
+      this.#bail('value block tail');
+    }
+    return this.#bailValue('if arm kind');
+  }
+
+  /**
+   * Scalar `as` casts. Same-representation casts (i32 as u32, boolean as
+   * i32) are no-ops; cross-representation casts use signed conversions
+   * and saturating truncation, matching the streaming backend. Casts
+   * FROM unsigned types bail (no unsigned convert ops wired yet).
+   */
+  #lowerAs(expr: AsExpression): i32 {
+    let value = this.#lowerExpression(expr.expression);
+    let srcVt = this.#valueType(value);
+    let dstVt = this.#exprValType(expr);
+    if (valTypeEquals(srcVt, dstVt)) {
+      return value;
+    }
+    if (this.#isUnsignedNode(expr.expression)) {
+      this.#bail('cast from unsigned');
+    }
+    if (srcVt is ValTypeI32) {
+      if (dstVt is ValTypeI64) { return this.b.emit(IrOp.i64_extend_i32_s, dstVt, value, -1); }
+      if (dstVt is ValTypeF64) { return this.b.emit(IrOp.f64_convert_i32_s, dstVt, value, -1); }
+      if (dstVt is ValTypeF32) { return this.b.emit(IrOp.f32_convert_i32_s, dstVt, value, -1); }
+    } else if (srcVt is ValTypeI64) {
+      if (dstVt is ValTypeI32) { return this.b.emit(IrOp.i32_wrap_i64, dstVt, value, -1); }
+      if (dstVt is ValTypeF64) { return this.b.emit(IrOp.f64_convert_i64_s, dstVt, value, -1); }
+      if (dstVt is ValTypeF32) { return this.b.emit(IrOp.f32_convert_i64_s, dstVt, value, -1); }
+    } else if (srcVt is ValTypeF64) {
+      if (dstVt is ValTypeI32) { return this.b.emit(IrOp.i32_trunc_sat_f64_s, dstVt, value, -1); }
+      if (dstVt is ValTypeI64) { return this.b.emit(IrOp.i64_trunc_sat_f64_s, dstVt, value, -1); }
+      if (dstVt is ValTypeF32) { return this.b.emit(IrOp.f32_demote_f64, dstVt, value, -1); }
+    } else if (srcVt is ValTypeF32) {
+      if (dstVt is ValTypeI32) { return this.b.emit(IrOp.i32_trunc_sat_f32_s, dstVt, value, -1); }
+      if (dstVt is ValTypeI64) { return this.b.emit(IrOp.i64_trunc_sat_f32_s, dstVt, value, -1); }
+      if (dstVt is ValTypeF64) { return this.b.emit(IrOp.f64_promote_f32, dstVt, value, -1); }
+    }
+    return this.#bailValue('cast kind');
+  }
+
+  #isUnsignedNode(expr: Expression): boolean {
+    let t = this.func.model.getNodeType(expr);
+    if (t == null) {
+      return false;
+    }
+    let bt = baseType(t as Type);
+    return bt is U32Type || bt is U64Type;
   }
 
   /**
@@ -571,7 +825,8 @@ final class FunctionLowerer {
       if (!valTypeEquals(vt, this.#valueType(rhs))) {
         this.#bail('mixed compound assignment types');
       }
-      let op = this.#mapBinaryOp(assign.operator as String, vt);
+      let unsigned = this.#isUnsignedNode(assign.left) || this.#isUnsignedNode(assign.value);
+      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
       value = this.b.binary(op, vt, current, rhs);
     }
     this.env[resolved.id] = value;
@@ -580,43 +835,43 @@ final class FunctionLowerer {
 
   // -- Helpers ---------------------------------------------------------
 
-  #mapBinaryOp(operator: String, vt: ValType): IrOp {
+  #mapBinaryOp(operator: String, vt: ValType, unsigned: boolean): IrOp {
     if (vt is ValTypeI32) {
       if (operator == "+") { return IrOp.i32_add; }
       if (operator == "-") { return IrOp.i32_sub; }
       if (operator == "*") { return IrOp.i32_mul; }
-      if (operator == "/") { return IrOp.i32_div_s; }
-      if (operator == "%") { return IrOp.i32_rem_s; }
+      // No "/" here: Zena division always yields a float (the checker
+      // promotes i32/i32 to f32), which lowering does not model yet.
+      if (operator == "%") { return if (unsigned) IrOp.i32_rem_u else IrOp.i32_rem_s; }
       if (operator == "&") { return IrOp.i32_and; }
       if (operator == "|") { return IrOp.i32_or; }
       if (operator == "^") { return IrOp.i32_xor; }
       if (operator == "<<") { return IrOp.i32_shl; }
-      if (operator == ">>") { return IrOp.i32_shr_s; }
+      if (operator == ">>") { return if (unsigned) IrOp.i32_shr_u else IrOp.i32_shr_s; }
       if (operator == ">>>") { return IrOp.i32_shr_u; }
       if (operator == "==") { return IrOp.i32_eq; }
       if (operator == "!=") { return IrOp.i32_ne; }
-      if (operator == "<") { return IrOp.i32_lt_s; }
-      if (operator == "<=") { return IrOp.i32_le_s; }
-      if (operator == ">") { return IrOp.i32_gt_s; }
-      if (operator == ">=") { return IrOp.i32_ge_s; }
+      if (operator == "<") { return if (unsigned) IrOp.i32_lt_u else IrOp.i32_lt_s; }
+      if (operator == "<=") { return if (unsigned) IrOp.i32_le_u else IrOp.i32_le_s; }
+      if (operator == ">") { return if (unsigned) IrOp.i32_gt_u else IrOp.i32_gt_s; }
+      if (operator == ">=") { return if (unsigned) IrOp.i32_ge_u else IrOp.i32_ge_s; }
     } else if (vt is ValTypeI64) {
       if (operator == "+") { return IrOp.i64_add; }
       if (operator == "-") { return IrOp.i64_sub; }
       if (operator == "*") { return IrOp.i64_mul; }
-      if (operator == "/") { return IrOp.i64_div_s; }
-      if (operator == "%") { return IrOp.i64_rem_s; }
+      if (operator == "%") { return if (unsigned) IrOp.i64_rem_u else IrOp.i64_rem_s; }
       if (operator == "&") { return IrOp.i64_and; }
       if (operator == "|") { return IrOp.i64_or; }
       if (operator == "^") { return IrOp.i64_xor; }
       if (operator == "<<") { return IrOp.i64_shl; }
-      if (operator == ">>") { return IrOp.i64_shr_s; }
+      if (operator == ">>") { return if (unsigned) IrOp.i64_shr_u else IrOp.i64_shr_s; }
       if (operator == ">>>") { return IrOp.i64_shr_u; }
       if (operator == "==") { return IrOp.i64_eq; }
       if (operator == "!=") { return IrOp.i64_ne; }
-      if (operator == "<") { return IrOp.i64_lt_s; }
-      if (operator == "<=") { return IrOp.i64_le_s; }
-      if (operator == ">") { return IrOp.i64_gt_s; }
-      if (operator == ">=") { return IrOp.i64_ge_s; }
+      if (operator == "<") { return if (unsigned) IrOp.i64_lt_u else IrOp.i64_lt_s; }
+      if (operator == "<=") { return if (unsigned) IrOp.i64_le_u else IrOp.i64_le_s; }
+      if (operator == ">") { return if (unsigned) IrOp.i64_gt_u else IrOp.i64_gt_s; }
+      if (operator == ">=") { return if (unsigned) IrOp.i64_ge_u else IrOp.i64_ge_s; }
     } else if (vt is ValTypeF64) {
       if (operator == "+") { return IrOp.f64_add; }
       if (operator == "-") { return IrOp.f64_sub; }
@@ -669,8 +924,9 @@ final class FunctionLowerer {
       this.#bail('untyped operand');
     }
     let bt = baseType(t as Type);
-    let ok = bt is I32Type || bt is I64Type || bt is F32Type ||
-        bt is F64Type || bt is BooleanType;
+    let ok = bt is I32Type || bt is I64Type || bt is U32Type ||
+        bt is U64Type || bt is F32Type || bt is F64Type ||
+        bt is BooleanType;
     if (!ok) {
       this.#bail('operand type');
     }

@@ -140,6 +140,64 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('(func $fib'));
   });
 
+  test('if expression with value blocks', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'export let main = (): i32 => {\n' +
+        '  let n = -200;\n' +
+        '  let kind = if (n < 0) {\n' +
+        '    let mag = -n;\n' +
+        '    if (mag > 100) 3 else 1;\n' +
+        '  } else if (n == 0) {\n' +
+        '    0;\n' +
+        '  } else {\n' +
+        '    2;\n' +
+        '  };\n' +
+        '  return kind;\n' +
+        '};');
+    assertSnapshot('zir_if_expression', result);
+  });
+
+  test('c-style for loop with break and continue', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'export let main = (): i32 => {\n' +
+        '  var acc = 0;\n' +
+        '  for (var i = 0; i < 10; i += 1) {\n' +
+        '    if (i == 2) { continue; }\n' +
+        '    if (i == 7) { break; }\n' +
+        '    acc += i;\n' +
+        '  }\n' +
+        '  return acc;\n' +
+        '};');
+    assertSnapshot('zir_for_loop', result);
+  });
+
+  test('scalar casts', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'export let main = (): i32 => {\n' +
+        '  let x = 10;\n' +
+        '  let d = x as f64;\n' +
+        '  let half = d / 2.0;\n' +
+        '  let wide = x as i64;\n' +
+        '  return (half as i32) + ((wide * (3 as i64)) as i32);\n' +
+        '};');
+    assertSnapshot('zir_scalar_casts', result);
+  });
+
+  test('unsigned operators select _u variants', (ctx: TestContext): void => {
+    // Structural (not snapshot): multi-function modules are
+    // discovery-order sensitive.
+    let result = compileWithZir(
+        'let umod = (a: u32, b: u32): u32 => a % b;\n' +
+        'let ucompare = (a: u32, b: u32): boolean => a > b;\n' +
+        'export let main = (): i32 => {\n' +
+        '  let big = (-1294967296) as u32;\n' +
+        '  if (ucompare(big, 2000000000 as u32)) { return umod(big, 7 as u32) as i32; }\n' +
+        '  return 0;\n' +
+        '};');
+    isTrue(result.contains('i32.rem_u'));
+    isTrue(result.contains('i32.gt_u'));
+  });
+
   test('zir output contains the lowered function', (ctx: TestContext): void => {
     // Cheap structural sanity independent of snapshots: the ZIR-lowered
     // function is emitted (every value a local, so at least one local).

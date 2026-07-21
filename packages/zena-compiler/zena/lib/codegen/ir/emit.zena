@@ -21,7 +21,7 @@ import { i32ToString } from 'zena:string-convert';
 import { ValType, ValTypeVoid } from '../wasm.zena';
 import { WasmModule, WasmFunction } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
-import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, irOpName } from './ir.zena';
+import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, irOpName, isUnaryNumericOp } from './ir.zena';
 import { IrCfg } from './cfg.zena';
 
 final class EmitFrame {
@@ -274,7 +274,7 @@ export final class ZirFunctionEmitter {
           throw new Error('zir emit: call ref is not a function');
         }
       }
-    } else if (this.#isUnaryNumeric(op)) {
+    } else if (isUnaryNumericOp(op)) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.#emitOp(op);
     } else {
@@ -288,13 +288,6 @@ export final class ZirFunctionEmitter {
     }
   }
 
-  #isUnaryNumeric(op: IrOp): boolean {
-    return op == IrOp.i32_eqz || op == IrOp.i64_eqz || op == IrOp.f64_neg ||
-        op == IrOp.f32_neg || op == IrOp.i32_wrap_i64 ||
-        op == IrOp.i64_extend_i32_s || op == IrOp.f64_convert_i32_s ||
-        op == IrOp.f32_convert_i32_s || op == IrOp.f64_promote_f32 ||
-        op == IrOp.f32_demote_f64;
-  }
 
   #emitOp(op: IrOp): void {
     let e = this.emitter;
@@ -317,6 +310,12 @@ export final class ZirFunctionEmitter {
       case IrOp.i32_le_s: { e.emitI32LeS(); }
       case IrOp.i32_gt_s: { e.emitI32GtS(); }
       case IrOp.i32_ge_s: { e.emitI32GeS(); }
+      case IrOp.i32_div_u: { e.emitI32DivU(); }
+      case IrOp.i32_rem_u: { e.emitI32RemU(); }
+      case IrOp.i32_lt_u: { e.emitI32LtU(); }
+      case IrOp.i32_le_u: { e.emitI32LeU(); }
+      case IrOp.i32_gt_u: { e.emitI32GtU(); }
+      case IrOp.i32_ge_u: { e.emitI32GeU(); }
       case IrOp.i64_add: { e.emitI64Add(); }
       case IrOp.i64_sub: { e.emitI64Sub(); }
       case IrOp.i64_mul: { e.emitI64Mul(); }
@@ -335,6 +334,12 @@ export final class ZirFunctionEmitter {
       case IrOp.i64_le_s: { e.emitI64LeS(); }
       case IrOp.i64_gt_s: { e.emitI64GtS(); }
       case IrOp.i64_ge_s: { e.emitI64GeS(); }
+      case IrOp.i64_div_u: { e.emitI64DivU(); }
+      case IrOp.i64_rem_u: { e.emitI64RemU(); }
+      case IrOp.i64_lt_u: { e.emitI64LtU(); }
+      case IrOp.i64_le_u: { e.emitI64LeU(); }
+      case IrOp.i64_gt_u: { e.emitI64GtU(); }
+      case IrOp.i64_ge_u: { e.emitI64GeU(); }
       case IrOp.f64_add: { e.emitF64Add(); }
       case IrOp.f64_sub: { e.emitF64Sub(); }
       case IrOp.f64_mul: { e.emitF64Mul(); }
@@ -361,6 +366,12 @@ export final class ZirFunctionEmitter {
       case IrOp.i64_extend_i32_s: { e.emitI64ExtendI32S(); }
       case IrOp.f64_convert_i32_s: { e.emitF64ConvertI32S(); }
       case IrOp.f32_convert_i32_s: { e.emitF32ConvertI32S(); }
+      case IrOp.f64_convert_i64_s: { e.emitF64ConvertI64S(); }
+      case IrOp.f32_convert_i64_s: { e.emitF32ConvertI64S(); }
+      case IrOp.i32_trunc_sat_f64_s: { e.emitI32TruncSatF64S(); }
+      case IrOp.i32_trunc_sat_f32_s: { e.emitI32TruncSatF32S(); }
+      case IrOp.i64_trunc_sat_f64_s: { e.emitI64TruncSatF64S(); }
+      case IrOp.i64_trunc_sat_f32_s: { e.emitI64TruncSatF32S(); }
       case IrOp.f64_promote_f32: { e.emitF64PromoteF32(); }
       case IrOp.f32_demote_f64: { e.emitF32DemoteF64(); }
       case _: {
