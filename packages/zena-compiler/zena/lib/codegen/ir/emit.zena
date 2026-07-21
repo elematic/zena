@@ -18,7 +18,7 @@
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
-import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, WasmType, heapTypeToSigned, HeapType } from '../wasm.zena';
+import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, WasmType, heapTypeToSigned, HeapType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
 import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, irOpName, isUnaryNumericOp } from './ir.zena';
@@ -323,6 +323,23 @@ export final class ZirFunctionEmitter {
         throw new Error('zir emit: struct_new_default ref kind');
       }
       this.emitter.emitStructNewDefault((ref as IrRefType).target.index);
+    } else if (op == IrOp.struct_new) {
+      let argsIdx = body.a[inst];
+      let argc = body.extra[argsIdx];
+      for (var k = 0; k < argc; k += 1) {
+        this.#pushValue(body.extra[argsIdx + 1 + k]);
+      }
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefType)) {
+        throw new Error('zir emit: struct_new ref kind');
+      }
+      this.emitter.emitStructNew((ref as IrRefType).target.index);
+    } else if (op == IrOp.ref_func) {
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefFunc)) {
+        throw new Error('zir emit: ref_func ref kind');
+      }
+      this.emitter.emitRefFunc((ref as IrRefFunc).target.index);
     } else if (op == IrOp.struct_get) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       let field = this.#fieldRef(body.b[inst]);
@@ -339,6 +356,7 @@ export final class ZirFunctionEmitter {
         case ValTypeRefNull as r: { this.emitter.emitRefNull(r.target.index); }
         case ValTypeAnyRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.any)); }
         case ValTypeEqRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.eq)); }
+        case ValTypeStructRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.struct)); }
         case _: {
           throw new Error('zir emit: ref.null type');
         }

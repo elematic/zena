@@ -46,7 +46,7 @@ import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, WasmAr
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, ClassKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 
 /**
@@ -951,6 +951,7 @@ final class FunctionLowerer {
       case NewExpression as newExpr: this.#lowerNew(newExpr)
       case MemberExpression as member: this.#lowerMemberRead(member)
       case ThisExpression: this.#lowerThis(expr)
+      case FunctionExpression as fExpr: this.#lowerFunctionExpression(fExpr)
       case NullLiteral: this.#bailValue('null without context')
       case _: this.#bailValue('expression kind')
     };
@@ -2492,6 +2493,101 @@ final class FunctionLowerer {
     }
     let funcRef = this.b.addRef(new IrRefFunc(target));
     return this.b.callFunc(funcRef, args, resultType);
+  }
+
+  /**
+   * Closure creation: ref.func of the (separately compiled, streaming
+   * or ZIR) implementation, a context struct holding the captured
+   * values, and the closure pair struct. Captures are BY VALUE here;
+   * a celled capture (mutated on either side) expects a cell reference
+   * in the context field, which the by-value env entry fails the
+   * subtype check for — bailing the whole function to streaming, which
+   * models the shared cell correctly.
+   */
+  #lowerFunctionExpression(fExpr: FunctionExpression): i32 {
+    let classKey = if (this.func.classType != null) {
+      getClassKey(this.func.classType as ClassType)
+    } else {
+      "" as ClassKey
+    };
+    let closureKey = getClosureSpecializationKey(fExpr.id, classKey);
+    var implOpt: WasmFunction | null = null;
+    if (this.wasm.specializedClosures.has(closureKey)) {
+      implOpt = this.wasm.specializedClosures[closureKey];
+    } else if (this.wasm.closureFunctions.has(fExpr)) {
+      implOpt = this.wasm.closureFunctions[fExpr];
+    }
+    if (implOpt == null) {
+      this.#bail('closure not registered');
+    }
+    let impl = implOpt as WasmFunction;
+    let nodeType = this.func.model.getNodeType(fExpr);
+    if (nodeType == null) {
+      this.#bail('untyped closure');
+    }
+    let closureStruct = getClosureStruct(this.wasm, baseType(nodeType as Type));
+    if (impl.contextStruct == null) {
+      this.#bail('closure without context struct');
+    }
+    let contextStruct = impl.contextStruct as WasmStruct;
+
+    var ctxVal = -1;
+    if (contextStruct.fields.length > 0) {
+      let ctxArgs = new Array<i32>();
+      var fieldIdx = 0;
+      if (impl.capturesThis) {
+        if (this.thisValue < 0) {
+          this.#bail('closure captures this outside method');
+        }
+        if (!isValSubtype(this.#valueType(this.thisValue),
+            contextStruct.fields[0].type)) {
+          this.#bail('closure this capture type');
+        }
+        ctxArgs.push(this.thisValue);
+        fieldIdx = 1;
+      }
+      for (let symId in impl.captures) {
+        if (!this.env.has(symId)) {
+          this.#bail('captured symbol not local');
+        }
+        let v = this.env[symId];
+        if (!isValSubtype(this.#valueType(v),
+            contextStruct.fields[fieldIdx].type)) {
+          // Celled capture (context field wants a cell ref).
+          this.#bail('celled capture');
+        }
+        ctxArgs.push(v);
+        fieldIdx += 1;
+      }
+      let ctxTypeRef = this.b.addRef(new IrRefType(contextStruct));
+      ctxVal = this.b.emit(IrOp.struct_new,
+          new ValTypeRef(contextStruct) as ValType,
+          this.b.pushArgList(ctxArgs), ctxTypeRef);
+    } else {
+      ctxVal = this.b.emit(IrOp.ref_null, new ValTypeStructRef(), -1, -1);
+    }
+
+    // The func slot's declared signature must be the implementation's
+    // own signature (both come from the interned signature table).
+    var slotSig: WasmSignature | null = null;
+    match (closureStruct.fields[0].type) {
+      case ValTypeRef as r: {
+        if (r.target is WasmSignature) {
+          slotSig = r.target as WasmSignature;
+        }
+      }
+      case _: {}
+    }
+    if (slotSig == null || (slotSig as WasmSignature) != impl.signature) {
+      this.#bail('closure signature adaptation');
+    }
+    let funcVal = this.b.emit(IrOp.ref_func, closureStruct.fields[0].type,
+        -1, this.b.addRef(new IrRefFunc(impl)));
+    let pairArgs = this.#twoValues(funcVal, ctxVal);
+    return this.b.emit(IrOp.struct_new,
+        new ValTypeRef(closureStruct) as ValType,
+        this.b.pushArgList(pairArgs),
+        this.b.addRef(new IrRefType(closureStruct)));
   }
 
   /**
