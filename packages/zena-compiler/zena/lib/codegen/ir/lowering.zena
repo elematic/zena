@@ -23,7 +23,7 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
-import { parseF64, parseI32 } from 'zena:string-convert';
+import { parseF64, parseI32, i32ToString } from 'zena:string-convert';
 import {
   Node, Statement, Expression, FunctionExpression, BlockStatement,
   ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
@@ -31,22 +31,23 @@ import {
   BinaryExpression, UnaryExpression, AssignmentExpression, Identifier,
   NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern,
   CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement,
+  IndexExpression, TemplateLiteral,
   NullLiteral, StringLiteral, NewExpression, MemberExpression,
   MethodDefinition, ThisExpression, Parameter, ClassDeclaration,
   FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation,
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   TupleLiteral, getMemberPropertyName
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, baseType, isVoidOrNeverType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, baseType, isVoidOrNeverType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
-import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, valTypeEquals, isRefValType } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, ClassKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 
 /**
@@ -1480,6 +1481,8 @@ final class FunctionLowerer {
       case ThisExpression: this.#lowerThis(expr)
       case FunctionExpression as fExpr: this.#lowerFunctionExpression(fExpr)
       case NullLiteral: this.#bailValue('null without context')
+      case IndexExpression as idx: this.#lowerIndexRead(idx)
+      case TemplateLiteral: this.#bailValue('template literal')
       case _: this.#bailValue('expression kind')
     };
   }
@@ -2799,6 +2802,183 @@ final class FunctionLowerer {
       }
     }
     return result;
+  }
+
+  /**
+   * Index reads. Raw wasm arrays (FixedArray values ARE wasm arrays)
+   * read via array_get; boxed tuples read the literal-index field;
+   * interface receivers dispatch through the [] vtable slot; class
+   * receivers resolve the [] overload by mangled signature key exactly
+   * like streaming (intrinsics preferred per class, supertype and
+   * generic-source walk) and call it directly. Index WRITES still bail
+   * at the assignment-target gate.
+   */
+  #lowerIndexRead(idx: IndexExpression): i32 {
+    if (idx.optional) {
+      this.#bail('optional index');
+    }
+    let objectType = this.func.model.getNodeType(idx.object);
+    if (objectType == null) {
+      this.#bail('untyped index receiver');
+    }
+    let selfResolved = this.#resolveSelfType(objectType as Type);
+
+    if (selfResolved is InterfaceType) {
+      let args = new Array<Expression>();
+      args.push(idx.index);
+      let result = this.#lowerInterfaceDispatch(
+          selfResolved as InterfaceType, '[]', idx.object, args);
+      return this.#reassertNonNull(result, this.#exprValType(idx));
+    }
+
+    if (baseType(selfResolved) is TupleType) {
+      if (!(idx.index is NumberLiteral)) {
+        this.#bail('dynamic tuple index');
+      }
+      let elemIdx = if (let (true, n) = parseI32((idx.index as NumberLiteral).raw)) n else -1;
+      if (elemIdx < 0) {
+        this.#bail('tuple index literal');
+      }
+      let receiver = this.#lowerExpression(idx.object);
+      let stOpt = match (this.#valueType(receiver)) {
+        case ValTypeRef as r:
+            if (r.target is WasmStruct) r.target as WasmStruct else null
+        case ValTypeRefNull as rn:
+            if (rn.target is WasmStruct) rn.target as WasmStruct else null
+        case _: null
+      };
+      if (stOpt == null) {
+        this.#bail('tuple receiver kind');
+      }
+      let st = stOpt as WasmStruct;
+      let fieldName = i32ToString(elemIdx);
+      if (st.fieldIndexByName(fieldName) < 0) {
+        this.#bail('tuple field not found');
+      }
+      let fieldRef = this.b.addRef(new IrRefField(st, fieldName));
+      let read = this.b.emit(IrOp.struct_get,
+          this.#fieldValType(st, fieldName), receiver, fieldRef);
+      return this.#reassertNonNull(read, this.#exprValType(idx));
+    }
+
+    let receiver = this.#lowerExpression(idx.object);
+    var arrOpt: WasmArray | null = null;
+    match (this.#valueType(receiver)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmArray) { arrOpt = r.target as WasmArray; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmArray) { arrOpt = rn.target as WasmArray; }
+      }
+      case _: {}
+    }
+    if (arrOpt != null) {
+      let arr = arrOpt as WasmArray;
+      if (arr.elementType is ValTypeI8) {
+        // array.get_u for packed elements is not wired yet.
+        this.#bail('packed array element');
+      }
+      this.#requireSupported(arr.elementType, 'array element type');
+      let index = this.#lowerExpression(idx.index);
+      if (!(this.#valueType(index) is ValTypeI32)) {
+        this.#bail('index operand type');
+      }
+      let value = this.b.emit(IrOp.array_get, arr.elementType, receiver, index);
+      return this.#reassertNonNull(value, this.#exprValType(idx));
+    }
+
+    // Class receiver: [] overload, resolved by mangled signature key.
+    // The receiver VALUE's class wins (specializations); the checked
+    // type is the fallback.
+    let fromValue = this.#classTypeOfValue(receiver);
+    let ct = if (fromValue != null) {
+      fromValue
+    } else if (selfResolved is ClassType) {
+      eraseTypeParameters(selfResolved) as ClassType
+    } else {
+      null
+    };
+    if (ct == null) {
+      this.#bail('index receiver kind');
+    }
+    let indexType = this.func.model.getNodeType(idx.index);
+    if (indexType == null) {
+      this.#bail('untyped index operand');
+    }
+    let sigParams = new Array<Type>();
+    sigParams.push(indexType as Type);
+    let dummy = new FunctionType(sigParams, null, new VoidType());
+    let mangled = '[]' + getSignatureKey(dummy);
+    let methodOpt = this.#resolveIndexMethod(ct as ClassType, mangled);
+    if (methodOpt == null) {
+      this.#bail('index method not found');
+    }
+    let method = methodOpt as WasmFunction;
+    if (method.intrinsic != null) {
+      this.#bail('index intrinsic');
+    }
+    if (method.isStatic || method.typeParameters != null) {
+      this.#bail('index method shape');
+    }
+    let sig = method.signature;
+    if (sig.params.length != 2 || sig.returns.length > 1) {
+      this.#bail('index method arity');
+    }
+    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
+      this.#bail('index receiver type');
+    }
+    this.#requireSupported(sig.params[1], 'index param type');
+    let indexValue = this.#lowerExpressionCtx(idx.index, sig.params[1]);
+    if (!isValSubtype(this.#valueType(indexValue), sig.params[1])) {
+      this.#bail('index operand type');
+    }
+    let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
+    if (resultType != null) {
+      this.#requireSupported(resultType, 'index result type');
+    }
+    let methodRef = this.b.addRef(new IrRefFunc(method));
+    let result = this.b.callFunc(methodRef,
+        this.#twoValues(receiver, indexValue), resultType);
+    if (resultType == null) {
+      return result;
+    }
+    return this.#reassertNonNull(result, this.#exprValType(idx));
+  }
+
+  /**
+   * Streaming's [] overload preference, per class up the supertype and
+   * generic-source chains: the signature-mangled key before the plain
+   * one, intrinsic registrations before regular methods.
+   */
+  #resolveIndexMethod(ct: ClassType, mangled: String): WasmFunction | null {
+    var currClass: ClassType | null = ct;
+    while (currClass != null) {
+      var g: ClassType | null = currClass;
+      while (g != null) {
+        let cKey = getClassKey(g as ClassType);
+        let keyWithSig = getClassMethodKey(cKey, mangled);
+        let keyPlain = getClassMethodKey(cKey, '[]');
+        if (let (true, f) = this.wasm.classMethodMap.get(keyWithSig)) {
+          if (f.intrinsic != null) {
+            return f;
+          }
+        }
+        if (let (true, f2) = this.wasm.classMethodMap.get(keyPlain)) {
+          if (f2.intrinsic != null) {
+            return f2;
+          }
+        }
+        if (let (true, f3) = this.wasm.classMethodMap.get(keyWithSig)) {
+          return f3;
+        }
+        if (let (true, f4) = this.wasm.classMethodMap.get(keyPlain)) {
+          return f4;
+        }
+        g = (g as ClassType).genericSource;
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    return null;
   }
 
   /**
