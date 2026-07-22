@@ -43,7 +43,7 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, valTypeEquals, isRefValType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
-import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct, getCellStruct } from '../type-mapping.zena';
+import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, ClassKey } from '../codegen-utils.zena';
@@ -3091,11 +3091,16 @@ final class FunctionLowerer {
       this.#bail('closure not registered');
     }
     let impl = implOpt as WasmFunction;
-    let nodeType = this.func.model.getNodeType(fExpr);
-    if (nodeType == null) {
-      this.#bail('untyped closure');
+    // The pair struct is keyed by the IMPLEMENTATION's own signature —
+    // deriving it from the checked node type drifted under
+    // substitution, and the func slot must hold exactly (ref implSig)
+    // anyway.
+    let pairKey = getClosureKey(impl.signature.params, impl.signature.returns);
+    let closureStructOpt = if (let (true, st) = this.wasm.closureStructs.get(pairKey)) st else null;
+    if (closureStructOpt == null) {
+      this.#bail('closure pair struct not found');
     }
-    let closureStruct = getClosureStruct(this.wasm, baseType(nodeType as Type));
+    let closureStruct = closureStructOpt as WasmStruct;
     if (impl.contextStruct == null) {
       this.#bail('closure without context struct');
     }
@@ -3167,19 +3172,32 @@ final class FunctionLowerer {
    * closure creation and closure bodies still bail.
    */
   #lowerClosureCall(call: CallExpression): i32 {
-    let calleeType = this.func.model.getNodeType(call.callee);
-    if (calleeType == null) {
-      this.#bail('untyped callee');
-    }
-    let bt = baseType(calleeType as Type);
-    if (!(bt is FunctionType)) {
-      this.#bail('indirect callee kind');
-    }
-    let closureStruct = getClosureStruct(this.wasm, bt as FunctionType);
     let callee = this.#lowerExpression(call.callee);
-    if (!isValSubtype(this.#valueType(callee),
-        new ValTypeRefNull(closureStruct) as ValType)) {
-      this.#bail('closure callee type');
+    // The callee value's OWN type carries the authoritative closure
+    // struct; recomputing it from the checked node type drifted
+    // whenever substitution or nullability normalization disagreed
+    // with the type the value actually flowed in with.
+    var structOpt: WasmStruct | null = null;
+    match (this.#valueType(callee)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) {
+          structOpt = r.target as WasmStruct;
+        }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) {
+          structOpt = rn.target as WasmStruct;
+        }
+      }
+      case _: {}
+    }
+    if (structOpt == null) {
+      this.#bail('closure callee kind');
+    }
+    let closureStruct = structOpt as WasmStruct;
+    if (closureStruct.fields.length != 2) {
+      // Not a closure pair struct (e.g. a class instance): bail.
+      this.#bail('closure callee shape');
     }
     var sigOpt: WasmSignature | null = null;
     match (closureStruct.fields[0].type) {
@@ -3191,7 +3209,7 @@ final class FunctionLowerer {
       case _: {}
     }
     if (sigOpt == null) {
-      this.#bail('closure func slot shape');
+      this.#bail('closure callee shape');
     }
     let sig = sigOpt as WasmSignature;
     if (sig.returns.length > 1) {
