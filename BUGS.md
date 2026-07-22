@@ -16,6 +16,49 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Mixin private names collide with host-class privates (semantics gap)
+- **Found**: 2026-07-22
+- **Severity**: medium (silent state corruption when names collide)
+- **Workaround**: avoid giving a host class a private field with the
+  same name as any private in an applied mixin.
+- **Details**: A mixin's private member and a host class's same-named
+  private collapse into ONE members-map entry and one struct field, so
+  mixin code and host code mutate each other's "private" state, and
+  the mixin's field initializer clobbers the host's:
+
+  ```zena
+  mixin Counter {
+    var #count: i32 = 0;
+    bump(): i32 { this.#count += 1; return this.#count; }
+  }
+  class HostB with Counter {
+    var #count: i32 = 100;
+    new();
+    hostCount(): i32 { return this.#count; }
+  }
+  // new HostB(): bump(); hostCount() returns 1 — expected 100.
+  ```
+
+  Both compilers and backends agree (the collapse happens in the
+  members map before codegen), and no execution test covered mixin
+  privates until tests/language/execution/mixins/private_names.zena
+  pinned the current behavior.
+
+  INTENDED SEMANTICS (per review discussion): private names are
+  lexically scoped to the mixin, shared across applications — like
+  classes, and unlike the JS mixin pattern where each application is a
+  fresh class with unshared private brands. Code written in the mixin
+  sees the mixin's #x in every application; host code sees the host's
+  #x; the two never alias. Implementation sketch: namespace mixin
+  private members distinctly in the members map (e.g. keyed by mixin
+  identity), mangle their struct fields with the MIXIN's key
+  (Counter::#count) while host privates keep the class key, and
+  resolve private accesses by lexical origin — the struct-driven
+  resolver from the ZIR work (WasmStruct.resolvePrivateFieldName)
+  extends naturally once the mixin is representable as a declaring
+  scope. Checker-first change; both backends inherit it.
+
+
 ### Checker does not narrow after calls to never-returning functions
 - **Found**: 2026-07-21
 - **Severity**: low (ergonomics; forces redundant casts)

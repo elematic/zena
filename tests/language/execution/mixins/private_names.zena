@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 3022
+// PINS CURRENT (WRONG) BEHAVIOR — see BUGS.md "Mixin private names
+// collide with host-class privates". A mixin's #count and a host
+// class's #count collapse into one field today, so b.bump() reads 2
+// (host state corrupted by mixin code) and hostCount() returns the
+// shared counter instead of 100. Under the intended semantics
+// (mixin privates lexically scoped to the mixin, like classes, NOT
+// per-application like the JS mixin pattern) this program returns
+// 3120: a.bump()x3 -> 3, b.bump()x2 on the MIXIN's counter -> 2,
+// b.hostCount() -> 100. Update @result when the semantics land.
+
+mixin Counter {
+  var #count: i32 = 0;
+  bump(): i32 {
+    this.#count += 1;
+    return this.#count;
+  }
+}
+
+class HostA with Counter {
+  new();
+}
+
+class HostB with Counter {
+  var #count: i32 = 100;
+  new();
+  hostCount(): i32 {
+    return this.#count;
+  }
+}
+
+export let main = (): i32 => {
+  let a = new HostA();
+  a.bump();
+  a.bump();
+  let b = new HostB();
+  b.bump();
+  return a.bump() * 1000 + b.bump() * 10 + b.hostCount();
+};
