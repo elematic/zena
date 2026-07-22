@@ -124,9 +124,44 @@ export final class SemanticModel {
    * Map from node.id → InterfaceAdaptation for implicit interface fat pointer adaptation.
    */
   #interfaceAdaptations = new NodeMap<InterfaceAdaptation>();
+  #resolvedOverloads = new NodeMap<FunctionType>();
 
   setInterfaceAdaptation(node: Node, source: ClassType, target: InterfaceType): void {
     this.#interfaceAdaptations[node] = new InterfaceAdaptation(source, target);
+  }
+
+  /**
+   * The overload the checker selected for a call or index expression,
+   * recorded ONLY when the callee had overloads. Codegen must consume
+   * this instead of re-deriving the choice from argument node types:
+   * overload selection is subtype-sensitive and belongs to the checker
+   * alone (registration mangles overloaded members with the DECLARED
+   * signature key, so the recorded FunctionType reproduces the exact
+   * registration name).
+   */
+  setResolvedOverload(node: Node, ft: FunctionType): void {
+    this.#resolvedOverloads[node] = ft;
+  }
+
+  getResolvedOverloadDirect(node: Node): FunctionType | null {
+    if (let (true, t) = this.#resolvedOverloads.get(node)) {
+      return t;
+    }
+    return null;
+  }
+
+  getResolvedOverload(node: Node): FunctionType | null {
+    let t = this.getResolvedOverloadDirect(node);
+    if (t != null) return t;
+    if (this.program != null) {
+      let prog = this.program as ProgramInterface;
+      if (let (true, model) = prog.nodeToModel.get(node.id)) {
+        if (model != this) {
+          return model.getResolvedOverloadDirect(node);
+        }
+      }
+    }
+    return null;
   }
 
   getInterfaceAdaptationDirect(node: Node): InterfaceAdaptation | null {

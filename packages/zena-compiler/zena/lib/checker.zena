@@ -5618,8 +5618,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case MemberExpression as memExpr: {
     checkMemberExpression(ctx, memExpr, memExpr.object, memExpr.property, memExpr.optional, memExpr.isSymbolAccess, memExpr.loc)
   }
-  case IndexExpression {object, index, optional, loc}: {
-    checkIndexExpression(ctx, object, index, optional, loc)
+  case IndexExpression as idxExpr: {
+    checkIndexExpression(ctx, idxExpr.object, idxExpr.index, idxExpr.optional, idxExpr.loc, idxExpr)
   }
   case ThisExpression {loc}: {
     let cc = ctx.currentClass;
@@ -9094,7 +9094,8 @@ let checkIndexExpression = (
   object: Expression,
   index: Expression,
   optional: boolean,
-  loc: SourceLocation | null
+  loc: SourceLocation | null,
+  node: Node | null = null
 ): Type => {
   let objectType = checkExpression(ctx, object, null);
 
@@ -9123,7 +9124,7 @@ let checkIndexExpression = (
     case _: {}
   }
 
-  let resultType = resolveIndexType(ctx, baseType_, index, loc);
+  let resultType = resolveIndexType(ctx, baseType_, index, loc, node);
 
   if (isNullable && optional) {
     let types = new Array<Type>();
@@ -9142,7 +9143,8 @@ let resolveIndexType = (
   ctx: CheckerContext,
   objectType: Type,
   index: Expression,
-  loc: SourceLocation | null
+  loc: SourceLocation | null,
+  node: Node | null = null
 ): Type => {
   // Check the index.
   let indexType = checkExpression(ctx, index, null);
@@ -9174,6 +9176,10 @@ let resolveIndexType = (
             if (resolvedCandidate.parameters.length == 1) {
               let paramType = resolvedCandidate.parameters[0];
               if (isAssignableTo(ctx, indexType, paramType)) {
+                if (node != null && candidates.length > 1) {
+                  // Record the subtype-sensitive selection for codegen.
+                  ctx.model.setResolvedOverload(node as Node, candidate);
+                }
                 return substituteTypeParams(ct.typeParameters, ct.typeArguments, candidate.returnType);
               }
             }
@@ -9256,6 +9262,10 @@ let resolveIndexType = (
             }
           }
         }
+        if (node != null && candidates.length > 1) {
+          // Record the subtype-sensitive selection for codegen.
+          ctx.model.setResolvedOverload(node as Node, selectedMethod);
+        }
         return substituteTypeParams(ct.typeParameters, ct.typeArguments, selectedMethod.returnType);
       }
       ctx.error(
@@ -9289,6 +9299,9 @@ let resolveIndexType = (
               break;
             }
           }
+        }
+        if (node != null && candidates.length > 1) {
+          ctx.model.setResolvedOverload(node as Node, selectedMethod);
         }
         return substituteTypeParams(it.typeParameters, it.typeArguments, selectedMethod.returnType);
       }
@@ -10725,6 +10738,10 @@ let checkCallExpressionInner = (
 
         if (bestMatch != null) {
           effectiveFt = bestMatch as FunctionType;
+          // Record the selection: overload choice is subtype-sensitive
+          // and made exactly once, here. Codegen reads it back instead
+          // of re-deriving from argument types.
+          ctx.model.setResolvedOverload(call, bestMatch as FunctionType);
         }
       }
 

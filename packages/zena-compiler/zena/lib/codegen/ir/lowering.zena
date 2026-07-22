@@ -2704,6 +2704,17 @@ final class FunctionLowerer {
     }
     let classInfo = infoOpt as ClassCodegenInfo;
     let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+    // Overloaded methods register under per-signature slot names; the
+    // checker records its (static, subtype-sensitive) selection per
+    // call node, and we reproduce the exact slot name from it. When a
+    // record exists, ONLY that slot is acceptable — a plain-name
+    // fallback could bind a different overload.
+    let chosenFt = this.func.model.getResolvedOverload(call);
+    let slotName = if (chosenFt != null) {
+      propName + getSignatureKey(chosenFt as FunctionType)
+    } else {
+      propName
+    };
 
     var methodOpt: WasmFunction | null = null;
     let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
@@ -2715,7 +2726,7 @@ final class FunctionLowerer {
       // Never against super- or subclasses: private names cannot be
       // shared across a hierarchy.
       let lexicalCt = this.#lexicalClassOf(member, ct);
-      let lexKey = getClassMethodKey(getClassKey(lexicalCt), propName);
+      let lexKey = getClassMethodKey(getClassKey(lexicalCt), slotName);
       if (let (true, m) = this.wasm.classMethodMap.get(lexKey)) {
         methodOpt = m;
       }
@@ -2725,7 +2736,7 @@ final class FunctionLowerer {
         while (c != null && methodOpt == null) {
           let cc = c as ClassType;
           if (this.#canonicalKeyOf(cc) == lexCanonical) {
-            let key = getClassMethodKey(getClassKey(cc), propName);
+            let key = getClassMethodKey(getClassKey(cc), slotName);
             if (let (true, m2) = this.wasm.classMethodMap.get(key)) {
               methodOpt = m2;
             }
@@ -2743,7 +2754,7 @@ final class FunctionLowerer {
       // template methods register under the template's key.
       var g: ClassType | null = currClass;
       while (g != null && methodOpt == null) {
-        let key = getClassMethodKey(getClassKey(g as ClassType), propName);
+        let key = getClassMethodKey(getClassKey(g as ClassType), slotName);
         if (let (true, m) = this.wasm.classMethodMap.get(key)) {
           methodOpt = m;
         }
@@ -2759,9 +2770,11 @@ final class FunctionLowerer {
         method.intrinsic != null) {
       this.#bail('method shape');
     }
-    if (!isPrivate && this.#memberProvidedBySubclass(classInfo, propName)) {
+    if (!isPrivate && this.#memberProvidedBySubclass(classInfo, slotName)) {
       // Private access is never virtual, so the devirt-safety check
-      // only applies to public members.
+      // only applies to public members. Overload slots are overridden
+      // independently (method-overloading.md §6.1), so the check keys
+      // on the SLOT name.
       this.#bail('overridden method');
     }
     let sig = method.signature;
@@ -2901,15 +2914,19 @@ final class FunctionLowerer {
     if (ct == null) {
       this.#bail('index receiver kind');
     }
-    let indexType = this.func.model.getNodeType(idx.index);
-    if (indexType == null) {
-      this.#bail('untyped index operand');
-    }
-    let sigParams = new Array<Type>();
-    sigParams.push(indexType as Type);
-    let dummy = new FunctionType(sigParams, null, new VoidType());
-    let mangled = '[]' + getSignatureKey(dummy);
-    let methodOpt = this.#resolveIndexMethod(ct as ClassType, mangled);
+    // Overload choice belongs to the checker: it records the selected
+    // declared FunctionType per index node, and registration mangles
+    // overloaded members with that same declaration's signature key —
+    // so the exact registered name is reproducible with NO argument-
+    // type reconstruction here. No record means no overloads: the
+    // plain name is unambiguous.
+    let chosenFt = this.func.model.getResolvedOverload(idx);
+    let mangled = if (chosenFt != null) {
+      '[]' + getSignatureKey(chosenFt as FunctionType)
+    } else {
+      '[]'
+    };
+    let methodOpt = this.#resolveIndexMethod(ct as ClassType, mangled, chosenFt != null);
     if (methodOpt == null) {
       this.#bail('index method not found');
     }
@@ -2946,33 +2963,31 @@ final class FunctionLowerer {
   }
 
   /**
-   * Streaming's [] overload preference, per class up the supertype and
-   * generic-source chains: the signature-mangled key before the plain
-   * one, intrinsic registrations before regular methods.
+   * Finds the [] implementation registered under `mangled`, walking
+   * supertype and generic-source chains, preferring intrinsic
+   * registrations per class (streaming's rule). When the checker
+   * recorded an overload choice (`exact`), ONLY that name is
+   * acceptable — falling back to the plain name could silently bind a
+   * different overload.
    */
-  #resolveIndexMethod(ct: ClassType, mangled: String): WasmFunction | null {
+  #resolveIndexMethod(ct: ClassType, mangled: String, exact: boolean): WasmFunction | null {
     var currClass: ClassType | null = ct;
     while (currClass != null) {
       var g: ClassType | null = currClass;
       while (g != null) {
         let cKey = getClassKey(g as ClassType);
         let keyWithSig = getClassMethodKey(cKey, mangled);
-        let keyPlain = getClassMethodKey(cKey, '[]');
         if (let (true, f) = this.wasm.classMethodMap.get(keyWithSig)) {
           if (f.intrinsic != null) {
             return f;
           }
         }
-        if (let (true, f2) = this.wasm.classMethodMap.get(keyPlain)) {
-          if (f2.intrinsic != null) {
+        if (!exact) {
+          if (let (true, f2) = this.wasm.classMethodMap.get(keyWithSig)) {
             return f2;
           }
-        }
-        if (let (true, f3) = this.wasm.classMethodMap.get(keyWithSig)) {
+        } else if (let (true, f3) = this.wasm.classMethodMap.get(keyWithSig)) {
           return f3;
-        }
-        if (let (true, f4) = this.wasm.classMethodMap.get(keyPlain)) {
-          return f4;
         }
         g = (g as ClassType).genericSource;
       }

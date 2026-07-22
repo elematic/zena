@@ -1,0 +1,39 @@
+// @mode: run
+// @result: 1130
+// PINS the overload-selection rule: FIRST ASSIGNABLE MATCH IN
+// DECLARATION ORDER (not most-specific). visit(Animal) declared
+// before visit(Dog) captures a Dog argument (v1 -> 1); with the
+// declaration order reversed, the Dog overload wins (v2 -> 10).
+// The checker records its selection per call node
+// (SemanticModel.setResolvedOverload) and codegen consumes it —
+// see docs/design/method-overloading.md §5/§6.1. If the language
+// moves to most-specific selection, this test flags it.
+class Animal {
+  new();
+}
+
+class Dog extends Animal {
+  new() : super();
+}
+
+class VetAnimalFirst {
+  new();
+  visit(a: Animal): i32 { return 1; }
+  visit(d: Dog): i32 { return 2; }
+}
+
+class VetDogFirst {
+  new();
+  visit(d: Dog): i32 { return 10; }
+  visit(a: Animal): i32 { return 20; }
+}
+
+export let main = (): i32 => {
+  let v1 = new VetAnimalFirst();
+  let v2 = new VetDogFirst();
+  let dog = new Dog();
+  let animal = new Animal();
+  // Encode all four call results.
+  return v1.visit(dog) * 1000 + v1.visit(animal) * 100 +
+      v2.visit(dog) + v2.visit(animal);
+};
