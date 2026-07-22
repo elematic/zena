@@ -1,0 +1,97 @@
+// @mode: run
+// @result: 577
+// Private fields on generic classes: per-specialization structs
+// mangle fields with the specialized class key, while specializations
+// with erased-identical layouts can share the template's struct (and
+// its template-mangled names). Resolution must work through both,
+// plus inherited-private shadowing, plus CROSS-SPECIALIZATION access:
+// private access is granted by the lexical class (Cell), so a method
+// of one specialization may read and write the privates of a Cell
+// with a different T — specialization must not change privacy.
+
+class Cell<T> {
+  var #value: T;
+  var #reads: i32;
+
+  new(v: T) : #value = v, #reads = 0;
+
+  get(): T {
+    this.#reads += 1;
+    return this.#value;
+  }
+
+  set(v: T): void {
+    this.#value = v;
+  }
+
+  reads(): i32 {
+    return this.#reads;
+  }
+
+  // Cross-specialization reads/writes: `other` is a DIFFERENT
+  // specialization than `this` at the call sites below — a
+  // value-typed one (own struct, specialized keys) and a ref-typed
+  // one (possibly shared erased struct, template keys).
+  peekI32(other: Cell<i32>): i32 {
+    other.#reads += 1;
+    return other.#value;
+  }
+
+  bumpTag(other: Cell<Tag>): void {
+    other.#value = new Tag(other.#value.n + 1);
+    other.#reads += 1;
+  }
+}
+
+class Tag {
+  n: i32;
+  new(this.n);
+}
+
+class Label {
+  n: i32;
+  new(this.n);
+}
+
+class Base {
+  #x: i32;
+  new() : #x = 5;
+  getBaseX(): i32 {
+    return this.#x;
+  }
+}
+
+class Shadow extends Base {
+  #x: i32;
+  new() : super(), #x = 7;
+  getShadowX(): i32 {
+    return this.#x;
+  }
+}
+
+export let main = (): i32 => {
+  // i32 specialization: distinct layout, own struct.
+  let ci = new Cell<i32>(40);
+  ci.set(ci.get() + 2);
+  var acc = ci.get() + ci.reads();
+
+  // Two reference specializations: candidates for shared erased
+  // layout — resolution must find the fields either way.
+  let ct = new Cell<Tag>(new Tag(100));
+  let cl = new Cell<Label>(new Label(200));
+  acc += ct.get().n + cl.get().n;
+
+  // Inherited private shadowing still lexically scoped.
+  let s = new Shadow();
+  acc += s.getBaseX() * 10 + s.getShadowX();
+
+  // Cross-specialization private access, through methods of
+  // Cell<Label> — a third specialization touching the privates of
+  // Cell<i32> and Cell<Tag> instances.
+  acc += cl.peekI32(ci);               // 42; ci.#reads -> 3
+  cl.bumpTag(ct);                      // ct.#value.n -> 101, #reads -> 2
+  acc += ct.get().n;                   // 101; ct.#reads -> 3
+  acc += ci.reads() * 10 + ct.reads(); // 30 + 3
+
+  return acc;
+};

@@ -347,7 +347,12 @@ export let generateMemberExpression = (
         var fieldIndex = -1;
         let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
         let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
-          getClassPrivateFieldKey(ctKey, propName)
+          // Struct-driven resolution: shared structs carry the
+          // template's mangled names, per-specialization structs the
+          // specialized class's — the struct itself knows which.
+          let resolved = structInfo.resolvePrivateFieldName(ct, propName);
+          if (resolved != null) resolved as String
+          else getClassPrivateFieldKey(ctKey, propName)
         } else {
           propName
         };

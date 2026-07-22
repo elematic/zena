@@ -24,7 +24,7 @@ import { Program } from '../program.zena';
 
 import { 
   compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey, 
-  CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getTypeUniqueKey,
+  CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getClassPrivateFieldKey, getTypeUniqueKey,
   FunctionAdaptationKey, getFunctionAdaptationKey, ClassMethodKey, getClassMethodKey,
   SpecializedFunctionKey, getSpecializedFunctionKey, ClosureSpecializationKey, getClosureSpecializationKey,
   FunctionValueWrapperKey, getFunctionValueWrapperKey
@@ -232,6 +232,49 @@ export final class WasmStruct extends WasmType {
   new(this.name, this.fields) : super();
 
   /**
+   * Resolves a private member's mangled field name against this
+   * struct. Field names carry the key of the class the STRUCT was
+   * built for — the specialized class for per-specialization structs,
+   * the generic template for structs shared across erased-identical
+   * specializations, and the declaring ancestor for inherited fields —
+   * so no single caller-side mangle can be correct. The search order
+   * preserves lexical privacy: first the accessor's written class
+   * chain exactly (a subclass's shadowing private must not win), then
+   * this struct's own class chain restricted to classes that are
+   * specializations of the lexical class. Both backends share this.
+   */
+  resolvePrivateFieldName(lexicalCt: ClassType | null, propName: String): String | null {
+    if (lexicalCt != null) {
+      var l: ClassType | null = lexicalCt;
+      while (l != null) {
+        var g: ClassType | null = l as ClassType;
+        while (g != null) {
+          let key = getClassPrivateFieldKey(getClassKey(g as ClassType), propName);
+          if (this.fieldIndexByName(key) >= 0) {
+            return key;
+          }
+          g = (g as ClassType).genericSource;
+        }
+        l = (l as ClassType).superType;
+      }
+    }
+    let lexCanonical = if (lexicalCt != null) canonicalClassKey(lexicalCt as ClassType) else null;
+    var c = this.classType;
+    while (c != null) {
+      let cc = c as ClassType;
+      if (lexCanonical == null ||
+          (canonicalClassKey(cc) as String) == (lexCanonical as ClassKey) as String) {
+        let key = getClassPrivateFieldKey(getClassKey(cc), propName);
+        if (this.fieldIndexByName(key) >= 0) {
+          return key;
+        }
+      }
+      c = cc.superType;
+    }
+    return null;
+  }
+
+  /**
    * Index of the named field, or -1. Memoized: field lookups by name
    * happen once per field access during lowering and emission, and a
    * per-access linear scan would multiply out to O(accesses × fields)
@@ -255,6 +298,16 @@ export final class WasmStruct extends WasmType {
     return if (let (true, idx) = cache.get(fieldName)) idx else -1;
   }
 }
+
+/** The generic-source root's key: specializations compare equal to
+ * their template through this. */
+export let canonicalClassKey = (ct: ClassType): ClassKey => {
+  var c = ct;
+  while (c.genericSource != null) {
+    c = c.genericSource as ClassType;
+  }
+  return getClassKey(c);
+};
 
 export final class WasmArray extends WasmType {
   elementType: ValType;

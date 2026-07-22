@@ -3117,20 +3117,10 @@ final class FunctionLowerer {
    * accessed from copied method bodies).
    */
   #privateLookupName(st: WasmStruct, ct: ClassType, propName: String): String | null {
-    var curr: ClassType | null = ct;
-    while (curr != null) {
-      let c = curr as ClassType;
-      var g: ClassType | null = c;
-      while (g != null) {
-        let key = getClassPrivateFieldKey(getClassKey(g as ClassType), propName);
-        if (st.fieldIndexByName(key) >= 0) {
-          return key;
-        }
-        g = (g as ClassType).genericSource;
-      }
-      curr = c.superType;
-    }
-    return null;
+    // Shared with the streaming backend: struct field names carry the
+    // key of whatever class the struct was BUILT for, so the struct
+    // itself resolves, lexically disambiguated.
+    return st.resolvePrivateFieldName(ct, propName);
   }
 
   /** The generic-source root's key: specializations compare equal to
