@@ -35,9 +35,9 @@ import {
   MethodDefinition, ThisExpression, Parameter, ClassDeclaration,
   FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation,
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
-  getMemberPropertyName
+  TupleLiteral, getMemberPropertyName
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, baseType, isVoidOrNeverType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, baseType, isVoidOrNeverType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
@@ -439,11 +439,8 @@ final class FunctionLowerer {
 
   lower(): IrBody {
     let sig = this.func.signature;
-    if (sig.returns.length > 1) {
-      this.#bail('multi-value return');
-    }
-    if (sig.returns.length == 1) {
-      this.#requireSupported(sig.returns[0], 'return type');
+    for (let rt in sig.returns) {
+      this.#requireSupported(rt, 'return type');
     }
 
     var params: Array<Parameter> | null = null;
@@ -573,8 +570,12 @@ final class FunctionLowerer {
       if (sig.returns.length == 0) {
         this.#bail('void expression body');
       }
-      let value = this.#lowerExpressionCtx(body as Expression, sig.returns[0]);
-      this.#emitCheckedRet(value);
+      if (sig.returns.length > 1) {
+        this.#lowerMultiReturn(body as Expression);
+      } else {
+        let value = this.#lowerExpressionCtx(body as Expression, sig.returns[0]);
+        this.#emitCheckedRet(value);
+      }
     }
     return this.b.finish();
   }
@@ -893,6 +894,65 @@ final class FunctionLowerer {
    * into an interface fat pointer — so the function bails rather than
    * emitting invalid wasm.
    */
+  /**
+   * Multi-value returns: only the inline-tuple-literal form for now —
+   * elements lower straight onto the result stack (with `_` producing
+   * the slot's default, mirroring streaming). Boxed tuples and call
+   * forwarding still bail.
+   */
+  #lowerMultiReturn(arg: Expression): void {
+    if (!(arg is TupleLiteral)) {
+      this.#bail('multi-value return');
+    }
+    let lit = arg as TupleLiteral;
+    let sig = this.func.signature;
+    if (lit.elements.length != sig.returns.length) {
+      this.#bail('multi-value return arity');
+    }
+    let nt = this.func.model.getNodeType(lit);
+    if (nt == null || !(baseType(nt as Type) is InlineTupleType)) {
+      this.#bail('boxed tuple return');
+    }
+    let values = new Array<i32>();
+    for (var i = 0; i < lit.elements.length; i += 1) {
+      let el = lit.elements[i];
+      let expected = sig.returns[i];
+      var v = -1;
+      if (el is Identifier && (el as Identifier).name == '_') {
+        v = this.#defaultValueOf(expected);
+      } else {
+        v = this.#lowerExpressionCtx(el, expected);
+      }
+      if (!isValSubtype(this.#valueType(v), expected)) {
+        this.#bail('multi-value return type');
+      }
+      values.push(v);
+    }
+    this.b.retMulti(values);
+  }
+
+  /** The zero value of a result slot (for `_` tuple placeholders). */
+  #defaultValueOf(vt: ValType): i32 {
+    if (vt is ValTypeI32) {
+      return this.b.constI32(0, vt);
+    }
+    if (vt is ValTypeI64) {
+      return this.b.constI64(0 as i64, vt);
+    }
+    if (vt is ValTypeF64) {
+      return this.b.constF64(0.0, vt);
+    }
+    if (vt is ValTypeF32) {
+      return this.b.constF32(0.0, vt);
+    }
+    let nullable = vt is ValTypeRefNull || vt is ValTypeAnyRef ||
+        vt is ValTypeEqRef || vt is ValTypeStructRef;
+    if (nullable) {
+      return this.b.emit(IrOp.ref_null, vt, -1, -1);
+    }
+    return this.#bailValue('placeholder type');
+  }
+
   #emitCheckedRet(value: i32): void {
     let sig = this.func.signature;
     if (sig.returns.length != 1) {
@@ -926,6 +986,8 @@ final class FunctionLowerer {
       case ReturnStatement {argument}: {
         if (argument == null) {
           this.b.retVoid();
+        } else if (this.func.signature.returns.length > 1) {
+          this.#lowerMultiReturn(argument as Expression);
         } else {
           let sig = this.func.signature;
           let ctx = if (sig.returns.length == 1) sig.returns[0] else null;
