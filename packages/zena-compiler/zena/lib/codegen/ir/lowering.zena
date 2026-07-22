@@ -2523,7 +2523,9 @@ final class FunctionLowerer {
     if (this.func.model.isStaticAccess(member)) {
       this.#bail('static member write');
     }
-    let target = this.#resolveMemberTarget(member);
+    let receiver = this.#lowerExpression(member.object);
+    let receiverCt = this.#receiverClass(receiver, member);
+    let target = this.#resolveMemberTarget(member, receiverCt);
     if (target.fieldName == null) {
       this.#bail('write through accessor');
     }
@@ -2532,21 +2534,20 @@ final class FunctionLowerer {
     // neither a redefined setter between receiver and declarer nor a
     // transitive-subclass setter may exist for a direct struct.set.
     let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
-    let receiverCt = eraseTypeParameters(this.#resolveSelfType(
-        this.func.model.getNodeType(member.object) as Type)) as ClassType;
-    if (this.#accessorRedefined(receiverCt, propName, 'set#' + propName)) {
+    let isPrivateWrite = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
+    if (!isPrivateWrite &&
+        this.#accessorRedefined(receiverCt, propName, 'set#' + propName)) {
       this.#bail('field with redefined setter');
     }
     var infoOpt: ClassCodegenInfo | null = null;
     if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
       infoOpt = info;
     }
-    if (infoOpt != null &&
+    if (!isPrivateWrite && infoOpt != null &&
         this.#memberProvidedBySubclass(infoOpt as ClassCodegenInfo, 'set#' + propName)) {
       this.#bail('field with overriding setter');
     }
 
-    let receiver = this.#lowerExpression(member.object);
     if (!isValSubtype(this.#valueType(receiver),
         new ValTypeRefNull(target.owner) as ValType)) {
       this.#bail('member receiver struct mismatch');
@@ -2610,8 +2611,9 @@ final class FunctionLowerer {
           it, 'get#' + propName, member.object, null);
       return this.#reassertNonNull(result, this.#exprValType(member));
     }
-    let target = this.#resolveMemberTarget(member);
     let receiver = this.#lowerExpression(member.object);
+    let target = this.#resolveMemberTarget(
+        member, this.#receiverClass(receiver, member));
     let receiverVt = this.#valueType(receiver);
     let isStructRef = receiverVt is ValTypeRef || receiverVt is ValTypeRefNull;
     if (!isStructRef) {
@@ -2683,7 +2685,15 @@ final class FunctionLowerer {
     if (!(selfResolved is ClassType)) {
       this.#bail('method receiver kind');
     }
-    let ct = eraseTypeParameters(selfResolved) as ClassType;
+    // Resolve against the class the receiver VALUE carries: checked
+    // node types name the GENERIC class inside specialized-method
+    // bodies, but specialized methods register under their own key.
+    let receiver = this.#lowerExpression(member.object);
+    var ct = eraseTypeParameters(selfResolved) as ClassType;
+    let fromValue = this.#classTypeOfValue(receiver);
+    if (fromValue != null) {
+      ct = fromValue as ClassType;
+    }
     let cKey = getClassKey(ct);
     let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
     if (infoOpt == null) {
@@ -2693,11 +2703,48 @@ final class FunctionLowerer {
     let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
 
     var methodOpt: WasmFunction | null = null;
+    let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
+    if (isPrivate) {
+      // Private methods are lexically scoped and never virtual: they
+      // resolve ONLY against the class the code was written in — plus
+      // that class's own specializations (same canonical class), since
+      // specialized copies register under their specialized keys.
+      // Never against super- or subclasses: private names cannot be
+      // shared across a hierarchy.
+      let lexicalCt = this.#lexicalClassOf(member, ct);
+      let lexKey = getClassMethodKey(getClassKey(lexicalCt), propName);
+      if (let (true, m) = this.wasm.classMethodMap.get(lexKey)) {
+        methodOpt = m;
+      }
+      if (methodOpt == null) {
+        let lexCanonical = this.#canonicalKeyOf(lexicalCt);
+        var c: ClassType | null = ct;
+        while (c != null && methodOpt == null) {
+          let cc = c as ClassType;
+          if (this.#canonicalKeyOf(cc) == lexCanonical) {
+            let key = getClassMethodKey(getClassKey(cc), propName);
+            if (let (true, m2) = this.wasm.classMethodMap.get(key)) {
+              methodOpt = m2;
+            }
+          }
+          c = cc.superType;
+        }
+      }
+      if (methodOpt == null) {
+        this.#bail('private method not found');
+      }
+    }
     var currClass: ClassType | null = ct;
     while (currClass != null && methodOpt == null) {
-      let key = getClassMethodKey(getClassKey(currClass as ClassType), propName);
-      if (let (true, m) = this.wasm.classMethodMap.get(key)) {
-        methodOpt = m;
+      // Inner walk through generic sources: shared (unspecialized)
+      // template methods register under the template's key.
+      var g: ClassType | null = currClass;
+      while (g != null && methodOpt == null) {
+        let key = getClassMethodKey(getClassKey(g as ClassType), propName);
+        if (let (true, m) = this.wasm.classMethodMap.get(key)) {
+          methodOpt = m;
+        }
+        g = (g as ClassType).genericSource;
       }
       currClass = (currClass as ClassType).superType;
     }
@@ -2709,7 +2756,9 @@ final class FunctionLowerer {
         method.intrinsic != null) {
       this.#bail('method shape');
     }
-    if (this.#memberProvidedBySubclass(classInfo, propName)) {
+    if (!isPrivate && this.#memberProvidedBySubclass(classInfo, propName)) {
+      // Private access is never virtual, so the devirt-safety check
+      // only applies to public members.
       this.#bail('overridden method');
     }
     let sig = method.signature;
@@ -2720,7 +2769,6 @@ final class FunctionLowerer {
       this.#bail('method arity adaptation');
     }
 
-    let receiver = this.#lowerExpression(member.object);
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
       this.#bail('method receiver type');
     }
@@ -2837,10 +2885,91 @@ final class FunctionLowerer {
   }
 
   /**
-   * Resolves a member read against the receiver's class: either a
-   * physical field (fieldName set) or a non-overridden getter function.
+   * The ClassType a lowered receiver value actually carries: struct
+   * types remember their class. This beats re-deriving the class from
+   * checked node types, which name the GENERIC class inside
+   * specialized-method bodies (same authoritative-source principle as
+   * the closure-identity fix).
    */
-  #resolveMemberTarget(member: MemberExpression): MemberTarget {
+  #classTypeOfValue(value: i32): ClassType | null {
+    match (this.#valueType(value)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) {
+          return (r.target as WasmStruct).classType;
+        }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) {
+          return (rn.target as WasmStruct).classType;
+        }
+      }
+      case _: {}
+    }
+    return null;
+  }
+
+  /**
+   * The LEXICAL class of a member access: derived from the checked
+   * type of the receiver expression, which names the class the
+   * accessing code was written in — the generic template inside
+   * specialized-method bodies, and the DECLARING class inside method
+   * bodies the compiler copies into subclasses. Private members are
+   * lexically scoped, so their mangled names must resolve against
+   * this, never against the receiver value's (possibly more derived,
+   * possibly more specialized) runtime class.
+   */
+  #lexicalClassOf(member: MemberExpression, fallback: ClassType): ClassType {
+    let objectType = this.func.model.getNodeType(member.object);
+    if (objectType != null) {
+      let selfResolved = this.#resolveSelfType(objectType as Type);
+      if (selfResolved is ClassType) {
+        return eraseTypeParameters(selfResolved) as ClassType;
+      }
+    }
+    return fallback;
+  }
+
+  /**
+   * Resolves a private member's mangled struct-field name by walking
+   * the LEXICAL declaring chain — supertypes and generic sources —
+   * since fields are stored under the DECLARING class's key (the
+   * template's for specialized generics, an ancestor's for privates
+   * accessed from copied method bodies).
+   */
+  #privateLookupName(st: WasmStruct, ct: ClassType, propName: String): String | null {
+    var curr: ClassType | null = ct;
+    while (curr != null) {
+      let c = curr as ClassType;
+      var g: ClassType | null = c;
+      while (g != null) {
+        let key = getClassPrivateFieldKey(getClassKey(g as ClassType), propName);
+        if (st.fieldIndexByName(key) >= 0) {
+          return key;
+        }
+        g = (g as ClassType).genericSource;
+      }
+      curr = c.superType;
+    }
+    return null;
+  }
+
+  /** The generic-source root's key: specializations compare equal to
+   * their template through this. */
+  #canonicalKeyOf(ct: ClassType): String {
+    var c = ct;
+    while (c.genericSource != null) {
+      c = c.genericSource as ClassType;
+    }
+    return getClassKey(c) as String;
+  }
+
+  /** Receiver class for member/method resolution: the value's own
+   * class when its struct carries one, else the checked type. */
+  #receiverClass(receiver: i32, member: MemberExpression): ClassType {
+    let fromValue = this.#classTypeOfValue(receiver);
+    if (fromValue != null) {
+      return fromValue as ClassType;
+    }
     let objectType = this.func.model.getNodeType(member.object);
     if (objectType == null) {
       this.#bail('untyped member receiver');
@@ -2849,7 +2978,14 @@ final class FunctionLowerer {
     if (!(selfResolved is ClassType)) {
       this.#bail('member on non-class');
     }
-    let ct = eraseTypeParameters(selfResolved) as ClassType;
+    return eraseTypeParameters(selfResolved) as ClassType;
+  }
+
+  /**
+   * Resolves a member read against the receiver's class: either a
+   * physical field (fieldName set) or a non-overridden getter function.
+   */
+  #resolveMemberTarget(member: MemberExpression, ct: ClassType): MemberTarget {
     let cKey = getClassKey(ct);
     let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
     if (infoOpt == null) {
@@ -2860,13 +2996,16 @@ final class FunctionLowerer {
     var propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
     var lookupName = propName;
     if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
-      // Private fields are stored under class-mangled names; private
-      // access is only legal from the declaring class.
       if (this.func.classType == null) {
         this.#bail('private access outside class');
       }
-      lookupName = getClassPrivateFieldKey(
-          getClassKey(this.func.classType as ClassType), propName);
+      let lexicalCt = this.#lexicalClassOf(member, ct);
+      let resolved = this.#privateLookupName(structType, lexicalCt, propName);
+      if (resolved != null) {
+        lookupName = resolved as String;
+      } else {
+        lookupName = getClassPrivateFieldKey(getClassKey(lexicalCt), propName);
+      }
     }
 
     // Physical field with the property's name? (Memoized on the
@@ -2874,8 +3013,13 @@ final class FunctionLowerer {
     // sound when no class between the receiver and the field's declarer
     // redefined the accessor (a subclass shadowing an inherited field
     // with a getter leaves the parent's physical field in the struct),
-    // and no transitive subclass overrides it either.
+    // and no transitive subclass overrides it either. Private access
+    // is never virtual, so those checks only apply to public members.
+    let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
     let hasField = structType.fieldIndexByName(lookupName) >= 0;
+    if (hasField && isPrivate) {
+      return new MemberTarget(structType, lookupName, null);
+    }
     if (hasField && !this.#accessorRedefined(ct, propName, 'get#' + propName)) {
       if (this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
         this.#bail('field with overriding accessor');
@@ -2900,7 +3044,7 @@ final class FunctionLowerer {
     if ((getter as WasmFunction).isStatic) {
       this.#bail('static member');
     }
-    if (this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
+    if (!isPrivate && this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
       this.#bail('overridden getter');
     }
     return new MemberTarget(structType, null, getter);
