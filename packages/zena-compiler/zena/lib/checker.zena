@@ -6082,6 +6082,148 @@ let findMatchingOverload = (
   return null;
 };
 
+/**
+ * Overload selection (member-lookup.md §5.1): X is at least as
+ * specific as Y, over the call's first argCount parameters, when
+ * every parameter of X is assignable to Y's corresponding parameter.
+ */
+let atLeastAsSpecific = (
+  ctx: CheckerContext,
+  x: FunctionType,
+  y: FunctionType,
+  argCount: i32
+): boolean => {
+  var i = 0;
+  while (i < argCount && i < x.parameters.length && i < y.parameters.length) {
+    if (!isAssignableTo(ctx, x.parameters[i], y.parameters[i])) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+};
+
+/**
+ * Picks the most-specific applicable overload (member-lookup.md
+ * §5.1): the unique applicable candidate at least as specific as
+ * every other. Parameter-equivalent ties break toward the
+ * exact-arity candidate; a set with no unique maximum is AMBIGUOUS —
+ * returns (first-declared, true) so the caller can report the error
+ * and still recover deterministically.
+ */
+let pickMostSpecificOverload = (
+  ctx: CheckerContext,
+  applicable: Array<FunctionType>,
+  argCount: i32
+): (FunctionType, boolean) => {
+  var best = applicable[0];
+  for (var i = 1; i < applicable.length; i += 1) {
+    let c = applicable[i];
+    let cBeatsBest = atLeastAsSpecific(ctx, c, best, argCount);
+    let bestBeatsC = atLeastAsSpecific(ctx, best, c, argCount);
+    if (cBeatsBest && !bestBeatsC) {
+      best = c;
+    } else if (cBeatsBest && bestBeatsC &&
+        c.parameters.length == argCount &&
+        best.parameters.length != argCount) {
+      best = c;
+    }
+  }
+  for (var i = 0; i < applicable.length; i += 1) {
+    if (!atLeastAsSpecific(ctx, best, applicable[i], argCount)) {
+      return (applicable[0], true);
+    }
+  }
+  return (best, false);
+};
+
+/**
+ * Conservative value-overlap test for the overlap restriction on
+ * subclass-added overloads (member-lookup.md §5.1): true when some
+ * runtime value could satisfy both types. Exact for class-class
+ * (single inheritance: unrelated classes share no subtype) and
+ * primitive pairs; conservatively true when interfaces, type
+ * parameters, or other open-world types are involved.
+ */
+let typesMayOverlap = (ctx: CheckerContext, a: Type, b: Type): boolean => {
+  if (isAssignableTo(ctx, a, b) || isAssignableTo(ctx, b, a)) {
+    return true;
+  }
+  return match (a) {
+    case UnionT {types}: {
+      for (let arm in types) {
+        if (typesMayOverlap(ctx, arm, b)) { return true; }
+      }
+      false
+    }
+    case _: match (b) {
+      case UnionT {types}: {
+        for (let arm in types) {
+          if (typesMayOverlap(ctx, a, arm)) { return true; }
+        }
+        false
+      }
+      case _: {
+        let aIsClass = a is ClassType;
+        let bIsClass = b is ClassType;
+        if (aIsClass && bIsClass) {
+          // Unrelated classes (neither assignable) share no common
+          // subtype under single inheritance.
+          false
+        } else if (a is InterfaceType || b is InterfaceType ||
+            a is TypeParameterType || b is TypeParameterType) {
+          // A class can implement any interface; type parameters are
+          // open. Conservatively overlapping.
+          true
+        } else {
+          // Distinct primitives / other closed leaf types with no
+          // assignability relation are disjoint.
+          false
+        }
+      }
+    }
+  };
+};
+
+/**
+ * True when some argument tuple could be applicable to both
+ * signatures: their arity ranges intersect and every shared
+ * parameter position may overlap in values.
+ */
+let signaturesMayOverlap = (
+  ctx: CheckerContext,
+  a: FunctionType,
+  b: FunctionType
+): boolean => {
+  var aRequired = a.parameters.length;
+  let aOpt = a.optionalParameters;
+  if (aOpt != null) {
+    aRequired = 0;
+    for (let o in aOpt) { if (!o) { aRequired += 1; } }
+  }
+  var bRequired = b.parameters.length;
+  let bOpt = b.optionalParameters;
+  if (bOpt != null) {
+    bRequired = 0;
+    for (let o in bOpt) { if (!o) { bRequired += 1; } }
+  }
+  let lo = if (aRequired > bRequired) aRequired else bRequired;
+  let hiA = a.parameters.length;
+  let hiB = b.parameters.length;
+  let hi = if (hiA < hiB) hiA else hiB;
+  if (lo > hi) {
+    return false;
+  }
+  var i = 0;
+  while (i < lo) {
+    if (!typesMayOverlap(ctx, a.parameters[i], b.parameters[i])) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+};
+
 
 /**
  * Register a class declaration's type identity, flags, superclass,
@@ -6793,7 +6935,30 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 );
                 ownMethodNames.add(methodName);
               } else {
+                // Overlap restriction (member-lookup.md §5.1): a
+                // subclass may not ADD an overload whose parameters
+                // overlap an inherited signature — some argument
+                // tuple would then select differently through
+                // supertype- vs subclass-typed references. Declare
+                // overlapping alternatives at the base class and
+                // override per-signature instead.
                 let inheritedMethod = inheritedMethodInfo.type as FunctionType;
+                var overlapsInherited = signaturesMayOverlap(ctx, methodType, inheritedMethod);
+                if (!overlapsInherited && inheritedMethod.overloads != null) {
+                  let inhOvs = inheritedMethod.overloads as Array<FunctionType>;
+                  for (let inh in inhOvs) {
+                    if (signaturesMayOverlap(ctx, methodType, inh)) {
+                      overlapsInherited = true;
+                    }
+                  }
+                }
+                if (overlapsInherited) {
+                  ctx.error(
+                    "Overload of '" + methodName + "' overlaps an inherited signature; declare overlapping overloads in the base class and override per-signature.",
+                    DiagnosticCode.IncompatibleTypes,
+                    md.loc
+                  );
+                }
                 if (inheritedMethod.overloads == null) {
                   let ovArray = new Array<FunctionType>();
                   ovArray.push(inheritedMethod);
@@ -9333,18 +9498,38 @@ let resolveIndexType = (
               oi = oi + 1;
             }
           }
+          // Most-specific selection over the applicable candidates
+          // (member-lookup.md §5.1).
+          let applicableRaw = new Array<FunctionType>();
+          let applicableRes = new Array<FunctionType>();
           for (let candidate in candidates) {
             let resolvedCandidate = substituteTypeParams(ct.typeParameters, ct.typeArguments, candidate) as FunctionType;
-            if (resolvedCandidate.parameters.length == 1) {
-              let paramType = resolvedCandidate.parameters[0];
-              if (isAssignableTo(ctx, indexType, paramType)) {
-                if (node != null && candidates.length > 1) {
-                  // Record the subtype-sensitive selection for codegen.
-                  ctx.model.setResolvedOverload(node as Node, candidate);
-                }
-                return substituteTypeParams(ct.typeParameters, ct.typeArguments, candidate.returnType);
+            if (resolvedCandidate.parameters.length == 1 &&
+                isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])) {
+              applicableRaw.push(candidate);
+              applicableRes.push(resolvedCandidate);
+            }
+          }
+          if (applicableRaw.length > 0) {
+            var selIdx = 0;
+            if (applicableRes.length > 1) {
+              let (winner, ambiguous) = pickMostSpecificOverload(ctx, applicableRes, 1);
+              if (ambiguous) {
+                ctx.error(
+                  "Ambiguous overload call: multiple overloads match and none is most specific. Cast an argument to select one.",
+                  DiagnosticCode.TypeMismatch,
+                  loc
+                );
+              }
+              for (var wi = 0; wi < applicableRes.length; wi += 1) {
+                if (applicableRes[wi] == winner) { selIdx = wi; }
               }
             }
+            if (node != null && candidates.length > 1) {
+              // Record the subtype-sensitive selection for codegen.
+              ctx.model.setResolvedOverload(node as Node, applicableRaw[selIdx]);
+            }
+            return substituteTypeParams(ct.typeParameters, ct.typeArguments, applicableRaw[selIdx].returnType);
           }
         }
       }
@@ -9413,15 +9598,32 @@ let resolveIndexType = (
             oi = oi + 1;
           }
         }
+        // Most-specific selection over the applicable candidates
+        // (member-lookup.md §5.1).
         var selectedMethod = baseMethod;
+        let applicableRaw = new Array<FunctionType>();
+        let applicableRes = new Array<FunctionType>();
         for (let candidate in candidates) {
           let resolvedCandidate = substituteTypeParams(ct.typeParameters, ct.typeArguments, candidate) as FunctionType;
-          if (resolvedCandidate.parameters.length == 1) {
-            let paramType = resolvedCandidate.parameters[0];
-            if (isAssignableTo(ctx, indexType, paramType)) {
-              selectedMethod = candidate;
-              break;
-            }
+          if (resolvedCandidate.parameters.length == 1 &&
+              isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])) {
+            applicableRaw.push(candidate);
+            applicableRes.push(resolvedCandidate);
+          }
+        }
+        if (applicableRaw.length == 1) {
+          selectedMethod = applicableRaw[0];
+        } else if (applicableRaw.length > 1) {
+          let (winner, ambiguous) = pickMostSpecificOverload(ctx, applicableRes, 1);
+          if (ambiguous) {
+            ctx.error(
+              "Ambiguous overload call: multiple overloads match and none is most specific. Cast an argument to select one.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+          }
+          for (var wi = 0; wi < applicableRes.length; wi += 1) {
+            if (applicableRes[wi] == winner) { selectedMethod = applicableRaw[wi]; }
           }
         }
         if (node != null && candidates.length > 1) {
@@ -9451,15 +9653,32 @@ let resolveIndexType = (
             oi = oi + 1;
           }
         }
+        // Most-specific selection over the applicable candidates
+        // (member-lookup.md §5.1).
         var selectedMethod = baseMethod;
+        let applicableRaw = new Array<FunctionType>();
+        let applicableRes = new Array<FunctionType>();
         for (let candidate in candidates) {
           let resolvedCandidate = substituteTypeParams(it.typeParameters, it.typeArguments, candidate) as FunctionType;
-          if (resolvedCandidate.parameters.length == 1) {
-            let paramType = resolvedCandidate.parameters[0];
-            if (isAssignableTo(ctx, indexType, paramType)) {
-              selectedMethod = candidate;
-              break;
-            }
+          if (resolvedCandidate.parameters.length == 1 &&
+              isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])) {
+            applicableRaw.push(candidate);
+            applicableRes.push(resolvedCandidate);
+          }
+        }
+        if (applicableRaw.length == 1) {
+          selectedMethod = applicableRaw[0];
+        } else if (applicableRaw.length > 1) {
+          let (winner, ambiguous) = pickMostSpecificOverload(ctx, applicableRes, 1);
+          if (ambiguous) {
+            ctx.error(
+              "Ambiguous overload call: multiple overloads match and none is most specific. Cast an argument to select one.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+          }
+          for (var wi = 0; wi < applicableRes.length; wi += 1) {
+            if (applicableRes[wi] == winner) { selectedMethod = applicableRaw[wi]; }
           }
         }
         if (node != null && candidates.length > 1) {
@@ -10870,7 +11089,13 @@ let checkCallExpressionInner = (
           candidates.push(overload);
         }
 
+        // Most-specific selection (member-lookup.md §5.1): collect
+        // every applicable candidate, then pick the unique candidate
+        // at least as specific as all others. Declaration order
+        // carries no meaning; an applicable set with no unique
+        // maximum is an ambiguity error.
         var bestMatch: FunctionType | null = null;
+        let applicable = new Array<FunctionType>();
         for (let candidate in candidates) {
           let expectedCount = candidate.parameters.length;
           var requiredCount = expectedCount;
@@ -10892,10 +11117,22 @@ let checkCallExpressionInner = (
               }
             }
             if (matchOk) {
-              bestMatch = candidate;
-              break;
+              applicable.push(candidate);
             }
           }
+        }
+        if (applicable.length == 1) {
+          bestMatch = applicable[0];
+        } else if (applicable.length > 1) {
+          let (winner, ambiguous) = pickMostSpecificOverload(ctx, applicable, args.length);
+          if (ambiguous) {
+            ctx.error(
+              "Ambiguous overload call: multiple overloads match and none is most specific. Cast an argument to select one.",
+              DiagnosticCode.TypeMismatch,
+              call.loc
+            );
+          }
+          bestMatch = winner;
         }
 
         if (bestMatch != null) {

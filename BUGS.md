@@ -105,22 +105,6 @@ immediately trying to fix it (which can pollute the current task's context).
   lookup probes field -> method -> getter, which acts as a silent
   precedence instead of an error.
 
-### Overload selection does not implement the ruled semantics yet
-- **Found**: 2026-07-22 (ruling date)
-- **Severity**: medium (spec/implementation divergence; silent
-  shadowing of more-specific overloads until migrated)
-- **Workaround**: order overloads most-specific-first in source.
-- **Details**: member-lookup.md §5.1 ruled for MOST-SPECIFIC
-  selection with an overlap restriction on subclass-added overloads
-  (declaration-site overlap error, call-site ambiguity error). The
-  checker still implements declaration-order first-match, and the
-  override-reorder wrinkle (member-lookup.md §5.3) is live. Migration
-  touches only the candidate-choice step in checkCallExpressionInner
-  and resolveIndexType — the setResolvedOverload recording contract
-  and per-signature slots are unaffected. Update the two pinned tests
-  when migrating: classes/overload-declaration-order.zena (1130 ->
-  2130) and classes/overload-override-reorder.zena (120 -> 2020).
-
 ### Interface methods with the same name silently overwrite each other
 - **Found**: 2026-07-22
 - **Severity**: medium (silent wrong types; no diagnostic)
@@ -297,6 +281,25 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Details**: When you declare `class Symbol` in a module, it should shadow the built-in `Symbol` type within that module's scope. Instead, references to `Symbol` still resolve to the built-in type, causing errors like "Property 'name' does not exist on type 'Symbol'". This affects any class name that collides with built-in types.
 
 ## Fixed Bugs
+
+### Overload selection migrated to most-specific (was declaration-order first-match)
+- **Found**: 2026-07-22 (ruling); **Fixed**: 2026-07-23 (both compilers)
+- **Details**: Implemented member-lookup.md §5.1 in the self-hosted
+  and bootstrap checkers: the unique most-specific applicable
+  candidate wins (pointwise parameter assignability), declaration
+  order carries no meaning, an applicable set with no unique maximum
+  is an ambiguity error, and a subclass may no longer ADD an overload
+  overlapping an inherited signature (declaration-site error;
+  class-class overlap exact under single inheritance,
+  interface/type-parameter positions conservatively assumed).
+  Parameter-equivalent ties break toward the exact-arity candidate.
+  The pinned tests flipped as primed: overload-declaration-order.zena
+  1130 -> 2130, overload-override-reorder.zena 120 -> 2020 (selection
+  now coherent across reference types); new pins
+  overload-nullability.zena (T beats T | null) and
+  semantics/classes/overload-most-specific.zena (ambiguity + overlap
+  errors, same messages in both compilers). Zero fallout in the
+  compiler, stdlib, or test corpus.
 
 ### Private grouped accessors broken in every compiler
 - **Found**: 2026-07-23; **Fixed**: 2026-07-23

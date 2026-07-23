@@ -1750,6 +1750,127 @@ function checkExpressionAgainstLiteralType(
   return false;
 }
 
+/**
+ * Overload selection (member-lookup.md §5.1): X is at least as
+ * specific as Y, over the call's first argCount parameters, when
+ * every parameter of X is assignable to Y's corresponding parameter.
+ */
+function atLeastAsSpecific(
+  ctx: CheckerContext,
+  x: FunctionType,
+  y: FunctionType,
+  argCount: number,
+): boolean {
+  for (
+    let i = 0;
+    i < argCount && i < x.parameters.length && i < y.parameters.length;
+    i++
+  ) {
+    if (!isAssignableTo(ctx, x.parameters[i], y.parameters[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Picks the most-specific applicable overload (member-lookup.md
+ * §5.1): the unique applicable candidate at least as specific as
+ * every other. Parameter-equivalent ties break toward the
+ * exact-arity candidate; a set with no unique maximum is AMBIGUOUS —
+ * returns [first-declared, true] so the caller can report the error
+ * and still recover deterministically.
+ */
+export function pickMostSpecificOverload(
+  ctx: CheckerContext,
+  applicable: FunctionType[],
+  argCount: number,
+): [FunctionType, boolean] {
+  let best = applicable[0];
+  for (let i = 1; i < applicable.length; i++) {
+    const c = applicable[i];
+    const cBeatsBest = atLeastAsSpecific(ctx, c, best, argCount);
+    const bestBeatsC = atLeastAsSpecific(ctx, best, c, argCount);
+    if (cBeatsBest && !bestBeatsC) {
+      best = c;
+    } else if (
+      cBeatsBest &&
+      bestBeatsC &&
+      c.parameters.length === argCount &&
+      best.parameters.length !== argCount
+    ) {
+      best = c;
+    }
+  }
+  for (const candidate of applicable) {
+    if (!atLeastAsSpecific(ctx, best, candidate, argCount)) {
+      return [applicable[0], true];
+    }
+  }
+  return [best, false];
+}
+
+export const AMBIGUOUS_OVERLOAD_MESSAGE =
+  'Ambiguous overload call: multiple overloads match and none is most specific. Cast an argument to select one.';
+
+/**
+ * Conservative value-overlap test for the overlap restriction on
+ * subclass-added overloads (member-lookup.md §5.1): true when some
+ * runtime value could satisfy both types. Exact for class-class
+ * (single inheritance) and primitive pairs; conservatively true when
+ * interfaces or type parameters are involved.
+ */
+function typesMayOverlap(ctx: CheckerContext, a: Type, b: Type): boolean {
+  if (isAssignableTo(ctx, a, b) || isAssignableTo(ctx, b, a)) {
+    return true;
+  }
+  if (a.kind === TypeKind.Union) {
+    return (a as UnionType).types.some((arm) => typesMayOverlap(ctx, arm, b));
+  }
+  if (b.kind === TypeKind.Union) {
+    return (b as UnionType).types.some((arm) => typesMayOverlap(ctx, a, arm));
+  }
+  if (a.kind === TypeKind.Class && b.kind === TypeKind.Class) {
+    return false;
+  }
+  if (
+    a.kind === TypeKind.Interface ||
+    b.kind === TypeKind.Interface ||
+    a.kind === TypeKind.TypeParameter ||
+    b.kind === TypeKind.TypeParameter
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True when some argument tuple could be applicable to both
+ * signatures: their arity ranges intersect and every shared
+ * parameter position may overlap in values.
+ */
+export function signaturesMayOverlap(
+  ctx: CheckerContext,
+  a: FunctionType,
+  b: FunctionType,
+): boolean {
+  const requiredOf = (f: FunctionType) =>
+    f.optionalParameters
+      ? f.optionalParameters.filter((o) => !o).length
+      : f.parameters.length;
+  const lo = Math.max(requiredOf(a), requiredOf(b));
+  const hi = Math.min(a.parameters.length, b.parameters.length);
+  if (lo > hi) {
+    return false;
+  }
+  for (let i = 0; i < lo; i++) {
+    if (!typesMayOverlap(ctx, a.parameters[i], b.parameters[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   if (expr.callee.type === NodeType.SuperExpression) {
     // super() must be called in the initializer list, not the constructor body
@@ -1947,10 +2068,13 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     }
   }
 
-  // Overload resolution
+  // Overload resolution: most-specific selection over the applicable
+  // candidates (member-lookup.md §5.1). Declaration order carries no
+  // meaning; an applicable set with no unique maximum is an
+  // ambiguity error.
   if (funcType.overloads && funcType.overloads.length > 0) {
     const candidates = [funcType, ...funcType.overloads];
-    let bestMatch: FunctionType | null = null;
+    const applicable: FunctionType[] = [];
 
     for (const candidate of candidates) {
       const expectedCount = candidate.parameters.length;
@@ -1972,13 +2096,26 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       }
 
       if (match) {
-        bestMatch = candidate;
-        break;
+        applicable.push(candidate);
       }
     }
 
-    if (bestMatch) {
-      funcType = bestMatch;
+    if (applicable.length === 1) {
+      funcType = applicable[0];
+    } else if (applicable.length > 1) {
+      const [winner, ambiguous] = pickMostSpecificOverload(
+        ctx,
+        applicable,
+        argTypes.length,
+      );
+      if (ambiguous) {
+        ctx.diagnostics.reportError(
+          AMBIGUOUS_OVERLOAD_MESSAGE,
+          DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
+        );
+      }
+      funcType = winner;
     }
   }
 
@@ -4551,26 +4688,37 @@ function checkIndexExpression(
       let selectedOverload = resolvedMethod;
       if (resolvedMethod.overloads && resolvedMethod.overloads.length > 0) {
         const candidates = [resolvedMethod, ...resolvedMethod.overloads];
-        let bestMatch: FunctionType | undefined;
-
+        // Most-specific selection (member-lookup.md §5.1).
+        const applicable: FunctionType[] = [];
         for (const candidate of candidates) {
           const resolvedCandidate = resolveMemberType(
             classType,
             candidate,
             ctx,
           ) as FunctionType;
-          if (resolvedCandidate.parameters.length === 1) {
-            if (
-              isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])
-            ) {
-              bestMatch = resolvedCandidate;
-              break;
-            }
+          if (
+            resolvedCandidate.parameters.length === 1 &&
+            isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])
+          ) {
+            applicable.push(resolvedCandidate);
           }
         }
-
-        if (bestMatch) {
-          selectedOverload = bestMatch;
+        if (applicable.length === 1) {
+          selectedOverload = applicable[0];
+        } else if (applicable.length > 1) {
+          const [winner, ambiguous] = pickMostSpecificOverload(
+            ctx,
+            applicable,
+            1,
+          );
+          if (ambiguous) {
+            ctx.diagnostics.reportError(
+              AMBIGUOUS_OVERLOAD_MESSAGE,
+              DiagnosticCode.TypeMismatch,
+              ctx.getLocation(expr.loc),
+            );
+          }
+          selectedOverload = winner;
         }
       }
 
@@ -4656,6 +4804,8 @@ function checkIndexExpression(
           ? [resolvedMethod, ...resolvedMethod.overloads]
           : [resolvedMethod];
 
+        // Most-specific selection (member-lookup.md §5.1).
+        const applicable: FunctionType[] = [];
         for (const candidate of candidates) {
           const resolvedCandidate = resolveMemberType(
             instantiatedClassType,
@@ -4666,12 +4816,30 @@ function checkIndexExpression(
             resolvedCandidate.parameters.length === 1 &&
             isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])
           ) {
-            // Found a matching overload - store it for codegen
-            expr.resolvedOperatorMethod = resolvedCandidate;
-            // Store the extension class type for codegen to use
-            expr.extensionClassType = instantiatedClassType;
-            return wrapResult(resolvedCandidate.returnType);
+            applicable.push(resolvedCandidate);
           }
+        }
+        if (applicable.length > 0) {
+          let winner = applicable[0];
+          if (applicable.length > 1) {
+            const [best, ambiguous] = pickMostSpecificOverload(
+              ctx,
+              applicable,
+              1,
+            );
+            if (ambiguous) {
+              ctx.diagnostics.reportError(
+                AMBIGUOUS_OVERLOAD_MESSAGE,
+                DiagnosticCode.TypeMismatch,
+                ctx.getLocation(expr.loc),
+              );
+            }
+            winner = best;
+          }
+          // Store the resolved overload and class type for codegen
+          expr.resolvedOperatorMethod = winner;
+          expr.extensionClassType = instantiatedClassType;
+          return wrapResult(winner.returnType);
         }
       }
     }

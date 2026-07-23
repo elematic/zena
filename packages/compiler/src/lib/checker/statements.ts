@@ -79,6 +79,7 @@ import {
   checkMatchPattern,
   getCompileTimeNumericValue,
   createUnionType,
+  signaturesMayOverlap,
 } from './expressions.js';
 import {
   instantiateGenericClass,
@@ -4381,8 +4382,28 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
                   methodType.overloads = newOverloads;
                 }
               } else {
-                // No matching overload in super - this is a new overload, add to inherited method
+                // No matching overload in super - this is a new overload.
+                // Overlap restriction (member-lookup.md §5.1): a subclass
+                // may not ADD an overload whose parameters overlap an
+                // inherited signature — some argument tuple would then
+                // select differently through supertype- vs subclass-typed
+                // references. Declare overlapping alternatives at the base
+                // class and override per-signature instead.
                 const inheritedMethod = classType.methods.get(memberName)!;
+                const inheritedSigs = [
+                  inheritedMethod,
+                  ...(inheritedMethod.overloads ?? []),
+                ];
+                for (const inh of inheritedSigs) {
+                  if (signaturesMayOverlap(ctx, methodType, inh)) {
+                    ctx.diagnostics.reportError(
+                      `Overload of '${memberName}' overlaps an inherited signature; declare overlapping overloads in the base class and override per-signature.`,
+                      DiagnosticCode.TypeMismatch,
+                      ctx.getLocation(member.name.loc),
+                    );
+                    break;
+                  }
+                }
                 if (!inheritedMethod.overloads) {
                   inheritedMethod.overloads = [];
                 }

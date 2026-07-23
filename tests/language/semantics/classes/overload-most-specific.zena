@@ -1,0 +1,72 @@
+// @mode: check
+// Most-specific overload selection (member-lookup.md §5.1): the
+// unique applicable candidate at least as specific as every other
+// wins; an applicable set with no unique maximum is an ambiguity
+// error; a subclass may not ADD an overload overlapping an inherited
+// signature (declare it in the base and override per-signature).
+
+class Animal {
+  x: i32 = 0;
+}
+class Dog extends Animal {
+  y: i32 = 0;
+}
+class Pet {
+  z: i32 = 0;
+}
+
+class Vet {
+  visit(a: Animal): i32 {
+    return 1;
+  }
+  visit(d: Dog): i32 {
+    return 2;
+  }
+  visit(p: Pet): i32 {
+    return 3;
+  }
+}
+
+// Dog argument: visit(Dog) is most specific among {visit(Animal),
+// visit(Dog)}; visit(Pet) is not applicable. No error.
+let takesDog = (v: Vet, d: Dog): i32 => {
+  return v.visit(d);
+};
+
+// Nullability: T is more specific than T | null.
+class NullPref {
+  g(x: Dog | null): i32 {
+    return 1;
+  }
+  g(x: Dog): i32 {
+    return 2;
+  }
+}
+let usesNull = (n: NullPref, d: Dog): i32 => {
+  return n.g(d) * 10 + n.g(null);
+};
+
+// Two applicable but incomparable candidates: ambiguous.
+class Amb {
+  f(a: Animal, b: Dog): i32 {
+    return 1;
+  }
+  f(a: Dog, b: Animal): i32 {
+    return 2;
+  }
+}
+let ambiguous = (m: Amb, d: Dog): i32 => {
+  return m.f(d, d); // @error: Ambiguous overload call
+};
+
+// Overlap restriction on subclass additions.
+class BaseV {
+  visit(a: Animal): i32 {
+    return 1;
+  }
+}
+class SubV extends BaseV {
+  visit(d: Dog): i32 { // @error: overlaps an inherited signature
+    return 2;
+  }
+}

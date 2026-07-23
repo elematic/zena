@@ -142,11 +142,10 @@ and each signature has its own implementation body.
 
 > **Status.** The implementation represents an overload set as a
 > "primary" `FunctionType` (the first declaration) carrying the later
-> signatures in an `.overloads` array. The primary has no meaning in
-> the settled semantics; today it still determines first-match
-> selection order (§5.1 Status) and the type of an overloaded
-> tear-off (§7 Status). Both uses disappear with migration, after
-> which "primary" is purely a representation detail.
+> signatures in an `.overloads` array. Since the most-specific
+> migration, the primary's only remaining semantic leak is the type
+> of an overloaded tear-off (§7 Status); once that is fixed,
+> "primary" is purely a representation detail.
 
 ## 5. Overload selection and dispatch
 
@@ -215,22 +214,21 @@ synthesized runtime dispatch at the statically enumerable incoherent
 sites (hidden dispatch cost for what is still only receiver-side
 coherence).
 
-> **Status.** The implementation still uses declaration-order
-> first-match (ruled out 2026-07-22; migration tracked in BUGS.md):
-> candidates are tried as `[primary, ...overloads]` in declaration
-> order and the first applicable one wins — no specificity ranking,
-> no ambiguity error, and the overlap restriction is not enforced.
-> The index (`[]`) paths additionally consider only single-parameter
-> candidates and skip optional-parameter handling. Two artifacts are
-> pinned by tests and flip with migration:
-> `classes/overload-declaration-order.zena` (a `Dog` argument picks
-> a first-declared `visit(Animal)`; 1130 → 2130) and
-> `classes/overload-override-reorder.zena` (overriding one signature
-> makes it the subclass set's primary, so supertype- and
-> subclass-typed references select different overloads for the same
-> object; 120 → 2020). Migration touches only the candidate-choice
-> step in `checkCallExpressionInner` / `resolveIndexType`; §5.2 and
-> §5.3 are unaffected.
+Implemented in both compilers (2026-07-23). Parameter-equivalent
+applicable candidates (identical over the call's arguments, e.g. an
+exact-arity signature vs. one reached through optional parameters)
+tie-break toward the exact-arity candidate. Overlap for
+interface-typed and type-parameter positions is conservatively
+assumed; whole-program (RTA-exact) overlap remains available as a
+refinement. Pinned by `classes/overload-declaration-order.zena`
+(most-specific wins regardless of order),
+`classes/overload-override-reorder.zena` (selection coherent across
+reference types), `classes/overload-nullability.zena` (`T` beats
+`T | null`), and `semantics/classes/overload-most-specific.zena`
+(ambiguity and overlap errors).
+
+> **Status.** The index (`[]`) selection paths still consider only
+> single-parameter candidates and skip optional-parameter handling.
 
 ### 5.2 Recording: the checker→codegen contract
 
@@ -392,7 +390,7 @@ follows it; streaming conforms where noted):
 2. Member identity for dispatch comes from the receiver *value's*
    struct/class info; privacy and private field naming come from the
    *lexical* class via `resolvePrivateFieldName` (§6).
-3. No signature reconstruction from argument node types anywhere.
+2. No signature reconstruction from argument node types anywhere.
    (The streaming backend still reconstructs; it is scheduled to die
    with streaming at M4 and must not grow new callers.)
 
@@ -400,21 +398,18 @@ follows it; streaming conforms where noted):
 
 Every **Status** block above, in one place; all tracked in BUGS.md:
 
-1. Overload selection is declaration-order first-match; overlap
-   restriction unenforced (§5.1 — the migration).
-2. Interface overloads unimplemented; same-name interface methods
+1. Interface overloads unimplemented; same-name interface methods
    silently last-win, must become an error until implemented (§4).
-3. Overloaded tear-offs silently pick the first-declared signature
+2. Overloaded tear-offs silently pick the first-declared signature
    instead of context-sensitive resolution (§7).
-4. Cross-arm member access on non-null unions unimplemented (§3).
-5. Static/instance members share one namespace in the
+3. Cross-arm member access on non-null unions unimplemented (§3).
+4. Static/instance members share one namespace in the
    implementation (§2.2).
-6. Cross-kind member collisions not uniformly diagnosed; probe order
+5. Cross-kind member collisions not uniformly diagnosed; probe order
    acts as precedence (§2.1).
-7. Bodyless methods in regular classes silently parse as empty-body
+6. Bodyless methods in regular classes silently parse as empty-body
    overloads (BUGS.md; interacts with §4's one-member-per-name
    model).
-8. Mixin-private / host-private collision (§6, PR #36).
 
 ## 10. Deferred designs
 

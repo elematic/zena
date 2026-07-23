@@ -1,19 +1,12 @@
 // @mode: run
-// @result: 120
-// PINS the overriding/overload-order interaction described in
-// docs/design/member-lookup.md §5.3 ("Wrinkle: overriding reorders
-// selection order"). When Sub overrides only visit(Dog), the checker
-// makes the override the primary of Sub's overload set, reordering
-// it. Under the CURRENT declaration-order selection, the SAME object
-// gets DIFFERENT signatures selected through different static
-// reference types: base-typed picks visit(Animal) (Base's order,
-// slot visit$Animal, which Sub does not override -> Base body -> 1);
-// sub-typed picks visit(Dog) (the override heads Sub's set -> 20).
-//
-// RULING (member-lookup.md §5.1, 2026-07-22): the language semantics
-// is MOST-SPECIFIC selection, under which this wrinkle is moot —
-// both sites pick visit(Dog). When the checker migrates, this test's
-// expected result changes from 120 to 2020.
+// @result: 2020
+// PINS most-specific selection's coherence across reference types
+// (member-lookup.md §5.1/§5.3): Sub overrides only visit(Dog), and a
+// Dog argument selects the visit(Dog) SLOT through both the
+// base-typed and sub-typed references — same signature, Sub's body
+// (20) both times. Under the retired declaration-order rule the two
+// references disagreed (base picked visit(Animal)); overriding no
+// longer changes which overload callers get.
 
 class Animal {
   x: i32 = 0;
