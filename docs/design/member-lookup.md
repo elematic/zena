@@ -1,0 +1,427 @@
+# Member Lookup and Overload Resolution
+
+This is the authoritative specification for how Zena resolves member
+accesses (`recv.name`, `recv[i]`, operators) and how overloaded
+callables are selected — for methods, free functions, and `declare`
+interop functions alike.
+
+Identifier resolution — which declaration a *bare name* refers to — is
+covered by `name-resolution.md`. This document picks up after that:
+the receiver expression already has a static type, or the callee name
+already resolved to a function (possibly an overload set).
+
+The body text describes the **settled language semantics**. Where the
+compilers have not caught up yet, the divergence appears as an
+indented **Status** block; each such block is tracked in BUGS.md and
+gets deleted when the implementation lands. Notes marked
+*implementation note* describe compiler strategy that is not
+observable in the language and could be done differently.
+
+## 1. Principles
+
+1. **All lookup and selection is static.** The checker alone decides
+   which member a name refers to and which overload signature a call
+   uses, from static types. Codegen consumes recorded decisions; it
+   never re-derives them. The only things resolved at runtime are
+   *which override* of an already-selected virtual slot runs, and
+   *which implementation* backs an interface slot.
+2. **Overload-ness is a static property.** Whether a callee is
+   overloaded is determined entirely by its declaration site(s) and
+   the receiver's static type. For every well-typed call the checker
+   selects exactly **one** declared signature. There is no runtime
+   overload selection anywhere in the language (see §10 for the
+   dynamic-dispatch machinery that would change this, deferred).
+3. **Privacy comes from the source; dispatch comes from values.**
+   Private (`#`) names resolve lexically only — see §6.
+
+## 2. The member namespaces of a type
+
+### 2.1 Instance members: one namespace, one map
+
+Each class or interface has a single **instance-member namespace**: a
+name denotes at most one member. Member kinds share that namespace —
+fields, methods (an overloaded method is *one* member owning a set of
+signatures, §4), accessor pairs (a getter and setter for the same
+name form one logical member), and operator members. Declaring one
+name as two different kinds in the same class body is a **collision
+error**; there is no lookup "order" among kinds because a well-formed
+class never needs one.
+
+Operator members are named by their glyph: `[]`, `[]=`, `==`, `+`,
+`-`, `*`, `/`, `%`. Note `[]=` is a distinct member from `[]`, not an
+arity-2 variant of it. Other operator glyphs are reserved.
+
+> **Status.** The implementation stores members in one map with
+> accessor keys mangled as `get#name` / `set#name`, and probes
+> field → method → getter in that order. Cross-kind collisions are
+> not yet uniformly diagnosed; the probe order acts as a de-facto
+> precedence instead of an error.
+
+### 2.2 Static members: a separate namespace
+
+Static members form their **own namespace**, held by the class
+itself: `T.foo` resolves in the static namespace, `t.foo` in the
+instance namespace. The same name may exist in both without
+conflict.
+
+> **Status.** The implementation keeps statics in the same map as
+> instance members with an `isStatic` flag, so a static and an
+> instance member of the same name currently collide.
+
+### 2.3 Inheritance
+
+A class's instance-member set is the union of its own declarations
+and its superclass's set, with these rules:
+
+- Private (`#`) members are **never** inherited (§6).
+- Redeclaring an inherited name must be an **override** of the same
+  member kind (method signature overrides its slot per §5.3, accessor
+  overrides accessor). Redeclaring an inherited name as a different
+  kind is a collision error.
+- Inherited generic members are seen through the subclass's type
+  arguments (substitution).
+
+*Implementation note.* Whether the compiler materializes the
+inherited set eagerly (today: members are copied down into each
+subclass's map at class-build time, giving flat single-probe lookup)
+or walks the superclass chain with memoization is not observable in
+the language. A lazy memoized walk may be worthwhile — programs look
+up a small subset of members — but note the checker also enumerates
+full member sets per class (conformance checking, vtable building,
+case-class synthesis), which bounds the potential savings.
+
+## 3. Member access on a receiver
+
+Given a receiver expression of static type `T` and a property name
+`p`:
+
+1. **Privacy gate.** A `#`-prefixed name is only accessible lexically
+   inside the body of the class that declares it (§6).
+2. **Class/interface receivers.** Probe the instance-member namespace
+   of `T` (the static namespace when the receiver is the class name
+   itself). Missing member ⇒ error.
+3. **Union receivers.** Member access on a union is valid iff
+   **every arm** supports the member; the access's static type is the
+   union of the per-arm member types. Calls select an overload
+   per-arm (§5.1) and are well-typed if selection succeeds on every
+   arm; the call's type is the union of the per-arm result types.
+   `null` is not special: the `null` arm supports no members, so a
+   plain access on `T | null` is an error exactly like any arm
+   missing the member. Optional chaining `recv?.p` is sugar that
+   skips the `null` arm and unions `null` back into the result type.
+
+   > **Status.** Only the `null`-arm case is implemented (plain
+   > access errors with "object may be null"; `?.` works). Valid
+   > cross-arm access on non-null unions is not implemented yet —
+   > the checker rejects member access on multi-arm unions, so code
+   > must narrow first.
+
+## 4. Overload sets
+
+An **overload set** forms when multiple same-named callables are
+declared in the same scope. An overloaded member is one member whose
+type carries a *set* of declared signatures; the set is semantically
+**unordered** (selection is by specificity, §5.1, never by position),
+and each signature has its own implementation body.
+
+- **Methods**: multiple same-named method declarations in one class
+  body. Subclasses interact with the set per-signature: overriding
+  replaces one signature's implementation (§5.3); *adding* signatures
+  is constrained by the overlap restriction (§5.1).
+- **Free and `declare` functions**: same mechanism. For
+  `declare function` interop, each overload maps to its own host
+  import — the original motivation for the feature (unboxed
+  `print_i32` / `print_f32` style bindings).
+- **Interfaces**: interfaces may declare overloaded methods, e.g.
+  `Sequence` declaring both `[](i: i32)` and `[](r: Range)`.
+  Conformance and dispatch are per-signature (§5.4).
+
+  > **Status.** Interface overloads are not implemented: a second
+  > same-named interface method silently overwrites the first
+  > (BUGS.md). Until implemented, this must become a checker error.
+
+> **Status.** The implementation represents an overload set as a
+> "primary" `FunctionType` (the first declaration) carrying the later
+> signatures in an `.overloads` array. The primary has no meaning in
+> the settled semantics; today it still determines first-match
+> selection order (§5.1 Status) and the type of an overloaded
+> tear-off (§7 Status). Both uses disappear with migration, after
+> which "primary" is purely a representation detail.
+
+## 5. Overload selection and dispatch
+
+### 5.1 Selection: most-specific, statically
+
+At every call-shaped site — plain calls, method calls, `recv[i]`
+reads (`[]`), `recv[i] = v` writes (`[]=`), and operator uses — the
+checker selects exactly one signature from the callee's overload set
+(the receiver's *static* type's set, for members):
+
+1. **Applicability**: a candidate is applicable if the argument count
+   fits (counting optional parameters) and every argument type is
+   assignable to the corresponding parameter type.
+2. **Specificity**: candidate `X` is *at least as specific as* `Y`
+   iff every parameter of `X` is assignable to the corresponding
+   parameter of `Y`.
+3. **Selection**: the selected signature is the unique applicable
+   candidate that is at least as specific as every other applicable
+   candidate. No applicable candidate ⇒ "no overload matches" error.
+   Applicable candidates but no unique most-specific one ⇒
+   **ambiguity error** (resolve with a cast or an exactly-typed
+   argument). Declaration order carries no meaning.
+
+**Union-typed arguments don't blur selection.** Assignability of a
+union requires *every* arm to be assignable, so an argument of type
+`Dog | String` is applicable only to candidates whose parameter
+accepts the whole union — it never makes both `f(Dog)` and
+`f(String)` applicable. A call with a union argument either finds a
+union-accepting candidate or is an error; narrowing chooses a
+specific overload.
+
+**Overlap restriction on subclass additions.** A subclass may not
+*add* a new overload whose parameter tuple **overlaps** an inherited
+signature of the same name. Overlap is about possible runtime
+values, not call-site types: two signatures overlap iff some value
+tuple would be applicable to both — pointwise, each parameter pair
+shares a possible common value. (Per the previous paragraph,
+union-typed call sites cannot manufacture overlap.) Overlapping
+alternatives must be declared at the class that introduces the
+overload set, and subclasses participate by overriding per-slot
+(§5.3). Adding a genuinely disjoint signature remains legal. For
+class-typed parameters, overlap is subtype-comparability; for
+interface-typed parameters it is "do these types share a common
+subtype" — conservatively assumed when not provable, exact under
+whole-program knowledge (closed world: check for a live common
+subtype via RTA).
+
+**Rationale — soundness vs coherence.** Selection over the static
+type's set is always *sound* (§5.3: the chosen slot exists, with
+that exact signature, on every runtime receiver), but without the
+overlap restriction it can be *incoherent*: a subclass-added
+overload is invisible through supertype references, so the static
+choice could differ from what selection would yield knowing the
+runtime type. The restriction buys coherence loudly: silent
+shadowing becomes a declaration-site overlap error or a call-site
+ambiguity error. Full coherence is unattainable by receiver dispatch
+alone anyway — an argument statically typed `Animal` but dynamically
+a `Dog` selects `visit(Animal)` under every static rule; fixing
+*that* is multimethod dispatch on argument runtime types (§10.2,
+rejected). Static argument types are the accepted boundary.
+
+**Rejected alternatives**: (a) declaration-order first-match
+repaired for coherence (in-place override, additions appended —
+coherent but silently dead overloads and load-bearing order); (b)
+synthesized runtime dispatch at the statically enumerable incoherent
+sites (hidden dispatch cost for what is still only receiver-side
+coherence).
+
+> **Status.** The implementation still uses declaration-order
+> first-match (ruled out 2026-07-22; migration tracked in BUGS.md):
+> candidates are tried as `[primary, ...overloads]` in declaration
+> order and the first applicable one wins — no specificity ranking,
+> no ambiguity error, and the overlap restriction is not enforced.
+> The index (`[]`) paths additionally consider only single-parameter
+> candidates and skip optional-parameter handling. Two artifacts are
+> pinned by tests and flip with migration:
+> `classes/overload-declaration-order.zena` (a `Dog` argument picks
+> a first-declared `visit(Animal)`; 1130 → 2130) and
+> `classes/overload-override-reorder.zena` (overriding one signature
+> makes it the subclass set's primary, so supertype- and
+> subclass-typed references select different overloads for the same
+> object; 120 → 2020). Migration touches only the candidate-choice
+> step in `checkCallExpressionInner` / `resolveIndexType`; §5.2 and
+> §5.3 are unaffected.
+
+### 5.2 Recording: the checker→codegen contract
+
+When (and only when) the callee had an overload set, the checker
+records the selected *declared* signature on the call/index node:
+`SemanticModel.setResolvedOverload(node, ft)`. Codegen must:
+
+- reproduce the registration slot name from the record —
+  `name + getSignatureKey(recordedFt)` (§5.3) — and
+- treat the record as exact: when a record exists, **only** that slot
+  is acceptable. Falling back to a plain-name lookup could silently
+  bind a different overload; a miss is a compiler bug and must be
+  loud.
+
+Codegen never inspects argument node types to (re)choose an
+overload.
+
+### 5.3 Registration and virtual dispatch: per-signature slots
+
+Codegen registers each overload as its own function with a mangled
+name: `name + signatureKey` when the member is overloaded, the plain
+`name` otherwise. Each mangled name is its own vtable slot, so
+overriding is **per-signature**:
+
+```zena
+class Base {
+  foo(x: i32): i32 { ... }   // slot foo$i32
+  foo(x: f64): i32 { ... }   // slot foo$f64
+}
+class Child extends Base {
+  foo(x: i32): i32 { ... }   // replaces slot foo$i32 only
+}                            // foo$f64 inherited unchanged
+```
+
+**Why dynamic dispatch never picks a signature.** Every virtual call
+makes two decisions at different times:
+
+1. *Which signature* (= which slot): static, from the receiver's
+   static type's overload set (§5.1). Fixed at the call site.
+2. *Which body fills that slot*: dynamic, by indexing the runtime
+   receiver's vtable at the already-fixed slot.
+
+This is sound because the slot's signature is invariant across the
+hierarchy **by construction**: a subclass method only occupies an
+existing slot if its parameter list is exactly equal to the
+inherited signature. A same-named method with any *other* parameter
+list — even an assignable refinement like `visit(d: Dog)` under an
+inherited `visit(a: Animal)` — is not an override but a **new
+slot**, which supertype-typed call sites cannot name (and whose
+addition the §5.1 overlap restriction constrains). Subtypes can add
+slots and replace slot bodies; they can never remove a slot or
+change a slot's signature. So the signature set reachable from a
+call site is closed at the static type, every possible runtime
+receiver honors it, and the runtime only ever chooses among bodies
+sharing one identical signature.
+
+Consequently, for polymorphic receivers: a call through a supertype
+reference can only select signatures the supertype declares, and the
+signature selected for a call is fixed at compile time even though
+the method body that runs is not. There is no "re-selection" against
+the runtime type's overload set.
+
+### 5.4 Interface dispatch
+
+Interface slots are keyed per-signature, exactly like class vtable
+slots: an interface declaring `[](i: i32)` and `[](r: Range)` has two
+slots. A conforming class binds, per slot, its method matching that
+signature; a call through an interface reference statically selects
+the slot (§5.1) and dynamically picks the implementing class's bound
+method. There is never a signature choice at runtime.
+
+> **Status.** Interface slots are currently keyed by bare member
+> name — one slot per name — which suffices only because interface
+> overloads are unimplemented (§4 Status).
+
+## 6. Private names
+
+Private (`#`) member resolution follows one rule: **lexical only,
+never virtual, always direct**.
+
+- `this.#x` (or `obj.#x`) resolves against the class *lexically
+  enclosing the expression* — the class whose body the source text
+  sits in — never against the runtime or even static receiver
+  hierarchy. This holds even where the compiler copies inherited
+  method bodies into subclasses: the copy still resolves `#x` to the
+  declaring class's field.
+- Private names are never inherited and never shared between super-
+  and subclasses. `A::#x` and `B::#x` are distinct fields even when
+  `B extends A`; neither can access the other's.
+- Private access is direct (field offset / direct call), never a
+  vtable dispatch. Private methods cannot be overridden.
+- **Generics**: specializations of one generic class share the same
+  lexical class, so a method of `Box<i32>` may access `#x` of another
+  `Box<T>` instance it holds — privacy is granted by the lexical
+  class and is unaffected by specialization. (Pinned by
+  `classes/private-fields-generic.zena`.) *Implementation note*: the
+  physical struct-field name may carry either the specialization's
+  key or the shared template's key;
+  `WasmStruct.resolvePrivateFieldName` owns that mapping in both
+  backends — frontends must not synthesize private field names by
+  string convention.
+- **Mixins**: each mixin *application* produces a new class, but the
+  mixin *declaration* is one lexical scope — all applications of a
+  mixin share its private names lexically, exactly like
+  specializations of a generic class. (This is deliberately stronger
+  than the JS mixin pattern, where every application gets fresh
+  private names.)
+
+  > **Status.** The checker has a known collision between mixin
+  > privates and host-class privates — BUGS.md, pinned by
+  > `mixins/private_names.zena` (PR #36).
+
+## 7. Tear-offs of overloaded members
+
+Accessing an overloaded method as a value (`let f = obj.method`)
+needs a single signature for the resulting closure. Resolution is
+**context-sensitive** against the expected type — assignability to a
+function type already requires a specific signature:
+
+```zena
+let printInt: (x: i32) => void = p.print;  // picks print(i32)
+run(p.print);       // picks the overload matching run's param type
+let f = p.print;    // no context: error, ambiguous overload reference
+```
+
+The escape hatch is a lambda: `let f = (x: i32) => p.print(x);`.
+
+Generating a boxed runtime dispatcher instead (accept `anyref`,
+`ref.test`, branch) was considered and **rejected**: hidden boxing
+and runtime checks, and context-sensitive resolution covers static
+usage. See §10.2.
+
+> **Status.** Not implemented: an overloaded tear-off today silently
+> yields the first-declared signature, ignoring context (BUGS.md).
+
+## 8. What codegen may assume
+
+Summarizing the contract this spec creates (the ZIR backend already
+follows it; streaming conforms where noted):
+
+1. Every call/index node whose callee had an overload set carries a
+   recorded declared signature; the slot name is
+   `name + getSignatureKey(recorded)` and must resolve exactly (§5.2).
+2. Member identity for dispatch comes from the receiver *value's*
+   struct/class info; privacy and private field naming come from the
+   *lexical* class via `resolvePrivateFieldName` (§6).
+3. No signature reconstruction from argument node types anywhere.
+   (The streaming backend still reconstructs; it is scheduled to die
+   with streaming at M4 and must not grow new callers.)
+
+## 9. Implementation-gap index
+
+Every **Status** block above, in one place; all tracked in BUGS.md:
+
+1. Overload selection is declaration-order first-match; overlap
+   restriction unenforced (§5.1 — the migration).
+2. Interface overloads unimplemented; same-name interface methods
+   silently last-win, must become an error until implemented (§4).
+3. Overloaded tear-offs silently pick the first-declared signature
+   instead of context-sensitive resolution (§7).
+4. Cross-arm member access on non-null unions unimplemented (§3).
+5. Static/instance members share one namespace in the
+   implementation (§2.2).
+6. Cross-kind member collisions not uniformly diagnosed; probe order
+   acts as precedence (§2.1).
+7. Bodyless methods in regular classes silently parse as empty-body
+   overloads (BUGS.md; interacts with §4's one-member-per-name
+   model).
+8. Mixin-private / host-private collision (§6, PR #36).
+
+## 10. Deferred designs
+
+Recorded so the ideas aren't lost; none of this is committed.
+
+1. **Single-implementation overloads** (TS-style: several signatures,
+   one union-typed body, checker correlates argument to return
+   types). Would trade mangled multi-implementation slots for one
+   body plus per-signature bridge thunks in the vtable.
+2. **Dispatcher thunks / boxed dispatchers** for call sites that
+   cannot name a signature statically. Rejected for tear-offs (§7).
+   The only other candidate sites — spreading a union-of-tuples into
+   a call — do not exist in the language; if they ever do, a
+   per-overload-set synthetic dispatcher (runtime `ref.test` chain
+   over the candidates) is the shape to reach for.
+3. **`dynamic` receivers** (`dynamic_call(obj, "draw", args)` via a
+   name-keyed side table of dispatchers). Nothing in the current
+   language needs it.
+
+---
+
+*History: this document superseded and replaced
+`function-overloading.md` and `method-overloading.md` (2026-07-22);
+their still-live ideas are folded in above, the deferred ones in
+§10. The most-specific selection rule was ruled the same day.*

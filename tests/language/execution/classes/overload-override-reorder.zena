@@ -1,0 +1,45 @@
+// @mode: run
+// @result: 120
+// PINS the overriding/overload-order interaction described in
+// docs/design/member-lookup.md §5.3 ("Wrinkle: overriding reorders
+// selection order"). When Sub overrides only visit(Dog), the checker
+// makes the override the primary of Sub's overload set, reordering
+// it. Under the CURRENT declaration-order selection, the SAME object
+// gets DIFFERENT signatures selected through different static
+// reference types: base-typed picks visit(Animal) (Base's order,
+// slot visit$Animal, which Sub does not override -> Base body -> 1);
+// sub-typed picks visit(Dog) (the override heads Sub's set -> 20).
+//
+// RULING (member-lookup.md §5.1, 2026-07-22): the language semantics
+// is MOST-SPECIFIC selection, under which this wrinkle is moot —
+// both sites pick visit(Dog). When the checker migrates, this test's
+// expected result changes from 120 to 2020.
+
+class Animal {
+  x: i32 = 0;
+}
+class Dog extends Animal {
+  y: i32 = 0;
+}
+
+class Base {
+  visit(a: Animal): i32 {
+    return 1;
+  }
+  visit(d: Dog): i32 {
+    return 2;
+  }
+}
+
+class Sub extends Base {
+  visit(d: Dog): i32 {
+    return 20;
+  }
+}
+
+export let main = (): i32 => {
+  let dog = new Dog();
+  let sub = new Sub();
+  let base: Base = sub;
+  return base.visit(dog) * 100 + sub.visit(dog);
+};

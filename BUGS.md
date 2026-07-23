@@ -16,6 +16,87 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Cross-arm member access on non-null unions is unimplemented
+- **Found**: 2026-07-22 (ruled desired behavior)
+- **Severity**: low (ergonomics; forces narrowing)
+- **Workaround**: narrow to an arm before accessing.
+- **Details**: member-lookup.md §3 specifies that member access on a
+  union is valid when every arm supports the member (result = union
+  of per-arm member types; per-arm overload selection for calls),
+  with null just an arm that supports no members. The checker
+  currently only handles the null arm (plain access errors, ?. works)
+  and rejects member access on multi-arm unions entirely.
+
+### Static and instance members share one namespace in the implementation
+- **Found**: 2026-07-22
+- **Severity**: low
+- **Workaround**: avoid same-named static and instance members.
+- **Details**: member-lookup.md §2.2 specifies statics as their own
+  namespace (a map on the class, vs instance members on instances),
+  so the same name may exist in both. The implementation stores both
+  in one members map with an isStatic flag, so they collide.
+
+### Cross-kind member collisions are not uniformly diagnosed
+- **Found**: 2026-07-22
+- **Severity**: low
+- **Workaround**: none needed; avoid same-named members of different
+  kinds.
+- **Details**: member-lookup.md §2.1 specifies one instance-member
+  namespace per class — declaring one name as two kinds (field vs
+  method vs accessor) is a collision error. The implementation's
+  lookup probes field -> method -> getter, which acts as a silent
+  precedence instead of an error.
+
+### Overload selection does not implement the ruled semantics yet
+- **Found**: 2026-07-22 (ruling date)
+- **Severity**: medium (spec/implementation divergence; silent
+  shadowing of more-specific overloads until migrated)
+- **Workaround**: order overloads most-specific-first in source.
+- **Details**: member-lookup.md §5.1 ruled for MOST-SPECIFIC
+  selection with an overlap restriction on subclass-added overloads
+  (declaration-site overlap error, call-site ambiguity error). The
+  checker still implements declaration-order first-match, and the
+  override-reorder wrinkle (member-lookup.md §5.3) is live. Migration
+  touches only the candidate-choice step in checkCallExpressionInner
+  and resolveIndexType — the setResolvedOverload recording contract
+  and per-signature slots are unaffected. Update the two pinned tests
+  when migrating: classes/overload-declaration-order.zena (1130 ->
+  2130) and classes/overload-override-reorder.zena (120 -> 2020).
+
+### Interface methods with the same name silently overwrite each other
+- **Found**: 2026-07-22
+- **Severity**: medium (silent wrong types; no diagnostic)
+- **Workaround**: don't declare same-named methods in an interface.
+- **Details**: Interface member registration assigns
+  `ifaceType.members[name]` without checking for an existing entry
+  (checker.zena `registerInterface` method loop), so the last
+  declaration wins and earlier signatures vanish without any error.
+  Interface overloads aren't supported (member-lookup.md §9.1); until
+  they are designed, a duplicate name should be a checker error.
+
+### Bodyless method in a regular class becomes a silent empty body
+- **Found**: 2026-07-22
+- **Severity**: medium (silent wrong behavior for a natural mistake)
+- **Workaround**: always write method bodies in non-declare classes.
+- **Details**: The parser treats `foo(x: A);` in a non-abstract,
+  non-declare class as a method with an empty block body
+  (parser.zena, Semi branch of method parsing). Anyone writing
+  TypeScript-style "signature list + one implementation" overloads
+  gets real empty-body overloads that return zero values, selected by
+  normal overload resolution (member-lookup.md §9.2). Should be a
+  parse or check error.
+
+### Tear-off of an overloaded method silently picks the first signature
+- **Found**: 2026-07-22
+- **Severity**: low (overloaded tear-offs are rare so far)
+- **Workaround**: wrap in a lambda: `let f = (x: i32) => p.print(x);`.
+- **Details**: `let f = obj.method` where `method` is overloaded
+  returns the primary (first-declared) `FunctionType` with no
+  diagnostic and no use of the expected type (`resolveMemberType`
+  MethodInfo path; `setResolvedOverload` is only called from call and
+  index resolution). Spec is context-sensitive resolution with an
+  ambiguity error when no context exists (member-lookup.md §7/§9.3).
+
 ### Mixin private names collide with host-class privates (semantics gap)
 - **Found**: 2026-07-22
 - **Severity**: medium (silent state corruption when names collide)
