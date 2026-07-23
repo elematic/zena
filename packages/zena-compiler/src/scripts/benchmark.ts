@@ -19,6 +19,7 @@ let runCompiler = false;
 let runStrings = false;
 let runBasic = false;
 let runMapKeys = false;
+let runMaps = false;
 let runZirBench = false;
 let filter = '';
 
@@ -39,6 +40,8 @@ for (let i = 0; i < args.length; i++) {
     runBasic = true;
   } else if (arg === '--map-keys') {
     runMapKeys = true;
+  } else if (arg === '--maps') {
+    runMaps = true;
   } else if (arg === '--zir') {
     runZirBench = true;
   } else if (arg === '--filter' || arg === '-f') {
@@ -47,11 +50,12 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-if (!runCompiler && !runStrings && !runBasic && !runMapKeys) {
+if (!runCompiler && !runStrings && !runBasic && !runMapKeys && !runMaps) {
   runCompiler = true;
   runStrings = true;
   runBasic = true;
   runMapKeys = true;
+  runMaps = true;
 }
 
 const ITERATIONS = iterations;
@@ -1072,6 +1076,167 @@ if (runBasic) {
     }
   } else {
     console.log('\nNo matching basic benchmarks were run.');
+  }
+  console.log('\n--------------------------------------------------\n');
+}
+
+<<<<<<< HEAD
+if (runMapKeys) {
+  // --- Map Key Execution Benchmarks ---
+  console.log('==================================================');
+  console.log('Running Map Key Micro-Benchmark Suite (Execution)');
+=======
+if (runMaps) {
+  // --- Map Execution Benchmarks ---
+  console.log('==================================================');
+  console.log('Running Map Micro-Benchmark Suite (Execution)');
+>>>>>>> 38b2f15b ([zena-compiler] Add map benchmarks)
+  if (filter) {
+    console.log(`Filter: ${filter}`);
+  }
+  console.log('==================================================\n');
+
+if (runMaps) {
+  // --- Map Execution Benchmarks ---
+  console.log('==================================================');
+  console.log('Running Map Micro-Benchmark Suite (Execution)');
+  if (filter) {
+    console.log(`Filter: ${filter}`);
+  }
+  console.log('==================================================\n');
+
+  const mapBenchSrc = join(repoRoot, 'packages', 'stdlib', 'benchmarks', 'map_bench.zena');
+  const mapBenchWasm = join(outDir, 'map_bench.wasm');
+  const mapBenchNode = join(repoRoot, 'packages', 'stdlib', 'benchmarks', 'map-bench-node.js');
+
+  console.log('Compiling map_bench.zena...');
+  try {
+    execSync(
+      `node "${bootstrapCli}" build "${mapBenchSrc}" --target wasi -o "${mapBenchWasm}"`,
+      {cwd: repoRoot, stdio: 'pipe'},
+    );
+    console.log('Compilation successful.');
+  } catch (e) {
+    console.error('Failed to compile map_bench.zena:', e);
+    process.exit(1);
+  }
+
+  console.log('\nRunning Zena (wasmtime via zena-cli) benchmark...');
+  let zenaOut = '';
+  try {
+    const wasmFilterArg = filter ? ` -- "${filter}"` : '';
+    zenaOut = execSync(
+      `"${zenaCli}" run "${mapBenchWasm}"${wasmFilterArg}`,
+      {cwd: repoRoot, encoding: 'utf-8', stdio: 'pipe'},
+    );
+  } catch (e) {
+    console.error('Failed to run Zena benchmark:', e);
+  }
+
+  console.log('Running Zena (Node.js WASI) benchmark...');
+  let zenaNodeOut = '';
+  try {
+    const wasmFilterArg = filter ? ` "${filter}"` : '';
+    zenaNodeOut = execSync(
+      `node --experimental-wasi-unstable-preview1 "${runWasiNode}" "${mapBenchWasm}"${wasmFilterArg}`,
+      {cwd: repoRoot, encoding: 'utf-8', stdio: 'pipe'},
+    );
+  } catch (e) {
+    console.error('Failed to run Zena Node.js benchmark:', e);
+  }
+
+  console.log('Running Node.js (V8 JS) benchmark...');
+  let nodeOut = '';
+  try {
+    const nodeFilterArg = filter ? ` "${filter}"` : '';
+    nodeOut = execSync(`node "${mapBenchNode}"${nodeFilterArg}`, {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+  } catch (e) {
+    console.error('Failed to run Node.js benchmark:', e);
+  }
+
+  // Parse timing data
+  const parseTimes = (output: string) => {
+    const map = new Map<string, number>();
+    const lines = output.split('\n');
+    for (const line of lines) {
+      if (line.includes(':') && line.includes('ms')) {
+        const parts = line.split(':');
+        const name = parts[0].trim();
+        const time = parseFloat(parts[1].replace('ms', '').trim());
+        if (name && !isNaN(time)) {
+          map.set(name, time);
+        }
+      }
+    }
+    return map;
+  };
+
+  const zenaTimes = parseTimes(zenaOut);
+  const zenaNodeTimes = parseTimes(zenaNodeOut);
+  const nodeTimes = parseTimes(nodeOut);
+
+  if (zenaTimes.size > 0 || zenaNodeTimes.size > 0 || nodeTimes.size > 0) {
+    console.log('\nMap Micro-Benchmark Comparison:');
+    const mapColWidths = [40, 17, 17, 16, 15, 15];
+    const formatMapRow = (cells: string[]) => {
+      return (
+        '│ ' +
+        cells
+          .map((cell, i) => {
+            if (i === 0) {
+              return cell.padEnd(mapColWidths[i]);
+            } else {
+              return cell.padStart(mapColWidths[i]);
+            }
+          })
+          .join(' │ ') +
+        ' │'
+      );
+    };
+    const makeMapSeparator = (left: string, mid: string, right: string) => {
+      return (
+        left + mapColWidths.map((w) => '─'.repeat(w + 2)).join(mid) + right
+      );
+    };
+
+    console.log(makeMapSeparator('┌', '┬', '┐'));
+    console.log(
+      formatMapRow([
+        'Test Case',
+        'Zena (Wasmtime)',
+        'Zena (Node.js)',
+        'Node.js (JS)',
+        'Ratio (Wt/JS)',
+        'Ratio (Node/JS)',
+      ]),
+    );
+    console.log(makeMapSeparator('├', '┼', '┤'));
+
+    for (const [name, zenaTime] of zenaTimes.entries()) {
+      const zenaNodeTime = zenaNodeTimes.get(name);
+      const nodeTime = nodeTimes.get(name);
+      if (nodeTime !== undefined && zenaNodeTime !== undefined) {
+        const wtRatio = `${(zenaTime / nodeTime).toFixed(2)}x`;
+        const nodeRatio = `${(zenaNodeTime / nodeTime).toFixed(2)}x`;
+        console.log(
+          formatMapRow([
+            name,
+            `${zenaTime.toFixed(2)} ms`,
+            `${zenaNodeTime.toFixed(2)} ms`,
+            `${nodeTime.toFixed(2)} ms`,
+            wtRatio,
+            nodeRatio,
+          ]),
+        );
+      }
+    }
+    console.log(makeMapSeparator('└', '┴', '┘'));
+  } else {
+    console.log('\nNo matching map benchmarks were run.');
   }
   console.log('\n--------------------------------------------------\n');
 }

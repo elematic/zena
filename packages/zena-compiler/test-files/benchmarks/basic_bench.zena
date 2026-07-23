@@ -1,53 +1,10 @@
-import { Memory, defaultAllocator } from 'zena:memory';
 import { console } from 'zena:console';
 import { String } from 'zena:string';
 import { getArguments } from 'zena:cli';
 import { Iterator, Iterable } from 'zena:iterator';
 import { IterableUtils } from 'zena:iterable-utils';
 import { ImmutableArray } from 'zena:immutable-array';
-
-@external("wasi_snapshot_preview1", "clock_time_get")
-declare function __wasi_clock_time_get(
-  clockId: i32,
-  precision: i64,
-  timePtr: i32
-): i32;
-
-let getMonotonicTimeMs = (): f64 => {
-  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
-    // Clock ID 1 is CLOCK_MONOTONIC. Precision 1ns.
-    let res = __wasi_clock_time_get(1, 1 as i64, addr);
-    if (res == 0) {
-      let ns = Memory.default.getI64(addr);
-      defaultAllocator.free(addr);
-      return (ns as f64) / 1000000.0;
-    }
-    defaultAllocator.free(addr);
-  }
-  return 0.0;
-};
-
-let formatFloat = (n: f64): String => {
-  let total = n;
-  let integerPart = total as i32;
-  let fractionPart = ((total - (integerPart as f64)) * 100.0) as i32;
-  let fractionPartAbs = if (fractionPart < 0) -fractionPart else fractionPart;
-  let fracStr = if (fractionPartAbs < 10) "0" + i32ToString(fractionPartAbs) else i32ToString(fractionPartAbs);
-  return i32ToString(integerPart) + "." + fracStr;
-};
-
-let runTest = (name: String, testFunc: () => void, filter: String): void => {
-  if (filter.length > 0 && !name.contains(filter)) {
-    return;
-  }
-  // Warm up the JIT compiler
-  testFunc();
-
-  let start = getMonotonicTimeMs();
-  testFunc();
-  let end = getMonotonicTimeMs();
-  console.log(name + ": " + formatFloat(end - start) + " ms");
-};
+import { runTest } from 'zena:benchmark';
 
 let fibRecursive = (n: i32): i32 => {
   if (n <= 1) {

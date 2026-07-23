@@ -1,0 +1,118 @@
+import { HashMap } from 'zena:map';
+import { OrderedMap } from 'zena:ordered-map';
+import { runTest } from 'zena:benchmark';
+import { console } from 'zena:console';
+import { getArguments } from 'zena:cli';
+import { String } from 'zena:string';
+
+export let main = (): i32 => {
+  let args = getArguments();
+  var filter = "";
+  if (args.length > 1) {
+    filter = args[1];
+  }
+
+  console.log("==============================================");
+  console.log("Running Zena HashMap Benchmarks (Wasm GC)...");
+  if (filter.length > 0) {
+    console.log("Filter: " + filter);
+  }
+  console.log("==============================================");
+
+  // 1. HashMap String Insertion (N=50,000)
+  runTest("HashMapInsertString (N=50,000)", () => {
+    let map = new HashMap<String, i32>();
+    for (var i = 0; i < 50000; i += 1) {
+      let key = "key_" + i32ToString(i);
+      map[key] = i;
+    }
+  }, filter);
+
+  // 2. HashMap String Lookup (N=100,000)
+  runTest("HashMapLookupString (N=100,000)", () => {
+    let map = new HashMap<String, i32>();
+    let keys = new Array<String>();
+    for (var i = 0; i < 10000; i += 1) {
+      let key = "key_" + i32ToString(i);
+      keys.push(key);
+      map[key] = i;
+    }
+
+    var sum = 0;
+    for (var j = 0; j < 10; j += 1) {
+      for (var k = 0; k < 10000; k += 1) {
+        let key = keys[k];
+        if (map.has(key)) {
+          sum = sum + map[key];
+        }
+      }
+    }
+    if (sum != 499950000) {
+      console.log("Error in sum: " + i32ToString(sum));
+    }
+  }, filter);
+
+  // 3. HashMap Integer Insertion (N=50,000)
+  runTest("HashMapInsertInt (N=50,000)", () => {
+    let map = new HashMap<i32, i32>();
+    for (var i = 0; i < 50000; i += 1) {
+      map[i] = i;
+    }
+  }, filter);
+
+  // 4. HashMap Integer Lookup (N=100,000)
+  runTest("HashMapLookupInt (N=100,000)", () => {
+    let map = new HashMap<i32, i32>();
+    for (var i = 0; i < 10000; i += 1) {
+      map[i] = i;
+    }
+
+    var sum = 0;
+    for (var j = 0; j < 10; j += 1) {
+      for (var k = 0; k < 10000; k += 1) {
+        if (map.has(k)) {
+          sum = sum + map[k];
+        }
+      }
+    }
+    if (sum != 499950000) {
+      console.log("Error in sum: " + i32ToString(sum));
+    }
+  }, filter);
+
+  // 5. OrderedMap String Insertion (N=50,000)
+  runTest("OrderedMapInsertString (N=50,000)", () => {
+    let map = new OrderedMap<String, i32>();
+    for (var i = 0; i < 50000; i += 1) {
+      let key = "key_" + i32ToString(i);
+      map[key] = i;
+    }
+  }, filter);
+
+  // 6. OrderedMap String Lookup (N=100,000)
+  runTest("OrderedMapLookupString (N=100,000)", () => {
+    let map = new OrderedMap<String, i32>();
+    let keys = new Array<String>();
+    for (var i = 0; i < 10000; i += 1) {
+      let key = "key_" + i32ToString(i);
+      keys.push(key);
+      map[key] = i;
+    }
+
+    var sum = 0;
+    for (var j = 0; j < 10; j += 1) {
+      for (var k = 0; k < 10000; k += 1) {
+        let key = keys[k];
+        if (map.has(key)) {
+          sum = sum + map[key];
+        }
+      }
+    }
+    if (sum != 499950000) {
+      console.log("Error in sum: " + i32ToString(sum));
+    }
+  }, filter);
+
+  console.log("----------------------------------------------");
+  return 0;
+};
