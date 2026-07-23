@@ -11,6 +11,13 @@ declare function hash<T>(value: T): i32;
 @intrinsic('eq')
 declare function equals<T>(a: T, b: T): boolean;
 
+@intrinsic('i32.clz')
+declare function clz(x: i32): i32;
+
+let getPowerOfTwoCapacity = (capacity: i32): i32 => {
+  return 1 << (32 - clz(capacity - 1));
+};
+
 /**
  * Internal entry for OrderedMap. Combines hash bucket chaining (bucketNext)
  * with a doubly-linked list for insertion order (orderNext/orderPrev).
@@ -90,7 +97,7 @@ export class OrderedMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>
   var #tail: OrderedEntry<K, V> | null = null;
 
   new(capacity: i32 = 16)
-    : #buckets = __array_new_empty<OrderedEntry<K, V> | null>(capacity) as FixedArray<OrderedEntry<K, V> | null>;
+    : #buckets = __array_new_empty<OrderedEntry<K, V> | null>(getPowerOfTwoCapacity(capacity)) as FixedArray<OrderedEntry<K, V> | null>;
 
   size: i32 {
     get {
@@ -99,14 +106,15 @@ export class OrderedMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>
   }
 
   operator []=(key: K, value: V): void {
-    if (this.#size * 4 >= this.#buckets.length * 3) {
+    var len = this.#buckets.length;
+    if (this.#size * 4 >= len * 3) {
       this.#resize();
+      len = this.#buckets.length;
     }
 
     let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
+    let mask = len - 1;
+    let index = h & mask;
 
     let head = this.#buckets[index];
     var current = head;
@@ -130,9 +138,8 @@ export class OrderedMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>
    */
   operator [](key: K): V {
     let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
+    let mask = this.#buckets.length - 1;
+    let index = h & mask;
 
     var current = this.#buckets[index];
     while (current != null) {
@@ -151,9 +158,8 @@ export class OrderedMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>
    */
   get(key: K): inline (true, V) | inline (false, _) {
     let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
+    let mask = this.#buckets.length - 1;
+    let index = h & mask;
 
     var current = this.#buckets[index];
     while (current != null) {
@@ -171,9 +177,8 @@ export class OrderedMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>
    */
   getOr(key: K, defaultValue: V): V {
     let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
+    let mask = this.#buckets.length - 1;
+    let index = h & mask;
 
     var current = this.#buckets[index];
     while (current != null) {
@@ -191,9 +196,8 @@ export class OrderedMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>
    */
   getOption(key: K): Option<V> {
     let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
+    let mask = this.#buckets.length - 1;
+    let index = h & mask;
 
     var current = this.#buckets[index];
     while (current != null) {
@@ -208,9 +212,8 @@ export class OrderedMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>
 
   has(key: K): boolean {
     let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
+    let mask = this.#buckets.length - 1;
+    let index = h & mask;
 
     var current = this.#buckets[index];
     while (current != null) {
@@ -225,9 +228,8 @@ export class OrderedMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>
 
   delete(key: K): boolean {
     let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) index = index + len;
+    let mask = this.#buckets.length - 1;
+    let index = h & mask;
 
     let head = this.#buckets[index];
     var current = head;
@@ -323,13 +325,14 @@ export class OrderedMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>
     let newCapacity = this.#buckets.length * 2;
     this.#buckets = __array_new_empty<OrderedEntry<K, V> | null>(newCapacity) as FixedArray<OrderedEntry<K, V> | null>;
 
+    let mask = newCapacity - 1;
     // Re-hash all entries by walking the insertion-order linked list
     var current = this.#head;
     while (current != null) {
       let entry = current as OrderedEntry<K, V>;
-      let h = hash(entry.key);
-      var index = h % newCapacity;
-      if (index < 0) index = index + newCapacity;
+      // Recompute the hash: keys may have mutated since insertion (see the
+      // note on HashMap#findEntry in map.zena).
+      let index = hash(entry.key) & mask;
 
       entry.bucketNext = this.#buckets[index];
       this.#buckets[index] = entry;

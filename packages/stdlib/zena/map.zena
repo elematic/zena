@@ -17,7 +17,14 @@ declare function hash<T>(value: T): i32;
 @intrinsic('eq')
 declare function equals<T>(a: T, b: T): boolean;
 
+@intrinsic('i32.clz')
+declare function clz(x: i32): i32;
+
 symbol entryNext;
+
+let getPowerOfTwoCapacity = (capacity: i32): i32 => {
+  return 1 << (32 - clz(capacity - 1));
+};
 
 /**
  * A key-value pair from a Map.
@@ -133,7 +140,7 @@ export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K,
   var #size = 0;
 
   new(capacity: i32 = 16)
-    : #buckets = __array_new_empty<MapEntry<K, V> | null>(capacity) as FixedArray<MapEntry<K, V> | null>;
+    : #buckets = __array_new_empty<MapEntry<K, V> | null>(getPowerOfTwoCapacity(capacity)) as FixedArray<MapEntry<K, V> | null>;
 
   size: i32 {
     get {
@@ -141,18 +148,13 @@ export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K,
     }
   }
 
-  #bucketFor(key: K): i32 {
-    let h = hash(key);
-    let len = this.#buckets.length;
-    var index = h % len;
-    if (index < 0) {
-      index += len;
-    }
-    return index;
-  }
-
-  #findEntry(key: K): MapEntry<K, V> | null {
-    var entry = this.#buckets[this.#bucketFor(key)];
+  // NOTE: entries deliberately do NOT cache their key's hash code. Some
+  // callers (notably the compiler) mutate keys after insertion, changing
+  // their hashCode; recomputing hashes on every lookup and resize keeps
+  // such entries findable as long as the hash is stable at lookup time.
+  #findEntry(key: K, h: i32): MapEntry<K, V> | null {
+    let mask = this.#buckets.length - 1;
+    var entry = this.#buckets[h & mask];
     while (entry != null) {
       if (equals(entry.key, key)) {
         return entry;
@@ -163,18 +165,21 @@ export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K,
   }
 
   operator []=(key: K, value: V): void {
-    // Resize when load factor exceeds 75% (size/capacity >= 3/4)
-    if (this.#size * 4 >= this.#buckets.length * 3) {
+    // Resize when load factor exceeds 75%
+    var len = this.#buckets.length;
+    if (this.#size * 4 >= len * 3) {
       this.#resize();
+      len = this.#buckets.length;
     }
 
-    let existing = this.#findEntry(key);
+    let h = hash(key);
+    let existing = this.#findEntry(key, h);
     if (existing != null) {
       existing.value = value;
       return;
     }
 
-    let index = this.#bucketFor(key);
+    let index = h & (len - 1);
     this.#buckets[index] = new MapEntry(key, value, this.#buckets[index]);
     this.#size += 1;
   }
@@ -184,7 +189,8 @@ export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K,
    * Use this when you expect the key to exist.
    */
   operator [](key: K): V {
-    let entry = this.#findEntry(key);
+    let h = hash(key);
+    let entry = this.#findEntry(key, h);
     if (entry != null) {
       return entry.value;
     }
@@ -197,7 +203,8 @@ export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K,
    * getting its value, as it has zero allocation overhead.
    */
   get(key: K): inline (true, V) | inline (false, _) {
-    let entry = this.#findEntry(key);
+    let h = hash(key);
+    let entry = this.#findEntry(key, h);
     if (entry != null) {
       return (true, entry.value);
     }
@@ -208,7 +215,8 @@ export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K,
    * Gets the value for a key, or returns the default value if not found.
    */
   getOr(key: K, defaultValue: V): V {
-    let entry = this.#findEntry(key);
+    let h = hash(key);
+    let entry = this.#findEntry(key, h);
     if (entry != null) {
       return entry.value;
     }
@@ -220,7 +228,8 @@ export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K,
    * Use this when you need to store or pass around the optional result.
    */
   getOption(key: K): Option<V> {
-    let entry = this.#findEntry(key);
+    let h = hash(key);
+    let entry = this.#findEntry(key, h);
     if (entry != null) {
       return some(entry.value);
     }
@@ -228,11 +237,14 @@ export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K,
   }
 
   has(key: K): boolean {
-    return this.#findEntry(key) != null;
+    let h = hash(key);
+    return this.#findEntry(key, h) != null;
   }
 
   delete(key: K): boolean {
-    let index = this.#bucketFor(key);
+    let h = hash(key);
+    let mask = this.#buckets.length - 1;
+    let index = h & mask;
     var entry = this.#buckets[index];
     var prev: MapEntry<K, V> | null = null;
 
@@ -257,6 +269,16 @@ export final class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K,
     this.#size = 0;
   }
 
+  // NOTE: resize deliberately REINSERTS through the public []= operator
+  // instead of re-linking or copying entries directly. This preserves three
+  // behaviors that callers (notably the compiler) rely on:
+  // 1. Hashes are recomputed: keys may have mutated since insertion (see
+  //    the note on #findEntry), so a hash captured at insert time can be
+  //    stale.
+  // 2. Entries whose keys have mutated to compare equal are merged, so
+  //    iteration never yields duplicate keys.
+  // 3. Fresh entry nodes are allocated, leaving the old table's chains
+  //    intact as a consistent snapshot for any live iterator.
   #resize(): void {
     let oldBuckets = this.#buckets;
     let newCapacity = oldBuckets.length * 2;
