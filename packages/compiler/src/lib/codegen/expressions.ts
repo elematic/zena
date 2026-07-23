@@ -5420,7 +5420,17 @@ function generateAssignmentExpressionInner(
       if (!ctx.currentClass) {
         throw new Error('Private field assignment outside class');
       }
-      lookupName = manglePrivateName(ctx.currentClass, fieldName);
+      // Mangle with the receiver's class when we resolved it: the
+      // receiver may be a different specialization of the lexical
+      // class, whose field names carry its own class key. Fall back
+      // to the enclosing class (inherited privates keep the
+      // declaring ancestor's key and are found via currentClass).
+      const mangleOwner =
+        foundClass &&
+        foundClass.fields.has(manglePrivateName(foundClass, fieldName))
+          ? foundClass
+          : ctx.currentClass;
+      lookupName = manglePrivateName(mangleOwner, fieldName);
     }
 
     // Check for virtual property assignment (public fields or accessors)
@@ -7297,11 +7307,57 @@ function generateFieldFromBinding(
   // that owns this private field, so we know exactly which ClassInfo to use.
   // The binding stores the checker's class name, but codegen uses bundled names.
   if (fieldName.includes('::#') && ctx.currentClass) {
-    const classInfo = ctx.currentClass;
-    // Extract the private part (e.g., "::#length") and rebuild with unique mangled name
+    // Extract the private part (e.g., "::#length")
     const privatePart = fieldName.slice(fieldName.indexOf('::#'));
-    const lookupName = manglePrivateName(classInfo, privatePart.substring(2));
+    const memberName = privatePart.substring(2); // "#val"
 
+    // Private access is lexical-only, but the receiver may be a
+    // DIFFERENT specialization of the lexical class (a Cell<Tag>
+    // method reading a Cell<i32>'s privates), with its own ClassInfo
+    // and its own class key in the mangled field names. Resolve the
+    // receiver's ClassInfo like the assignment path does; fall back
+    // to the enclosing class for plain `this` access, checker-only
+    // synthetic receivers, and inherited privates (whose field name
+    // carries the declaring ancestor's key).
+    let classInfo = ctx.currentClass;
+    if (
+      objectExpr.inferredType &&
+      objectExpr.inferredType.kind === TypeKind.Class
+    ) {
+      let receiverType = objectExpr.inferredType as ClassType;
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        receiverType = ctx.checkerContext.substituteTypeParams(
+          receiverType,
+          ctx.currentTypeArguments,
+        ) as ClassType;
+      }
+      if (
+        receiverType.genericSource &&
+        receiverType.typeArguments &&
+        receiverType.typeArguments.length > 0
+      ) {
+        const interned = ctx.checkerContext.getInternedClass(
+          receiverType.genericSource,
+          receiverType.typeArguments,
+        );
+        if (interned) {
+          receiverType = interned;
+        }
+      }
+      let receiverInfo = ctx.getClassInfo(receiverType);
+      if (!receiverInfo && receiverType.typeArguments?.length) {
+        mapCheckerTypeToWasmType(ctx, receiverType);
+        receiverInfo = ctx.getClassInfo(receiverType);
+      }
+      if (
+        receiverInfo &&
+        receiverInfo.fields.has(manglePrivateName(receiverInfo, memberName))
+      ) {
+        classInfo = receiverInfo;
+      }
+    }
+
+    const lookupName = manglePrivateName(classInfo, memberName);
     const fieldInfo = classInfo.fields.get(lookupName);
     if (!fieldInfo) {
       throw new Error(

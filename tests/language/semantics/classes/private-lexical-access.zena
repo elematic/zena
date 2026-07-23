@@ -1,0 +1,50 @@
+// @mode: check
+// Private access is lexical-only (docs/design/member-lookup.md §6):
+// granted by the class the code is written in — any specialization
+// of it, since privacy is unaffected by specialization — never by
+// mere visibility of another class's same-named private, and never
+// from a subclass body (privates are not inherited). A superclass
+// body MAY touch its own private on a subclass-typed receiver: the
+// instance physically carries the ancestor's private state.
+
+class Box<T> {
+  #v: T;
+  new(v: T) : #v = v;
+
+  // Same lexical class, different specialization: allowed.
+  peekI32(other: Box<i32>): i32 {
+    return other.#v;
+  }
+}
+
+class Parent {
+  #p: i32;
+  new() : #p = 3;
+
+  // Own private on a subclass-typed receiver: allowed.
+  probe(c: Child): i32 {
+    return c.#p;
+  }
+}
+
+class Child extends Parent {
+  grab(): i32 {
+    return this.#p; // @error: does not exist on type
+  }
+}
+
+class Outsider {
+  steal(b: Box<i32>): i32 {
+    return b.#v; // @error: does not exist on type
+  }
+}
+
+class Mimic {
+  #v: i32;
+  new() : #v = 9;
+
+  // Same-named private grants nothing: #v here is Mimic::#v.
+  steal(b: Box<i32>): i32 {
+    return b.#v; // @error: does not have private member
+  }
+}

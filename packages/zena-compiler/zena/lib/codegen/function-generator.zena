@@ -312,9 +312,10 @@ export final class FunctionGenerator {
           }
           if (bodyNodes != null) {
             let mixinFields = new Array<FieldDefinition>();
+            let mixinFieldScopes = new Array<String>();
             let seenMixins = new HashMap<MixinKey, boolean>();
             if (mixins != null) {
-              collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, mixins as Array<TypeAnnotation>, mixinFields, seenMixins);
+              collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, mixins as Array<TypeAnnotation>, mixinFields, mixinFieldScopes, seenMixins);
             }
 
             let allFields = new Array<FieldDefinition>();
@@ -743,22 +744,28 @@ export final class FunctionGenerator {
             }
             if (bodyNodes != null) {
               let mixinFields = new Array<FieldDefinition>();
+              let mixinFieldScopes = new Array<String>();
               let seenMixins = new HashMap<MixinKey, boolean>();
               if (mixins != null) {
-                collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, mixins as Array<TypeAnnotation>, mixinFields, seenMixins);
+                collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, mixins as Array<TypeAnnotation>, mixinFields, mixinFieldScopes, seenMixins);
               }
 
               let allFields = new Array<FieldDefinition>();
+              let allFieldScopes = new Array<String>();
               for (let member in bodyNodes as Array<Node>) {
                 if (member is FieldDefinition) {
                   allFields.push(member as FieldDefinition);
+                  allFieldScopes.push("");
                 }
               }
-              for (let fd in mixinFields) {
-                allFields.push(fd);
+              for (var mfi = 0; mfi < mixinFields.length; mfi += 1) {
+                allFields.push(mixinFields[mfi]);
+                allFieldScopes.push(mixinFieldScopes[mfi]);
               }
 
-              for (let fd in allFields) {
+              for (var afi = 0; afi < allFields.length; afi += 1) {
+                let fd = allFields[afi];
+                let fdScope = allFieldScopes[afi];
                 if (fd.value != null && !fd.isStatic) {
                   let fieldName = match (fd.name) {
                     case Identifier {name}: name
@@ -782,7 +789,10 @@ export final class FunctionGenerator {
                     }
                     var fieldIndex = -1;
                     let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
-                      if (this.ctx.wasmFunction.classType != null) {
+                      if (fdScope != "") {
+                        // Mixin private: field named with the mixin's scope key.
+                        fdScope + "::" + actualFieldName
+                      } else if (this.ctx.wasmFunction.classType != null) {
                         getClassPrivateFieldKey(getClassKey(this.ctx.wasmFunction.classType as ClassType), actualFieldName)
                       } else {
                         actualFieldName
@@ -2103,22 +2113,28 @@ export final class FunctionGenerator {
       }
       if (bodyNodes != null) {
         let mixinFields = new Array<FieldDefinition>();
+        let mixinFieldScopes = new Array<String>();
         let seenMixins = new HashMap<MixinKey, boolean>();
         if (mixins != null) {
-          collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, mixins as Array<TypeAnnotation>, mixinFields, seenMixins);
+          collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, mixins as Array<TypeAnnotation>, mixinFields, mixinFieldScopes, seenMixins);
         }
 
         let allFields = new Array<FieldDefinition>();
+        let allFieldScopes = new Array<String>();
         for (let member in bodyNodes as Array<Node>) {
           if (member is FieldDefinition) {
             allFields.push(member as FieldDefinition);
+            allFieldScopes.push("");
           }
         }
-        for (let fd in mixinFields) {
-          allFields.push(fd);
+        for (var mfi = 0; mfi < mixinFields.length; mfi += 1) {
+          allFields.push(mixinFields[mfi]);
+          allFieldScopes.push(mixinFieldScopes[mfi]);
         }
 
-        for (let fd in allFields) {
+        for (var afi = 0; afi < allFields.length; afi += 1) {
+          let fd = allFields[afi];
+          let fdScope = allFieldScopes[afi];
           if (fd.value != null && !fd.isStatic) {
             let fieldName = match (fd.name) {
               case Identifier {name}: name
@@ -2131,7 +2147,12 @@ export final class FunctionGenerator {
             };
             if (fieldName != "") {
               let lookupName = if (fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#") {
-                getClassPrivateFieldKey(getClassKey(classType), fieldName)
+                if (fdScope != "") {
+                  // Mixin private: field named with the mixin's scope key.
+                  fdScope + "::" + fieldName
+                } else {
+                  getClassPrivateFieldKey(getClassKey(classType), fieldName)
+                }
               } else {
                 fieldName
               };
@@ -2206,20 +2227,26 @@ export final class FunctionGenerator {
     if (classDecl != null && classDecl is ClassDeclaration) {
       let cd = classDecl as ClassDeclaration;
       let mixinFields = new Array<FieldDefinition>();
+      let mixinFieldScopes = new Array<String>();
       let seenMixins = new HashMap<MixinKey, boolean>();
-      collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, cd.mixins, mixinFields, seenMixins);
+      collectMixinFields(this.ctx.wasm.program as Program, this.ctx.wasmFunction.model, cd.mixins, mixinFields, mixinFieldScopes, seenMixins);
 
       let allFields = new Array<FieldDefinition>();
+      let allFieldScopes = new Array<String>();
       for (let member in cd.body) {
         if (member is FieldDefinition) {
           allFields.push(member as FieldDefinition);
+          allFieldScopes.push("");
         }
       }
-      for (let fd in mixinFields) {
-        allFields.push(fd);
+      for (var mfi = 0; mfi < mixinFields.length; mfi += 1) {
+        allFields.push(mixinFields[mfi]);
+        allFieldScopes.push(mixinFieldScopes[mfi]);
       }
 
-      for (let fd in allFields) {
+      for (var afi = 0; afi < allFields.length; afi += 1) {
+        let fd = allFields[afi];
+        let fdScope = allFieldScopes[afi];
         if (fd.value != null && !fd.isStatic) {
           let fieldName = match (fd.name) {
             case Identifier {name}: name
@@ -2235,7 +2262,12 @@ export final class FunctionGenerator {
             }
             var fieldIndex = -1;
             let lookupName = if (actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#") {
-              getClassPrivateFieldKey(getClassKey(cType), actualFieldName)
+              if (fdScope != "") {
+                // Mixin private: field named with the mixin's scope key.
+                fdScope + "::" + actualFieldName
+              } else {
+                getClassPrivateFieldKey(getClassKey(cType), actualFieldName)
+              }
             } else {
               actualFieldName
             };

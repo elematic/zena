@@ -97,48 +97,33 @@ immediately trying to fix it (which can pollute the current task's context).
   index resolution). Spec is context-sensitive resolution with an
   ambiguity error when no context exists (member-lookup.md §7/§9.3).
 
-### Mixin private names collide with host-class privates (semantics gap)
+
+### Mixin private METHODS collide with host-class private methods
 - **Found**: 2026-07-22
-- **Severity**: medium (silent state corruption when names collide)
-- **Workaround**: avoid giving a host class a private field with the
-  same name as any private in an applied mixin.
-- **Details**: A mixin's private member and a host class's same-named
-  private collapse into ONE members-map entry and one struct field, so
-  mixin code and host code mutate each other's "private" state, and
-  the mixin's field initializer clobbers the host's:
+- **Severity**: low (private methods in mixins are rare so far)
+- **Workaround**: avoid giving a host class a private METHOD with the
+  same name as a private method in an applied mixin.
+- **Details**: Private FIELDS were fixed (see Fixed Bugs: "Mixin
+  private fields collide..."), but private mixin METHODS still share
+  the host's members-map entry and registration key
+  ("<HostKey>::#helper"), so a host and mixin same-named private
+  method still collapse. The fix should extend the private-scope-key
+  scheme (ClassType.privateScopeKey / WasmFunction.privateScopeKey)
+  to method registration and the private-call paths in both backends.
+  (Field scope keys include the declaration's source path, so
+  same-named mixins from different modules are already distinct for
+  fields; the method fix should reuse that key.)
 
-  ```zena
-  mixin Counter {
-    var #count: i32 = 0;
-    bump(): i32 { this.#count += 1; return this.#count; }
-  }
-  class HostB with Counter {
-    var #count: i32 = 100;
-    new();
-    hostCount(): i32 { return this.#count; }
-  }
-  // new HostB(): bump(); hostCount() returns 1 — expected 100.
-  ```
-
-  Both compilers and backends agree (the collapse happens in the
-  members map before codegen), and no execution test covered mixin
-  privates until tests/language/execution/mixins/private_names.zena
-  pinned the current behavior.
-
-  INTENDED SEMANTICS (per review discussion): private names are
-  lexically scoped to the mixin, shared across applications — like
-  classes, and unlike the JS mixin pattern where each application is a
-  fresh class with unshared private brands. Code written in the mixin
-  sees the mixin's #x in every application; host code sees the host's
-  #x; the two never alias. Implementation sketch: namespace mixin
-  private members distinctly in the members map (e.g. keyed by mixin
-  identity), mangle their struct fields with the MIXIN's key
-  (Counter::#count) while host privates keep the class key, and
-  resolve private accesses by lexical origin — the struct-driven
-  resolver from the ZIR work (WasmStruct.resolvePrivateFieldName)
-  extends naturally once the mixin is representable as a declaring
-  scope. Checker-first change; both backends inherit it.
-
+### Self-hosted checker does not narrow a loop var through a compound while condition
+- **Found**: 2026-07-22
+- **Severity**: low (forces redundant casts; bootstrap accepts the code)
+- **Workaround**: cast inside the loop body (`(r as ClassType).x`).
+- **Details**: The bootstrap checker narrows `r` in the body of
+  `while (r != null && !done) { r.member; r = r.next; }` for
+  `var r: T | null`; the self-hosted checker reports "Object may be
+  null", a checker divergence. Hit in checker.zena's private-access
+  receiver walk (see the "no narrowing through compound while"
+  comment there).
 
 ### Checker does not narrow after calls to never-returning functions
 - **Found**: 2026-07-21
@@ -270,6 +255,26 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Details**: When you declare `class Symbol` in a module, it should shadow the built-in `Symbol` type within that module's scope. Instead, references to `Symbol` still resolve to the built-in type, causing errors like "Property 'name' does not exist on type 'Symbol'". This affects any class name that collides with built-in types.
 
 ## Fixed Bugs
+
+### Mixin private fields collide with host-class privates
+- **Found**: 2026-07-22; **Fixed**: 2026-07-22 (self-hosted; the
+  bootstrap never collided)
+- **Details**: A mixin's private field and a host class's same-named
+  private collapsed into one members-map entry and one struct field
+  in the self-hosted compiler, so mixin and host code silently
+  mutated each other's state. Fixed with a private scope key: the
+  checker stores mixin private fields in host members maps under
+  "<scopeKey>::#name" where the scope key is the mixin's name plus
+  its source path (the MixinKey identity — names alone are not
+  unique; composed mixins keep the inner mixin's scope), codegen
+  names struct fields identically, functions compiled
+  from mixin bodies carry WasmFunction.privateScopeKey and resolve
+  "#" fields under it in both backends. Mixin privates are lexical to
+  the mixin declaration and shared across applications
+  (member-lookup.md §6); same-named host/mixin privates coexist even
+  with different types. Pinned by
+  tests/language/execution/mixins/private_names.zena (3120, all
+  compiler/backend combos).
 
 ### Stack overflow in emitter for large WASM output
 

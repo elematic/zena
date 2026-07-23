@@ -6356,7 +6356,24 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               continue;
             }
             let subType = substituteTypeParams(mt.typeParameters, mt.typeArguments, mtMember.type);
-            classType.members[key] = match (mtMember) {
+            // Mixin private FIELDS are stored under a mixin-scoped
+            // key ("<scopeKey>::#name") so they never collide with a
+            // host class's same-named private: privacy is lexical to
+            // the mixin declaration, and code in mixin bodies reaches
+            // these through the mixin's This type (whose
+            // privateScopeKey matches). Private methods are not yet
+            // namespaced this way (tracked in BUGS.md).
+            var storeKey = key;
+            if (mtMember is FieldInfo && key.length > 0 &&
+                key.sliceBytes(0, 1) == "#") {
+              let scope = (mt.genericSource ?? mt).privateScopeKey;
+              storeKey = if (scope != null) {
+                (scope as String) + "::" + key
+              } else {
+                mt.name + "_This::" + key
+              };
+            }
+            classType.members[storeKey] = match (mtMember) {
               case FieldInfo as fi: {
                 new FieldInfo(
                   subType,
@@ -8173,10 +8190,24 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       match (composedType) {
         case MixinType as composedMixin: {
           mixinType.mixins.push(composedMixin);
-          // Copy members from composed mixin.
+          // Copy members from composed mixin. Composed private FIELDS
+          // keep the COMPOSED mixin's private scope key: privacy is
+          // lexical to the declaring mixin, so the composing mixin's
+          // body cannot see them and applications name their struct
+          // fields with the inner mixin's scope.
           for (let key in composedMixin.members.keys()) {
             if (let (true, mInfo) = composedMixin.members.get(key)) {
-              mixinType.members[key] = mInfo;
+              var composedKey = key;
+              if (mInfo is FieldInfo && key.length > 0 &&
+                  key.sliceBytes(0, 1) == "#") {
+                let scope = (composedMixin.genericSource ?? composedMixin).privateScopeKey;
+                composedKey = if (scope != null) {
+                  (scope as String) + "::" + key
+                } else {
+                  composedMixin.name + "_This::" + key
+                };
+              }
+              mixinType.members[composedKey] = mInfo;
             }
           }
         }
@@ -8195,6 +8226,20 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
 
   // 1. Create a synthetic ClassType for "this" inside the mixin early
   let thisType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, mixinName + "_This");
+  // Mixin privates are lexically scoped to the mixin declaration and
+  // shared across applications (member-lookup.md §6). This key
+  // namespaces the mixin's private FIELDS inside every host class:
+  // the checker stores them under "<scopeKey>::#name" at application
+  // and codegen names the struct fields identically, so host and
+  // mixin same-named privates never collide. Names alone are not
+  // unique, so the key is the same identity MixinKey uses — the
+  // declaration's name plus its source path — making two same-named
+  // mixins from different modules distinct scopes. Every consumer
+  // reads the key from the MixinType / This type (never rederives it
+  // from the name).
+  let mixinScopeKey = mixinName + "_This@" + mixinType.sourcePath;
+  thisType.privateScopeKey = mixinScopeKey;
+  mixinType.privateScopeKey = mixinScopeKey;
   
   let onType = mixinType.onType;
   if (onType != null) {
@@ -8814,7 +8859,7 @@ let checkMemberExpression = (
   }
 
   // Unwrap union types for optional chaining.
-  var baseType_: Type = objectType;
+  var receiverType: Type = objectType;
   var isNullable = false;
   match (objectType) {
     case UnionT {types}: {
@@ -8830,16 +8875,64 @@ let checkMemberExpression = (
         ui = ui + 1;
       }
       if (nonNull.length == 1) {
-        baseType_ = nonNull[0];
+        receiverType = nonNull[0];
       } else if (nonNull.length > 1) {
-        baseType_ = new UnionT(nonNull);
+        receiverType = new UnionT(nonNull);
       }
     }
     case NullType: { isNullable = true; }
     case _: {}
   }
 
-  let resultType = resolveMemberType(ctx, baseType_, propName, loc);
+  // Private access is lexical-only (docs/design/member-lookup.md §6):
+  // the enclosing class must itself declare the private, and the
+  // receiver must be that same lexical class — any specialization of
+  // it, since privacy is unaffected by specialization — or a subclass
+  // instance, which physically carries the ancestor's private state.
+  // Receivers that are not plain class types (type parameters, mixin
+  // This) are left to the receiver-side member lookup below.
+  if (propName.length > 0 && propName.sliceBytes(0, 1) == "#" &&
+      ctx.currentClass != null && !(receiverType is ErrorType)) {
+    let cur = ctx.currentClass as ClassType;
+    if (!cur.members.has(propName) &&
+        !cur.members.has("get#" + propName) &&
+        !cur.members.has("set#" + propName)) {
+      ctx.error(
+        "Property '" + propName + "' does not exist on type '" + cur.name + "'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    if (receiverType is ClassType) {
+      // The receiver shares the lexical class when its own class —
+      // or any superclass, for subclass instances carrying an
+      // ancestor's private state — is a specialization of it.
+      let lexicalCanonical = cur.canonical();
+      var shares = false;
+      var r: ClassType | null = receiverType as ClassType;
+      while (r != null && !shares) {
+        // Casts: the self-hosted checker does not narrow the loop
+        // var through a compound while condition (bootstrap does) —
+        // see BUGS.md "no narrowing through compound while".
+        if ((r as ClassType).canonical() == lexicalCanonical) {
+          shares = true;
+        }
+        r = (r as ClassType).superType;
+      }
+      if (!shares) {
+        ctx.error(
+          "Type '" + typeToString(receiverType) + "' does not have private member '" +
+            propName + "' from class '" + cur.name + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        return new ErrorType();
+      }
+    }
+  }
+
+  let resultType = resolveMemberType(ctx, receiverType, propName, loc);
 
   if (isNullable && !optional) {
     ctx.error(

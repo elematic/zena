@@ -704,7 +704,8 @@ export let collectMixinMembers = (
   model: SemanticModel,
   mixinAnns: Array<TypeAnnotation> | null,
   methods: Array<Node>,
-  seen: HashMap<MixinKey, boolean>
+  seen: HashMap<MixinKey, boolean>,
+  scopes: Array<String> | null = null
 ): void => {
   if (mixinAnns == null) { return; }
   for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
@@ -717,10 +718,25 @@ export let collectMixinMembers = (
           let mixinKey = getMixinKey(mt as MixinType);
           if (!seen.has(mixinKey)) {
             seen[mixinKey] = true;
-            collectMixinMembers(program, model, (md as MixinDeclaration).mixins, methods, seen);
+            collectMixinMembers(program, model, (md as MixinDeclaration).mixins, methods, seen, scopes);
+            // The mixin's private scope key, parallel to `methods`
+            // when the caller asks for it: functions compiled from
+            // these nodes resolve their "#" fields under this scope
+            // (see WasmFunction.privateScopeKey). Read from the
+            // MixinType — the key includes the declaration's source
+            // path, so it is never rederived from the name.
+            let mtRoot = (mt as MixinType).genericSource ?? (mt as MixinType);
+            let scope = if (mtRoot.privateScopeKey != null) {
+              mtRoot.privateScopeKey as String
+            } else {
+              (mt as MixinType).name + "_This"
+            };
             for (let member in (md as MixinDeclaration).body) {
               if (member is MethodDefinition || member is AccessorDeclaration || member is FieldDefinition) {
                 methods.push(member);
+                if (scopes != null) {
+                  (scopes as Array<String>).push(scope);
+                }
               }
             }
           }
@@ -735,6 +751,7 @@ export let collectMixinFields = (
   model: SemanticModel,
   mixinAnns: Array<TypeAnnotation> | null,
   fields: Array<FieldDefinition>,
+  scopes: Array<String>,
   seen: HashMap<MixinKey, boolean>
 ): void => {
   if (mixinAnns == null) { return; }
@@ -748,10 +765,22 @@ export let collectMixinFields = (
           let mixinKey = getMixinKey(mt as MixinType);
           if (!seen.has(mixinKey)) {
             seen[mixinKey] = true;
-            collectMixinFields(program, model, (md as MixinDeclaration).mixins, fields, seen);
+            collectMixinFields(program, model, (md as MixinDeclaration).mixins, fields, scopes, seen);
+            // The mixin's private-field scope key: struct fields for
+            // this mixin's privates are named "<scope>::#name" in
+            // every host (see ClassType.privateScopeKey). Empty for
+            // public fields' purposes — callers only apply it to
+            // "#"-prefixed names.
+            let mtRoot = (mt as MixinType).genericSource ?? (mt as MixinType);
+            let scope = if (mtRoot.privateScopeKey != null) {
+              mtRoot.privateScopeKey as String
+            } else {
+              (mt as MixinType).name + "_This"
+            };
             for (let member in (md as MixinDeclaration).body) {
               if (member is FieldDefinition) {
                 fields.push(member as FieldDefinition);
+                scopes.push(scope);
               }
             }
           }

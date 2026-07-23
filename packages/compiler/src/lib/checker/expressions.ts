@@ -3947,7 +3947,38 @@ function checkMemberExpression(
       return Types.Error;
     }
 
-    if (!isAssignableTo(ctx, objectType, ctx.currentClass)) {
+    // Privacy is lexical (docs/design/member-lookup.md §6): all
+    // specializations of one generic class share the lexical class,
+    // so a Cell<i32> method may touch the privates of a Cell<Tag>.
+    // Accept receivers whose canonical (template) class matches the
+    // current class's anywhere on their superclass chain;
+    // isAssignableTo covers the plain subclass-instance case.
+    const lexicalClass = ctx.currentClass;
+    const canonicalOf = (ct: ClassType): ClassType => {
+      let c = ct;
+      while (c.genericSource) c = c.genericSource;
+      return c;
+    };
+    // Returns the entry on the receiver's superclass chain that IS a
+    // specialization of the lexical class (possibly the receiver
+    // itself), or undefined when the receiver does not share it.
+    const receiverLexicalClass = (): ClassType | undefined => {
+      if (objectType.kind !== TypeKind.Class) return undefined;
+      const target = canonicalOf(lexicalClass);
+      for (
+        let r: ClassType | undefined = objectType as ClassType;
+        r !== undefined;
+        r = r.superType
+      ) {
+        if (canonicalOf(r) === target) return r;
+      }
+      return undefined;
+    };
+    const receiverLexical = receiverLexicalClass();
+    if (
+      !isAssignableTo(ctx, objectType, ctx.currentClass) &&
+      receiverLexical === undefined
+    ) {
       ctx.diagnostics.reportError(
         `Type '${typeToString(objectType)}' does not have private member '${memberName}' from class '${ctx.currentClass.name}'.`,
         DiagnosticCode.TypeMismatch,
@@ -3955,6 +3986,14 @@ function checkMemberExpression(
       );
       return Types.Error;
     }
+
+    // Resolve the member's type against the receiver's own
+    // specialization of the lexical class, so a Cell<i32> receiver
+    // yields i32 for #value even from a Cell<Tag> method body.
+    const privateOwner =
+      receiverLexical !== undefined && receiverLexical.fields
+        ? receiverLexical
+        : ctx.currentClass;
 
     // Determine if this is static field access:
     // - Object is an Identifier that resolves to a class binding (e.g., ClassName.#field)
@@ -3965,8 +4004,11 @@ function checkMemberExpression(
       ctx.semanticContext.getResolvedBinding(expr.object)?.kind === 'class';
 
     if (ctx.currentClass.fields.has(memberName)) {
-      const fieldType = ctx.currentClass.fields.get(memberName)!;
-      const resolvedType = resolveMemberType(ctx.currentClass, fieldType, ctx);
+      const owner = privateOwner.fields.has(memberName)
+        ? privateOwner
+        : ctx.currentClass;
+      const fieldType = owner.fields.get(memberName)!;
+      const resolvedType = resolveMemberType(owner, fieldType, ctx);
 
       // Check for narrowed type based on the full path (e.g., "obj.#field")
       const path = getExpressionPath(expr, ctx);
@@ -3985,12 +4027,16 @@ function checkMemberExpression(
       return wrapResult(finalType);
     }
 
-    const methodType = ctx.currentClass.methods.get(memberName)!;
+    const methodOwner =
+      privateOwner.methods && privateOwner.methods.has(memberName)
+        ? privateOwner
+        : ctx.currentClass;
+    const methodType = methodOwner.methods.get(memberName)!;
 
     // Store private method binding
     const binding: MethodBinding = {
       kind: 'method',
-      classType: ctx.currentClass,
+      classType: methodOwner,
       methodName: memberName,
       isStaticDispatch: true, // Private methods are always static dispatch
       type: methodType,

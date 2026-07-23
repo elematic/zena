@@ -321,22 +321,26 @@ export final class Specializer implements SpecializerInterface {
 
     // 4. Populate VTable slots and structs
     let mixinMembers = new Array<Node>();
+    let mixinScopes = new Array<String>();
     let seenMixins = new HashMap<MixinKey, boolean>();
     let classDeclCd = if (classDecl != null && classDecl is ClassDeclaration) classDecl as ClassDeclaration else null;
     if (classDeclCd != null) {
-      collectMixinMembers(this.pass.program, sourceModel, classDeclCd.mixins, mixinMembers, seenMixins);
+      collectMixinMembers(this.pass.program, sourceModel, classDeclCd.mixins, mixinMembers, seenMixins, mixinScopes);
     }
 
     let allMembers = new Array<Node>();
+    let allScopes = new Array<String>();
     if (classDeclCd != null) {
       for (let ms in classDeclCd.body) {
         allMembers.push(ms);
+        allScopes.push("");
       }
     }
     
 
-    for (let ms in mixinMembers) {
-      allMembers.push(ms);
+    for (var mmi = 0; mmi < mixinMembers.length; mmi += 1) {
+      allMembers.push(mixinMembers[mmi]);
+      allScopes.push(mixinScopes[mmi]);
     }
 
     for (let ms in allMembers) {
@@ -451,7 +455,13 @@ export final class Specializer implements SpecializerInterface {
     }
 
     // 5. Register specialized methods
+    var msIdx = -1;
     for (let ms in allMembers) {
+      msIdx += 1;
+      // Mixin-declared members get the mixin's private scope key so
+      // their bodies resolve "#" fields to the mixin's namespaced
+      // struct fields (WasmFunction.privateScopeKey).
+      let msScope = allScopes[msIdx];
 
       if (ms is MethodDefinition) {
         let method = ms as MethodDefinition;
@@ -468,7 +478,8 @@ export final class Specializer implements SpecializerInterface {
           }
           case _: "<unknown>"
         };
-        this.registerClassMethod(ct, classDecl, methName, method as Node, false, false, null, sourceModel);
+        let regFn = this.registerClassMethod(ct, classDecl, methName, method as Node, false, false, null, sourceModel);
+        if (msScope != "") { regFn.privateScopeKey = msScope; }
       } else if (ms is AccessorDeclaration) {
         let acc = ms as AccessorDeclaration;
         let accName = match (acc.name) {
@@ -481,10 +492,12 @@ export final class Specializer implements SpecializerInterface {
           case _: "<unknown>"
         };
         if (acc.getter != null) {
-          this.registerClassMethod(ct, classDecl, "get#" + accName, acc as Node, false, false, null, sourceModel);
+          let regG = this.registerClassMethod(ct, classDecl, "get#" + accName, acc as Node, false, false, null, sourceModel);
+          if (msScope != "") { regG.privateScopeKey = msScope; }
         }
         if (acc.setter != null) {
-          this.registerClassMethod(ct, classDecl, "set#" + accName, acc.setter as Node, false, false, null, sourceModel);
+          let regS = this.registerClassMethod(ct, classDecl, "set#" + accName, acc.setter as Node, false, false, null, sourceModel);
+          if (msScope != "") { regS.privateScopeKey = msScope; }
         }
       } else if (ms is FieldDefinition) {
         let fd = ms as FieldDefinition;
@@ -1095,18 +1108,25 @@ export final class Specializer implements SpecializerInterface {
     let cdDecl = if (cd != null && cd is ClassDeclaration) cd as ClassDeclaration else null;
     if (cdDecl != null) {
       let mixinMembers = new Array<Node>();
+      let mixinScopes = new Array<String>();
       let seenMixins = new HashMap<MixinKey, boolean>();
-      collectMixinMembers(this.pass.program, sourceModel, cdDecl.mixins, mixinMembers, seenMixins);
+      collectMixinMembers(this.pass.program, sourceModel, cdDecl.mixins, mixinMembers, seenMixins, mixinScopes);
 
       let allMembers = new Array<Node>();
+      let allScopes = new Array<String>();
       for (let ms in cdDecl.body) {
         allMembers.push(ms);
+        allScopes.push("");
       }
-      for (let ms in mixinMembers) {
-        allMembers.push(ms);
+      for (var mmi = 0; mmi < mixinMembers.length; mmi += 1) {
+        allMembers.push(mixinMembers[mmi]);
+        allScopes.push(mixinScopes[mmi]);
       }
 
+      var msIdx = -1;
       for (let ms in allMembers) {
+        msIdx += 1;
+        let msScope = allScopes[msIdx];
         if (ms is MethodDefinition) {
           let mDef = ms as MethodDefinition;
           if (mDef.isAbstract) { continue; }
@@ -1139,7 +1159,8 @@ export final class Specializer implements SpecializerInterface {
               ctVtable.push(vtableMethName);
               vtableSet.add(vtableMethName);
             }
-            this.registerClassMethod(ct, cdDecl, methName, mDef, false, false, null, sourceModel);
+            let regFn = this.registerClassMethod(ct, cdDecl, methName, mDef, false, false, null, sourceModel);
+            if (msScope != "") { regFn.privateScopeKey = msScope; }
           }
         } else if (ms is AccessorDeclaration) {
           let acc = ms as AccessorDeclaration;
@@ -1160,7 +1181,8 @@ export final class Specializer implements SpecializerInterface {
                 ctVtable.push(getterName);
                 vtableSet.add(getterName);
               }
-              this.registerClassMethod(ct, cdDecl, getterName, acc as Node, false, false, null, sourceModel);
+              let regG = this.registerClassMethod(ct, cdDecl, getterName, acc as Node, false, false, null, sourceModel);
+              if (msScope != "") { regG.privateScopeKey = msScope; }
             }
             if (acc.setter != null) {
               let setterName = "set#" + accName;
@@ -1168,7 +1190,8 @@ export final class Specializer implements SpecializerInterface {
                 ctVtable.push(setterName);
                 vtableSet.add(setterName);
               }
-              this.registerClassMethod(ct, cdDecl, setterName, acc.setter as Node, false, false, null, sourceModel);
+              let regS = this.registerClassMethod(ct, cdDecl, setterName, acc.setter as Node, false, false, null, sourceModel);
+              if (msScope != "") { regS.privateScopeKey = msScope; }
             }
           }
         } else if (ms is FieldDefinition) {
@@ -1332,7 +1355,12 @@ export final class Specializer implements SpecializerInterface {
         }
       }
       if (!isInherited) {
-        let fName = if (pair.key.length > 0 && pair.key.sliceBytes(0, 1) == "#") {
+        let fName = if (pair.key.contains("::#")) {
+          // Mixin private fields arrive pre-scoped from the checker
+          // ("<mixinScopeKey>::#name") — the member key IS the field
+          // name, shared by every application of the mixin.
+          pair.key
+        } else if (pair.key.length > 0 && pair.key.sliceBytes(0, 1) == "#") {
           getClassPrivateFieldKey(cKey, pair.key)
         } else {
           pair.key

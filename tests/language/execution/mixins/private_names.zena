@@ -1,14 +1,13 @@
 // @mode: run
-// @result: 3022
-// PINS CURRENT (WRONG) BEHAVIOR — see BUGS.md "Mixin private names
-// collide with host-class privates". A mixin's #count and a host
-// class's #count collapse into one field today, so b.bump() reads 2
-// (host state corrupted by mixin code) and hostCount() returns the
-// shared counter instead of 100. Under the intended semantics
-// (mixin privates lexically scoped to the mixin, like classes, NOT
-// per-application like the JS mixin pattern) this program returns
-// 3120: a.bump()x3 -> 3, b.bump()x2 on the MIXIN's counter -> 2,
-// b.hostCount() -> 100. Update @result when the semantics land.
+// @result: 3120
+// Mixin privates are lexically scoped to the MIXIN declaration and
+// shared across applications — like classes, unlike the JS mixin
+// pattern where each application mints fresh private names
+// (docs/design/member-lookup.md §6). A host class's same-named
+// private is a DIFFERENT field: mixin code sees the mixin's #count,
+// host code sees the host's, and they never alias — so
+// a.bump()x3 -> 3, b.bump()x2 on the mixin's counter -> 2, and
+// b.hostCount() -> 100 (host state untouched by mixin code).
 
 mixin Counter {
   var #count: i32 = 0;

@@ -347,12 +347,26 @@ export let generateMemberExpression = (
         var fieldIndex = -1;
         let propName = getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
         let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
-          // Struct-driven resolution: shared structs carry the
-          // template's mangled names, per-specialization structs the
-          // specialized class's — the struct itself knows which.
-          let resolved = structInfo.resolvePrivateFieldName(ct, propName);
-          if (resolved != null) resolved as String
-          else getClassPrivateFieldKey(ctKey, propName)
+          // Functions compiled from a mixin body resolve privates
+          // under the mixin's scope key ("<Mixin>_This::#x") — mixin
+          // privates are lexical to the mixin declaration and never
+          // alias a host's same-named private.
+          let mixScope = ctx.wasmFunction.privateScopeKey;
+          let scopedName = if (mixScope != null) {
+            (mixScope as String) + "::" + propName
+          } else {
+            ""
+          };
+          if (scopedName != "" && structInfo.fieldIndexByName(scopedName) >= 0) {
+            scopedName
+          } else {
+            // Struct-driven resolution: shared structs carry the
+            // template's mangled names, per-specialization structs the
+            // specialized class's — the struct itself knows which.
+            let resolved = structInfo.resolvePrivateFieldName(ct, propName);
+            if (resolved != null) resolved as String
+            else getClassPrivateFieldKey(ctKey, propName)
+          }
         } else {
           propName
         };

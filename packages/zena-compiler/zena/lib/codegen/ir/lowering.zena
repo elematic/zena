@@ -3132,6 +3132,17 @@ final class FunctionLowerer {
    * accessed from copied method bodies).
    */
   #privateLookupName(st: WasmStruct, ct: ClassType, propName: String): String | null {
+    // Functions compiled from a mixin body resolve privates under the
+    // mixin's scope key ("<Mixin>_This::#x") — mixin privates are
+    // lexical to the mixin declaration and never alias a host's
+    // same-named private (WasmFunction.privateScopeKey).
+    let mixScope = this.func.privateScopeKey;
+    if (mixScope != null) {
+      let scopedName = (mixScope as String) + "::" + propName;
+      if (st.fieldIndexByName(scopedName) >= 0) {
+        return scopedName;
+      }
+    }
     // Shared with the streaming backend: struct field names carry the
     // key of whatever class the struct was BUILT for, so the struct
     // itself resolves, lexically disambiguated.

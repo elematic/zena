@@ -178,6 +178,14 @@ export final class ClassType extends Type {
   var cachedParams: Array<TypeParameterType> | null = null;
   var cachedArgs: Array<Type> | null = null;
   /**
+   * For the synthetic `This` class of a mixin declaration: the scope
+   * key under which the mixin's private fields are namespaced in
+   * every host class that applies it (shared across applications —
+   * mixin privates are lexical to the mixin declaration). Null for
+   * ordinary classes.
+   */
+  var privateScopeKey: String | null = null;
+  /**
    * Memoized results of substituteTypeParamsInClassContext for this class,
    * keyed by input type identity (codegen/type-mapping.zena).
    */
@@ -222,6 +230,20 @@ export final class ClassType extends Type {
   // of these fields immutable as possible instead of reassigning them in
   // `instantiateClassType`.
   new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super();
+
+  /**
+   * The original declaration this class was instantiated from:
+   * follows genericSource to the root. Specializations of one
+   * generic class compare equal through this; a non-generic class is
+   * its own canonical.
+   */
+  canonical(): ClassType {
+    var c = this;
+    while (c.genericSource != null) {
+      c = c.genericSource as ClassType;
+    }
+    return c;
+  }
 }
 
 let substituteInType = (
@@ -715,6 +737,13 @@ export final class MixinType extends Type {
   var sourcePath: String = "";
   var mixins: Array<MixinType> = new Array<MixinType>();
   var mixinKeyCache: MixinKey | null = null;
+  /**
+   * Scope key namespacing this mixin's private fields in host
+   * classes (see ClassType.privateScopeKey). Set at mixin
+   * registration on the declaration's MixinType; instantiations
+   * reach it through genericSource.
+   */
+  var privateScopeKey: String | null = null;
   instantiations = new HashMap<String, MixinType>();
 
   new(name: String) : name = name, super();

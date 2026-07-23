@@ -6,7 +6,7 @@ import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
 import { WasmFunction, WasmArray, WasmStruct, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
-import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getNodeType, typeToValTypeWithSub } from '../type-mapping.zena';
+import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getNodeType, typeToValTypeWithSub, eraseTypeParameters } from '../type-mapping.zena';
 import { ValTypeRefNull, ValTypeRef, ValType, ValTypeStructRef, valTypeEquals, HeapType, heapTypeToSigned } from '../wasm.zena';
 import { castValTypeRefNullIfNeeded } from './calls.zena';
 
@@ -292,10 +292,23 @@ export let generateAssignmentExpression = (
         let propName = getMemberPropertyName(memExpr.isSymbolAccess, memExpr.property.name);
         var fieldIndex = -1;
         let lookupName = if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
-          // Struct-driven resolution (see WasmStruct.resolvePrivateFieldName).
-          let resolved = structInfo.resolvePrivateFieldName(ct, propName);
-          if (resolved != null) resolved as String
-          else getClassPrivateFieldKey(ctKey, propName)
+          // Functions compiled from a mixin body resolve privates
+          // under the mixin's scope key ("<Mixin>_This::#x") — see
+          // WasmFunction.privateScopeKey.
+          let mixScope = ctx.wasmFunction.privateScopeKey;
+          let scopedName = if (mixScope != null) {
+            (mixScope as String) + "::" + propName
+          } else {
+            ""
+          };
+          if (scopedName != "" && structInfo.fieldIndexByName(scopedName) >= 0) {
+            scopedName
+          } else {
+            // Struct-driven resolution (see WasmStruct.resolvePrivateFieldName).
+            let resolved = structInfo.resolvePrivateFieldName(ct, propName);
+            if (resolved != null) resolved as String
+            else getClassPrivateFieldKey(ctKey, propName)
+          }
         } else {
           propName
         };

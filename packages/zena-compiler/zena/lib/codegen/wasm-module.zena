@@ -249,11 +249,19 @@ export final class WasmStruct extends WasmType {
       while (l != null) {
         var g: ClassType | null = l as ClassType;
         while (g != null) {
-          let key = getClassPrivateFieldKey(getClassKey(g as ClassType), propName);
+          // A mixin's This class namespaces its private fields with
+          // the mixin's scope key (ClassType.privateScopeKey), shared
+          // by all applications of the mixin.
+          let gc = g as ClassType;
+          let key = if (gc.privateScopeKey != null) {
+            getClassPrivateFieldKey(gc.privateScopeKey as String as ClassKey, propName)
+          } else {
+            getClassPrivateFieldKey(getClassKey(gc), propName)
+          };
           if (this.fieldIndexByName(key) >= 0) {
             return key;
           }
-          g = (g as ClassType).genericSource;
+          g = gc.genericSource;
         }
         l = (l as ClassType).superType;
       }
@@ -413,6 +421,15 @@ export final class WasmFunction implements Hashable {
   var importName: String | null = null;
   var isCaseClassEq: boolean = false;
   var isCaseClassHash: boolean = false;
+  /**
+   * Set on functions compiled from a mixin declaration's body: the
+   * mixin's private scope key ("<Mixin>_This"). Private field
+   * accesses in such functions resolve to "<scope>::#name" struct
+   * fields — mixin privates are lexical to the mixin declaration and
+   * never alias a host class's same-named private. Null for
+   * functions written in a class body.
+   */
+  var privateScopeKey: String | null = null;
   /** The target class struct for a synthesized field getter. */
   var getterStruct: WasmStruct | null = null;
   /** The index of the field in the class struct for the synthesized getter. */
