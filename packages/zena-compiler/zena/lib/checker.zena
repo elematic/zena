@@ -6241,7 +6241,10 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         // Inherit members from superclass.
         let memberKeys = st.members.keys();
         while (let (true, key) = memberKeys.next()) {
-          if (key.length == 0 || key.sliceBytes(0, 1) != "#") {
+          // Privates are never inherited: skip "#..." members and the
+          // get##/set## entries of private accessors.
+          if ((key.length == 0 || key.sliceBytes(0, 1) != "#") &&
+              !key.startsWith("get##") && !key.startsWith("set##")) {
             let parentMember = st.members[key];
             let subType = substituteTypeParams(st.typeParameters, st.typeArguments, parentMember.type);
             classType.members[key] = match (parentMember) {
@@ -6340,7 +6343,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           let memberKeys = mt.members.keys();
           while (let (true, key) = memberKeys.next()) {
             let mtMember = mt.members[key];
-            let isPrivateKey = key.length > 0 && key.sliceBytes(0, 1) == "#";
+            let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
+                key.startsWith("get##") || key.startsWith("set##");
             if (mtMember is MethodInfo && !isPrivateKey) {
               if (classType.members.has(key)) {
                 let existingMember = classType.members[key];
@@ -8371,27 +8375,49 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           case _: "<unknown>"
          };
         let isPrivate = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
-        let fdInfo = new FieldInfo(
-          accType,
-          false, // isMutable
-          false, // isAbstract
-          acc.isStatic,
-          isPrivate,
-          false // hasInitializer
-        );
-        mixinType.members[accName] = fdInfo;
-        thisType.members[accName] = fdInfo;
-        if (acc.getter != null) {
-          let getterFt = new FunctionType(new Array<Type>(), null, accType);
-          let mi = new MethodInfo(
-            getterFt,
+        if (isPrivate) {
+          // Private accessors register only their get#/set# methods,
+          // like class accessors: no bare-name entry (a bare
+          // FieldInfo would create a phantom struct field at
+          // application, and the bare getter-MethodInfo mistyped
+          // reads as '() => T').
+          if (acc.getter != null) {
+            let getterFt = new FunctionType(new Array<Type>(), null, accType);
+            let gi = new MethodInfo(getterFt, false, acc.isStatic, true, acc.isFinal);
+            mixinType.members["get#" + accName] = gi;
+            thisType.members["get#" + accName] = gi;
+          }
+          if (acc.setter != null) {
+            let setterParams = new Array<Type>();
+            setterParams.push(accType);
+            let setterFt = new FunctionType(setterParams, null, new VoidType());
+            let si = new MethodInfo(setterFt, false, acc.isStatic, true, acc.isFinal);
+            mixinType.members["set#" + accName] = si;
+            thisType.members["set#" + accName] = si;
+          }
+        } else {
+          let fdInfo = new FieldInfo(
+            accType,
+            false, // isMutable
             false, // isAbstract
             acc.isStatic,
             isPrivate,
-            acc.isFinal
+            false // hasInitializer
           );
-          mixinType.members[accName] = mi;
-          thisType.members[accName] = mi;
+          mixinType.members[accName] = fdInfo;
+          thisType.members[accName] = fdInfo;
+          if (acc.getter != null) {
+            let getterFt = new FunctionType(new Array<Type>(), null, accType);
+            let mi = new MethodInfo(
+              getterFt,
+              false, // isAbstract
+              acc.isStatic,
+              isPrivate,
+              acc.isFinal
+            );
+            mixinType.members[accName] = mi;
+            thisType.members[accName] = mi;
+          }
         }
       }
       case _: {}
@@ -8432,6 +8458,45 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
              ctx.exitNodeReferrer(methDef.id as i32);
            }
          }
+      }
+      case AccessorDeclaration as acc: {
+        // Mirrors class accessor body checking: getter with the
+        // accessor type as return context, setter with its parameter
+        // bound to the accessor type.
+        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+        if (acc.getter != null) {
+          ctx.enterNodeReferrer(acc.id as i32);
+          let getterBlock = acc.getter as BlockStatement;
+          ctx.enterScope();
+          let prevReturnType = ctx.returnType;
+          ctx.setReturnType(accType);
+          var gi = 0;
+          while (gi < getterBlock.body.length) {
+            checkStatement(ctx, getterBlock.body[gi]);
+            gi += 1;
+          }
+          ctx.setReturnType(prevReturnType);
+          ctx.exitScope();
+          ctx.exitNodeReferrer(acc.id as i32);
+        }
+        if (acc.setter != null) {
+          match (acc.setter as Node) {
+            case SetterInfo as si: {
+              ctx.enterNodeReferrer(si.id as i32);
+              ctx.enterScope();
+              let paramInfo = ctx.model.resolveDeclaration(si.param);
+              if (paramInfo != null) {
+                ctx.declareBinding(paramInfo as Symbol, accType);
+              }
+              for (let stmt in si.body.body) {
+                checkStatement(ctx, stmt);
+              }
+              ctx.exitScope();
+              ctx.exitNodeReferrer(si.id as i32);
+            }
+            case _: {}
+          }
+        }
       }
       case _: {}
     }

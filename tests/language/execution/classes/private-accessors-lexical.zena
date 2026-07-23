@@ -1,0 +1,22 @@
+// @mode: run
+// @result: 12
+// Private accessors are lexically scoped, never virtual
+// (member-lookup.md §6): a subclass's same-named private accessor is
+// a different member — the parent's body reads the PARENT's accessor
+// directly, no vtable dispatch.
+class P {
+  #x: i32 {
+    get { return 1; }
+  }
+  call(): i32 { return this.#x; }
+}
+class C extends P {
+  #x: i32 {
+    get { return 2; }
+  }
+  callC(): i32 { return this.#x; }
+}
+export let main = (): i32 => {
+  let c = new C();
+  return c.call() * 10 + c.callC();  // lexical: 12
+};

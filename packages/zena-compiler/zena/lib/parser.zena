@@ -2663,10 +2663,14 @@ export final class Parser {
       }
       
       // Private field: #name: Type; or #name?: Type; or #name = value;
+      // -OR- private accessor: #name: Type { get { } set(v) { } }
       let isOptional = this.#match(TokenType.Question);
       var typeAnnotation: TypeAnnotation | null = null;
       if (this.#match(TokenType.Colon)) {
         typeAnnotation = this.#parseTypeAnnotation();
+      }
+      if (typeAnnotation != null && this.#check(TokenType.LBrace)) {
+        return this.#parseAccessorBlock(hashName, typeAnnotation as TypeAnnotation, isFinal, decorators, startToken);
       }
       var value: Expression | null = null;
       if (this.#match(TokenType.Equals)) {

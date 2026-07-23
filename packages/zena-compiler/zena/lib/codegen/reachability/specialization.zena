@@ -392,7 +392,10 @@ export final class Specializer implements SpecializerInterface {
           }
           case _: ""
         };
-        if (accName != "") {
+        // Private-named accessors are lexical, never virtual: no
+        // vtable slots (like private methods).
+        if (accName != "" &&
+            !(accName.length > 0 && accName.sliceBytes(0, 1) == "#")) {
           if (acc.getter != null) {
             let getterName = "get#" + accName;
             var found = false;
@@ -502,12 +505,21 @@ export final class Specializer implements SpecializerInterface {
           }
           case _: "<unknown>"
         };
+        let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
         if (acc.getter != null) {
-          let regG = this.registerClassMethod(ct, classDecl, "get#" + accName, acc as Node, false, false, null, sourceModel);
+          var getterRegName = "get#" + accName;
+          if (isPrivateAcc && msScope != "") {
+            getterRegName = msScope + "::" + getterRegName;
+          }
+          let regG = this.registerClassMethod(ct, classDecl, getterRegName, acc as Node, false, false, null, sourceModel);
           if (msScope != "") { regG.privateScopeKey = msScope; }
         }
         if (acc.setter != null) {
-          let regS = this.registerClassMethod(ct, classDecl, "set#" + accName, acc.setter as Node, false, false, null, sourceModel);
+          var setterRegName = "set#" + accName;
+          if (isPrivateAcc && msScope != "") {
+            setterRegName = msScope + "::" + setterRegName;
+          }
+          let regS = this.registerClassMethod(ct, classDecl, setterRegName, acc.setter as Node, false, false, null, sourceModel);
           if (msScope != "") { regS.privateScopeKey = msScope; }
         }
       } else if (ms is FieldDefinition) {
@@ -1193,20 +1205,30 @@ export final class Specializer implements SpecializerInterface {
             case _: ""
           };
           if (accName != "") {
-             if (acc.getter != null) {
-              let getterName = "get#" + accName;
-              if (!vtableSet.has(getterName)) {
+            // Private-named accessors: no vtable slot (lexical, never
+            // virtual); mixin private accessors register under the
+            // mixin's scope key like private methods.
+            let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
+            if (acc.getter != null) {
+              var getterName = "get#" + accName;
+              if (!isPrivateAcc && !vtableSet.has(getterName)) {
                 ctVtable.push(getterName);
                 vtableSet.add(getterName);
+              }
+              if (isPrivateAcc && msScope != "") {
+                getterName = msScope + "::" + getterName;
               }
               let regG = this.registerClassMethod(ct, cdDecl, getterName, acc as Node, false, false, null, sourceModel);
               if (msScope != "") { regG.privateScopeKey = msScope; }
             }
             if (acc.setter != null) {
-              let setterName = "set#" + accName;
-              if (!vtableSet.has(setterName)) {
+              var setterName = "set#" + accName;
+              if (!isPrivateAcc && !vtableSet.has(setterName)) {
                 ctVtable.push(setterName);
                 vtableSet.add(setterName);
+              }
+              if (isPrivateAcc && msScope != "") {
+                setterName = msScope + "::" + setterName;
               }
               let regS = this.registerClassMethod(ct, cdDecl, setterName, acc.setter as Node, false, false, null, sourceModel);
               if (msScope != "") { regS.privateScopeKey = msScope; }

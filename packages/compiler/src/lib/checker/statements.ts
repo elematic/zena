@@ -5782,7 +5782,12 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       }
       const memberName = memberNameInfo.name;
 
-      mixinType.fields.set(memberName, fieldType);
+      // Private accessors have no bare-name field entry: the private
+      // read/write paths resolve their get#/set# methods directly
+      // (a field entry would misroute them to physical-field codegen).
+      if (!memberName.startsWith('#')) {
+        mixinType.fields.set(memberName, fieldType);
+      }
 
       if (member.getter) {
         mixinType.methods.set(getGetterName(memberName), {
@@ -5964,7 +5969,11 @@ function checkMixinBodies(ctx: CheckerContext, decl: MixinDeclaration) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) continue; // TODO: Check symbol accessor body
 
-      const fieldType = mixinType.fields.get(memberNameInfo.name)!;
+      // Private accessors have no bare-name fields entry; resolve
+      // the accessor type from the annotation instead.
+      const fieldType =
+        mixinType.fields.get(memberNameInfo.name) ??
+        resolveTypeAnnotation(ctx, member.typeAnnotation!);
       const previousReturnType = ctx.currentFunctionReturnType;
       if (member.getter) {
         ctx.currentFunctionReturnType = fieldType;

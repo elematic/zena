@@ -1,0 +1,22 @@
+// @mode: run
+// @result: 10102
+// Private accessors use the grouped form (#name: T { get {} set(v) {} })
+// and behave like private fields with computed storage: lexical to the
+// declaring class, read and write through direct calls
+// (member-lookup.md §6).
+class A {
+  var #raw: i32;
+  new() : #raw = 5;
+  #doubled: i32 {
+    get { return this.#raw * 2; }
+    set(v) { this.#raw = v + 1; }
+  }
+  read(): i32 { return this.#doubled; }
+  write(v: i32): void { this.#doubled = v; }
+}
+export let main = (): i32 => {
+  let a = new A();
+  let r1 = a.read();      // 10
+  a.write(50);            // #raw = 51
+  return r1 * 1000 + a.read();  // 10102
+};

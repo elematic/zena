@@ -3937,7 +3937,9 @@ function checkMemberExpression(
 
     if (
       !ctx.currentClass.fields.has(memberName) &&
-      !ctx.currentClass.methods.has(memberName)
+      !ctx.currentClass.methods.has(memberName) &&
+      !ctx.currentClass.methods.has(getGetterName(memberName)) &&
+      !ctx.currentClass.methods.has(getSetterName(memberName))
     ) {
       ctx.diagnostics.reportError(
         `Property '${memberName}' does not exist on type '${ctx.currentClass.name}'.`,
@@ -4025,6 +4027,38 @@ function checkMemberExpression(
       ctx.semanticContext.setResolvedBinding(expr, binding);
 
       return wrapResult(finalType);
+    }
+
+    // Private grouped accessor: resolve the getter directly — private
+    // access is lexical and never virtual, so this is always a static
+    // dispatch to the lexically-resolved getter (the receiver's
+    // specialization of the lexical class for cross-spec access).
+    if (!ctx.currentClass.methods.has(memberName)) {
+      const privGetterName = getGetterName(memberName);
+      const getterOwner =
+        privateOwner.methods && privateOwner.methods.has(privGetterName)
+          ? privateOwner
+          : ctx.currentClass;
+      if (getterOwner.methods.has(privGetterName)) {
+        const getterType = getterOwner.methods.get(privGetterName)!;
+        const resolvedGetter = resolveMemberType(
+          getterOwner,
+          getterType,
+          ctx,
+        ) as FunctionType;
+        const binding: GetterBinding = {
+          kind: 'getter',
+          classType: getterOwner,
+          methodName: privGetterName,
+          isStaticDispatch: true,
+          type: resolvedGetter.returnType,
+          isStatic: isStaticAccess,
+        };
+        ctx.semanticContext.setResolvedBinding(expr, binding);
+        return wrapResult(resolvedGetter.returnType);
+      }
+      // Setter-only accessor in read position falls through to the
+      // method lookup below and errors like any missing member.
     }
 
     const methodOwner =

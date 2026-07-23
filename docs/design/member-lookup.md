@@ -347,11 +347,16 @@ never virtual, always direct**.
   for their own private accesses. Pinned by
   `mixins/private_names.zena` and `mixins/private_methods.zena`.
 
-- **Interfaces cannot declare private members, and accessors cannot
-  have private names.** A `#`-prefixed name in an interface body is a
-  parse error in both compilers, and accessor declarations take plain
-  names only — there is no private-accessor form. Privates are a
-  class/mixin construct.
+- **Private accessors** use the grouped form
+  (`#name: T { get { ... } set(v) { ... } }`) and follow the same
+  rules as private fields and methods: lexical to the declaring class
+  or mixin, direct dispatch with no vtable slot, no override
+  relation. Pinned by `classes/private-accessors*.zena` and
+  `mixins/private_accessors.zena`.
+
+- **Interfaces cannot declare private members.** A `#`-prefixed name
+  in an interface body is a parse error in both compilers. Privates
+  are a class/mixin construct.
 
 ## 7. Tear-offs of overloaded members
 

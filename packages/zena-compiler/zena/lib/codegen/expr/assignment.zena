@@ -319,6 +319,77 @@ export let generateAssignmentExpression = (
           }
         }
 
+        // Private members are lexical, never virtual: write the field
+        // when the struct carries it, else DIRECT-call the lexically
+        // resolved private setter (mixin scope key first, then the
+        // lexical chain incl. generic sources). No vtable, no
+        // override machinery.
+        if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+          if (fieldIndex != -1) {
+            genExpr(memExpr.object, false);
+            ctx.emitter.emitRefCast(structInfo.index);
+            genExpr(assign.value, false);
+            if (!discardValue) {
+              let valType = typeToValType(ctx.wasm, getNodeType(ctx, assign.value) as Type);
+              let tempLocal = ctx.allocLocal(valType);
+              ctx.emitter.emitLocalTee(tempLocal);
+              ctx.emitter.emitStructSet(structInfo.index, fieldIndex);
+              ctx.emitter.emitLocalGet(tempLocal);
+            } else {
+              ctx.emitter.emitStructSet(structInfo.index, fieldIndex);
+            }
+            return;
+          }
+          let privSetterName = "set#" + propName;
+          var privSetter: WasmFunction | null = null;
+          let privScope = ctx.wasmFunction.privateScopeKey;
+          if (privScope != null) {
+            let scopedName = (privScope as String) + "::" + privSetterName;
+            var applied: ClassType | null = ct;
+            while (applied != null) {
+              let key = getClassMethodKey(getClassKey(applied), scopedName);
+              if (let (true, f) = ctx.wasm.classMethodMap.get(key)) {
+                privSetter = f;
+                break;
+              }
+              applied = applied.superType;
+            }
+          }
+          if (privSetter == null) {
+            var lexical: ClassType | null = ct;
+            while (lexical != null) {
+              var candidate: ClassType | null = lexical;
+              while (candidate != null) {
+                let key = getClassMethodKey(getClassKey(candidate), privSetterName);
+                if (let (true, f) = ctx.wasm.classMethodMap.get(key)) {
+                  privSetter = f;
+                  break;
+                }
+                candidate = candidate.genericSource;
+              }
+              if (privSetter != null) {
+                break;
+              }
+              lexical = lexical.superType;
+            }
+          }
+          if (privSetter == null) {
+            throw new Error("Could not find private member " + propName + " or setter on class " + ct.name);
+          }
+          genExpr(memExpr.object, false);
+          genExpr(assign.value, false);
+          if (!discardValue) {
+            let valType = typeToValType(ctx.wasm, getNodeType(ctx, assign.value) as Type);
+            let tempLocal = ctx.allocLocal(valType);
+            ctx.emitter.emitLocalTee(tempLocal);
+            ctx.emitter.emitCall(privSetter as WasmFunction);
+            ctx.emitter.emitLocalGet(tempLocal);
+          } else {
+            ctx.emitter.emitCall(privSetter as WasmFunction);
+          }
+          return;
+        }
+
         let setterName = "set#" + propName;
         var vtableIndex = -1;
         for (var i = 0; i < vtableStruct.fields.length; i += 1) {

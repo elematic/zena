@@ -5659,7 +5659,34 @@ function generateAssignmentExpressionInner(
       }
     }
 
-    const fieldInfo = foundClass.fields.get(lookupName);
+    let fieldInfo = foundClass.fields.get(lookupName);
+    if (!fieldInfo && fieldName.startsWith('#')) {
+      // Private grouped accessor: no physical field. Private access
+      // is lexical and never virtual — direct-call the setter from
+      // the lexically-resolved class (currentClass, or the receiver's
+      // specialization of it for cross-spec access).
+      const privSetterName = getSetterName(fieldName);
+      let setterOwner: ClassInfo | undefined;
+      if (foundClass.methods.has(privSetterName)) {
+        setterOwner = foundClass;
+      } else if (ctx.currentClass?.methods.has(privSetterName)) {
+        setterOwner = ctx.currentClass;
+      }
+      const setterInfo = setterOwner?.methods.get(privSetterName);
+      if (setterInfo) {
+        generateExpression(ctx, memberExpr.object, body);
+        const valueType = setterInfo.paramTypes[1];
+        generateAdaptedArgument(ctx, expr.value, valueType, body);
+        const tempVal = ctx.declareLocal('$$temp_priv_set', valueType);
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(tempVal));
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(setterInfo.index));
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempVal));
+        return;
+      }
+    }
     if (!fieldInfo) {
       throw new Error(`Field ${lookupName} not found`);
     }

@@ -298,6 +298,26 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Fixed Bugs
 
+### Private grouped accessors broken in every compiler
+- **Found**: 2026-07-23; **Fixed**: 2026-07-23
+- **Details**: `#name: T { get {...} set(v) {...} }` was broken
+  differently everywhere: the self-hosted parser rejected the
+  accessor block after a private field name; the bootstrap parsed it
+  but its checker's private gate (fields/methods maps only) rejected
+  every access, its assignment codegen had no private-setter path,
+  and both mixin checkers never type-checked mixin accessor bodies
+  (self-hosted) or misregistered them as bare fields (both). Where
+  they DID compile, private accessors dispatched virtually through
+  vtable slots. Now: private accessors parse, register as get#/set#
+  methods only (no phantom bare-name field), never get vtable slots,
+  and dispatch directly and lexically — subclass shadowing and
+  host/mixin same-name coexistence work, with mixin private
+  accessors under the mixin scope key. Pinned by
+  classes/private-accessors.zena (10102),
+  classes/private-accessors-lexical.zena (12), and
+  mixins/private_accessors.zena (100900) on all compiler/backend
+  combos.
+
 ### Mixin private methods collide with host-class private methods; streaming dispatched privates virtually
 - **Found**: 2026-07-23; **Fixed**: 2026-07-23 (all compilers)
 - **Details**: Two related bugs. (1) A mixin's private method and a

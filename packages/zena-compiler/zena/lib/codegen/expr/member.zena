@@ -377,6 +377,60 @@ export let generateMemberExpression = (
           }
         }
 
+        // Private members are lexical, never virtual: read the field
+        // when the struct carries it, else DIRECT-call the lexically
+        // resolved private getter (mixin scope key first, then the
+        // lexical chain incl. generic sources). No vtable, no
+        // override machinery.
+        if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+          if (fieldIndex != -1) {
+            genObject();
+            ctx.emitter.emitRefCast(structInfo.index);
+            ctx.emitter.emitStructGet(structInfo.index, fieldIndex);
+            adjustFieldGetNullability(ctx, getNodeType(ctx, expr), structInfo.fields[fieldIndex].type);
+            return;
+          }
+          let privGetterName = "get#" + propName;
+          var privGetter: WasmFunction | null = null;
+          let privScope = ctx.wasmFunction.privateScopeKey;
+          if (privScope != null) {
+            let scopedName = (privScope as String) + "::" + privGetterName;
+            var applied: ClassType | null = ct;
+            while (applied != null) {
+              let key = getClassMethodKey(getClassKey(applied), scopedName);
+              if (let (true, f) = ctx.wasm.classMethodMap.get(key)) {
+                privGetter = f;
+                break;
+              }
+              applied = applied.superType;
+            }
+          }
+          if (privGetter == null) {
+            var lexical: ClassType | null = ct;
+            while (lexical != null) {
+              var candidate: ClassType | null = lexical;
+              while (candidate != null) {
+                let key = getClassMethodKey(getClassKey(candidate), privGetterName);
+                if (let (true, f) = ctx.wasm.classMethodMap.get(key)) {
+                  privGetter = f;
+                  break;
+                }
+                candidate = candidate.genericSource;
+              }
+              if (privGetter != null) {
+                break;
+              }
+              lexical = lexical.superType;
+            }
+          }
+          if (privGetter == null) {
+            throw new Error("Could not find private member " + propName + " on class " + ct.name);
+          }
+          genObject();
+          ctx.emitter.emitCall(privGetter as WasmFunction);
+          return;
+        }
+
         let getterName = "get#" + propName;
         var vtableIndex = -1;
         for (var i = 0; i < vtableStruct.fields.length; i += 1) {

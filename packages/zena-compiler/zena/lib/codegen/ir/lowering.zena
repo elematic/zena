@@ -3168,6 +3168,37 @@ final class FunctionLowerer {
     return st.resolvePrivateFieldName(ct, propName);
   }
 
+  /**
+   * Resolves a private accessor function (get#/set# + private name)
+   * lexically: the calling function's mixin scope key first (scoped
+   * registrations walk the receiver's chain, since the mixin may be
+   * applied at an ancestor), then the LEXICAL class and its generic
+   * sources. Null when no such accessor is registered.
+   */
+  #resolvePrivateAccessor(ct: ClassType, lexicalCt: ClassType, accName: String): WasmFunction | null {
+    let mixScope = this.func.privateScopeKey;
+    if (mixScope != null) {
+      let scopedName = (mixScope as String) + "::" + accName;
+      var applied: ClassType | null = ct;
+      while (applied != null) {
+        let key = getClassMethodKey(getClassKey(applied), scopedName);
+        if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+          return f;
+        }
+        applied = applied.superType;
+      }
+    }
+    var candidate: ClassType | null = lexicalCt;
+    while (candidate != null) {
+      let key = getClassMethodKey(getClassKey(candidate), accName);
+      if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+        return f;
+      }
+      candidate = candidate.genericSource;
+    }
+    return null;
+  }
+
   /** The generic-source root's key: specializations compare equal to
    * their template through this. */
   #canonicalKeyOf(ct: ClassType): String {
@@ -3219,7 +3250,19 @@ final class FunctionLowerer {
       if (resolved != null) {
         lookupName = resolved as String;
       } else {
-        lookupName = getClassPrivateFieldKey(getClassKey(lexicalCt), propName);
+        // No physical field: a private ACCESSOR. Resolve the getter
+        // LEXICALLY (never against the receiver chain — copied-down
+        // method bodies are lowered with the subclass as receiver
+        // class, and a subclass's shadowing private accessor must not
+        // win): mixin scope key first, then the lexical class and its
+        // generic sources.
+        let privGetter = this.#resolvePrivateAccessor(ct, lexicalCt, 'get#' + propName);
+        if (privGetter != null) {
+          return new MemberTarget(structType, null, privGetter as WasmFunction);
+        }
+        // Never fall through to the receiver-chain getter walk below:
+        // it could bind a subclass's shadowing private accessor.
+        this.#bail('private member not found');
       }
     }
 
