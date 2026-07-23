@@ -4,8 +4,8 @@ import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import { Opcode, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeRefNull, ValTypeRef, ValTypeVoid, ValTypeEqRef } from '../wasm.zena';
 import { WasmFunction, WasmStruct, WasmModule } from '../wasm-module.zena';
-import { typeToValType, typeToValTypeWithSub, getNodeType, getClassMemberSignature } from '../type-mapping.zena';
-import { Type, baseType, isRefType, isFloatType, isBooleanLike, I32Type, BooleanType, F32Type, F64Type, I64Type, U64Type, ClassType, InterfaceType, U32Type, StringLiteralType, MethodInfo, MemberInfo, instantiateClassType } from '../../types.zena';
+import { typeToValType, typeToValTypeWithSub, getNodeType, getClassMemberSignature, getExpressionType, castRefNullIfNeeded } from '../type-mapping.zena';
+import { Type, baseType, isRefType, isFloatType, isBooleanLike, I32Type, BooleanType, F32Type, F64Type, I64Type, U64Type, ClassType, InterfaceType, U32Type, StringLiteralType, MethodInfo, MemberInfo, instantiateClassType, ArrayType } from '../../types.zena';
 import { getClassKey, unwrapAliases, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { Array } from 'zena:array';
 
@@ -1404,6 +1404,23 @@ export let generateArrayIntrinsic = (
     }
     
     genExpr(args[1], false); // value first
+    let elemTypeOpt = match (arrayType as Type) {
+      case ArrayType as at: at.elementType
+      case ClassType as ct: {
+        if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
+          (ct.typeArguments as Array<Type>)[0]
+        } else {
+          null
+        }
+      }
+      case _: null
+    };
+    if (elemTypeOpt != null) {
+      let arg1Type = getExpressionType(ctx, args[1]);
+      if (arg1Type != null) {
+        castRefNullIfNeeded(ctx, args[1], arg1Type as Type, elemTypeOpt as Type);
+      }
+    }
     genExpr(args[0], false); // size second
     
     ctx.emitter.emitArrayNew(typeIndex);

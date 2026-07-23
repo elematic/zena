@@ -1,4 +1,4 @@
-import { ValTypeI32, ValTypeRefNull } from './wasm.zena';
+import { ValTypeI32, ValTypeRefNull, ValTypeRef } from './wasm.zena';
 import { typeToValType, typeToValTypeWithSub, getCellStruct, getNodeType } from './type-mapping.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern, LetPatternCondition,
@@ -278,6 +278,11 @@ export let discoverLocalsFromStmt = (ctx: FunctionContext, stmt: Statement, disc
   }
 };
 
+let toDeclType = (t: ValType): ValType => match (t) {
+  case ValTypeRef as vr: new ValTypeRefNull((vr as ValTypeRef).target)
+  case _: t
+};
+
 export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): void => {
   match (pattern) {
     case IdentifierPattern as pat: {
@@ -302,7 +307,7 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
           }
           let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
           ctx.localIndices[s.id] = index;
-          ctx.localTypes.push(vType);
+          ctx.localTypes.push(toDeclType(vType));
         }
       }
     }
@@ -328,7 +333,7 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
           }
           let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
           ctx.localIndices[s.id] = index;
-          ctx.localTypes.push(vType);
+          ctx.localTypes.push(toDeclType(vType));
         }
       }
     }
@@ -353,7 +358,7 @@ export let discoverLocalsFromPattern = (ctx: FunctionContext, pattern: Node): vo
         }
         let index = ctx.wasmFunction.signature.params.length + ctx.localTypes.length;
         ctx.localIndices[s.id] = index;
-        ctx.localTypes.push(vType);
+        ctx.localTypes.push(toDeclType(vType));
       }
       discoverLocalsFromPattern(ctx, ap.pattern);
     }

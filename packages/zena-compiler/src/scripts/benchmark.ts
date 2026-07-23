@@ -1080,22 +1080,6 @@ if (runBasic) {
   console.log('\n--------------------------------------------------\n');
 }
 
-<<<<<<< HEAD
-if (runMapKeys) {
-  // --- Map Key Execution Benchmarks ---
-  console.log('==================================================');
-  console.log('Running Map Key Micro-Benchmark Suite (Execution)');
-=======
-if (runMaps) {
-  // --- Map Execution Benchmarks ---
-  console.log('==================================================');
-  console.log('Running Map Micro-Benchmark Suite (Execution)');
->>>>>>> 38b2f15b ([zena-compiler] Add map benchmarks)
-  if (filter) {
-    console.log(`Filter: ${filter}`);
-  }
-  console.log('==================================================\n');
-
 if (runMaps) {
   // --- Map Execution Benchmarks ---
   console.log('==================================================');

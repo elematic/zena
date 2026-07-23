@@ -96,29 +96,56 @@ export final class WasmField {
  * (there is no pre-existing object to cache them on, unlike e.g. ClassKey
  * which is memoized on the ClassType).
  */
+let valTypeHashCode = (vt: ValType): i32 => {
+  return match (vt) {
+    case ValTypeRef {target}: target.uid * 2
+    case ValTypeRefNull {target}: target.uid * 2 + 1
+    case _: valTypeToOpcode(vt)
+  };
+};
+
+/**
+ * Identity-based ValType equality for the type-pool cache keys below.
+ *
+ * This deliberately does NOT use valTypeEquals: that compares ref targets
+ * by their type-section INDEX, which is -1 for every type until layout()
+ * runs and is reassigned there. Keys whose equality mutates break the
+ * caches twice over — distinct keys can spuriously merge before layout
+ * (all indices equal -1), and entries cached before layout become
+ * unfindable afterwards. Comparing the target OBJECTS is stable across
+ * layout, matches valTypeHashCode (uid-based) so hashCode/equals agree,
+ * and is equivalent to index equality for laid-out types.
+ */
+let valTypeKeyEquals = (a: ValType, b: ValType): boolean => {
+  if (valTypeToOpcode(a) != valTypeToOpcode(b)) {
+    return false;
+  }
+  return match (a) {
+    case ValTypeRef {target as ta}: match (b) {
+      case ValTypeRef {target as tb}: ta == tb
+      case _: false
+    }
+    case ValTypeRefNull {target as ta}: match (b) {
+      case ValTypeRefNull {target as tb}: ta == tb
+      case _: false
+    }
+    case _: true
+  };
+};
+
 export final class SignatureKey implements Hashable {
   params: Array<ValType>;
   returns: Array<ValType>;
   new(this.params, this.returns);
 
   hashCode(): i32 {
-    var h = 0;
+    var h = 17;
     for (let p in this.params) {
-      h = h ^ valTypeToOpcode(p);
-      h = h ^ match (p) {
-        case ValTypeRef as r: r.target.uid
-        case ValTypeRefNull as rn: rn.target.uid
-        case _: 0
-      };
+      h = h * 31 + valTypeHashCode(p);
     }
-    h = h ^ 12345;
+    h = h * 31 + 12345;
     for (let r in this.returns) {
-      h = h ^ valTypeToOpcode(r);
-      h = h ^ match (r) {
-        case ValTypeRef as tr: tr.target.uid
-        case ValTypeRefNull as trn: trn.target.uid
-        case _: 0
-      };
+      h = h * 31 + valTypeHashCode(r);
     }
     return h;
   }
@@ -128,10 +155,10 @@ export final class SignatureKey implements Hashable {
       return false;
     }
     for (var i = 0; i < this.params.length; i += 1) {
-      if (!valTypeEquals(this.params[i], other.params[i])) { return false; }
+      if (!valTypeKeyEquals(this.params[i], other.params[i])) { return false; }
     }
     for (var j = 0; j < this.returns.length; j += 1) {
-      if (!valTypeEquals(this.returns[j], other.returns[j])) { return false; }
+      if (!valTypeKeyEquals(this.returns[j], other.returns[j])) { return false; }
     }
     return true;
   }
@@ -156,16 +183,11 @@ export final class StructKey implements Hashable {
     var h = if (this.name == null) 0 else hash(this.name as String);
     for (let f in this.fields) {
       if (f.name != null) {
-        h = h ^ hash(f.name as String);
+        h = h * 31 + hash(f.name as String);
       }
-      h = h ^ valTypeToOpcode(f.type);
-      h = h ^ match (f.type) {
-        case ValTypeRef as r: r.target.uid
-        case ValTypeRefNull as rn: rn.target.uid
-        case _: 0
-      };
+      h = h * 31 + valTypeHashCode(f.type);
       if (f.isMutable) {
-        h = h ^ 777;
+        h = h * 31 + 777;
       }
     }
     return h;
@@ -178,7 +200,7 @@ export final class StructKey implements Hashable {
     for (var i = 0; i < this.fields.length; i += 1) {
       let f1 = this.fields[i];
       let f2 = other.fields[i];
-      if (!stringEquals(f1.name, f2.name) || f1.isMutable != f2.isMutable || !valTypeEquals(f1.type, f2.type)) {
+      if (!stringEquals(f1.name, f2.name) || f1.isMutable != f2.isMutable || !valTypeKeyEquals(f1.type, f2.type)) {
         return false;
       }
     }
@@ -192,20 +214,15 @@ export final class ArrayKey implements Hashable {
   new(this.elementType, this.isMutable);
 
   hashCode(): i32 {
-    var h = valTypeToOpcode(this.elementType);
-    h = h ^ match (this.elementType) {
-      case ValTypeRef as r: r.target.uid
-      case ValTypeRefNull as rn: rn.target.uid
-      case _: 0
-    };
+    var h = valTypeHashCode(this.elementType);
     if (this.isMutable) {
-      h = h ^ 999;
+      h = h * 31 + 999;
     }
     return h;
   }
 
   operator ==(other: ArrayKey): boolean {
-    return this.isMutable == other.isMutable && valTypeEquals(this.elementType, other.elementType);
+    return this.isMutable == other.isMutable && valTypeKeyEquals(this.elementType, other.elementType);
   }
 }
 

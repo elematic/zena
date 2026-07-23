@@ -14,6 +14,7 @@ import {
   type ExportAllDeclaration,
   type ExportFromDeclaration,
   type Expression,
+  type ExpressionStatement,
   type ForInStatement,
   type ForStatement,
   type FunctionExpression,
@@ -187,29 +188,21 @@ const containsAssignmentToVariable = (
   return found;
 };
 
-/**
- * Classifies a top-level statement of a null-guard body with respect to
- * assignments to the variable with the given name. A plain `x = value;`
- * statement is classified by the checked type of `value` (the outermost
- * assignment stores last, so it governs even if `value` contains further
- * assignments to x). Any OTHER statement containing an assignment to x —
- * in an expression position or nested control flow — is conservatively
- * AssignsMaybeNull: it may run conditionally or leave x null.
- */
 const classifyNullGuardAssignment = (
+  ctx: CheckerContext,
   stmt: Statement,
   varName: string,
 ): NullGuardAssignKind => {
   if (stmt.type === NodeType.ExpressionStatement) {
-    const expr = (stmt as {expression: Expression}).expression;
+    const expr = (stmt as ExpressionStatement).expression;
     if (expr.type === NodeType.AssignmentExpression) {
-      const assignment = expr as AssignmentExpression;
+      const ae = expr as AssignmentExpression;
       if (
-        assignment.left.type === NodeType.Identifier &&
-        (assignment.left as Identifier).name === varName
+        ae.left.type === NodeType.Identifier &&
+        (ae.left as Identifier).name === varName
       ) {
-        const valueType = assignment.value.inferredType;
-        if (valueType && !isNullableType(valueType)) {
+        const vt = ae.value.inferredType ?? checkExpression(ctx, ae.value);
+        if (vt && !isNullableType(vt) && vt.kind !== TypeKind.Null) {
           return NullGuardAssignKind.AssignsNonNull;
         }
         return NullGuardAssignKind.AssignsMaybeNull;
@@ -226,27 +219,25 @@ const classifyNullGuardAssignment = (
  * Check if a statement (or block) definitely assigns a NON-NULL value to
  * a variable with the given name. Used to detect patterns like:
  *   if (x == null) { x = value; }
- * for post-if narrowing — sound only when `value` cannot itself be null,
- * and only for assignments at the top level of the guarded block (nested
- * or expression-position assignments may not run on every path, so they
- * defeat the narrowing). When several top-level assignments exist, the
- * last one governs.
+ * for post-if narrowing — sound only when `value` cannot itself be null.
  */
-const bodyAssignsToVariable = (stmt: Statement, varName: string): boolean => {
+const bodyAssignsToVariable = (
+  ctx: CheckerContext,
+  stmt: Statement,
+  varName: string,
+): boolean => {
   if (stmt.type === NodeType.BlockStatement) {
     let state: NullGuardAssignKind = NullGuardAssignKind.NotAnAssignment;
-    for (const s of (stmt as {body: Statement[]}).body) {
-      const kind = classifyNullGuardAssignment(s, varName);
-      if (kind !== NullGuardAssignKind.NotAnAssignment) {
-        state = kind;
+    const body = (stmt as {body: Statement[]}).body;
+    for (const s of body) {
+      const c = classifyNullGuardAssignment(ctx, s, varName);
+      if (c !== NullGuardAssignKind.NotAnAssignment) {
+        state = c;
       }
     }
     return state === NullGuardAssignKind.AssignsNonNull;
   }
-  return (
-    classifyNullGuardAssignment(stmt, varName) ===
-    NullGuardAssignKind.AssignsNonNull
-  );
+  return classifyNullGuardAssignment(ctx, stmt, varName) === NullGuardAssignKind.AssignsNonNull;
 };
 
 /**
@@ -1881,7 +1872,7 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
       false,
     );
     for (const [path, type] of inverseNarrowings) {
-      if (bodyAssignsToVariable(stmt.consequent, path)) {
+      if (bodyAssignsToVariable(ctx, stmt.consequent, path)) {
         ctx.narrowType(path, type);
       }
     }

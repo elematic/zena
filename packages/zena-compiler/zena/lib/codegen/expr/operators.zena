@@ -480,12 +480,19 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
               let rightValType = typeToValType(ctx.wasm, rightType);
               let rightLocal = ctx.allocLocal(rightValType);
               ctx.emitter.emitLocalSet(rightLocal);
-              
+
               let scratchLocal = ctx.getStructScratchLocal(structInfo);
               ctx.emitter.emitLocalTee(scratchLocal);
-              
+              ctx.emitter.emitRefAsNonNull();
+
               ctx.emitter.emitLocalGet(rightLocal);
-              
+              // allocLocal declares ref locals nullable (locals must be
+              // defaultable), so re-assert non-nullness of the reloaded
+              // operand when its value type is a non-null ref.
+              if (rightValType is ValTypeRef) {
+                ctx.emitter.emitRefAsNonNull();
+              }
+
               ctx.emitter.emitLocalGet(scratchLocal);
               ctx.emitter.emitRefCast(structInfo.index);
               ctx.emitter.emitStructGet(structInfo.index, 0);

@@ -1,13 +1,12 @@
 import { Node, Identifier, NumberLiteral, BooleanLiteral, StringLiteral, ImportSpecifier, TemplateLiteral, Expression, TaggedTemplateExpression } from '../../ast.zena';
-// import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType, I64Type, U64Type, U32Type, BooleanType, ArrayType, FunctionType, VoidType, AnyRefType } from '../../types.zena';
-import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType, I64Type, U64Type, U32Type, BooleanType, AnyRefType, ArrayType, FunctionType, VoidType, InterfaceType, TypeAliasType, RecordType, NullType } from '../../types.zena';
+import { Type, F64Type, F32Type, I32Type, baseType, typeToString, ClassType, I64Type, U64Type, U32Type, BooleanType, AnyRefType, ArrayType, FunctionType, VoidType, InterfaceType, TypeAliasType, RecordType, NullType, isRefType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { parseI32, parseF64, i32ToString, parseI64 } from 'zena:string-convert';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { WasmStruct, WasmFunction, WasmGlobal, WasmSignature, WasmArray } from '../wasm-module.zena';
-import { typeToValType, typeToValTypeWithSub, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults, getValTypeKey, substituteTypeParamsInClassContext } from '../type-mapping.zena';
-import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType, ValTypeEqRef, ValTypeStructRef, valTypeEquals, WasmType, valTypeToOpcode } from '../wasm.zena';
+import { typeToValType, typeToValTypeWithSub, getCellStruct, getClosureStruct, mapReturnTypeToWasmResults, getValTypeKey, substituteTypeParamsInClassContext, castValTypeRefNullIfNeeded } from '../type-mapping.zena';
+import { ValTypeRefNull, HeapType, heapTypeToSigned, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValType, ValTypeEqRef, ValTypeStructRef, valTypeEquals, isWasmSubtype, WasmType, valTypeToOpcode } from '../wasm.zena';
 import { ClassKey, ExportGlobalKey, ExportKey, getClassKey, getSpecializedName, getSignatureKey, ClassMethodKey, getClassMethodKey, FunctionValueWrapperKey, getFunctionValueWrapperKey } from '../codegen-utils.zena';
 import { String } from 'zena:string';
 
@@ -21,50 +20,85 @@ let wasmTypesEqual = (a: WasmType, b: WasmType): boolean => a.index == b.index;
 let valTypesEqual = (a: ValType, b: ValType): boolean => match (a) {
   case ValTypeRef {target as ta}: match (b) {
     case ValTypeRef {target as tb}: wasmTypesEqual(ta, tb)
+    case ValTypeRefNull {target as tb}: wasmTypesEqual(ta, tb)
     case _: false
   }
   case ValTypeRefNull {target as ta}: match (b) {
+    case ValTypeRef {target as tb}: wasmTypesEqual(ta, tb)
     case ValTypeRefNull {target as tb}: wasmTypesEqual(ta, tb)
     case _: false
   }
   case _: valTypeToOpcode(a) == valTypeToOpcode(b)
 };
 
-let emitAutoCast = (ctx: FunctionContext, ident: Identifier, resolvedSym: Symbol): void => {
+let typesRepresentSameZenaType = (a: Type, b: Type): boolean => typeToString(a) == typeToString(b);
+
+let emitAutoCast = (ctx: FunctionContext, ident: Identifier, symId: SymbolId, resolvedSym: Symbol): void => {
+  // Optional chaining generates its own null test on the RAW value and
+  // sets ignoreCasts while emitting the receiver/callee — an auto-cast
+  // here would trap before that test runs.
   if (ctx.ignoreCasts) {
     return;
   }
-  let unionCalleeType = ctx.wasmFunction.model.getUnionCallCalleeType(ident);
-  if (unionCalleeType != null) {
+  // Union-typed callees are dispatched by arity/type at the call site;
+  // the callee reference must stay uncast.
+  if (ctx.wasmFunction.model.getUnionCallCalleeType(ident) != null) {
     return;
   }
-  let nodeType = ctx.wasmFunction.model.getNodeType(ident);
-  let bindingType = ctx.wasmFunction.model.getBindingType(resolvedSym);
-  if (nodeType != null && bindingType != null) {
-    let nt = nodeType as Type;
-    if (!(nt is ClassType) && !(nt is InterfaceType)) { return; }
-    // The type of the value currently on the stack is the binding's actual
-    // storage type: globals may be stored with a more general (nullable)
-    // type than the checker's binding type implies.
-    var stackWasmType = typeToValTypeWithSub(ctx.wasm, bindingType as Type, ctx.wasmFunction);
-    if (ctx.wasm.globalMap.has(resolvedSym.id)) {
-      stackWasmType = ctx.wasm.globalMap[resolvedSym.id].type;
-    } else if (ctx.wasm.exportGlobalMap.has(resolvedSym.name as ExportGlobalKey)) {
-      stackWasmType = ctx.wasm.exportGlobalMap[resolvedSym.name as ExportGlobalKey].type;
+  if (ctx.localIndices.has(symId)) {
+    let localIndex = ctx.localIndices[symId];
+    let paramCount = ctx.wasmFunction.signature.params.length;
+    var actualLocalWasmType = if (localIndex < paramCount) {
+      ctx.wasmFunction.signature.params[localIndex]
+    } else {
+      ctx.localTypes[localIndex - paramCount]
+    };
+    if (ctx.isCelled(symId)) {
+      let symType = ctx.wasmFunction.model.getBindingType(resolvedSym);
+      if (symType != null) {
+        actualLocalWasmType = typeToValTypeWithSub(ctx.wasm, symType as Type, ctx.wasmFunction);
+      }
     }
-    // Substitute type parameters for the current specialization: inside a
-    // specialized generic method, `Entry<K, V>` must map to the
-    // specialization's wasm type, not the generic layout.
-    let ntWasm = typeToValTypeWithSub(ctx.wasm, nt, ctx.wasmFunction);
-    if (!valTypesEqual(ntWasm, stackWasmType)) {
-      match (ntWasm) {
+
+    var nodeType = ctx.wasmFunction.model.getNodeType(ident);
+    if (nodeType == null) {
+      nodeType = ctx.wasmFunction.model.getBindingType(resolvedSym);
+    }
+
+    var ntWasm: ValType | null = null;
+    if (nodeType != null) {
+      let nt = nodeType as Type;
+      if (isRefType(nt)) {
+        ntWasm = typeToValTypeWithSub(ctx.wasm, nt, ctx.wasmFunction);
+      }
+    } else {
+      match (actualLocalWasmType) {
         case ValTypeRefNull {target}: {
-          ctx.emitter.emitRefCastNull(target.index);
-        }
-        case ValTypeRef {target}: {
-          ctx.emitter.emitRefCast(target.index);
+          ntWasm = new ValTypeRef(target);
         }
         case _: {}
+      }
+    }
+
+    if (ntWasm != null && !isWasmSubtype(actualLocalWasmType, ntWasm as ValType)) {
+      match (ntWasm as ValType) {
+        case ValTypeRef {target}: {
+          if (target.index >= 0) {
+            ctx.emitter.emitRefCast(target.index);
+          } else {
+            ctx.emitter.emitRefAsNonNull();
+          }
+        }
+        case ValTypeRefNull {target}: {
+          if (target.index >= 0) {
+            ctx.emitter.emitRefCastNull(target.index);
+          }
+        }
+        case _: {
+          if (actualLocalWasmType is ValTypeRefNull) {
+            ctx.emitter.emitRefAsNonNull();
+          }
+        }
       }
     }
   }
@@ -76,26 +110,31 @@ export let generateIdentifier = (ctx: FunctionContext, ident: Identifier): void 
   if (sym != null) {
     resolvedSym = (sym as Symbol).resolveTarget();
     let rSym = resolvedSym as Symbol;
-    if (ctx.localIndices.has(rSym.id)) {
-      ctx.emitter.emitLocalGet(ctx.localIndices[rSym.id]);
-      if (ctx.isCelled(rSym.id)) {
+    let symId = if (ctx.localIndices.has((sym as Symbol).id)) (sym as Symbol).id else rSym.id;
+    if (ctx.localIndices.has(symId)) {
+      let localIdx = ctx.localIndices[symId];
+      ctx.emitter.emitLocalGet(localIdx);
+      if (ctx.isCelled(symId)) {
         let symType = ctx.wasmFunction.model.getBindingType(rSym);
         let valType = typeToValType(ctx.wasm, symType as Type);
         let cellStruct = getCellStruct(ctx.wasm, valType);
         ctx.emitter.emitStructGet(cellStruct.index, 0);
+        if (valType is ValTypeRef) {
+          ctx.emitter.emitRefAsNonNull();
+        }
       }
-      emitAutoCast(ctx, ident, rSym);
+      emitAutoCast(ctx, ident, symId, rSym);
       return;
     }
     if (ctx.wasm.globalMap.has(rSym.id)) {
       ctx.emitter.emitGlobalGet(ctx.wasm.globalMap[rSym.id].index);
-      emitAutoCast(ctx, ident, rSym);
+      emitAutoCast(ctx, ident, rSym.id, rSym);
       return;
     }
     let exportKey = rSym.name as ExportGlobalKey;
     if (ctx.wasm.exportGlobalMap.has(exportKey)) {
       ctx.emitter.emitGlobalGet(ctx.wasm.exportGlobalMap[exportKey].index);
-      emitAutoCast(ctx, ident, rSym);
+      emitAutoCast(ctx, ident, rSym.id, rSym);
       return;
     }
     
@@ -398,9 +437,9 @@ export let generateTaggedTemplateExpression = (
     let fieldName = tsaStruct.fields[f].name;
     if (fieldName != null) {
       let nameStr = fieldName as String;
-      if (nameStr.endsWith("::#strings")) {
+      if (nameStr.endsWith("#strings")) {
         stringsFieldIdx = f;
-      } else if (nameStr.endsWith("::#raw")) {
+      } else if (nameStr.endsWith("#raw")) {
         rawFieldIdx = f;
       }
     }
@@ -567,12 +606,17 @@ export let generateTaggedTemplateExpression = (
         ctx.emitter.emitLocalGet(closureLocal);
         ctx.emitter.emitStructGet(closureStruct.index, 1);
         
+        // The temps are declared nullable (locals must be defaultable) but
+        // the callee's signature takes non-null refs.
         ctx.emitter.emitLocalGet(tsaLocal);
+        ctx.emitter.emitRefAsNonNull();
         ctx.emitter.emitLocalGet(valuesLocal);
-        
+        ctx.emitter.emitRefAsNonNull();
+
         ctx.emitter.emitLocalGet(closureLocal);
         ctx.emitter.emitStructGet(closureStruct.index, 0);
-        
+        ctx.emitter.emitRefAsNonNull();
+
         ctx.emitter.emitCallRef(implSig.index);
       } else {
         throw new Error("Could not resolve tagged template tag call target: " + ident.name);
@@ -607,12 +651,17 @@ export let generateTaggedTemplateExpression = (
         ctx.emitter.emitLocalGet(closureLocal);
         ctx.emitter.emitStructGet(closureStruct.index, 1);
         
+        // The temps are declared nullable (locals must be defaultable) but
+        // the callee's signature takes non-null refs.
         ctx.emitter.emitLocalGet(tsaLocal);
+        ctx.emitter.emitRefAsNonNull();
         ctx.emitter.emitLocalGet(valuesLocal);
-        
+        ctx.emitter.emitRefAsNonNull();
+
         ctx.emitter.emitLocalGet(closureLocal);
         ctx.emitter.emitStructGet(closureStruct.index, 0);
-        
+        ctx.emitter.emitRefAsNonNull();
+
         ctx.emitter.emitCallRef(implSig.index);
       } else {
         throw new Error("Unsupported tagged template tag expression type");

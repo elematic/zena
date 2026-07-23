@@ -1340,9 +1340,21 @@ export final class ZirFunctionEmitter {
    */
   #storeMultiResults(callInst: i32): void {
     if (let (true, projs) = this.#mvProjections.get(callInst)) {
-      var k = projs.length - 1;
+      var maxK = 0;
+      for (let p in projs) {
+        let idx = this.body.b[p];
+        if (idx > maxK) {
+          maxK = idx;
+        }
+      }
+      var k = maxK;
       while (k >= 0) {
-        this.emitter.emitLocalSet(this.localOf[projs[k]]);
+        for (let p in projs) {
+          if (this.body.b[p] == k) {
+            this.emitter.emitLocalSet(this.localOf[p]);
+            break;
+          }
+        }
         k -= 1;
       }
     }

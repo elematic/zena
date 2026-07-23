@@ -7,7 +7,8 @@ import {
   RecordType, TupleType, MixinType
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
-import { Node, Identifier, ThisExpression } from '../ast.zena';
+import { Node, Identifier, ThisExpression, Expression } from '../ast.zena';
+import { Symbol } from '../scope/symbol.zena';
 import { FunctionContext } from './function-context.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
@@ -16,7 +17,7 @@ import {
 import { 
   ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, 
   ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode,
-  WasmType
+  WasmType, isWasmSubtype, HeapType, heapTypeToSigned
 } from './wasm.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
@@ -24,7 +25,7 @@ import { HashMap } from 'zena:map';
 import { OrderedMap } from 'zena:ordered-map';
 import { Array } from 'zena:array';
 import { 
-  getMemberRootClass, getClassKey, getInterfaceKey, ClassKey, InterfaceKey, 
+  getMemberRootClass, getClassKey, getClassMethodKey, getInterfaceKey, ClassKey, InterfaceKey, 
   ClassInterfaceKey, InterfaceMemberKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey
 } from './codegen-utils.zena';
 
@@ -964,7 +965,24 @@ export let eraseTypeParameters = (t: Type): Type => {
 };
 
 export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName: String): WasmSignature => {
+  let key = getClassMethodKey(getClassKey(ct), fieldName);
+  if (let (true, f) = wasm.classMethodMap.get(key)) {
+    return f.signature;
+  }
   let erasedCt = eraseTypeParameters(ct) as ClassType;
+  let erasedKey = getClassMethodKey(getClassKey(erasedCt), fieldName);
+  if (let (true, f) = wasm.classMethodMap.get(erasedKey)) {
+    return f.signature;
+  }
+  var curr: ClassType | null = ct;
+  while (curr != null) {
+    let k = getClassMethodKey(getClassKey(curr as ClassType), fieldName);
+    if (let (true, f) = wasm.classMethodMap.get(k)) {
+      return f.signature;
+    }
+    curr = (curr as ClassType).superType;
+  }
+
   let rootClass = getMemberRootClass(erasedCt, fieldName);
   let params = new Array<ValType>();
   let rootKey = getClassKey(rootClass);
@@ -1071,7 +1089,11 @@ export let getClosureKey = (params: Array<ValType>, returns: Array<ValType>): Cl
 };
 
 export let getCellKey = (valType: ValType): CellKey => {
-  return getValTypeKey(valType) as CellKey;
+  let normalizedType = match (valType) {
+    case ValTypeRef {target}: new ValTypeRefNull(target)
+    case _: valType
+  };
+  return getValTypeKey(normalizedType) as CellKey;
 };
 
 export let getClosureStruct = (wasm: WasmModule, ftVal: anyref): WasmStruct => {
@@ -1103,12 +1125,16 @@ export let getClosureStruct = (wasm: WasmModule, ftVal: anyref): WasmStruct => {
 };
 
 export let getCellStruct = (wasm: WasmModule, valType: ValType): WasmStruct => {
-  let key = getCellKey(valType);
+  let valTypeNull = match (valType) {
+    case ValTypeRef {target}: new ValTypeRefNull(target)
+    case _: valType
+  };
+  let key = getCellKey(valTypeNull);
   if (wasm.cellStructs.has(key)) {
     return wasm.cellStructs[key];
   }
   let fields = new Array<WasmField>();
-  fields.push(new WasmField("value", valType, true)); // mutable
+  fields.push(new WasmField("value", valTypeNull, true)); // mutable
   let name = "Cell_" + (key as String);
   let st = new WasmStruct(name, fields);
   wasm.types.push(st);
@@ -1577,6 +1603,125 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
     }
     case _: type
   };
+};
+
+export let isStructSubtype = (sub: WasmType, superType: WasmType): boolean => {
+  if (sub.index == superType.index && sub.index != -1) {
+    return true;
+  }
+  if (sub.uid == superType.uid) {
+    return true;
+  }
+  if (sub is WasmStruct) {
+    var curr = (sub as WasmStruct).superStruct;
+    while (curr != null) {
+      let c = curr as WasmStruct;
+      if ((c.index != -1 && c.index == superType.index) || c.uid == superType.uid) {
+        return true;
+      }
+      curr = c.superStruct;
+    }
+  }
+  return false;
+};
+
+export let isWasmSubtypeWithStructs = (sub: ValType, superType: ValType): boolean => match (sub) {
+  case ValTypeRef as ta: match (superType) {
+    case ValTypeRef as tb: isStructSubtype(ta.target, tb.target)
+    case ValTypeRefNull as tb: isStructSubtype(ta.target, tb.target)
+    case ValTypeEqRef: true
+    case ValTypeStructRef: true
+    case ValTypeAnyRef: true
+    case _: false
+  }
+  case ValTypeRefNull as ta: match (superType) {
+    case ValTypeRefNull as tb: isStructSubtype(ta.target, tb.target)
+    case ValTypeEqRef: true
+    case ValTypeStructRef: true
+    case ValTypeAnyRef: true
+    case _: false
+  }
+  case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
+};
+
+export let castValTypeRefNullIfNeeded = (ctx: FunctionContext, initWasmType: ValType, targetWasmType: ValType): void => {
+  let isTargetRef = match (targetWasmType) {
+    case ValTypeRef: true
+    case ValTypeRefNull: true
+    case ValTypeStructRef: true
+    case _: false
+  };
+  let needCast = match (initWasmType) {
+    case ValTypeRef as ta: match (targetWasmType) {
+      case ValTypeRef as tb: ta.target.index != tb.target.index
+      case ValTypeRefNull as tb: ta.target.index != tb.target.index
+      case _: true
+    }
+    case ValTypeRefNull as ta: match (targetWasmType) {
+      case ValTypeRef as tb: ta.target.index != tb.target.index
+      case ValTypeRefNull as tb: ta.target.index != tb.target.index
+      case _: true
+    }
+    case _: !isWasmSubtypeWithStructs(initWasmType, targetWasmType)
+  };
+  if (isTargetRef && needCast) {
+    match (targetWasmType) {
+      case ValTypeRefNull as trn: {
+        let targetIdx = trn.target.index;
+        if (targetIdx != -1) {
+          ctx.emitter.emitRefCastNull(targetIdx);
+        }
+      }
+      case ValTypeRef as tr: {
+        let targetIdx = tr.target.index;
+        if (targetIdx != -1) {
+          ctx.emitter.emitRefCast(targetIdx);
+        } else if (initWasmType is ValTypeRefNull) {
+          ctx.emitter.emitRefAsNonNull();
+        }
+      }
+      case ValTypeStructRef: {
+        if (initWasmType is ValTypeRefNull) {
+          ctx.emitter.emitRefAsNonNull();
+        } else {
+          ctx.emitter.emitRefCastNull(heapTypeToSigned(HeapType.struct));
+        }
+      }
+      case _: {
+        if (initWasmType is ValTypeRefNull && targetWasmType is ValTypeRef) {
+          ctx.emitter.emitRefAsNonNull();
+        }
+      }
+    }
+  } else if (initWasmType is ValTypeRefNull && targetWasmType is ValTypeRef) {
+    // Same target type but a nullability mismatch (needCast compares
+    // targets only): a nullable value flowing into a non-null slot still
+    // needs the null check.
+    ctx.emitter.emitRefAsNonNull();
+  }
+};
+
+export let castRefNullIfNeeded = (ctx: FunctionContext, arg: Expression, argType: Type, targetType: Type): void => {
+  var initWasmType = typeToValTypeWithSub(ctx.wasm, argType, ctx.wasmFunction);
+  if (arg is Identifier) {
+    let idNode = arg as Identifier;
+    let sym = ctx.wasmFunction.model.resolve(idNode);
+    if (sym != null) {
+      let rSym = (sym as Symbol).resolveTarget();
+      let symId = if (ctx.localIndices.has((sym as Symbol).id)) (sym as Symbol).id else rSym.id;
+      if (ctx.localIndices.has(symId)) {
+        let localIndex = ctx.localIndices[symId];
+        let paramCount = ctx.wasmFunction.signature.params.length;
+        initWasmType = if (localIndex < paramCount) {
+          ctx.wasmFunction.signature.params[localIndex]
+        } else {
+          ctx.localTypes[localIndex - paramCount]
+        };
+      }
+    }
+  }
+  let targetWasmType = typeToValType(ctx.wasm, targetType);
+  castValTypeRefNullIfNeeded(ctx, initWasmType, targetWasmType);
 };
 
 

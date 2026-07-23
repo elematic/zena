@@ -4,10 +4,10 @@ import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, Unio
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
-import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16, valTypeToOpcode, valTypeEquals } from '../wasm.zena';
+import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16, valTypeToOpcode, valTypeEquals, isWasmSubtype } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmSignature, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, getSpecializedFunctionKey, getSpecializedName, getTypeUniqueKey } from '../codegen-utils.zena';
-import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext, eraseTypeParameters, getExpressionType } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext, eraseTypeParameters, getExpressionType, castValTypeRefNullIfNeeded, castRefNullIfNeeded } from '../type-mapping.zena';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
@@ -16,40 +16,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 import { i32ToString } from 'zena:string-convert';
 import { console } from 'zena:console';
 
-export let castValTypeRefNullIfNeeded = (ctx: FunctionContext, initWasmType: ValType, targetWasmType: ValType): void => {
-  let isTargetRef = match (targetWasmType) {
-    case ValTypeRef: true
-    case ValTypeRefNull: true
-    case ValTypeStructRef: true
-    case _: false
-  };
-  if (isTargetRef && !valTypeEquals(initWasmType, targetWasmType)) {
-    match (targetWasmType) {
-      case ValTypeRefNull as trn: {
-        let targetIdx = trn.target.index;
-        if (targetIdx != -1) {
-          ctx.emitter.emitRefCastNull(targetIdx);
-        }
-      }
-      case ValTypeRef as tr: {
-        let targetIdx = tr.target.index;
-        if (targetIdx != -1) {
-          ctx.emitter.emitRefCast(targetIdx);
-        }
-      }
-      case ValTypeStructRef: {
-        ctx.emitter.emitRefCastNull(heapTypeToSigned(HeapType.struct));
-      }
-      case _: {}
-    }
-  }
-};
-
-export let castRefNullIfNeeded = (ctx: FunctionContext, argType: Type, targetType: Type): void => {
-  let initWasmType = typeToValTypeWithSub(ctx.wasm, argType, ctx.wasmFunction);
-  let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetType, ctx.wasmFunction);
-  castValTypeRefNullIfNeeded(ctx, initWasmType, targetWasmType);
-};let referencesSymbol = (node: Node, symId: SymbolId, model: SemanticModel): boolean => {
+let referencesSymbol = (node: Node, symId: SymbolId, model: SemanticModel): boolean => {
   let isRef = new Array<boolean>();
   isRef.push(false);
   walk(node, (n: Node): boolean => {
@@ -133,10 +100,29 @@ export let generateCallArguments = (
       genExpr(arg, false);
     }
 
-    if (expectedParamType != null) {
-      let argType = getExpressionType(ctx, arg);
-      if (argType != null) {
-        castRefNullIfNeeded(ctx, argType as Type, expectedParamType as Type);
+    let argType = getExpressionType(ctx, arg);
+    if (argType != null) {
+      if (expectedParamType != null) {
+        castRefNullIfNeeded(ctx, arg, argType as Type, expectedParamType as Type);
+      }
+      // Reconcile nullability with the callee: emit as_non_null only when
+      // the argument's checker type maps to a NON-null reference (the
+      // checker proved the value non-null, but it may be flowing out of
+      // nullable storage). Nullable arguments (unions with null, the null
+      // literal) target nullable params and must NOT be force-unwrapped —
+      // that traps on legitimately-null values.
+      match (typeToValTypeWithSub(ctx.wasm, argType as Type, ctx.wasmFunction)) {
+        case ValTypeRef: ctx.emitter.emitRefAsNonNull()
+        case _: {}
+      }
+    } else {
+      if (expectedParamType != null) {
+        match (typeToValType(ctx.wasm, expectedParamType as Type)) {
+          case ValTypeRef: ctx.emitter.emitRefAsNonNull()
+          case _: {}
+        }
+      } else {
+        ctx.emitter.emitRefAsNonNull();
       }
     }
 
@@ -195,6 +181,7 @@ let generateClosureCall = (
   // 4. Push function reference onto stack
   ctx.emitter.emitLocalGet(closureLocal);
   ctx.emitter.emitStructGet(closureStruct.index, 0);
+  ctx.emitter.emitRefAsNonNull();
   
   // 5. Get implementation signature and call_ref
   let params = new Array<ValType>();
@@ -272,7 +259,9 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           ctx.emitter.emitLocalGet(calleeLocal);
           ctx.emitter.emitRefCast(closureStruct.index);
           ctx.emitter.emitStructGet(closureStruct.index, 1);
-          
+          // NOTE: no as_non_null — the context is null for non-capturing
+          // closures and the implementation takes a nullable structref.
+
           let sigParams = new Array<ValType>();
           sigParams.push(new ValTypeStructRef());
           for (let p in ftVal.parameters) {
@@ -288,6 +277,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           ctx.emitter.emitLocalGet(calleeLocal);
           ctx.emitter.emitRefCast(closureStruct.index);
           ctx.emitter.emitStructGet(closureStruct.index, 0);
+          ctx.emitter.emitRefAsNonNull();
           
           let returns = new Array<ValType>();
           if (!isVoidOrNeverType(ftVal.returnType)) {
@@ -393,6 +383,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
       
       ctx.emitter.emitLocalGet(closureLocal);
       ctx.emitter.emitStructGet(closureStruct.index, 0);
+      ctx.emitter.emitRefAsNonNull();
       
       ctx.emitter.emitCallRef(sig.index);
       return;
@@ -807,6 +798,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           currentGenExpr(member.object, false);
           var scratchLocal = ctx.getStructScratchLocal(structInfo);
           ctx.emitter.emitLocalTee(scratchLocal);
+          ctx.emitter.emitRefAsNonNull();
           
           generateCallArguments(ctx, call, ft, scratchLocal, currentGenExpr);
           
@@ -853,6 +845,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           ctx.emitter.emitLocalTee(scratchLocal);
           ctx.emitter.emitRefCast(fatPtr.index);
           ctx.emitter.emitStructGet(fatPtr.index, 0); 
+          ctx.emitter.emitRefAsNonNull();
           
           generateCallArguments(ctx, call, ft, scratchLocal, currentGenExpr);
           

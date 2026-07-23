@@ -1,5 +1,5 @@
 import { SymbolId } from '../scope/symbol.zena';
-import { ValType, ValTypeRefNull, WasmType, ValTypeI32 } from './wasm.zena';
+import { ValType, ValTypeRefNull, ValTypeRef, WasmType, ValTypeI32 } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { WasmEmitter } from './wasm-emitter.zena';
@@ -35,8 +35,12 @@ export final class FunctionContext {
   }
 
   allocLocal(type: ValType): i32 {
+    let declType = match (type) {
+      case ValTypeRef as vr: new ValTypeRefNull((vr as ValTypeRef).target)
+      case _: type
+    };
     let index = this.wasmFunction.signature.params.length + this.localTypes.length;
-    this.localTypes.push(type);
+    this.localTypes.push(declType);
     return index;
   }
 

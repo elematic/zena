@@ -53,7 +53,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
-import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, valTypeEquals, isWasmSubtype, isRefValType, WasmType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo } from '../wasm-module.zena';
 import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
@@ -392,7 +392,7 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
   args.push(castToConcreteRef(b, params[0], target.signature.params[0]));
   for (var i = 1; i < params.length; i += 1) {
     var v = params[i];
-    if (!valTypeEquals(func.signature.params[i], target.signature.params[i])) {
+    if (!isWasmSubtype(func.signature.params[i], target.signature.params[i])) {
       v = castToConcreteRef(b, v, target.signature.params[i]);
     }
     args.push(v);
@@ -408,10 +408,14 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
     return b.finish();
   }
   let resultType = if (target.signature.returns.length == 1) target.signature.returns[0] else null;
-  let result = b.callFunc(funcRef, args, resultType);
+  var result = b.callFunc(funcRef, args, resultType);
   if (func.signature.returns.length == 1) {
     if (resultType == null) {
       throw new ZirUnsupported('trampoline result shape');
+    }
+    let expectedRet = func.signature.returns[0];
+    if (!isWasmSubtype(resultType as ValType, expectedRet)) {
+      result = castToConcreteRef(b, result, expectedRet);
     }
     b.ret(result);
   } else {

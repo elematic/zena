@@ -1557,7 +1557,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let fields = new Array<WasmField>();
       if (closureDep.capturesThis && enclosingClassType != null) {
         let ct = enclosingClassType as ClassType;
-        var thisValType: ValType = new ValTypeAnyRef();
+        var thisValType: ValType = new ValTypeStructRef();
         if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) {
           thisValType = new ValTypeRefNull(info.structType);
         } else {
@@ -1586,12 +1586,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                               (classType as ClassType).typeParameters != null && 
                               ((classType as ClassType).typeParameters as Array<TypeParameterType>).length > 0 && 
                               ((classType as ClassType).typeArguments == null || !isConcrete(classType as ClassType));
+      let contextStructName = "ClosureCtx_" + fileBase + suffix + "_" + locStr;
+      let contextStruct = new WasmStruct(contextStructName, fields);
+      wasmFunc.contextStruct = contextStruct;
       if (!isGenericTemplate) {
-        let contextStructName = "ClosureCtx_" + fileBase + suffix + "_" + locStr;
-        let contextStruct = new WasmStruct(contextStructName, fields);
         this.wasm.types.push(contextStruct);
         this.markTypeReached(contextStruct);
-        wasmFunc.contextStruct = contextStruct;
 
         this.wasm.addFunction(wasmFunc);
         this.markFunctionReached(wasmFunc);

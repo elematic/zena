@@ -1,4 +1,4 @@
-import { ValTypeVoid, ValType, ValTypeRefNull, ValTypeRef, ValTypeEqRef, valTypeEquals } from '../wasm.zena';
+import { ValTypeVoid, ValType, ValTypeRefNull, ValTypeRef, ValTypeEqRef, ValTypeStructRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, HeapType, heapTypeToSigned, valTypeEquals, isWasmSubtype } from '../wasm.zena';
 import { Error } from 'zena:error';
 import { console } from 'zena:console';
 import { 
@@ -12,6 +12,7 @@ import { typeToValType, typeToValTypeWithSub, mapReturnTypeToWasmResults, getNod
 import { generatePatternBinding } from './bindings.zena';
 import { Array } from 'zena:array';
 import { InterfaceAdaptation, RecordAdaptation } from '../../semantic-model.zena';
+import { Symbol } from '../../scope/symbol.zena';
 
 export let generateValueReturn = (ctx: FunctionContext, arg: Expression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   genExpr(arg, false);
@@ -35,6 +36,26 @@ export let generateValueReturn = (ctx: FunctionContext, arg: Expression, genExpr
 
       let actualTypes = new Array<ValType>();
       mapReturnTypeToWasmResults(ctx.wasm, effectiveType, actualTypes);
+      if (arg is Identifier && actualTypes.length == 1) {
+        let idNode = arg as Identifier;
+        let sym = ctx.wasmFunction.model.resolve(idNode);
+        if (sym != null) {
+          let rSym = (sym as Symbol).resolveTarget();
+          let symId = if (ctx.localIndices.has((sym as Symbol).id)) (sym as Symbol).id else rSym.id;
+          // Celled locals are stored as a Cell struct but generateIdentifier
+          // reads THROUGH the cell, so the value on the stack has the
+          // unboxed type — keep the checker-derived actual type for those.
+          if (ctx.localIndices.has(symId) && !ctx.isCelled(symId)) {
+            let localIndex = ctx.localIndices[symId];
+            let paramCount = ctx.wasmFunction.signature.params.length;
+            actualTypes[0] = if (localIndex < paramCount) {
+              ctx.wasmFunction.signature.params[localIndex]
+            } else {
+              ctx.localTypes[localIndex - paramCount]
+            };
+          }
+        }
+      }
 
       if (argType is InlineTupleType) {
         let itt = argType as InlineTupleType;
@@ -52,23 +73,8 @@ export let generateValueReturn = (ctx: FunctionContext, arg: Expression, genExpr
           let actual = actualTypes[i];
           let expected = expectedReturns[i];
           var itemNeedsCast = false;
-          match (expected) {
-            case ValTypeRefNull as r: {
-              if (!(actual is ValTypeRefNull && (actual as ValTypeRefNull).target.index == r.target.index)) {
-                itemNeedsCast = true;
-              }
-            }
-            case ValTypeRef as r: {
-              if (!(actual is ValTypeRef && (actual as ValTypeRef).target.index == r.target.index)) {
-                itemNeedsCast = true;
-              }
-            }
-            case ValTypeEqRef: {
-              if (!(actual is ValTypeEqRef)) {
-                itemNeedsCast = true;
-              }
-            }
-            case _: {}
+          if (!isWasmSubtype(actual, expected)) {
+            itemNeedsCast = true;
           }
           if (itemNeedsCast) {
             needsTemp = true;
@@ -98,25 +104,72 @@ export let generateValueReturn = (ctx: FunctionContext, arg: Expression, genExpr
 
             match (expected) {
               case ValTypeRefNull as r: {
-                if (!(actual is ValTypeRefNull && (actual as ValTypeRefNull).target.index == r.target.index)) {
-                  ctx.emitter.emitRefCastNull(r.target.index);
+                if (!isWasmSubtype(actual, expected)) {
+                  if (r.target.index >= 0) {
+                    ctx.emitter.emitRefCastNull(r.target.index);
+                  }
                 }
               }
               case ValTypeRef as r: {
-                if (!(actual is ValTypeRef && (actual as ValTypeRef).target.index == r.target.index)) {
-                  ctx.emitter.emitRefCast(r.target.index);
+                if (!isWasmSubtype(actual, expected)) {
+                  if (r.target.index >= 0) {
+                    ctx.emitter.emitRefCast(r.target.index);
+                  } else {
+                    ctx.emitter.emitRefAsNonNull();
+                  }
                 }
               }
               case ValTypeEqRef: {
-                if (!(actual is ValTypeEqRef)) {
+                if (!isWasmSubtype(actual, expected)) {
                   ctx.emitter.emitRefCastEqNull();
                 }
               }
-              case _: {}
+              case _: {
+                if (actual is ValTypeRefNull && expected is ValTypeRef) {
+                  ctx.emitter.emitRefAsNonNull();
+                }
+              }
             }
 
             j += 1;
           }
+        }
+      } else if (actualTypes.length < expectedReturns.length) {
+        var k = actualTypes.length;
+        while (k < expectedReturns.length) {
+          let exp = expectedReturns[k];
+          match (exp) {
+            case ValTypeRefNull as r: {
+              let idx = r.target.index;
+              if (idx >= 0) {
+                ctx.emitter.emitRefNull(idx);
+              } else {
+                ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.struct));
+              }
+            }
+            case ValTypeStructRef: {
+              ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.struct));
+            }
+            case ValTypeEqRef: {
+              ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.eq));
+            }
+            case ValTypeI32: {
+              ctx.emitter.emitI32Const(0);
+            }
+            case ValTypeI64: {
+              ctx.emitter.emitI64Const(0 as i64);
+            }
+            case ValTypeF32: {
+              ctx.emitter.emitF32Const(0.0);
+            }
+            case ValTypeF64: {
+              ctx.emitter.emitF64Const(0.0);
+            }
+            case _: {
+              ctx.emitter.emitRefNull(heapTypeToSigned(HeapType.any));
+            }
+          }
+          k += 1;
         }
       }
     }

@@ -1,14 +1,13 @@
 import { Node, AssignmentExpression, Identifier, Expression, BinaryExpression, MemberExpression, SuperExpression, ClassDeclaration, ImportSpecifier, IndexExpression, getMemberPropertyName } from '../../ast.zena';
-import { Type, F64Type, F32Type, ClassType, InterfaceType, ArrayType, typeToString, FunctionType, VoidType, ByteArrayType, FieldInfo } from '../../types.zena';
+import { Type, F64Type, F32Type, ClassType, InterfaceType, ArrayType, AnyRefType, typeToString, FunctionType, VoidType, ByteArrayType, FieldInfo } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { generateBinaryExpression } from './operators.zena';
 import { WasmFunction, WasmArray, WasmStruct, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
-import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getNodeType, typeToValTypeWithSub, eraseTypeParameters } from '../type-mapping.zena';
-import { ValTypeRefNull, ValTypeRef, ValType, ValTypeStructRef, valTypeEquals, HeapType, heapTypeToSigned } from '../wasm.zena';
-import { castValTypeRefNullIfNeeded } from './calls.zena';
+import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getNodeType, typeToValTypeWithSub, eraseTypeParameters, castValTypeRefNullIfNeeded } from '../type-mapping.zena';
+import { ValTypeRefNull, ValTypeRef, ValType, ValTypeStructRef, valTypeEquals, isWasmSubtype, HeapType, heapTypeToSigned } from '../wasm.zena';
 
 /**
  * Reconciles the wasm type of an assigned value with the binding's wasm
@@ -18,37 +17,39 @@ import { castValTypeRefNullIfNeeded } from './calls.zena';
  * classes lowers to eqref, while the target local is a non-nullable
  * concrete ref (bindings became non-nullable by default in 8fae4045).
  */
-let castAssignedValueIfNeeded = (ctx: FunctionContext, value: Expression, targetType: Type): void => {
-  let vType = getNodeType(ctx, value);
-  if (vType == null) {
-    return;
-  }
-  let valueWasmType = typeToValTypeWithSub(ctx.wasm, vType as Type, ctx.wasmFunction);
-  let targetWasmType = typeToValTypeWithSub(ctx.wasm, targetType, ctx.wasmFunction);
-  let isTargetRef = match (targetWasmType) {
-    case ValTypeRef: true
-    case ValTypeRefNull: true
-    case ValTypeStructRef: true
-    case _: false
-  };
-  if (isTargetRef && !valTypeEquals(valueWasmType, targetWasmType)) {
-    match (targetWasmType) {
-      case ValTypeRefNull as trn: {
-        if (trn.target.index != -1) {
-          ctx.emitter.emitRefCastNull(trn.target.index);
-        }
-      }
-      case ValTypeRef as tr: {
-        if (tr.target.index != -1) {
-          ctx.emitter.emitRefCast(tr.target.index);
-        }
-      }
-      case ValTypeStructRef: {
-        ctx.emitter.emitRefCastNull(heapTypeToSigned(HeapType.struct));
-      }
-      case _: {}
+let castAssignedValueIfNeeded = (ctx: FunctionContext, value: Expression, targetType: Type, targetIdent: Node | null = null): void => {
+  var vType = getNodeType(ctx, value);
+  if (vType == null && value is Identifier) {
+    let sym = ctx.wasmFunction.model.resolve(value as Identifier);
+    if (sym != null) {
+      vType = ctx.wasmFunction.model.getBindingType(sym as Symbol);
     }
   }
+  if (vType == null) {
+    vType = new AnyRefType();
+  }
+  let valueWasmType = typeToValTypeWithSub(ctx.wasm, vType as Type, ctx.wasmFunction);
+  var targetWasmType = typeToValTypeWithSub(ctx.wasm, targetType, ctx.wasmFunction);
+
+  if (targetIdent != null && targetIdent is Identifier) {
+    let idNode = targetIdent as Identifier;
+    let sym = ctx.wasmFunction.model.resolve(idNode);
+    if (sym != null) {
+      let rSym = (sym as Symbol).resolveTarget();
+      let symId = if (ctx.localIndices.has((sym as Symbol).id)) (sym as Symbol).id else rSym.id;
+      if (ctx.localIndices.has(symId) && !ctx.isCelled(symId)) {
+        let localIndex = ctx.localIndices[symId];
+        let paramCount = ctx.wasmFunction.signature.params.length;
+        targetWasmType = if (localIndex < paramCount) {
+          ctx.wasmFunction.signature.params[localIndex]
+        } else {
+          ctx.localTypes[localIndex - paramCount]
+        };
+      }
+    }
+  }
+
+  castValTypeRefNullIfNeeded(ctx, valueWasmType, targetWasmType);
 };
 
 let isArrayType = (t: Type): boolean => {
@@ -111,11 +112,18 @@ export let generateAssignmentExpression = (
       if (ctx.localIndices.has(s.id)) {
         if (ctx.isCelled(s.id)) {
           let symType = ctx.wasmFunction.model.getBindingType(s);
-          let valType = typeToValType(ctx.wasm, symType as Type);
+          var innerType = symType as Type;
+          if (innerType is ClassType && (innerType as ClassType).name == "Cell") {
+            let ct = innerType as ClassType;
+            if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
+              innerType = (ct.typeArguments as Array<Type>)[0];
+            }
+          }
+          let valType = typeToValType(ctx.wasm, innerType);
           let cellStruct = getCellStruct(ctx.wasm, valType);
 
           genExpr(assign.value, false);
-          castAssignedValueIfNeeded(ctx, assign.value, symType as Type);
+          castAssignedValueIfNeeded(ctx, assign.value, symType as Type, assign.left);
           let valLocal = ctx.allocLocal(valType);
           if (discardValue) {
             ctx.emitter.emitLocalSet(valLocal);
@@ -129,7 +137,7 @@ export let generateAssignmentExpression = (
           genExpr(assign.value, false);
           let symType = ctx.wasmFunction.model.getBindingType(s);
           if (symType != null) {
-            castAssignedValueIfNeeded(ctx, assign.value, symType as Type);
+            castAssignedValueIfNeeded(ctx, assign.value, symType as Type, assign.left);
           }
           if (discardValue) {
             ctx.emitter.emitLocalSet(ctx.localIndices[(sym as Symbol).id]);
@@ -160,11 +168,12 @@ export let generateAssignmentExpression = (
     
     match (objectType) {
       case ClassType as ctVar: {
-        let ct = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
+        let rawCt = if (ctVar.name.length >= 5 && ctVar.name.sliceBytes(ctVar.name.length - 5, ctVar.name.length) == "_This") {
           ctx.wasmFunction.classType as ClassType
         } else {
           ctVar
         };
+        let ct = eraseTypeParameters(rawCt) as ClassType;
         let isStaticAccess = ctx.wasmFunction.model.isStaticAccess(memExpr);
 
         if (isStaticAccess) {
@@ -271,7 +280,7 @@ export let generateAssignmentExpression = (
           return;
         }
 
-        let ctKey = getClassKey(ct);
+        let ctKey = getClassKey(rawCt);
         var structInfoOpt: WasmStruct | null = null;
         var vtableStructOpt: WasmStruct | null = null;
         var classInfoOpt: ClassCodegenInfo | null = null;
@@ -305,7 +314,7 @@ export let generateAssignmentExpression = (
             scopedName
           } else {
             // Struct-driven resolution (see WasmStruct.resolvePrivateFieldName).
-            let resolved = structInfo.resolvePrivateFieldName(ct, propName);
+            let resolved = structInfo.resolvePrivateFieldName(rawCt, propName);
             if (resolved != null) resolved as String
             else getClassPrivateFieldKey(ctKey, propName)
           }
@@ -465,6 +474,14 @@ export let generateAssignmentExpression = (
             ctx.emitter.emitLocalTee(tempLocal);
             ctx.emitter.emitStructSet(structInfo.index, fieldIndex);
             ctx.emitter.emitLocalGet(tempLocal);
+            let assignNodeType = getNodeType(ctx, assign);
+            let expectedValType = if (assignNodeType != null) typeToValType(ctx.wasm, assignNodeType as Type) else valType;
+            if (!isWasmSubtype(valType, expectedValType)) {
+              match (expectedValType) {
+                case ValTypeRef: { ctx.emitter.emitRefAsNonNull(); }
+                case _: {}
+              }
+            }
           } else {
             ctx.emitter.emitStructSet(structInfo.index, fieldIndex);
           }
@@ -520,7 +537,7 @@ export let generateAssignmentExpression = (
             ctx.emitter.emitRefCast(vtableStruct.index);
             ctx.emitter.emitStructGet(vtableStruct.index, vtableIndex);
 
-            let sig = getClassMemberSignature(ctx.wasm, ct, setterName);
+            let sig = getClassMemberSignature(ctx.wasm, rawCt, setterName);
             ctx.emitter.emitRefCast(sig.index);
             ctx.emitter.emitCallRef(sig.index);
 

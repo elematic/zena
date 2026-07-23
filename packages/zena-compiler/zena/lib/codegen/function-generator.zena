@@ -1,5 +1,5 @@
 import { console } from 'zena:console';
-import { ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeAnyRef, ValTypeEqRef, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeVoid, valTypeEquals, ValTypeExternRef } from './wasm.zena';
+import { ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeAnyRef, ValTypeEqRef, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeVoid, valTypeEquals, isWasmSubtype, ValTypeExternRef } from './wasm.zena';
 import { emitI64FoldToI32, emitHashCodeDispatch, emitEqDispatch } from './expr/intrinsics.zena';
 import { 
   Node, VariableDeclaration, FunctionExpression, IdentifierPattern,
@@ -24,7 +24,7 @@ import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned, WasmType } from './wasm.zena';
 import { WasmField, WasmStruct, WasmSignature, sortWasmFields, WasmGlobal, WasmFunction, WasmModule, WasmArray } from './wasm-module.zena';
-import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters, getNonNullableType, getInterfaceTypeParameters, substituteTypeParamsInClassContext, getExpressionType } from './type-mapping.zena';
+import { typeToValType, getClosureStruct, getCellStruct, typeToValTypeWithSub, substituteTypeParamsInCodegen, getNodeType, getClassTypeParameters, getNonNullableType, getInterfaceTypeParameters, substituteTypeParamsInClassContext, getExpressionType, castValTypeRefNullIfNeeded } from './type-mapping.zena';
 import { 
   getClassKey, getInterfaceKey, collectMixinFields, getClassInterfaceKey,
   getClassPrivateFieldKey, classInterfaceKeyToString,
@@ -444,7 +444,7 @@ export final class FunctionGenerator {
             this.ctx.emitter.emitLocalGet(i);
             let paramWasmType = this.ctx.wasmFunction.signature.params[i];
             let targetWasmType = target.signature.params[i];
-            if (!valTypeEquals(paramWasmType, targetWasmType)) {
+            if (!isWasmSubtype(paramWasmType, targetWasmType)) {
               match (targetWasmType) {
                 case ValTypeRefNull as targetRefNull: {
                   this.ctx.emitter.emitRefCast(targetRefNull.target.index);
@@ -458,6 +458,21 @@ export final class FunctionGenerator {
             i += 1;
           }
           this.ctx.emitter.emitCall(target);
+          if (this.ctx.wasmFunction.signature.returns.length > 0 && target.signature.returns.length > 0) {
+            let actualRet = target.signature.returns[0];
+            let expectedRet = this.ctx.wasmFunction.signature.returns[0];
+            if (!isWasmSubtype(actualRet, expectedRet)) {
+              match (expectedRet) {
+                case ValTypeRefNull as r: {
+                  this.ctx.emitter.emitRefCastNull(r.target.index);
+                }
+                case ValTypeRef as r: {
+                  this.ctx.emitter.emitRefCast(r.target.index);
+                }
+                case _: {}
+              }
+            }
+          }
         }
       } else if (this.ctx.wasmFunction.isFunctionAdaptation) {
         this.generateFunctionAdaptationBody();
@@ -678,7 +693,7 @@ export final class FunctionGenerator {
       if (contextStruct.fields.length > 0) {
         let typedCtxLocalIdx = this.ctx.allocLocal(new ValTypeRefNull(contextStruct));
         this.ctx.emitter.emitLocalGet(0);
-        this.ctx.emitter.emitRefCast(contextStruct.index);
+        this.ctx.emitter.emitRefCastNull(contextStruct.index);
         this.ctx.emitter.emitLocalSet(typedCtxLocalIdx);
         
         var fieldIdx = 0;
@@ -971,10 +986,32 @@ export final class FunctionGenerator {
                             (this.ctx.wasmFunction.classType as ClassType).isExtension;
             if (isExtCtor) {
               if (this.ctx.isReachable) {
-                if (this.ctx.thisLocalIndex >= 0) {
-                  this.ctx.emitter.emitLocalGet(this.ctx.thisLocalIndex);
+                let thisLocal = if (this.ctx.thisLocalIndex >= 0) this.ctx.thisLocalIndex else 0;
+                this.ctx.emitter.emitLocalGet(thisLocal);
+                let paramCount = this.ctx.wasmFunction.signature.params.length;
+                let actualType = if (thisLocal < paramCount) {
+                  this.ctx.wasmFunction.signature.params[thisLocal]
                 } else {
-                  this.ctx.emitter.emitLocalGet(0);
+                  this.ctx.localTypes[thisLocal - paramCount]
+                };
+                if (this.ctx.wasmFunction.signature.returns.length > 0) {
+                  let retType = this.ctx.wasmFunction.signature.returns[0];
+                  if (!isWasmSubtype(actualType, retType)) {
+                    match (retType) {
+                      case ValTypeRef as tr: {
+                        if (tr.target.index >= 0) {
+                          this.ctx.emitter.emitRefCast(tr.target.index);
+                        } else {
+                          this.ctx.emitter.emitRefAsNonNull();
+                        }
+                      }
+                      case _: {
+                        if (actualType is ValTypeRefNull && retType is ValTypeRef) {
+                          this.ctx.emitter.emitRefAsNonNull();
+                        }
+                      }
+                    }
+                  }
                 }
                 this.ctx.emitter.emitReturn();
                 this.ctx.isReachable = false;
@@ -1312,7 +1349,18 @@ export final class FunctionGenerator {
             }
           }
           
-          if (valTypeEquals(currentSourceWasmType, targetWasmType)) {
+          let isStrictlyEqual = match (currentSourceWasmType) {
+            case ValTypeRef as s1: match (targetWasmType) {
+              case ValTypeRef as t1: s1.target.index == t1.target.index
+              case _: false
+            }
+            case ValTypeRefNull as s2: match (targetWasmType) {
+              case ValTypeRefNull as t2: s2.target.index == t2.target.index
+              case _: false
+            }
+            case _: valTypeEquals(currentSourceWasmType, targetWasmType)
+          };
+          if (isStrictlyEqual) {
             // No-op identity cast
           } else {
             match (targetWasmType) {
@@ -1573,7 +1621,7 @@ export final class FunctionGenerator {
       let expectedParamWasmType = typeToValType(this.ctx.wasm, expectedFt.parameters[i]);
       let actualParamWasmType = typeToValType(this.ctx.wasm, actualFt.parameters[i]);
       
-      if (!valTypeEquals(expectedParamWasmType, actualParamWasmType)) {
+      if (!isWasmSubtype(expectedParamWasmType, actualParamWasmType)) {
         match (actualParamWasmType) {
           case ValTypeRefNull as targetRefNull: {
             this.ctx.emitter.emitRefCast(targetRefNull.target.index);
@@ -1642,6 +1690,21 @@ export final class FunctionGenerator {
       i += 1;
     }
     this.ctx.emitter.emitCall(target);
+    if (this.ctx.wasmFunction.signature.returns.length > 0 && target.signature.returns.length > 0) {
+      let actualRet = target.signature.returns[0];
+      let expectedRet = this.ctx.wasmFunction.signature.returns[0];
+      if (!isWasmSubtype(actualRet, expectedRet)) {
+        match (expectedRet) {
+          case ValTypeRefNull as r: {
+            this.ctx.emitter.emitRefCastNull(r.target.index);
+          }
+          case ValTypeRef as r: {
+            this.ctx.emitter.emitRefCast(r.target.index);
+          }
+          case _: {}
+        }
+      }
+    }
     this.ctx.emitter.emitReturn();
   }
 
@@ -1673,13 +1736,13 @@ export final class FunctionGenerator {
       let fieldName = structTypeVal.fields[f].name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
-        if (nameStr.endsWith("::#data")) {
+        if (nameStr.endsWith("#data")) {
           dataFieldIdx = f;
-        } else if (nameStr.endsWith("::#start")) {
+        } else if (nameStr.endsWith("#start")) {
           startFieldIdx = f;
-        } else if (nameStr.endsWith("::#end")) {
+        } else if (nameStr.endsWith("#end")) {
           endFieldIdx = f;
-        } else if (nameStr.endsWith("::#encoding")) {
+        } else if (nameStr.endsWith("#encoding")) {
           encodingFieldIdx = f;
         }
       }
@@ -1708,7 +1771,7 @@ export final class FunctionGenerator {
           this.ctx.emitter.emitI32Add();
         } else if (i == encodingFieldIdx) {
           this.ctx.emitter.emitI32Const(0);
-        } else if (nameStr.endsWith("::#hashCode")) {
+        } else if (nameStr.endsWith("#hashCode")) {
           this.ctx.emitter.emitI32Const(0);
         } else {
           match (field.type) {
@@ -2367,6 +2430,14 @@ export final class FunctionGenerator {
           }
           let localIdx = this.ctx.localIndices[symId];
           this.ctx.emitter.emitLocalGet(localIdx);
+          let paramCount = this.ctx.wasmFunction.signature.params.length;
+          let actualType = if (localIdx < paramCount) {
+            this.ctx.wasmFunction.signature.params[localIdx]
+          } else {
+            this.ctx.localTypes[localIdx - paramCount]
+          };
+          let fieldType = contextStruct.fields[fieldIdx].type;
+          castValTypeRefNullIfNeeded(this.ctx, actualType, fieldType);
           fieldIdx += 1;
         }
         this.ctx.emitter.emitStructNew(contextStruct.index);
@@ -2426,11 +2497,11 @@ export final class FunctionGenerator {
       let fieldName = (stringStruct as WasmStruct).fields[f].name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
-        if (nameStr.endsWith("::#data")) {
+        if (nameStr.endsWith("#data")) {
           dataFieldIdx = f;
-        } else if (nameStr.endsWith("::#start")) {
+        } else if (nameStr.endsWith("#start")) {
           startFieldIdx = f;
-        } else if (nameStr.endsWith("::#end")) {
+        } else if (nameStr.endsWith("#end")) {
           endFieldIdx = f;
         }
       }
@@ -2573,11 +2644,11 @@ export final class FunctionGenerator {
       let fieldName = (stringStruct as WasmStruct).fields[f].name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
-        if (nameStr.endsWith("::#data")) {
+        if (nameStr.endsWith("#data")) {
           dataFieldIdx = f;
-        } else if (nameStr.endsWith("::#start")) {
+        } else if (nameStr.endsWith("#start")) {
           startFieldIdx = f;
-        } else if (nameStr.endsWith("::#end")) {
+        } else if (nameStr.endsWith("#end")) {
           endFieldIdx = f;
         }
       }
@@ -2679,13 +2750,13 @@ export final class FunctionGenerator {
       let fieldName = stringStruct.fields[f].name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
-        if (nameStr.endsWith("::#data")) {
+        if (nameStr.endsWith("#data")) {
           dataFieldIdx = f;
-        } else if (nameStr.endsWith("::#start")) {
+        } else if (nameStr.endsWith("#start")) {
           startFieldIdx = f;
-        } else if (nameStr.endsWith("::#end")) {
+        } else if (nameStr.endsWith("#end")) {
           endFieldIdx = f;
-        } else if (nameStr.endsWith("::#encoding")) {
+        } else if (nameStr.endsWith("#encoding")) {
           encodingFieldIdx = f;
         }
       }
@@ -2751,9 +2822,9 @@ export final class FunctionGenerator {
       let fieldName = (stringStruct as WasmStruct).fields[f].name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
-        if (nameStr.endsWith("::#data")) {
+        if (nameStr.endsWith("#data")) {
           dataFieldIdx = f;
-        } else if (nameStr.endsWith("::#start")) {
+        } else if (nameStr.endsWith("#start")) {
           startFieldIdx = f;
         }
       }
@@ -2814,13 +2885,13 @@ export final class FunctionGenerator {
       let fieldName = (stringStruct as WasmStruct).fields[f].name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
-        if (nameStr.endsWith("::#data")) {
+        if (nameStr.endsWith("#data")) {
           dataFieldIdx = f;
-        } else if (nameStr.endsWith("::#start")) {
+        } else if (nameStr.endsWith("#start")) {
           startFieldIdx = f;
-        } else if (nameStr.endsWith("::#end")) {
+        } else if (nameStr.endsWith("#end")) {
           endFieldIdx = f;
-        } else if (nameStr.endsWith("::#hashCode")) {
+        } else if (nameStr.endsWith("#hashCode")) {
           hashCodeFieldIdx = f;
         }
       }
@@ -2957,9 +3028,9 @@ export final class FunctionGenerator {
       let fieldName = (stringStruct as WasmStruct).fields[f].name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
-        if (nameStr.endsWith("::#data")) {
+        if (nameStr.endsWith("#data")) {
           dataFieldIdx = f;
-        } else if (nameStr.endsWith("::#start")) {
+        } else if (nameStr.endsWith("#start")) {
           startFieldIdx = f;
         }
       }
@@ -3013,9 +3084,9 @@ export final class FunctionGenerator {
       let fieldName = (stringStruct as WasmStruct).fields[f].name;
       if (fieldName != null) {
         let nameStr = fieldName as String;
-        if (nameStr.endsWith("::#start")) {
+        if (nameStr.endsWith("#start")) {
           startFieldIdx = f;
-        } else if (nameStr.endsWith("::#end")) {
+        } else if (nameStr.endsWith("#end")) {
           endFieldIdx = f;
         }
       }

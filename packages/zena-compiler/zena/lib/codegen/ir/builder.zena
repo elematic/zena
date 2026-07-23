@@ -1,7 +1,19 @@
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
-import { ValType, valTypeEquals } from '../wasm.zena';
+import { ValType, valTypeEquals, ValTypeRef, ValTypeRefNull, valTypeToOpcode } from '../wasm.zena';
 import { IrBody, IrBlock, IrOp, IrRef, isIrTerminator } from './ir.zena';
+
+let valTypesStrictlyEqual = (a: ValType, b: ValType): boolean => match (a) {
+  case ValTypeRef as ta: match (b) {
+    case ValTypeRef as tb: ta.target.index == tb.target.index
+    case _: false
+  }
+  case ValTypeRefNull as ta: match (b) {
+    case ValTypeRefNull as tb: ta.target.index == tb.target.index
+    case _: false
+  }
+  case _: valTypeToOpcode(a) == valTypeToOpcode(b)
+};
 
 /**
  * ZIR construction API.
@@ -19,11 +31,24 @@ export final class IrBuilder {
   body = new IrBody();
   var #current: i32 = -1;
 
-  newBlock(): i32 {
-    this.body.blocks.push(new IrBlock());
-    return this.body.blocks.length - 1;
+  /** Total blocks created so far. */
+  numBlocks(): i32 {
+    return this.body.blocks.length;
   }
 
+  /**
+   * Allocate a fresh block. It is not current until switchTo(b) is called.
+   */
+  newBlock(): i32 {
+    let idx = this.body.blocks.length;
+    this.body.blocks.push(new IrBlock());
+    return idx;
+  }
+
+  /**
+   * Select `block` as the insertion target for subsequent emissions. Fails if
+   * `block` has already received a terminator instruction.
+   */
   switchTo(block: i32): void {
     if (block < 0 || block >= this.body.blocks.length) {
       throw new Error('switchTo: no such block');
@@ -34,6 +59,7 @@ export final class IrBuilder {
     this.#current = block;
   }
 
+  /** Current insertion target (-1 before first switchTo). */
   currentBlock(): i32 {
     return this.#current;
   }
@@ -58,7 +84,7 @@ export final class IrBuilder {
     let table = this.body.typeTable;
     var i = 0;
     while (i < table.length) {
-      if (valTypeEquals(table[i], type)) {
+      if (valTypesStrictlyEqual(table[i], type)) {
         return i;
       }
       i += 1;

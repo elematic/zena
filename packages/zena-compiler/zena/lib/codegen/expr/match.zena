@@ -7,15 +7,14 @@ import {
   MemberExpression
 } from '../../ast.zena';
 import { Type, F64Type, F32Type, VoidType, ClassType, typeToString, isVoidOrNeverType } from '../../types.zena';
-import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeRef } from '../wasm.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeRef, isWasmSubtype } from '../wasm.zena';
 import { getClassKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
-import { typeToValType, typeToValTypeWithSub, getCellStruct } from '../type-mapping.zena';
+import { typeToValType, typeToValTypeWithSub, getCellStruct, getExpressionType, castValTypeRefNullIfNeeded } from '../type-mapping.zena';
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { parseF64, parseI64 } from 'zena:string-convert';
 import { WasmStruct, RecordDispatchInfo, WasmFunction } from '../wasm-module.zena';
 import { generateStringLiteral, parseI64OrU64Literal } from './primitives.zena';
-import { castValTypeRefNullIfNeeded } from './calls.zena';
 
 export let generateMatchExpression = (
   ctx: FunctionContext,
@@ -34,8 +33,28 @@ export let generateMatchExpression = (
   let tempDiscriminant = ctx.allocLocal(discWasmType);
   ctx.emitter.emitLocalSet(tempDiscriminant);
 
-  // 2. Determine match block result type
-  let nodeType = ctx.wasmFunction.model.getNodeType(expr);
+  var nodeType = ctx.wasmFunction.model.getNodeType(expr);
+  if (nodeType == null && !discardValue) {
+    for (let mc in expr.cases) {
+      var bodyExpr: Expression | null = null;
+      if (mc.body is BlockStatement) {
+        let block = mc.body as BlockStatement;
+        if (block.body.length > 0 && block.body[block.body.length - 1] is ExpressionStatement) {
+          bodyExpr = (block.body[block.body.length - 1] as ExpressionStatement).expression;
+        }
+      } else if (mc.body is Expression) {
+        bodyExpr = mc.body as Expression;
+      }
+      if (bodyExpr != null) {
+        let armT = getExpressionType(ctx, bodyExpr as Expression);
+        if (armT != null) {
+          nodeType = armT;
+          break;
+        }
+      }
+    }
+  }
+
   var resultValType: ValType = new ValTypeVoid();
   if (!discardValue) {
     if (nodeType is F32Type) {
@@ -95,6 +114,96 @@ export let generateMatchExpression = (
       }
     } else if (mc.body is Expression) {
       genExpr(mc.body as Expression, dropResult);
+    }
+
+    if (!dropResult) {
+      let armExpr = if (mc.body is BlockStatement) {
+        let block = mc.body as BlockStatement;
+        if (block.body.length > 0 && block.body[block.body.length - 1] is ExpressionStatement) {
+          (block.body[block.body.length - 1] as ExpressionStatement).expression
+        } else {
+          null
+        }
+      } else {
+        mc.body as Expression
+      };
+      if (armExpr != null) {
+        var actualWasmType: ValType | null = null;
+        if (armExpr is Identifier) {
+          let idNode = armExpr as Identifier;
+          let sym = ctx.wasmFunction.model.resolve(idNode);
+          if (sym != null) {
+            let rSym = (sym as Symbol).resolveTarget();
+            let symId = if (ctx.localIndices.has((sym as Symbol).id)) (sym as Symbol).id else rSym.id;
+            if (ctx.localIndices.has(symId)) {
+              let localIndex = ctx.localIndices[symId];
+              let paramCount = ctx.wasmFunction.signature.params.length;
+              actualWasmType = if (localIndex < paramCount) {
+                ctx.wasmFunction.signature.params[localIndex]
+              } else {
+                ctx.localTypes[localIndex - paramCount]
+              };
+            }
+          }
+        }
+        if (actualWasmType == null) {
+          var matchType = ctx.wasmFunction.model.getNodeType(expr);
+          if (matchType == null) {
+            for (let mc in expr.cases) {
+              var bodyExpr: Expression | null = null;
+              if (mc.body is BlockStatement) {
+                let block = mc.body as BlockStatement;
+                if (block.body.length > 0 && block.body[block.body.length - 1] is ExpressionStatement) {
+                  bodyExpr = (block.body[block.body.length - 1] as ExpressionStatement).expression;
+                }
+              } else if (mc.body is Expression) {
+                bodyExpr = mc.body as Expression;
+              }
+              if (bodyExpr != null) {
+                let armT = getExpressionType(ctx, bodyExpr as Expression);
+                if (armT != null) {
+                  matchType = armT;
+                  break;
+                }
+              }
+            }
+          }
+          let armTypeOpt = matchType ?? getExpressionType(ctx, armExpr as Expression);
+          if (armTypeOpt != null) {
+            actualWasmType = typeToValType(ctx.wasm, armTypeOpt as Type);
+          }
+        }
+        if (actualWasmType != null) {
+          let actual = actualWasmType as ValType;
+          if (!isWasmSubtype(actual, resultValType)) {
+            match (resultValType) {
+              case ValTypeRef as tr: {
+                if (tr.target.index >= 0) {
+                  ctx.emitter.emitRefCast(tr.target.index);
+                } else {
+                  ctx.emitter.emitRefAsNonNull();
+                }
+              }
+              case ValTypeRefNull as trn: {
+                if (trn.target.index >= 0) {
+                  ctx.emitter.emitRefCastNull(trn.target.index);
+                }
+              }
+              case _: {
+                if (resultValType is ValTypeRef) {
+                  ctx.emitter.emitRefAsNonNull();
+                }
+              }
+            }
+          } else if (resultValType is ValTypeRef && actual is ValTypeRefNull) {
+            ctx.emitter.emitRefAsNonNull();
+          }
+        } else if (resultValType is ValTypeRef) {
+          ctx.emitter.emitRefAsNonNull();
+        }
+      } else if (resultValType is ValTypeRef) {
+        ctx.emitter.emitRefAsNonNull();
+      }
     }
 
     // Break to outer match block

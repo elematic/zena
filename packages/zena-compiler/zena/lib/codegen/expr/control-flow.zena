@@ -1,13 +1,12 @@
-import { ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeEqRef, ValTypeRef, valTypeEquals } from '../wasm.zena';
+import { ValTypeVoid, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeEqRef, ValTypeRef, valTypeEquals, isWasmSubtype } from '../wasm.zena';
 import { Node, IfExpression, Expression, BlockStatement, Statement, ExpressionStatement, ThrowExpression, TryExpression, CatchClause, Identifier, LetPatternCondition, TuplePattern, LiteralPattern, BooleanLiteral, NumberLiteral, StringLiteral, NullLiteral, PipelineExpression, PipePlaceholder } from '../../ast.zena';
 import { Type, F64Type, F32Type, VoidType, InlineTupleType, UnionType, baseType, isVoidOrNeverType, NullType, HoleType, typeToString } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { WasmTag, WasmGlobal, WasmStruct } from '../wasm-module.zena';
-import { typeToValType, getExpressionType, typeToValTypeWithSub } from '../type-mapping.zena';
+import { typeToValType, getExpressionType, typeToValTypeWithSub, castRefNullIfNeeded } from '../type-mapping.zena';
 import { generatePatternBinding } from '../stmt/bindings.zena';
-import { castRefNullIfNeeded } from './calls.zena';
 
 export let generateIfExpression = (
   ctx: FunctionContext, 
@@ -104,9 +103,10 @@ export let generateIfExpression = (
           let loadValue = (): void => {
             ctx.emitter.emitLocalGet(tempIndex);
             let targetValType = typeToValTypeWithSub(ctx.wasm, elemTypes[i], ctx.wasmFunction);
-            if (!valTypeEquals(tempValType, targetValType)) {
+            if (!isWasmSubtype(tempValType, targetValType)) {
               match (targetValType) {
                 case ValTypeRef as tr: { ctx.emitter.emitRefCast(tr.target.index); }
+                case ValTypeRefNull as trn: { ctx.emitter.emitRefCastNull(trn.target.index); }
                 case _: {}
               }
             }
@@ -196,7 +196,7 @@ export let generateIfBranch = (
           genExpr(exprStmt.expression, false);
           let argType = getExpressionType(ctx, exprStmt.expression);
           if (argType != null) {
-            castRefNullIfNeeded(ctx, argType as Type, expectedType as Type);
+            castRefNullIfNeeded(ctx, exprStmt.expression, argType as Type, expectedType as Type);
           }
         } else {
           genStmt(lastStmt);
@@ -209,7 +209,7 @@ export let generateIfBranch = (
     if (expectedType != null) {
       let argType = getExpressionType(ctx, expr);
       if (argType != null) {
-        castRefNullIfNeeded(ctx, argType as Type, expectedType as Type);
+        castRefNullIfNeeded(ctx, expr, argType as Type, expectedType as Type);
       }
     }
   } else {

@@ -79,20 +79,38 @@ export let valTypeToOpcode = (type: ValType): i32 => match (type) {
 };
 
 export let valTypeEquals = (a: ValType, b: ValType): boolean => {
-  if (valTypeToOpcode(a) != valTypeToOpcode(b)) {
-    return false;
-  }
   return match (a) {
     case ValTypeRef as ta: match (b) {
-       case ValTypeRef as tb : ta.target == tb.target
-       case _: false
+      case ValTypeRef as tb: ta.target.index == tb.target.index
+      case ValTypeRefNull as tb: ta.target.index == tb.target.index
+      case _: false
     }
     case ValTypeRefNull as ta: match (b) {
-       case ValTypeRefNull as tb : ta.target == tb.target
-       case _: false
+      case ValTypeRef as tb: ta.target.index == tb.target.index
+      case ValTypeRefNull as tb: ta.target.index == tb.target.index
+      case _: false
     }
-    case _: true
+    case _: valTypeToOpcode(a) == valTypeToOpcode(b)
   };
+};
+
+export let isWasmSubtype = (sub: ValType, superType: ValType): boolean => match (sub) {
+  case ValTypeRef as ta: match (superType) {
+    case ValTypeRef as tb: ta.target.index == tb.target.index
+    case ValTypeRefNull as tb: ta.target.index == tb.target.index
+    case ValTypeEqRef: true
+    case ValTypeStructRef: true
+    case ValTypeAnyRef: true
+    case _: false
+  }
+  case ValTypeRefNull as ta: match (superType) {
+    case ValTypeRefNull as tb: ta.target.index == tb.target.index
+    case ValTypeEqRef: true
+    case ValTypeStructRef: true
+    case ValTypeAnyRef: true
+    case _: false
+  }
+  case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
 };
 
 /** Any reference-typed ValType, concrete or abstract heap type. */

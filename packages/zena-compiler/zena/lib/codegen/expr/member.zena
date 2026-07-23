@@ -331,7 +331,7 @@ export let generateMemberExpression = (
           return;
         }
 
-        let ctKey = getClassKey(ct);
+        let ctKey = getClassKey(rawCt);
         var structInfoOpt: WasmStruct | null = null;
         var vtableStructOpt: WasmStruct | null = null;
         var classInfoOpt: ClassCodegenInfo | null = null;
@@ -368,7 +368,7 @@ export let generateMemberExpression = (
             // Struct-driven resolution: shared structs carry the
             // template's mangled names, per-specialization structs the
             // specialized class's — the struct itself knows which.
-            let resolved = structInfo.resolvePrivateFieldName(ct, propName);
+            let resolved = structInfo.resolvePrivateFieldName(rawCt, propName);
             if (resolved != null) resolved as String
             else getClassPrivateFieldKey(ctKey, propName)
           }
@@ -539,6 +539,7 @@ export let generateMemberExpression = (
           genObject();
           let scratchLocal = ctx.getStructScratchLocal(structInfo);
           ctx.emitter.emitLocalTee(scratchLocal);
+          ctx.emitter.emitRefAsNonNull();
 
           ctx.emitter.emitLocalGet(scratchLocal);
           ctx.emitter.emitRefCast(structInfo.index);
@@ -546,7 +547,7 @@ export let generateMemberExpression = (
           ctx.emitter.emitRefCast(vtableStruct.index);
           ctx.emitter.emitStructGet(vtableStruct.index, vtableIndex);
 
-          let sig = getClassMemberSignature(ctx.wasm, ct, getterName);
+          let sig = getClassMemberSignature(ctx.wasm, rawCt, getterName);
           ctx.emitter.emitRefCast(sig.index);
           ctx.emitter.emitCallRef(sig.index);
           return;
@@ -597,10 +598,12 @@ export let generateMemberExpression = (
         
         ctx.emitter.emitLocalGet(scratchLocal);
         ctx.emitter.emitStructGet(fatPtr.index, 0); // Get Instance
+        ctx.emitter.emitRefAsNonNull();
         
         ctx.emitter.emitLocalGet(scratchLocal);
         ctx.emitter.emitStructGet(fatPtr.index, 1); // Get VTable
         ctx.emitter.emitStructGet(vst.index, vtableIndex);
+        ctx.emitter.emitRefAsNonNull();
         
         let sig = getInterfaceMemberSignature(ctx.wasm, it, getterName);
         ctx.emitter.emitCallRef(sig.index);

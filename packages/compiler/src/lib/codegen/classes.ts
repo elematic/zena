@@ -1695,6 +1695,9 @@ export function generateTrampoline(
             }
 
             if (impl) {
+              if (classReturnType[0] === ValType.ref_null) {
+                body.push(Opcode.ref_as_non_null);
+              }
               body.push(
                 Opcode.global_get,
                 ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
@@ -1703,6 +1706,8 @@ export function generateTrampoline(
               body.push(
                 ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
               );
+            } else {
+              adaptReference(body, classReturnType, interfaceResults[0]);
             }
           }
         } else {
