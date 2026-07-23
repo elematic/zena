@@ -605,6 +605,62 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             return;
           }
 
+          // Private methods are lexically scoped and never virtual
+          // (member-lookup.md §6): no vtable slot exists for them —
+          // resolve directly. Mixin-declared bodies resolve under the
+          // mixin's scope key ("<scope>::#name", registered per host);
+          // class bodies walk the lexical chain (the checked receiver
+          // type names the class the code was written in), including
+          // generic sources for shared template registrations.
+          if (targetName.length > 0 && targetName.sliceBytes(0, 1) == "#") {
+            // Each probe is one classMethodMap lookup; the loops walk
+            // the class CHAIN, not members, because registration keys
+            // vary: mixin privates register under the mixin scope at
+            // whichever ancestor applied the mixin, and class privates
+            // register under the declaring class's key — which for
+            // shared generic templates is the template's, not the
+            // specialization's (hence the genericSource hop).
+            var privFunc: WasmFunction | null = null;
+            let mixScope = ctx.wasmFunction.privateScopeKey;
+            if (mixScope != null) {
+              let scopedName = (mixScope as String) + "::" + lookupName;
+              var applied: ClassType | null = ct;
+              while (applied != null) {
+                let key = getClassMethodKey(getClassKey(applied), scopedName);
+                if (let (true, f) = ctx.wasm.classMethodMap.get(key)) {
+                  privFunc = f;
+                  break;
+                }
+                applied = applied.superType;
+              }
+            }
+            if (privFunc == null) {
+              var lexical: ClassType | null = ct;
+              while (lexical != null) {
+                var candidate: ClassType | null = lexical;
+                while (candidate != null) {
+                  let key = getClassMethodKey(getClassKey(candidate), lookupName);
+                  if (let (true, f) = ctx.wasm.classMethodMap.get(key)) {
+                    privFunc = f;
+                    break;
+                  }
+                  candidate = candidate.genericSource;
+                }
+                if (privFunc != null) {
+                  break;
+                }
+                lexical = lexical.superType;
+              }
+            }
+            if (privFunc == null) {
+              throw new Error("Private method " + lookupName + " not found from class " + ct.name);
+            }
+            currentGenExpr(member.object, false);
+            generateCallArguments(ctx, call, ft, -1, currentGenExpr);
+            ctx.emitter.emitCall(privFunc as WasmFunction);
+            return;
+          }
+
           var receiverCt = ct;
           var isConcrete = false;
           if (member.object is NewExpression) {

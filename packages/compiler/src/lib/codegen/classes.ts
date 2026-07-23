@@ -7841,7 +7841,10 @@ function applyMixin(
               isFinal: false,
             });
 
-            if (!vtable.includes(memberName)) {
+            // The constraint's methods map can carry '#' entries;
+            // private methods never get vtable slots (lexical, never
+            // virtual) — same exclusion as the plain-class path.
+            if (!memberName.startsWith('#') && !vtable.includes(memberName)) {
               vtable.push(memberName);
             }
           }
@@ -7940,7 +7943,13 @@ function applyMixin(
           isFinal: resolvedType.isFinal,
         });
 
-        if (shouldRegister && !vtable.includes(methodName)) {
+        // Private methods never get vtable slots (they are lexically
+        // scoped, never virtual) — mirrors the plain-class path.
+        if (
+          shouldRegister &&
+          !methodName.startsWith('#') &&
+          !vtable.includes(methodName)
+        ) {
           vtable.push(methodName);
         }
       }

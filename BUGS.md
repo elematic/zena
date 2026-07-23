@@ -156,22 +156,6 @@ immediately trying to fix it (which can pollute the current task's context).
   ambiguity error when no context exists (member-lookup.md §7/§9.3).
 
 
-### Mixin private METHODS collide with host-class private methods
-- **Found**: 2026-07-22
-- **Severity**: low (private methods in mixins are rare so far)
-- **Workaround**: avoid giving a host class a private METHOD with the
-  same name as a private method in an applied mixin.
-- **Details**: Private FIELDS were fixed (see Fixed Bugs: "Mixin
-  private fields collide..."), but private mixin METHODS still share
-  the host's members-map entry and registration key
-  ("<HostKey>::#helper"), so a host and mixin same-named private
-  method still collapse. The fix should extend the private-scope-key
-  scheme (ClassType.privateScopeKey / WasmFunction.privateScopeKey)
-  to method registration and the private-call paths in both backends.
-  (Field scope keys include the declaration's source path, so
-  same-named mixins from different modules are already distinct for
-  fields; the method fix should reuse that key.)
-
 ### Self-hosted checker does not narrow a loop var through a compound while condition
 - **Found**: 2026-07-22
 - **Severity**: low (forces redundant casts; bootstrap accepts the code)
@@ -313,6 +297,28 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Details**: When you declare `class Symbol` in a module, it should shadow the built-in `Symbol` type within that module's scope. Instead, references to `Symbol` still resolve to the built-in type, causing errors like "Property 'name' does not exist on type 'Symbol'". This affects any class name that collides with built-in types.
 
 ## Fixed Bugs
+
+### Mixin private methods collide with host-class private methods; streaming dispatched privates virtually
+- **Found**: 2026-07-23; **Fixed**: 2026-07-23 (all compilers)
+- **Details**: Two related bugs. (1) A mixin's private method and a
+  host class's same-named private method collapsed into one dispatch
+  slot in ALL THREE compilers (self-hosted streaming/ZIR and the
+  bootstrap), so mixin code calling this.#word() ran the host's
+  method. Fixed by extending the mixin private scope key to methods:
+  the checker stores mixin private MethodInfo under
+  "<scope>::#name", registration registers them per host under the
+  scoped name, and the private-call paths probe the calling
+  function's privateScopeKey first. (2) The self-hosted streaming
+  backend gave private methods vtable slots and dispatched them
+  virtually — a subclass's shadowing #m hijacked the parent's
+  this.#m() (ZIR and the bootstrap were already lexical). Privates
+  now get no vtable slot anywhere and are always direct-called
+  lexically; the bootstrap's mixin-intermediate vtable gets the same
+  "#" exclusion its plain classes already had. Pinned by
+  mixins/private_methods.zena (11111400),
+  classes/private-methods-lexical.zena (12), and
+  classes/private-methods-generic.zena (41) on all compiler/backend
+  combos.
 
 ### Mixin private fields collide with host-class privates
 - **Found**: 2026-07-22; **Fixed**: 2026-07-22 (self-hosted; the

@@ -339,9 +339,19 @@ never virtual, always direct**.
   than the JS mixin pattern, where every application gets fresh
   private names.)
 
-  > **Status.** The checker has a known collision between mixin
-  > privates and host-class privates — BUGS.md, pinned by
-  > `mixins/private_names.zena` (PR #36).
+  *Implementation note*: mixin privates are namespaced by a scope key
+  equal to the MixinKey identity (declaration name + source path);
+  fields are stored and named as `"<scope>::#name"`, private methods
+  register per host under the scoped name, and functions compiled
+  from mixin bodies carry the scope (`WasmFunction.privateScopeKey`)
+  for their own private accesses. Pinned by
+  `mixins/private_names.zena` and `mixins/private_methods.zena`.
+
+- **Interfaces cannot declare private members, and accessors cannot
+  have private names.** A `#`-prefixed name in an interface body is a
+  parse error in both compilers, and accessor declarations take plain
+  names only — there is no private-accessor form. Privates are a
+  class/mixin construct.
 
 ## 7. Tear-offs of overloaded members
 

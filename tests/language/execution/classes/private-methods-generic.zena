@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 41
+// Cross-specialization private METHOD calls: privacy is granted by
+// the lexical class (member-lookup.md §6), so a Box<Tag> method may
+// call the private method of a Box<i32> — specialization does not
+// change privacy.
+
+class Box<T> {
+  #v: T;
+  new(v: T) : #v = v;
+  #peek(): T {
+    return this.#v;
+  }
+  peekOther(other: Box<i32>): i32 {
+    return other.#peek();
+  }
+}
+
+class Tag {
+  n: i32;
+  new(this.n);
+}
+
+export let main = (): i32 => {
+  let bi = new Box<i32>(41);
+  let bt = new Box<Tag>(new Tag(7));
+  return bt.peekOther(bi);
+};

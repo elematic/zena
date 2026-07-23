@@ -2719,6 +2719,23 @@ final class FunctionLowerer {
     var methodOpt: WasmFunction | null = null;
     let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
     if (isPrivate) {
+      // Mixin-declared bodies resolve their privates under the
+      // mixin's scope key ("<scope>::#name", registered per host
+      // class) — mixin privates are lexical to the mixin declaration
+      // and never alias a host's same-named private.
+      let mixScope = this.func.privateScopeKey;
+      if (mixScope != null) {
+        let scopedName = (mixScope as String) + "::" + slotName;
+        var applied: ClassType | null = ct;
+        while (applied != null) {
+          let key = getClassMethodKey(getClassKey(applied), scopedName);
+          if (let (true, m) = this.wasm.classMethodMap.get(key)) {
+            methodOpt = m;
+            break;
+          }
+          applied = applied.superType;
+        }
+      }
       // Private methods are lexically scoped and never virtual: they
       // resolve ONLY against the class the code was written in — plus
       // that class's own specializations (same canonical class), since
@@ -2727,8 +2744,10 @@ final class FunctionLowerer {
       // shared across a hierarchy.
       let lexicalCt = this.#lexicalClassOf(member, ct);
       let lexKey = getClassMethodKey(getClassKey(lexicalCt), slotName);
-      if (let (true, m) = this.wasm.classMethodMap.get(lexKey)) {
-        methodOpt = m;
+      if (methodOpt == null) {
+        if (let (true, m) = this.wasm.classMethodMap.get(lexKey)) {
+          methodOpt = m;
+        }
       }
       if (methodOpt == null) {
         let lexCanonical = this.#canonicalKeyOf(lexicalCt);

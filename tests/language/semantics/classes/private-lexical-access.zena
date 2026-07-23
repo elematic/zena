@@ -21,9 +21,13 @@ class Parent {
   #p: i32;
   new() : #p = 3;
 
-  // Own private on a subclass-typed receiver: allowed.
+  #pm(): i32 {
+    return 4;
+  }
+
+  // Own private (field or method) on a subclass-typed receiver: allowed.
   probe(c: Child): i32 {
-    return c.#p;
+    return c.#p + c.#pm();
   }
 }
 
@@ -46,5 +50,21 @@ class Mimic {
   // Same-named private grants nothing: #v here is Mimic::#v.
   steal(b: Box<i32>): i32 {
     return b.#v; // @error: does not have private member
+  }
+}
+
+class ChildMethod extends Parent {
+  grab(): i32 {
+    return this.#pm(); // @error: does not exist on type
+  }
+}
+
+class MimicMethod {
+  #pm(): i32 {
+    return 9;
+  }
+
+  steal(p: Box<i32>): i32 {
+    return p.#pm(); // @error: does not have private member
   }
 }

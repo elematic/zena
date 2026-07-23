@@ -6340,7 +6340,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           let memberKeys = mt.members.keys();
           while (let (true, key) = memberKeys.next()) {
             let mtMember = mt.members[key];
-            if (mtMember is MethodInfo) {
+            let isPrivateKey = key.length > 0 && key.sliceBytes(0, 1) == "#";
+            if (mtMember is MethodInfo && !isPrivateKey) {
               if (classType.members.has(key)) {
                 let existingMember = classType.members[key];
                 if (!isAssignableTo(ctx, mtMember.type, existingMember.type)) {
@@ -6363,9 +6364,12 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             // these through the mixin's This type (whose
             // privateScopeKey matches). Private methods are not yet
             // namespaced this way (tracked in BUGS.md).
+            // Mixin private FIELDS AND METHODS are stored under a
+            // mixin-scoped key: privacy is lexical to the mixin
+            // declaration, so a host's same-named private is a
+            // different member entirely.
             var storeKey = key;
-            if (mtMember is FieldInfo && key.length > 0 &&
-                key.sliceBytes(0, 1) == "#") {
+            if (isPrivateKey && (mtMember is FieldInfo || mtMember is MethodInfo)) {
               let scope = (mt.genericSource ?? mt).privateScopeKey;
               storeKey = if (scope != null) {
                 (scope as String) + "::" + key
@@ -8198,7 +8202,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           for (let key in composedMixin.members.keys()) {
             if (let (true, mInfo) = composedMixin.members.get(key)) {
               var composedKey = key;
-              if (mInfo is FieldInfo && key.length > 0 &&
+              if ((mInfo is FieldInfo || mInfo is MethodInfo) && key.length > 0 &&
                   key.sliceBytes(0, 1) == "#") {
                 let scope = (composedMixin.genericSource ?? composedMixin).privateScopeKey;
                 composedKey = if (scope != null) {

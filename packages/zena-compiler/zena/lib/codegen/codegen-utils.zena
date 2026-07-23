@@ -1,5 +1,5 @@
 import { 
-  Node, MethodDefinition, FieldDefinition, AccessorDeclaration, MixinDeclaration, TypeAnnotation, NodeId, Identifier
+  Node, MethodDefinition, FieldDefinition, AccessorDeclaration, MixinDeclaration, ClassDeclaration, TypeAnnotation, NodeId, Identifier
 } from '../ast.zena';
 import { 
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, BooleanType, BoolLiteralType, 
@@ -744,6 +744,37 @@ export let collectMixinMembers = (
       }
     }
   }
+};
+
+/**
+ * The private scope key of the mixin that declares `member`, when the
+ * class declaration `cd` acquires `member` through a mixin (directly
+ * or composed) — null for the class's own members. Used by
+ * registration paths that reach members via nodes rather than via
+ * the member-collection loops.
+ */
+export let mixinScopeOfMember = (
+  program: Program,
+  model: SemanticModel,
+  cd: Node | null,
+  member: Node
+): String | null => {
+  match (cd) {
+    case ClassDeclaration as cdd: {
+      if (cdd.mixins == null) { return null; }
+      let members = new Array<Node>();
+      let scopes = new Array<String>();
+      let seen = new HashMap<MixinKey, boolean>();
+      collectMixinMembers(program, model, cdd.mixins, members, seen, scopes);
+      for (var i = 0; i < members.length; i += 1) {
+        if (members[i] == member) {
+          return scopes[i];
+        }
+      }
+    }
+    case _: {}
+  }
+  return null;
 };
 
 export let collectMixinFields = (

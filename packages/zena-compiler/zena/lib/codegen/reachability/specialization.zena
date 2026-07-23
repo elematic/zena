@@ -373,7 +373,10 @@ export final class Specializer implements SpecializerInterface {
           for (let existing in ctVtable) {
             if (existing == vtableMethName) { found = true; }
           }
-          if (!found && methName != "<constructor>") {
+          // Private methods are never virtual (member-lookup.md §6):
+          // they get no vtable slot and are always called directly.
+          let isPrivateMeth = methName.length > 0 && methName.sliceBytes(0, 1) == "#";
+          if (!found && methName != "<constructor>" && !isPrivateMeth) {
             ctVtable.push(vtableMethName);
           }
         }
@@ -478,7 +481,15 @@ export final class Specializer implements SpecializerInterface {
           }
           case _: "<unknown>"
         };
-        let regFn = this.registerClassMethod(ct, classDecl, methName, method as Node, false, false, null, sourceModel);
+        // Mixin private methods register under the mixin's scope key
+        // ("<scope>::#name") so a host's same-named private is a
+        // different function; bodies from mixins carry the scope for
+        // their own private accesses.
+        var regName = methName;
+        if (msScope != "" && methName.length > 0 && methName.sliceBytes(0, 1) == "#") {
+          regName = msScope + "::" + methName;
+        }
+        let regFn = this.registerClassMethod(ct, classDecl, regName, method as Node, false, false, null, sourceModel);
         if (msScope != "") { regFn.privateScopeKey = msScope; }
       } else if (ms is AccessorDeclaration) {
         let acc = ms as AccessorDeclaration;
@@ -1155,11 +1166,18 @@ export final class Specializer implements SpecializerInterface {
               }
             }
             
-            if (!mDef.isStatic && !vtableSet.has(vtableMethName) && methName != "<constructor>") {
+            // Privates: no vtable slot (never virtual); mixin
+            // privates register under the mixin's scope key.
+            let isPrivateMeth = methName.length > 0 && methName.sliceBytes(0, 1) == "#";
+            if (!mDef.isStatic && !vtableSet.has(vtableMethName) && methName != "<constructor>" && !isPrivateMeth) {
               ctVtable.push(vtableMethName);
               vtableSet.add(vtableMethName);
             }
-            let regFn = this.registerClassMethod(ct, cdDecl, methName, mDef, false, false, null, sourceModel);
+            var regName = methName;
+            if (msScope != "" && isPrivateMeth) {
+              regName = msScope + "::" + methName;
+            }
+            let regFn = this.registerClassMethod(ct, cdDecl, regName, mDef, false, false, null, sourceModel);
             if (msScope != "") { regFn.privateScopeKey = msScope; }
           }
         } else if (ms is AccessorDeclaration) {

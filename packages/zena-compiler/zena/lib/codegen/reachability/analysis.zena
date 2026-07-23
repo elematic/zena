@@ -10,7 +10,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString, parseI32 } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, mixinScopeOfMember, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName } from '../codegen-utils.zena';
 import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeEqRef, ValTypeExternRef } from '../wasm.zena';
@@ -1970,10 +1970,20 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 let mDef = node as MethodDefinition;
                 let ct = ref.classType as ClassType;
                 let cKey = getClassKey(ct);
-                let methName = getMethodName(mDef);
                 let lookupId = (ct.genericSource ?? ct).symbolId;
                 let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
-                specializer.registerClassMethod(ct, cd, methName, mDef, false, false, null, this.classModels[lookupId], null);
+                // Mixin-declared methods carry the mixin's private
+                // scope key, and mixin PRIVATE methods register under
+                // it — mirroring the member-collection loops, so this
+                // node-driven path never creates an unscoped twin.
+                let mixScope = mixinScopeOfMember(this.program, this.classModels[lookupId], cd, node);
+                var methName = getMethodName(mDef);
+                if (mixScope != null && methName.length > 0 &&
+                    methName.sliceBytes(0, 1) == "#") {
+                  methName = (mixScope as String) + "::" + methName;
+                }
+                let regF = specializer.registerClassMethod(ct, cd, methName, mDef, false, false, null, this.classModels[lookupId], null);
+                if (mixScope != null) { regF.privateScopeKey = mixScope as String; }
               } else if (node is AccessorDeclaration && ref.classType != null) {
                 let acc = node as AccessorDeclaration;
                 let ct = ref.classType as ClassType;
@@ -1990,11 +2000,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 if (accName != "") {
                   let lookupId = (ct.genericSource ?? ct).symbolId;
                   let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
+                  let mixScope = mixinScopeOfMember(this.program, this.classModels[lookupId], cd, node);
                   if (acc.getter != null) {
-                    specializer.registerClassMethod(ct, cd, "get#" + accName, acc, false, false, null, this.classModels[lookupId], null);
+                    let regG = specializer.registerClassMethod(ct, cd, "get#" + accName, acc, false, false, null, this.classModels[lookupId], null);
+                    if (mixScope != null) { regG.privateScopeKey = mixScope as String; }
                   }
                   if (acc.setter != null) {
-                    specializer.registerClassMethod(ct, cd, "set#" + accName, acc.setter, false, false, null, this.classModels[lookupId], null);
+                    let regS = specializer.registerClassMethod(ct, cd, "set#" + accName, acc.setter, false, false, null, this.classModels[lookupId], null);
+                    if (mixScope != null) { regS.privateScopeKey = mixScope as String; }
                   }
                 }
               } else if (node is FieldDefinition && ref.classType != null) {

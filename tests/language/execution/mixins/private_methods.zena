@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 11111400
+// Mixin private METHODS are lexically scoped to the mixin declaration
+// (member-lookup.md §6), like mixin private fields: a host class's
+// same-named private method is a different function, never an
+// override — private access is direct and never virtual. The mixin's
+// #word uses the mixin's #count even when the host declares both
+// names itself.
+
+mixin Greeter {
+  var #count: i32 = 0;
+  #word(): i32 {
+    this.#count += 1;
+    return 10 + this.#count;
+  }
+  greet(): i32 {
+    return this.#word();
+  }
+}
+
+class Plain with Greeter {
+  new();
+}
+
+class Loud with Greeter {
+  var #count: i32 = 500;
+  #word(): i32 {
+    return 900 + this.#count;
+  }
+  new();
+  shout(): i32 {
+    return this.#word();
+  }
+}
+
+export let main = (): i32 => {
+  let p = new Plain();
+  let l = new Loud();
+  let a = p.greet();  // mixin #word -> mixin #count 0->1 -> 11
+  let b = l.greet();  // mixin #word on l -> l's mixin-count 0->1 -> 11
+  let c = l.shout();  // host #word -> 900 + host #count 500 -> 1400
+  return a * 1000000 + b * 10000 + c;
+};
