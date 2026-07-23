@@ -16,6 +16,64 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Parsers diverge on super() position in constructor init lists
+- **Found**: 2026-07-22 (bootstrap side surfaced by CI run #32)
+- **Severity**: low (divergence; each compiler is self-consistent)
+- **Workaround**: write super() last — both compilers accept that.
+- **Details**: The grammar (and the bootstrap parser, parser.ts
+  ~3275) requires super(...) as the FINAL init-list entry, but the
+  self-hosted parser accepts it anywhere: `new() : super(), y = 2;`
+  parses, compiles, and runs correctly under the self-hosted
+  compiler while the bootstrap rejects it with "Expected '{' before
+  method body. Got Comma". Either the grammar should relax (and the
+  bootstrap follow) or the self-hosted parser should enforce
+  super-last. Decide, then pin with a semantics test.
+
+### Mixin method bodies are re-typed per application on shared AST nodes
+- **Found**: 2026-07-22 (while fixing the mixin private field collision)
+- **Severity**: medium (latent miscompile risk; blocks node-type reasoning)
+- **Workaround**: none needed for privates (WasmFunction.privateScopeKey
+  bypasses node types); avoid type-divergent host-dependent typing in
+  mixin bodies.
+- **Details**: A mixin's body AST is shared by every application, but
+  the checker re-checks it per application and setNodeType overwrites
+  the shared nodes — observed directly: getNodeType(this) inside a
+  mixin method returned the HOST class (e.g. HostA), not the mixin's
+  synthetic This. Consequences: (1) codegen cannot derive lexical
+  identity from node types for mixin code (why the private-field fix
+  stores the scope on WasmFunction instead); (2) if two applications
+  give a mixin-body expression genuinely different types (e.g. via
+  the on-type), the LAST application's types win for every copy —
+  a latent wrong-types miscompile for earlier copies. Consider
+  per-application node-type maps for mixin bodies, or checking mixin
+  bodies once against This like classes.
+
+### No narrowing from destructured tuple elements
+- **Found**: 2026-07-21 (repeatedly, writing compiler code)
+- **Severity**: low (ergonomics; forces if-let or casts)
+- **Workaround**: destructure inside the condition:
+  `if (let (true, v) = map.get(k)) { ... }`.
+- **Details**: `let (found, v) = map.get(k); if (found) { use(v) }`
+  does not narrow `v` — its type stays `T | _` even though the tuple
+  type correlates the arms. The if-let form narrows fine. Correlated
+  narrowing of tuple elements after destructuring would make the
+  common two-step pattern usable.
+
+### Compilation cache is not invalidated when the compiler changes
+- **Found**: 2026-07-21 (stale-cache runs masked real regressions)
+- **Severity**: medium (green test runs against a stale compiler)
+- **Workaround**: `rm -rf .zena/cache` before any suite run that
+  follows a compiler rebuild (all our gates do this manually).
+- **Details**: .zena/cache keys entries by source content (e.g.
+  private-fields-generic_<hash>.wasm) but not by the compiler binary
+  that produced them, so after rebuilding the compiler, cached
+  modules from the previous compiler are served as hits. This masked
+  a super-fields miscompile during the ZIR work (suite stayed green
+  off stale artifacts) and makes any checker/codegen change
+  unverifiable without manual cache clearing. The cache key should
+  include a compiler build fingerprint (e.g. hash of cli.wasm /
+  zena-cli).
+
 ### Cross-arm member access on non-null unions is unimplemented
 - **Found**: 2026-07-22 (ruled desired behavior)
 - **Severity**: low (ergonomics; forces narrowing)
