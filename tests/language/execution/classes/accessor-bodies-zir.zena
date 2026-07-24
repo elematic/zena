@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 53103
+// Written grouped-accessor bodies (getter with logic, setter with
+// validation) — lowered by ZIR like methods, with `this` plus the
+// setter's value parameter.
+
+class Gauge {
+  var #raw: i32;
+  new() : #raw = 5;
+
+  level: i32 {
+    get {
+      return this.#raw * 10;
+    }
+    set(v) {
+      if (v > 100) {
+        this.#raw = 100;
+      } else {
+        this.#raw = v;
+      }
+    }
+  }
+
+  readonly2x: i32 {
+    get {
+      return this.level * 2;
+    }
+  }
+}
+
+export let main = (): i32 => {
+  let g = new Gauge();
+  let a = g.level;        // 50
+  g.level = 7;            // #raw = 7
+  let b = g.level;        // 70
+  g.level = 500;          // clamped: #raw = 100
+  let c = g.level;        // 1000
+  let d = g.readonly2x;   // 2000
+  return a * 1000 + b + c + d + 33;   // 50000 + 70 + 1000 + 2000 + 33
+};

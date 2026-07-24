@@ -35,6 +35,7 @@ import {
   NullLiteral, StringLiteral, NewExpression, MemberExpression,
   MethodDefinition, ThisExpression, Parameter, ClassDeclaration,
   FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation,
+  AccessorDeclaration, SetterInfo,
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName
 } from '../../ast.zena';
@@ -333,14 +334,20 @@ let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
 
 /** The one intrinsic with a body streaming synthesizes: array.len. */
 let synthesizeIntrinsic = (func: WasmFunction): IrBody => {
-  if ((func.intrinsic as String) != 'array.len' ||
-      func.signature.params.length != 1 || func.signature.returns.length != 1) {
-    throw new ZirUnsupported('intrinsic');
+  if ((func.intrinsic as String) == 'array.len' &&
+      func.signature.params.length == 1 && func.signature.returns.length == 1) {
+    let b = new IrBuilder();
+    let params = synthEntryParams(b, func);
+    let len = b.emit(IrOp.array_len, new ValTypeI32(), params[0], -1);
+    b.ret(len);
+    return b.finish();
   }
+  // Every other standalone intrinsic body mirrors the streaming
+  // backend: call sites always inline the op, so the standalone
+  // function exists only for slot uniformity and traps if reached.
   let b = new IrBuilder();
-  let params = synthEntryParams(b, func);
-  let len = b.emit(IrOp.array_len, new ValTypeI32(), params[0], -1);
-  b.ret(len);
+  synthEntryParams(b, func);
+  b.unreachable();
   return b.finish();
 };
 
@@ -392,7 +399,20 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   // No adaptations, trampolines, synthesized accessors, imports, or
   // generics. Plain top-level functions, written-out method bodies,
   // constructors, and closure implementation bodies are eligible.
-  if (func.isImport || usesSynthesizedMachinery(func)) {
+  // Declared intrinsic methods have no lowerable body: their
+  // standalone functions mirror streaming (array.len real, all
+  // others unreachable — call sites always inline the op).
+  if (func.intrinsic != null) {
+    return synthesizeIntrinsic(func);
+  }
+  // Written accessor bodies (grouped accessors) lower like methods;
+  // getterStruct/setterStruct only routes to synthesis when there is
+  // no AST node (field-backed synthesized accessors above).
+  if (func.isImport || func.importWrapperTarget != null ||
+      func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
+      func.isClosureWrapper || func.isClosureTrampoline ||
+      func.isCaseClassEq || func.isCaseClassHash ||
+      func.typeParameters != null || func.typeArguments != null) {
     throw new ZirUnsupported("function shape");
   }
   if (func.isClosure) {
@@ -421,6 +441,9 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
         (isCtor && md.decorators.length > 0)) {
       throw new ZirUnsupported("method shape");
     }
+  } else if (func.node is AccessorDeclaration || func.node is SetterInfo) {
+    // Written grouped-accessor bodies: lowered like methods by
+    // FunctionLowerer's accessor branches.
   } else if (!(func.node is FunctionExpression)) {
     throw new ZirUnsupported("synthesized function");
   } else if (!func.isClosure &&
@@ -459,6 +482,7 @@ final class FunctionLowerer {
     var paramOffset = 0;
     var ctorDef: MethodDefinition | null = null;
     let node = this.func.node as Node;
+    var setterParamIdent: Identifier | null = null;
     if (node is MethodDefinition) {
       let md = node as MethodDefinition;
       params = md.params;
@@ -473,6 +497,23 @@ final class FunctionLowerer {
       if (methName == "<constructor>") {
         ctorDef = md;
       }
+    } else if (node is AccessorDeclaration) {
+      // Written getter body: `this` plus no declared parameters.
+      let acc = node as AccessorDeclaration;
+      if (acc.getter == null) {
+        this.#bail('accessor without getter body');
+      }
+      params = new Array<Parameter>();
+      bodyNode = acc.getter as Node;
+      paramOffset = 1;
+    } else if (node is SetterInfo) {
+      // Written setter body: `this` plus the single value parameter
+      // (a bare Identifier, bound manually after the entry params).
+      let si = node as SetterInfo;
+      params = new Array<Parameter>();
+      bodyNode = si.body;
+      paramOffset = 1;
+      setterParamIdent = si.param;
     } else {
       let fExpr = node as FunctionExpression;
       params = fExpr.params;
@@ -483,7 +524,8 @@ final class FunctionLowerer {
       }
     }
     let paramList = params as Array<Parameter>;
-    if (sig.params.length != paramList.length + paramOffset) {
+    let setterExtra = if (setterParamIdent != null) 1 else 0;
+    if (sig.params.length != paramList.length + paramOffset + setterExtra) {
       this.#bail('signature/param shape mismatch');
     }
 
@@ -519,6 +561,17 @@ final class FunctionLowerer {
         this.#bail('unresolved parameter');
       }
       let vt = sig.params[i + paramOffset];
+      this.#requireSupported(vt, 'parameter type');
+      let value = this.b.blockParam(entry, vt);
+      this.env[(sym as Symbol).id] = value;
+      this.symbols[(sym as Symbol).id] = sym as Symbol;
+    }
+    if (setterParamIdent != null) {
+      let sym = this.func.model.resolveDeclaration(setterParamIdent as Node);
+      if (sym == null) {
+        this.#bail('unresolved setter parameter');
+      }
+      let vt = sig.params[paramOffset];
       this.#requireSupported(vt, 'parameter type');
       let value = this.b.blockParam(entry, vt);
       this.env[(sym as Symbol).id] = value;
