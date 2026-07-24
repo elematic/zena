@@ -304,6 +304,72 @@ method. There is never a signature choice at runtime.
 > name — one slot per name — which suffices only because interface
 > overloads are unimplemented (§4 Status).
 
+### 5.5 Operator calls fold into method resolution (unification plan)
+
+Every operator form is a method-like call on an operator member
+(§2.1) and conceptually desugars to one:
+
+| Form            | Desugars to        | Today's checker path        |
+|-----------------|--------------------|-----------------------------|
+| `a.m(x)`        | —                  | call checking               |
+| `a[i]`          | `a.[](i)`          | `resolveIndexType`          |
+| `a[i] = v`      | `a.[]=(i, v)`      | assignment checking         |
+| `a == b`        | `a.==(b)`          | binary-operator checking    |
+| `a + b` etc.    | `a.+(b)` etc.      | binary-operator checking    |
+| `a(x)` (future) | `a.<call>(x)`      | — (callable classes)        |
+
+The semantics are already uniform — member lookup (§3), most-specific
+selection (§5.1), recording (§5.2), per-signature slots and dispatch
+(§5.3) apply to all of them identically. The IMPLEMENTATIONS are not
+yet: each form has its own checking site and its own lowering path in
+each backend. This section pins the intended end state so the code
+paths converge instead of accreting:
+
+1. **One checker entry.** All method-like forms resolve through a
+   single internal "resolve member call" routine: collect the
+   overload set from the receiver's static type, collect applicable
+   candidates, select most-specific, record the declared signature on
+   the SYNTACTIC node (call node, IndexExpression for reads,
+   AssignmentExpression for `[]=` writes — a compound assignment is
+   one read selection plus one write selection on distinct nodes),
+   and derive the expression's type from the selected signature.
+   Today the selection tail is shared (`selectMostSpecificIndex`)
+   but applicability collection and expected-type flow are still
+   per-site; unifying them also fixes the known bug that index
+   writes are typed by the `[]` READ selection (BUGS.md) — under the
+   unified entry, `a[i] = v` is typed by `[]=` like any call.
+
+2. **One lowering path per backend.** Codegen lowers every
+   method-like call the same way: reproduce the recorded slot name
+   (§5.2), then **devirtualize** (final class/method, no overriding
+   subclass, concrete receiver) into a direct call, else dispatch
+   through the vtable/itable slot. Operator forms get no bespoke
+   lowering branches.
+
+3. **Intrinsic inlining as an optimization, not a special case.**
+   After devirtualization, a direct call whose callee is
+   intrinsic-flagged (`array.get`, `array.set`, `array.len`, `eq`,
+   `hash`, the memory ops) is replaced by the raw instruction. Under
+   this shape, `FixedArray` indexing needs no dedicated index-lowering
+   path at all: `a[i]` resolves to the `[]` member, devirtualizes to
+   the `array.get` intrinsic, and inlines — the "array fast path"
+   becomes an optimization outcome. The standalone intrinsic
+   functions keep their §-noted role: real bodies only where a
+   funcref slot can reach them (`array.len` via `Sequence.length`),
+   trapping tripwires elsewhere.
+
+4. **Callable classes (future).** A call operator member would give
+   `obj(args)` the same fold: look up the call member, select the
+   overload, record, dispatch. Nothing else in the pipeline changes —
+   which is the point of the fold. (Closures could then be understood
+   as instances of a builtin callable class; not designed here.)
+
+Status: the checker shares the selection tail across all sites; the
+ZIR backend shares slot-name reproduction but still has dedicated
+index/eq-hash lowering branches; the streaming backend's per-form
+paths retire with streaming at M4 and should not be unified
+retroactively.
+
 ## 6. Private names
 
 Private (`#`) member resolution follows one rule: **lexical only,
