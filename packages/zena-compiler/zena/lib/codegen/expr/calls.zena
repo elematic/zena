@@ -5,7 +5,7 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { FunctionContext } from '../function-context.zena';
 import { WasmType, ValTypeRef, ValTypeRefNull, ValTypeStructRef, ValType, ValTypeEqRef, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, HeapType, heapTypeToSigned, ValTypeI8, ValTypeI16, valTypeToOpcode, valTypeEquals } from '../wasm.zena';
-import { WasmFunction, WasmStruct, WasmSignature, ClassCodegenInfo } from '../wasm-module.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmSignature, ClassCodegenInfo } from '../wasm-module.zena';
 import { getClassKey, getInterfaceKey, getSignatureKey, ClassKey, InterfaceKey, ExportKey, getTypeKeyForSpecialization, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, getSpecializedFunctionKey, getSpecializedName, getTypeUniqueKey } from '../codegen-utils.zena';
 import { typeToValType, typeToValTypeWithSub, getInterfaceMemberSignature, getClassMemberSignature, getClosureStruct, mapReturnTypeToWasmResults, getNodeType, getNonNullableType, substituteTypeParamsInFunctionContext, eraseTypeParameters, getExpressionType } from '../type-mapping.zena';
 import { Error } from 'zena:error';
@@ -340,7 +340,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
           } else {
             let sym = ctx.wasmFunction.model.resolve(ident);
             if (sym != null) {
-              let targetDecl = findDeclaration(ctx, sym as Symbol, ft);
+              let targetDecl = findDeclaration(ctx.wasm, sym as Symbol, ft);
               if (ctx.wasm.functionMap.has((sym as Symbol).id) || 
                   (targetDecl != null && ctx.wasm.intrinsics.has((targetDecl as DeclareFunction).id)) || 
                   (sym as Symbol).declaration is ImportSpecifier) {
@@ -405,7 +405,7 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
         let sym = ctx.wasmFunction.model.resolve(ident);
         if (sym != null) {
           let symVal = sym as Symbol;
-          let decl = findDeclaration(ctx, symVal, ft);
+          let decl = findDeclaration(ctx.wasm, symVal, ft);
 
           if (decl != null && ctx.wasm.intrinsics.has((decl as DeclareFunction).id)) {
             let intrinsicName = ctx.wasm.intrinsics[(decl as DeclareFunction).id];
@@ -1128,12 +1128,12 @@ let findModuleNode = (model: SemanticModel, node: Node): Module | null => {
   return curr as Module;
 };
 
-let findDeclaration = (ctx: FunctionContext, sym: Symbol, expectedType: Type | null): DeclareFunction | null => {
+export let findDeclaration = (wasm: WasmModule, sym: Symbol, expectedType: Type | null): DeclareFunction | null => {
   let resolved = sym.resolveTarget();
   let decl = resolved.declaration;
   if (decl == null) return null;
 
-  let prog = ctx.wasm.program;
+  let prog = wasm.program;
   if (prog != null && resolved.modulePath != "") {
     let canonicalPath = resolved.modulePath;
     if (prog.unitsByPath.has(canonicalPath)) {

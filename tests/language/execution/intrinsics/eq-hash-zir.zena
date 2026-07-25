@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 1023
+// The generic eq/hash intrinsics (zena:map's equals/hash) across
+// their type-directed tiers: primitive equality, i64 hash folding
+// (lo ^ hi), string equality and hashing via the runtime helpers,
+// and class equality/hashing through operator== / hashCode with the
+// reference fast path.
+
+import { Hashable } from 'zena:hashable';
+
+@intrinsic('hash')
+declare function hash<T>(value: T): i32;
+@intrinsic('eq')
+declare function equals<T>(a: T, b: T): boolean;
+
+final class P implements Hashable {
+  x: i32;
+  new(this.x);
+  hashCode(): i32 {
+    return this.x * 7;
+  }
+  operator ==(other: P): boolean {
+    return this.x == other.x;
+  }
+}
+
+export let main = (): i32 => {
+  var acc = 0;
+  if (equals(3, 3)) { acc += 1; }
+  if (!equals(3, 4)) { acc += 2; }
+  if (equals("ab", "ab")) { acc += 4; }
+  if (hash(5) == 5) { acc += 8; }
+  if (hash(21474836482 as i64) == 7) { acc += 16; } // 5*2^32 + 2 -> 5 ^ 2
+  if (hash("zena") == hash("zena")) { acc += 32; }
+  let p1 = new P(9);
+  let p2 = new P(9);
+  let p3 = new P(8);
+  if (equals(p1, p2)) { acc += 64; }
+  if (equals(p1, p1)) { acc += 128; }
+  if (!equals(p1, p3)) { acc += 256; }
+  if (hash(p1) == 63) { acc += 512; }
+  return acc;
+};
