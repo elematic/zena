@@ -2815,13 +2815,27 @@ function checkAssignmentExpression(
       const classType = objectType as ClassType | InterfaceType;
       const setter = classType.methods.get('[]=');
       if (setter) {
-        // Resolve the method type with generic substitution for the class's type arguments
-        const resolvedSetter = resolveMemberType(
-          classType,
-          setter,
-          ctx,
-        ) as FunctionType;
+        // Resolve the setter overload set with generic substitution;
+        // selection is most-specific over (index, value)
+        // (member-lookup.md §5.1) and the winner is recorded for
+        // codegen (resolvedSetterMethod).
+        const setterCandidates = [setter, ...(setter.overloads ?? [])].map(
+          (c) => resolveMemberType(classType, c, ctx) as FunctionType,
+        );
         const indexType = checkExpression(ctx, indexExpr.index);
+        const byIndex = setterCandidates.filter(
+          (c) =>
+            c.parameters.length === 2 &&
+            isAssignableTo(ctx, indexType, c.parameters[0]),
+        );
+        let resolvedSetter = setterCandidates[0];
+        if (byIndex.length === 1) {
+          resolvedSetter = byIndex[0];
+        } else if (byIndex.length > 1) {
+          // Narrow by value below; keep byIndex[0]'s value param as
+          // the checking expectation only if all agree.
+          resolvedSetter = byIndex[0];
+        }
 
         if (resolvedSetter.parameters.length !== 2) {
           ctx.diagnostics.reportError(
@@ -2830,7 +2844,7 @@ function checkAssignmentExpression(
             ctx.getLocation(expr.loc),
           );
         } else {
-          if (!isAssignableTo(ctx, indexType, resolvedSetter.parameters[0])) {
+          if (byIndex.length === 0) {
             ctx.diagnostics.reportError(
               `Type mismatch in index: expected ${typeToString(resolvedSetter.parameters[0])}, got ${typeToString(indexType)}`,
               DiagnosticCode.TypeMismatch,
@@ -2841,8 +2855,34 @@ function checkAssignmentExpression(
           const valueType = checkExpression(
             ctx,
             expr.value,
-            resolvedSetter.parameters[1],
+            byIndex.length > 1 ? undefined : resolvedSetter.parameters[1],
           );
+          // Refine among index-applicable candidates by the value type
+          // and pick the most-specific winner.
+          if (byIndex.length > 1) {
+            const applicable = byIndex.filter((c) =>
+              isAssignableTo(ctx, valueType, c.parameters[1]),
+            );
+            if (applicable.length === 1) {
+              resolvedSetter = applicable[0];
+            } else if (applicable.length > 1) {
+              const [winner, ambiguous] = pickMostSpecificOverload(
+                ctx,
+                applicable,
+                2,
+              );
+              if (ambiguous) {
+                ctx.diagnostics.reportError(
+                  AMBIGUOUS_OVERLOAD_MESSAGE,
+                  DiagnosticCode.TypeMismatch,
+                  ctx.getLocation(expr.loc),
+                );
+              }
+              resolvedSetter = winner;
+            }
+          }
+          expr.resolvedSetterMethod = resolvedSetter;
+
           const effectiveType = expr.operator
             ? checkCompoundOperator(
                 ctx,

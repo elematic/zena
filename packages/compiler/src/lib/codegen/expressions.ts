@@ -4833,7 +4833,13 @@ function generateAssignmentExpressionInner(
       }
 
       if (foundClass) {
-        const methodInfo = foundClass.methods.get('[]=');
+        // The checker records the selected []= overload; overloaded
+        // setters register under the mangled name.
+        const setterSel = (expr as AssignmentExpression).resolvedSetterMethod;
+        const methodInfo =
+          (setterSel
+            ? foundClass.methods.get('[]=' + getSignatureKey(setterSel))
+            : undefined) ?? foundClass.methods.get('[]=');
         if (methodInfo) {
           if (
             methodInfo.intrinsic === 'array.set' &&

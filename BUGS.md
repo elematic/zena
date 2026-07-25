@@ -16,6 +16,25 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Index assignment typing is driven by the [] READ selection
+- **Found**: 2026-07-23 (while adding []= overload selection)
+- **Severity**: low-medium (limits []= overloads; compiler divergence)
+- **Workaround**: give [] a read overload accepting every index type
+  that []= accepts, and keep []= value types assignable to the []
+  return type.
+- **Details**: `recv[i] = v` type-checks the LEFT as an index READ:
+  the value is checked against the [] return type (so a []= overload
+  whose value parameter is not assignable-compatible with the read
+  type is unreachable), and a PURE write whose index only matches a
+  []= overload (not any [] read) is a type error under the bootstrap
+  ("Type mismatch in index") while the self-hosted checker silently
+  falls back to the primary [] signature — a divergence. Writes
+  should be typed by []= selection (member-lookup.md §5.1): for
+  non-compound index assignments, select the []= overload over
+  (index, value) directly and use its value parameter as the
+  assignment's expected/result type; compound assignments legitimately
+  need both [] and []=.
+
 ### Parsers diverge on super() position in constructor init lists
 - **Found**: 2026-07-22 (bootstrap side surfaced by CI run #32)
 - **Severity**: low (divergence; each compiler is self-consistent)

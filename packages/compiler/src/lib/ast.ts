@@ -515,6 +515,8 @@ export interface AssignmentExpression extends Node {
   value: Expression;
   /** Set by checker when a class operator method is resolved for compound assignment */
   resolvedOperatorMethod?: FunctionType;
+  /** Set by checker: the selected []= overload for an index assignment (member-lookup.md §5.1). */
+  resolvedSetterMethod?: FunctionType;
 }
 
 export interface AsExpression extends Node {

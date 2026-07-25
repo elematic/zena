@@ -3357,6 +3357,125 @@ final class FunctionLowerer {
     return false;
   }
 
+  /**
+   * Index writes `recv[i] = v`: array.set for wasm-array receivers,
+   * else a direct call to the checker-selected `[]=` overload (the
+   * selection is recorded on the ASSIGNMENT node — the read
+   * selection of a compound assignment lives on the IndexExpression,
+   * but compound index writes bail for now). Yields the assigned
+   * value, like every assignment expression.
+   */
+  #lowerIndexWrite(assign: AssignmentExpression): i32 {
+    let idx = assign.left as IndexExpression;
+    if (idx.optional) {
+      this.#bail('optional index');
+    }
+    if (assign.operator != null) {
+      this.#bail('compound index write');
+    }
+    let objectType = this.func.model.getNodeType(idx.object);
+    if (objectType == null) {
+      this.#bail('untyped index receiver');
+    }
+    let selfResolved = this.#resolveSelfType(objectType as Type);
+    if (selfResolved is InterfaceType) {
+      this.#bail('interface index write');
+    }
+
+    let receiver = this.#lowerExpression(idx.object);
+    var arrOpt: WasmArray | null = null;
+    match (this.#valueType(receiver)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmArray) { arrOpt = r.target as WasmArray; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmArray) { arrOpt = rn.target as WasmArray; }
+      }
+      case _: {}
+    }
+    if (arrOpt != null) {
+      let arr = arrOpt as WasmArray;
+      if (arr.elementType is ValTypeI8) {
+        this.#bail('packed array element');
+      }
+      this.#requireSupported(arr.elementType, 'array element type');
+      let index = this.#lowerExpression(idx.index);
+      if (!(this.#valueType(index) is ValTypeI32)) {
+        this.#bail('index operand type');
+      }
+      let value = this.#lowerExpressionCtx(assign.value, arr.elementType);
+      if (!isValSubtype(this.#valueType(value), arr.elementType)) {
+        this.#bail('array write type');
+      }
+      let tripleIdx = this.b.pushExtra(this.#threeValues(receiver, index, value));
+      this.b.emitVoid(IrOp.array_set, tripleIdx, -1);
+      return value;
+    }
+
+    // Class receiver: the checker records the selected `[]=` overload
+    // on the assignment node; registration mangles overloaded members
+    // with the same declaration's signature key. No record means no
+    // overloads.
+    let fromValue = this.#classTypeOfValue(receiver);
+    let ct = if (fromValue != null) {
+      fromValue
+    } else if (selfResolved is ClassType) {
+      eraseTypeParameters(selfResolved) as ClassType
+    } else {
+      null
+    };
+    if (ct == null) {
+      this.#bail('index receiver kind');
+    }
+    let chosenFt = this.func.model.getResolvedOverload(assign);
+    let mangled = if (chosenFt != null) {
+      '[]=' + getSignatureKey(chosenFt as FunctionType)
+    } else {
+      '[]='
+    };
+    let methodOpt = this.#resolveIndexMethod(ct as ClassType, mangled, chosenFt != null);
+    if (methodOpt == null) {
+      this.#bail('index setter not found');
+    }
+    let method = methodOpt as WasmFunction;
+    if (method.intrinsic != null) {
+      this.#bail('index intrinsic');
+    }
+    if (method.isStatic || method.typeParameters != null) {
+      this.#bail('index method shape');
+    }
+    let sig = method.signature;
+    if (sig.params.length != 3 || sig.returns.length > 0) {
+      this.#bail('index setter shape');
+    }
+    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
+      this.#bail('index receiver type');
+    }
+    let index = this.#lowerExpressionCtx(idx.index, sig.params[1]);
+    if (!isValSubtype(this.#valueType(index), sig.params[1])) {
+      this.#bail('index operand type');
+    }
+    let value = this.#lowerExpressionCtx(assign.value, sig.params[2]);
+    if (!isValSubtype(this.#valueType(value), sig.params[2])) {
+      this.#bail('index write type');
+    }
+    let funcRef = this.b.addRef(new IrRefFunc(method));
+    let args = new Array<i32>();
+    args.push(receiver);
+    args.push(index);
+    args.push(value);
+    this.b.callFunc(funcRef, args, null);
+    return value;
+  }
+
+  #threeValues(a: i32, b: i32, c: i32): Array<i32> {
+    let out = new Array<i32>();
+    out.push(a);
+    out.push(b);
+    out.push(c);
+    return out;
+  }
+
   #twoValues(a: i32, b: i32): Array<i32> {
     let result = new Array<i32>();
     result.push(a);
@@ -3656,6 +3775,9 @@ final class FunctionLowerer {
   #lowerAssignment(assign: AssignmentExpression): i32 {
     if (assign.left is MemberExpression) {
       return this.#lowerMemberAssign(assign);
+    }
+    if (assign.left is IndexExpression) {
+      return this.#lowerIndexWrite(assign);
     }
     if (!(assign.left is Identifier)) {
       this.#bail('assignment target');

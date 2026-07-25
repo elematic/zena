@@ -1,0 +1,54 @@
+// @mode: run
+// @result: 367913
+// Index WRITES with overloaded []= (member-lookup.md §5.1/§5.2): the
+// checker selects the most-specific setter over (index, value) and
+// records it on the assignment node; codegen reproduces the exact
+// registration slot. A DogTag index picks []=(DogTag, i32) even
+// though []=(Tag, i32) is also applicable; assignment-as-expression
+// yields the assigned value.
+
+class Tag {
+  n: i32;
+  new(this.n);
+}
+class DogTag extends Tag {
+  new(n: i32) : super(n);
+}
+
+class Pen {
+  var last: i32 = 0;
+  var tagWrites: i32 = 0;
+  var dogTagWrites: i32 = 0;
+
+  operator [](i: i32): i32 {
+    return this.last;
+  }
+  operator [](t: Tag): i32 {
+    return this.last;
+  }
+  operator []=(i: i32, v: i32) {
+    this.last = v;
+  }
+  operator []=(t: Tag, v: i32) {
+    this.tagWrites += 1;
+    this.last = t.n * 10 + v;
+  }
+  operator []=(d: DogTag, v: i32) {
+    this.dogTagWrites += 1;
+    this.last = d.n * 100 + v;
+  }
+}
+
+export let main = (): i32 => {
+  let p = new Pen();
+  let t = new Tag(4);
+  let d = new DogTag(6);
+  p[9] = 3;                 // []=(i32, i32): last = 3
+  let plain = p[0];         // 3
+  p[t] = 1;                 // []=(Tag, i32): last = 41
+  let viaTag = p[0];        // 41
+  p[d] = 5;                 // most specific []=(DogTag, i32): last = 605
+  let viaDog = p[0];        // 605
+  let ret = (p[8] = 7);     // assignment yields the value: 7
+  return viaDog * 100 + viaTag * 10 + plain * 100000 + ret * 1000 + p.tagWrites + p.dogTagWrites * 2;
+};
