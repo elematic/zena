@@ -39,7 +39,7 @@ import {
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, baseType, isVoidOrNeverType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, baseType, isVoidOrNeverType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
@@ -50,7 +50,7 @@ import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignat
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 
 /**
@@ -2984,6 +2984,26 @@ final class FunctionLowerer {
       return this.#reassertNonNull(result, this.#exprValType(member));
     }
     let receiver = this.#lowerExpression(member.object);
+    // .length on wasm-array receivers: array.len (mirrors the
+    // FixedArray length intrinsic in the streaming backend).
+    var recvArr: WasmArray | null = null;
+    match (this.#valueType(receiver)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmArray) { recvArr = r.target as WasmArray; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmArray) { recvArr = rn.target as WasmArray; }
+      }
+      case _: {}
+    }
+    if (recvArr != null) {
+      let arrProp = getMemberPropertyName(
+          member.isSymbolAccess, member.property.name);
+      if (arrProp == "length") {
+        return this.b.emit(IrOp.array_len, new ValTypeI32(), receiver, -1);
+      }
+      this.#bail('array member');
+    }
     let target = this.#resolveMemberTarget(
         member, this.#receiverClass(receiver, member));
     let receiverVt = this.#valueType(receiver);
@@ -3053,6 +3073,26 @@ final class FunctionLowerer {
         return this.#reassertNonNull(result, want);
       }
       return result;
+    }
+    // Extension methods on arrays (map/fold/indexOf/...): resolved
+    // by element-type specialization key against wasm.arrayMethods,
+    // mirroring the streaming backend. The callee may itself be
+    // streaming-compiled (the synthesized map/fold bodies) — both
+    // backends share one module, so cross-backend calls are plain
+    // direct calls.
+    var arrayElem: Type | null = null;
+    match (selfResolved) {
+      case ArrayType as at: { arrayElem = at.elementType; }
+      case ClassType as arrCt: {
+        if (arrCt.name == "array" && arrCt.typeArguments != null &&
+            (arrCt.typeArguments as Array<Type>).length > 0) {
+          arrayElem = (arrCt.typeArguments as Array<Type>)[0];
+        }
+      }
+      case _: {}
+    }
+    if (arrayElem != null) {
+      return this.#lowerArrayExtensionCall(call, member, arrayElem as Type);
     }
     if (!(selfResolved is ClassType)) {
       this.#bail('method receiver kind');
@@ -4225,6 +4265,109 @@ final class FunctionLowerer {
     }
     this.#bail('enum member not found');
     return -1;
+  }
+
+  /**
+   * Calls a FixedArray/ImmutableArray extension method on an
+   * array-typed receiver: the target is the arrayMethods entry whose
+   * class specialization matches the element type (the generic
+   * template when the element is a type parameter), mirroring the
+   * streaming backend's matching. Receiver is argument 0.
+   */
+  #lowerArrayExtensionCall(call: CallExpression, member: MemberExpression, elemType: Type): i32 {
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    // Overloaded extension methods (slice(start) / slice(start, end))
+    // register under mangled names; the checker records the selected
+    // declaration per call node (member-lookup.md §5.2).
+    var lookupName = propName;
+    let chosenFt = this.func.model.getResolvedOverload(call);
+    if (chosenFt != null) {
+      lookupName = propName + getSignatureKey(chosenFt as FunctionType);
+    }
+    let isGenericElem = elemType is TypeParameterType;
+    var foundOpt: WasmFunction | null = null;
+    // Self-calls inside FixedArray/ImmutableArray's own specialized
+    // methods (`this.slice(...)` from the Range wrappers): the
+    // element type reads as erased there, but the target is simply
+    // this function's own specialization.
+    if (this.func.classType != null) {
+      let ownCt = this.func.classType as ClassType;
+      if (ownCt.name == "FixedArray" || ownCt.name == "ImmutableArray") {
+        let key = getClassMethodKey(getClassKey(ownCt), lookupName);
+        if (let (true, m) = this.wasm.classMethodMap.get(key)) {
+          foundOpt = m;
+        }
+      }
+    }
+    if (foundOpt == null) {
+    for (let f in this.wasm.arrayMethods) {
+      if (f.classType == null || f.methodName == null ||
+          (f.methodName as String) != lookupName) {
+        continue;
+      }
+      let fClass = f.classType as ClassType;
+      if (fClass.name != "FixedArray" && fClass.name != "ImmutableArray") {
+        continue;
+      }
+      let fArgs = fClass.typeArguments;
+      if (isGenericElem) {
+        if (fArgs == null || (fArgs as Array<Type>).length == 0) {
+          foundOpt = f;
+        }
+      } else if (fArgs != null && (fArgs as Array<Type>).length > 0) {
+        if (getTypeKeyForSpecialization(elemType) ==
+            getTypeKeyForSpecialization((fArgs as Array<Type>)[0])) {
+          foundOpt = f;
+        }
+      }
+    }
+    }
+    if (foundOpt == null) {
+      this.#bail('array extension method');
+    }
+    let target = foundOpt as WasmFunction;
+    if (target.intrinsic != null || target.typeParameters != null) {
+      this.#bail('array extension shape');
+    }
+    let sig = target.signature;
+    if (sig.returns.length > 1) {
+      this.#bail('array extension multi-value');
+    }
+    if (sig.params.length != call.args.length + 1) {
+      this.#bail('array extension arity');
+    }
+    for (let p in sig.params) {
+      this.#requireSupported(p, 'array extension param');
+    }
+    var resultType: ValType | null = null;
+    if (sig.returns.length == 1) {
+      this.#requireSupported(sig.returns[0], 'array extension result');
+      resultType = sig.returns[0];
+    }
+    let receiver = this.#lowerExpressionCtx(member.object, sig.params[0]);
+    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
+      this.#bail('array extension receiver');
+    }
+    let args = new Array<i32>();
+    args.push(receiver);
+    for (var i = 0; i < call.args.length; i += 1) {
+      let value = this.#lowerExpressionCtx(call.args[i], sig.params[i + 1]);
+      if (!isValSubtype(this.#valueType(value), sig.params[i + 1])) {
+        this.#bail('array extension argument');
+      }
+      args.push(value);
+    }
+    let funcRef = this.b.addRef(new IrRefFunc(target));
+    let raw = this.b.callFunc(funcRef, args, resultType);
+    if (resultType != null) {
+      let nodeType = this.func.model.getNodeType(call);
+      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
+        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+        return this.#reassertNonNull(raw, want);
+      }
+    }
+    return raw;
   }
 
   #threeValues(a: i32, b: i32, c: i32): Array<i32> {

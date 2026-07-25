@@ -1,0 +1,21 @@
+// @mode: run
+// @result: 76543
+// Array extension calls and .length under ZIR: slice by
+// element-specialized lookup, the Range [] wrappers that self-call
+// slice inside FixedArray's own methods, map with a closure argument
+// (the callee may be backend-mixed — calls are direct either way),
+// and array.len member reads.
+
+export let main = (): i32 => {
+  let a = [3, 1, 4, 1, 5];
+  var acc = 0;
+  if (a.length == 5) { acc += 3; }            // array.len
+  let s = a.slice(1, 4);                       // [1, 4, 1]
+  if (s.length == 3) { acc += 40; }
+  if (s[0] == 1 && s[1] == 4 && s[2] == 1) { acc += 500; }
+  let r = a[1..4];                             // Range wrapper -> slice
+  if (r.length == 3 && r[1] == 4) { acc += 6000; }
+  let m = a.map((x: i32): i32 => x * 2);
+  if (m.length == 5 && m[4] == 10) { acc += 70000; }
+  return acc;
+};
