@@ -364,6 +364,27 @@ paths converge instead of accreting:
    which is the point of the fold. (Closures could then be understood
    as instances of a builtin callable class; not designed here.)
 
+**Fast paths under the unified model.** Two cases look like fast
+paths but are different things. Arithmetic on primitives never
+enters this pipeline at all: primitives have no members, so
+`i32 + i32` is a builtin numeric operation typed directly by the
+checker — it lowers to `i32.add` in every version of this design,
+not as an exception but as a different semantic category (only
+class-typed operands, e.g. `String.+`, resolve through §5.1).
+For member-resolved forms where the static type already decides
+everything (indexing a statically array-typed receiver), the fast
+path SHOULD survive — but as *shared machinery run eagerly*, not as
+separate lowering logic: lowering emits the resolved-call form and
+immediately applies the same devirtualize/legalize transfer
+functions the passes use, materializing only the simplified result
+(builder-level folding, as in LLVM's IRBuilder constant folding).
+One copy of the logic, two invocation points: eagerly at
+construction when lowering-time facts suffice, and again in the
+passes when later information (e.g. inlining revealing a concrete
+receiver) creates new opportunities. What must NOT survive is
+today's shape — hand-written eager branches that duplicate the
+decision logic and can drift from it.
+
 A note on the current array fast path: lowering `a[i]` straight to
 `array.get` for statically array-typed receivers is not a semantic
 special case but an eager fusion of steps whose outcomes are
