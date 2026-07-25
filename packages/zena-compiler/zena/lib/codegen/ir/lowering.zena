@@ -1914,6 +1914,49 @@ final class FunctionLowerer {
       }
       return same;
     }
+    // Class operator members: `a + b` / `a == b` where the left
+    // operand's class declares the operator resolve to a method call
+    // (member-lookup.md §5.5 — operators fold into method
+    // resolution). Mirrors streaming: `!=` is `==` inverted; direct
+    // call when devirtualizable, else bail (streaming dispatches
+    // virtually there). String concat and String equality are the
+    // dominant users.
+    let leftNodeType = this.func.model.getNodeType(bin.left);
+    if (leftNodeType != null) {
+      let leftBase = baseType(leftNodeType as Type);
+      if (leftBase is ClassType) {
+        let opMember = if (bin.operator == "!=") "==" else bin.operator;
+        let leftCt = eraseTypeParameters(leftBase) as ClassType;
+        if (leftCt.members.has(opMember)) {
+          let left = this.#lowerExpression(bin.left);
+          let right = this.#lowerExpression(bin.right);
+          // Resolve against the VALUE's class when known (mirrors
+          // method calls); the checked class is the fallback.
+          let fromValue = this.#classTypeOfValue(left);
+          let recvCt = if (fromValue != null) fromValue as ClassType else leftCt;
+          let methodOpt = this.#resolveDevirtualizedMethod(recvCt, opMember);
+          if (methodOpt == null) {
+            this.#bail('operator dispatch');
+          }
+          let method = methodOpt as WasmFunction;
+          let sig = method.signature;
+          if (sig.params.length != 2 || sig.returns.length != 1) {
+            this.#bail('operator method shape');
+          }
+          let recv = this.#coerceTo(left, sig.params[0]);
+          let arg = this.#coerceTo(right, sig.params[1]);
+          let funcRef = this.b.addRef(new IrRefFunc(method));
+          let args = new Array<i32>();
+          args.push(recv);
+          args.push(arg);
+          let raw = this.b.callFunc(funcRef, args, sig.returns[0]);
+          if (bin.operator == "!=") {
+            return this.b.emit(IrOp.i32_eqz, new ValTypeI32(), raw, -1);
+          }
+          return raw;
+        }
+      }
+    }
     this.#requireScalarNode(bin.left);
     this.#requireScalarNode(bin.right);
     let left = this.#lowerExpression(bin.left);
