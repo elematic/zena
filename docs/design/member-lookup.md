@@ -364,6 +364,23 @@ paths converge instead of accreting:
    which is the point of the fold. (Closures could then be understood
    as instances of a builtin callable class; not designed here.)
 
+A note on the current array fast path: lowering `a[i]` straight to
+`array.get` for statically array-typed receivers is not a semantic
+special case but an eager fusion of steps whose outcomes are
+statically total there — wasm arrays carry no vtable (virtual
+dispatch on an array value is unrepresentable), `FixedArray` is an
+unsubclassable extension class represented as the bare array ref,
+and its `[]` resolves to exactly one intrinsic. And because
+standalone intrinsic functions are trap stubs, replacing intrinsic
+callees with raw ops is mandatory LEGALIZATION, not optional
+optimization: some phase must do it, and with no pass pipeline yet,
+that phase is lowering. Once the pipeline exists, the fusion should
+retire — passes seeing pre-fused ops instead of calls would hide
+exactly the devirtualization opportunities the uniform call form
+exposes. (Devirtualizing an INTERFACE dispatch down to `array.get` —
+proving a `Sequence` is always a `FixedArray` — is by contrast a
+genuine future optimization no backend attempts today.)
+
 Status: the checker shares the selection tail across all sites; the
 ZIR backend shares slot-name reproduction but still has dedicated
 index/eq-hash lowering branches; the streaming backend's per-form
