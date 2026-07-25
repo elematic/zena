@@ -36,12 +36,13 @@ import {
   MethodDefinition, ThisExpression, Parameter, ClassDeclaration,
   FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation,
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
-  TupleLiteral, getMemberPropertyName
+  TupleLiteral, EnumDeclaration, getMemberPropertyName
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, baseType, isVoidOrNeverType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, baseType, isVoidOrNeverType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
+import { parseI32WithHex } from '../expr/member.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
@@ -1523,6 +1524,14 @@ final class FunctionLowerer {
     }
     let resolved = (sym as Symbol).resolveTarget();
     if (!this.env.has(resolved.id)) {
+      // Module-level globals read via global.get; the checked type of
+      // the identifier reasserts non-nullness where the global's wasm
+      // type is a nullable ref.
+      if (let (true, g) = this.wasm.globalMap.get(resolved.id)) {
+        let globalRef = this.b.addRef(new IrRefGlobal(g));
+        let raw = this.b.emit(IrOp.global_get, g.type, -1, globalRef);
+        return this.#reassertNonNull(raw, this.#exprValType(ident));
+      }
       this.#bail('non-local identifier');
     }
     var value = this.env[resolved.id];
@@ -2602,6 +2611,21 @@ final class FunctionLowerer {
       this.#bail('optional member access');
     }
     let objectType = this.func.model.getNodeType(member.object);
+    // Enum member access lowers to a constant, mirroring the
+    // streaming backend: numeric members inline their (implicit or
+    // literal) value, string-enum members their string literal. The
+    // enum "namespace" identifier itself is never lowered.
+    if (objectType != null) {
+      match (baseType(objectType as Type)) {
+        case RecordType as rt: {
+          if (rt.enumDeclaration != null) {
+            return this.#lowerEnumMember(
+                rt.enumDeclaration as EnumDeclaration, member);
+          }
+        }
+        case _: {}
+      }
+    }
     if (objectType != null &&
         this.#resolveSelfType(objectType as Type) is InterfaceType) {
       if (this.func.model.isStaticAccess(member)) {
@@ -3468,6 +3492,78 @@ final class FunctionLowerer {
     return value;
   }
 
+  /** Module-level global writes: global.set, with compound
+   * assignments reading through global.get first. Yields the
+   * assigned value like every assignment expression. */
+  #lowerGlobalAssign(assign: AssignmentExpression, g: WasmGlobal): i32 {
+    var value = -1;
+    if (assign.operator == null) {
+      value = this.#lowerExpressionCtx(assign.value, g.type);
+    } else {
+      this.#requireScalarNode(assign.left);
+      this.#requireScalarNode(assign.value);
+      let readRef = this.b.addRef(new IrRefGlobal(g));
+      let current = this.b.emit(IrOp.global_get, g.type, -1, readRef);
+      let rhs = this.#lowerExpression(assign.value);
+      let vt = this.#valueType(current);
+      if (!valTypeEquals(vt, this.#valueType(rhs))) {
+        this.#bail('mixed global compound types');
+      }
+      let unsigned = this.#isUnsignedNode(assign.left) ||
+          this.#isUnsignedNode(assign.value);
+      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
+      value = this.b.binary(op, vt, current, rhs);
+    }
+    if (!isValSubtype(this.#valueType(value), g.type)) {
+      this.#bail('global write type');
+    }
+    let writeRef = this.b.addRef(new IrRefGlobal(g));
+    this.b.emitVoid(IrOp.global_set, value, writeRef);
+    return value;
+  }
+
+  /** Enum member constants (see the streaming generator's enum
+   * path): sequential numeric values with literal overrides, or the
+   * member's string literal for string enums. */
+  #lowerEnumMember(ed: EnumDeclaration, member: MemberExpression): i32 {
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    let isStringEnum = ed.members.length > 0 &&
+        ed.members[0].initializer is StringLiteral;
+    var nextValue = 0;
+    for (let m in ed.members) {
+      if (isStringEnum) {
+        if (m.name.name == propName) {
+          if (m.initializer is StringLiteral) {
+            return this.#lowerStringLiteral(m.initializer as StringLiteral);
+          }
+          this.#bail('string enum member literal');
+        }
+      } else {
+        var currentValue = nextValue;
+        if (m.initializer != null) {
+          if (m.initializer is NumberLiteral) {
+            let raw = (m.initializer as NumberLiteral).raw;
+            let (ok, v) = parseI32WithHex(raw);
+            if (ok) {
+              currentValue = v;
+            } else {
+              this.#bail('enum member literal');
+            }
+          } else {
+            this.#bail('enum member initializer');
+          }
+        }
+        if (m.name.name == propName) {
+          return this.b.constI32(currentValue, new ValTypeI32() as ValType);
+        }
+        nextValue = currentValue + 1;
+      }
+    }
+    this.#bail('enum member not found');
+    return -1;
+  }
+
   #threeValues(a: i32, b: i32, c: i32): Array<i32> {
     let out = new Array<i32>();
     out.push(a);
@@ -3788,6 +3884,9 @@ final class FunctionLowerer {
     }
     let resolved = (sym as Symbol).resolveTarget();
     if (!this.env.has(resolved.id)) {
+      if (let (true, g) = this.wasm.globalMap.get(resolved.id)) {
+        return this.#lowerGlobalAssign(assign, g);
+      }
       this.#bail('non-local assignment target');
     }
     let celled = this.#isCelled(resolved.id);

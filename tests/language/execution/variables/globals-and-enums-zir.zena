@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 51210
+// Module-level globals (read, write, compound write) and numeric
+// enum member constants (implicit and literal-override values) — the
+// constructs the ZIR backend lowers via global.get/global.set and
+// inline constants.
+
+enum Color {
+  Red,
+  Green = 10,
+  Blue,
+}
+
+var counter: i32 = 5;
+let base: i32 = 400;
+
+let bump = (n: i32): i32 => {
+  counter += n;      // compound global write
+  return counter;
+};
+
+export let main = (): i32 => {
+  counter = 7;                       // plain global write
+  let a = bump(3);                   // 10
+  let b = base + counter;            // 410
+  let c = (Color.Red as i32) + (Color.Green as i32) + (Color.Blue as i32); // 0 + 10 + 11 = 21
+  return a * 1000 + b * 100 + c * 10;
+};
