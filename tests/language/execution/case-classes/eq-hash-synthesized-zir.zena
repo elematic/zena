@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 511
+// Synthesized case-class operator== and hashCode across field kinds
+// (i32, i64, String, nested case class — class with case params):
+// value equality with the
+// type-test guard, null-safety on reference fields, and
+// hash-consistency (equal values hash equally; hashCode is the
+// 31-fold mirror of the streaming backend).
+
+class Inner(tag: i32)
+class Rec(id: i32, big: i64, name: String, inner: Inner)
+
+export let main = (): i32 => {
+  var acc = 0;
+  let a = new Rec(1, 5000000000, "zena", new Inner(7));
+  let b = new Rec(1, 5000000000, "zena", new Inner(7));
+  let c = new Rec(2, 5000000000, "zena", new Inner(7));
+  let d = new Rec(1, 5000000000, "zena", new Inner(8));
+  if (a == b) { acc += 1; }            // deep value equality
+  if (!(a == c)) { acc += 2; }         // i32 field differs
+  if (!(a == d)) { acc += 4; }         // nested case class differs
+  if (a == a) { acc += 8; }            // reflexive
+  if (a.hashCode() == b.hashCode()) { acc += 16; }  // equal -> equal hash
+  if (a.hashCode() != 0) { acc += 32; }
+  let e = new Rec(1, 5000000001, "zena", new Inner(7));
+  if (!(a == e)) { acc += 64; }        // i64 field differs
+  let f = new Rec(1, 5000000000, "zen" + "a", new Inner(7));
+  if (a == f) { acc += 128; }          // string content equality
+  if (a.hashCode() == f.hashCode()) { acc += 256; }
+  return acc;
+};

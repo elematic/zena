@@ -44,8 +44,8 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
-import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType } from '../wasm.zena';
-import { WasmModule, WasmFunction, WasmStruct, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
@@ -379,6 +379,14 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
       let lowerer = new FunctionLowerer(wasm, func);
       return lowerer.lowerSynthesizedConstructor();
     }
+    if (func.isCaseClassEq) {
+      let lowerer = new FunctionLowerer(wasm, func);
+      return lowerer.lowerCaseClassEq();
+    }
+    if (func.isCaseClassHash) {
+      let lowerer = new FunctionLowerer(wasm, func);
+      return lowerer.lowerCaseClassHash();
+    }
     throw new ZirUnsupported("synthesized function");
   }
   // No adaptations, trampolines, synthesized accessors, imports, or
@@ -593,6 +601,246 @@ final class FunctionLowerer {
    * parameter into its field, then stores field defaults with the
    * accessor rename applied. Both mirrored exactly.
    */
+  /**
+   * Synthesized case-class operator== (mirrors the streaming
+   * generator): `other` must ref.test as this struct, then every
+   * field compares equal — numerics by value, Strings by content and
+   * classes through a DEVIRTUALIZED operator== (both null-safely),
+   * other references by identity. Virtual dispatch bails to
+   * streaming.
+   */
+  lowerCaseClassEq(): IrBody {
+    let sig = this.func.signature;
+    if (sig.params.length != 2 || sig.returns.length != 1 ||
+        this.func.structType == null) {
+      this.#bail('case eq shape');
+    }
+    let st = this.func.structType as WasmStruct;
+    let i32vt = new ValTypeI32() as ValType;
+    let entry = this.b.newBlock();
+    let params = new Array<i32>();
+    for (let vt in sig.params) {
+      params.push(this.b.blockParam(entry, vt));
+    }
+    this.b.switchTo(entry);
+
+    let stVt = new ValTypeRef(st) as ValType;
+    let test = this.b.emit(IrOp.ref_test, i32vt, params[1], this.b.internType(stVt));
+    if (st.fields.length <= 1) {
+      this.b.ret(test);
+      return this.b.finish();
+    }
+
+    let thenB = this.b.newBlock();
+    let elseB = this.b.newBlock();
+    this.b.brIf(test, thenB, this.#noArgs(), elseB, this.#noArgs());
+    let mergeB = this.b.newBlock();
+    let resultParam = this.b.blockParam(mergeB, i32vt);
+
+    this.b.switchTo(elseB);
+    let zero = this.b.constI32(0, i32vt);
+    let elseArgs = new Array<i32>();
+    elseArgs.push(zero);
+    this.b.br(mergeB, elseArgs);
+
+    this.b.switchTo(thenB);
+    let selfC = this.b.emit(IrOp.ref_cast, stVt, params[0], this.b.internType(stVt));
+    let otherC = this.b.emit(IrOp.ref_cast, stVt, params[1], this.b.internType(stVt));
+    var acc = -1;
+    for (var fi = 0; fi < st.fields.length; fi += 1) {
+      let f = st.fields[fi];
+      if (f.name == null || (f.name as String) == "<vtable>") {
+        continue;
+      }
+      let fieldRef = this.b.addRef(new IrRefField(st, f.name as String));
+      let a = this.b.emit(IrOp.struct_get, f.type, selfC, fieldRef);
+      let b2 = this.b.emit(IrOp.struct_get, f.type, otherC, fieldRef);
+      let fe = this.#synthFieldEq(f, a, b2);
+      acc = if (acc == -1) fe else this.b.binary(IrOp.i32_and, i32vt, acc, fe);
+    }
+    if (acc == -1) {
+      acc = this.b.constI32(1, i32vt);
+    }
+    let thenArgs = new Array<i32>();
+    thenArgs.push(acc);
+    this.b.br(mergeB, thenArgs);
+
+    this.b.switchTo(mergeB);
+    this.b.ret(resultParam);
+    return this.b.finish();
+  }
+
+  /** Field-wise equality for the synthesized case-class ==. */
+  #synthFieldEq(f: WasmField, a: i32, b2: i32): i32 {
+    let i32vt = new ValTypeI32() as ValType;
+    let ft = f.type;
+    if (ft is ValTypeI32) {
+      return this.b.binary(IrOp.i32_eq, i32vt, a, b2);
+    }
+    if (ft is ValTypeI64) {
+      return this.b.binary(IrOp.i64_eq, i32vt, a, b2);
+    }
+    if (ft is ValTypeF32) {
+      return this.b.binary(IrOp.f32_eq, i32vt, a, b2);
+    }
+    if (ft is ValTypeF64) {
+      return this.b.binary(IrOp.f64_eq, i32vt, a, b2);
+    }
+    var targetOpt: WasmType | null = null;
+    match (ft) {
+      case ValTypeRef as r: { targetOpt = r.target; }
+      case ValTypeRefNull as rn: { targetOpt = rn.target; }
+      case _: {}
+    }
+    if (targetOpt != null && targetOpt is WasmStruct) {
+      let fieldStruct = targetOpt as WasmStruct;
+      var eqFunc: WasmFunction | null = null;
+      if (this.#isStringStruct(fieldStruct)) {
+        eqFunc = this.#stringEqFunc();
+      }
+      if (eqFunc == null && fieldStruct.classType != null) {
+        let fct = fieldStruct.classType as ClassType;
+        if (fct.members.has("==")) {
+          // A user operator== on the field's class: only a
+          // devirtualized direct call is expressible.
+          eqFunc = this.#resolveDevirtualizedMethod(fct, "==");
+          if (eqFunc == null) {
+            this.#bail('case eq field dispatch');
+          }
+        }
+      }
+      if (eqFunc != null) {
+        // Null-safe reference fast path around the content equality
+        // (see #refEqFastPathCall): struct fields are nullable refs.
+        return this.#refEqFastPathCall(eqFunc as WasmFunction, a, b2, true);
+      }
+    }
+    // Fallback: reference identity (also covers arrays/closures).
+    return this.b.emit(IrOp.ref_eq, i32vt, a, b2);
+  }
+
+  /**
+   * Synthesized case-class hashCode (mirrors the streaming
+   * generator): h = fold(h * 31 + fieldHash). Numerics hash by value
+   * (i64 folds lo ^ hi), Strings through the runtime helper and
+   * class fields through a DEVIRTUALIZED hashCode (both null-safely,
+   * null hashing to 0); other reference fields hash to 0. Float
+   * fields bail (no reinterpret ops in ZIR yet).
+   */
+  lowerCaseClassHash(): IrBody {
+    let sig = this.func.signature;
+    if (sig.params.length != 1 || sig.returns.length != 1 ||
+        this.func.structType == null) {
+      this.#bail('case hash shape');
+    }
+    let st = this.func.structType as WasmStruct;
+    let i32vt = new ValTypeI32() as ValType;
+    let entry = this.b.newBlock();
+    let params = new Array<i32>();
+    for (let vt in sig.params) {
+      params.push(this.b.blockParam(entry, vt));
+    }
+    this.b.switchTo(entry);
+
+    if (st.fields.length <= 1) {
+      this.b.ret(this.b.constI32(0, i32vt));
+      return this.b.finish();
+    }
+    let stVt = new ValTypeRef(st) as ValType;
+    let selfC = this.b.emit(IrOp.ref_cast, stVt, params[0], this.b.internType(stVt));
+    var h = -1;
+    for (var fi = 0; fi < st.fields.length; fi += 1) {
+      let f = st.fields[fi];
+      if (f.name == null || (f.name as String) == "<vtable>") {
+        continue;
+      }
+      let fh = this.#synthFieldHash(st, f, selfC);
+      if (h == -1) {
+        h = fh;
+      } else {
+        let thirtyOne = this.b.constI32(31, i32vt);
+        let scaled = this.b.binary(IrOp.i32_mul, i32vt, h, thirtyOne);
+        h = this.b.binary(IrOp.i32_add, i32vt, scaled, fh);
+      }
+    }
+    if (h == -1) {
+      h = this.b.constI32(0, i32vt);
+    }
+    this.b.ret(h);
+    return this.b.finish();
+  }
+
+  /** Field-wise hash for the synthesized case-class hashCode. */
+  #synthFieldHash(st: WasmStruct, f: WasmField, selfC: i32): i32 {
+    let i32vt = new ValTypeI32() as ValType;
+    let ft = f.type;
+    if (ft is ValTypeF32 || ft is ValTypeF64) {
+      this.#bail('case hash float field');
+    }
+    if (ft is ValTypeI32) {
+      let fieldRef = this.b.addRef(new IrRefField(st, f.name as String));
+      return this.b.emit(IrOp.struct_get, ft, selfC, fieldRef);
+    }
+    if (ft is ValTypeI64) {
+      let fieldRef = this.b.addRef(new IrRefField(st, f.name as String));
+      let v = this.b.emit(IrOp.struct_get, ft, selfC, fieldRef);
+      return this.#hashI64Fold(v);
+    }
+    // Fresh binding: the narrowing state after the bail/return chain
+    // above over-narrows `ft` (see BUGS.md narrowing entries).
+    let ftRef: ValType = f.type;
+    var targetOpt: WasmType | null = null;
+    match (ftRef) {
+      case ValTypeRef as r: { targetOpt = r.target; }
+      case ValTypeRefNull as rn: { targetOpt = rn.target; }
+      case _: {}
+    }
+    if (targetOpt != null && targetOpt is WasmStruct) {
+      let fieldStruct = targetOpt as WasmStruct;
+      var hashFunc: WasmFunction | null = null;
+      if (this.#isStringStruct(fieldStruct) && this.wasm.stringHashFunc != null) {
+        hashFunc = this.wasm.stringHashFunc;
+      }
+      if (hashFunc == null && fieldStruct.classType != null) {
+        let fct = fieldStruct.classType as ClassType;
+        if (fct.members.has("hashCode")) {
+          hashFunc = this.#resolveDevirtualizedMethod(fct, "hashCode");
+          if (hashFunc == null) {
+            this.#bail('case hash field dispatch');
+          }
+        }
+      }
+      if (hashFunc != null) {
+        let fieldRef = this.b.addRef(new IrRefField(st, f.name as String));
+        let v = this.b.emit(IrOp.struct_get, ft, selfC, fieldRef);
+        // Null-safe: null hashes to 0.
+        let isNull = this.b.emit(IrOp.ref_is_null, i32vt, v, -1);
+        let nullB = this.b.newBlock();
+        let callB = this.b.newBlock();
+        this.b.brIf(isNull, nullB, this.#noArgs(), callB, this.#noArgs());
+        let mergeB = this.b.newBlock();
+        let result = this.b.blockParam(mergeB, i32vt);
+
+        this.b.switchTo(nullB);
+        let zero = this.b.constI32(0, i32vt);
+        let nullArgs = new Array<i32>();
+        nullArgs.push(zero);
+        this.b.br(mergeB, nullArgs);
+
+        this.b.switchTo(callB);
+        let called = this.#callUnary(hashFunc as WasmFunction, v);
+        let callArgs = new Array<i32>();
+        callArgs.push(called);
+        this.b.br(mergeB, callArgs);
+
+        this.b.switchTo(mergeB);
+        return result;
+      }
+    }
+    // Unsupported field kinds hash to 0 (mirrors streaming).
+    return this.b.constI32(0, i32vt);
+  }
+
   lowerSynthesizedConstructor(): IrBody {
     let sig = this.func.signature;
     if (sig.returns.length != 0 || sig.params.length == 0) {
@@ -3585,12 +3833,7 @@ final class FunctionLowerer {
     if (strClass != null &&
         this.#canonicalKeyOf(ctA as ClassType) == this.#canonicalKeyOf(strClass as ClassType) &&
         this.#canonicalKeyOf(ctB as ClassType) == this.#canonicalKeyOf(strClass as ClassType)) {
-      let key = getClassMethodKey(getClassKey(strClass as ClassType), "==");
-      let methodOpt = if (let (true, m) = this.wasm.classMethodMap.get(key)) m else null;
-      if (methodOpt == null) {
-        this.#bail('string eq method');
-      }
-      return this.#callEqMethod(methodOpt as WasmFunction, a, b2);
+      return this.#callEqMethod(this.#stringEqFunc(), a, b2);
     }
     if (this.#isNullableRef(va) || this.#isNullableRef(vb)) {
       this.#bail('nullable eq operand');
@@ -3622,11 +3865,7 @@ final class FunctionLowerer {
       return v;
     }
     if (vv is ValTypeI64) {
-      let lo = this.b.emit(IrOp.i32_wrap_i64, i32vt, v, -1);
-      let thirtyTwo = this.b.constI64(32 as i64, new ValTypeI64() as ValType);
-      let shifted = this.b.binary(IrOp.i64_shr_u, new ValTypeI64() as ValType, v, thirtyTwo);
-      let hi = this.b.emit(IrOp.i32_wrap_i64, i32vt, shifted, -1);
-      return this.b.binary(IrOp.i32_xor, i32vt, lo, hi);
+      return this.#hashI64Fold(v);
     }
     let ctV = this.#classTypeOfValue(v);
     if (ctV == null) {
@@ -3635,16 +3874,7 @@ final class FunctionLowerer {
     let strClass = this.wasm.stringClass;
     if (strClass != null &&
         this.#canonicalKeyOf(ctV as ClassType) == this.#canonicalKeyOf(strClass as ClassType)) {
-      let hashFn = this.wasm.stringHashFunc;
-      if (hashFn == null) {
-        this.#bail('string hash helper');
-      }
-      let fn = hashFn as WasmFunction;
-      let arg = this.#coerceTo(v, fn.signature.params[0]);
-      let funcRef = this.b.addRef(new IrRefFunc(fn));
-      let args = new Array<i32>();
-      args.push(arg);
-      return this.b.callFunc(funcRef, args, fn.signature.returns[0]);
+      return this.#callStringHash(v);
     }
     if (this.#isNullableRef(vv)) {
       this.#bail('nullable hash operand');
@@ -3653,15 +3883,7 @@ final class FunctionLowerer {
     if (hashMethod == null) {
       this.#bail('hash operand type');
     }
-    let fn = hashMethod as WasmFunction;
-    if (fn.signature.params.length != 1 || fn.signature.returns.length != 1) {
-      this.#bail('hash method shape');
-    }
-    let recv = this.#coerceTo(v, fn.signature.params[0]);
-    let funcRef = this.b.addRef(new IrRefFunc(fn));
-    let args = new Array<i32>();
-    args.push(recv);
-    return this.b.callFunc(funcRef, args, fn.signature.returns[0]);
+    return this.#callUnary(hashMethod as WasmFunction, v);
   }
 
   /**
@@ -3721,6 +3943,67 @@ final class FunctionLowerer {
 
     this.b.switchTo(mergeB);
     return result;
+  }
+
+  /** i64 -> i32 hash fold (lo ^ hi), shared by the hash intrinsic
+   * and the case-class hashCode synthesis (mirrors streaming). */
+  #hashI64Fold(v: i32): i32 {
+    let i32vt = new ValTypeI32() as ValType;
+    let lo = this.b.emit(IrOp.i32_wrap_i64, i32vt, v, -1);
+    let thirtyTwo = this.b.constI64(32 as i64, new ValTypeI64() as ValType);
+    let shifted = this.b.binary(IrOp.i64_shr_u, new ValTypeI64() as ValType, v, thirtyTwo);
+    let hi = this.b.emit(IrOp.i32_wrap_i64, i32vt, shifted, -1);
+    return this.b.binary(IrOp.i32_xor, i32vt, lo, hi);
+  }
+
+  /** Call the runtime string-hash helper on a String value. */
+  #callStringHash(v: i32): i32 {
+    let hashFn = this.wasm.stringHashFunc;
+    if (hashFn == null) {
+      this.#bail('string hash helper');
+    }
+    return this.#callUnary(hashFn as WasmFunction, v);
+  }
+
+  /** Direct call to a devirtualized single-result unary method
+   * (hashCode, the string-hash helper), coercing the receiver. */
+  #callUnary(fn: WasmFunction, v: i32): i32 {
+    if (fn.signature.params.length != 1 || fn.signature.returns.length != 1) {
+      this.#bail('unary method shape');
+    }
+    let recv = this.#coerceTo(v, fn.signature.params[0]);
+    let funcRef = this.b.addRef(new IrRefFunc(fn));
+    let args = new Array<i32>();
+    args.push(recv);
+    return this.b.callFunc(funcRef, args, fn.signature.returns[0]);
+  }
+
+  /** String's operator== function, or a bail. (Inline throw: the
+   * checker does not treat a #bail() call as terminating — BUGS.md
+   * "never-returning calls don't narrow".) */
+  #stringEqFunc(): WasmFunction {
+    let strClass = this.wasm.stringClass;
+    if (strClass != null) {
+      let key = getClassMethodKey(getClassKey(strClass as ClassType), "==");
+      if (let (true, m) = this.wasm.classMethodMap.get(key)) {
+        return m;
+      }
+    }
+    throw new ZirUnsupported('string eq method');
+  }
+
+  /** True when the struct IS the String struct (covers generic
+   * specializations with String arguments, matched by struct index
+   * like the streaming backend). */
+  #isStringStruct(st: WasmStruct): boolean {
+    let strClass = this.wasm.stringClass;
+    if (strClass == null) {
+      return false;
+    }
+    if (let (true, info) = this.wasm.classInfos.get(getClassKey(strClass as ClassType))) {
+      return info.structType.index == st.index;
+    }
+    return false;
   }
 
   /** Direct call to a two-operand boolean method (String.== or a
