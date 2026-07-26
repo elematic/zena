@@ -394,6 +394,17 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
       let lowerer = new FunctionLowerer(wasm, func);
       return lowerer.lowerCaseClassHash();
     }
+    // Vtable slot stubs: the vtable struct declares one exactly-typed
+    // funcref field per method of the hierarchy, so a method with no
+    // proven call still needs a function of the right signature in its
+    // slot. Streaming emits a bare `unreachable` for these; mirror it —
+    // a dispatch landing here means liveness was wrong, so trap loudly.
+    if (func.isVtableSlotStub) {
+      let b = new IrBuilder();
+      synthEntryParams(b, func);
+      b.unreachable();
+      return b.finish();
+    }
     throw new ZirUnsupported("synthesized function");
   }
   // No adaptations, trampolines, synthesized accessors, imports, or

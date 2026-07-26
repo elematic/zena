@@ -422,6 +422,16 @@ export final class WasmFunction implements Hashable {
   var isCaseClassEq: boolean = false;
   var isCaseClassHash: boolean = false;
   /**
+   * Set on body-less functions that exist only to occupy a vtable
+   * slot. A class's vtable struct declares one exactly-typed funcref
+   * field per method of the hierarchy, so even a method that
+   * reachability never saw a call to must put SOMETHING of the right
+   * signature in its slot. Both backends emit a single `unreachable`
+   * for these: a virtual dispatch landing on one means the liveness
+   * analysis was wrong, and trapping loudly is the correct response.
+   */
+  var isVtableSlotStub: boolean = false;
+  /**
    * Set on functions compiled from a mixin declaration's body: the
    * mixin's private scope key ("<Mixin>_This"). Private field
    * accesses in such functions resolve to "<scope>::#name" struct
