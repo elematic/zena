@@ -50,7 +50,7 @@ import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
-import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
+import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey } from '../codegen-utils.zena';
@@ -1625,7 +1625,8 @@ final class FunctionLowerer {
       }
     }
     if ((!isFixed && !isArray) || elemType == null) {
-      this.#bail('for-in iterator protocol');
+      this.#lowerForInIterator(stmt, iterableType as Type);
+      return;
     }
 
     // The fast paths consume the raw value; skip the top-level Iterable
@@ -1741,6 +1742,209 @@ final class FunctionLowerer {
     this.reachable = true;
   }
 
+  /**
+   * for-in via the iterator protocol, mirroring streaming: class
+   * iterables pack into their Iterable (or Iterator) fat pointer here
+   * — skipping any checker-recorded top-level adaptation, like the
+   * array fast paths — and `:iterator` is dispatched through the
+   * vtable slot. The loop header calls next(), a multi-value
+   * (i32 ok, element) return, through the ITERATOR value's own
+   * fat-pointer type; the element downcasts to the binding's type
+   * exactly where streaming ref.casts its element temp.
+   */
+  #lowerForInIterator(stmt: ForInStatement, iterableType: Type): void {
+    let resolved = this.#resolveSelfType(iterableType);
+    var iter = -1;
+    if (resolved is ClassType) {
+      let ct = eraseTypeParameters(resolved) as ClassType;
+      let recv = this.#lowerExpressionDispatch(stmt.iterable);
+      let iteratorIface = findImplementedInterfaceTransitive(ct, 'Iterator');
+      if (iteratorIface != null) {
+        // The iterable IS an iterator: no :iterator call.
+        iter = this.#packInterface(recv, ct, iteratorIface as InterfaceType);
+      } else {
+        let iterableIface = findImplementedInterfaceTransitive(ct, 'Iterable');
+        if (iterableIface == null) {
+          this.#bail('for-in iterable kind');
+        }
+        let packed = this.#packInterface(recv, ct,
+            iterableIface as InterfaceType);
+        iter = this.#slotCallSingle(packed, ':iterator');
+      }
+    } else if (resolved is InterfaceType) {
+      let it = resolved as InterfaceType;
+      let recv = this.#lowerExpression(stmt.iterable);
+      if (it.name == 'Iterator') {
+        iter = recv;
+      } else {
+        iter = this.#slotCallSingle(recv, ':iterator');
+      }
+    } else {
+      this.#bail('for-in iterable kind');
+    }
+
+    var pat = stmt.pattern;
+    if (pat is BindingPattern) {
+      pat = (pat as BindingPattern).pattern;
+    }
+    var symOpt: Symbol | null = null;
+    if (pat is IdentifierPattern || pat is Identifier) {
+      symOpt = this.func.model.resolveDeclaration(pat);
+    }
+    if (symOpt == null) {
+      this.#bail('for-in pattern');
+    }
+    let sym = symOpt as Symbol;
+    let bindingType = this.func.model.getBindingType(sym);
+    if (bindingType == null) {
+      this.#bail('untyped binding');
+    }
+    let bindVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
+    this.#requireSupported(bindVt, 'for-in element type');
+
+    let carried = this.#assignedEnvSyms(stmt.body);
+    let header = this.b.newBlock();
+    let headerParams = this.#addParams(header, carried);
+    this.b.br(header, this.#envValues(carried));
+
+    this.b.switchTo(header);
+    this.#applyParams(carried, headerParams);
+    let results = this.#slotCallMulti(iter, 'next');
+    if (results.length != 2 || !(this.#valueType(results[0]) is ValTypeI32)) {
+      this.#bail('iterator next shape');
+    }
+    let ok = results[0];
+    var elem = results[1];
+
+    let bodyB = this.b.newBlock();
+    let exitB = this.b.newBlock();
+    let exitParams = this.#addParams(exitB, carried);
+    this.b.brIf(ok, bodyB, this.#noArgs(), exitB, this.#envValues(carried));
+
+    this.b.switchTo(bodyB);
+    if (!isValSubtype(this.#valueType(elem), bindVt)) {
+      // The slot's element type is erased/nullable relative to the
+      // binding: runtime downcast, streaming's ref.cast on elemTemp.
+      if (!isRefValType(bindVt)) {
+        this.#bail('for-in element type');
+      }
+      elem = this.b.emit(IrOp.ref_cast, bindVt, elem, this.b.internType(bindVt));
+    }
+    this.#bindPatternSym(sym, elem);
+
+    let updateB = this.b.newBlock();
+    let updateParams = this.#addParams(updateB, carried);
+    this.loops.push(new LoopCtx(updateB, exitB, carried));
+    this.#lowerStatement(stmt.body);
+    if (this.reachable) {
+      this.b.br(updateB, this.#envValues(carried));
+    }
+    this.loops.pop();
+
+    this.b.switchTo(updateB);
+    this.reachable = true;
+    this.#applyParams(carried, updateParams);
+    this.b.br(header, this.#envValues(carried));
+
+    this.#applyParams(carried, exitParams);
+    this.b.switchTo(exitB);
+    this.reachable = true;
+  }
+
+  /** #slotCallOnValue for members returning exactly one value. */
+  #slotCallSingle(recv: i32, memberName: String): i32 {
+    let results = this.#slotCallOnValue(recv, memberName);
+    if (results.length != 1) {
+      this.#bail('interface slot shape');
+    }
+    return results[0];
+  }
+
+  /** #slotCallOnValue for members with multi-value returns. */
+  #slotCallMulti(recv: i32, memberName: String): Array<i32> {
+    return this.#slotCallOnValue(recv, memberName);
+  }
+
+  /**
+   * Dispatches a receiver-only interface method through the vtable of
+   * an already-lowered fat-pointer VALUE. The fat pointer's own struct
+   * type names the vtable struct, so no InterfaceType resolution is
+   * needed past whatever produced the value — the :iterator slot's
+   * signature hands the loop the Iterator fat-pointer type for free.
+   * Returns the call's result values (empty for void).
+   */
+  #slotCallOnValue(recv: i32, memberName: String): Array<i32> {
+    var fatOpt: WasmStruct | null = null;
+    match (this.#valueType(recv)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) { fatOpt = r.target as WasmStruct; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) { fatOpt = rn.target as WasmStruct; }
+      }
+      case _: {}
+    }
+    if (fatOpt == null || (fatOpt as WasmStruct).fields.length != 2) {
+      this.#bail('interface receiver type');
+    }
+    let fatPtr = fatOpt as WasmStruct;
+    var vstOpt: WasmStruct | null = null;
+    match (fatPtr.fields[1].type) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) { vstOpt = r.target as WasmStruct; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) { vstOpt = rn.target as WasmStruct; }
+      }
+      case _: {}
+    }
+    if (vstOpt == null) {
+      this.#bail('interface receiver type');
+    }
+    let vst = vstOpt as WasmStruct;
+    let slot = vst.fieldIndexByName(memberName);
+    if (slot < 0) {
+      this.#bail('interface member not in vtable');
+    }
+    var sigOpt: WasmSignature | null = null;
+    match (vst.fields[slot].type) {
+      case ValTypeRef as r: {
+        if (r.target is WasmSignature) { sigOpt = r.target as WasmSignature; }
+      }
+      case _: {}
+    }
+    if (sigOpt == null) {
+      this.#bail('interface slot shape');
+    }
+    let sig = sigOpt as WasmSignature;
+    if (sig.params.length != 1) {
+      this.#bail('interface call arity adaptation');
+    }
+    let inst = this.b.emit(
+        IrOp.iface_instance, fatPtr.fields[0].type, recv, -1);
+    if (!isValSubtype(this.#valueType(inst), sig.params[0])) {
+      this.#bail('interface receiver adaptation');
+    }
+    let vt = this.b.emit(IrOp.iface_vtable, fatPtr.fields[1].type, recv, -1);
+    let fieldRef = this.b.addRef(new IrRefField(vst, memberName));
+    let callee = this.b.emit(
+        IrOp.struct_get, vst.fields[slot].type, vt, fieldRef);
+    for (let r in sig.returns) {
+      this.#requireSupported(r, 'interface result type');
+    }
+    let args = this.#oneArg(inst);
+    if (sig.returns.length > 1) {
+      return this.b.callRefMulti(callee, args, sig.returns);
+    }
+    let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
+    let result = this.b.callRef(callee, args, resultType);
+    let out = new Array<i32>();
+    if (resultType != null) {
+      out.push(result);
+    }
+    return out;
+  }
+
   // -- Expressions -----------------------------------------------------
 
   #lowerExpression(expr: Expression): i32 {
@@ -1793,8 +1997,14 @@ final class FunctionLowerer {
     if (!(srcType is ClassType) || !(tgtType is InterfaceType)) {
       this.#bail('interface adaptation shape');
     }
-    let iName = getInterfaceKey(tgtType as InterfaceType);
-    let key = getClassInterfaceKey(getClassKey(srcType as ClassType), iName);
+    return this.#packInterface(value, srcType as ClassType,
+        tgtType as InterfaceType);
+  }
+
+  /** Packs a class instance value into `it`'s fat pointer. */
+  #packInterface(value: i32, ct: ClassType, it: InterfaceType): i32 {
+    let iName = getInterfaceKey(it);
+    let key = getClassInterfaceKey(getClassKey(ct), iName);
     let vtOpt = this.wasm.getClassInterfaceVTable(key);
     if (vtOpt == null) {
       this.#bail('interface vtable global not found');

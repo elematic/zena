@@ -1,0 +1,75 @@
+// @mode: run
+// @result: 654321
+// for-in via the iterator protocol under ZIR: a user class that IS an
+// Iterator (packed directly, no :iterator call), an Iterable-typed
+// parameter (fat pointer in, :iterator through the vtable slot),
+// HashMap iteration (stdlib Iterable class receiver), map.keys() (a
+// bare Iterator interface value — same shape as countdown()'s return),
+// break/continue inside the loop, and
+// a loop-carried outer variable. next() is a multi-value
+// (bool, element) call through the iterator's vtable.
+import { HashMap } from 'zena:map';
+import { Iterable, Iterator } from 'zena:iterator';
+
+class Countdown implements Iterator<i32> {
+  var n: i32;
+  new(this.n);
+  next(): inline (true, i32) | inline (false, _) {
+    if (this.n <= 0) {
+      return (false, _);
+    }
+    this.n -= 1;
+    return (true, this.n + 1);
+  }
+}
+
+let countdown = (n: i32): Iterator<i32> => {
+  return new Countdown(n);
+};
+
+let sumOf = (xs: Iterable<i32>): i32 => {
+  var s = 0;
+  for (let x in xs) {
+    s += x;
+  }
+  return s;
+};
+
+export let main = (): i32 => {
+  var acc = 0;
+  var sum = 0;
+  for (let v in countdown(3)) {
+    sum += v;
+  }
+  if (sum == 6) { acc += 1; }
+  if (sumOf([4, 5, 6]) == 15) { acc += 20; }
+  let m = new HashMap<String, i32>();
+  m["a"] = 10;
+  m["b"] = 20;
+  m["c"] = 30;
+  var vsum = 0;
+  var count = 0;
+  for (let pair in m) {
+    vsum += pair.value;
+    count += 1;
+  }
+  if (vsum == 60 && count == 3) { acc += 300; }
+  var ksum = 0;
+  for (let k in m.keys()) {
+    ksum += k.length;
+  }
+  if (ksum == 3) { acc += 4000; }
+  var picked = 0;
+  for (let v in countdown(5)) {
+    if (v % 2 == 0) { continue; }
+    if (v == 1) { break; }
+    picked += v;
+  }
+  if (picked == 8) { acc += 50000; }
+  var outer = 0;
+  for (let v in countdown(4)) {
+    outer = outer * 10 + v;
+  }
+  if (outer == 4321) { acc += 600000; }
+  return acc;
+};

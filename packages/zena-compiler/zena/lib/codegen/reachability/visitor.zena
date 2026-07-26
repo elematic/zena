@@ -13,7 +13,7 @@ import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters } from '../type-mapping.zena';
+import { typeToValType, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 import { collectValueExports } from '../function-generator.zena';
 import { dirName, normalizePath } from '../../module-resolver.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -1473,44 +1473,3 @@ let matchOverloadForImport = (t1: Type, t2: Type): boolean => {
   return false;
 };
 
-let findImplementedInterfaceTransitive = (ct: ClassType, name: String): InterfaceType | null => {
-  let seen = new HashMap<InterfaceKey, boolean>();
-  let queue = new Array<InterfaceType>();
-  
-  let ctParams = getClassTypeParameters(ct);
-  for (let impl in ct.implementsList) {
-    let resolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, impl) as InterfaceType;
-    queue.push(resolved);
-  }
-  
-  var currSuper = ct.superType;
-  while (currSuper != null) {
-    let superCt = currSuper as ClassType;
-    let superCtParams = getClassTypeParameters(superCt);
-    for (let impl in superCt.implementsList) {
-      let resolved = substituteTypeParamsInCodegen(superCtParams, superCt.typeArguments, impl) as InterfaceType;
-      queue.push(resolved);
-    }
-    currSuper = superCt.superType;
-  }
-  
-  var head = 0;
-  while (head < queue.length) {
-    let it = queue[head];
-    head += 1;
-    
-    let key = getInterfaceKey(it);
-    if (!seen.has(key)) {
-      seen[key] = true;
-      if (it.name == name) {
-        return it;
-      }
-      let itParams = getInterfaceTypeParameters(it);
-      for (let ext in it.extendsList) {
-        let resolvedExt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ext) as InterfaceType;
-        queue.push(resolvedExt);
-      }
-    }
-  }
-  return null;
-};

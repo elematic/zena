@@ -164,6 +164,23 @@ export final class IrBuilder {
     this.#emitInCurrent(IrOp.ret_multi, -1, idx, -1);
   }
 
+  /** Multi-result call_ref; same projection contract as callFuncMulti. */
+  callRefMulti(callee: i32, args: Array<i32>, resultTypes: Array<ValType>): Array<i32> {
+    let start = this.body.extra.length;
+    this.body.extra.push(callee);
+    this.body.extra.push(args.length);
+    for (let v in args) {
+      this.body.extra.push(v);
+    }
+    let call = this.#emitInCurrent(IrOp.call_ref, -1, start, -1);
+    let projections = new Array<i32>();
+    for (var k = 0; k < resultTypes.length; k += 1) {
+      projections.push(this.#emitInCurrent(IrOp.mv_get,
+          this.internType(resultTypes[k]), call, k));
+    }
+    return projections;
+  }
+
   /** call_ref through a funcref value: extra = [callee, argc, arg*]. */
   callRef(callee: i32, args: Array<i32>, resultType: ValType | null): i32 {
     let start = this.body.extra.length;

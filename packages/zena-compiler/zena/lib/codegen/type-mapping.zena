@@ -595,6 +595,55 @@ export let substituteTypeParamsInClassContext = (classType: ClassType | null, t:
   return result;
 };
 
+/**
+ * The (substituted) InterfaceType named `name` that `ct` implements,
+ * searching the class's own implements list, its superclasses', and
+ * every interface's transitive extends chain. Was duplicated
+ * per-module (stmt/loops.zena, reachability/visitor.zena, ir/); this
+ * is the one shared copy.
+ */
+export let findImplementedInterfaceTransitive = (ct: ClassType, name: String): InterfaceType | null => {
+  let seen = new HashMap<InterfaceKey, boolean>();
+  let queue = new Array<InterfaceType>();
+
+  let ctParams = getClassTypeParameters(ct);
+  for (let impl in ct.implementsList) {
+    let resolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, impl) as InterfaceType;
+    queue.push(resolved);
+  }
+
+  var currSuper = ct.superType;
+  while (currSuper != null) {
+    let superCt = currSuper as ClassType;
+    let superCtParams = getClassTypeParameters(superCt);
+    for (let impl in superCt.implementsList) {
+      let resolved = substituteTypeParamsInCodegen(superCtParams, superCt.typeArguments, impl) as InterfaceType;
+      queue.push(resolved);
+    }
+    currSuper = superCt.superType;
+  }
+
+  var head = 0;
+  while (head < queue.length) {
+    let it = queue[head];
+    head += 1;
+
+    let key = getInterfaceKey(it);
+    if (!seen.has(key)) {
+      seen[key] = true;
+      if (it.name == name) {
+        return it;
+      }
+      let itParams = getInterfaceTypeParameters(it);
+      for (let ext in it.extendsList) {
+        let resolvedExt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ext) as InterfaceType;
+        queue.push(resolvedExt);
+      }
+    }
+  }
+  return null;
+};
+
 export let substituteTypeParamsInFunctionContext = (wasmFunction: WasmFunction | null, t: Type): Type => {
   if (wasmFunction == null) {
     return t;
