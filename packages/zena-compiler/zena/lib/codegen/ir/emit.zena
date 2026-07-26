@@ -22,7 +22,7 @@ import { i32ToString } from 'zena:string-convert';
 import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, WasmType, heapTypeToSigned, HeapType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
-import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, irOpName, isUnaryNumericOp } from './ir.zena';
+import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
 
@@ -233,6 +233,19 @@ export final class ZirFunctionEmitter {
     }
     if (op == IrOp.unreachable) {
       this.emitter.emitUnreachable();
+      return;
+    }
+    if (op == IrOp.throw) {
+      let idx = body.a[inst];
+      let argc = body.extra[idx];
+      for (var k = 0; k < argc; k += 1) {
+        this.#pushValue(body.extra[idx + 1 + k]);
+      }
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefTag)) {
+        throw new Error('zir emit: throw ref kind');
+      }
+      this.emitter.emitThrow((ref as IrRefTag).target.index);
       return;
     }
     let succs = body.successors(inst);

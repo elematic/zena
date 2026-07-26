@@ -37,9 +37,11 @@ import {
   FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation,
   AccessorDeclaration, SetterInfo,
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
-  TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName
+  TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
+  IsExpression, RangeExpression, PipelineExpression, SuperExpression,
+  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, baseType, isVoidOrNeverType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
@@ -47,11 +49,11 @@ import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
-import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
-import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization } from '../codegen-utils.zena';
+import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { IntrinsicCx, lowerIntrinsic, asWasmArray } from './intrinsics.zena';
 
@@ -66,6 +68,23 @@ import { IntrinsicCx, lowerIntrinsic, asWasmArray } from './intrinsics.zena';
 export final class ZirUnsupported extends Error {
   new(reason: String) : super('zir unsupported: ' + reason);
 }
+
+/** Bail-reason tag for expression kinds without a dispatch arm. */
+let kindTagOf = (e: Expression): String => {
+  return match (e) {
+    case IsExpression: ' is'
+    case RangeExpression: ' range'
+    case PipelineExpression: ' pipeline'
+    case SuperExpression: ' super'
+    case ArrayLiteral: ' arraylit'
+    case RecordLiteral: ' recordlit'
+    case MapLiteral: ' maplit'
+    case TupleLiteral: ' tuplelit'
+    case ThrowExpression: ' throw'
+    case TryExpression: ' try'
+    case _: ' other'
+  };
+};
 
 /**
  * Synthesized or adapted machinery lowering does not model: wrappers,
@@ -566,7 +585,14 @@ final class FunctionLowerer {
     }
     for (var i = 0; i < paramList.length; i += 1) {
       let p = paramList[i];
-      if (p.pattern != null || p.isThisParam || p.defaultValue != null) {
+      // Only destructuring patterns block lowering. this-params bind
+      // like plain params — the parser already synthesized the
+      // FieldInitializer entries that store them (lowered by the
+      // constructor prologue). Default values are CALLER-supplied
+      // (desugared into each call site's argument list), so the callee
+      // binds the parameter normally; call sites that actually omit
+      // arguments still bail at 'call arity adaptation'.
+      if (p.pattern != null) {
         this.#bail('parameter shape');
       }
       let sym = this.func.model.resolveDeclaration(p.name);
@@ -1295,7 +1321,11 @@ final class FunctionLowerer {
         }
       }
       case ExpressionStatement {expression}: {
-        this.#lowerExpression(expression);
+        if (expression is ThrowExpression) {
+          this.#lowerThrowStatement(expression as ThrowExpression);
+        } else {
+          this.#lowerExpression(expression);
+        }
       }
       case VariableDeclaration as vd: {
         this.#lowerVariableDeclaration(vd);
@@ -1799,8 +1829,78 @@ final class FunctionLowerer {
       case NullLiteral: this.#bailValue('null without context')
       case IndexExpression as idx: this.#lowerIndexRead(idx)
       case TemplateLiteral: this.#bailValue('template literal')
-      case _: this.#bailValue('expression kind')
+      case IsExpression as isExpr: this.#lowerIs(isExpr)
+      case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
+  }
+
+  /**
+   * `x is T`: ref.test for reference sources; non-reference sources
+   * fold to a constant by type identity (the operand still evaluates
+   * for effects). Mirrors streaming's IsExpression codegen.
+   */
+  #lowerIs(isExpr: IsExpression): i32 {
+    let sourceTypeOpt = this.#substitutedNodeType(isExpr.expression);
+    if (sourceTypeOpt == null) {
+      this.#bail('untyped is source');
+    }
+    let sourceType = sourceTypeOpt as Type;
+    let targetTypeOpt = this.func.model.getNodeType(isExpr.typeAnnotation);
+    if (targetTypeOpt == null) {
+      this.#bail('untyped is target');
+    }
+    let targetType = substituteTypeParamsInFunctionContext(
+        this.func, targetTypeOpt as Type);
+    let value = this.#lowerExpression(isExpr.expression);
+    if (!isRefType(sourceType)) {
+      let same = getTypeUniqueKey(sourceType) == getTypeUniqueKey(targetType) ||
+          targetType is AnyType || targetType is AnyRefType ||
+          targetType is EqRefType;
+      return this.b.constI32(if (same) 1 else 0, new ValTypeI32());
+    }
+    if (!isRefValType(this.#valueType(value))) {
+      this.#bail('is operand type');
+    }
+    let targetVt = typeToValTypeWithSub(this.wasm, targetType, this.func);
+    var target: WasmType | null = null;
+    match (targetVt) {
+      case ValTypeRef as r: { target = r.target; }
+      case ValTypeRefNull as rn: { target = rn.target; }
+      case _: {}
+    }
+    if (target == null) {
+      this.#bail('is target kind');
+    }
+    // Streaming emits a plain (non-null) ref.test either way.
+    return this.b.emit(IrOp.ref_test, new ValTypeI32(), value,
+        this.b.internType(new ValTypeRef(target as WasmType) as ValType));
+  }
+
+  /**
+   * `throw e;` in statement position, mirroring streaming: the payload
+   * value is stored in the shared exception-payload GLOBAL (the tag
+   * itself carries no values), then the module-wide tag is thrown.
+   * Expression-position throws still bail — they would have to yield a
+   * value of the surrounding type from an unreachable continuation, a
+   * shape lowering does not model yet.
+   */
+  #lowerThrowStatement(thr: ThrowExpression): void {
+    this.wasm.ensureExceptionInfra(this.func.model);
+    let tagOpt = this.wasm.exceptionTag;
+    let payloadOpt = this.wasm.exceptionPayload;
+    if (tagOpt == null || payloadOpt == null) {
+      this.#bail('exception infra missing');
+    }
+    let payload = payloadOpt as WasmGlobal;
+    let value = this.#lowerExpressionCtx(thr.argument, payload.type);
+    if (!isValSubtype(this.#valueType(value), payload.type)) {
+      this.#bail('throw payload type');
+    }
+    this.b.emitVoid(IrOp.global_set, value,
+        this.b.addRef(new IrRefGlobal(payload)));
+    this.b.throwWithTag(this.#noArgs(),
+        this.b.addRef(new IrRefTag(tagOpt as WasmTag)));
+    this.reachable = false;
   }
 
   #lowerNumberLiteral(lit: NumberLiteral): i32 {

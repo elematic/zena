@@ -16,6 +16,22 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Exhaustiveness false-positive (Z2022) on large sealed matches
+- **Found**: 2026-07-25 (adding dispatch arms in ir/lowering.zena)
+- **Severity**: medium (rejects valid code; forced an is-chain workaround)
+- **Workaround**: keep the match small (one added arm was fine) or use
+  an if/is chain in the wildcard arm.
+- **Details**: `#lowerExpressionDispatch` in
+  zena/lib/codegen/ir/lowering.zena matches on the sealed Expression
+  union (~30 cases) with 18 arms + `case _`. Adding seven more named
+  arms (IsExpression, RangeExpression, PipelineExpression,
+  SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral) made the
+  self-hosted checker report "Unreachable case. The match is already
+  exhaustive." (Z2022) for every arm after the first added one and for
+  the wildcard — with 25 of ~30 cases covered, i.e. clearly not
+  exhaustive. Adding just IsExpression alone did not trigger it.
+  Bootstrap behavior not compared. Reproduce by re-adding those arms.
+
 ### Integer literals in u32/u64 context: bootstrap accepts, self-hosted throws
 - **Found**: 2026-07-25 (writing a u32 generic-specialization test)
 - **Severity**: medium (u32/u64 literals unusable with the self-hosted

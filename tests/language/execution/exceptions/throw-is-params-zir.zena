@@ -1,0 +1,42 @@
+// @mode: run
+// @result: 54321
+// ZIR coverage for four shapes this slice unlocked: statement-position
+// throw (payload global + bare tag, caught here by a streaming-lowered
+// try-expression — cross-backend), `is` expressions (ref.test on a
+// union source, both arms), constructor this-params (parser-desugared
+// FieldInitializers), and default parameter values (caller-supplied;
+// both the full-arity and defaulted call).
+
+class Shape {
+  id: i32;
+  new(this.id);
+}
+
+class P {
+  a: i32;
+  b: i32;
+  new(this.a, this.b);
+  scaled(f: i32 = 2): i32 {
+    return this.a * f;
+  }
+}
+
+let boom = (n: i32): i32 => {
+  if (n > 5) {
+    throw new Error("big");
+  }
+  return n * 2;
+};
+
+export let main = (): i32 => {
+  var acc = 0;
+  if (boom(2) == 4) { acc += 1; }
+  acc += try { boom(9) } catch (e) { 20 };
+  let v: Shape | String = new Shape(3);
+  let w: Shape | String = "s";
+  if (v is Shape && !(v is String) && w is String) { acc += 300; }
+  let p = new P(5, 7);
+  if (p.a == 5 && p.b == 7) { acc += 4000; }
+  if (p.scaled() == 10 && p.scaled(3) == 15) { acc += 50000; }
+  return acc;
+};
