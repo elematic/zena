@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 654321
+// Prelude array builtins under ZIR, reached through their stdlib
+// wrappers (the bootstrap checker does not expose __array_* names to
+// user modules — see BUGS.md): __byte_array_new / __byte_array_copy
+// via zena:byte-array, packed i8 index reads (unsigned get_u — 250
+// must not sign-extend) and writes, and __array_new_empty /
+// __array_new inside FixedArray.slice/map and growable Array bodies.
+import { newByteArray, copyBytes } from 'zena:byte-array';
+
+export let main = (): i32 => {
+  var acc = 0;
+  let b = newByteArray(5);                     // array.new_default (i8)
+  if (b.length == 5) { acc += 1; }
+  b[0] = 250;
+  b[1] = 7;
+  if (b[0] == 250) { acc += 20; }              // get_u, unsigned
+  let c = newByteArray(5);
+  copyBytes(c, 1, b, 0, 2);                    // array.copy
+  if (c[1] == 250 && c[2] == 7 && c[0] == 0) { acc += 300; }
+  let s = [1, 2, 3].slice(0, 2);               // __array_new_empty in slice
+  if (s.length == 2 && s[1] == 2) { acc += 4000; }
+  let m = [5, 6].map((x: i32): i32 => x + 1);  // __array_new_empty in map
+  if (m[1] == 7) { acc += 50000; }
+  let g = new Array<i32>();                    // growable Array internals
+  g.push(9);
+  g.push(8);
+  if (g.length == 2 && g[0] == 9 && g[1] == 8) { acc += 600000; }
+  return acc;
+};

@@ -448,10 +448,39 @@ export final class ZirFunctionEmitter {
     } else if (op == IrOp.array_len) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.emitter.emitArrayLen();
+    } else if (op == IrOp.array_new) {
+      let pairIdx = body.a[inst];
+      let init = body.extra[pairIdx + 1];
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefType)) {
+        throw new Error('zir emit: array_new ref kind');
+      }
+      let typeIndex = (ref as IrRefType).target.index;
+      if (init >= 0) {
+        // array.new pops (init value, length); default form pops length only.
+        this.#pushValue(init);
+        this.#pushValue(body.extra[pairIdx]);
+        this.emitter.emitArrayNew(typeIndex);
+      } else {
+        this.#pushValue(body.extra[pairIdx]);
+        this.emitter.emitArrayNewDefault(typeIndex);
+      }
     } else if (op == IrOp.array_get) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
       this.emitter.emitArrayGet(this.#arrayTargetOf(body.a[inst]).index);
+    } else if (op == IrOp.array_get_u) {
+      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
+      this.emitter.emitArrayGetU(this.#arrayTargetOf(body.a[inst]).index);
+    } else if (op == IrOp.array_copy) {
+      let tupleIdx = body.a[inst];
+      for (var k = 0; k < 5; k += 1) {
+        this.#pushValue(body.extra[tupleIdx + k]);
+      }
+      this.emitter.emitArrayCopy(
+          this.#arrayTargetOf(body.extra[tupleIdx]).index,
+          this.#arrayTargetOf(body.extra[tupleIdx + 2]).index);
     } else if (op == IrOp.array_set) {
       let tripleIdx = body.a[inst];
       this.emitter.emitLocalGet(this.localOf[body.extra[tripleIdx]]);

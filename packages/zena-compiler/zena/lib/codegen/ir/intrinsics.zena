@@ -1,0 +1,274 @@
+/**
+ * Intrinsic call lowering: one function per intrinsic, with
+ * lowerIntrinsic as the single name -> function router for every
+ * call-position intrinsic (the prelude array builtins plus the
+ * @intrinsic declare functions like eq/hash). FunctionLowerer's
+ * surface is private and importing it here would create an import
+ * cycle with lowering.zena, so each lowering receives the narrow
+ * slice it needs as IntrinsicCx: the builder plus closures over the
+ * lowerer's expression machinery. The eq/hash implementations stay
+ * lowerer-side for now — they share the primitive cluster with the
+ * case-class ==/hashCode synthesizers — and arrive here as closures.
+ */
+import { Array } from 'zena:array';
+import { String } from 'zena:string';
+import { CallExpression, Expression } from '../../ast.zena';
+import { ValType, ValTypeI32, ValTypeI8, ValTypeRef, ValTypeRefNull } from '../wasm.zena';
+import { WasmArray, isValSubtype } from '../wasm-module.zena';
+import { IrOp, IrRefType } from './ir.zena';
+import { IrBuilder } from './builder.zena';
+
+/** The WasmArray behind a reference ValType, or null. */
+export let asWasmArray = (vt: ValType): WasmArray | null => {
+  var arrOpt: WasmArray | null = null;
+  match (vt) {
+    case ValTypeRef as r: {
+      if (r.target is WasmArray) { arrOpt = r.target as WasmArray; }
+    }
+    case ValTypeRefNull as rn: {
+      if (rn.target is WasmArray) { arrOpt = rn.target as WasmArray; }
+    }
+    case _: {}
+  }
+  return arrOpt;
+};
+
+/**
+ * The slice of FunctionLowerer the intrinsic lowerings need. `fail`
+ * throws ZirUnsupported on the lowerer's side; its i32 result is never
+ * actually produced — it only lets bail sites sit in value positions.
+ * `lowerEq`/`lowerHash` are the type-directed equals/hash lowerings,
+ * which live on the lowerer because they share primitives with the
+ * case-class synthesizers.
+ */
+export final class IntrinsicCx {
+  b: IrBuilder;
+  /** Lowers an expression; a non-null `want` supplies the context type. */
+  lowerExpr: (e: Expression, want: ValType | null) => i32;
+  valueTypeOf: (value: i32) => ValType;
+  /** The expression's own checked type, substituted and supported. */
+  exprVt: (e: Expression) => ValType;
+  reassertNonNull: (value: i32, want: ValType) => i32;
+  requireSupported: (vt: ValType, what: String) => void;
+  fail: (reason: String) => i32;
+  lowerEq: (call: CallExpression) => i32;
+  lowerHash: (call: CallExpression) => i32;
+  new(this.b, this.lowerExpr, this.valueTypeOf, this.exprVt,
+      this.reassertNonNull, this.requireSupported, this.fail,
+      this.lowerEq, this.lowerHash);
+}
+
+/** Lowers `e` and requires an array-typed value: (value, its array). */
+let arrayOperand = (cx: IntrinsicCx, e: Expression): (i32, WasmArray) => {
+  let lowerExpr = cx.lowerExpr;
+  let valueTypeOf = cx.valueTypeOf;
+  let fail = cx.fail;
+  let value = lowerExpr(e, null);
+  let arrOpt = asWasmArray(valueTypeOf(value));
+  if (arrOpt == null) {
+    fail('array builtin receiver');
+  }
+  return (value, arrOpt as WasmArray);
+};
+
+/** Lowers `e` and requires an i32 value (indexes, offsets, lengths). */
+let indexOperand = (cx: IntrinsicCx, e: Expression): i32 => {
+  let lowerExpr = cx.lowerExpr;
+  let valueTypeOf = cx.valueTypeOf;
+  let fail = cx.fail;
+  let value = lowerExpr(e, null);
+  if (!(valueTypeOf(value) is ValTypeI32)) {
+    fail('array builtin index type');
+  }
+  return value;
+};
+
+/** __array_len / __byte_array_length: array.len is width-agnostic. */
+let lowerArrayLen = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let (arr, _) = arrayOperand(cx, call.args[0]);
+  return cx.b.emit(IrOp.array_len, new ValTypeI32(), arr, -1);
+};
+
+/** __array_get: array.get of a non-packed element. */
+let lowerArrayGet = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let fail = cx.fail;
+  let requireSupported = cx.requireSupported;
+  let reassertNonNull = cx.reassertNonNull;
+  let exprVt = cx.exprVt;
+  let (arr, arrType) = arrayOperand(cx, call.args[0]);
+  let index = indexOperand(cx, call.args[1]);
+  if (arrType.elementType is ValTypeI8) {
+    fail('array builtin packed element');
+  }
+  requireSupported(arrType.elementType, 'array element type');
+  let value = cx.b.emit(IrOp.array_get, arrType.elementType, arr, index);
+  return reassertNonNull(value, exprVt(call));
+};
+
+/** __byte_array_get: packed i8 elements read unsigned (array.get_u). */
+let lowerByteArrayGet = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let fail = cx.fail;
+  let (arr, arrType) = arrayOperand(cx, call.args[0]);
+  let index = indexOperand(cx, call.args[1]);
+  if (!(arrType.elementType is ValTypeI8)) {
+    fail('byte builtin on non-byte array');
+  }
+  return cx.b.emit(IrOp.array_get_u, new ValTypeI32(), arr, index);
+};
+
+/** __array_set: array.set of a non-packed element. */
+let lowerArraySet = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let fail = cx.fail;
+  let lowerExpr = cx.lowerExpr;
+  let valueTypeOf = cx.valueTypeOf;
+  let (arr, arrType) = arrayOperand(cx, call.args[0]);
+  let index = indexOperand(cx, call.args[1]);
+  if (arrType.elementType is ValTypeI8) {
+    fail('array builtin packed element');
+  }
+  cx.requireSupported(arrType.elementType, 'array element type');
+  let value = lowerExpr(call.args[2], arrType.elementType);
+  if (!isValSubtype(valueTypeOf(value), arrType.elementType)) {
+    fail('array builtin write type');
+  }
+  let tripleIdx = cx.b.pushExtra(threeValues(arr, index, value));
+  return cx.b.emitVoid(IrOp.array_set, tripleIdx, -1);
+};
+
+/** __byte_array_set: packed i8 elements take plain i32 values. */
+let lowerByteArraySet = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let fail = cx.fail;
+  let lowerExpr = cx.lowerExpr;
+  let valueTypeOf = cx.valueTypeOf;
+  let (arr, arrType) = arrayOperand(cx, call.args[0]);
+  let index = indexOperand(cx, call.args[1]);
+  if (!(arrType.elementType is ValTypeI8)) {
+    fail('byte builtin on non-byte array');
+  }
+  let value = lowerExpr(call.args[2], new ValTypeI32());
+  if (!(valueTypeOf(value) is ValTypeI32)) {
+    fail('array builtin write type');
+  }
+  let tripleIdx = cx.b.pushExtra(threeValues(arr, index, value));
+  return cx.b.emitVoid(IrOp.array_set, tripleIdx, -1);
+};
+
+/**
+ * The array type both new-family builtins allocate: the call's own
+ * checked type — the same source streaming uses for the array.new
+ * type index.
+ */
+let newResultArray = (cx: IntrinsicCx, call: CallExpression): (ValType, WasmArray) => {
+  let fail = cx.fail;
+  let resultVt = cx.exprVt(call);
+  let arrTypeOpt = asWasmArray(resultVt);
+  if (arrTypeOpt == null) {
+    fail('array builtin result type');
+  }
+  return (resultVt, arrTypeOpt as WasmArray);
+};
+
+/** __array_new: array.new with an explicit init value. */
+let lowerArrayNew = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let fail = cx.fail;
+  let lowerExpr = cx.lowerExpr;
+  let valueTypeOf = cx.valueTypeOf;
+  let (resultVt, arrType) = newResultArray(cx, call);
+  let length = indexOperand(cx, call.args[0]);
+  if (arrType.elementType is ValTypeI8) {
+    fail('array builtin packed element');
+  }
+  cx.requireSupported(arrType.elementType, 'array element type');
+  let init = lowerExpr(call.args[1], arrType.elementType);
+  if (!isValSubtype(valueTypeOf(init), arrType.elementType)) {
+    fail('array builtin init type');
+  }
+  let pairIdx = cx.b.pushExtra(twoValues(length, init));
+  return cx.b.emit(IrOp.array_new, resultVt, pairIdx,
+      cx.b.addRef(new IrRefType(arrType)));
+};
+
+/** __array_new_empty / __byte_array_new: array.new_default. */
+let lowerArrayNewDefault = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let (resultVt, arrType) = newResultArray(cx, call);
+  let length = indexOperand(cx, call.args[0]);
+  let pairIdx = cx.b.pushExtra(twoValues(length, -1));
+  return cx.b.emit(IrOp.array_new, resultVt, pairIdx,
+      cx.b.addRef(new IrRefType(arrType)));
+};
+
+/**
+ * __byte_array_copy: argument order (dest, destOff, src, srcOff, len)
+ * matches array.copy's operand order exactly.
+ */
+let lowerByteArrayCopy = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let fail = cx.fail;
+  let (dest, destType) = arrayOperand(cx, call.args[0]);
+  let destOff = indexOperand(cx, call.args[1]);
+  let (src, srcType) = arrayOperand(cx, call.args[2]);
+  let srcOff = indexOperand(cx, call.args[3]);
+  let len = indexOperand(cx, call.args[4]);
+  if (!(destType.elementType is ValTypeI8) ||
+      !(srcType.elementType is ValTypeI8)) {
+    fail('byte builtin on non-byte array');
+  }
+  let tuple = new Array<i32>();
+  tuple.push(dest);
+  tuple.push(destOff);
+  tuple.push(src);
+  tuple.push(srcOff);
+  tuple.push(len);
+  let tupleIdx = cx.b.pushExtra(tuple);
+  return cx.b.emitVoid(IrOp.array_copy, tupleIdx, -1);
+};
+
+let twoValues = (a: i32, b: i32): Array<i32> => {
+  let out = new Array<i32>();
+  out.push(a);
+  out.push(b);
+  return out;
+};
+
+let threeValues = (a: i32, b: i32, c: i32): Array<i32> => {
+  let out = new Array<i32>();
+  out.push(a);
+  out.push(b);
+  out.push(c);
+  return out;
+};
+
+/**
+ * The single name -> lowering router for call-position intrinsics.
+ * Array-builtin notes: the __byte_array_* variants differ only in
+ * element width — packed i8 elements read unsigned (array.get_u) and
+ * write plain i32 values. Each lowering checks the element width it
+ * requires, so a plain builtin on a packed array (or vice versa) is a
+ * lowering bug surfaced as a loud bail, exactly where streaming would
+ * emit invalid wasm. Identical-implementation pairs share a function:
+ * both length builtins are the width-agnostic array.len, and
+ * __array_new_empty / __byte_array_new are both array.new_default.
+ */
+export let lowerIntrinsic = (cx: IntrinsicCx, name: String, call: CallExpression): i32 => {
+  if (name == '__array_len' || name == '__byte_array_length') {
+    return lowerArrayLen(cx, call);
+  }
+  if (name == '__array_get') { return lowerArrayGet(cx, call); }
+  if (name == '__byte_array_get') { return lowerByteArrayGet(cx, call); }
+  if (name == '__array_set') { return lowerArraySet(cx, call); }
+  if (name == '__byte_array_set') { return lowerByteArraySet(cx, call); }
+  if (name == '__array_new') { return lowerArrayNew(cx, call); }
+  if (name == '__array_new_empty' || name == '__byte_array_new') {
+    return lowerArrayNewDefault(cx, call);
+  }
+  if (name == '__byte_array_copy') { return lowerByteArrayCopy(cx, call); }
+  if (name == 'eq') {
+    let lowerEq = cx.lowerEq;
+    return lowerEq(call);
+  }
+  if (name == 'hash') {
+    let lowerHash = cx.lowerHash;
+    return lowerHash(call);
+  }
+  let fail = cx.fail;
+  return fail('intrinsic ' + name);
+};

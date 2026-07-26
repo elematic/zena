@@ -45,6 +45,7 @@ import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
+import { isArrayIntrinsic } from '../expr/intrinsics.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
@@ -52,6 +53,7 @@ import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
+import { IntrinsicCx, lowerIntrinsic, asWasmArray } from './intrinsics.zena';
 
 /**
  * Thrown for constructs lowering does not model YET: tryLowerFunction
@@ -3314,27 +3316,18 @@ final class FunctionLowerer {
     }
 
     let receiver = this.#lowerExpression(idx.object);
-    var arrOpt: WasmArray | null = null;
-    match (this.#valueType(receiver)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmArray) { arrOpt = r.target as WasmArray; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmArray) { arrOpt = rn.target as WasmArray; }
-      }
-      case _: {}
-    }
+    let arrOpt = asWasmArray(this.#valueType(receiver));
     if (arrOpt != null) {
       let arr = arrOpt as WasmArray;
-      if (arr.elementType is ValTypeI8) {
-        // array.get_u for packed elements is not wired yet.
-        this.#bail('packed array element');
-      }
-      this.#requireSupported(arr.elementType, 'array element type');
       let index = this.#lowerExpression(idx.index);
       if (!(this.#valueType(index) is ValTypeI32)) {
         this.#bail('index operand type');
       }
+      if (arr.elementType is ValTypeI8) {
+        // Packed byte elements read unsigned, as i32 (array.get_u).
+        return this.b.emit(IrOp.array_get_u, new ValTypeI32(), receiver, index);
+      }
+      this.#requireSupported(arr.elementType, 'array element type');
       let value = this.b.emit(IrOp.array_get, arr.elementType, receiver, index);
       return this.#reassertNonNull(value, this.#exprValType(idx));
     }
@@ -3803,28 +3796,21 @@ final class FunctionLowerer {
     }
 
     let receiver = this.#lowerExpression(idx.object);
-    var arrOpt: WasmArray | null = null;
-    match (this.#valueType(receiver)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmArray) { arrOpt = r.target as WasmArray; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmArray) { arrOpt = rn.target as WasmArray; }
-      }
-      case _: {}
-    }
+    let arrOpt = asWasmArray(this.#valueType(receiver));
     if (arrOpt != null) {
       let arr = arrOpt as WasmArray;
-      if (arr.elementType is ValTypeI8) {
-        this.#bail('packed array element');
-      }
-      this.#requireSupported(arr.elementType, 'array element type');
       let index = this.#lowerExpression(idx.index);
       if (!(this.#valueType(index) is ValTypeI32)) {
         this.#bail('index operand type');
       }
-      let value = this.#lowerExpressionCtx(assign.value, arr.elementType);
-      if (!isValSubtype(this.#valueType(value), arr.elementType)) {
+      // Packed byte elements write plain i32 values.
+      var elemCtx: ValType = new ValTypeI32();
+      if (!(arr.elementType is ValTypeI8)) {
+        this.#requireSupported(arr.elementType, 'array element type');
+        elemCtx = arr.elementType;
+      }
+      let value = this.#lowerExpressionCtx(assign.value, elemCtx);
+      if (!isValSubtype(this.#valueType(value), elemCtx)) {
         this.#bail('array write type');
       }
       let tripleIdx = this.b.pushExtra(this.#threeValues(receiver, index, value));
@@ -3919,28 +3905,15 @@ final class FunctionLowerer {
   }
 
   /**
-   * Global @intrinsic declare-function calls (equals/hash from
-   * zena:map), type-directed like the streaming backend's
-   * generateGlobalIntrinsic but restricted to the tiers ZIR can
-   * express today. Could these be written in Zena? Only once the
-   * language can constrain the type parameter (equals<T: Eq>) — the
-   * dispatch below is exactly what such a bound would monomorphize
-   * to, and the string/hash helpers it calls ARE Zena functions.
-   * Until then the type dispatch lives here.
-   */
-  #lowerGlobalIntrinsic(name: String, call: CallExpression): i32 {
-    if (name == 'eq') {
-      return this.#lowerEqIntrinsic(call);
-    }
-    if (name == 'hash') {
-      return this.#lowerHashIntrinsic(call);
-    }
-    this.#bail('intrinsic call');
-    return -1;
-  }
-
-  /**
-   * equals<T>(a, b): by operand wasm type —
+   * equals<T>(a, b) — the @intrinsic declare from zena:map,
+   * type-directed like the streaming backend's generateGlobalIntrinsic
+   * but restricted to the tiers ZIR can express today. Could this be
+   * written in Zena? Only once the language can constrain the type
+   * parameter (equals<T: Eq>) — the dispatch below is exactly what
+   * such a bound would monomorphize to, and the string/hash helpers it
+   * calls ARE Zena functions. Until then the type dispatch lives here
+   * (routed by intrinsics.zena's lowerIntrinsic). By operand wasm
+   * type —
    *   numerics        -> the type's eq instruction;
    *   String/String   -> String.operator== (content equality);
    *   class w/ ==     -> ref.eq fast path around a DEVIRTUALIZED
@@ -4444,6 +4417,16 @@ final class FunctionLowerer {
     if (call.optional) {
       this.#bail('optional call');
     }
+    // Prelude array builtins (__array_new_empty & co.) are checker-
+    // registered values with no declaration and no compiled function;
+    // streaming name-dispatches them to inline array instructions
+    // (generateArrayIntrinsic). Same here — including the explicit-
+    // type-argument form __array_new_empty<T>(n), which must route
+    // before the generic-call gate.
+    let calleeName = (call.callee as Identifier).name;
+    if (isArrayIntrinsic(calleeName)) {
+      return lowerIntrinsic(this.#intrinsicCx(), calleeName, call);
+    }
     if (call.typeArguments != null) {
       this.#bail('generic call');
     }
@@ -4472,7 +4455,7 @@ final class FunctionLowerer {
     let intrDecl = findDeclaration(this.wasm, resolved, calleeFt);
     if (intrDecl != null) {
       if (let (true, intrName) = this.wasm.intrinsics.get((intrDecl as DeclareFunction).id)) {
-        return this.#lowerGlobalIntrinsic(intrName, call);
+        return lowerIntrinsic(this.#intrinsicCx(), intrName, call);
       }
     }
     let targetOpt = if (let (true, t) = this.wasm.functionMap.get(resolved.id)) t else null;
@@ -4514,6 +4497,28 @@ final class FunctionLowerer {
     }
     let funcRef = this.b.addRef(new IrRefFunc(target));
     return this.b.callFunc(funcRef, args, resultType);
+  }
+
+  /**
+   * The narrow slice of this lowerer that intrinsics.zena needs (its
+   * module cannot import FunctionLowerer without a cycle). The eq and
+   * hash lowerings ride along as closures: their implementations stay
+   * on the lowerer because they share the primitive cluster with the
+   * case-class ==/hashCode synthesizers.
+   */
+  #intrinsicCx(): IntrinsicCx {
+    return new IntrinsicCx(
+        this.b,
+        (e: Expression, want: ValType | null): i32 =>
+            if (want == null) this.#lowerExpression(e)
+            else this.#lowerExpressionCtx(e, want as ValType),
+        (value: i32): ValType => this.#valueType(value),
+        (e: Expression): ValType => this.#exprValType(e),
+        (value: i32, want: ValType): i32 => this.#reassertNonNull(value, want),
+        (vt: ValType, what: String): void => this.#requireSupported(vt, what),
+        (reason: String): i32 => this.#bailValue(reason),
+        (call: CallExpression): i32 => this.#lowerEqIntrinsic(call),
+        (call: CallExpression): i32 => this.#lowerHashIntrinsic(call));
   }
 
   /**
