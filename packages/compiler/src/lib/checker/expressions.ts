@@ -4291,6 +4291,23 @@ function checkMemberExpression(
   // Check methods
   if (classType.methods.has(memberName)) {
     const methodType = classType.methods.get(memberName)!;
+    // Generic methods have no interface dispatch slot (one slot cannot
+    // serve every type argument), so a call through an interface
+    // receiver has no implementation strategy yet — codegen used to
+    // crash on it. Reject it here until erased dispatch (or a ruling
+    // to drop such members) exists. See BUGS.md.
+    if (
+      classType.kind === TypeKind.Interface &&
+      methodType.typeParameters &&
+      methodType.typeParameters.length > 0
+    ) {
+      ctx.diagnostics.reportError(
+        `Generic method '${memberName}' cannot be called through interface '${classType.name}'; call it on a concrete type instead.`,
+        DiagnosticCode.NotCallable,
+        ctx.getLocation(expr.property.loc),
+      );
+      return Types.Error;
+    }
     const resolvedType = resolveMemberType(
       classType,
       methodType,

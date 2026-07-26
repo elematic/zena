@@ -16,27 +16,26 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-### Generic interface methods crash both compilers when dispatched virtually
+### Generic interface methods are not virtually dispatchable (diagnostic in place)
 - **Found**: 2026-07-26 (probing primitive type-argument coverage)
-- **Severity**: high (internal compiler crash, not a diagnostic; a
-  stdlib interface declares the construct)
-- **Workaround**: call generic methods on concrete receivers only.
+- **Severity**: medium (was: high internal crash — both checkers now
+  reject the call site with a proper diagnostic; the language-design
+  question remains)
+- **Workaround**: call generic methods on concrete receivers only —
+  direct calls monomorphize per inferred type argument (map_spec_i32
+  etc., covered by tests/language/execution/arrays/
+  generic-method-primitive-mono.zena).
 - **Details**: `Sequence<T>` declares `map<U>(...)`, but generic
   methods get no interface vtable slot (one slot cannot serve every
-  U), and neither compiler handles the dispatch site:
-  ```
-  let s: Sequence<i32> = [1, 2, 3];
-  let m = s.map((x: i32): i32 => x + 1);   // bootstrap: "Method map
-  // not found in interface"; self-hosted: "Property getter not found
-  // in interface vtable: get#map on interface: Sequence"
-  ```
-  Both are internal throws during codegen. Direct calls are fine —
-  they monomorphize per inferred type argument (map_spec_i32 etc.,
-  covered by tests/language/execution/arrays/
-  generic-method-primitive-mono.zena). Needs a ruling: implement
-  erased virtual dispatch (box U through anyref via the class-vtable
-  copies that already exist), make it a proper checker diagnostic, or
-  drop map from the Sequence interface.
+  U). Codegen used to crash internally on
+  `(s: Sequence<i32>).map(f)`; both checkers now reject it ("Generic
+  method 'map' cannot be called through interface 'Sequence'...",
+  Z2008/NotCallable — pinned by tests/language/semantics/interfaces/
+  generic-method-virtual-dispatch.zena). Still needs a ruling on the
+  feature itself: implement erased virtual dispatch (box U through
+  anyref via the class-vtable copies that already exist), or drop
+  map from the Sequence interface so the declaration stops promising
+  something uncallable.
 
 ### Exhaustiveness false-positive (Z2022) on large sealed matches
 - **Found**: 2026-07-25 (adding dispatch arms in ir/lowering.zena)

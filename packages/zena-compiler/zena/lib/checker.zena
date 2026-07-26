@@ -9395,6 +9395,22 @@ let resolveMemberType = (
       }
       if (it.members.has(propName) && it.members[propName] is MethodInfo) {
         let methodInfo = it.members[propName];
+        // Generic methods have no interface dispatch slot (one slot
+        // cannot serve every type argument), so a call through an
+        // interface receiver has no implementation strategy yet —
+        // codegen used to crash on it. Reject it here until erased
+        // dispatch (or a ruling to drop such members) exists. See
+        // BUGS.md "Generic interface methods...".
+        if (methodInfo.type is FunctionType &&
+            (methodInfo.type as FunctionType).typeParameters != null) {
+          ctx.error(
+            "Generic method '" + propName + "' cannot be called through interface '" +
+                it.name + "'; call it on a concrete type instead.",
+            DiagnosticCode.NotCallable,
+            loc
+          );
+          return new ErrorType();
+        }
         let subMethod = substituteTypeParams(it.typeParameters, it.typeArguments, methodInfo.type);
         return substituteThisType(it as Type, subMethod);
       }
