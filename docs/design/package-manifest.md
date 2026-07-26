@@ -2,10 +2,10 @@
 
 Zena has two manifest files that serve distinct purposes:
 
-1. **`zena-package.json`** — self-describes a single package: its exports,
-   internal modules, and (eventually) its dependencies by name. All paths are
-   relative to the package's own root and point to its own files. A package does
-   not know where its dependencies are physically located.
+1. **`zena-package.json`** — self-describes a single package: its exports and
+   (eventually) its dependencies by name. All paths are relative to the
+   package's own root and point to its own files. A package does not know
+   where its dependencies are physically located.
 
 2. **Resolution file** (currently `zena-packages.json`, name TBD) — maps
    package names to physical locations for a compilation unit. Lives at the
@@ -36,29 +36,31 @@ internal structure. All paths are relative to the package root.
   "exports": {
     "array": {},
     "string": {},
+    "url": {"path": "url/index.zena"},
     "console": {
-      "virtual": {"host": "console-host", "wasi": "console-wasi"}
+      "virtual": {"host": "console/host.zena", "wasi": "console/wasi.zena"}
     }
-  },
-  "internal": ["console-host", "console-wasi", "console-interface"]
+  }
 }
 ```
 
 ### Schema
 
-| Field      | Type                           | Required | Description                             |
-| ---------- | ------------------------------ | -------- | --------------------------------------- |
-| `exports`  | `Record<string, ModuleExport>` | no       | Modules importable by external packages |
-| `internal` | `string[]`                     | no       | Module names that are package-private   |
+| Field     | Type                           | Required | Description                             |
+| --------- | ------------------------------ | -------- | --------------------------------------- |
+| `exports` | `Record<string, ModuleExport>` | no       | Modules importable by external packages |
 
 If no `zena-package.json` exists (or `exports` is absent), the package is
 **open** — all `.zena` files under the root are importable. If `exports` is
 present, the package is **closed** — only listed modules are importable.
+Files not listed in `exports` are private to the package: they are reachable
+only via relative imports from the package's own files. There is no separate
+`internal` mechanism.
 
 ### Module Export
 
 Each key under `exports` is a module name (without `.zena` extension). The
-value is either an empty object (regular module) or an object with a
+value is an empty object (regular module) or an object with a `path` or
 `virtual` field.
 
 #### Regular Module
@@ -70,33 +72,45 @@ An empty object `{}` means the module is a normal source file at
 "utils": {}
 ```
 
+#### Explicit Entry File
+
+A `path` field names the module's entry file, relative to the package root.
+This is how a directory-based library exposes one public module implemented
+as multiple files:
+
+```json
+"url": { "path": "url/index.zena" }
+```
+
+The entry file re-exports the public API and reaches its sibling
+implementation files via relative imports (`./encoding.zena`). Those files
+are not importable by name.
+
 #### Virtual Module
 
-A virtual module resolves to different implementation files depending on the
+A virtual module resolves to different entry files depending on the
 compilation target (e.g., `host` for browser/Node.js, `wasi` for standalone
 WASM).
 
-| Field     | Type                     | Required | Description                                     |
-| --------- | ------------------------ | -------- | ----------------------------------------------- |
-| `virtual` | `Record<string, string>` | yes      | Map of target name → implementation module name |
+| Field     | Type                     | Required | Description                                                 |
+| --------- | ------------------------ | -------- | ----------------------------------------------------------- |
+| `virtual` | `Record<string, string>` | yes      | Map of target name → entry file path (package-root-relative) |
 
 ```json
-"console": { "virtual": { "host": "console-host", "wasi": "console-wasi" } }
+"console": { "virtual": { "host": "console/host.zena", "wasi": "console/wasi.zena" } }
 ```
 
 When compiling with `--target wasi`, `import { log } from 'pkg:console'`
-resolves to `<root>/console-wasi.zena`. With `--target host`, it resolves to
-`<root>/console-host.zena`.
+resolves to `<root>/console/wasi.zena`. With `--target host`, it resolves to
+`<root>/console/host.zena`.
 
-### `internal` (Package-Private Modules)
+### Package-Private Files
 
-Modules listed in `internal` can only be imported from within the same package.
-External code that tries to import them gets a resolution error. This is useful
-for hiding implementation details like platform-specific backends.
-
-```json
-"internal": ["console-host", "console-wasi", "console-interface"]
-```
+There is no `internal` list. Files not named in `exports` (directly or via a
+`path`/`virtual` entry file) are private to the package: they can only be
+reached through relative imports from the package's own files. In the stdlib,
+such files get path-shaped canonical ids (`zena:console/interface.zena`)
+while manifest modules keep name ids (`zena:string`).
 
 ### Future: Dependencies
 
@@ -192,10 +206,12 @@ project/
   packages/
     stdlib/
       zena/
-        zena-package.json         # exports, internal
+        zena-package.json         # exports
         array.zena
-        console-host.zena         # internal
-        console-wasi.zena         # internal
+        console/
+          interface.zena          # private (unlisted)
+          host.zena               # private (virtual target)
+          wasi.zena               # private (virtual target)
     my-app/
       zena/
         main.zena
@@ -208,10 +224,9 @@ project/
   "exports": {
     "array": {},
     "console": {
-      "virtual": {"host": "console-host", "wasi": "console-wasi"}
+      "virtual": {"host": "console/host.zena", "wasi": "console/wasi.zena"}
     }
-  },
-  "internal": ["console-host", "console-wasi"]
+  }
 }
 ```
 

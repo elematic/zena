@@ -17,9 +17,9 @@ export * from './analysis/index.js';
 import {Compiler, type CompilerHost} from './compiler.js';
 import {CodeGenerator} from './codegen/index.js';
 import {
-  resolveStdlibModule,
+  resolveStdlibImport,
+  resolveStdlibRelative,
   loadStdlibModule,
-  isInternalModule,
   type Target,
 } from '@zena-lang/stdlib';
 
@@ -33,20 +33,24 @@ class InMemoryHost implements CompilerHost {
   }
 
   resolve(specifier: string, referrer: string): string {
-    if (specifier.startsWith('zena:')) {
-      const name = specifier.substring(5);
-      // Internal modules can only be imported from other stdlib modules
-      if (isInternalModule(name)) {
-        if (!referrer.startsWith('zena:')) {
-          throw new Error(`Cannot import internal module: ${specifier}`);
-        }
-        return specifier; // Allow as-is for stdlib-to-stdlib imports
+    if (
+      (specifier.startsWith('./') || specifier.startsWith('../')) &&
+      referrer.startsWith('zena:')
+    ) {
+      const resolved = resolveStdlibRelative(specifier, referrer);
+      if (!resolved) {
+        throw new Error(
+          `Cannot resolve '${specifier}' from ${referrer} (escapes the stdlib)`,
+        );
       }
-      const resolved = resolveStdlibModule(name, this.#target);
+      return resolved;
+    }
+    if (specifier.startsWith('zena:')) {
+      const resolved = resolveStdlibImport(specifier.substring(5), this.#target);
       if (!resolved) {
         throw new Error(`Unknown stdlib module: ${specifier}`);
       }
-      return `zena:${resolved}`;
+      return resolved;
     }
     return specifier;
   }
@@ -54,16 +58,7 @@ class InMemoryHost implements CompilerHost {
   load(path: string): string {
     if (this.#files.has(path)) return this.#files.get(path)!;
     if (path.startsWith('zena:')) {
-      const name = path.substring(5);
-      // Internal modules can be loaded (they're allowed after resolution from stdlib)
-      if (isInternalModule(name)) {
-        return loadStdlibModule(name);
-      }
-      const resolved = resolveStdlibModule(name, this.#target);
-      if (!resolved) {
-        throw new Error(`Stdlib module not found or not importable: ${name}`);
-      }
-      return loadStdlibModule(resolved);
+      return loadStdlibModule(path);
     }
     throw new Error(`File not found: ${path}`);
   }

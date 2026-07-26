@@ -13,7 +13,7 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
 import {readFileSync} from 'node:fs';
-import {join, dirname} from 'node:path';
+import {join, dirname, posix} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Compiler, type CompilerHost} from '@zena-lang/compiler';
 import {CodeGenerator} from '@zena-lang/compiler';
@@ -36,14 +36,25 @@ const createHost = (mainPath: string): CompilerHost => ({
     }
     if (p.startsWith('zena:')) {
       const name = p.substring(5);
-      return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
+      const rel = name.endsWith('.zena') ? name : `${name}.zena`;
+      return readFileSync(join(stdlibPath, rel), 'utf-8');
     }
     throw new Error(`File not found: ${p}`);
   },
-  resolve: (specifier: string) => {
-    // zena:console is virtual - map to console-host for host target
+  resolve: (specifier: string, referrer: string) => {
+    // zena:console is virtual - map to console/host.zena for host target
     if (specifier === 'zena:console') {
-      return 'zena:console-host';
+      return 'zena:console/host.zena';
+    }
+    // Relative imports between stdlib modules resolve to path ids
+    if (
+      (specifier.startsWith('./') || specifier.startsWith('../')) &&
+      referrer.startsWith('zena:')
+    ) {
+      return (
+        'zena:' +
+        posix.normalize(posix.join(posix.dirname(referrer.slice(5)), specifier))
+      );
     }
     return specifier;
   },

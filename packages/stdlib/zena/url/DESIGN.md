@@ -113,13 +113,15 @@ URL implementation work**, since they also pay off immediately for `console`.
    `zena/console/`, stop being nameable modules entirely, and the `internal`
    list — plus the "is the referrer a stdlib file?" checks in both resolvers —
    is deleted. "Not in the manifest" becomes the only privacy mechanism.
-3. **Relative imports between stdlib files**: the self-hosted resolver already
-   supports this (it tracks the referrer's directory precisely so stdlib
-   relative imports work), but stdlib files currently only use `zena:`
-   imports, so the path is untested — and the bootstrap loader needs the
-   equivalent. Detail to settle: the canonical module id for a non-manifest
-   stdlib file (e.g. `zena:url/encoding` vs. an absolute path) so both
-   compilers dedupe and cache it consistently.
+3. **Relative imports between stdlib files** work in both compilers, resolved
+   in the space of stdlib-root-relative file paths. Canonical ids come in two
+   shapes: name ids (`zena:string`) for manifest modules whose entry file is
+   the default `<name>.zena`, and path ids (`zena:url/encoding.zena` — always
+   containing the file path) for everything else, including all `path` and
+   `virtual` entry files. Each file has exactly one canonical id, so module
+   dedup and caching stay consistent, and hosts map ids to files without
+   consulting the manifest (append `.zena` unless the id already ends with
+   it).
 4. **Manifest stays the public registry**: `"url"` is the only new entry.
    Files under `zena/url/` are unlisted and therefore private.
 5. **No build changes**: the wireit inputs already glob `zena/**/*.zena`.

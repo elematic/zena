@@ -1,23 +1,17 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {loadStdlibModule, resolveStdlibSpecifier} from '@zena-lang/stdlib';
 import {Compiler, type CompilerHost} from '../lib/compiler.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const stdlibPath = path.resolve(__dirname, '../../stdlib/zena');
 
 class MockHost implements CompilerHost {
   files = new Map<string, string>();
 
   resolve(specifier: string, referrer: string): string {
-    // zena:console is virtual - map to console-host
-    if (specifier === 'zena:console') {
-      return 'zena:console-host';
-    }
-    if (specifier.startsWith('zena:')) {
-      return specifier;
+    // Handles zena:<name> imports (including the virtual zena:console) and
+    // relative imports between stdlib modules.
+    const stdlibResolved = resolveStdlibSpecifier(specifier, referrer, 'host');
+    if (stdlibResolved !== null) {
+      return stdlibResolved;
     }
     // Simple relative resolution mock
     if (specifier.startsWith('./')) {
@@ -31,9 +25,7 @@ class MockHost implements CompilerHost {
       return this.files.get(specifier)!;
     }
     if (specifier.startsWith('zena:')) {
-      const name = specifier.substring(5);
-      const filePath = path.join(stdlibPath, `${name}.zena`);
-      return fs.readFileSync(filePath, 'utf-8');
+      return loadStdlibModule(specifier);
     }
     throw new Error(`File not found: ${specifier}`);
   }
@@ -149,7 +141,7 @@ describe('Compiler', () => {
 
     // 2 user modules + 18 stdlib modules (15 prelude-imported + zena:iterator, zena:array-iterator, zena:growable-array-iterator)
     // Prelude imports: string, error, option, sequence, range, immutable-array, fixed-array,
-    // growable-array, console, hashable, map, box, math, string-convert + console-host
+    // growable-array, console, hashable, map, box, math, string-convert + console/host.zena
     assert.strictEqual(modules.length, 21);
   });
 
@@ -202,7 +194,7 @@ describe('Compiler', () => {
 
     // Find indices of prelude console module and user module
     const consoleIndex = modules.findIndex(
-      (m) => m.path === 'zena:console-host',
+      (m) => m.path === 'zena:console/host.zena',
     );
     const userIndex = modules.findIndex((m) => m.path === 'main.zena');
 
@@ -210,12 +202,12 @@ describe('Compiler', () => {
     // because CodeGenerator processes them in order for global initialization
     assert.ok(
       consoleIndex !== -1,
-      'console-host module should be in modules list',
+      'console/host.zena module should be in modules list',
     );
     assert.ok(userIndex !== -1, 'user module should be in modules list');
     assert.ok(
       consoleIndex < userIndex,
-      `console-host (index ${consoleIndex}) should come before main.zena (index ${userIndex})`,
+      `console/host.zena (index ${consoleIndex}) should come before main.zena (index ${userIndex})`,
     );
   });
 });

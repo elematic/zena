@@ -10,18 +10,15 @@ const manifestPath = path.resolve(pkgRoot, 'stdlib-manifest.json');
 
 export type Target = 'host' | 'wasi';
 
-interface VirtualMapping {
-  host: string;
-  wasi: string;
-}
-
 interface ModuleEntry {
-  virtual?: VirtualMapping;
+  /** Entry file relative to zena/. Defaults to `<name>.zena`. */
+  path?: string;
+  /** Target-conditional entry files, relative to zena/. */
+  virtual?: Record<string, string>;
 }
 
 interface StdlibManifest {
   modules: Record<string, ModuleEntry>;
-  internal: string[];
 }
 
 let cachedManifest: StdlibManifest | null = null;
@@ -48,77 +45,144 @@ export const isStdlibModule = (name: string): boolean => {
 };
 
 /**
- * Check if a module name is internal (not directly importable)
+ * Map a canonical stdlib module id to its file path relative to the zena/
+ * source directory.
+ *
+ * Canonical ids come in two shapes:
+ * - Name ids (`zena:string`): manifest module names. The file is the entry's
+ *   `path`, defaulting to `<name>.zena`.
+ * - Path ids (`zena:console/host.zena`): files without a manifest name (the
+ *   result of virtual-module resolution or relative imports between stdlib
+ *   files). The id contains the file path directly.
+ *
+ * Accepts the id with or without the `zena:` prefix.
  */
-export const isInternalModule = (name: string): boolean => {
-  const manifest = getManifest();
-  return manifest.internal.includes(name);
+export const stdlibModuleFilePath = (id: string): string => {
+  const sub = id.startsWith('zena:') ? id.substring(5) : id;
+  if (sub.endsWith('.zena')) {
+    return sub;
+  }
+  const entry = getManifest().modules[sub];
+  return entry?.path ?? `${sub}.zena`;
 };
 
 /**
- * Resolve a module specifier to its actual module name.
- * Handles virtual modules like 'console' → 'console-host' or 'console-wasi'.
- * Returns null if the module is not found or not importable.
+ * Map a file path relative to zena/ back to a canonical stdlib module id.
+ *
+ * Returns a name id only for a manifest module whose entry file is the
+ * default `<name>.zena` — modules with an explicit `path` or `virtual`
+ * mapping canonicalize to path ids everywhere (see resolveStdlibImport), so
+ * each file has exactly one canonical id and module dedup works.
  */
-export const resolveStdlibModule = (
+const pathToStdlibId = (relPath: string): string => {
+  if (!relPath.includes('/') && relPath.endsWith('.zena')) {
+    const name = relPath.slice(0, -'.zena'.length);
+    const entry = getManifest().modules[name];
+    if (entry && !entry.virtual && !entry.path) {
+      return `zena:${name}`;
+    }
+  }
+  return `zena:${relPath}`;
+};
+
+/**
+ * Resolve an import of `zena:<name>` to a canonical module id.
+ * Handles virtual modules like 'console' → 'zena:console/host.zena'.
+ * Returns null if the module is not found or not available for the target.
+ */
+export const resolveStdlibImport = (
   name: string,
   target: Target = 'host',
 ): string | null => {
-  const manifest = getManifest();
-
-  // Check if it's an internal module (not directly importable)
-  if (manifest.internal.includes(name)) {
-    return null;
-  }
-
-  // Check if it's a known public module
-  const entry = manifest.modules[name];
+  const entry = getManifest().modules[name];
   if (!entry) {
     return null;
   }
-
-  // Handle virtual modules
   if (entry.virtual) {
-    return entry.virtual[target];
+    const virtualPath = entry.virtual[target];
+    return virtualPath ? `zena:${virtualPath}` : null;
   }
-
-  return name;
+  if (entry.path) {
+    return `zena:${entry.path}`;
+  }
+  return `zena:${name}`;
 };
 
 /**
- * Load a stdlib module's source code.
- * The name should be the resolved module name (after virtual resolution).
+ * Resolve a relative import specifier from a stdlib module.
+ * Returns the canonical id of the target module, or null if the specifier
+ * escapes the stdlib source directory.
  */
-export const loadStdlibModule = (name: string): string => {
-  // Check cache first
-  if (moduleCache.has(name)) {
-    return moduleCache.get(name)!;
+export const resolveStdlibRelative = (
+  specifier: string,
+  referrerId: string,
+): string | null => {
+  const referrerPath = stdlibModuleFilePath(referrerId);
+  const resolved = path.posix.normalize(
+    path.posix.join(path.posix.dirname(referrerPath), specifier),
+  );
+  if (resolved.startsWith('..')) {
+    return null;
+  }
+  return pathToStdlibId(resolved);
+};
+
+/**
+ * Resolve a specifier in the context of the stdlib. Handles `zena:<name>`
+ * imports (from anywhere) and relative imports whose referrer is a stdlib
+ * module. Returns null when the specifier is not stdlib-related, so callers
+ * can fall through to their own file/package resolution. Throws on unknown
+ * stdlib modules and on relative imports escaping the stdlib.
+ */
+export const resolveStdlibSpecifier = (
+  specifier: string,
+  referrer: string,
+  target: Target = 'host',
+): string | null => {
+  if (specifier.startsWith('./') || specifier.startsWith('../')) {
+    if (!referrer.startsWith('zena:')) {
+      return null;
+    }
+    const resolved = resolveStdlibRelative(specifier, referrer);
+    if (!resolved) {
+      throw new Error(
+        `Cannot resolve '${specifier}' from ${referrer} (escapes the stdlib)`,
+      );
+    }
+    return resolved;
+  }
+  if (specifier.startsWith('zena:')) {
+    const resolved = resolveStdlibImport(specifier.substring(5), target);
+    if (!resolved) {
+      throw new Error(`Unknown stdlib module: ${specifier}`);
+    }
+    return resolved;
+  }
+  return null;
+};
+
+/**
+ * Load a stdlib module's source code by canonical id (with or without the
+ * `zena:` prefix).
+ */
+export const loadStdlibModule = (id: string): string => {
+  const relPath = stdlibModuleFilePath(id);
+  if (relPath.split('/').includes('..')) {
+    throw new Error(`Invalid stdlib module path: ${id}`);
+  }
+  const cached = moduleCache.get(relPath);
+  if (cached !== undefined) {
+    return cached;
   }
 
-  const filePath = path.join(stdlibDir, `${name}.zena`);
-
+  const filePath = path.join(stdlibDir, relPath);
   if (!fs.existsSync(filePath)) {
-    throw new Error(`Stdlib module file not found: ${name}`);
+    throw new Error(`Stdlib module file not found: ${id}`);
   }
 
   const content = fs.readFileSync(filePath, 'utf-8');
-  moduleCache.set(name, content);
+  moduleCache.set(relPath, content);
   return content;
-};
-
-/**
- * Resolve and load a stdlib module in one step.
- * Returns null if the module is not importable.
- */
-export const getStdlibModule = (
-  name: string,
-  target: Target = 'host',
-): string | null => {
-  const resolved = resolveStdlibModule(name, target);
-  if (!resolved) {
-    return null;
-  }
-  return loadStdlibModule(resolved);
 };
 
 /**
@@ -127,12 +191,4 @@ export const getStdlibModule = (
 export const getPublicModules = (): string[] => {
   const manifest = getManifest();
   return Object.keys(manifest.modules);
-};
-
-/**
- * Get all internal module names
- */
-export const getInternalModules = (): string[] => {
-  const manifest = getManifest();
-  return [...manifest.internal];
 };

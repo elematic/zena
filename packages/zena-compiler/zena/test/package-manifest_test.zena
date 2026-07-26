@@ -23,12 +23,11 @@ export let tests = suite("Package Manifest", () => {
       equal(config.root, "/project/lib/mylib");
       // String shorthand → open package (no exports restriction).
       equal(config.exports == null, true);
-      equal(config.internal == null, true);
     });
 
     test("parses object form packages", () => {
       let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib/mylib", "exports": {"utils": {}, "math": {}}, "internal": ["impl"]}}}');
+      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib/mylib", "exports": {"utils": {}, "math": {}}}}}');
 
       let packages = loadPackageMap(host, "/project/zena-packages.json");
       let config = packages["mylib"];
@@ -36,24 +35,33 @@ export let tests = suite("Package Manifest", () => {
 
       // Exports present.
       isTrue(config.exports != null);
+      let exports = config.exports as HashMap<String, ModuleExport>;
+      isTrue(exports.has("utils"));
+      isFalse(exports.has("impl"));
+    });
 
-      // Internal modules.
-      isTrue(config.internal != null);
-      isTrue(config.isInternal("impl"));
-      isFalse(config.isInternal("utils"));
+    test("parses module exports with explicit entry paths", () => {
+      let host = new MockHost();
+      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"widgets": {"path": "widgets/index.zena"}, "utils": {}}}}}');
+
+      let packages = loadPackageMap(host, "/project/zena-packages.json");
+      let config = packages["mylib"];
+      let exports = config.exports as HashMap<String, ModuleExport>;
+      equal(exports["widgets"].path as String, "widgets/index.zena");
+      equal(exports["utils"].path == null, true);
     });
 
     test("parses virtual module exports", () => {
       let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"console": {"virtual": {"host": "console-js", "wasi": "console-wasi"}}}}}}');
+      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"console": {"virtual": {"host": "console/js.zena", "wasi": "console/wasi.zena"}}}}}}');
 
       let packages = loadPackageMap(host, "/project/zena-packages.json");
       let config = packages["mylib"];
       let exports = config.exports as HashMap<String, ModuleExport>;
       let consoleExport = exports["console"];
       let virtual = consoleExport.virtual as HashMap<String, String>;
-      equal(virtual["host"], "console-js");
-      equal(virtual["wasi"], "console-wasi");
+      equal(virtual["host"], "console/js.zena");
+      equal(virtual["wasi"], "console/wasi.zena");
     });
 
     test("skips zena package from manifest", () => {
@@ -97,16 +105,16 @@ export let tests = suite("Package Manifest", () => {
       let exports = config.exports as HashMap<String, ModuleExport>;
       let consoleExport = exports["console"];
       let virtual = consoleExport.virtual as HashMap<String, String>;
-      equal(virtual["host"], "console-host");
-      equal(virtual["wasi"], "console-wasi");
+      equal(virtual["host"], "console/host.zena");
+      equal(virtual["wasi"], "console/wasi.zena");
     });
 
-    test("marks implementation modules as internal", () => {
+    test("does not export console implementation files by name", () => {
       let config = buildStdlibConfig("/stdlib");
-      isTrue(config.isInternal("console-host"));
-      isTrue(config.isInternal("console-wasi"));
-      isTrue(config.isInternal("console-interface"));
-      isFalse(config.isInternal("string"));
+      let exports = config.exports as HashMap<String, ModuleExport>;
+      isFalse(exports.has("console-host"));
+      isFalse(exports.has("console-wasi"));
+      isFalse(exports.has("console-interface"));
     });
   });
 });

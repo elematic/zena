@@ -728,7 +728,7 @@ wasmtime run -W gc=y -W exceptions=y --dir /tmp/zena-test::/ /tmp/test.wasm
 ```zena
 // examples/read-file.zena
 import { readFile, writeFile, listDir, getRootDir, OpenFlags } from 'zena:fs';
-import { console } from 'zena:console-wasi';
+import { console } from 'zena:console';
 
 export let main = (): i32 => {
   // Simple API: readFile throws on error

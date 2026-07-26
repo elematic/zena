@@ -1,13 +1,13 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {Compiler} from '../../lib/compiler.js';
-import {createHost} from './utils.js';
+import {loadStdlibModule, resolveStdlibSpecifier} from '@zena-lang/stdlib';
+import {Compiler, type CompilerHost} from '../../lib/compiler.js';
 import {TypeKind} from '../../lib/types.js';
 
 suite('console-wasi debug', () => {
   test('trace console type resolution', () => {
     const source = `
-import { console } from 'zena:console-wasi';
+import { console } from 'zena:console';
 
 export let main = () => {
   console.log('Hello WASI');
@@ -15,7 +15,17 @@ export let main = () => {
 };
 `;
 
-    const host = createHost(source, '/main.zena');
+    // Host that resolves the virtual zena:console to the wasi implementation
+    // (zena:console/wasi.zena) via the wasi target.
+    const host: CompilerHost = {
+      load: (p: string) => {
+        if (p === '/main.zena') return source;
+        if (p.startsWith('zena:')) return loadStdlibModule(p);
+        throw new Error(`File not found: ${p}`);
+      },
+      resolve: (specifier: string, referrer: string) =>
+        resolveStdlibSpecifier(specifier, referrer, 'wasi') ?? specifier,
+    };
     const compiler = new Compiler(host, {
       target: 'wasi',
     });
@@ -38,9 +48,9 @@ export let main = () => {
 
     // Find the console-wasi module
     const consoleWasiModule = modules.find(
-      (m) => m.path === 'zena:console-wasi',
+      (m) => m.path === 'zena:console/wasi.zena',
     );
-    assert(consoleWasiModule, 'console-wasi module should exist');
+    assert(consoleWasiModule, 'console/wasi.zena module should exist');
 
     // Find the console module (from prelude)
     const consoleModule = modules.find((m) => m.path === 'zena:console');
@@ -73,7 +83,7 @@ export let main = () => {
       console.log('zena:console not found in modules');
     }
 
-    console.log('\nzena:console-wasi exports:');
+    console.log('\nzena:console/wasi.zena exports:');
     for (const [name, info] of consoleWasiModule.exports ?? []) {
       console.log(`  ${name}: kind=${info.kind}, type.kind=${info.type?.kind}`);
       if (info.type?.kind === TypeKind.Interface) {
@@ -120,13 +130,13 @@ export let main = () => {
     // Check the Console interfaces from both modules are different
     console.log('\n=== Console interface identity check ===');
     const consoleInterfaceModule = modules.find(
-      (m) => m.path === 'zena:console-interface',
+      (m) => m.path === 'zena:console/interface.zena',
     );
     const consoleInterfaceExport =
       consoleInterfaceModule?.exports?.get('type:Console');
 
     if (consoleInterfaceExport) {
-      console.log(`zena:console-interface exports Console: true`);
+      console.log(`zena:console/interface.zena exports Console: true`);
       console.log(
         `Console type object: ${(consoleInterfaceExport.type as any)?.name}`,
       );
@@ -158,7 +168,7 @@ export let main = () => {
         }
       }
     } else {
-      console.log('Console interface not found in zena:console-interface');
+      console.log('Console interface not found in zena:console/interface.zena');
     }
 
     // Check what the call expression resolves to

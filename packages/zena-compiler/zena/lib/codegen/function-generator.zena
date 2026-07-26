@@ -20,6 +20,7 @@ import { Type, I32Type, F64Type, F32Type, VoidType, FunctionType, RecordType, Cl
 import { SemanticModel, InterfaceAdaptation, FunctionAdaptation } from '../semantic-model.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
+import { i32ToString } from 'zena:string-convert';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { Error } from 'zena:error';
 import { ValType, HeapType, heapTypeToSigned, WasmType } from './wasm.zena';
@@ -2763,7 +2764,21 @@ export final class FunctionGenerator {
     }
 
     if (dataFieldIdx == -1 || startFieldIdx == -1 || endFieldIdx == -1 || encodingFieldIdx == -1) {
-      throw new Error("$stringCreate: String layout fields not found in structure!");
+      var fieldDesc = "";
+      for (var df = 0; df < stringStruct.fields.length; df += 1) {
+        let fn = stringStruct.fields[df].name;
+        if (fn != null) {
+          fieldDesc = fieldDesc + " '" + (fn as String) + "'";
+        } else {
+          fieldDesc = fieldDesc + " <null>";
+        }
+      }
+      throw new Error(
+        "$stringCreate: String layout fields not found in structure! " +
+        "class=" + (this.ctx.wasm.stringClass as ClassType).name +
+        " sourcePath=" + (this.ctx.wasm.stringClass as ClassType).sourcePath +
+        " nfields=" + i32ToString(stringStruct.fields.length) +
+        " fields:" + fieldDesc);
     }
 
     let locals = new Array<ValType>();

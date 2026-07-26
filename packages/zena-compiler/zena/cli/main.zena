@@ -3,7 +3,7 @@ import { getArguments, getEnv, exit, ExitCode } from 'zena:cli';
 import { console } from 'zena:console';
 import { readFile, writeFileBytes, writeFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
-import { PackageConfig } from '../lib/module-resolver.zena';
+import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
 import { DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
 import { i32ToString } from 'zena:string-convert';
@@ -25,8 +25,7 @@ class WasiHost implements CompilerHost {
     var actualPath = path;
     // If it's a zena: package import, map it to the wasi /stdlib dir
     if (path.startsWith("zena:")) {
-      let moduleName = path.sliceBytes(5, path.length);
-      actualPath = `/stdlib/${moduleName}.zena`;
+      actualPath = "/stdlib/" + stdlibIdToRelativeFile(path);
     }
     let content = readFile(actualPath);
     if (this.testMode && path == this.entryPath) {

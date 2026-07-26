@@ -42,15 +42,15 @@ export const stringModule = fs.readFileSync(
   'utf-8',
 );
 export const consoleHostModule = fs.readFileSync(
-  path.join(stdlibDir, 'console-host.zena'),
+  path.join(stdlibDir, 'console', 'host.zena'),
   'utf-8',
 );
 export const consoleWasiModule = fs.readFileSync(
-  path.join(stdlibDir, 'console-wasi.zena'),
+  path.join(stdlibDir, 'console', 'wasi.zena'),
   'utf-8',
 );
 export const consoleInterfaceModule = fs.readFileSync(
-  path.join(stdlibDir, 'console-interface.zena'),
+  path.join(stdlibDir, 'console', 'interface.zena'),
   'utf-8',
 );
 export const mapModule = fs.readFileSync(
@@ -123,14 +123,14 @@ export const cliModule = fs.readFileSync(
   'utf-8',
 );
 
-// New manifest-based module loader
+// Manifest-based module loader
 export {
   type Target,
   isStdlibModule,
-  isInternalModule,
-  resolveStdlibModule,
+  resolveStdlibImport,
+  resolveStdlibRelative,
+  resolveStdlibSpecifier,
+  stdlibModuleFilePath,
   loadStdlibModule,
-  getStdlibModule,
   getPublicModules,
-  getInternalModules,
 } from './lib/module-loader.js';

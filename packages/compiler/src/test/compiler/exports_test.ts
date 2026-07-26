@@ -1,13 +1,8 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {loadStdlibModule, resolveStdlibSpecifier} from '@zena-lang/stdlib';
 import {Compiler, type CompilerHost} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const stdlibPath = path.resolve(__dirname, '../../../stdlib/zena');
 
 describe('Exports', () => {
   it('should export entry point functions with original names', async () => {
@@ -27,17 +22,19 @@ describe('Exports', () => {
             `;
         }
         if (specifier.startsWith('zena:')) {
-          const name = specifier.substring(5);
-          const filePath = path.join(stdlibPath, `${name}.zena`);
-          return fs.readFileSync(filePath, 'utf-8');
+          return loadStdlibModule(specifier);
         }
         return '';
       },
       resolve: (specifier: string, referrer: string) => {
-        // zena:console is virtual - map to console-host
-        if (specifier === 'zena:console') return 'zena:console-host';
-        if (specifier === 'zena:array') return 'zena:array';
-        if (specifier === 'zena:string') return 'zena:string';
+        // Handles zena:<name> imports (including the virtual zena:console)
+        // and relative imports between stdlib modules.
+        const stdlibResolved = resolveStdlibSpecifier(
+          specifier,
+          referrer,
+          'host',
+        );
+        if (stdlibResolved !== null) return stdlibResolved;
         if (specifier.startsWith('./')) {
           return '/' + specifier.substring(2) + '.zena';
         }
@@ -90,18 +87,14 @@ describe('Exports', () => {
             `;
         }
         if (specifier.startsWith('zena:')) {
-          const name = specifier.substring(5);
-          const filePath = path.join(stdlibPath, `${name}.zena`);
-          return fs.readFileSync(filePath, 'utf-8');
+          return loadStdlibModule(specifier);
         }
         return '';
       },
-      resolve: (specifier: string) => {
-        // zena:console is virtual - map to console-host
-        if (specifier === 'zena:console') return 'zena:console-host';
-        if (specifier === 'zena:array') return 'zena:array';
-        if (specifier === 'zena:string') return 'zena:string';
-        return specifier;
+      resolve: (specifier: string, referrer: string) => {
+        // Handles zena:<name> imports (including the virtual zena:console)
+        // and relative imports between stdlib modules.
+        return resolveStdlibSpecifier(specifier, referrer, 'host') ?? specifier;
       },
     };
 

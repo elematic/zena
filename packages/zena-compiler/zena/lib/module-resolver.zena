@@ -18,22 +18,25 @@ import { Error } from 'zena:error';
 // ============================================================================
 
 // Configuration for a single module export within a package.
-// For simple modules, `virtual` is null.
-// For target-conditional modules, `virtual` maps target names to
-// the actual implementation module name.
+// For simple modules, `virtual` and `path` are null and the module resolves
+// to `<name>.zena` in the package root.
+// `path` overrides the entry file (relative to the package root).
+// For target-conditional modules, `virtual` maps target names to entry file
+// paths (relative to the package root).
 export final class ModuleExport {
   virtual: HashMap<String, String> | null;
+  path: String | null;
 
-  new(virtual: HashMap<String, String> | null)
-    : virtual = virtual;
+  new(virtual: HashMap<String, String> | null, path: String | null = null)
+    : virtual = virtual, path = path;
 }
 
 // Configuration for a package in the package manifest.
 //
 // A package maps a name (e.g., "zena", "zena-compiler") to a root directory
 // containing .zena source files. Packages can optionally restrict which
-// modules are importable via `exports`, and hide implementation modules
-// via `internal`.
+// modules are importable via `exports`; files not listed there are private
+// to the package and reachable only via relative imports.
 export final class PackageConfig {
   // Absolute path to the package root directory.
   root: String;
@@ -42,27 +45,10 @@ export final class PackageConfig {
   // package). If present, only listed modules can be imported (closed package).
   exports: HashMap<String, ModuleExport> | null;
 
-  // Internal module names. These can only be imported from within the same
-  // package (e.g., stdlib implementation modules like "console-host").
-  internal: Array<String> | null;
-
   new(
     root: String,
-    exports: HashMap<String, ModuleExport> | null,
-    internal: Array<String> | null
-  ) : root = root, exports = exports, internal = internal;
-
-  // Check if a module name is internal to this package.
-  isInternal(name: String): boolean {
-    if (this.internal == null) { return false; }
-    let arr = this.internal as Array<String>;
-    var i = 0;
-    while (i < arr.length) {
-      if (arr[i] == name) { return true; }
-      i += 1;
-    }
-    return false;
-  }
+    exports: HashMap<String, ModuleExport> | null
+  ) : root = root, exports = exports;
 }
 
 // ============================================================================
@@ -71,7 +57,9 @@ export final class PackageConfig {
 
 // A resolved module with its canonical path and package info.
 export final class ResolvedModule(
-  // Canonical path. For stdlib: "zena:string", "zena:console-wasi".
+  // Canonical path. For stdlib, either a name id ("zena:string") for a
+  // manifest module resolving to its default "<name>.zena" file, or a path
+  // id ("zena:console/host.zena") for any other stdlib file.
   // For file modules: "/absolute/path/to/module.zena".
   path: String,
 
@@ -130,10 +118,59 @@ export final class ModuleResolver {
 
   // Resolve a relative import specifier.
   resolveRelative(specifier: String, referrer: String): ResolvedModule {
+    // Relative imports between stdlib files resolve in the space of paths
+    // relative to the stdlib source root and stay within it.
+    if (referrer.startsWith("zena:")) {
+      return this.#resolveStdlibRelative(specifier, referrer);
+    }
     let dir = dirName(referrer);
     let resolved = normalizePath(dir + "/" + specifier);
     let packageName = this.findPackageForPath(resolved);
     return new ResolvedModule(resolved, packageName);
+  }
+
+  #resolveStdlibRelative(specifier: String, referrer: String): ResolvedModule {
+    let refPath = this.#stdlibFilePath(referrer.sliceBytes(5, referrer.length));
+    let resolved = normalizePath(dirName(refPath) + "/" + specifier);
+    if (resolved == ".." || resolved.startsWith("../")) {
+      throw new Error(
+        "Cannot resolve '" + specifier + "' from " + referrer +
+          " (escapes the stdlib)"
+      );
+    }
+    return new ResolvedModule("zena:" + this.#stdlibIdForPath(resolved), "zena");
+  }
+
+  // Map a stdlib canonical id (without the "zena:" prefix) to its file path
+  // relative to the stdlib source root.
+  #stdlibFilePath(sub: String): String {
+    if (sub.endsWith(".zena")) {
+      return sub;
+    }
+    return sub + ".zena";
+  }
+
+  // Map a stdlib-root-relative file path back to a canonical id (without the
+  // "zena:" prefix): the module name when the path is the default entry file
+  // of a manifest module, otherwise the path itself. Modules with an explicit
+  // `path` or a `virtual` mapping always canonicalize to path ids, so each
+  // file has exactly one canonical id.
+  #stdlibIdForPath(path: String): String {
+    if (path.contains("/") || !path.endsWith(".zena")) {
+      return path;
+    }
+    let name = path.sliceBytes(0, path.length - 5);
+    if (let (true, config) = this.#packages.get("zena")) {
+      if (config.exports != null) {
+        let exports = config.exports as HashMap<String, ModuleExport>;
+        if (let (true, moduleExport) = exports.get(name)) {
+          if (moduleExport.virtual == null && moduleExport.path == null) {
+            return name;
+          }
+        }
+      }
+    }
+    return path;
   }
 
   // Resolve a package import specifier.
@@ -143,16 +180,6 @@ export final class ModuleResolver {
     referrer: String
   ): ResolvedModule {
     if (let (true, config) = this.#packages.get(packageName)) {
-
-      // Internal modules bypass exports — only accessible within the package.
-      if (config.isInternal(moduleName)) {
-        if (!this.isInPackage(referrer, packageName)) {
-          throw new Error(
-            "Cannot import internal module '" + packageName + ":" + moduleName + "'"
-          );
-        }
-        return makeCanonicalPath(packageName, moduleName, config);
-      }
 
       // Check exports if the package has an explicit export list.
       if (config.exports != null) {
@@ -165,12 +192,21 @@ export final class ModuleResolver {
 
         let moduleExport = exports[moduleName];
 
-        // Resolve virtual modules (target-conditional).
+        // Resolve virtual modules (target-conditional) to their entry file.
         if (moduleExport.virtual != null) {
           let virtual = moduleExport.virtual as HashMap<String, String>;
-          if (let (true, resolvedName) = virtual.get(this.#target)) {
-            return makeCanonicalPath(packageName, resolvedName, config);
+          if (let (true, entryPath) = virtual.get(this.#target)) {
+            return makeCanonicalFilePath(packageName, entryPath, config);
           }
+        }
+
+        // Modules with an explicit entry file resolve to it.
+        if (moduleExport.path != null) {
+          return makeCanonicalFilePath(
+            packageName,
+            moduleExport.path as String,
+            config
+          );
         }
       }
 
@@ -178,18 +214,6 @@ export final class ModuleResolver {
     }
 
     throw new Error("Unknown package: '" + packageName + "'");
-  }
-
-  isInPackage(referrer: String, packageName: String): boolean {
-    if (packageName == "zena") {
-      if (referrer.startsWith("zena:") || referrer.contains("/stdlib/") || referrer.contains("\\stdlib\\")) {
-        return true;
-      }
-    }
-    if (let (true, config) = this.#packages.get(packageName)) {
-      return referrer.startsWith(config.root);
-    }
-    return false;
   }
 
   // Find which package (if any) contains the given path.
@@ -212,7 +236,22 @@ export final class ModuleResolver {
 // Path Utilities
 // ============================================================================
 
-// Create a canonical path for a module in a package.
+// Map a stdlib canonical id (with or without the "zena:" prefix) to its file
+// path relative to the stdlib source root. Name ids ("zena:string") map to
+// "<name>.zena"; path ids ("zena:console/host.zena") contain the file path.
+export let stdlibIdToRelativeFile = (id: String): String => {
+  var sub = id;
+  if (id.startsWith("zena:")) {
+    sub = id.sliceBytes(5, id.length);
+  }
+  if (sub.endsWith(".zena")) {
+    return sub;
+  }
+  return sub + ".zena";
+};
+
+// Create a canonical path for a module resolving to its default
+// "<name>.zena" entry file.
 // Stdlib modules use the "zena:" prefix; other packages resolve to file paths.
 let makeCanonicalPath = (
   packageName: String,
@@ -224,6 +263,20 @@ let makeCanonicalPath = (
   }
   let filePath = config.root + "/" + moduleName + ".zena";
   return new ResolvedModule(filePath, packageName);
+};
+
+// Create a canonical path for a module with an explicit entry file
+// (from `path` or a `virtual` mapping), given relative to the package root.
+// Stdlib entries become path ids ("zena:console/host.zena").
+let makeCanonicalFilePath = (
+  packageName: String,
+  entryPath: String,
+  config: PackageConfig
+): ResolvedModule => {
+  if (packageName == "zena") {
+    return new ResolvedModule("zena:" + entryPath, "zena");
+  }
+  return new ResolvedModule(config.root + "/" + entryPath, packageName);
 };
 
 // Find the byte position of the first occurrence of a byte in a string.
@@ -242,12 +295,9 @@ export let indexOfByte = (s: String, byte: i32): i32 => {
 // Get the directory portion of a path.
 // e.g., "/foo/bar/baz.zena" → "/foo/bar"
 // Returns "." if the path has no directory separator.
+// Note: "zena:" canonical ids must not be passed here — the resolver maps
+// them to stdlib-root-relative file paths first (see #resolveStdlibRelative).
 export let dirName = (path: String): String => {
-  // For zena: canonical paths, the "directory" is meaningless for joining
-  // but we return the prefix so relative imports within stdlib work.
-  if (path.startsWith("zena:")) {
-    return "zena:";
-  }
   var lastSlash = 0 - 1;
   var i = 0;
   while (i < path.length) {
@@ -275,8 +325,13 @@ export let normalizePath = (path: String): String => {
     if (seg == "." || seg == "") {
       // Skip "." and empty segments (from "//")
     } else if (seg == "..") {
-      if (result.length > 0) {
+      if (result.length > 0 && result[result.length - 1] != "..") {
         result.pop();
+      } else if (!isAbsolute) {
+        // Preserve leading ".." segments in relative paths so callers can
+        // detect escapes above the base directory. (Above the root of an
+        // absolute path, ".." is dropped as before.)
+        result.push(seg);
       }
     } else {
       result.push(seg);

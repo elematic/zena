@@ -13,6 +13,7 @@ import { readFile, listDir, exists, DirEntry, FileType } from 'zena:fs';
 import { Array } from 'zena:array';
 import { StringReader } from 'zena:string-reader';
 import { ScopeBuilder } from '../lib/scope/scope-builder.zena';
+import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { checkModule, CheckResult } from '../lib/checker.zena';
 import { Diagnostic, DiagnosticSeverity, formatDiagnostic } from '../lib/diagnostics.zena';
 import { createCompiler, CompilerOptions, checkCompilation, Compiler, ProgramCheckResult } from '../lib/compiler.zena';
@@ -126,8 +127,7 @@ class FsHost implements CompilerHost {
       return this.fileSourceOverride;
     }
     if (path.startsWith("zena:")) {
-      let moduleName = path.sliceBytes(5, path.length);
-      let fsPath = this.#stdlibRoot + "/" + moduleName + ".zena";
+      let fsPath = this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path);
       return readFile(fsPath);
     }
     return readFile(path);

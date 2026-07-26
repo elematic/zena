@@ -29,7 +29,7 @@ import {
 } from 'zena-compiler:compiler';
 import { parse as parseSource } from 'zena-compiler:parser';
 import { Type, ClassType, InterfaceType, FunctionType, MemberInfo, FieldInfo, MethodInfo } from 'zena-compiler:types';
-import { PackageConfig } from 'zena-compiler:module-resolver';
+import { PackageConfig, stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
 import { getStandardPrelude } from 'zena-compiler:prelude';
 import {
   Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
@@ -82,8 +82,7 @@ class LspHost implements CompilerHost {
    */
   resolveToFilesystemPath(path: String): String {
     if (path.startsWith("zena:")) {
-      let moduleName = path.sliceBytes(5, path.length);
-      return this.#stdlibRoot + "/" + moduleName + ".zena";
+      return this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path);
     }
     return path;
   }
@@ -110,8 +109,7 @@ class LspHost implements CompilerHost {
     }
     // Stdlib: map canonical "zena:module" to filesystem path.
     if (path.startsWith("zena:")) {
-      let moduleName = path.sliceBytes(5, path.length);
-      let fsPath = this.#stdlibRoot + "/" + moduleName + ".zena";
+      let fsPath = this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path);
       return __read_file(fsPath, fsPath.length);
     }
     // Regular file: read by absolute path.

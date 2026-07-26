@@ -20,7 +20,7 @@ import {
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { getStandardPrelude } from '../lib/prelude.zena';
-import { PackageConfig } from '../lib/module-resolver.zena';
+import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { Diagnostic, DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
 
 // ============================================================================
@@ -35,9 +35,9 @@ class FsHost implements CompilerHost {
 
   readFile(path: String): String {
     if (path.startsWith("zena:")) {
-      // Map zena:array → packages/stdlib/zena/array.zena
-      let moduleName = path.sliceBytes(5, path.length);
-      let fsPath = this.#stdlibRoot + "/" + moduleName + ".zena";
+      // Map zena:array → packages/stdlib/zena/array.zena and
+      // zena:console/host.zena → packages/stdlib/zena/console/host.zena
+      let fsPath = this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path);
       return readFile(fsPath);
     }
     return readFile(path);
@@ -150,19 +150,19 @@ export let tests = suite('Checker: Real Files', (): void => {
   });
 
   test('checks console-host.zena', (ctx: TestContext): void => {
-    let errors = checkFile("packages/stdlib/zena/console-host.zena");
+    let errors = checkFile("packages/stdlib/zena/console/host.zena");
     printDiagnostics(errors, "console-host.zena");
     equal(errors.length, 0);
   });
 
   test('checks console-interface.zena', (ctx: TestContext): void => {
-    let errors = checkFile("packages/stdlib/zena/console-interface.zena");
+    let errors = checkFile("packages/stdlib/zena/console/interface.zena");
     printDiagnostics(errors, "console-interface.zena");
     equal(errors.length, 0);
   });
 
   test('checks console-wasi.zena', (ctx: TestContext): void => {
-    let errors = checkFile("packages/stdlib/zena/console-wasi.zena");
+    let errors = checkFile("packages/stdlib/zena/console/wasi.zena");
     printDiagnostics(errors, "console-wasi.zena");
     equal(errors.length, 0);
   });

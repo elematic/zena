@@ -2,15 +2,14 @@ import {type CompilerHost, type Target} from '@zena-lang/compiler';
 import {readFileSync, existsSync} from 'node:fs';
 import {resolve, dirname} from 'node:path';
 import {
-  resolveStdlibModule,
+  resolveStdlibImport,
+  resolveStdlibRelative,
   loadStdlibModule,
-  isInternalModule,
 } from '@zena-lang/stdlib';
 
 export interface PackageConfigEntry {
   root: string;
-  exports?: Record<string, {virtual?: Record<string, string>}>;
-  internal?: string[];
+  exports?: Record<string, {path?: string; virtual?: Record<string, string>}>;
 }
 
 export interface PackageMap {
@@ -48,6 +47,16 @@ export class NodeCompilerHost implements CompilerHost {
 
   resolve(specifier: string, referrer: string): string {
     if (specifier.startsWith('./') || specifier.startsWith('../')) {
+      // Relative imports from a stdlib module stay within the stdlib.
+      if (referrer.startsWith('zena:')) {
+        const resolved = resolveStdlibRelative(specifier, referrer);
+        if (!resolved) {
+          throw new Error(
+            `Cannot resolve '${specifier}' from ${referrer} (escapes the stdlib)`,
+          );
+        }
+        return resolved;
+      }
       const dir = dirname(referrer);
       return resolve(dir, specifier);
     }
@@ -65,18 +74,11 @@ export class NodeCompilerHost implements CompilerHost {
 
     // stdlib — 'zena' is a reserved package name
     if (packageName === 'zena') {
-      const name = subpath!;
-      if (isInternalModule(name)) {
-        if (!referrer.startsWith('zena:')) {
-          throw new Error(`Cannot import internal module: ${specifier}`);
-        }
-        return specifier;
-      }
-      const resolved = resolveStdlibModule(name, this.#target);
+      const resolved = resolveStdlibImport(subpath!, this.#target);
       if (!resolved) {
         throw new Error(`Unknown stdlib module: ${specifier}`);
       }
-      return `zena:${resolved}`;
+      return resolved;
     }
 
     // User package — resolve via package map
@@ -98,16 +100,7 @@ export class NodeCompilerHost implements CompilerHost {
     }
 
     if (path.startsWith('zena:')) {
-      const name = path.substring(5);
-      // Internal modules can be loaded (they're allowed after resolution from stdlib)
-      if (isInternalModule(name)) {
-        return loadStdlibModule(name);
-      }
-      const resolved = resolveStdlibModule(name, this.#target);
-      if (!resolved) {
-        throw new Error(`Stdlib module not found or not importable: ${name}`);
-      }
-      return loadStdlibModule(resolved);
+      return loadStdlibModule(path);
     }
 
     if (!existsSync(path)) {

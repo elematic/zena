@@ -8,7 +8,7 @@
  */
 
 import {readdir, readFile, stat} from 'node:fs/promises';
-import {join, dirname, relative} from 'node:path';
+import {join, dirname, relative, posix} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execSync} from 'node:child_process';
 import * as fs from 'node:fs';
@@ -139,7 +139,8 @@ const createHost = () => ({
     }
     if (p.startsWith('zena:')) {
       const name = p.substring(5);
-      return fs.readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
+      const rel = name.endsWith('.zena') ? name : `${name}.zena`;
+      return fs.readFileSync(join(stdlibPath, rel), 'utf-8');
     }
     throw new Error(`File not found: ${p}`);
   },
@@ -147,8 +148,19 @@ const createHost = () => ({
     if (specifier.startsWith('./') && referrer.startsWith('/wit-parser/')) {
       return '/wit-parser/' + specifier.substring(2);
     }
+    // zena:console is virtual - map to console/host.zena for host target
     if (specifier === 'zena:console') {
-      return 'zena:console-host';
+      return 'zena:console/host.zena';
+    }
+    // Relative imports between stdlib modules resolve to path ids
+    if (
+      (specifier.startsWith('./') || specifier.startsWith('../')) &&
+      referrer.startsWith('zena:')
+    ) {
+      return (
+        'zena:' +
+        posix.normalize(posix.join(posix.dirname(referrer.slice(5)), specifier))
+      );
     }
     return specifier;
   },

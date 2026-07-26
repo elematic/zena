@@ -2,6 +2,7 @@ import {execSync} from 'node:child_process';
 import {existsSync, readFileSync} from 'node:fs';
 import {basename, dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {loadStdlibModule, resolveStdlibSpecifier} from '@zena-lang/stdlib';
 import type {Module} from '../../lib/ast.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {Compiler, type CompilerHost} from '../../lib/compiler.js';
@@ -67,17 +68,12 @@ export const createHost = (
       return files[p];
     }
     if (p.startsWith('zena:')) {
-      const name = p.substring(5);
-      return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
+      return loadStdlibModule(p);
     }
     throw new Error(`File not found: ${p}`);
   },
-  resolve: (specifier: string, _referrer: string) => {
-    // zena:console is virtual - map to console-host for host target
-    if (specifier === 'zena:console') {
-      return 'zena:console-host';
-    }
-    return specifier;
+  resolve: (specifier: string, referrer: string) => {
+    return resolveStdlibSpecifier(specifier, referrer, 'host') ?? specifier;
   },
 });
 
@@ -517,8 +513,7 @@ const createFileHost = (
       return virtualFiles.get(p)!;
     }
     if (p.startsWith('zena:')) {
-      const name = p.substring(5);
-      return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
+      return loadStdlibModule(p);
     }
     if (existsSync(p)) {
       return readFileSync(p, 'utf-8');
@@ -526,12 +521,9 @@ const createFileHost = (
     throw new Error(`File not found: ${p}`);
   },
   resolve: (specifier: string, referrer: string) => {
-    // zena:console is virtual - map to console-host for host target
-    if (specifier === 'zena:console') {
-      return 'zena:console-host';
-    }
-    if (specifier.startsWith('zena:')) {
-      return specifier;
+    const stdlibResolved = resolveStdlibSpecifier(specifier, referrer, 'host');
+    if (stdlibResolved) {
+      return stdlibResolved;
     }
     if (specifier.startsWith('./') || specifier.startsWith('../')) {
       const dir = dirname(referrer);

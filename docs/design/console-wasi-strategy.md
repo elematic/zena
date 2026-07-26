@@ -139,7 +139,7 @@ Runtime (`@zena-lang/runtime`) provides:
 
 ```
 packages/stdlib/zena/
-└── console-wasi.zena     # Uses WASI canonical ABI
+└── console/wasi.zena     # Uses WASI canonical ABI
 ```
 
 Uses `wasi:cli/stdout` stream. In Preview 2 this means:
@@ -151,15 +151,16 @@ Uses `wasi:cli/stdout` stream. In Preview 2 this means:
 
 ```
 packages/stdlib/zena/
-├── console/
-│   ├── interface.zena    # Shared Console interface
-│   ├── host.zena         # @external("console", ...) implementation
-│   └── wasi.zena         # WASI stream implementation
-├── console.zena          # Re-exports from host.zena (default)
-└── console-wasi.zena     # Re-exports from wasi.zena (--target wasi)
+└── console/
+    ├── interface.zena    # Shared Console interface
+    ├── host.zena         # @external("console", ...) implementation
+    └── wasi.zena         # WASI stream implementation
 ```
 
-The compiler switches which file backs `zena:console` based on `--target`.
+The compiler switches which file backs `zena:console` based on `--target`,
+via the `virtual` entry in `stdlib-manifest.json` (host → `console/host.zena`,
+wasi → `console/wasi.zena`). The implementation files are not importable by
+name; they share `interface.zena` via relative imports.
 
 ## The GC + Component Model Challenge
 

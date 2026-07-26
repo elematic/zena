@@ -19,9 +19,8 @@ import {DiagnosticSeverity, formatDiagnostic} from '../lib/diagnostics.js';
 
 // Import stdlib module loader
 import {
-  resolveStdlibModule,
+  resolveStdlibSpecifier,
   loadStdlibModule,
-  isInternalModule,
 } from '@zena-lang/stdlib';
 
 import {createStringReader, createStringWriter} from './string-reader.js';
@@ -335,18 +334,7 @@ async function runCheckTest(
       load: (path: string) => {
         if (path === filePath) return content;
         if (path.startsWith('zena:')) {
-          const name = path.substring(5);
-          // Internal modules can be loaded (they're allowed after resolution from stdlib)
-          if (isInternalModule(name)) {
-            return loadStdlibModule(name);
-          }
-          const resolved = resolveStdlibModule(name, 'host');
-          if (!resolved) {
-            throw new Error(
-              `Stdlib module not found or not importable: ${name}`,
-            );
-          }
-          return loadStdlibModule(resolved);
+          return loadStdlibModule(path);
         }
         // Try to load relative to test file
         const resolvedPath = join(dirname(filePath), path);
@@ -356,22 +344,7 @@ async function runCheckTest(
         throw new Error(`File not found: ${path}`);
       },
       resolve: (specifier: string, referrer: string) => {
-        if (specifier.startsWith('zena:')) {
-          const name = specifier.substring(5);
-          // Internal modules can only be imported from other stdlib modules
-          if (isInternalModule(name)) {
-            if (!referrer.startsWith('zena:')) {
-              throw new Error(`Cannot import internal module: ${specifier}`);
-            }
-            return specifier; // Allow as-is for stdlib-to-stdlib imports
-          }
-          const resolved = resolveStdlibModule(name, 'host');
-          if (!resolved) {
-            throw new Error(`Unknown stdlib module: ${specifier}`);
-          }
-          return `zena:${resolved}`;
-        }
-        return specifier;
+        return resolveStdlibSpecifier(specifier, referrer, 'host') ?? specifier;
       },
     };
 
@@ -470,16 +443,7 @@ async function runExecutionTest(
     load: (path: string) => {
       if (path === filePath) return content;
       if (path.startsWith('zena:')) {
-        const name = path.substring(5);
-        // Internal modules can be loaded (they're allowed after resolution from stdlib)
-        if (isInternalModule(name)) {
-          return loadStdlibModule(name);
-        }
-        const resolved = resolveStdlibModule(name, 'host');
-        if (!resolved) {
-          throw new Error(`Stdlib module not found or not importable: ${name}`);
-        }
-        return loadStdlibModule(resolved);
+        return loadStdlibModule(path);
       }
       // Try to load the file directly (it's an absolute path from resolve)
       if (existsSync(path)) {
@@ -488,20 +452,9 @@ async function runExecutionTest(
       throw new Error(`File not found: ${path}`);
     },
     resolve: (specifier: string, referrer: string) => {
-      if (specifier.startsWith('zena:')) {
-        const name = specifier.substring(5);
-        // Internal modules can only be imported from other stdlib modules
-        if (isInternalModule(name)) {
-          if (!referrer.startsWith('zena:')) {
-            throw new Error(`Cannot import internal module: ${specifier}`);
-          }
-          return specifier; // Allow as-is for stdlib-to-stdlib imports
-        }
-        const resolved = resolveStdlibModule(name, 'host');
-        if (!resolved) {
-          throw new Error(`Unknown stdlib module: ${specifier}`);
-        }
-        return `zena:${resolved}`;
+      const stdlibResolved = resolveStdlibSpecifier(specifier, referrer, 'host');
+      if (stdlibResolved) {
+        return stdlibResolved;
       }
       // Handle relative imports
       if (specifier.startsWith('./') || specifier.startsWith('../')) {

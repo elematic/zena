@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {resolveStdlibSpecifier} from '@zena-lang/stdlib';
 import {Compiler, CodeGenerator} from '../../lib/index.js';
 import type {CompilerHost} from '../../lib/compiler.js';
 
@@ -21,15 +22,11 @@ class WasiTestHost implements CompilerHost {
     this.#target = target;
   }
 
-  resolve(specifier: string, _referrer: string): string {
-    // zena:console is virtual - map to appropriate implementation based on target
-    if (specifier === 'zena:console') {
-      return this.#target === 'wasi'
-        ? 'zena:console-wasi'
-        : 'zena:console-host';
-    }
-    if (specifier.startsWith('zena:')) return specifier;
-    return specifier;
+  resolve(specifier: string, referrer: string): string {
+    // Handles zena:<name> imports (including the virtual zena:console, which
+    // maps to zena:console/host.zena or zena:console/wasi.zena based on
+    // target) and relative imports between stdlib modules.
+    return resolveStdlibSpecifier(specifier, referrer, this.#target) ?? specifier;
   }
 
   load(filePath: string): string {
@@ -42,10 +39,13 @@ class WasiTestHost implements CompilerHost {
 }
 
 // Load stdlib files into a Map
-// When target is 'wasi', loads console-wasi instead of console
+// When target is 'wasi', loads console/wasi.zena instead of console/host.zena
 function loadStdlib(target: 'host' | 'wasi' = 'host'): Map<string, string> {
   const files = new Map<string, string>();
 
+  // Entries are either manifest module names (keyed as zena:<name>, file
+  // <name>.zena) or file paths ending in .zena (keyed as zena:<path>, the
+  // path-id form used for files reached via virtual/relative resolution).
   const stdlibFiles = [
     'string',
     'error',
@@ -63,16 +63,17 @@ function loadStdlib(target: 'host' | 'wasi' = 'host'): Map<string, string> {
     'iterator',
     'array-iterator',
     // Console interface is shared between host and wasi implementations
-    'console-interface',
+    'console/interface.zena',
     // String conversion functions (needed by prelude)
     'math',
     'string-convert',
     // Load appropriate console implementation based on target
-    target === 'wasi' ? 'console-wasi' : 'console-host',
+    target === 'wasi' ? 'console/wasi.zena' : 'console/host.zena',
   ];
 
   for (const name of stdlibFiles) {
-    const filePath = path.join(stdlibPath, `${name}.zena`);
+    const relPath = name.endsWith('.zena') ? name : `${name}.zena`;
+    const filePath = path.join(stdlibPath, relPath);
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       files.set(`zena:${name}`, content);
@@ -201,7 +202,7 @@ export let main = () => 42;
   });
 
   test('should compile simple program without console usage', async () => {
-    // Load stdlib with wasi target (includes console-wasi, but user code doesn't use it)
+    // Load stdlib with wasi target (includes console/wasi.zena, but user code doesn't use it)
     const files = loadStdlib('wasi');
 
     // Add test file - no console usage
