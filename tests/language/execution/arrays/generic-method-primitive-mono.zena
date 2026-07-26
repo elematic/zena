@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 54321
+// Generic METHODS monomorphize per inferred type argument at direct
+// call sites — including primitive type args, which could not survive
+// erasure (anyref cannot hold a raw i32/f64 without boxing). The
+// compiled module must contain map_spec_i32 / map_spec_f64 style
+// instances, fully typed: values near the i32 limits prove no i31-ish
+// boxing is involved, f64 proves no 31-bit scheme at all, and the
+// U != T case pins the method's own type argument. (Virtual dispatch
+// of Sequence<T>.map<U> is a separate, currently-broken story — see
+// BUGS.md "Generic interface methods crash both compilers when
+// dispatched virtually".)
+
+export let main = (): i32 => {
+  var acc = 0;
+  let big = [2000000000, 0 - 2000000000].map((x: i32): i32 => x + 1);
+  if (big[0] == 2000000001 && big[1] == 0 - 1999999999) { acc += 1; }
+  let d = [1.5, 2.5].map((x: f64): f64 => x * 2.0);
+  if (d[0] == 3.0 && d[1] == 5.0) { acc += 20; }
+  let s = [1, 2, 3].fold(10, (acc2: i32, x: i32): i32 => acc2 + x);
+  if (s == 16) { acc += 300; }
+  let fs = [1.5, 2.5].fold(0.0, (a: f64, x: f64): f64 => a + x);
+  if (fs == 4.0) { acc += 4000; }
+  let m = [3, 4].map((x: i32): f64 => (x as f64) + 0.5);
+  if (m[0] == 3.5 && m[1] == 4.5) { acc += 50000; }
+  return acc;
+};
