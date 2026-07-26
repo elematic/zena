@@ -48,7 +48,7 @@ import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
-import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
+import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization } from '../codegen-utils.zena';
@@ -1560,7 +1560,7 @@ final class FunctionLowerer {
    * default-iterator sequences (which don't).
    */
   #lowerForIn(stmt: ForInStatement): void {
-    let iterableType = this.func.model.getNodeType(stmt.iterable);
+    let iterableType = this.#substitutedNodeType(stmt.iterable);
     if (iterableType == null) {
       this.#bail('untyped for-in iterable');
     }
@@ -1934,9 +1934,9 @@ final class FunctionLowerer {
     // call when devirtualizable, else bail (streaming dispatches
     // virtually there). String concat and String equality are the
     // dominant users.
-    let leftNodeType = this.func.model.getNodeType(bin.left);
-    if (leftNodeType != null) {
-      let leftBase = baseType(leftNodeType as Type);
+    let leftBaseOpt = this.#substitutedBaseType(bin.left);
+    if (leftBaseOpt != null) {
+      let leftBase = leftBaseOpt as Type;
       if (leftBase is ClassType) {
         let opMember = if (bin.operator == "!=") "==" else bin.operator;
         let leftCt = eraseTypeParameters(leftBase) as ClassType;
@@ -2748,12 +2748,8 @@ final class FunctionLowerer {
   }
 
   #isUnsignedNode(expr: Expression): boolean {
-    let t = this.func.model.getNodeType(expr);
-    if (t == null) {
-      return false;
-    }
-    let bt = baseType(t as Type);
-    return bt is U32Type || bt is U64Type;
+    let bt = this.#substitutedBaseType(expr);
+    return bt != null && ((bt as Type) is U32Type || (bt as Type) is U64Type);
   }
 
   /**
@@ -2809,7 +2805,7 @@ final class FunctionLowerer {
    * singleton global instead.
    */
   #lowerNew(expr: NewExpression): i32 {
-    let nodeType = this.func.model.getNodeType(expr);
+    let nodeType = this.#substitutedNodeType(expr);
     if (nodeType == null) {
       this.#bail('untyped new');
     }
@@ -2968,7 +2964,7 @@ final class FunctionLowerer {
     if (member.optional) {
       this.#bail('optional member access');
     }
-    let objectType = this.func.model.getNodeType(member.object);
+    let objectType = this.#substitutedNodeType(member.object);
     // Enum member access lowers to a constant, mirroring the
     // streaming backend: numeric members inline their (implicit or
     // literal) value, string-enum members their string literal. The
@@ -3069,7 +3065,7 @@ final class FunctionLowerer {
     if (this.func.model.isStaticAccess(member)) {
       this.#bail('static method call');
     }
-    let objectType = this.func.model.getNodeType(member.object);
+    let objectType = this.#substitutedNodeType(member.object);
     if (objectType == null) {
       this.#bail('untyped method receiver');
     }
@@ -3271,7 +3267,7 @@ final class FunctionLowerer {
     if (idx.optional) {
       this.#bail('optional index');
     }
-    let objectType = this.func.model.getNodeType(idx.object);
+    let objectType = this.#substitutedNodeType(idx.object);
     if (objectType == null) {
       this.#bail('untyped index receiver');
     }
@@ -3546,7 +3542,7 @@ final class FunctionLowerer {
    * possibly more specialized) runtime class.
    */
   #lexicalClassOf(member: MemberExpression, fallback: ClassType): ClassType {
-    let objectType = this.func.model.getNodeType(member.object);
+    let objectType = this.#substitutedNodeType(member.object);
     if (objectType != null) {
       let selfResolved = this.#resolveSelfType(objectType as Type);
       if (selfResolved is ClassType) {
@@ -3629,7 +3625,7 @@ final class FunctionLowerer {
     if (fromValue != null) {
       return fromValue as ClassType;
     }
-    let objectType = this.func.model.getNodeType(member.object);
+    let objectType = this.#substitutedNodeType(member.object);
     if (objectType == null) {
       this.#bail('untyped member receiver');
     }
@@ -3786,7 +3782,7 @@ final class FunctionLowerer {
     if (assign.operator != null) {
       this.#bail('compound index write');
     }
-    let objectType = this.func.model.getNodeType(idx.object);
+    let objectType = this.#substitutedNodeType(idx.object);
     if (objectType == null) {
       this.#bail('untyped index receiver');
     }
@@ -4862,17 +4858,46 @@ final class FunctionLowerer {
    * operator variants; they bail until lowering learns them.
    */
   #requireScalarNode(expr: Expression): void {
-    let t = this.func.model.getNodeType(expr);
-    if (t == null) {
+    let bt = this.#substitutedBaseType(expr);
+    if (bt == null) {
       this.#bail('untyped operand');
     }
-    let bt = baseType(t as Type);
-    let ok = bt is I32Type || bt is I64Type || bt is U32Type ||
-        bt is U64Type || bt is F32Type || bt is F64Type ||
-        bt is BooleanType;
+    let btVal = bt as Type;
+    let ok = btVal is I32Type || btVal is I64Type || btVal is U32Type ||
+        btVal is U64Type || btVal is F32Type || btVal is F64Type ||
+        btVal is BooleanType;
     if (!ok) {
       this.#bail('operand type');
     }
+  }
+
+  /**
+   * The checked type of `expr` with the enclosing class/method context
+   * substituted: inside a FixedArray<i32> body a node checker-typed `T`
+   * (or `ArrayIterator<T>`) reads as i32 (ArrayIterator<i32>) here.
+   * Type-directed decisions — scalar-ness, signedness, operator-member
+   * dispatch, and especially class-key resolution before
+   * eraseTypeParameters — must use this rather than the raw node type:
+   * the raw type can name a type parameter that is concrete in this
+   * function, and erasing it unsubstituted lands on the _anyref
+   * specialization where streaming (whose getNodeType substitutes)
+   * uses the concrete one.
+   */
+  #substitutedNodeType(expr: Expression): Type | null {
+    let t = this.func.model.getNodeType(expr);
+    if (t == null) {
+      return null;
+    }
+    return substituteTypeParamsInFunctionContext(this.func, t as Type);
+  }
+
+  /** Base type of #substitutedNodeType (unions unwrapped by baseType). */
+  #substitutedBaseType(expr: Expression): Type | null {
+    let t = this.#substitutedNodeType(expr);
+    if (t == null) {
+      return null;
+    }
+    return baseType(t as Type);
   }
 
   #requireScalar(vt: ValType, what: String): void {

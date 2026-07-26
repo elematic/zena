@@ -124,6 +124,26 @@ import {
 } from '../bindings.js';
 
 /**
+ * An expression's inferred type with the enclosing generic context
+ * substituted: inside a Pair<u32> body an operand checker-typed `T`
+ * reads as u32 here. Type-directed decisions (signedness in
+ * particular) must use this rather than the raw inferred type.
+ */
+function substitutedInferredType(
+  ctx: CodegenContext,
+  e: Expression,
+): Type | undefined {
+  const t = e.inferredType;
+  if (t && ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+    return ctx.checkerContext.substituteTypeParams(
+      t,
+      ctx.currentTypeArguments,
+    );
+  }
+  return t;
+}
+
+/**
  * Get the expected WASM return types for a checker type.
  * For inline tuples and unions of inline tuples, returns array of WASM types for each element.
  * For single values, returns array with one element.
@@ -6328,11 +6348,13 @@ function generateBinaryExpression(
       t &&
       t.kind === TypeKind.Number &&
       (t as NumberType).name === Types.U64.name;
+    const leftInferred = substitutedInferredType(ctx, expr.left);
+    const rightInferred = substitutedInferredType(ctx, expr.right);
     const useUnsigned =
-      isU32Type(expr.left.inferredType) ||
-      isU32Type(expr.right.inferredType) ||
-      isU64Type(expr.left.inferredType) ||
-      isU64Type(expr.right.inferredType);
+      isU32Type(leftInferred) ||
+      isU32Type(rightInferred) ||
+      isU64Type(leftInferred) ||
+      isU64Type(rightInferred);
 
     switch (targetType) {
       case ValType.i32:
@@ -6775,8 +6797,9 @@ function generateBinaryExpression(
   // Check if operating on unsigned integers (u32)
   // The WASM type is still i32, but we need to use unsigned instructions
   const isU32 = (e: Expression): boolean => {
-    if (e.inferredType && e.inferredType.kind === TypeKind.Number) {
-      return (e.inferredType as NumberType).name === Types.U32.name;
+    const t = substitutedInferredType(ctx, e);
+    if (t && t.kind === TypeKind.Number) {
+      return (t as NumberType).name === Types.U32.name;
     }
     return false;
   };

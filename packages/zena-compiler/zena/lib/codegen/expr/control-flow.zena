@@ -19,7 +19,11 @@ export let generateIfExpression = (
   let nodeType = ctx.wasmFunction.model.getNodeType(expr);
   var resultValType: ValType = new ValTypeVoid();
   if (!discardValue && nodeType != null && !isVoidOrNeverType(nodeType as Type)) {
-    resultValType = typeToValType(ctx.wasm, nodeType as Type);
+    // Substitute the enclosing class/method context: inside a
+    // specialized generic body the if-expression may be checker-typed
+    // by a type parameter that is concrete here — the plain mapping
+    // yields anyref while both arms produce the concrete type.
+    resultValType = typeToValTypeWithSub(ctx.wasm, nodeType as Type, ctx.wasmFunction);
   }
   let dropResult = discardValue || resultValType is ValTypeVoid;
 
@@ -242,7 +246,7 @@ export let generateTryExpression = (
   let tag = ctx.wasm.exceptionTag as WasmTag;
 
   let nodeType = ctx.wasmFunction.model.getNodeType(expr as Node);
-  let resultType = typeToValType(ctx.wasm, nodeType as Type);
+  let resultType = typeToValTypeWithSub(ctx.wasm, nodeType as Type, ctx.wasmFunction);
 
   var resultLocal: i32 = -1;
   var resultLocalType = resultType;

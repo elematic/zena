@@ -16,6 +16,19 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Integer literals in u32/u64 context: bootstrap accepts, self-hosted throws
+- **Found**: 2026-07-25 (writing a u32 generic-specialization test)
+- **Severity**: medium (u32/u64 literals unusable with the self-hosted
+  compiler; compiler divergence)
+- **Workaround**: `let x = 5 as u32;` — check the literal without an
+  unsigned expected type, then cast.
+- **Details**: `let half: u32 = 2000000000;` (or any integer literal in
+  a u32/u64 expected-type position, including constructor arguments)
+  type-checks under the bootstrap but makes the self-hosted checker
+  throw "u32 anad u64 not supported yet" (checker.zena, NumberLiteral
+  case — a TODO about negative literals turned into a hard throw).
+  Large literals beyond i32 range (4000000000) are rejected by both.
+
 ### Prelude array builtins are user-visible in self-hosted only
 - **Found**: 2026-07-25 (writing a ZIR execution test that called
   `__array_new_empty` directly)

@@ -1,0 +1,57 @@
+// @mode: run
+// @result: 4321
+// Node types inside specialized generic class bodies name the class's
+// own type parameter (T); lowering must substitute the enclosing
+// context before every type-directed decision. Pins the cases that
+// were wrong or bailing: scalar operators on T operands (including
+// u32 SIGNEDNESS — a signed compare would pick 5 over 4000000000),
+// operator members on T (String ==), and `new` of another generic
+// class inside a generic body resolving to the concrete
+// specialization, not the erased one.
+
+class Cell<T> {
+  v: T;
+  new(this.v);
+}
+
+// Methods on unconstrained T compile per specialization (so `>` here
+// would be instantiated — and rejected — for a Pair<String>); keep the
+// scalar-only ops and the == in separate classes.
+class Pair<T> {
+  a: T;
+  b: T;
+  new(this.a, this.b);
+  bigger(): T {
+    return if (this.a > this.b) this.a else this.b;
+  }
+  wrap(): Cell<T> {
+    return new Cell<T>(this.a);
+  }
+}
+
+class Same<T> {
+  a: T;
+  b: T;
+  new(this.a, this.b);
+  same(): boolean {
+    return this.a == this.b;
+  }
+}
+
+export let main = (): i32 => {
+  var acc = 0;
+  // 4000000000 as u32. Large u32 literals are rejected outright, and
+  // the self-hosted checker rejects ANY literal in u32 context (see
+  // BUGS.md) — so build the values through casts and addition.
+  let half = 2000000000 as u32;
+  let big = half + half;
+  let pu = new Pair<u32>(big, 5 as u32);
+  if (pu.bigger() == big) { acc += 1; }
+  let pi = new Pair<i32>(-2, 7);
+  if (pi.bigger() == 7) { acc += 20; }
+  let ps = new Same<String>("ab", "ab");
+  if (ps.same()) { acc += 300; }
+  let c = pi.wrap();
+  if (c.v == -2) { acc += 4000; }
+  return acc;
+};
