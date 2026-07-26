@@ -418,6 +418,55 @@ Only parameters whose function type mentions `this` (or otherwise
 narrows in the implementation) need the closure wrap; plain `T`
 positions are concrete per interface instantiation and pass through.
 
+### The optimization payoff: `a.map(f)` becomes a local loop
+
+The goal for callback APIs is that `a.map((x) => y)` compiles to a
+plain loop — devirtualize, inline `map`, prove the closure doesn't
+escape, inline the callback. Per-type-argument slots are what make
+that pipeline a composition of STANDARD passes; each stage stays
+fully typed:
+
+1. **Devirtualize** (three tiers, cheapest first):
+   - Concrete receivers (`[1,2,3].map(f)`) never touch a vtable —
+     they are direct calls to `map_spec_i32` TODAY, so the dominant
+     case starts at step 2 for free.
+   - Locally-built fat pointers: `iface_vtable(iface_pack(x, vt))`
+     folds to `vt`, and a `vt_slot` load from an immutable vtable
+     global with a known initializer folds to a `ref.func` constant —
+     a ZIR forwarding/GVN peephole (M3).
+   - Whole-program: RTA's reached-implementor sets (ir.md §10.1
+     harvest sweep) devirtualize any remaining site with a single
+     reached implementor of the interface instantiation.
+2. **Inline `map`**: the `_spec_` body is small (alloc, loop,
+   `call_ref f`) and — because slots are monomorphized — already
+   traffics in raw element types. Standard SSA inlining (M3).
+3. **Escape analysis + callback inlining**: after step 2, the
+   caller's closure pair `{funcref, context}` and the `call_ref`
+   consuming it are in one function. Scalar replacement on the
+   non-escaping pair turns the callee into a `ref.func` constant →
+   direct call → inline. By-value captures make the context struct
+   SROA-friendly; celled captures keep their heap cell (still
+   correct, and often itself non-escaping).
+4. **Result**: a local loop writing unboxed elements. The result
+   array allocation remains (it IS map's value); removing it for
+   fused chains like `a.map(f).fold(g, z)` where the intermediate is
+   provably non-escaping is loop fusion — a later, separate prize.
+
+Under ERASURE this pipeline breaks at step 2: the inlined body
+carries per-element Box allocations, unbox casts, and an
+`array (mut anyref)` intermediate, so reaching the fast loop would
+additionally require box/unbox cancellation across the closure
+boundary and re-typing the result array's heap layout — a
+data-representation transformation, i.e. undoing erasure in the
+optimizer. Monomorphized slots make the fast loop a pass
+composition; erasure makes it a research project.
+
+The `seq: this` trampoline never taxes the optimized path: direct
+calls bypass it entirely, and when devirt fires on a virtual site,
+inlining the trampoline exposes the direct `_spec_` call and the
+closure wrap dies to DCE whenever the callback ignores `seq` (the
+common case). Trampolines should be marked always-inline-on-devirt.
+
 ### Work items, in landing order
 
 1. Checker: record (member, solved targsKey) at interface call sites;
