@@ -328,12 +328,107 @@ This tiered approach means most `is` checks remain fast, and only fully-specifie
 
 - **Classes & Structs**: Both compilers currently use **Full Specialization (Monomorphization)** for class struct layouts and fields. For every concrete class type argument combination (e.g., `Box<i32>`, `Box<String>`), a unique WASM struct layout is generated. There is no shared code layout for reference types yet.
 - **Generic Methods on VTables (Type Erasure)**: For generic methods on classes and interfaces (e.g. `map<U>`), the current compilers simplify vtable generation by erasing the method's generic type parameters to `anyref` inside the vtable slot.
-  - **Static Dispatch**: Direct calls are monomorphized (e.g., `map_spec_i32`), avoiding boxing.
-  - **Virtual/Interface Dispatch**: Calls through vtables reference a single erased base function slot (e.g., `Array_i32.map` returning `anyref`). Primitives passed to or returned from these slots are implicitly boxed into heap objects (like `Box_i32`) and unboxed via trampoline adapters.
+  - **Static Dispatch**: Direct calls are monomorphized (e.g., `map_spec_i32`), avoiding boxing. This includes *inferred* type arguments — the checker records the solved type args on the call's FunctionType and reachability instantiates the `_spec_` copy. Pinned by `tests/language/execution/arrays/generic-method-primitive-mono.zena` with erasure-hostile values (i32 near ±2³¹, f64, U≠T).
+  - **Virtual/Interface Dispatch**: NOT IMPLEMENTED (status corrected 2026-07-26). The erased copies (`Array_i32.map` over `anyref`) exist and occupy *class*-vtable slots, but no boxing or unboxing adapters were ever generated, generic methods get no *interface* vtable slot at all, and both compilers crashed with internal errors on a dispatch site like `(s: Sequence<i32>).map(f)`. Both checkers now reject it with a NotCallable diagnostic instead (see BUGS.md "Generic interface methods are not virtually dispatchable"; semantics test `interfaces/generic-method-virtual-dispatch.zena`). The diagnostic is a stopgap until §"Generic interface dispatch" below is implemented.
 
 ### Future Path (Eliminating Auto-Boxing)
 
 We intend to move to **Pure Monomorphization** to completely eliminate implicit heap allocations:
 
 1. **Remove `any` / Keep `anyref`**: The dynamically typed `any` (which implicitly boxes primitives) will be deprecated in favor of a strictly reference-only `anyref` type (which forbids primitive values without explicit wrapping).
-2. **Generic Method VTable Expansion**: Instead of type-erasing generic methods in vtables, the compiler's Reachability Analysis (RTA) will specialize virtual generic method slots. Each reached type argument combination (e.g., `map_spec_i32`, `map_spec_string`) will get its own physical slot in the class/interface vtable, making all virtual generic calls fully concrete and zero-overhead (no auto-boxing or trampolines).
+2. **Generic Method VTable Expansion**: Instead of type-erasing generic methods in vtables, the compiler's Reachability Analysis (RTA) will specialize virtual generic method slots. Each reached type argument combination (e.g., `map_spec_i32`, `map_spec_string`) will get its own physical slot in the class/interface vtable, making all virtual generic calls fully concrete and zero-overhead (no auto-boxing or trampolines). See the implementation plan below.
+
+## Generic interface dispatch: implementation plan (2026-07-26)
+
+Ruling: higher-order interface methods like `Sequence<T>.map<U>` MUST
+work — they are table stakes for this language class. Of the two
+implementation families, vtable expansion is chosen; erasure is
+rejected.
+
+### Why erasure is rejected
+
+A single erased slot (`U → anyref`) fails in two independent ways:
+
+1. **Boxing**: `anyref` cannot hold a raw i32/f64. Every U-typed value
+   crossing the slot needs a `Box` allocation and unbox casts —
+   including inside the loop body, per element. This contradicts the
+   pure-monomorphization pillar (Box exists for unions only).
+2. **Representation leak** (the fatal one): `map`'s RESULT type
+   mentions U (`Sequence<U>`). The erased callee returns a
+   Sequence-of-boxed-anyref whose interface struct type is
+   `$Sequence_anyref` — but the caller's static type is
+   `Sequence<i32>`, whose fat pointer and slot signatures are
+   DIFFERENT WASM TYPES with unboxed element accessors. Bridging
+   requires a wrapper object per boundary crossing that re-boxes and
+   unboxes on every access, forever. Erasure does not stay contained
+   in the callee; it infects every downstream use of the result.
+
+### The chosen design: per-type-argument slots (whole-program)
+
+Zena is a closed-world, whole-program compiler — the same property
+that lets RTA build vtables at all lets it enumerate every (interface
+member, type-argument tuple) pair that is ever dispatched:
+
+- **Checker**: inference already solves U at every call site and
+  records it on the call's FunctionType (this is what drives the
+  existing `_spec_` instantiation for direct calls). Interface call
+  sites additionally record the member + type-arg key so reachability
+  and both backends can reproduce the slot name — same recipe as
+  `setResolvedOverload` for overload selection.
+- **Reachability**: `referencedInterfaceMembers` keys grow a
+  specialization dimension: `"<ifaceId>.map$<targsKey>"`. When a
+  (class, interface) pair meets a referenced specialized member —
+  in either discovery order, exactly like today's RTA trigger — the
+  class's `map_spec_<targsKey>` is instantiated via the existing
+  `instantiateGenericMethod` path (these are the SAME functions
+  direct calls already use) plus one dispatch trampoline per
+  (class, iface, member, targsKey). New Us discovered late simply
+  iterate the fixpoint; layout binds post-fixpoint (ir.md §10.2).
+- **VTable/interface struct layout**: the interface struct gains one
+  exactly-typed funcref field per reached (member, targsKey). Typed
+  slots stay exact — no casts before call_ref, preserving the
+  existing dispatch pillar. Slot count is bounded by *reached*
+  combinations; a program that maps to three result types through an
+  interface pays three slots, not a combinatorial table.
+- **Call sites (both backends)**: interface dispatch resolves the
+  slot by member + recorded targsKey instead of member alone.
+  Everything else (iface_instance/iface_vtable/struct.get/call_ref)
+  is unchanged.
+
+### The one real wrinkle: `this` inside function-typed parameters
+
+`Sequence.map`'s callback is `(item: T, index: i32, seq: this) => U`.
+At the slot level `this` means the INTERFACE fat pointer
+(`Sequence<T>`), but the concrete implementation
+(`FixedArray<T>.map_spec_*`) invokes the callback with its raw
+receiver. A caller-supplied closure typed `seq: Sequence<T>` cannot
+receive a bare array ref. The dispatch trampoline therefore does
+double adaptation:
+
+1. wrap the caller's closure `f` in a synthesized closure `g` where
+   `g(item, i, concreteSeq) = f(item, i, iface_pack(concreteSeq))`
+   (one closure-pair allocation per virtual call — direct calls pay
+   nothing);
+2. call the direct `_spec_` implementation with `g`;
+3. `iface_pack` the concrete result (`FixedArray<U>`) into the
+   declared `Sequence<U>` fat pointer — the same covariant-result
+   packing `:iterator` trampolines do today.
+
+Only parameters whose function type mentions `this` (or otherwise
+narrows in the implementation) need the closure wrap; plain `T`
+positions are concrete per interface instantiation and pass through.
+
+### Work items, in landing order
+
+1. Checker: record (member, solved targsKey) at interface call sites;
+   both compilers. Keep the NotCallable diagnostic until step 5.
+2. RTA: specialized `referencedInterfaceMembers` keys; instantiate
+   `_spec_` impls + trampolines at pair×member meet; register the
+   result class × result interface pair.
+3. Layout: per-(member, targsKey) interface-struct fields, named by
+   the same mangling as `_spec_` functions.
+4. Backends: slot resolution by member+targsKey (streaming and ZIR —
+   ZIR's #lowerInterfaceDispatch takes the same key).
+5. Lift the diagnostic; move the semantics test to execution tests
+   exercising primitive U through the interface (the erasure-hostile
+   value set from generic-method-primitive-mono).
