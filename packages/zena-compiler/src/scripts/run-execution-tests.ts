@@ -10,6 +10,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const repoRoot = join(pkgDir, '..', '..');
 const testsDir = join(repoRoot, 'tests', 'language', 'execution');
+// Outputs are cached per backend: each ZENA_BACKEND value gets its own
+// output folder, so switching backends never silently re-tests the
+// previous backend's cached wasm.
+const backendName = process.env.ZENA_BACKEND || 'streaming';
+const executionOutDir = join(pkgDir, 'zena', 'out', 'execution', backendName);
 
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
@@ -95,7 +100,7 @@ async function run() {
       continue;
     }
     const relPath = relative(testsDir, file);
-    const wasmOut = join(pkgDir, 'zena', 'out', 'execution', `${relPath}.wasm`);
+    const wasmOut = join(executionOutDir, `${relPath}.wasm`);
 
     if (!existsSync(wasmOut)) {
       filesToCompile.push(file);
@@ -118,13 +123,7 @@ async function run() {
     // Ensure output directories exist
     for (const file of filesToCompile) {
       const relPath = relative(testsDir, file);
-      const wasmOut = join(
-        pkgDir,
-        'zena',
-        'out',
-        'execution',
-        `${relPath}.wasm`,
-      );
+      const wasmOut = join(executionOutDir, `${relPath}.wasm`);
       mkdirSync(dirname(wasmOut), {recursive: true});
     }
 
@@ -171,13 +170,7 @@ async function run() {
 
         const file = filesToCompile[fileIndex++];
         const relPath = relative(testsDir, file);
-        const wasmOut = join(
-          pkgDir,
-          'zena',
-          'out',
-          'execution',
-          `${relPath}.wasm`,
-        );
+        const wasmOut = join(executionOutDir, `${relPath}.wasm`);
 
         activeCount++;
 
@@ -204,13 +197,7 @@ async function run() {
           }
 
           // Output WAT as well for debugging
-          const watOut = join(
-            pkgDir,
-            'zena',
-            'out',
-            'execution',
-            `${relPath}.wat`,
-          );
+          const watOut = join(executionOutDir, `${relPath}.wat`);
           try {
             execSync(`wasm-tools print "${wasmOut}" > "${watOut}"`, {
               stdio: 'pipe',
@@ -289,7 +276,7 @@ async function run() {
       continue;
     }
 
-    const wasmOut = join(pkgDir, 'zena', 'out', 'execution', `${relPath}.wasm`);
+    const wasmOut = join(executionOutDir, `${relPath}.wasm`);
     if (!existsSync(wasmOut)) {
       continue;
     }
