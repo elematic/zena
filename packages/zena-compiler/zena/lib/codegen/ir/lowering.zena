@@ -45,7 +45,7 @@ import {
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
-import { Program } from '../../program.zena';
+import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
 import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
@@ -411,6 +411,10 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     }
     if (func.isClosureWrapper) {
       return synthesizeClosureWrapper(func);
+    }
+    if (func.name != null && (func.name as String) == '__start') {
+      let lowerer = new FunctionLowerer(wasm, func);
+      return lowerer.lowerStart();
     }
     if (func.intrinsic != null) {
       return synthesizeIntrinsic(func);
@@ -944,6 +948,120 @@ final class FunctionLowerer {
     }
     // Unsupported field kinds hash to 0 (mirrors streaming).
     return this.b.constI32(0, i32vt);
+  }
+
+  /**
+   * __start: the module initializer, mirroring streaming — the shared
+   * string segment materializes first, then each unit's non-literal
+   * global initializers in order (memory.zena's unit before all
+   * others, then static class fields per unit), each lowered under
+   * ITS OWN unit's model. Namespace-import globals (record structs of
+   * function closures) bail; any bail restores the swapped model
+   * before propagating, since streaming re-generates this function
+   * with the same WasmFunction object.
+   */
+  lowerStart(): IrBody {
+    let entry = this.b.newBlock();
+    this.b.switchTo(entry);
+    if (this.wasm.sharedStringsGlobal != null) {
+      let byteArr = this.wasm.getByteArrayType();
+      let zero = this.b.constI32(0, new ValTypeI32());
+      let len = this.b.constI32(this.wasm.sharedStringsLength, new ValTypeI32());
+      let bytes = this.b.arrayNewData(zero, len, this.wasm.sharedStringsDataIdx,
+          this.b.addRef(new IrRefType(byteArr)),
+          new ValTypeRef(byteArr) as ValType);
+      let g = this.wasm.sharedStringsGlobal as WasmGlobal;
+      this.b.emitVoid(IrOp.global_set, bytes,
+          this.b.addRef(new IrRefGlobal(g)));
+    }
+    for (let g in this.wasm.globals) {
+      if (g.namespaceImport != null) {
+        this.#bail('start namespace import');
+      }
+    }
+    let progOpt = this.wasm.program;
+    if (progOpt != null) {
+      let prog = progOpt as Program;
+      for (let unit in prog.units) {
+        if (unit.model.sourcePath.contains('memory.zena')) {
+          this.#lowerUnitGlobalInits(unit);
+        }
+      }
+      for (let unit in prog.units) {
+        if (!unit.model.sourcePath.contains('memory.zena')) {
+          this.#lowerUnitGlobalInits(unit);
+        }
+      }
+    }
+    this.b.retVoid();
+    return this.b.finish();
+  }
+
+  /** One unit's non-literal global initializers, streaming's order. */
+  #lowerUnitGlobalInits(unit: CompilationUnit): void {
+    let model = unit.model;
+    for (let stmt in unit.ast.body) {
+      if (stmt is VariableDeclaration) {
+        let vd = stmt as VariableDeclaration;
+        if (vd.pattern is IdentifierPattern) {
+          let sym = model.resolveDeclaration(vd.pattern);
+          if (sym != null) {
+            if (let (true, g) = this.wasm.globalMap.get((sym as Symbol).id)) {
+              if (g.initExpr != null &&
+                  !this.#isLiteralInit(g.initExpr as Expression)) {
+                this.#lowerGlobalInit(g);
+              }
+            }
+          }
+        }
+      } else if (stmt is ClassDeclaration) {
+        let cd = stmt as ClassDeclaration;
+        for (let member in cd.body) {
+          if (member is FieldDefinition) {
+            let fd = member as FieldDefinition;
+            if (fd.isStatic && fd.value != null &&
+                !this.#isLiteralInit(fd.value as Expression)) {
+              if (fd.name is Identifier) {
+                let expected = cd.name.name + '_' + (fd.name as Identifier).name;
+                for (let g in this.wasm.globals) {
+                  if (g.name == expected) {
+                    this.#lowerGlobalInit(g);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /** Numeric/boolean literals init in the global's own initializer. */
+  #isLiteralInit(e: Expression): boolean {
+    return e is NumberLiteral || e is BooleanLiteral;
+  }
+
+  /**
+   * Lowers one global's initializer under the global's OWN model —
+   * restoring the swap even when the expression bails, because the
+   * streaming fallback then re-generates __start from this same
+   * WasmFunction.
+   */
+  #lowerGlobalInit(g: WasmGlobal): void {
+    let saved = this.func.model;
+    this.func.model = g.model;
+    let value = try {
+      this.#lowerExpressionCtx(g.initExpr as Expression, g.type)
+    } catch (e) {
+      this.func.model = saved;
+      throw e
+    };
+    this.func.model = saved;
+    if (!isValSubtype(this.#valueType(value), g.type)) {
+      this.#bail('global init type');
+    }
+    this.b.emitVoid(IrOp.global_set, value,
+        this.b.addRef(new IrRefGlobal(g)));
   }
 
   lowerSynthesizedConstructor(): IrBody {

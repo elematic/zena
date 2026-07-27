@@ -32,6 +32,7 @@
  *   struct_get:  a = receiver,                b = ref (field)
  *   struct_set:  a -> [receiver, value],      b = ref (field)
  *   array_new:   a -> [length, init or -1],   b = ref (array type)
+ *   array_new_data: a -> [offset, length, dataIndex], b = ref (array type)
  *   array_get:   a = array, b = index
  *   array_get_u: a = array, b = index  (unsigned read of packed i8 elements)
  *   array_set:   a -> [array, index, value]
@@ -175,6 +176,7 @@ export enum IrOp {
   struct_get,
   struct_set,
   array_new,
+  array_new_data,
   array_get,
   array_get_u,
   array_set,
@@ -421,6 +423,13 @@ export final class IrBody {
       out.push(this.extra[av + 4]);
       return;
     }
+    // array_new_data: [offset, length, dataIndex] — dataIndex is an
+    // immediate, not a value.
+    if (op == IrOp.array_new_data) {
+      out.push(this.extra[av]);
+      out.push(this.extra[av + 1]);
+      return;
+    }
     // array_new: [length, init], where init is -1 for default-initialized.
     if (op == IrOp.array_new) {
       out.push(this.extra[av]);
@@ -655,6 +664,7 @@ export let irOpName = (op: IrOp): String => {
     case IrOp.struct_get: { name = 'struct.get'; }
     case IrOp.struct_set: { name = 'struct.set'; }
     case IrOp.array_new: { name = 'array.new'; }
+    case IrOp.array_new_data: { name = 'array.new_data'; }
     case IrOp.array_get: { name = 'array.get'; }
     case IrOp.array_get_u: { name = 'array.get_u'; }
     case IrOp.array_set: { name = 'array.set'; }

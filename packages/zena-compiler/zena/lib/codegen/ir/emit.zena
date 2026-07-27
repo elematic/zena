@@ -478,6 +478,16 @@ export final class ZirFunctionEmitter {
         this.#pushValue(body.extra[pairIdx]);
         this.emitter.emitArrayNewDefault(typeIndex);
       }
+    } else if (op == IrOp.array_new_data) {
+      let idx = body.a[inst];
+      this.#pushValue(body.extra[idx]);
+      this.#pushValue(body.extra[idx + 1]);
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefType)) {
+        throw new Error('zir emit: array_new_data ref kind');
+      }
+      this.emitter.emitArrayNewData(
+          (ref as IrRefType).target.index, body.extra[idx + 2]);
     } else if (op == IrOp.array_get) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.emitter.emitLocalGet(this.localOf[body.b[inst]]);

@@ -1,0 +1,41 @@
+// @mode: run
+// @result: 4321
+// Coverage for ZIR pools with no previous suite representation:
+// `is`-narrowing followed by subtype use (the 'narrowed to subtype'
+// and 'identifier type shift' pools). Exercises: narrowing a base
+// binding to a subclass, using the narrowed value's members both via
+// explicit `as` and via flow narrowing, and a null-narrowing chain
+// whose use site needs a re-asserted type.
+
+class Animal {
+  legs: i32;
+  new(this.legs);
+}
+
+class Dog extends Animal {
+  tricks: i32;
+  new(this.tricks) : super(4);
+}
+
+let describe = (a: Animal): i32 => {
+  if (a is Dog) {
+    let d = a as Dog;
+    return d.legs * 100 + d.tricks;
+  }
+  return a.legs;
+};
+
+export let main = (): i32 => {
+  var acc = 0;
+  let d: Animal = new Dog(7);
+  if (describe(d) == 407) { acc += 1; }
+  if (describe(new Animal(2)) == 2) { acc += 20; }
+  var maybe: Dog | null = null;
+  if (maybe == null) { acc += 300; }
+  maybe = new Dog(9);
+  if (maybe != null) {
+    let sure = maybe as Dog;
+    if (sure.tricks == 9) { acc += 4000; }
+  }
+  return acc;
+};
