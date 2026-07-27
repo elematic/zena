@@ -41,7 +41,7 @@ import {
   IsExpression, RangeExpression, PipelineExpression, SuperExpression,
   ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
@@ -2280,6 +2280,27 @@ final class FunctionLowerer {
         }
       }
     }
+    // == / != on references whose type declares NO operator== compare
+    // identity (streaming's ref.eq fallback). The member branch above
+    // already claimed types with a content-equality operator; nullable
+    // unions strip their null before the check, so `Node | null`
+    // compares by identity while `String | null` keeps bailing (its
+    // non-null member owns an ==).
+    if ((bin.operator == "==" || bin.operator == "!=") &&
+        leftBaseOpt != null &&
+        this.#refIdentityEqType(leftBaseOpt as Type)) {
+      let left = this.#lowerExpression(bin.left);
+      let right = this.#lowerExpression(bin.right);
+      if (!isRefValType(this.#valueType(left)) ||
+          !isRefValType(this.#valueType(right))) {
+        this.#bail('identity compare on non-refs');
+      }
+      let same = this.b.binary(IrOp.ref_eq, new ValTypeI32(), left, right);
+      if (bin.operator == "!=") {
+        return this.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+      }
+      return same;
+    }
     this.#requireScalarNode(bin.left);
     this.#requireScalarNode(bin.right);
     let left = this.#lowerExpression(bin.left);
@@ -2296,6 +2317,37 @@ final class FunctionLowerer {
         bin.operator == ">" || bin.operator == ">=";
     let resultType = if (isComparison) new ValTypeI32() as ValType else leftType;
     return this.b.binary(op, resultType, left, right);
+  }
+
+  /**
+   * True when `t` is a reference type with no operator== anywhere on
+   * it, so == means identity. Nullable unions strip their null;
+   * unions of multiple non-null members stay conservative (false).
+   */
+  #refIdentityEqType(tIn: Type): boolean {
+    var t = tIn;
+    if (t is UnionType) {
+      let ut = t as UnionType;
+      var nonNull: Type | null = null;
+      var count = 0;
+      for (let m in ut.types) {
+        if (!(m is NullType)) {
+          nonNull = m;
+          count += 1;
+        }
+      }
+      if (count != 1 || nonNull == null) {
+        return false;
+      }
+      t = baseType(nonNull as Type);
+    }
+    if (t is ClassType) {
+      return !(t as ClassType).members.has('==');
+    }
+    if (t is InterfaceType) {
+      return !(t as InterfaceType).members.has('==');
+    }
+    return false;
   }
 
   #lowerLogical(bin: BinaryExpression): i32 {
@@ -3033,6 +3085,17 @@ final class FunctionLowerer {
     let dstVt = this.#exprValType(expr);
     if (valTypeEquals(srcVt, dstVt)) {
       return value;
+    }
+    if (isRefValType(srcVt) && isRefValType(dstVt)) {
+      // Reference casts, mirroring streaming: subtype-compatible
+      // values pass through uncast; everything else is a ref.cast —
+      // null-preserving for nullable targets, trapping for non-null
+      // ones (emission picks the form from the interned target type).
+      if (isValSubtype(srcVt, dstVt)) {
+        return value;
+      }
+      return this.b.emit(IrOp.ref_cast, dstVt, value,
+          this.b.internType(dstVt));
     }
     if (this.#isUnsignedNode(expr.expression)) {
       this.#bail('cast from unsigned');
@@ -5176,7 +5239,17 @@ final class FunctionLowerer {
     let ok = btVal is I32Type || btVal is I64Type || btVal is U32Type ||
         btVal is U64Type || btVal is F32Type || btVal is F64Type ||
         btVal is BooleanType;
-    if (!ok) {
+    if (ok) {
+      return;
+    }
+    // Semantic types with scalar RUNTIME representations — numeric
+    // enums foremost — operate as their representation, exactly as
+    // streaming compiles them. Signedness stays name-driven: only
+    // u32/u64 (#isUnsignedNode) pick the _u operator variants.
+    let vt = typeToValTypeWithSub(this.wasm, btVal, this.func);
+    let reprOk = vt is ValTypeI32 || vt is ValTypeI64 || vt is ValTypeF32 ||
+        vt is ValTypeF64;
+    if (!reprOk) {
       this.#bail('operand type');
     }
   }
