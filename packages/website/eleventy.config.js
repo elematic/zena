@@ -7,6 +7,10 @@ export default (eleventyConfig) => {
   // Pass through static assets
   eleventyConfig.addPassthroughCopy('src/css');
   eleventyConfig.addPassthroughCopy('src/images');
+  eleventyConfig.addPassthroughCopy({
+    '../website-client/lib': 'js',
+    '../language-service/lsp.wasm': 'wasm/lsp.wasm',
+  });
 
   return {
     dir: {

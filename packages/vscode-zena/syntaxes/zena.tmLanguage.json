@@ -73,15 +73,15 @@
       "patterns": [
         {
           "name": "keyword.control.flow.zena",
-          "match": "\\b(if|else|while|for|return|match|case|throw)\\b"
+          "match": "\\b(if|else|while|for|in|return|match|case|throw|try|catch)\\b"
         },
         {
           "name": "keyword.declaration.zena",
-          "match": "\\b(let|var|const|class|interface|mixin|enum|type|distinct|function|symbol)\\b"
+          "match": "\\b(let|var|class|sealed|interface|mixin|enum|type)\\b"
         },
         {
           "name": "keyword.modifier.zena",
-          "match": "\\b(export|import|from|declare|final|abstract|static|extension|operator)\\b"
+          "match": "\\b(export|import|from|declare)\\b"
         },
         {
           "name": "keyword.operator.expression.zena",
@@ -109,13 +109,22 @@
       "patterns": [
         {
           "name": "meta.class.zena",
-          "begin": "\\b(class)\\s+([A-Z][a-zA-Z0-9_$]*)",
+          "begin": "\\b(sealed\\s+|case\\s+)?(class)\\s+([A-Z][a-zA-Z0-9_$]*)",
           "beginCaptures": {
-            "1": {"name": "keyword.declaration.class.zena"},
-            "2": {"name": "entity.name.type.class.zena"}
+            "1": {"name": "keyword.declaration.modifier.zena"},
+            "2": {"name": "keyword.declaration.class.zena"},
+            "3": {"name": "entity.name.type.class.zena"}
           },
-          "end": "(?=\\{|extends|implements|with)",
+          "end": "(?=\\{|extends|implements|with|\\()",
           "patterns": [{"include": "#type-parameters"}]
+        },
+        {
+          "name": "meta.case-variant.zena",
+          "match": "\\b(case)\\s+([A-Z][a-zA-Z0-9_$]*)",
+          "captures": {
+            "1": {"name": "keyword.declaration.case.zena"},
+            "2": {"name": "entity.name.type.class.variant.zena"}
+          }
         },
         {
           "name": "meta.interface.zena",
@@ -157,19 +166,39 @@
           "patterns": [{"include": "#type-parameters"}]
         },
         {
-          "name": "meta.constructor.zena",
-          "match": "(#new)\\s*(?=\\()",
+          "name": "meta.field.private-setter.zena",
+          "match": "\\b(var)\\s*(\\()\\s*(#[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(\\))\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
           "captures": {
-            "1": {"name": "entity.name.function.constructor.zena"}
+            "1": {"name": "keyword.declaration.zena"},
+            "2": {"name": "punctuation.parenthesis.begin.zena"},
+            "3": {"name": "variable.other.private.zena"},
+            "4": {"name": "punctuation.parenthesis.end.zena"},
+            "5": {"name": "variable.other.property.zena"}
           }
         },
         {
-          "name": "meta.symbol.zena",
-          "match": "\\b(symbol)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
-          "captures": {
-            "1": {"name": "keyword.declaration.symbol.zena"},
-            "2": {"name": "entity.name.type.symbol.zena"}
-          }
+          "name": "meta.constructor.zena",
+          "begin": "\\b(new)\\s*(\\()",
+          "beginCaptures": {
+            "1": {"name": "entity.name.function.constructor.zena"},
+            "2": {"name": "punctuation.definition.parameters.begin.zena"}
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {"name": "punctuation.definition.parameters.end.zena"}
+          },
+          "patterns": [
+            {
+              "match": "\\b(this)\\.([a-zA-Z_$][a-zA-Z0-9_$]*)",
+              "captures": {
+                "1": {"name": "variable.language.this.zena"},
+                "2": {"name": "variable.parameter.zena"}
+              }
+            },
+            {"include": "#types"},
+            {"include": "#identifiers"},
+            {"match": ",", "name": "punctuation.separator.comma.zena"}
+          ]
         }
       ]
     },
@@ -204,7 +233,7 @@
         },
         {
           "name": "support.type.builtin.zena",
-          "match": "\\b(array|Array|Map|Box|Error|String|FixedArray|GrowableArray|ImmutableArray|Sequence|Iterator)\\b"
+          "match": "\\b(Array|Map|Box|Error|String|FixedArray|GrowableArray|ImmutableArray|Sequence|Iterator|HashSet|HashMap|Console)\\b"
         },
         {
           "name": "entity.name.type.zena",
@@ -284,6 +313,18 @@
     "operators": {
       "patterns": [
         {
+          "name": "keyword.operator.pipeline.zena",
+          "match": "\\|>"
+        },
+        {
+          "name": "keyword.operator.null-coalescing.zena",
+          "match": "\\?\\?"
+        },
+        {
+          "name": "keyword.operator.optional-chaining.zena",
+          "match": "\\?\\.|\\?\\(|\\?\\["
+        },
+        {
           "name": "keyword.operator.arrow.zena",
           "match": "=>"
         },
@@ -296,6 +337,10 @@
           "match": "&&|\\|\\||!"
         },
         {
+          "name": "keyword.operator.assignment.compound.zena",
+          "match": "\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<=|>>="
+        },
+        {
           "name": "keyword.operator.assignment.zena",
           "match": "="
         },
@@ -305,7 +350,7 @@
         },
         {
           "name": "keyword.operator.bitwise.zena",
-          "match": "&|\\||\\^"
+          "match": "&|\\||\\^|<<|>>"
         },
         {
           "name": "keyword.operator.spread.zena",
@@ -337,7 +382,7 @@
         },
         {
           "name": "punctuation.definition.array.zena",
-          "match": "#?\\[|\\]"
+          "match": "[\\[\\]]"
         },
         {
           "name": "punctuation.definition.parameters.zena",
@@ -346,10 +391,6 @@
         {
           "name": "punctuation.separator.colon.zena",
           "match": ":"
-        },
-        {
-          "name": "punctuation.definition.mutable.zena",
-          "match": "#(?=\\{|\\[)"
         }
       ]
     },

@@ -1,0 +1,76 @@
+{
+  "name": "@zena-lang/website-client",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "module": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": "./lib/index.js",
+    "./zena-playground": "./lib/zena-playground.js",
+    "./worker": "./lib/worker/compiler-worker.js"
+  },
+  "scripts": {
+    "build": "wireit",
+    "build:stdlib": "wireit",
+    "build:ts": "wireit"
+  },
+  "wireit": {
+    "build": {
+      "dependencies": [
+        "build:stdlib",
+        "build:ts"
+      ]
+    },
+    "build:stdlib": {
+      "command": "node --experimental-strip-types src/scripts/build-stdlib-map.ts",
+      "dependencies": [
+        "../stdlib:build"
+      ],
+      "files": [
+        "src/scripts/build-stdlib-map.ts",
+        "../stdlib/zena/**/*.zena"
+      ],
+      "output": [
+        "src/lib/stdlib-data.json"
+      ]
+    },
+    "build:ts": {
+      "command": "tsc && tsc -p tsconfig.worker.json",
+      "dependencies": [
+        "build:stdlib",
+        "../runtime:build",
+        "../language-service:build"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "src/**/*.json",
+        "tsconfig.json",
+        "tsconfig.worker.json"
+      ],
+      "output": [
+        "lib/",
+        "scripts/",
+        "tsconfig.tsbuildinfo",
+        "tsconfig.worker.tsbuildinfo"
+      ],
+      "clean": "if-file-deleted"
+    }
+  },
+  "dependencies": {
+    "@codemirror/lint": "^6.8.4",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/theme-one-dark": "^6.1.2",
+    "@codemirror/view": "^6.36.3",
+    "@zena-lang/runtime": "*",
+    "codemirror-elements": "^0.0.11",
+    "lit": "^3.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@zena-lang/language-service": "*",
+    "typescript": "~5.9.3",
+    "wireit": "^0.14.12"
+  }
+}
