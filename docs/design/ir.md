@@ -1093,6 +1093,13 @@ until M4.
   self-compile passing under strict mode (zero fallbacks); until then,
   strict mode is the everyday tool for finding the next construct to
   lower.
+  *Status (2026-07-26): the portable suite (364 tests) passes under
+  `zir-strict` with zero fallbacks, and the benchmark gate holds
+  (0.97×–1.12× across targets; the full self-compile is 0.97× —
+  faster than streaming). The remaining gate half is self-compile
+  under strict: ~1,161 of 19,646 functions still fall back
+  (signature/param mismatches, `_spec_`/erased generic bodies,
+  written-constructor shapes, and a long tail).*
 - **M3 — the loop.** simplify/DCE/blockmerge, then inline, devirt, SRoA,
   SCCP; golden WAT tests per pass; `-O2`/`-Os` wired. §10 harvest pass.
   Success metric: measurable size _and_ speed wins on the benchmark suite

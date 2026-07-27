@@ -45,6 +45,7 @@ import {
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
+import { Program } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
 import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
@@ -54,7 +55,7 @@ import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignat
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { IntrinsicCx, lowerIntrinsic, asWasmArray } from './intrinsics.zena';
 
@@ -963,9 +964,6 @@ final class FunctionLowerer {
       this.#bail('constructor declaration shape');
     }
     let cd = classDecl as ClassDeclaration;
-    if (cd.mixins != null && (cd.mixins as Array<TypeAnnotation>).length > 0) {
-      this.#bail('constructor with mixins');
-    }
 
     let entry = this.b.newBlock();
     let params = new Array<i32>();
@@ -1018,6 +1016,35 @@ final class FunctionLowerer {
           this.#storeCtorField(ct, structType, (fd.name as Identifier).name,
               fd.value as Expression, false);
         }
+      }
+    }
+    this.#mixinFieldDefaults(ct, structType, cd, false);
+  }
+
+  /**
+   * Field-default stores for the fields a class gains from its mixins,
+   * after the class's own defaults (streaming's order). Private mixin
+   * field names mangle with the MIXIN's scope key via #storeCtorField.
+   */
+  #mixinFieldDefaults(ct: ClassType, structType: WasmStruct,
+      cd: ClassDeclaration, mapSetterNames: boolean): void {
+    if (cd.mixins == null ||
+        (cd.mixins as Array<TypeAnnotation>).length == 0) {
+      return;
+    }
+    let mixinFields = new Array<FieldDefinition>();
+    let mixinFieldScopes = new Array<String>();
+    let seenMixins = new HashMap<MixinKey, boolean>();
+    collectMixinFields(this.wasm.program as Program, this.func.model,
+        cd.mixins, mixinFields, mixinFieldScopes, seenMixins);
+    for (var i = 0; i < mixinFields.length; i += 1) {
+      let fd = mixinFields[i];
+      if (fd.value != null && !fd.isStatic) {
+        if (!(fd.name is Identifier)) {
+          this.#bail('field name shape');
+        }
+        this.#storeCtorField(ct, structType, (fd.name as Identifier).name,
+            fd.value as Expression, mapSetterNames, mixinFieldScopes[i]);
       }
     }
   }
@@ -1144,11 +1171,9 @@ final class FunctionLowerer {
       this.#bail('constructor declaration shape');
     }
     let cd = classDecl as ClassDeclaration;
-    if (cd.mixins != null && (cd.mixins as Array<TypeAnnotation>).length > 0) {
-      this.#bail('constructor with mixins');
-    }
 
-    // 1. Field defaults, in declaration order.
+    // 1. Field defaults, in declaration order: the class's own fields,
+    // then mixin fields — streaming's order.
     for (let member in cd.body) {
       if (member is FieldDefinition) {
         let fd = member as FieldDefinition;
@@ -1161,6 +1186,7 @@ final class FunctionLowerer {
         }
       }
     }
+    this.#mixinFieldDefaults(ct, structType, cd, true);
 
     // 2. Initializer list (includes desugared this.x params).
     if (md.initializerList != null) {
@@ -1213,7 +1239,7 @@ final class FunctionLowerer {
    * mangling. Fields absent from the struct are skipped WITHOUT
    * evaluating the value, matching the streaming backend.
    */
-  #storeCtorField(ct: ClassType, structType: WasmStruct, fieldName: String, value: Expression, mapSetterNames: boolean = true): void {
+  #storeCtorField(ct: ClassType, structType: WasmStruct, fieldName: String, value: Expression, mapSetterNames: boolean = true, mixinScope: String = ''): void {
     var actualName = fieldName;
     // Streaming's DEFAULT-constructor path stores by the raw field name;
     // the written-constructor and case-class paths apply the accessor
@@ -1226,7 +1252,13 @@ final class FunctionLowerer {
     }
     var lookupName = actualName;
     if (actualName.length > 0 && actualName.sliceBytes(0, 1) == "#") {
-      lookupName = getClassPrivateFieldKey(getClassKey(ct), actualName);
+      // Mixin privates are lexical to the MIXIN: their struct fields
+      // carry the mixin's scope key, never the host class's.
+      lookupName = if (mixinScope != '') {
+        mixinScope + '::' + actualName
+      } else {
+        getClassPrivateFieldKey(getClassKey(ct), actualName)
+      };
     }
     let found = structType.fieldIndexByName(lookupName) >= 0;
     if (!found) {
