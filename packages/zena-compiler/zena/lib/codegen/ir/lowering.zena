@@ -39,7 +39,8 @@ import {
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
   IsExpression, RangeExpression, PipelineExpression, SuperExpression,
-  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression
+  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression,
+  LetPatternCondition, TuplePattern
 } from '../../ast.zena';
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
@@ -110,6 +111,17 @@ final class MemberTarget {
   /** Set for direct getter calls. */
   getter: WasmFunction | null;
   new(this.owner, this.fieldName, this.getter);
+}
+
+/** A lowered let-condition: the flag plus bindings to apply in the
+ * SUCCESS block only — coercing an exhausted iterator's null payload
+ * would trap if emitted before the flag branch. */
+final class LetCondBinds {
+  cond: i32;
+  syms: Array<Symbol>;
+  values: Array<i32>;
+  vts: Array<ValType>;
+  new(this.cond, this.syms, this.values, this.vts);
 }
 
 final class LoopCtx {
@@ -1406,11 +1418,131 @@ final class FunctionLowerer {
     this.symbols[(sym as Symbol).id] = sym as Symbol;
   }
 
+  /**
+   * `let PATTERN = init` conditions (if-let / while-let): evaluates
+   * init as a multi-value source, binds the pattern's non-literal
+   * elements, and returns the CONDITION value. Streaming's contract,
+   * mirrored exactly: the FIRST tuple element IS the boolean — a
+   * literal `true` in the pattern is not re-checked, and the trailing
+   * bindings are unconditionally bound (they only flow into the arm
+   * the checker allows them in).
+   */
+  #lowerLetCondition(lpc: LetPatternCondition): LetCondBinds {
+    var pat = lpc.pattern;
+    if (pat is BindingPattern) {
+      pat = (pat as BindingPattern).pattern;
+    }
+    if (!(pat is TuplePattern)) {
+      this.#bail('let-condition pattern');
+    }
+    let tp = pat as TuplePattern;
+    let values = this.#lowerMultiSource(lpc.init);
+    if (values.length != tp.elements.length) {
+      this.#bail('let-condition arity');
+    }
+    let cond = values[0];
+    if (!(this.#valueType(cond) is ValTypeI32)) {
+      this.#bail('let-condition flag type');
+    }
+    let syms = new Array<Symbol>();
+    let bindValues = new Array<i32>();
+    let vts = new Array<ValType>();
+    for (var i = 0; i < tp.elements.length; i += 1) {
+      let el = tp.elements[i];
+      if (el == null || el is LiteralPattern || el is BooleanLiteral ||
+          el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
+        continue;
+      }
+      let symOpt = this.func.model.resolveDeclaration(el as Node);
+      if (symOpt == null) {
+        // `_` and other non-binding elements: nothing to bind.
+        continue;
+      }
+      let sym = symOpt as Symbol;
+      let bindingType = this.func.model.getBindingType(sym);
+      if (bindingType == null) {
+        this.#bail('untyped binding');
+      }
+      let bindVt = typeToValTypeWithSub(
+          this.wasm, bindingType as Type, this.func);
+      this.#requireSupported(bindVt, 'let-condition element type');
+      if (!isValSubtype(this.#valueType(values[i]), bindVt) &&
+          !isRefValType(bindVt)) {
+        this.#bail('let-condition element type');
+      }
+      syms.push(sym);
+      bindValues.push(values[i]);
+      vts.push(bindVt);
+    }
+    return new LetCondBinds(cond, syms, bindValues, vts);
+  }
+
+  /** Applies a let-condition's bindings in the CURRENT (taken) block. */
+  #applyLetBinds(binds: LetCondBinds): void {
+    for (var i = 0; i < binds.syms.length; i += 1) {
+      var bound = binds.values[i];
+      let bindVt = binds.vts[i];
+      if (!isValSubtype(this.#valueType(bound), bindVt)) {
+        // Erased/nullable slot element vs the concrete binding:
+        // runtime downcast — in the taken block, so an exhausted
+        // source's null payload is never coerced.
+        bound = this.b.emit(IrOp.ref_cast, bindVt, bound,
+            this.b.internType(bindVt));
+      }
+      this.#bindPatternSym(binds.syms[i], bound);
+    }
+  }
+
+  /**
+   * Evaluates a let-condition init to its result VALUES: multi-value
+   * direct calls (devirtualized method or top-level function) and
+   * receiver-only interface dispatch (iterator next()). Single-result
+   * sources come back as one-element lists.
+   */
+  #lowerMultiSource(init: Expression): Array<i32> {
+    let out = new Array<i32>();
+    if (!(init is CallExpression)) {
+      this.#bail('let-condition source');
+    }
+    let call = init as CallExpression;
+    if (call.callee is MemberExpression) {
+      let member = call.callee as MemberExpression;
+      let objT = this.#substitutedNodeType(member.object);
+      if (objT != null && call.args.length == 0 &&
+          this.#resolveSelfType(objT as Type) is InterfaceType) {
+        let recv = this.#lowerExpression(member.object);
+        return this.#slotCallOnValue(recv, getMemberPropertyName(
+            member.isSymbolAccess, member.property.name));
+      }
+      let rep = this.#lowerMethodCall(call, member, out);
+      if (out.length == 0) {
+        out.push(rep);
+      }
+      return out;
+    }
+    if (call.callee is Identifier) {
+      let rep = this.#lowerCall(call, out);
+      if (out.length == 0) {
+        out.push(rep);
+      }
+      return out;
+    }
+    this.#bail('let-condition source');
+    return out;
+  }
+
   #lowerIf(stmt: IfStatement): void {
-    if (!(stmt.test is Expression)) {
+    var cond = -1;
+    var letBinds: LetCondBinds | null = null;
+    if (stmt.test is Expression) {
+      cond = this.#lowerExpression(stmt.test as Expression);
+    } else if (stmt.test is LetPatternCondition) {
+      let binds = this.#lowerLetCondition(stmt.test as LetPatternCondition);
+      letBinds = binds;
+      cond = binds.cond;
+    } else {
       this.#bail('if-let');
     }
-    let cond = this.#lowerExpression(stmt.test as Expression);
 
     if (stmt.alternate == null) {
       let mergeSyms = this.#assignedEnvSyms(stmt.consequent);
@@ -1421,6 +1553,9 @@ final class FunctionLowerer {
 
       let saved = this.#copyEnv();
       this.b.switchTo(thenB);
+      if (letBinds != null) {
+        this.#applyLetBinds(letBinds as LetCondBinds);
+      }
       this.#lowerStatement(stmt.consequent);
       if (this.reachable) {
         this.b.br(mergeB, this.#envValues(mergeSyms));
@@ -1446,6 +1581,9 @@ final class FunctionLowerer {
 
     let saved = this.#copyEnv();
     this.b.switchTo(thenB);
+    if (letBinds != null) {
+      this.#applyLetBinds(letBinds as LetCondBinds);
+    }
     this.#lowerStatement(stmt.consequent);
     if (this.reachable) {
       mergeB = this.b.newBlock();
@@ -1476,7 +1614,7 @@ final class FunctionLowerer {
   }
 
   #lowerWhile(stmt: WhileStatement): void {
-    if (!(stmt.test is Expression)) {
+    if (!(stmt.test is Expression) && !(stmt.test is LetPatternCondition)) {
       this.#bail('while-let');
     }
     let carried = this.#assignedEnvSyms(stmt.body);
@@ -1488,7 +1626,18 @@ final class FunctionLowerer {
 
     this.b.switchTo(header);
     this.#applyParams(carried, headerParams);
-    let cond = this.#lowerExpression(stmt.test as Expression);
+    // while-let re-evaluates the pattern source and rebinds its
+    // elements every iteration, exactly like the expression form
+    // re-evaluates the condition.
+    var cond = -1;
+    var letBinds: LetCondBinds | null = null;
+    if (stmt.test is LetPatternCondition) {
+      let binds = this.#lowerLetCondition(stmt.test as LetPatternCondition);
+      letBinds = binds;
+      cond = binds.cond;
+    } else {
+      cond = this.#lowerExpression(stmt.test as Expression);
+    }
 
     let bodyB = this.b.newBlock();
     let exitB = this.b.newBlock();
@@ -1497,6 +1646,9 @@ final class FunctionLowerer {
 
     this.loops.push(new LoopCtx(header, exitB, carried));
     this.b.switchTo(bodyB);
+    if (letBinds != null) {
+      this.#applyLetBinds(letBinds as LetCondBinds);
+    }
     this.#lowerStatement(stmt.body);
     if (this.reachable) {
       this.b.br(header, this.#envValues(carried));
@@ -3428,7 +3580,8 @@ final class FunctionLowerer {
    * and arity matches exactly. Everything else — statics, interfaces,
    * generic methods, optional calls, dynamic dispatch — bails.
    */
-  #lowerMethodCall(call: CallExpression, member: MemberExpression): i32 {
+  #lowerMethodCall(call: CallExpression, member: MemberExpression,
+      multiOut: Array<i32> | null = null): i32 {
     if (member.optional || call.optional) {
       this.#bail('optional method call');
     }
@@ -3588,7 +3741,7 @@ final class FunctionLowerer {
       this.#bail('overridden method');
     }
     let sig = method.signature;
-    if (sig.returns.length > 1) {
+    if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('method multi-value return');
     }
     if (sig.params.length != call.args.length + 1) {
@@ -3608,6 +3761,18 @@ final class FunctionLowerer {
         this.#bail('method argument type');
       }
       args.push(value);
+    }
+    if (sig.returns.length > 1) {
+      for (let r in sig.returns) {
+        this.#requireSupported(r, 'method result type');
+      }
+      let multiRef = this.b.addRef(new IrRefFunc(method));
+      let projs = this.b.callFuncMulti(multiRef, args, sig.returns);
+      let outs = multiOut as Array<i32>;
+      for (let p in projs) {
+        outs.push(p);
+      }
+      return projs[0];
     }
     let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
     if (resultType != null) {
@@ -4776,7 +4941,7 @@ final class FunctionLowerer {
    * rejects void values in operand position, and if one ever slipped
    * through, the verifier's produces-no-value check fails loudly.
    */
-  #lowerCall(call: CallExpression): i32 {
+  #lowerCall(call: CallExpression, multiOut: Array<i32> | null = null): i32 {
     if (call.callee is MemberExpression) {
       return this.#lowerMethodCall(call, call.callee as MemberExpression);
     }
@@ -4842,7 +5007,7 @@ final class FunctionLowerer {
       this.#bail('callee shape');
     }
     let sig = target.signature;
-    if (sig.returns.length > 1) {
+    if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('callee multi-value return');
     }
     if (sig.params.length != call.args.length) {
@@ -4850,11 +5015,6 @@ final class FunctionLowerer {
     }
     for (var i = 0; i < sig.params.length; i += 1) {
       this.#requireSupported(sig.params[i], 'call param type');
-    }
-    var resultType: ValType | null = null;
-    if (sig.returns.length == 1) {
-      this.#requireSupported(sig.returns[0], 'call result type');
-      resultType = sig.returns[0];
     }
     let args = new Array<i32>();
     for (var i = 0; i < call.args.length; i += 1) {
@@ -4865,6 +5025,22 @@ final class FunctionLowerer {
       args.push(value);
     }
     let funcRef = this.b.addRef(new IrRefFunc(target));
+    if (sig.returns.length > 1) {
+      for (let r in sig.returns) {
+        this.#requireSupported(r, 'call result type');
+      }
+      let projs = this.b.callFuncMulti(funcRef, args, sig.returns);
+      let outs = multiOut as Array<i32>;
+      for (let p in projs) {
+        outs.push(p);
+      }
+      return projs[0];
+    }
+    var resultType: ValType | null = null;
+    if (sig.returns.length == 1) {
+      this.#requireSupported(sig.returns[0], 'call result type');
+      resultType = sig.returns[0];
+    }
     return this.b.callFunc(funcRef, args, resultType);
   }
 

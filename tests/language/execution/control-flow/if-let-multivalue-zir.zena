@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 4321
+// if-let / while-let over multi-value sources under ZIR. The miss
+// cases matter most: the payload of a (false, _) result is null-ish
+// and must NOT be coerced to the binding's non-null type unless the
+// flag branch is taken (a header-block cast would trap on the
+// exhausted iteration — the bug this test pins).
+import { HashMap } from 'zena:map';
+
+export let main = (): i32 => {
+  var acc = 0;
+  let m = new HashMap<String, String>();
+  m["k"] = "v";
+  if (let (true, v) = m.get("k")) {
+    if (v == "v") { acc += 1; }
+  }
+  if (let (true, v) = m.get("missing")) {
+    acc += 1000000;
+  } else {
+    acc += 20;
+  }
+  var count = 0;
+  let keys = m.keys();
+  while (let (true, k) = keys.next()) {
+    if (k.length == 1) { count += 1; }
+  }
+  if (count == 1) { acc += 300; }
+  m["k2"] = "v2";
+  var total = 0;
+  let it = m.keys();
+  while (let (true, k) = it.next()) {
+    total += k.length;
+  }
+  if (total == 3) { acc += 4000; }
+  return acc;
+};
