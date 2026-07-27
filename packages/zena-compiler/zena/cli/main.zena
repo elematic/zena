@@ -142,9 +142,14 @@ export let main = (): i32 => {
     let wasmBytes = generator.generate(program).toByteArray();
     writeFileBytes(outPath, wasmBytes);
 
-    let watGenerator = new WatGenerator(target, useZir, false, zirStrict);
-    let watString = watGenerator.generate(program);
-    writeFile(outPath + ".wat", watString);
+    // The WAT dump runs a SECOND full generator pass and its text
+    // dwarfs the binary (~30x — the tests module's dump is ~135 MB),
+    // so it is opt-in for debugging.
+    if (getEnv("ZENA_EMIT_WAT") != null) {
+      let watGenerator = new WatGenerator(target, useZir, false, zirStrict);
+      let watString = watGenerator.generate(program);
+      writeFile(outPath + ".wat", watString);
+    }
     performance.end(tCodegen);
     
     console.log("Success: wrote " + outPath);
