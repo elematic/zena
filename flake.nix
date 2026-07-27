@@ -182,7 +182,15 @@
             pkgs.rustc
             pkgs.rustfmt
             pkgs.rust-analyzer
-          ];
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+
+          # Every Rust binary on darwin links -liconv, but cargo invokes the
+          # system `cc` as the linker, which reads neither NIX_LDFLAGS nor
+          # finds libiconv in the nix apple-sdk SDKROOT. Point rustc at the
+          # nix libiconv explicitly.
+          env = pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+            RUSTFLAGS = "-L${pkgs.libiconv}/lib";
+          };
 
           shellHook = ''
             unset DEVELOPER_DIR

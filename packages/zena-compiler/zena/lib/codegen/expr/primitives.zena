@@ -30,18 +30,33 @@ let valTypesEqual = (a: ValType, b: ValType): boolean => match (a) {
   case _: valTypeToOpcode(a) == valTypeToOpcode(b)
 };
 
-let typesRepresentSameZenaType = (a: Type, b: Type): boolean => typeToString(a) == typeToString(b);
-
 let emitAutoCast = (ctx: FunctionContext, ident: Identifier, resolvedSym: Symbol): void => {
+  if (ctx.ignoreCasts) {
+    return;
+  }
+  let unionCalleeType = ctx.wasmFunction.model.getUnionCallCalleeType(ident);
+  if (unionCalleeType != null) {
+    return;
+  }
   let nodeType = ctx.wasmFunction.model.getNodeType(ident);
   let bindingType = ctx.wasmFunction.model.getBindingType(resolvedSym);
   if (nodeType != null && bindingType != null) {
     let nt = nodeType as Type;
-    let bt = bindingType as Type;
     if (!(nt is ClassType) && !(nt is InterfaceType)) { return; }
-    let ntWasm = typeToValType(ctx.wasm, nt);
-    let btWasm = typeToValType(ctx.wasm, bt);
-    if (!typesRepresentSameZenaType(nt, bt) && !valTypesEqual(ntWasm, btWasm)) {
+    // The type of the value currently on the stack is the binding's actual
+    // storage type: globals may be stored with a more general (nullable)
+    // type than the checker's binding type implies.
+    var stackWasmType = typeToValTypeWithSub(ctx.wasm, bindingType as Type, ctx.wasmFunction);
+    if (ctx.wasm.globalMap.has(resolvedSym.id)) {
+      stackWasmType = ctx.wasm.globalMap[resolvedSym.id].type;
+    } else if (ctx.wasm.exportGlobalMap.has(resolvedSym.name as ExportGlobalKey)) {
+      stackWasmType = ctx.wasm.exportGlobalMap[resolvedSym.name as ExportGlobalKey].type;
+    }
+    // Substitute type parameters for the current specialization: inside a
+    // specialized generic method, `Entry<K, V>` must map to the
+    // specialization's wasm type, not the generic layout.
+    let ntWasm = typeToValTypeWithSub(ctx.wasm, nt, ctx.wasmFunction);
+    if (!valTypesEqual(ntWasm, stackWasmType)) {
       match (ntWasm) {
         case ValTypeRefNull {target}: {
           ctx.emitter.emitRefCastNull(target.index);

@@ -3,6 +3,7 @@ import {
   NodeType,
   type AccessorDeclaration,
   type AsPattern,
+  type AssignmentExpression,
   type AssignmentPattern,
   type BinaryExpression,
   type BreakStatement,
@@ -73,6 +74,7 @@ import {
   type InlineTupleType,
   type UnionType,
 } from '../types.js';
+import {visit} from '../visitor.js';
 import type {CheckerContext} from './context.js';
 import {
   checkExpression,
@@ -145,34 +147,106 @@ const branchDefinitelyExits = (stmt: Statement): boolean => {
   }
 };
 
+const NullGuardAssignKind = {
+  NotAnAssignment: 0,
+  AssignsNonNull: 1,
+  AssignsMaybeNull: 2,
+} as const;
+type NullGuardAssignKind =
+  (typeof NullGuardAssignKind)[keyof typeof NullGuardAssignKind];
+
 /**
- * Check if a statement (or block) contains an assignment to a variable
- * with the given name. Used to detect patterns like:
+ * Check if a statement (anywhere within it) contains an assignment to a
+ * variable with the given name.
+ */
+const containsAssignmentToVariable = (
+  stmt: Statement,
+  varName: string,
+): boolean => {
+  let found = false;
+  visit(
+    stmt,
+    {
+      beforeVisit(node) {
+        if (found) return false;
+        if (node.type === NodeType.AssignmentExpression) {
+          const left = (node as AssignmentExpression).left;
+          if (
+            left.type === NodeType.Identifier &&
+            (left as Identifier).name === varName
+          ) {
+            found = true;
+            return false;
+          }
+        }
+        return true;
+      },
+    },
+    undefined,
+  );
+  return found;
+};
+
+/**
+ * Classifies a top-level statement of a null-guard body with respect to
+ * assignments to the variable with the given name. A plain `x = value;`
+ * statement is classified by the checked type of `value` (the outermost
+ * assignment stores last, so it governs even if `value` contains further
+ * assignments to x). Any OTHER statement containing an assignment to x —
+ * in an expression position or nested control flow — is conservatively
+ * AssignsMaybeNull: it may run conditionally or leave x null.
+ */
+const classifyNullGuardAssignment = (
+  stmt: Statement,
+  varName: string,
+): NullGuardAssignKind => {
+  if (stmt.type === NodeType.ExpressionStatement) {
+    const expr = (stmt as {expression: Expression}).expression;
+    if (expr.type === NodeType.AssignmentExpression) {
+      const assignment = expr as AssignmentExpression;
+      if (
+        assignment.left.type === NodeType.Identifier &&
+        (assignment.left as Identifier).name === varName
+      ) {
+        const valueType = assignment.value.inferredType;
+        if (valueType && !isNullableType(valueType)) {
+          return NullGuardAssignKind.AssignsNonNull;
+        }
+        return NullGuardAssignKind.AssignsMaybeNull;
+      }
+    }
+  }
+  if (containsAssignmentToVariable(stmt, varName)) {
+    return NullGuardAssignKind.AssignsMaybeNull;
+  }
+  return NullGuardAssignKind.NotAnAssignment;
+};
+
+/**
+ * Check if a statement (or block) definitely assigns a NON-NULL value to
+ * a variable with the given name. Used to detect patterns like:
  *   if (x == null) { x = value; }
- * for post-if narrowing.
+ * for post-if narrowing — sound only when `value` cannot itself be null,
+ * and only for assignments at the top level of the guarded block (nested
+ * or expression-position assignments may not run on every path, so they
+ * defeat the narrowing). When several top-level assignments exist, the
+ * last one governs.
  */
 const bodyAssignsToVariable = (stmt: Statement, varName: string): boolean => {
-  switch (stmt.type) {
-    case NodeType.BlockStatement: {
-      const body = (stmt as {body: Statement[]}).body;
-      return body.some((s) => bodyAssignsToVariable(s, varName));
-    }
-    case NodeType.ExpressionStatement: {
-      const expr = (stmt as {expression: Expression}).expression;
-      if (expr.type === NodeType.AssignmentExpression) {
-        const left = (expr as {left: Expression}).left;
-        if (
-          left.type === NodeType.Identifier &&
-          (left as Identifier).name === varName
-        ) {
-          return true;
-        }
+  if (stmt.type === NodeType.BlockStatement) {
+    let state: NullGuardAssignKind = NullGuardAssignKind.NotAnAssignment;
+    for (const s of (stmt as {body: Statement[]}).body) {
+      const kind = classifyNullGuardAssignment(s, varName);
+      if (kind !== NullGuardAssignKind.NotAnAssignment) {
+        state = kind;
       }
-      return false;
     }
-    default:
-      return false;
+    return state === NullGuardAssignKind.AssignsNonNull;
   }
+  return (
+    classifyNullGuardAssignment(stmt, varName) ===
+    NullGuardAssignKind.AssignsNonNull
+  );
 };
 
 /**
