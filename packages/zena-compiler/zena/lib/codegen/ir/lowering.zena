@@ -57,6 +57,7 @@ import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
+import { synthesizeScaffold } from './scaffold.zena';
 import { IntrinsicCx, lowerIntrinsic, asWasmArray } from './intrinsics.zena';
 
 /**
@@ -144,7 +145,29 @@ final class LoopCtx {
  */
 export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boolean = false, bailReasons: HashMap<String, i32> | null = null): IrBody | null => {
   if (strict) {
-    return lowerFunctionOrThrow(wasm, func);
+    // Strict mode is the coverage ratchet: name the function so the
+    // failure points straight at the next thing to lower. (The
+    // catch arm yields null rather than rethrowing directly — a
+    // catch whose every arm throws miscompiles under the bootstrap.)
+    var failMsg: String | null = null;
+    let result: IrBody | null = try {
+      lowerFunctionOrThrow(wasm, func)
+    } catch (e) {
+      if (e is ZirUnsupported) {
+        // message carries the class's own 'zir unsupported: ' prefix;
+        // strip it so re-wrapping does not double it.
+        let m = (e as ZirUnsupported).message;
+        failMsg = m.sliceBytes(17, m.length) + ' [in ' +
+            (if (func.name != null) func.name as String else '<unnamed>') + ']';
+        null
+      } else {
+        throw e
+      }
+    };
+    if (failMsg != null) {
+      throw new ZirUnsupported(failMsg as String);
+    }
+    return result;
   }
   // ZirUnsupported means "fall back to the streaming generator"; any
   // other exception is a lowering bug and propagates.
@@ -415,6 +438,13 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     if (func.name != null && (func.name as String) == '__start') {
       let lowerer = new FunctionLowerer(wasm, func);
       return lowerer.lowerStart();
+    }
+    // Named module-scaffold helpers ($stringCreate & co.): fixed
+    // shapes synthesized instruction-for-instruction from streaming's
+    // generators.
+    let scaffold = synthesizeScaffold(wasm, func);
+    if (scaffold != null) {
+      return scaffold as IrBody;
     }
     if (func.intrinsic != null) {
       return synthesizeIntrinsic(func);
@@ -2421,7 +2451,17 @@ final class FunctionLowerer {
       if (let (true, value) = parseI32(lit.raw)) {
         return this.b.constI32(value, vt);
       }
-      // u32 literals above i32.max: parse wide and truncate.
+      // 0x literals only: parseI32WithHex does not guard overflow, so
+      // it must never see huge DECIMAL literals (an i64-range literal
+      // wrapped to -1 instead of bailing when it did).
+      // Destructure-then-if: the bootstrap rejects this call inside an
+      // if-let tuple pattern.
+      if (lit.raw.startsWith('0x')) {
+        let (hexOk, hexValue) = parseI32WithHex(lit.raw);
+        if (hexOk) {
+          return this.b.constI32(hexValue, vt);
+        }
+      }
       if (let (true, wide) = parseI64OrU64Literal(lit.raw)) {
         if (wide >= (0 as i64) && wide <= (4294967295 as i64)) {
           return this.b.constI32(wide as i32, vt);
@@ -5209,6 +5249,7 @@ final class FunctionLowerer {
   #intrinsicCx(): IntrinsicCx {
     return new IntrinsicCx(
         this.b,
+        this.wasm,
         (e: Expression, want: ValType | null): i32 =>
             if (want == null) this.#lowerExpression(e)
             else this.#lowerExpressionCtx(e, want as ValType),

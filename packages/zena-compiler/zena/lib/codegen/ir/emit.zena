@@ -510,6 +510,51 @@ export final class ZirFunctionEmitter {
       this.emitter.emitLocalGet(this.localOf[body.extra[tripleIdx + 1]]);
       this.#pushValue(body.extra[tripleIdx + 2]);
       this.emitter.emitArraySet(this.#arrayTargetOf(body.extra[tripleIdx]).index);
+    } else if (op == IrOp.extern_convert_any) {
+      this.#pushValue(body.a[inst]);
+      this.emitter.emitExternConvertAny();
+    } else if (op == IrOp.any_convert_extern) {
+      this.#pushValue(body.a[inst]);
+      this.emitter.emitAnyConvertExtern();
+    } else if (op == IrOp.i32_store || op == IrOp.i32_store8 ||
+        op == IrOp.i64_store || op == IrOp.f32_store ||
+        op == IrOp.f64_store) {
+      let pairIdx = body.a[inst];
+      let align = body.b[inst];
+      this.#pushValue(body.extra[pairIdx]);
+      this.#pushValue(body.extra[pairIdx + 1]);
+      if (op == IrOp.i32_store) {
+        this.emitter.emitI32Store(align, 0);
+      } else if (op == IrOp.i32_store8) {
+        this.emitter.emitI32Store8(align, 0);
+      } else if (op == IrOp.i64_store) {
+        this.emitter.emitI64Store(align, 0);
+      } else if (op == IrOp.f32_store) {
+        this.emitter.emitF32Store(align, 0);
+      } else {
+        this.emitter.emitF64Store(align, 0);
+      }
+    } else if (op == IrOp.i32_load || op == IrOp.i32_load8_u ||
+        op == IrOp.i64_load || op == IrOp.f32_load ||
+        op == IrOp.f64_load) {
+      let align = body.b[inst];
+      this.#pushValue(body.a[inst]);
+      if (op == IrOp.i32_load) {
+        this.emitter.emitI32Load(align, 0);
+      } else if (op == IrOp.i32_load8_u) {
+        this.emitter.emitI32Load8U(align, 0);
+      } else if (op == IrOp.i64_load) {
+        this.emitter.emitI64Load(align, 0);
+      } else if (op == IrOp.f32_load) {
+        this.emitter.emitF32Load(align, 0);
+      } else {
+        this.emitter.emitF64Load(align, 0);
+      }
+    } else if (op == IrOp.memory_size) {
+      this.emitter.emitMemorySize();
+    } else if (op == IrOp.memory_grow) {
+      this.#pushValue(body.a[inst]);
+      this.emitter.emitMemoryGrow();
     } else if (op == IrOp.ref_is_null) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.emitter.emitRefIsNull();
@@ -692,6 +737,38 @@ export final class ZirFunctionEmitter {
       case IrOp.i64_trunc_sat_f32_s: { e.emitI64TruncSatF32S(); }
       case IrOp.f64_promote_f32: { e.emitF64PromoteF32(); }
       case IrOp.f32_demote_f64: { e.emitF32DemoteF64(); }
+      case IrOp.i64_reinterpret_f64: { e.emitI64ReinterpretF64(); }
+      case IrOp.i32_reinterpret_f32: { e.emitI32ReinterpretF32(); }
+      case IrOp.f32_reinterpret_i32: { e.emitF32ReinterpretI32(); }
+      case IrOp.f64_reinterpret_i64: { e.emitF64ReinterpretI64(); }
+      case IrOp.i32_trunc_sat_f32_u: { e.emitI32TruncSatF32U(); }
+      case IrOp.i32_trunc_sat_f64_u: { e.emitI32TruncSatF64U(); }
+      case IrOp.i64_trunc_sat_f32_u: { e.emitI64TruncSatF32U(); }
+      case IrOp.i64_trunc_sat_f64_u: { e.emitI64TruncSatF64U(); }
+      case IrOp.i32_clz: { e.emitI32Clz(); }
+      case IrOp.i32_ctz: { e.emitI32Ctz(); }
+      case IrOp.i32_popcnt: { e.emitI32Popcnt(); }
+      case IrOp.i64_clz: { e.emitI64Clz(); }
+      case IrOp.i64_ctz: { e.emitI64Ctz(); }
+      case IrOp.i64_popcnt: { e.emitI64Popcnt(); }
+      case IrOp.f32_abs: { e.emitF32Abs(); }
+      case IrOp.f32_ceil: { e.emitF32Ceil(); }
+      case IrOp.f32_floor: { e.emitF32Floor(); }
+      case IrOp.f32_nearest: { e.emitF32Nearest(); }
+      case IrOp.f32_sqrt: { e.emitF32Sqrt(); }
+      case IrOp.f32_trunc: { e.emitF32Trunc(); }
+      case IrOp.f64_abs: { e.emitF64Abs(); }
+      case IrOp.f64_ceil: { e.emitF64Ceil(); }
+      case IrOp.f64_floor: { e.emitF64Floor(); }
+      case IrOp.f64_nearest: { e.emitF64Nearest(); }
+      case IrOp.f64_sqrt: { e.emitF64Sqrt(); }
+      case IrOp.f64_trunc: { e.emitF64Trunc(); }
+      case IrOp.f32_min: { e.emitF32Min(); }
+      case IrOp.f32_max: { e.emitF32Max(); }
+      case IrOp.f32_copysign: { e.emitF32Copysign(); }
+      case IrOp.f64_min: { e.emitF64Min(); }
+      case IrOp.f64_max: { e.emitF64Max(); }
+      case IrOp.f64_copysign: { e.emitF64Copysign(); }
       case _: {
         throw new Error('zir emit: unsupported opcode ' + irOpName(op));
       }

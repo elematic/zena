@@ -14,7 +14,9 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { CallExpression, Expression } from '../../ast.zena';
 import { ValType, ValTypeI32, ValTypeI8, ValTypeRef, ValTypeRefNull } from '../wasm.zena';
-import { WasmArray, isValSubtype } from '../wasm-module.zena';
+import { WasmModule, WasmFunction, WasmArray, isValSubtype } from '../wasm-module.zena';
+import { ValTypeI64, ValTypeF32, ValTypeF64 } from '../wasm.zena';
+import { IrRefFunc } from './ir.zena';
 import { IrOp, IrRefType } from './ir.zena';
 import { IrBuilder } from './builder.zena';
 
@@ -43,6 +45,7 @@ export let asWasmArray = (vt: ValType): WasmArray | null => {
  */
 export final class IntrinsicCx {
   b: IrBuilder;
+  wasm: WasmModule;
   /** Lowers an expression; a non-null `want` supplies the context type. */
   lowerExpr: (e: Expression, want: ValType | null) => i32;
   valueTypeOf: (value: i32) => ValType;
@@ -53,10 +56,46 @@ export final class IntrinsicCx {
   fail: (reason: String) => i32;
   lowerEq: (call: CallExpression) => i32;
   lowerHash: (call: CallExpression) => i32;
-  new(this.b, this.lowerExpr, this.valueTypeOf, this.exprVt,
+  new(this.b, this.wasm, this.lowerExpr, this.valueTypeOf, this.exprVt,
       this.reassertNonNull, this.requireSupported, this.fail,
       this.lowerEq, this.lowerHash);
 }
+
+/** Memory load: addr operand; alignment hint matches streaming. */
+let lowerMemLoad = (cx: IntrinsicCx, call: CallExpression, op: IrOp, resultVt: ValType, align: i32): i32 => {
+  let lowerExpr = cx.lowerExpr;
+  let addr = lowerExpr(call.args[0], null);
+  return cx.b.emit(op, resultVt, addr, align);
+};
+
+/** Memory store: addr + value operands; align matches streaming. */
+let lowerMemStore = (cx: IntrinsicCx, call: CallExpression, op: IrOp, align: i32): i32 => {
+  let lowerExpr = cx.lowerExpr;
+  let addr = lowerExpr(call.args[0], null);
+  let value = lowerExpr(call.args[1], null);
+  let pair = new Array<i32>();
+  pair.push(addr);
+  pair.push(value);
+  return cx.b.emitVoid(op, cx.b.pushExtra(pair), align);
+};
+
+/** A call-position intrinsic that is one wasm instruction: lowers the
+ * arguments in order and emits the op. Operand agreement is the
+ * checker's (and finally the verifier's/validator's) problem. */
+let lowerInstr = (cx: IntrinsicCx, call: CallExpression, op: IrOp, resultVt: ValType): i32 => {
+  let lowerExpr = cx.lowerExpr;
+  if (call.args.length == 1) {
+    let a = lowerExpr(call.args[0], null);
+    return cx.b.emit(op, resultVt, a, -1);
+  }
+  if (call.args.length == 2) {
+    let a = lowerExpr(call.args[0], null);
+    let c = lowerExpr(call.args[1], null);
+    return cx.b.binary(op, resultVt, a, c);
+  }
+  let fail = cx.fail;
+  return fail('intrinsic arity');
+};
 
 /** Lowers `e` and requires an array-typed value: (value, its array). */
 let arrayOperand = (cx: IntrinsicCx, e: Expression): (i32, WasmArray) => {
@@ -261,6 +300,80 @@ export let lowerIntrinsic = (cx: IntrinsicCx, name: String, call: CallExpression
     return lowerArrayNewDefault(cx, call);
   }
   if (name == '__byte_array_copy') { return lowerByteArrayCopy(cx, call); }
+  if (name == 'i32.div_s') { return lowerInstr(cx, call, IrOp.i32_div_s, new ValTypeI32()); }
+  if (name == 'i32.div_u') { return lowerInstr(cx, call, IrOp.i32_div_u, new ValTypeI32()); }
+  if (name == 'i64.div_s') { return lowerInstr(cx, call, IrOp.i64_div_s, new ValTypeI64()); }
+  if (name == 'i64.div_u') { return lowerInstr(cx, call, IrOp.i64_div_u, new ValTypeI64()); }
+  if (name == 'i64.reinterpret_f64') { return lowerInstr(cx, call, IrOp.i64_reinterpret_f64, new ValTypeI64()); }
+  if (name == 'i32.clz') { return lowerInstr(cx, call, IrOp.i32_clz, new ValTypeI32()); }
+  if (name == 'i32.ctz') { return lowerInstr(cx, call, IrOp.i32_ctz, new ValTypeI32()); }
+  if (name == 'i32.popcnt') { return lowerInstr(cx, call, IrOp.i32_popcnt, new ValTypeI32()); }
+  if (name == 'i64.clz') { return lowerInstr(cx, call, IrOp.i64_clz, new ValTypeI64()); }
+  if (name == 'i64.ctz') { return lowerInstr(cx, call, IrOp.i64_ctz, new ValTypeI64()); }
+  if (name == 'i64.popcnt') { return lowerInstr(cx, call, IrOp.i64_popcnt, new ValTypeI64()); }
+  if (name == 'i32.reinterpret_f32') { return lowerInstr(cx, call, IrOp.i32_reinterpret_f32, new ValTypeI32()); }
+  if (name == 'f32.reinterpret_i32') { return lowerInstr(cx, call, IrOp.f32_reinterpret_i32, new ValTypeF32()); }
+  if (name == 'f64.reinterpret_i64') { return lowerInstr(cx, call, IrOp.f64_reinterpret_i64, new ValTypeF64()); }
+  if (name == 'i32.trunc_sat_f32_s') { return lowerInstr(cx, call, IrOp.i32_trunc_sat_f32_s, new ValTypeI32()); }
+  if (name == 'i32.trunc_sat_f32_u') { return lowerInstr(cx, call, IrOp.i32_trunc_sat_f32_u, new ValTypeI32()); }
+  if (name == 'i32.trunc_sat_f64_s') { return lowerInstr(cx, call, IrOp.i32_trunc_sat_f64_s, new ValTypeI32()); }
+  if (name == 'i32.trunc_sat_f64_u') { return lowerInstr(cx, call, IrOp.i32_trunc_sat_f64_u, new ValTypeI32()); }
+  if (name == 'i64.trunc_sat_f32_s') { return lowerInstr(cx, call, IrOp.i64_trunc_sat_f32_s, new ValTypeI64()); }
+  if (name == 'i64.trunc_sat_f32_u') { return lowerInstr(cx, call, IrOp.i64_trunc_sat_f32_u, new ValTypeI64()); }
+  if (name == 'i64.trunc_sat_f64_s') { return lowerInstr(cx, call, IrOp.i64_trunc_sat_f64_s, new ValTypeI64()); }
+  if (name == 'i64.trunc_sat_f64_u') { return lowerInstr(cx, call, IrOp.i64_trunc_sat_f64_u, new ValTypeI64()); }
+  if (name == 'f32.abs') { return lowerInstr(cx, call, IrOp.f32_abs, new ValTypeF32()); }
+  if (name == 'f32.ceil') { return lowerInstr(cx, call, IrOp.f32_ceil, new ValTypeF32()); }
+  if (name == 'f32.floor') { return lowerInstr(cx, call, IrOp.f32_floor, new ValTypeF32()); }
+  if (name == 'f32.nearest') { return lowerInstr(cx, call, IrOp.f32_nearest, new ValTypeF32()); }
+  if (name == 'f32.sqrt') { return lowerInstr(cx, call, IrOp.f32_sqrt, new ValTypeF32()); }
+  if (name == 'f32.trunc') { return lowerInstr(cx, call, IrOp.f32_trunc, new ValTypeF32()); }
+  if (name == 'f32.neg') { return lowerInstr(cx, call, IrOp.f32_neg, new ValTypeF32()); }
+  if (name == 'f64.abs') { return lowerInstr(cx, call, IrOp.f64_abs, new ValTypeF64()); }
+  if (name == 'f64.ceil') { return lowerInstr(cx, call, IrOp.f64_ceil, new ValTypeF64()); }
+  if (name == 'f64.floor') { return lowerInstr(cx, call, IrOp.f64_floor, new ValTypeF64()); }
+  if (name == 'f64.nearest') { return lowerInstr(cx, call, IrOp.f64_nearest, new ValTypeF64()); }
+  if (name == 'f64.sqrt') { return lowerInstr(cx, call, IrOp.f64_sqrt, new ValTypeF64()); }
+  if (name == 'f64.trunc') { return lowerInstr(cx, call, IrOp.f64_trunc, new ValTypeF64()); }
+  if (name == 'f64.neg') { return lowerInstr(cx, call, IrOp.f64_neg, new ValTypeF64()); }
+  if (name == 'f32.min') { return lowerInstr(cx, call, IrOp.f32_min, new ValTypeF32()); }
+  if (name == 'f32.max') { return lowerInstr(cx, call, IrOp.f32_max, new ValTypeF32()); }
+  if (name == 'f32.copysign') { return lowerInstr(cx, call, IrOp.f32_copysign, new ValTypeF32()); }
+  if (name == 'f64.min') { return lowerInstr(cx, call, IrOp.f64_min, new ValTypeF64()); }
+  if (name == 'f64.max') { return lowerInstr(cx, call, IrOp.f64_max, new ValTypeF64()); }
+  if (name == 'f64.copysign') { return lowerInstr(cx, call, IrOp.f64_copysign, new ValTypeF64()); }
+  if (name == 'i32.load') { return lowerMemLoad(cx, call, IrOp.i32_load, new ValTypeI32(), 2); }
+  if (name == 'i32.load8_u') { return lowerMemLoad(cx, call, IrOp.i32_load8_u, new ValTypeI32(), 0); }
+  if (name == 'i64.load') { return lowerMemLoad(cx, call, IrOp.i64_load, new ValTypeI64(), 3); }
+  if (name == 'f32.load') { return lowerMemLoad(cx, call, IrOp.f32_load, new ValTypeF32(), 2); }
+  if (name == 'f64.load') { return lowerMemLoad(cx, call, IrOp.f64_load, new ValTypeF64(), 3); }
+  if (name == 'i32.store') { return lowerMemStore(cx, call, IrOp.i32_store, 0); }
+  if (name == 'i32.store8') { return lowerMemStore(cx, call, IrOp.i32_store8, 0); }
+  if (name == 'i64.store') { return lowerMemStore(cx, call, IrOp.i64_store, 0); }
+  if (name == 'f32.store') { return lowerMemStore(cx, call, IrOp.f32_store, 0); }
+  if (name == 'f64.store') { return lowerMemStore(cx, call, IrOp.f64_store, 0); }
+  if (name == 'memory.size') { return cx.b.emit(IrOp.memory_size, new ValTypeI32(), -1, -1); }
+  if (name == 'memory.grow') {
+    let lowerExpr = cx.lowerExpr;
+    let pages = lowerExpr(call.args[0], null);
+    return cx.b.emit(IrOp.memory_grow, new ValTypeI32(), pages, -1);
+  }
+  if (name == 'wasi_write_string') {
+    let lowerExpr = cx.lowerExpr;
+    let fail = cx.fail;
+    let helperOpt = cx.wasm.wasiWriteStringHelper;
+    if (helperOpt == null) {
+      fail('wasi write helper missing');
+    }
+    let helper = helperOpt as WasmFunction;
+    let sig = helper.signature;
+    let args = new Array<i32>();
+    let fd = lowerExpr(call.args[0], sig.params[0]);
+    args.push(fd);
+    let s = lowerExpr(call.args[1], sig.params[1]);
+    args.push(s);
+    return cx.b.callFunc(cx.b.addRef(new IrRefFunc(helper)), args, null);
+  }
   if (name == 'eq') {
     let lowerEq = cx.lowerEq;
     return lowerEq(call);

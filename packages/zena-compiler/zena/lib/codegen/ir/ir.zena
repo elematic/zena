@@ -162,6 +162,49 @@ export enum IrOp {
   i64_trunc_sat_f32_s,
   f64_promote_f32,
   f32_demote_f64,
+  i64_reinterpret_f64,
+  i32_reinterpret_f32,
+  f32_reinterpret_i32,
+  f64_reinterpret_i64,
+  i32_trunc_sat_f32_u,
+  i32_trunc_sat_f64_u,
+  i64_trunc_sat_f32_u,
+  i64_trunc_sat_f64_u,
+  i32_clz,
+  i32_ctz,
+  i32_popcnt,
+  i64_clz,
+  i64_ctz,
+  i64_popcnt,
+  f32_abs,
+  f32_ceil,
+  f32_floor,
+  f32_nearest,
+  f32_sqrt,
+  f32_trunc,
+  f64_abs,
+  f64_ceil,
+  f64_floor,
+  f64_nearest,
+  f64_sqrt,
+  f64_trunc,
+  f32_min,
+  f32_max,
+  f32_copysign,
+  f64_min,
+  f64_max,
+  f64_copysign,
+  // linear memory loads: a = addr, b = alignment hint
+  i32_load,
+  i32_load8_u,
+  i64_load,
+  f32_load,
+  f64_load,
+  i64_store,
+  f32_store,
+  f64_store,
+  memory_size,
+  memory_grow,
   // references
   ref_null,
   ref_is_null,
@@ -170,6 +213,11 @@ export enum IrOp {
   ref_test,
   ref_cast,
   ref_func,
+  extern_convert_any,
+  any_convert_extern,
+  // linear memory (fixed alignments matching the streaming helpers)
+  i32_store,
+  i32_store8,
   // aggregates
   struct_new,
   struct_new_default,
@@ -229,7 +277,32 @@ export let isUnaryNumericOp = (op: IrOp): boolean => {
       op == IrOp.f32_convert_i64_s || op == IrOp.i32_trunc_sat_f64_s ||
       op == IrOp.i32_trunc_sat_f32_s || op == IrOp.i64_trunc_sat_f64_s ||
       op == IrOp.i64_trunc_sat_f32_s || op == IrOp.f64_promote_f32 ||
-      op == IrOp.f32_demote_f64;
+      op == IrOp.f32_demote_f64 || op == IrOp.i64_reinterpret_f64 ||
+      op == IrOp.i32_reinterpret_f32 ||
+      op == IrOp.f32_reinterpret_i32 ||
+      op == IrOp.f64_reinterpret_i64 ||
+      op == IrOp.i32_trunc_sat_f32_u ||
+      op == IrOp.i32_trunc_sat_f64_u ||
+      op == IrOp.i64_trunc_sat_f32_u ||
+      op == IrOp.i64_trunc_sat_f64_u ||
+      op == IrOp.i32_clz ||
+      op == IrOp.i32_ctz ||
+      op == IrOp.i32_popcnt ||
+      op == IrOp.i64_clz ||
+      op == IrOp.i64_ctz ||
+      op == IrOp.i64_popcnt ||
+      op == IrOp.f32_abs ||
+      op == IrOp.f32_ceil ||
+      op == IrOp.f32_floor ||
+      op == IrOp.f32_nearest ||
+      op == IrOp.f32_sqrt ||
+      op == IrOp.f32_trunc ||
+      op == IrOp.f64_abs ||
+      op == IrOp.f64_ceil ||
+      op == IrOp.f64_floor ||
+      op == IrOp.f64_nearest ||
+      op == IrOp.f64_sqrt ||
+      op == IrOp.f64_trunc;
 };
 
 /**
@@ -244,6 +317,9 @@ export let isSingleValueOp = (op: IrOp): boolean => {
   return isUnaryNumericOp(op) ||
       op == IrOp.ref_is_null || op == IrOp.ref_as_non_null ||
       op == IrOp.ref_test || op == IrOp.ref_cast || op == IrOp.array_len ||
+      op == IrOp.extern_convert_any || op == IrOp.any_convert_extern ||
+      op == IrOp.i32_load || op == IrOp.i32_load8_u || op == IrOp.i64_load ||
+      op == IrOp.f32_load || op == IrOp.f64_load || op == IrOp.memory_grow ||
       op == IrOp.global_set || op == IrOp.struct_get || op == IrOp.vt_load ||
       op == IrOp.vt_slot || op == IrOp.iface_pack ||
       op == IrOp.iface_vtable || op == IrOp.iface_instance ||
@@ -258,7 +334,10 @@ export let isBinaryNumericOp = (op: IrOp): boolean => {
   let v = op as i32;
   return (v >= IrOp.i32_add as i32 && v <= IrOp.i32_ge_u as i32 &&
           v != IrOp.i32_eqz as i32) ||
-         (v >= IrOp.i64_add as i32 && v <= IrOp.f32_ge as i32);
+         (v >= IrOp.i64_add as i32 && v <= IrOp.f32_ge as i32) ||
+         op == IrOp.f32_min || op == IrOp.f32_max ||
+         op == IrOp.f32_copysign || op == IrOp.f64_min ||
+         op == IrOp.f64_max || op == IrOp.f64_copysign;
 };
 
 /**
@@ -382,7 +461,7 @@ export final class IrBody {
         op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
         op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
         op == IrOp.global_get || op == IrOp.struct_new_default ||
-        op == IrOp.unreachable) {
+        op == IrOp.memory_size || op == IrOp.unreachable) {
       return;
     }
     // Shape: one value in slot a. Slot b is free for the non-value payload
@@ -401,8 +480,10 @@ export final class IrBody {
     }
     // Shapes with more than two operands spill to `extra`; slot a holds the
     // extra index (slot b keeps the refTable index where one is needed).
-    // struct_set: fixed pair [receiver, value].
-    if (op == IrOp.struct_set) {
+    // struct_set / memory stores: fixed pair [receiver|addr, value].
+    if (op == IrOp.struct_set || op == IrOp.i32_store ||
+        op == IrOp.i32_store8 || op == IrOp.i64_store ||
+        op == IrOp.f32_store || op == IrOp.f64_store) {
       out.push(this.extra[av]);
       out.push(this.extra[av + 1]);
       return;
@@ -652,6 +733,48 @@ export let irOpName = (op: IrOp): String => {
     case IrOp.i64_trunc_sat_f32_s: { name = 'i64.trunc_sat_f32_s'; }
     case IrOp.f64_promote_f32: { name = 'f64.promote_f32'; }
     case IrOp.f32_demote_f64: { name = 'f32.demote_f64'; }
+    case IrOp.i64_reinterpret_f64: { name = 'i64.reinterpret_f64'; }
+    case IrOp.i32_reinterpret_f32: { name = 'i32.reinterpret_f32'; }
+    case IrOp.f32_reinterpret_i32: { name = 'f32.reinterpret_i32'; }
+    case IrOp.f64_reinterpret_i64: { name = 'f64.reinterpret_i64'; }
+    case IrOp.i32_trunc_sat_f32_u: { name = 'i32.trunc_sat_f32_u'; }
+    case IrOp.i32_trunc_sat_f64_u: { name = 'i32.trunc_sat_f64_u'; }
+    case IrOp.i64_trunc_sat_f32_u: { name = 'i64.trunc_sat_f32_u'; }
+    case IrOp.i64_trunc_sat_f64_u: { name = 'i64.trunc_sat_f64_u'; }
+    case IrOp.i32_clz: { name = 'i32.clz'; }
+    case IrOp.i32_ctz: { name = 'i32.ctz'; }
+    case IrOp.i32_popcnt: { name = 'i32.popcnt'; }
+    case IrOp.i64_clz: { name = 'i64.clz'; }
+    case IrOp.i64_ctz: { name = 'i64.ctz'; }
+    case IrOp.i64_popcnt: { name = 'i64.popcnt'; }
+    case IrOp.f32_abs: { name = 'f32.abs'; }
+    case IrOp.f32_ceil: { name = 'f32.ceil'; }
+    case IrOp.f32_floor: { name = 'f32.floor'; }
+    case IrOp.f32_nearest: { name = 'f32.nearest'; }
+    case IrOp.f32_sqrt: { name = 'f32.sqrt'; }
+    case IrOp.f32_trunc: { name = 'f32.trunc'; }
+    case IrOp.f64_abs: { name = 'f64.abs'; }
+    case IrOp.f64_ceil: { name = 'f64.ceil'; }
+    case IrOp.f64_floor: { name = 'f64.floor'; }
+    case IrOp.f64_nearest: { name = 'f64.nearest'; }
+    case IrOp.f64_sqrt: { name = 'f64.sqrt'; }
+    case IrOp.f64_trunc: { name = 'f64.trunc'; }
+    case IrOp.f32_min: { name = 'f32.min'; }
+    case IrOp.f32_max: { name = 'f32.max'; }
+    case IrOp.f32_copysign: { name = 'f32.copysign'; }
+    case IrOp.f64_min: { name = 'f64.min'; }
+    case IrOp.f64_max: { name = 'f64.max'; }
+    case IrOp.f64_copysign: { name = 'f64.copysign'; }
+    case IrOp.i32_load: { name = 'i32.load'; }
+    case IrOp.i32_load8_u: { name = 'i32.load8_u'; }
+    case IrOp.i64_load: { name = 'i64.load'; }
+    case IrOp.f32_load: { name = 'f32.load'; }
+    case IrOp.f64_load: { name = 'f64.load'; }
+    case IrOp.i64_store: { name = 'i64.store'; }
+    case IrOp.f32_store: { name = 'f32.store'; }
+    case IrOp.f64_store: { name = 'f64.store'; }
+    case IrOp.memory_size: { name = 'memory.size'; }
+    case IrOp.memory_grow: { name = 'memory.grow'; }
     case IrOp.ref_null: { name = 'ref.null'; }
     case IrOp.ref_is_null: { name = 'ref.is_null'; }
     case IrOp.ref_as_non_null: { name = 'ref.as_non_null'; }
@@ -659,6 +782,10 @@ export let irOpName = (op: IrOp): String => {
     case IrOp.ref_test: { name = 'ref.test'; }
     case IrOp.ref_cast: { name = 'ref.cast'; }
     case IrOp.ref_func: { name = 'ref.func'; }
+    case IrOp.extern_convert_any: { name = 'extern.convert_any'; }
+    case IrOp.any_convert_extern: { name = 'any.convert_extern'; }
+    case IrOp.i32_store: { name = 'i32.store'; }
+    case IrOp.i32_store8: { name = 'i32.store8'; }
     case IrOp.struct_new: { name = 'struct.new'; }
     case IrOp.struct_new_default: { name = 'struct.new_default'; }
     case IrOp.struct_get: { name = 'struct.get'; }

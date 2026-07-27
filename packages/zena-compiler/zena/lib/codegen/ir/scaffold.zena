@@ -1,0 +1,397 @@
+/**
+ * Synthesizers for the named module-scaffold helpers streaming builds
+ * without an AST: the host-interop string helpers ($stringCreate,
+ * $stringSetByte, $stringGetByte, $stringGetLength, $stringHash), the
+ * internal string_hash_helper, and wasi_write_string_helper. Each
+ * mirrors its streaming generator instruction for instruction — these
+ * exist in EVERY module, so they were the structural blocker keeping
+ * zir-strict red before any real construct was measured.
+ */
+import { Array } from 'zena:array';
+import { String } from 'zena:string';
+import { Error } from 'zena:error';
+import { ValType, ValTypeI32, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeExternRef } from '../wasm.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmArray, WasmGlobal } from '../wasm-module.zena';
+import { ClassType } from '../../types.zena';
+import { getClassKey } from '../codegen-utils.zena';
+import { IrBody, IrOp, IrRefType, IrRefField, IrRefGlobal, IrRefFunc } from './ir.zena';
+import { IrBuilder } from './builder.zena';
+
+/** The String struct, its vtable global, and the field names by role. */
+final class StringLayout {
+  st: WasmStruct;
+  vtable: WasmGlobal | null;
+  data: String;
+  start: String;
+  end: String;
+  encoding: String | null;
+  hashCode: String | null;
+  new(this.st, this.vtable, this.data, this.start, this.end,
+      this.encoding, this.hashCode);
+}
+
+let stringLayoutOf = (wasm: WasmModule): StringLayout => {
+  let stringClass = wasm.stringClass;
+  if (stringClass == null) {
+    throw new Error('string helper synthesis: String class not found');
+  }
+  let key = getClassKey(stringClass as ClassType);
+  var stOpt: WasmStruct | null = null;
+  var vt: WasmGlobal | null = null;
+  if (let (true, info) = wasm.classInfos.get(key)) {
+    stOpt = info.structType;
+    vt = info.vtableGlobal;
+  }
+  if (stOpt == null) {
+    throw new Error('string helper synthesis: String struct not found');
+  }
+  let st = stOpt as WasmStruct;
+  var data: String | null = null;
+  var start: String | null = null;
+  var end: String | null = null;
+  var encoding: String | null = null;
+  var hashCode: String | null = null;
+  for (let f in st.fields) {
+    if (f.name == null) {
+      continue;
+    }
+    let n = f.name as String;
+    if (n.endsWith('::#data')) {
+      data = n;
+    } else if (n.endsWith('::#start')) {
+      start = n;
+    } else if (n.endsWith('::#end')) {
+      end = n;
+    } else if (n.endsWith('::#encoding')) {
+      encoding = n;
+    } else if (n.endsWith('::#hashCode')) {
+      hashCode = n;
+    }
+  }
+  if (data == null || start == null || end == null) {
+    throw new Error('string helper synthesis: String field layout');
+  }
+  return new StringLayout(st, vt, data as String, start as String,
+      end as String, encoding, hashCode);
+};
+
+let fieldGet = (b: IrBuilder, st: WasmStruct, name: String, recv: i32): i32 => {
+  let idx = st.fieldIndexByName(name);
+  if (idx < 0) {
+    throw new Error('string helper synthesis: missing field ' + name);
+  }
+  return b.emit(IrOp.struct_get, st.fields[idx].type, recv,
+      b.addRef(new IrRefField(st, name)));
+};
+
+let fieldSet = (b: IrBuilder, st: WasmStruct, name: String, recv: i32, value: i32): void => {
+  let pair = new Array<i32>();
+  pair.push(recv);
+  pair.push(value);
+  b.emitVoid(IrOp.struct_set, b.pushExtra(pair), b.addRef(new IrRefField(st, name)));
+};
+
+let i32c = (b: IrBuilder, v: i32): i32 => {
+  return b.constI32(v, new ValTypeI32());
+};
+
+/** entry block with one param per signature slot, left current. */
+let entryOf = (b: IrBuilder, func: WasmFunction): Array<i32> => {
+  let entry = b.newBlock();
+  let params = new Array<i32>();
+  for (let vt in func.signature.params) {
+    params.push(b.blockParam(entry, vt));
+  }
+  b.switchTo(entry);
+  return params;
+};
+
+/**
+ * The FNV-1a byte loop both hash helpers share: hashes
+ * data[start..end) starting from the offset basis, returning the
+ * running-hash value in the block the builder is left in.
+ */
+let fnvLoop = (b: IrBuilder, data: i32, start: i32, end: i32): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  let header = b.newBlock();
+  let hParam = b.blockParam(header, i32vt);
+  let iParam = b.blockParam(header, i32vt);
+  var seed = new Array<i32>();
+  seed.push(i32c(b, -2128831035));
+  seed.push(start);
+  b.br(header, seed);
+
+  b.switchTo(header);
+  let done = b.binary(IrOp.i32_ge_u, i32vt, iParam, end);
+  let bodyB = b.newBlock();
+  let exitB = b.newBlock();
+  let hOut = b.blockParam(exitB, i32vt);
+  var exitArgs = new Array<i32>();
+  exitArgs.push(hParam);
+  b.brIf(done, exitB, exitArgs, bodyB, new Array<i32>());
+
+  b.switchTo(bodyB);
+  let byte = b.emit(IrOp.array_get_u, i32vt, data, iParam);
+  let xored = b.binary(IrOp.i32_xor, i32vt, hParam, byte);
+  let mixed = b.binary(IrOp.i32_mul, i32vt, xored, i32c(b, 16777619));
+  let one = i32c(b, 1);
+  let next = b.binary(IrOp.i32_add, i32vt, iParam, one);
+  var back = new Array<i32>();
+  back.push(mixed);
+  back.push(next);
+  b.br(header, back);
+
+  b.switchTo(exitB);
+  return hOut;
+};
+
+/** $stringCreate(len) -> externref: fresh empty String of `len` bytes. */
+let synthStringCreate = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let lay = stringLayoutOf(wasm);
+  if (lay.vtable == null || lay.encoding == null) {
+    throw new Error('string helper synthesis: $stringCreate layout');
+  }
+  let byteArr = wasm.getByteArrayType();
+  let b = new IrBuilder();
+  let params = entryOf(b, func);
+  let inst = b.emit(IrOp.struct_new_default,
+      new ValTypeRef(lay.st) as ValType, -1, b.addRef(new IrRefType(lay.st)));
+  let vtg = lay.vtable as WasmGlobal;
+  let vtVal = b.emit(IrOp.global_get, vtg.type, -1, b.addRef(new IrRefGlobal(vtg)));
+  fieldSet(b, lay.st, '<vtable>', inst, vtVal);
+  var lenInit = new Array<i32>();
+  lenInit.push(params[0]);
+  lenInit.push(-1);
+  let bytes = b.emit(IrOp.array_new, new ValTypeRef(byteArr) as ValType,
+      b.pushExtra(lenInit), b.addRef(new IrRefType(byteArr)));
+  fieldSet(b, lay.st, lay.data, inst, bytes);
+  fieldSet(b, lay.st, lay.start, inst, i32c(b, 0));
+  fieldSet(b, lay.st, lay.end, inst, params[0]);
+  fieldSet(b, lay.st, lay.encoding as String, inst, i32c(b, 0));
+  let ext = b.emit(IrOp.extern_convert_any, new ValTypeExternRef(), inst, -1);
+  b.ret(ext);
+  return b.finish();
+};
+
+/** externref param -> non-null String struct value. */
+let externToString = (b: IrBuilder, lay: StringLayout, ext: i32): i32 => {
+  let anyv = b.emit(IrOp.any_convert_extern, new ValTypeAnyRef(), ext, -1);
+  let vt = new ValTypeRef(lay.st) as ValType;
+  return b.emit(IrOp.ref_cast, vt, anyv, b.internType(vt));
+};
+
+/** $stringSetByte(str externref, index, value). */
+let synthStringSetByte = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let lay = stringLayoutOf(wasm);
+  let b = new IrBuilder();
+  let params = entryOf(b, func);
+  let s = externToString(b, lay, params[0]);
+  let data = fieldGet(b, lay.st, lay.data, s);
+  let start = fieldGet(b, lay.st, lay.start, s);
+  let idx = b.binary(IrOp.i32_add, new ValTypeI32(), start, params[1]);
+  let triple = new Array<i32>();
+  triple.push(data);
+  triple.push(idx);
+  triple.push(params[2]);
+  b.emitVoid(IrOp.array_set, b.pushExtra(triple), -1);
+  b.retVoid();
+  return b.finish();
+};
+
+/** $stringGetByte(str externref, index) -> i32. */
+let synthStringGetByte = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let lay = stringLayoutOf(wasm);
+  let b = new IrBuilder();
+  let params = entryOf(b, func);
+  let s = externToString(b, lay, params[0]);
+  let data = fieldGet(b, lay.st, lay.data, s);
+  let start = fieldGet(b, lay.st, lay.start, s);
+  let idx = b.binary(IrOp.i32_add, new ValTypeI32(), start, params[1]);
+  b.ret(b.emit(IrOp.array_get_u, new ValTypeI32(), data, idx));
+  return b.finish();
+};
+
+/** $stringGetLength(str externref) -> i32 (#end - #start). */
+let synthStringGetLength = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let lay = stringLayoutOf(wasm);
+  let b = new IrBuilder();
+  let params = entryOf(b, func);
+  let s = externToString(b, lay, params[0]);
+  let end = fieldGet(b, lay.st, lay.end, s);
+  let start = fieldGet(b, lay.st, lay.start, s);
+  b.ret(b.binary(IrOp.i32_sub, new ValTypeI32(), end, start));
+  return b.finish();
+};
+
+/** string_hash_helper(str anyref-ish) -> i32: plain FNV-1a, no memo. */
+let synthStringHashHelper = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let lay = stringLayoutOf(wasm);
+  let b = new IrBuilder();
+  let params = entryOf(b, func);
+  let vt = new ValTypeRef(lay.st) as ValType;
+  let s = b.emit(IrOp.ref_cast, vt, params[0], b.internType(vt));
+  let data = fieldGet(b, lay.st, lay.data, s);
+  let start = fieldGet(b, lay.st, lay.start, s);
+  let end = fieldGet(b, lay.st, lay.end, s);
+  b.ret(fnvLoop(b, data, start, end));
+  return b.finish();
+};
+
+/**
+ * $stringHash(s) -> i32: memoized FNV-1a — a cached non-zero
+ * #hashCode returns directly; otherwise hash, coerce 0 to 1 (0 means
+ * "uncomputed"), store the cache, return.
+ */
+let synthStringHash = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let lay = stringLayoutOf(wasm);
+  if (lay.hashCode == null) {
+    throw new Error('string helper synthesis: $stringHash layout');
+  }
+  let hashField = lay.hashCode as String;
+  let i32vt = new ValTypeI32() as ValType;
+  let b = new IrBuilder();
+  let params = entryOf(b, func);
+  let s = params[0];
+  let cached = fieldGet(b, lay.st, hashField, s);
+  let missB = b.newBlock();
+  let hitB = b.newBlock();
+  b.brIf(cached, hitB, new Array<i32>(), missB, new Array<i32>());
+
+  b.switchTo(hitB);
+  b.ret(cached);
+
+  b.switchTo(missB);
+  let data = fieldGet(b, lay.st, lay.data, s);
+  let start = fieldGet(b, lay.st, lay.start, s);
+  let end = fieldGet(b, lay.st, lay.end, s);
+  let h = fnvLoop(b, data, start, end);
+  // h == 0 -> 1, so the cache sentinel stays unambiguous.
+  let zeroB = b.newBlock();
+  let storeB = b.newBlock();
+  let hFinal = b.blockParam(storeB, i32vt);
+  var hArgs = new Array<i32>();
+  hArgs.push(h);
+  b.brIf(h, storeB, hArgs, zeroB, new Array<i32>());
+  b.switchTo(zeroB);
+  var oneArg = new Array<i32>();
+  oneArg.push(i32c(b, 1));
+  b.br(storeB, oneArg);
+  b.switchTo(storeB);
+  fieldSet(b, lay.st, hashField, s, hFinal);
+  b.ret(hFinal);
+  return b.finish();
+};
+
+/**
+ * wasi_write_string_helper(fd, str): copies the string's bytes into
+ * the fixed linear-memory scratch window and calls the fd_write
+ * import, dropping the errno — streaming's exact layout (string
+ * bytes at 64, iovec at 0, nwritten at 8).
+ */
+let synthWasiWriteString = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let lay = stringLayoutOf(wasm);
+  var fdWrite: WasmFunction | null = null;
+  for (let f in wasm.functionImports) {
+    if (f.importName != null && (f.importName as String) == 'fd_write') {
+      fdWrite = f;
+    }
+  }
+  if (fdWrite == null) {
+    throw new Error('string helper synthesis: fd_write import not found');
+  }
+  let i32vt = new ValTypeI32() as ValType;
+  let b = new IrBuilder();
+  let params = entryOf(b, func);
+  let fd = params[0];
+  let sRaw = params[1];
+
+  // null string: nothing to write.
+  let isNull = b.emit(IrOp.ref_is_null, i32vt, sRaw, -1);
+  let retB = b.newBlock();
+  let contB = b.newBlock();
+  b.brIf(isNull, retB, new Array<i32>(), contB, new Array<i32>());
+  b.switchTo(retB);
+  b.retVoid();
+
+  b.switchTo(contB);
+  let vt = new ValTypeRef(lay.st) as ValType;
+  let s = b.emit(IrOp.ref_cast, vt, sRaw, b.internType(vt));
+  let data = fieldGet(b, lay.st, lay.data, s);
+  let start = fieldGet(b, lay.st, lay.start, s);
+  let end = fieldGet(b, lay.st, lay.end, s);
+  let len = b.binary(IrOp.i32_sub, i32vt, end, start);
+  let emptyB = b.newBlock();
+  let writeB = b.newBlock();
+  b.brIf(len, writeB, new Array<i32>(), emptyB, new Array<i32>());
+  b.switchTo(emptyB);
+  b.retVoid();
+
+  // copy loop: mem[64 + i] = data[start + i]
+  b.switchTo(writeB);
+  let header = b.newBlock();
+  let iParam = b.blockParam(header, i32vt);
+  var iInit = new Array<i32>();
+  iInit.push(i32c(b, 0));
+  b.br(header, iInit);
+  b.switchTo(header);
+  let done = b.binary(IrOp.i32_ge_s, i32vt, iParam, len);
+  let bodyB = b.newBlock();
+  let afterB = b.newBlock();
+  b.brIf(done, afterB, new Array<i32>(), bodyB, new Array<i32>());
+  b.switchTo(bodyB);
+  let addr = b.binary(IrOp.i32_add, i32vt, i32c(b, 64), iParam);
+  let srcIdx = b.binary(IrOp.i32_add, i32vt, start, iParam);
+  let byte = b.emit(IrOp.array_get_u, i32vt, data, srcIdx);
+  var storePair = new Array<i32>();
+  storePair.push(addr);
+  storePair.push(byte);
+  b.emitVoid(IrOp.i32_store8, b.pushExtra(storePair), 0);
+  let next = b.binary(IrOp.i32_add, i32vt, iParam, i32c(b, 1));
+  var back = new Array<i32>();
+  back.push(next);
+  b.br(header, back);
+
+  b.switchTo(afterB);
+  var iov0 = new Array<i32>();
+  iov0.push(i32c(b, 0));
+  iov0.push(i32c(b, 64));
+  b.emitVoid(IrOp.i32_store, b.pushExtra(iov0), 2);
+  var iov1 = new Array<i32>();
+  iov1.push(i32c(b, 4));
+  iov1.push(len);
+  b.emitVoid(IrOp.i32_store, b.pushExtra(iov1), 2);
+  let args = new Array<i32>();
+  args.push(fd);
+  args.push(i32c(b, 0));
+  args.push(i32c(b, 1));
+  args.push(i32c(b, 8));
+  let fw = fdWrite as WasmFunction;
+  let resultType = if (fw.signature.returns.length == 1) {
+    fw.signature.returns[0]
+  } else {
+    null
+  };
+  b.callFunc(b.addRef(new IrRefFunc(fw)), args, resultType);
+  // errno intentionally ignored, mirroring streaming's drop.
+  b.retVoid();
+  return b.finish();
+};
+
+/**
+ * Routes a named scaffold helper to its synthesizer, or null when the
+ * name is not one of the seven.
+ */
+export let synthesizeScaffold = (wasm: WasmModule, func: WasmFunction): IrBody | null => {
+  if (func.name == null) {
+    return null;
+  }
+  let name = func.name as String;
+  if (name == '$stringCreate') { return synthStringCreate(wasm, func); }
+  if (name == '$stringSetByte') { return synthStringSetByte(wasm, func); }
+  if (name == '$stringGetByte') { return synthStringGetByte(wasm, func); }
+  if (name == '$stringGetLength') { return synthStringGetLength(wasm, func); }
+  if (name == '$stringHash') { return synthStringHash(wasm, func); }
+  if (name == 'string_hash_helper') { return synthStringHashHelper(wasm, func); }
+  if (name == 'wasi_write_string_helper') { return synthWasiWriteString(wasm, func); }
+  return null;
+};
