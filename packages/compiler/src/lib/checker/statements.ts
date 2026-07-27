@@ -5286,6 +5286,22 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
     checkSuperInitializer(ctx, method.superInitializer);
   }
 
+  // An extension-class constructor produces its value solely through
+  // super(<underlying value>) — without a super call there is nothing
+  // to return, so it is required.
+  if (
+    methodName === CONSTRUCTOR_NAME &&
+    !method.isStatic &&
+    ctx.currentClass?.isExtension &&
+    !method.superInitializer
+  ) {
+    ctx.diagnostics.reportError(
+      `Extension class constructor must call 'super' with the underlying value.`,
+      DiagnosticCode.ArgumentCountMismatch,
+      ctx.getLocation(method.loc),
+    );
+  }
+
   // Validate that all non-nullable fields are initialized (constructors only)
   if (methodName === CONSTRUCTOR_NAME && ctx.currentClass) {
     const classType = ctx.currentClass;
@@ -5401,7 +5417,7 @@ function checkSuperInitializer(
       ctx.diagnostics.reportError(
         `Extension class constructor must call 'super' with exactly one argument.`,
         DiagnosticCode.ArgumentCountMismatch,
-        undefined /* TODO fix location */,
+        ctx.getLocation(superInit.loc),
       );
     } else {
       const argType = checkExpression(ctx, superInit.arguments[0]);
@@ -5409,7 +5425,7 @@ function checkSuperInitializer(
         ctx.diagnostics.reportError(
           `Type mismatch in super call: expected ${typeToString(ctx.currentClass.onType)}, got ${typeToString(argType)}`,
           DiagnosticCode.TypeMismatch,
-          undefined /* TODO fix location */,
+          ctx.getLocation(superInit.arguments[0].loc),
         );
       }
     }

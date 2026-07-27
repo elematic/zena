@@ -2673,6 +2673,32 @@ export final extension class FixedArray<T> on array<T> {
 }
 ```
 
+#### Constructors
+
+An extension-class constructor builds a value of the extended type. It takes
+only its declared parameters (there is no receiver — nothing exists yet), and
+it must call `super` with exactly one argument: the underlying value, which
+must be assignable to the `on` type. `new Ext(...)` evaluates to that value,
+viewed as the extension type. A constructor body may follow the `super`
+initializer; it runs with `this` bound to the value.
+
+```zena
+export final extension class FixedArray<T> on array<T> {
+  new(length: i32, value: T) : super(__array_new(length, value));
+}
+```
+
+Because extension classes are erased, `new Ext(...)` compiles to an ordinary
+call — no allocation happens beyond what the `super` argument itself creates.
+
+Rules:
+
+- The `super` call is required: without it the constructor has no value to
+  return.
+- `super` takes exactly one argument, assignable to the `on` type.
+- Field initializer lists (`this.x` parameters) are not available — extension
+  classes cannot declare instance fields.
+
 ### Static Symbols
 
 Static Symbols allow you to define unique identifiers for methods and fields

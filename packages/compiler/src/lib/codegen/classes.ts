@@ -2650,7 +2650,6 @@ export function registerClassMethods(
       `Class ${decl.name.name} not found in registerClassMethods`,
     );
   }
-
   if (classInfo.methodsRegistered) {
     return;
   }
@@ -3694,6 +3693,25 @@ export function registerClassMethods(
     !currentSuperClassInfo?.vtableTypeIndex
   ) {
     generateInterfaceVTable(ctx, classInfo, decl);
+
+    // Vtable creation is skipped, but the class's method bodies —
+    // notably a written constructor — must still be generated, or their
+    // registered functions are emitted with empty (invalid) bodies.
+    const extDeclForGen = {
+      ...decl,
+      body: mergedBody,
+      superClass: currentSuperClassInfo
+        ? {type: NodeType.Identifier, name: currentSuperClassInfo.name}
+        : decl.superClass,
+    } as ClassDeclaration;
+    const extCapturedModule =
+      ctx.currentModule ?? ctx.stmtToModule.get(decl) ?? null;
+    ctx.bodyGenerators.push(() => {
+      const savedModule = ctx.currentModule;
+      ctx.currentModule = extCapturedModule;
+      generateClassMethods(ctx, extDeclForGen, undefined, classType);
+      ctx.currentModule = savedModule;
+    });
 
     ctx.currentClass = previousCurrentClass;
     return;

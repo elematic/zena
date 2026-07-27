@@ -560,6 +560,7 @@ final class FunctionLowerer {
     var bodyNode: Node | null = null;
     var paramOffset = 0;
     var ctorDef: MethodDefinition | null = null;
+    var extCtorDef: MethodDefinition | null = null;
     let node = this.func.node as Node;
     var setterParamIdent: Identifier | null = null;
     if (node is MethodDefinition) {
@@ -574,7 +575,15 @@ final class FunctionLowerer {
         methName = (md.name as Identifier).name;
       }
       if (methName == "<constructor>") {
-        ctorDef = md;
+        if (this.func.classType != null &&
+            (this.func.classType as ClassType).isExtension) {
+          // Extension constructors take NO receiver (their signature
+          // is the declared params, returning the underlying value).
+          extCtorDef = md;
+          paramOffset = 0;
+        } else {
+          ctorDef = md;
+        }
       }
     } else if (node is AccessorDeclaration) {
       // Written getter body: `this` plus no declared parameters.
@@ -692,6 +701,10 @@ final class FunctionLowerer {
       this.#lowerClosurePrologue(ctxParam);
     }
 
+    if (extCtorDef != null) {
+      this.#lowerExtensionConstructor(extCtorDef as MethodDefinition, sig);
+      return this.b.finish();
+    }
     if (ctorDef != null) {
       this.#lowerConstructorPrologue(ctorDef as MethodDefinition);
       if (bodyNode != null) {
@@ -978,6 +991,44 @@ final class FunctionLowerer {
     }
     // Unsupported field kinds hash to 0 (mirrors streaming).
     return this.b.constI32(0, i32vt);
+  }
+
+  /**
+   * Extension-class constructors have no receiver and RETURN the
+   * underlying value: `new(len, v) : super(expr)` evaluates the
+   * single super argument to the onType value, which becomes `this`
+   * for any body statements and the function's result — streaming's
+   * shape, with the this-local replaced by an SSA value. (A bare
+   * `return;` in such a body would emit a void return against a
+   * one-result signature; the verifier and wasm validation reject
+   * that loudly. No stdlib extension constructor has a body today.)
+   */
+  #lowerExtensionConstructor(md: MethodDefinition, sig: WasmSignature): void {
+    if (sig.returns.length != 1) {
+      this.#bail('extension constructor shape');
+    }
+    if (md.initializerList != null) {
+      this.#bail('extension constructor initializers');
+    }
+    if (md.superInitializer == null) {
+      this.#bail('extension constructor without super');
+    }
+    let si = md.superInitializer as SuperInitializer;
+    if (si.args.length != 1) {
+      this.#bail('extension super arity');
+    }
+    this.#requireSupported(sig.returns[0], 'extension constructor type');
+    let value = this.#lowerExpressionCtx(si.args[0], sig.returns[0]);
+    if (!isValSubtype(this.#valueType(value), sig.returns[0])) {
+      this.#bail('extension constructor value type');
+    }
+    this.thisValue = value;
+    if (md.body != null) {
+      this.#lowerStatement(md.body as Statement);
+    }
+    if (this.reachable) {
+      this.b.ret(this.thisValue);
+    }
   }
 
   /**

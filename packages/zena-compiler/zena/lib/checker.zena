@@ -7973,7 +7973,42 @@ let checkMethodBody = (
     case _: ""
   };
   if (methodName == "<constructor>") {
-    if (md.superInitializer != null) {
+    if (classType.isExtension && !md.isStatic) {
+      // An extension-class constructor produces its value solely
+      // through super(<underlying value>): required, exactly one
+      // argument, assignable to the extended type.
+      if (md.superInitializer == null) {
+        ctx.error(
+          "Extension class constructor must call 'super' with the underlying value.",
+          DiagnosticCode.ArgumentCountMismatch,
+          md.loc
+        );
+      } else {
+        let superInit = md.superInitializer as SuperInitializer;
+        if (superInit.args.length != 1) {
+          ctx.error(
+            "Extension class constructor must call 'super' with exactly one argument.",
+            DiagnosticCode.ArgumentCountMismatch,
+            superInit.loc
+          );
+          for (let arg in superInit.args) {
+            checkExpression(ctx, arg, null);
+          }
+        } else {
+          let argType = checkExpression(ctx, superInit.args[0], null);
+          if (classType.onType != null &&
+              !isAssignableTo(ctx, argType, classType.onType as Type)) {
+            ctx.error(
+              "Type mismatch in super call: expected " +
+              typeToString(classType.onType as Type) + ", got " +
+              typeToString(argType),
+              DiagnosticCode.TypeMismatch,
+              superInit.args[0].loc
+            );
+          }
+        }
+      }
+    } else if (md.superInitializer != null) {
       let superInit = md.superInitializer as SuperInitializer;
       for (let arg in superInit.args) {
         checkExpression(ctx, arg, null);

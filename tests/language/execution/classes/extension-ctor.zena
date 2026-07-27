@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 4321
+// Extension-class constructors: no receiver, super(expr) supplies the
+// underlying value, `new Ext(...)` is an ordinary call returning that
+// value viewed as the extension type, and a constructor body runs
+// after `this` is bound.
+
+class Point {
+  x: i32;
+  y: i32;
+  new(this.x, this.y);
+}
+
+var made = 0;
+
+extension class Diag on Point {
+  new(n: i32) : super(new Point(n, n));
+  sum(): i32 {
+    return this.x + this.y;
+  }
+}
+
+extension class Shifted on Point {
+  new(x: i32, shift: i32) : super(new Point(x + shift, shift)) {
+    made += 1;
+  }
+}
+
+export let main = (): i32 => {
+  var acc = 0;
+  let d = new Diag(21);
+  if (d.sum() == 42) { acc += 1; }
+  if ((d as Point).x == 21) { acc += 20; }
+  let s = new Shifted(40, 2);
+  if ((s as Point).x == 42) { acc += 300; }
+  if (made == 1) { acc += 4000; }
+  return acc;
+};
