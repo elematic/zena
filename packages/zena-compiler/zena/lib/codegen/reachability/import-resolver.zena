@@ -1,0 +1,104 @@
+import { Program, CompilationUnit } from '../../program.zena';
+import { SemanticModel } from '../../semantic-model.zena';
+import { ImportSpecifier, ImportDeclaration, Node, Module } from '../../ast.zena';
+import { Type, FunctionType, TupleType, RecordType } from '../../types.zena';
+import { Symbol, SymbolId } from '../../scope/symbol.zena';
+import { dirName, normalizePath } from '../../module-resolver.zena';
+import { Array } from 'zena:array';
+
+let matchOverloadForImport = (fnType: Type, expectedType: Type): boolean => {
+  if (!(fnType is FunctionType) || !(expectedType is FunctionType)) {
+    return false;
+  }
+  let targetFn = fnType as FunctionType;
+  let expFn = expectedType as FunctionType;
+  if (targetFn.parameters.length != expFn.parameters.length) {
+    return false;
+  }
+  return true;
+};
+
+export let resolveImportedSymbolId = (program: Program, model: SemanticModel, spec: ImportSpecifier, expectedType: Type | null = null): SymbolId => {
+  var parentNode = model.getParent(spec);
+  if (parentNode == null) {
+    for (let u in program.units) {
+      if (u.model == model || u.ast.path == model.sourcePath) {
+        for (let stmt in u.ast.body) {
+          if (stmt is ImportDeclaration) {
+            let imp = stmt as ImportDeclaration;
+            for (let s in imp.imports) {
+              if (s == spec || s.imported.name == spec.imported.name) {
+                parentNode = imp;
+                break;
+              }
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+  if (parentNode == null || !(parentNode is ImportDeclaration)) {
+    return -1 as SymbolId;
+  }
+  let importDecl = parentNode as ImportDeclaration;
+  let specifier = importDecl.moduleSpecifier.value;
+  
+  var canonicalPath = specifier;
+  if (specifier.startsWith("./") || specifier.startsWith("../")) {
+    let referrer = model.getParent(importDecl);
+    if (referrer != null && referrer is Module) {
+      let mod = referrer as Module;
+      let dir = dirName(mod.path);
+      canonicalPath = normalizePath(dir + "/" + specifier);
+    }
+  }
+  
+  var targetUnitOpt: CompilationUnit | null = if (program.unitsByPath.has(canonicalPath)) program.unitsByPath[canonicalPath] else null;
+  if (targetUnitOpt == null) {
+    let searchSuffix = if (canonicalPath.startsWith("zena:")) (canonicalPath.sliceBytes(5, canonicalPath.length) + ".zena") else canonicalPath;
+    for (let u in program.units) {
+      if (u.ast.path == canonicalPath || u.ast.path.endsWith("/" + searchSuffix) || u.ast.path.endsWith(searchSuffix)) {
+        targetUnitOpt = u;
+        break;
+      }
+    }
+  }
+  if (targetUnitOpt == null) {
+    return -1 as SymbolId;
+  }
+  let targetUnit = targetUnitOpt as CompilationUnit;
+  let importedName = spec.imported.name;
+  
+  let key1 = targetUnit.ast.path + "::" + importedName;
+  let key2 = canonicalPath + "::" + importedName;
+  let listOpt: Array<Symbol> | null = if (program.exportedSymbols.has(key1)) {
+    program.exportedSymbols[key1]
+  } else if (program.exportedSymbols.has(key2)) {
+    program.exportedSymbols[key2]
+  } else {
+    null
+  };
+  if (listOpt != null) {
+    let list = listOpt as Array<Symbol>;
+    var fallback: Symbol | null = null;
+    for (let sym in list) {
+      if (expectedType == null) {
+        return sym.id;
+      }
+      let declNode = sym.declaration;
+      if (declNode != null) {
+        let nodeType = targetUnit.model.getNodeType(declNode as Node);
+        if (nodeType != null && matchOverloadForImport(nodeType as Type, expectedType as Type)) {
+          return sym.id;
+        }
+      }
+      if (fallback == null) { fallback = sym; }
+    }
+    if (fallback != null) {
+      return (fallback as Symbol).id;
+    }
+  }
+  
+  return -1 as SymbolId;
+};

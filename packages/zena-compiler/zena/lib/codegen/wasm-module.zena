@@ -1224,6 +1224,56 @@ export final class WasmModule {
     this.ensureStringGetLength(model);
   }
 
+  ensureStringLiteralHelpers(model: SemanticModel): void {
+    if (this.stringFromSharedFunc != null && this.getStringLiteralFunc != null) {
+      return;
+    }
+    let sKey = getClassKey(this.stringClass as ClassType);
+    let info = this.classInfos[sKey];
+    let stringStruct = info.structType;
+    let stringType = new ValTypeRefNull(stringStruct);
+    let stringArrayType = this.getArray(stringType, true);
+    this.stringArrayType = stringArrayType;
+
+    let arrayValType = new ValTypeRef(stringArrayType);
+    let literalsArrayGlobal = new WasmGlobal("string_literals_array", "string_literals_array", arrayValType, false, null, null, model);
+    literalsArrayGlobal.initArraySize = this.stringLiterals.size;
+    this.globals.push(literalsArrayGlobal);
+    this.stringLiteralsArrayGlobal = literalsArrayGlobal;
+
+    let byteArrayStruct = this.getByteArrayType();
+    let byteArrayType = new ValTypeRefNull(byteArrayStruct);
+
+    let sharedGlobalName = "shared_strings_data";
+    let sharedGlobal = new WasmGlobal(sharedGlobalName, sharedGlobalName, byteArrayType, true, null, null, model);
+    this.globals.push(sharedGlobal);
+    this.sharedStringsGlobal = sharedGlobal;
+
+    let sigParams = new Array<ValType>();
+    sigParams.push(new ValTypeI32()); // offset
+    sigParams.push(new ValTypeI32()); // length
+    let sigReturns = new Array<ValType>();
+    sigReturns.push(stringType);
+
+    let sig = this.getSignature(sigParams, sigReturns);
+    let helperFunc = new WasmFunction(sig, null, model);
+    helperFunc.name = "string_from_shared";
+    this.addFunction(helperFunc);
+    this.stringFromSharedFunc = helperFunc;
+
+    let getSigParams = new Array<ValType>();
+    getSigParams.push(new ValTypeI32()); // id
+    let getSigReturns = new Array<ValType>();
+    let nonNullableStringType = new ValTypeRef(stringStruct);
+    getSigReturns.push(nonNullableStringType);
+
+    let getSig = this.getSignature(getSigParams, getSigReturns);
+    let getHelperFunc = new WasmFunction(getSig, null, model);
+    getHelperFunc.name = "get_string_literal";
+    this.addFunction(getHelperFunc);
+    this.getStringLiteralFunc = getHelperFunc;
+  }
+
   ensureHashInfra(model: SemanticModel): void {
     if (this.stringHashFunc != null) {
       return;

@@ -227,10 +227,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           this.specializer.instantiateClassType(ct, model);
         }
         if (func.node != null) {
+          let fnNode = func.node as Node;
+          this.nodeIdToNode[fnNode.id as i32] = fnNode;
+          this.nodeIdToModel[fnNode.id as i32] = func.model;
           this.queueReferrer(new Referrer(
             false,
             -1 as SymbolId,
-            (func.node as Node).id as i32,
+            fnNode.id as i32,
             func.model,
             func.classType,
             this.currentReachable,
@@ -548,6 +551,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.markFunctionReached(this.wasm.stringSetByteFunc as WasmFunction);
       this.markFunctionReached(this.wasm.stringGetByteFunc as WasmFunction);
       this.markFunctionReached(this.wasm.stringGetLengthFunc as WasmFunction);
+      if (this.wasm.stringLiterals.size > 0) {
+        this.wasm.ensureStringLiteralHelpers(this.program.units[0].model);
+        this.markFunctionReached(this.wasm.stringFromSharedFunc as WasmFunction);
+        this.markFunctionReached(this.wasm.getStringLiteralFunc as WasmFunction);
+      }
     }
 
     // Populate mixinToClasses mapping
@@ -588,6 +596,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // RTA Roots
     for (let unit in this.program.units) {
       let model = unit.model;
+      let isEntry = this.program.entryPoint != null && unit.ast.path == (this.program.entryPoint as CompilationUnit).ast.path;
       let gKeys = model.globalDeclarations.keys();
       while (let (true, id) = gKeys.next()) {
         let decl = model.globalDeclarations[id];
@@ -596,12 +605,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         
         if (decl is VariableDeclaration) {
           let vd = decl as VariableDeclaration;
-          isExported = vd.exported;
-          if (vd.pattern is IdentifierPattern && (vd.pattern as IdentifierPattern).name == "main") {
+          isExported = isEntry && vd.exported;
+          if (isEntry && vd.pattern is IdentifierPattern && (vd.pattern as IdentifierPattern).name == "main") {
             isMain = true;
           }
         } else if (decl is DeclareFunction) {
-          isExported = (decl as DeclareFunction).exported;
+          isExported = isEntry && (decl as DeclareFunction).exported;
         }
         
         if (isMain || isExported) {
@@ -630,9 +639,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.specializer.instantiateClassType(tsaClass, this.getClassModel(tsaClass));
     }
 
+    this.ensureAllHelperFunctionsReached();
+
     performance.end(tInit);
     let tQueues = performance.start("codegen-discovery-queues");
     // Main reachability queue traversal
+    this.processQueues();
+
+    this.ensureAllHelperFunctionsReached();
     this.processQueues();
     performance.end(tQueues);
     let tLayout = performance.start("codegen-discovery-layout");
@@ -1213,6 +1227,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
+    this.currentReachable = true;
+
+    if (this.wasm.stringClass != null && this.wasm.stringLiterals.size > 0) {
+      this.wasm.ensureStringLiteralHelpers(this.program.units[0].model);
+      this.markFunctionReached(this.wasm.stringFromSharedFunc as WasmFunction);
+      this.markFunctionReached(this.wasm.getStringLiteralFunc as WasmFunction);
+    }
+
+    this.ensureAllHelperFunctionsReached();
+    this.processQueues();
+
     for (let t in this.wasm.tags) {
       this.markTypeReached(t.signature);
     }
@@ -1226,13 +1251,66 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let isReached = this.reachedFunctionsSet.has(f);
       if (isReached) {
         reachedList.push(f);
+        this.markTypeReached(f.signature);
       }
     }
     this.wasm.functions = reachedList;
+
+    if (this.wasm.stringCreateFunc != null) { this.markTypeReached((this.wasm.stringCreateFunc as WasmFunction).signature); }
+    if (this.wasm.stringSetByteFunc != null) { this.markTypeReached((this.wasm.stringSetByteFunc as WasmFunction).signature); }
+    if (this.wasm.stringGetByteFunc != null) { this.markTypeReached((this.wasm.stringGetByteFunc as WasmFunction).signature); }
+    if (this.wasm.stringGetLengthFunc != null) { this.markTypeReached((this.wasm.stringGetLengthFunc as WasmFunction).signature); }
     
     this.closeReachedTypes();
     this.wasm.types = this.emittedTypes;
     performance.end(tLayout3);
+  }
+
+  ensureAllHelperFunctionsReached(): void {
+    for (let unit in this.program.units) {
+      let mod = unit.ast;
+      let model = unit.model;
+      for (let stmt in mod.body) {
+        if (stmt != null && stmt is ImportDeclaration) {
+          this.visitor.discoverImportDeclaration(stmt as ImportDeclaration, model);
+        }
+      }
+    }
+
+    if (this.wasm.stringClass != null) {
+      this.wasm.ensureStringHelpers(this.program.units[0].model);
+      if (this.wasm.stringCreateFunc != null) { this.markFunctionReached(this.wasm.stringCreateFunc as WasmFunction); }
+      if (this.wasm.stringSetByteFunc != null) { this.markFunctionReached(this.wasm.stringSetByteFunc as WasmFunction); }
+      if (this.wasm.stringGetByteFunc != null) { this.markFunctionReached(this.wasm.stringGetByteFunc as WasmFunction); }
+      if (this.wasm.stringGetLengthFunc != null) { this.markFunctionReached(this.wasm.stringGetLengthFunc as WasmFunction); }
+    }
+    if (this.wasm.wasiWriteStringHelper != null) {
+      this.markFunctionReached(this.wasm.wasiWriteStringHelper as WasmFunction);
+    }
+    if (this.wasm.stringHashFunc != null) {
+      this.markFunctionReached(this.wasm.stringHashFunc as WasmFunction);
+    }
+    if (this.wasm.i32ToStringFunc != null) {
+      this.markFunctionReached(this.wasm.i32ToStringFunc as WasmFunction);
+    }
+    if (this.wasm.u32ToStringFunc != null) {
+      this.markFunctionReached(this.wasm.u32ToStringFunc as WasmFunction);
+    }
+    if (this.wasm.i64ToStringFunc != null) {
+      this.markFunctionReached(this.wasm.i64ToStringFunc as WasmFunction);
+    }
+    if (this.wasm.u64ToStringFunc != null) {
+      this.markFunctionReached(this.wasm.u64ToStringFunc as WasmFunction);
+    }
+    if (this.wasm.f32ToStringFunc != null) {
+      this.markFunctionReached(this.wasm.f32ToStringFunc as WasmFunction);
+    }
+    if (this.wasm.f64ToStringFunc != null) {
+      this.markFunctionReached(this.wasm.f64ToStringFunc as WasmFunction);
+    }
+    if (this.wasm.boolToStringFunc != null) {
+      this.markFunctionReached(this.wasm.boolToStringFunc as WasmFunction);
+    }
   }
 
   traverseDependencies(deps: SymbolDependencies, model: SemanticModel, classType: ClassType | null, typeArguments: Array<Type> | null = null, node: Node | null = null): void {

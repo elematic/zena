@@ -1,5 +1,7 @@
 import { Node, CallExpression, Identifier, Expression, ImportSpecifier, MemberExpression, SuperExpression, ClassDeclaration, ImportDeclaration, Module, IdentifierPattern, DeclareFunction, VariableDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, SymbolDeclaration, getMemberPropertyName, NewExpression, PropertyAssignment } from '../../ast.zena';
 import { walk } from '../../visitor.zena';
+import { Program } from '../../program.zena';
+import { resolveImportedSymbolId } from '../reachability/import-resolver.zena';
 import { Type, FunctionType, ClassType, InterfaceType, VoidType, ArrayType, UnionType, TypeParameterType, typeToString, isVoidOrNeverType, instantiateClassType, isRefType, baseType } from '../../types.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
@@ -427,8 +429,13 @@ export let generateCallExpression = (ctx: FunctionContext, call: CallExpression,
             }
           }
           
-          if (ctx.wasm.functionMap.has(resolved.id)) {
-            let f = ctx.wasm.functionMap[resolved.id];
+          var targetSymId = resolved.id;
+          if (resolved.declaration != null && resolved.declaration is ImportSpecifier) {
+            let model = ctx.wasmFunction.model;
+            targetSymId = resolveImportedSymbolId(model.program as Program, model, resolved.declaration as ImportSpecifier, ft);
+          }
+          if (targetSymId != (-1 as SymbolId) && ctx.wasm.functionMap.has(targetSymId)) {
+            let f = ctx.wasm.functionMap[targetSymId];
             generateCallArguments(ctx, call, ft, -1, currentGenExpr);
             ctx.emitter.emitCall(f);
             return;

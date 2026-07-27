@@ -18,6 +18,7 @@ import { collectValueExports } from '../function-generator.zena';
 import { dirName, normalizePath } from '../../module-resolver.zena';
 import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
+import { resolveImportedSymbolId } from './import-resolver.zena';
 
 /**
  * TypeLowerer translates Zena semantic types into their target WebAssembly representation,
@@ -723,32 +724,39 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           }
         }
         
-        let rawNodeType = model.getNodeType(n);
-        if (rawNodeType != null) {
-          let nodeType = resolveType(rawNodeType);
-          if (isCallee) {
-            if (nodeType is FunctionType) {
-              let ft = nodeType as FunctionType;
-              let sym = model.resolve(n as Identifier);
-              if (sym != null) {
-                let symVal = sym as Symbol;
-                var targetSymId = symVal.id;
-                if (symVal.declaration != null && symVal.declaration is ImportSpecifier) {
-                  targetSymId = resolveImportedSymbolId(this.pass.program, model, symVal.declaration as ImportSpecifier, null);
-                }
-                var resolvedArgs = new Array<Type>();
+        if (isCallee) {
+          let sym = model.resolve(n as Identifier);
+          if (sym != null) {
+            let symVal = sym as Symbol;
+            var targetSymId = symVal.id;
+            if (symVal.declaration != null && symVal.declaration is ImportSpecifier) {
+              targetSymId = resolveImportedSymbolId(this.pass.program, model, symVal.declaration as ImportSpecifier, null);
+            }
+            var resolvedArgs = new Array<Type>();
+            let rawNodeType = model.getNodeType(n);
+            if (rawNodeType != null) {
+              let nodeType = resolveType(rawNodeType);
+              if (nodeType is FunctionType) {
+                let ft = nodeType as FunctionType;
                 if (ft.typeArguments != null) {
                   for (let arg in (ft.typeArguments as Array<Type>)) {
                     resolvedArgs.push(arg);
                   }
                 }
-                let isSpecialized = resolvedArgs.length > 0;
-                if (isSpecialized && targetSymId != (-1 as SymbolId) && this.pass.wasm.genericFunctions.has(targetSymId)) {
-                  this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
-                }
               }
             }
-          } else {
+            let isSpecialized = resolvedArgs.length > 0;
+            if (isSpecialized && targetSymId != (-1 as SymbolId) && this.pass.wasm.genericFunctions.has(targetSymId)) {
+              this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
+            } else if (targetSymId != (-1 as SymbolId) && this.pass.wasm.functionMap.has(targetSymId)) {
+              let targetFunc = this.pass.wasm.functionMap[targetSymId];
+              this.pass.markFunctionReached(targetFunc);
+            }
+          }
+        } else {
+          let rawNodeType = model.getNodeType(n);
+          if (rawNodeType != null) {
+            let nodeType = resolveType(rawNodeType);
             this.discoverIdentifierReferenceAsValue(n as Identifier, model, nodeType);
           }
         }
@@ -1008,7 +1016,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let sym = moduleModel.resolveDeclaration(ident);
           if (sym != null) {
             this.pass.wasm.functionMap[sym.id] = wasmFunc;
-            if (varDecl.exported) {
+            let isEntry = this.pass.program.entryPoint != null && moduleModel.sourcePath == (this.pass.program.entryPoint as CompilationUnit).ast.path;
+            if ((varDecl.exported || ident.name == "main") && isEntry) {
               this.pass.wasm.exportMap[ident.name as ExportKey] = wasmFunc;
             }
             if (this.pass.currentReachable) {
@@ -1044,7 +1053,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.wasm.globals.push(wasmGlobal);
           this.pass.wasm.globalMap[sym.id] = wasmGlobal;
           
-          if (varDecl.exported) {
+          let isEntry = this.pass.program.entryPoint != null && moduleModel.sourcePath == (this.pass.program.entryPoint as CompilationUnit).ast.path;
+          if (varDecl.exported && isEntry) {
             this.pass.wasm.exportGlobalMap[ident.name as ExportGlobalKey] = wasmGlobal;
           }
         }
@@ -1101,6 +1111,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                     if (this.pass.wasm.functionMap.has(exportSym.id)) {
                       let f = this.pass.wasm.functionMap[exportSym.id];
                       f.isReferenceTaken = true;
+                      this.pass.markFunctionReached(f);
                       if (f.closureTrampoline == null) {
                         let tParams = new Array<ValType>();
                         tParams.push(new ValTypeStructRef());
@@ -1116,6 +1127,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                         trampoline.isReferenceTaken = true;
                         f.closureTrampoline = trampoline;
                         this.pass.wasm.addFunction(trampoline);
+                        this.pass.markFunctionReached(trampoline);
                       }
                     }
                   }
@@ -1374,53 +1386,7 @@ let eraseType = (t: Type): Type => {
   };
 };
 
-let resolveImportedSymbolId = (program: Program, model: SemanticModel, spec: ImportSpecifier, expectedType: Type | null = null): SymbolId => {
-  let parentNode = model.getParent(spec);
-  if (parentNode == null || !(parentNode is ImportDeclaration)) {
-    return -1 as SymbolId;
-  }
-  let importDecl = parentNode as ImportDeclaration;
-  let specifier = importDecl.moduleSpecifier.value;
-  
-  var canonicalPath = specifier;
-  if (specifier.startsWith("./") || specifier.startsWith("../")) {
-    let referrer = model.getParent(importDecl);
-    if (referrer != null && referrer is Module) {
-      let mod = referrer as Module;
-      let dir = dirName(mod.path);
-      canonicalPath = normalizePath(dir + "/" + specifier);
-    }
-  }
-  
-  if (!program.unitsByPath.has(canonicalPath)) {
-    return -1 as SymbolId;
-  }
-  
-  let targetUnit = program.unitsByPath[canonicalPath];
-  let importedName = spec.imported.name;
-  
-  let key = canonicalPath + "::" + importedName;
-  if (let (true, list) = program.exportedSymbols.get(key)) {
-    var fallback: Symbol | null = null;
-    for (let sym in list) {
-      if (expectedType == null) {
-        return sym.id;
-      }
-      let declNode = sym.declaration;
-      if (declNode != null) {
-        let nodeType = targetUnit.model.getNodeType(declNode as Node);
-        if (nodeType != null && matchOverloadForImport(nodeType as Type, expectedType as Type)) {
-          return sym.id;
-        }
-      }
-      fallback = sym;
-    }
-    if (fallback != null) {
-      return (fallback as Symbol).id;
-    }
-  }
-  return -1 as SymbolId;
-};
+
 
 let matchTypesForImport = (t1: Type, t2: Type): boolean => {
   if (t1 is TypeParameterType) {

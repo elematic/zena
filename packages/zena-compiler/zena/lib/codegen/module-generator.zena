@@ -229,51 +229,10 @@ export final class ModuleGenerator {
           litIdx += 1;
         }
 
-        // Add the StringArray type (mutable elements)
-        let stringArrayType = wasm.getArray(stringType, true);
-        wasm.stringArrayType = stringArrayType;
-
-        // Add the immutable string literals array global
-        let arrayValType = new ValTypeRef(stringArrayType);
-        let literalsArrayGlobal = new WasmGlobal("string_literals_array", "string_literals_array", arrayValType, false, null, null, this.program.units[0].model);
-        literalsArrayGlobal.initArraySize = wasm.stringLiterals.size;
-        wasm.globals.push(literalsArrayGlobal);
-        wasm.stringLiteralsArrayGlobal = literalsArrayGlobal;
-
-        // Add the shared strings ByteArray global
-        let byteArrayStruct = wasm.getByteArrayType();
-        let byteArrayType = new ValTypeRefNull(byteArrayStruct);
-
-        let sharedGlobalName = "shared_strings_data";
-        let sharedGlobal = new WasmGlobal(sharedGlobalName, sharedGlobalName, byteArrayType, true, null, null, this.program.units[0].model);
-        wasm.globals.push(sharedGlobal);
-        wasm.sharedStringsGlobal = sharedGlobal;
-
-        // Allocate the stringFromShared helper function WasmSignature and WasmFunction
-        let sigParams = new Array<ValType>();
-        sigParams.push(new ValTypeI32()); // offset
-        sigParams.push(new ValTypeI32()); // length
-        let sigReturns = new Array<ValType>();
-        sigReturns.push(stringType);
-
-        let sig = wasm.getSignature(sigParams, sigReturns);
-        let helperFunc = new WasmFunction(sig, null, this.program.units[0].model);
-        helperFunc.name = "string_from_shared";
-        wasm.addFunction(helperFunc);
-        wasm.stringFromSharedFunc = helperFunc;
-
-        // Allocate the getStringLiteral helper function WasmSignature and WasmFunction
-        let getSigParams = new Array<ValType>();
-        getSigParams.push(new ValTypeI32()); // id
-        let getSigReturns = new Array<ValType>();
-        let nonNullableStringType = new ValTypeRef(stringStruct);
-        getSigReturns.push(nonNullableStringType);
-
-        let getSig = wasm.getSignature(getSigParams, getSigReturns);
-        let getHelperFunc = new WasmFunction(getSig, null, this.program.units[0].model);
-        getHelperFunc.name = "get_string_literal";
-        wasm.addFunction(getHelperFunc);
-        wasm.getStringLiteralFunc = getHelperFunc;
+        wasm.ensureStringLiteralHelpers(this.program.units[0].model);
+        if (wasm.stringLiteralsArrayGlobal != null) {
+          (wasm.stringLiteralsArrayGlobal as WasmGlobal).initArraySize = wasm.stringLiterals.size;
+        }
       }
     }
     
@@ -444,6 +403,9 @@ export final class ModuleGenerator {
     this.emitter.emitImportSectionStart(wasm.functionImports.length);
     for (let f in wasm.functionImports) {
       if (f.importModule != null && f.importName != null) {
+        if (f.signature.index < 0) {
+          throw new Error("Function import " + (if (f.name != null) f.name as String else "<unnamed>") + " has unassigned signature index (-1)!");
+        }
         this.emitter.emitFunctionImport(f.importModule as String, f.importName as String, f.signature.index);
       }
     }
@@ -451,6 +413,9 @@ export final class ModuleGenerator {
 
     this.emitter.emitFunctionSectionStart(wasm.functions.length);
     for (let f in wasm.functions) {
+      if (f.signature.index < 0) {
+        throw new Error("Function " + (if (f.name != null) f.name as String else "<unnamed>") + " has unassigned signature index (-1)!");
+      }
       this.emitter.emitFunctionDefinition(f.signature.index);
     }
     this.emitter.emitFunctionSectionEnd();
@@ -462,6 +427,9 @@ export final class ModuleGenerator {
     this.emitter.emitTagSectionStart(wasm.tags.length);
     for (var i = 0; i < wasm.tags.length; i += 1) {
       let tag = wasm.tags[i];
+      if (tag.signature.index < 0) {
+        throw new Error("Tag has unassigned signature index (-1)!");
+      }
       this.emitter.emitTagDefinition(tag.index, tag.signature.index);
     }
     this.emitter.emitTagSectionEnd();
@@ -572,52 +540,30 @@ export final class ModuleGenerator {
           }
         }
       }
-      
+
       this.emitter.emitGlobalEnd();
     }
     this.emitter.emitGlobalSectionEnd();
     
     let exports = new Array<WasmExport>();
-    let entryPoint = this.program.entryPoint;
-    if (entryPoint != null) {
-      let entryMod = (entryPoint as CompilationUnit).ast;
-      let model = (entryPoint as CompilationUnit).model;
-      for (let stmt in entryMod.body) {
-        if (stmt is VariableDeclaration) {
-          if (stmt.exported && stmt.pattern is IdentifierPattern) {
-            let ident = stmt.pattern as IdentifierPattern;
-            let sym = model.resolveDeclaration(ident);
-            if (sym != null) {
-              if (wasm.functionMap.has(sym.id)) {
-                let wasmFunc = wasm.functionMap[sym.id];
-                 exports.push(new WasmExport(ident.name, wasmFunc));
-              }
-            }
-          }
-        } else if (stmt is DeclareFunction) {
-          let df = stmt as DeclareFunction;
-          if (df.exported) {
-            let sym = model.resolveDeclaration(df);
-            if (sym != null) {
-              if (wasm.functionMap.has(sym.id)) {
-                let wasmFunc = wasm.functionMap[sym.id];
-                exports.push(new WasmExport(df.name.name, wasmFunc));
-              }
-            }
-          }
-        }
-      }
+    let expKeys = wasm.exportMap.keys();
+    while (let (true, k) = expKeys.next()) {
+      let f = wasm.exportMap[k];
+      exports.push(new WasmExport(k as String, f));
     }
 
-    for (let f in wasm.functions) {
-      if (f.name != null && (
-        (f.name as String) == "$stringCreate" ||
-        (f.name as String) == "$stringSetByte" ||
-        (f.name as String) == "$stringGetByte" ||
-        (f.name as String) == "$stringGetLength"
-      )) {
-        exports.push(new WasmExport(f.name as String, f));
-      }
+    // Export synthesized runtime string helpers if present
+    if (wasm.stringCreateFunc != null) {
+      exports.push(new WasmExport("$stringCreate", wasm.stringCreateFunc as WasmFunction));
+    }
+    if (wasm.stringSetByteFunc != null) {
+      exports.push(new WasmExport("$stringSetByte", wasm.stringSetByteFunc as WasmFunction));
+    }
+    if (wasm.stringGetByteFunc != null) {
+      exports.push(new WasmExport("$stringGetByte", wasm.stringGetByteFunc as WasmFunction));
+    }
+    if (wasm.stringGetLengthFunc != null) {
+      exports.push(new WasmExport("$stringGetLength", wasm.stringGetLengthFunc as WasmFunction));
     }
     
     // Compute total exports = functions + globals + tags
