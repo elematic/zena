@@ -16,6 +16,19 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Unsigned widening casts: bootstrap uses _u opcodes, self-hosted signs-extends
+- **Found**: 2026-07-27 (lowering `as` casts from unsigned in ZIR)
+- **Severity**: medium (silent wrong values for u32 >= 2^31 / u64 >=
+  2^63 in widening/float casts, self-hosted only)
+- **Workaround**: mask explicitly before widening.
+- **Details**: The bootstrap's AsExpression codegen picks
+  i64.extend_i32_u / f64.convert_i{32,64}_u for unsigned sources; the
+  self-hosted streaming backend has no unsigned conversion path at
+  all and emits the signed variants (e.g. `(3000000000 as u32) as
+  u64` sign-extends). ZIR deliberately mirrors streaming until this
+  is fixed in both self-hosted backends together (the _u IrOps and
+  emitter methods do not exist yet either).
+
 ### Generic interface methods are not virtually dispatchable (diagnostic in place)
 - **Found**: 2026-07-26 (probing primitive type-argument coverage)
 - **Severity**: medium (was: high internal crash — both checkers now

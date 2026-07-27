@@ -1574,6 +1574,10 @@ final class FunctionLowerer {
     if (pat is BindingPattern) {
       pat = (pat as BindingPattern).pattern;
     }
+    if (pat is TuplePattern) {
+      this.#lowerTupleDeclaration(vd, pat as TuplePattern);
+      return;
+    }
     if (!(pat is IdentifierPattern)) {
       this.#bail('destructuring declaration');
     }
@@ -1620,9 +1624,17 @@ final class FunctionLowerer {
     if (values.length != tp.elements.length) {
       this.#bail('let-condition arity');
     }
-    let cond = values[0];
+    var cond = values[0];
     if (!(this.#valueType(cond) is ValTypeI32)) {
       this.#bail('let-condition flag type');
+    }
+    // A literal `false` first element matches when the flag is 0:
+    // invert. Literal `true` and plain bindings take the flag as-is.
+    let first = tp.elements[0];
+    if (first != null && first is BooleanLiteral) {
+      if (!(first as BooleanLiteral).value) {
+        cond = this.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);
+      }
     }
     let syms = new Array<Symbol>();
     let bindValues = new Array<i32>();
@@ -1681,6 +1693,12 @@ final class FunctionLowerer {
    */
   #lowerMultiSource(init: Expression): Array<i32> {
     let out = new Array<i32>();
+    if (init is TupleLiteral) {
+      for (let el in (init as TupleLiteral).elements) {
+        out.push(this.#lowerExpression(el));
+      }
+      return out;
+    }
     if (!(init is CallExpression)) {
       this.#bail('let-condition source');
     }
@@ -1709,6 +1727,54 @@ final class FunctionLowerer {
     }
     this.#bail('let-condition source');
     return out;
+  }
+
+  /**
+   * `let (a, b) = init;` — the init's values come from the same
+   * multi-value machinery as let-conditions (direct calls, interface
+   * next(), or a tuple literal), and each element binds like a plain
+   * declaration: the binding's own checked type, with a runtime
+   * downcast when the source slot is erased/nullable.
+   */
+  #lowerTupleDeclaration(vd: VariableDeclaration, tp: TuplePattern): void {
+    let values = this.#lowerMultiSource(vd.init);
+    if (values.length != tp.elements.length) {
+      this.#bail('destructuring arity');
+    }
+    for (var i = 0; i < tp.elements.length; i += 1) {
+      let el = tp.elements[i];
+      if (el == null || el is LiteralPattern || el is BooleanLiteral ||
+          el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
+        continue;
+      }
+      let symOpt = this.func.model.resolveDeclaration(el as Node);
+      if (symOpt == null) {
+        // `_` and other non-binding elements.
+        continue;
+      }
+      let sym = symOpt as Symbol;
+      let bindingType = this.func.model.getBindingType(sym);
+      if (bindingType == null) {
+        this.#bail('untyped binding');
+      }
+      let bindVt = typeToValTypeWithSub(
+          this.wasm, bindingType as Type, this.func);
+      this.#requireSupported(bindVt, 'binding type');
+      var bound = values[i];
+      if (!isValSubtype(this.#valueType(bound), bindVt)) {
+        if (!isRefValType(bindVt)) {
+          this.#bail('destructured element type');
+        }
+        bound = this.b.emit(IrOp.ref_cast, bindVt, bound,
+            this.b.internType(bindVt));
+      }
+      if (this.#isCelled(sym.id)) {
+        this.env[sym.id] = this.#cellAlloc(bindVt, bound);
+      } else {
+        this.env[sym.id] = bound;
+      }
+      this.symbols[sym.id] = sym;
+    }
   }
 
   #lowerIf(stmt: IfStatement): void {
@@ -2195,6 +2261,94 @@ final class FunctionLowerer {
   /** #slotCallOnValue for members with multi-value returns. */
   #slotCallMulti(recv: i32, memberName: String): Array<i32> {
     return this.#slotCallOnValue(recv, memberName);
+  }
+
+  /**
+   * Static method calls: the receiver expression names the class (its
+   * checked type IS the ClassType), the method resolves by walking
+   * the class and its supertypes for an isStatic registration under
+   * the (overload-mangled) slot name, and the call passes no
+   * receiver — streaming's shape exactly.
+   */
+  #lowerStaticCall(call: CallExpression, member: MemberExpression,
+      multiOut: Array<i32> | null): i32 {
+    let objectType = this.#substitutedNodeType(member.object);
+    if (objectType == null) {
+      this.#bail('untyped static receiver');
+    }
+    let resolved = this.#resolveSelfType(objectType as Type);
+    if (!(resolved is ClassType)) {
+      this.#bail('static receiver kind');
+    }
+    let ct = eraseTypeParameters(resolved) as ClassType;
+    var name = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    // Overload choice belongs to the checker; the recorded selection
+    // reproduces the registered slot name. No record = no overloads.
+    let chosenFt = this.func.model.getResolvedOverload(call);
+    if (chosenFt != null) {
+      name = name + getSignatureKey(chosenFt as FunctionType);
+    }
+    var foundOpt: WasmFunction | null = null;
+    var curr: ClassType | null = ct;
+    while (curr != null && foundOpt == null) {
+      let key = getClassMethodKey(getClassKey(curr as ClassType), name);
+      if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+        if (f.isStatic) {
+          foundOpt = f;
+        }
+      }
+      curr = (curr as ClassType).superType;
+    }
+    if (foundOpt == null) {
+      this.#bail('static method not found');
+    }
+    let target = foundOpt as WasmFunction;
+    if (target.typeParameters != null || target.intrinsic != null) {
+      this.#bail('static method shape');
+    }
+    let sig = target.signature;
+    if (sig.returns.length > 1 && multiOut == null) {
+      this.#bail('method multi-value return');
+    }
+    if (sig.params.length != call.args.length) {
+      this.#bail('static call arity');
+    }
+    let args = new Array<i32>();
+    for (var i = 0; i < sig.params.length; i += 1) {
+      this.#requireSupported(sig.params[i], 'method param type');
+      let v = this.#lowerExpressionCtx(call.args[i], sig.params[i]);
+      if (!isValSubtype(this.#valueType(v), sig.params[i])) {
+        this.#bail('method argument type');
+      }
+      args.push(v);
+    }
+    let fr = this.b.addRef(new IrRefFunc(target));
+    if (sig.returns.length > 1) {
+      for (let r in sig.returns) {
+        this.#requireSupported(r, 'method result type');
+      }
+      let projs = this.b.callFuncMulti(fr, args, sig.returns);
+      let outs = multiOut as Array<i32>;
+      for (let p in projs) {
+        outs.push(p);
+      }
+      return projs[0];
+    }
+    var resultType: ValType | null = null;
+    if (sig.returns.length == 1) {
+      this.#requireSupported(sig.returns[0], 'method result type');
+      resultType = sig.returns[0];
+    }
+    let result = this.b.callFunc(fr, args, resultType);
+    if (resultType != null) {
+      let nodeType = this.func.model.getNodeType(call);
+      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
+        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+        return this.#reassertNonNull(result, want);
+      }
+    }
+    return result;
   }
 
   /**
@@ -3422,9 +3576,38 @@ final class FunctionLowerer {
    * FROM unsigned types bail (no unsigned convert ops wired yet).
    */
   #lowerAs(expr: AsExpression): i32 {
+    let dstVt = this.#exprValType(expr);
+    // Literal-through-cast (`9223372036854775807 as u64`,
+    // `1.5 as f32`): the bare literal checks as i32/f64 and cannot
+    // lower alone at that width — parse it directly at the cast's
+    // width, exactly like streaming's handledLiteral path.
+    if (dstVt is ValTypeI64) {
+      if (expr.expression is NumberLiteral) {
+        if (let (true, wide) = parseI64OrU64Literal(
+            (expr.expression as NumberLiteral).raw)) {
+          return this.b.constI64(wide, dstVt);
+        }
+      }
+      if (expr.expression is UnaryExpression) {
+        let un = expr.expression as UnaryExpression;
+        if (un.operator == '-' && un.argument is NumberLiteral) {
+          if (let (true, wideNeg) = parseI64OrU64Literal(
+              '-' + (un.argument as NumberLiteral).raw)) {
+            return this.b.constI64(wideNeg, dstVt);
+          }
+        }
+      }
+    }
+    if (dstVt is ValTypeF64 && expr.expression is NumberLiteral) {
+      return this.b.constF64(
+          parseF64((expr.expression as NumberLiteral).raw), dstVt);
+    }
+    if (dstVt is ValTypeF32 && expr.expression is NumberLiteral) {
+      return this.b.constF32(
+          parseF64((expr.expression as NumberLiteral).raw), dstVt);
+    }
     let value = this.#lowerExpression(expr.expression);
     let srcVt = this.#valueType(value);
-    let dstVt = this.#exprValType(expr);
     if (valTypeEquals(srcVt, dstVt)) {
       return value;
     }
@@ -3439,9 +3622,11 @@ final class FunctionLowerer {
       return this.b.emit(IrOp.ref_cast, dstVt, value,
           this.b.internType(dstVt));
     }
-    if (this.#isUnsignedNode(expr.expression)) {
-      this.#bail('cast from unsigned');
-    }
+    // NOTE: unsigned sources use the SIGNED conversion ops below,
+    // matching the self-hosted streaming backend exactly (it has no
+    // _u conversion path). The bootstrap DOES use _u opcodes here, so
+    // u32 values >= 2^31 cast to i64/f64 diverge between compilers —
+    // filed in BUGS.md; parity with streaming wins until that ruling.
     if (srcVt is ValTypeI32) {
       if (dstVt is ValTypeI64) { return this.b.emit(IrOp.i64_extend_i32_s, dstVt, value, -1); }
       if (dstVt is ValTypeF64) { return this.b.emit(IrOp.f64_convert_i32_s, dstVt, value, -1); }
@@ -3779,7 +3964,7 @@ final class FunctionLowerer {
       this.#bail('generic method call');
     }
     if (this.func.model.isStaticAccess(member)) {
-      this.#bail('static method call');
+      return this.#lowerStaticCall(call, member, multiOut);
     }
     let objectType = this.#substitutedNodeType(member.object);
     if (objectType == null) {
