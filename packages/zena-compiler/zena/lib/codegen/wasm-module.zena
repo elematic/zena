@@ -1088,18 +1088,18 @@ export final class WasmModule {
     return this.datas.length - 1;
   }
 
-  getStringLiteralDataIndex(value: String): i32 {
-    if (this.stringLiterals.has(value)) {
-      return this.stringLiterals[value];
+  /**
+   * Records a string literal for the shared registry. The packed
+   * shared segment built at layout is the ONE store for literal
+   * bytes: registration creates no per-literal data segment, and
+   * every materialization is a zero-copy view into the shared
+   * backing array. A literal missing from the registry at codegen
+   * time is a discovery bug and fails the compile loudly.
+   */
+  registerStringLiteral(value: String): void {
+    if (!this.stringLiterals.has(value)) {
+      this.stringLiterals[value] = -1;
     }
-    let buf = new ByteBuffer();
-    let len = value.length;
-    for (var i = 0; i < len; i += 1) {
-      buf.writeByte(value.getByteAt(i));
-    }
-    let dataIdx = this.addData(buf);
-    this.stringLiterals[value] = dataIdx;
-    return dataIdx;
   }
 
   ensureMemory(): void {

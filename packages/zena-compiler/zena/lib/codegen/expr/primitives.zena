@@ -223,87 +223,14 @@ export let generateStringLiteral = (ctx: FunctionContext, expr: StringLiteral): 
     return;
   }
 
-  let stringClass = ctx.wasm.stringClass;
-  if (stringClass == null) {
-    throw new Error("String class struct not found during string literal generation!");
-  }
-  let stringKey = getClassKey(stringClass as ClassType);
-  var structTypeOpt: WasmStruct | null = null;
-  var vtableGlobal: WasmGlobal | null = null;
-  if (let (true, stringInfo) = ctx.wasm.classInfos.get(stringKey)) {
-    structTypeOpt = stringInfo.structType;
-    vtableGlobal = stringInfo.vtableGlobal;
-  }
-  if (structTypeOpt == null) {
-    throw new Error("String class struct not found during string literal generation!");
-  }
-  let structType = structTypeOpt as WasmStruct;
-  let tempLocal = ctx.allocLocal(new ValTypeRefNull(structType));
-
-  // 1. Allocate String struct with default values
-  ctx.emitter.emitStructNewDefault(structType.index);
-  ctx.emitter.emitLocalSet(tempLocal);
-
-  // 2. Set vtable (field 0)
-  if (vtableGlobal != null) {
-    ctx.emitter.emitLocalGet(tempLocal);
-    ctx.emitter.emitGlobalGet((vtableGlobal as WasmGlobal).index);
-    ctx.emitter.emitStructSet(structType.index, 0); // vtable is field 0
-  }
-
-  // 3. Find string field offsets
-  var dataFieldIdx = -1;
-  var startFieldIdx = -1;
-  var endFieldIdx = -1;
-  var encodingFieldIdx = -1;
-  for (var f = 0; f < structType.fields.length; f += 1) {
-    let fieldName = structType.fields[f].name;
-    if (fieldName != null) {
-      let nameStr = fieldName as String;
-      if (nameStr.endsWith("::#data")) {
-        dataFieldIdx = f;
-      } else if (nameStr.endsWith("::#start")) {
-        startFieldIdx = f;
-      } else if (nameStr.endsWith("::#end")) {
-        endFieldIdx = f;
-      } else if (nameStr.endsWith("::#encoding")) {
-        encodingFieldIdx = f;
-      }
-    }
-  }
-  if (dataFieldIdx == -1 || startFieldIdx == -1 || endFieldIdx == -1 || encodingFieldIdx == -1) {
-    throw new Error("String fields not found in struct!");
-  }
-
-  // 4. Create the ByteArray from the data segment
-  let dataIndex = ctx.wasm.getStringLiteralDataIndex(expr.value);
-  let byteArrayType = ctx.wasm.getByteArrayType();
-  let byteArrayTypeIndex = byteArrayType.index;
-  
-  ctx.emitter.emitLocalGet(tempLocal);
-  ctx.emitter.emitI32Const(0); // offset
-  ctx.emitter.emitI32Const(expr.value.length); // length
-  ctx.emitter.emitArrayNewData(byteArrayTypeIndex, dataIndex);
-  ctx.emitter.emitStructSet(structType.index, dataFieldIdx);
-
-  // 5. Set #start (index startFieldIdx) to 0
-  ctx.emitter.emitLocalGet(tempLocal);
-  ctx.emitter.emitI32Const(0);
-  ctx.emitter.emitStructSet(structType.index, startFieldIdx);
-
-  // 6. Set #end (index endFieldIdx) to length
-  ctx.emitter.emitLocalGet(tempLocal);
-  ctx.emitter.emitI32Const(expr.value.length);
-  ctx.emitter.emitStructSet(structType.index, endFieldIdx);
-
-  // 7. Set #encoding (index encodingFieldIdx) to 0
-  ctx.emitter.emitLocalGet(tempLocal);
-  ctx.emitter.emitI32Const(0);
-  ctx.emitter.emitStructSet(structType.index, encodingFieldIdx);
-
-  // 8. Return the String instance by getting it to the stack
-  ctx.emitter.emitLocalGet(tempLocal);
-  ctx.emitter.emitRefAsNonNull();
+  // The packed shared segment is the ONE store for literal bytes:
+  // reachability registers every literal it can see (AST walks plus
+  // the dependency-carrying-method walk), so a miss here means a
+  // discovery gap, and building a one-off copy would silently fork
+  // the storage story. Fail the compile instead.
+  throw new Error("String literal missing from the shared registry: '" +
+      expr.value + "' in " +
+      (if (ctx.wasmFunction.name != null) ctx.wasmFunction.name as String else "<unnamed>"));
 };
 
 export let generateTemplateLiteral = (

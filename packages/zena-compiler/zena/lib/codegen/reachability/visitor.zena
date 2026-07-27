@@ -295,6 +295,27 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
 
   new(this.pass);
 
+  /**
+   * Registers every string-literal payload under `root` into the
+   * shared literal registry: plain literals and template elements.
+   * discoverNodeTypes does this as part of its full walk; node-referrer
+   * processing calls THIS when checker-recorded dependencies let it
+   * skip that walk. The dependency records carry no literals, so
+   * skipping the walk used to silently drop any literal whose only
+   * occurrences were in dependency-carrying METHOD bodies, forcing
+   * per-occurrence inline construction in both backends.
+   */
+  registerLiterals(root: Node): void {
+    walkEnter(root, (n: Node) => {
+      if (n is StringLiteral) {
+        this.pass.wasm.registerStringLiteral((n as StringLiteral).value);
+      }
+      if (n is TemplateElement) {
+        this.pass.wasm.registerStringLiteral((n as TemplateElement).cooked);
+      }
+    });
+  }
+
   discoverNodeTypes(root: Node, model: SemanticModel, resolveType: (t: Type) => Type): void {
 
     walkEnter(root, (n: Node) => {
@@ -303,7 +324,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is StringLiteral) {
         let sl = n as StringLiteral;
-        this.pass.wasm.getStringLiteralDataIndex(sl.value);
+        this.pass.wasm.registerStringLiteral(sl.value);
       }
       let typeLowerer = this.pass.typeLowerer;
       let specializer = this.pass.specializer;
@@ -377,7 +398,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is TemplateElement) {
         let tmplEl = n as TemplateElement;
-        this.pass.wasm.getStringLiteralDataIndex(tmplEl.cooked);
+        this.pass.wasm.registerStringLiteral(tmplEl.cooked);
       }
       if (n is TaggedTemplateExpression) {
         let expr = n as TaggedTemplateExpression;

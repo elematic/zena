@@ -497,34 +497,23 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Workaround**: Explicitly assign to a new local instead of overriding: `let classType = unnarrowedType as ClassType;`
 - **Details**: When a variable is narrowed by `if (x is ClassType)`, the Zena type system treats it as narrowed logic-wise, but the underlying Wasm local remains its original generic uncasted type (e.g. `(ref null $Type)`). The bootstrap compiler does not inject dynamic `ref.cast` when later reading this variable to evaluate a property access. Wasm compilation fails with: `type mismatch: expected (ref null $ClassType), found (ref null $Type)`. Assigning it explicitly circumvents the flaw.
 
-### String literal bytes are stored twice; tests wasm is 85 MB
-- **Found**: 2026-07-26 (attempting full literal registration)
-- **Severity**: medium-high (binary bloat; blocks completing the
-  literal registry; __all_tests__.zena output is already 85 MB)
-- **Workaround**: none needed for correctness; leave method-body-only
-  literals out of the registry until storage is deduplicated.
-- **Details**: Every literal that enters the registry gets BOTH a raw
-  per-literal data segment (getStringLiteralDataIndex) and a copy
-  inside the subsequence-packed shared segment. The raw segments are
-  only needed by the inline-construction fallback's array.new_data;
-  registered literals are materialized from the shared segment. For
-  the tests build (huge expected-output fixtures) this doubling
-  dominates: registering the currently-missed method-body literals
-  (SymbolDependencies.stringLiterals is declared but NEVER populated,
-  and the node-referrer path skips discoverNodeTypes when checker deps
-  exist — that gap, not a deliberate tier, is why ~390 literals were
-  unregistered) grows the output 85 MB -> 135 MB. Fix direction: make
-  the shared packed segment the single source of truth — registration
-  stops creating raw segments, and inline construction reads a slice
-  of the shared segment via array.new_data's offset/length operands.
+### zena-cli writes a full WAT dump next to every cache entry
+- **Found**: 2026-07-26 (a 135 MB "output" turned out to be the .wat)
+- **Severity**: low-medium (doubles codegen work per build; the
+  __all_tests__ WAT is ~135 MB of text for a 4.5 MB module)
+- **Workaround**: none needed; the dump is unconditional in
+  zena/cli/main.zena (BinaryGenerator output, then a second full
+  WatGenerator pass whose text is written to <out>.wat).
+- **Details**: Probably a debug leftover. Should be behind a flag
+  (-g / ZENA_EMIT_WAT), which would roughly halve codegen time and
+  avoid giant text files in .zena/cache. (An earlier version of this
+  entry claimed the tests WASM was 85 MB — that was this WAT dump;
+  the binary is ~4.5 MB.)
 
-### fd_write of >= 128 MiB fails with ENOMEM instead of chunking
-- **Found**: 2026-07-26 (the 135 MB write above)
-- **Severity**: low-medium (hard failure with an unhelpful message)
-- **Workaround**: keep outputs under 128 MiB.
-- **Details**: zena:fs Descriptor.writeString copies the whole payload
-  into linear memory (allocOrPanic) and issues ONE fd_write; at
-  ~2^27 bytes this fails with WASI errno 48 (ENOMEM), reported as
-  "UNKNOWN" because __errnoToString has no case for 48 (and prints no
-  number). Chunked writes + numeric errnos in the message would fix
-  both halves.
+### fs.zena errno messages lack the numeric code
+- **Found**: 2026-07-26 (debugging a WASI errno 48 as "UNKNOWN")
+- **Severity**: low
+- **Workaround**: none.
+- **Details**: __errnoToString maps a subset of WASI errnos and prints
+  bare "UNKNOWN" otherwise; unmapped codes (48 = ENOMEM among them)
+  should at least print their number.

@@ -4904,16 +4904,21 @@ final class FunctionLowerer {
   }
 
   /**
-   * String literals: the fast path only — RTA pre-registers every
-   * literal reached through checker dependencies, so the shared-data
-   * helper call covers it (i32.const id; call $get_string_literal).
-   * Literals missing from the registry bail to the streaming path,
-   * which also knows how to build one-off strings inline.
+   * String literals: i32.const id; call $get_string_literal — a
+   * zero-copy view into the packed shared segment, which is the ONE
+   * store for literal bytes. Reachability registers every literal
+   * (AST walks plus the dependency-carrying-method walk), so the
+   * registry is complete by construction and a miss fails loudly.
    */
   #lowerStringLiteral(lit: StringLiteral): i32 {
     let litId = if (let (true, id) = this.wasm.stringLiteralIds.get(lit.value)) id else -1;
     if (litId < 0) {
-      this.#bail('unregistered string literal');
+      // Same contract as streaming: the shared registry is complete by
+      // construction, so a miss is a discovery bug — a plain Error
+      // (not ZirUnsupported) fails the compile loudly rather than
+      // falling back to a second storage story.
+      throw new Error("String literal missing from the shared registry: '" +
+          lit.value + "'");
     }
     if (this.wasm.getStringLiteralFunc == null) {
       this.#bail('no string literal helper');

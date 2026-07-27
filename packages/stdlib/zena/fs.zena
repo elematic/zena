@@ -505,13 +505,27 @@ export class Descriptor {
     }
 
     let (ptr, len) = __stringToLinear(data);
-    
-    // Set up iovec
-    mem.setI32(SCRATCH_PTR, ptr);
-    mem.setI32(SCRATCH_PTR + 4, len);
-    
-    let errno = __wasi_fd_write(this.#fd, SCRATCH_PTR, 1, SCRATCH_PTR + 8);
-    __checkErrno(errno, "write");
+
+    // Hosts reject very large single fd_write iovecs (observed: WASI
+    // errno 48 NOMEM at >= 128 MiB under wasmtime), and fd_write may
+    // legally write fewer bytes than asked — loop in bounded chunks
+    // and advance by the host-reported nwritten.
+    var off = 0;
+    while (off < len) {
+      var chunk = len - off;
+      if (chunk > 33554432) {
+        chunk = 33554432; // 32 MiB
+      }
+      mem.setI32(SCRATCH_PTR, ptr + off);
+      mem.setI32(SCRATCH_PTR + 4, chunk);
+      let errno = __wasi_fd_write(this.#fd, SCRATCH_PTR, 1, SCRATCH_PTR + 8);
+      __checkErrno(errno, "write");
+      let nwritten = mem.getI32(SCRATCH_PTR + 8);
+      if (nwritten <= 0) {
+        throw new FsError(29, "write made no progress");
+      }
+      off += nwritten;
+    }
   }
 
   // Open a file or directory relative to this descriptor
