@@ -48,6 +48,8 @@ import {
   SealedVariant, EnumMember
 } from 'zena-compiler:ast';
 import { CommentMap, attachComments } from 'zena-compiler:comment-attachment';
+import { BinaryGenerator } from 'zena-compiler:codegen/binary-generator';
+import { Program, CompilationUnit } from 'zena-compiler:program';
 import { i32ToString } from 'zena:string-convert';
 import { format as formatSource } from 'zena-formatter:printer';
 
@@ -853,6 +855,60 @@ export class LanguageService {
   }
 
   /**
+   * Compile a source string to a WebAssembly binary (ByteArray).
+   * Returns null if compilation fails with errors.
+   */
+  compileToWasm(path: String, source: String): ByteArray | null {
+    this.#host.setDocument(path, source);
+
+    let wasmBytes = try {
+      this.#compiler.invalidate(path);
+      let compResult = this.#compiler.compile(path);
+      let checkResult = checkCompilation(compResult, this.#cachedCheckResult, false);
+      this.#cachedCheckResult = checkResult;
+
+      var hasError = false;
+      var i = 0;
+      while (i < checkResult.diagnostics.length) {
+        if (checkResult.diagnostics[i].severity == DiagnosticSeverity.Error) {
+          hasError = true;
+          break;
+        }
+        i += 1;
+      }
+      if (hasError) {
+        return null;
+      }
+
+      let units = new Array<CompilationUnit>();
+      var entryUnit: CompilationUnit | null = null;
+      var fi = 0;
+      while (fi < compResult.files.length) {
+        let file = compResult.files[fi];
+        let res = checkResult.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.path == compResult.entry.path || file.ast.path == compResult.entry.ast.path) {
+            entryUnit = unit;
+          }
+        }
+        fi += 1;
+      }
+      if (entryUnit == null && units.length > 0) {
+        entryUnit = units[units.length - 1];
+      }
+
+      let program = new Program(units, entryUnit);
+      let generator = new BinaryGenerator("host", false, false, false);
+      generator.generate(program).toByteArray()
+    } catch (e) {
+      null
+    };
+    return wasmBytes;
+  }
+
+  /**
    * Find the definition of the symbol at the given byte offset.
    *
    * Uses the cached ScopeResult for the given file.
@@ -860,9 +916,20 @@ export class LanguageService {
   getDefinition(path: String, offset: i32): SourceSpan | null {
     if (!this.#scopeResults.has(path)) { return null; }
     let scopeResult = this.#scopeResults[path];
-
     let syms = scopeResult.symbols;
-    var maybeInfo = syms.getByOffset(offset);
+
+    var maybeInfo: Symbol | null = null;
+    if (this.#compilations.has(path)) {
+      let compilation = this.#compilations[path];
+      let node = findNodeAtOffset(compilation.entry.ast, offset);
+      if (node != null && (node as Node).loc != null) {
+        let nLoc = (node as Node).loc as SourceLocation;
+        maybeInfo = syms.getByOffset(nLoc.start);
+      }
+    }
+    if (maybeInfo == null) {
+      maybeInfo = syms.getByOffset(offset);
+    }
 
     if (maybeInfo != null) {
       let sym = maybeInfo as Symbol;
@@ -1018,7 +1085,15 @@ export class LanguageService {
     if (hasScopeResult) {
       let sr = this.#scopeResults[path];
       let syms = sr.symbols;
-      var maybeInfo = syms.getByOffset(offset);
+      var maybeInfo = if (foundNode.loc != null) {
+        let nLoc = foundNode.loc as SourceLocation;
+        syms.getByOffset(nLoc.start)
+      } else {
+        null
+      };
+      if (maybeInfo == null) {
+        maybeInfo = syms.getByOffset(offset);
+      }
       if (maybeInfo != null) {
         symbolInfo = maybeInfo as Symbol;
         if (nodeType == null) {
@@ -1603,4 +1678,25 @@ export let getSymbolChildCount = (sym: DocumentSymbol): i32 => {
  */
 export let getSymbolChild = (sym: DocumentSymbol, index: i32): DocumentSymbol => {
   return sym.children[index];
+};
+
+/**
+ * Compile source to WebAssembly binary (ByteArray).
+ */
+export let compileToWasm = (path: String, source: String): ByteArray | null => {
+  return (__ls as LanguageService).compileToWasm(path, source);
+};
+
+/**
+ * Get the length of a ByteArray.
+ */
+export let getByteArrayLength = (bytes: ByteArray): i32 => {
+  return bytes.length;
+};
+
+/**
+ * Get byte at index from ByteArray.
+ */
+export let getByteArrayByte = (bytes: ByteArray, index: i32): i32 => {
+  return bytes[index];
 };

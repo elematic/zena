@@ -24,6 +24,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 interface LspExports extends WebAssembly.Exports {
   init(stdlibRoot: unknown): void;
   check(path: unknown, source: unknown): unknown;
+  compileToWasm(path: unknown, source: unknown): unknown;
+  getByteArrayLength(bytes: unknown): number;
+  getByteArrayByte(bytes: unknown, index: number): number;
   getDiagnosticCount(diagnostics: unknown): number;
   getDiagnosticLine(diagnostics: unknown, index: number): number;
   getDiagnosticColumn(diagnostics: unknown, index: number): number;
@@ -641,6 +644,15 @@ let f = new Foo(42);`;
     assert.strictEqual(hover!.doc, 'Add two numbers.\nReturns their sum.');
   });
 
+  test('getHover: doc comment on function at call site reference', () => {
+    const src =
+      '/**\n * Greets a user by name.\n */\nlet greet = (name: String): String => "Hello " + name;\n\nexport let main = () => {\n  greet("Zena");\n};';
+    const offset = offsetOf(src, 'greet', 2);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'Greets a user by name.');
+  });
+
   test('getHover: no doc comment returns empty string', () => {
     const src = 'let x = 42;';
     const offset = offsetOf(src, 'x', 1);
@@ -1013,5 +1025,57 @@ let x: i32 = 0;`;
       );
     }
     // It's acceptable for hover on import specifiers to return null
+  });
+
+  test('compileToWasm: compiles source and exports main()', async () => {
+    const src = `import { console } from 'zena:console';
+export let main = (): void => {
+  console.log('Hello from test main');
+};`;
+    const wasmRef = lsp.exports.compileToWasm(
+      lsp.writeString('/main.zena'),
+      lsp.writeString(src)
+    );
+    assert.ok(wasmRef, 'compileToWasm should return a ByteArray reference');
+    const len = lsp.exports.getByteArrayLength(wasmRef);
+    assert.ok(len > 0, `Expected Wasm binary length > 0, got ${len}`);
+
+    const uint8 = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      uint8[i] = lsp.exports.getByteArrayByte(wasmRef, i) & 0xff;
+    }
+
+    let programExports: WebAssembly.Exports | undefined;
+    let loggedMessage = '';
+    const { instance } = await WebAssembly.instantiate(uint8.buffer, {
+      console: {
+        ...createConsoleImports(() => programExports),
+        log_string: (strRef: unknown, strLen: number) => {
+          const reader = createStringReader(programExports!);
+          loggedMessage = reader(strRef, strLen);
+        },
+      },
+      wasi_snapshot_preview1: {
+        fd_write: () => 0,
+        proc_exit: () => 0,
+        environ_get: () => 0,
+        environ_sizes_get: () => 0,
+        clock_time_get: () => 0,
+      },
+      env: {
+        getStackTrace: () => null,
+        captureStackTrace: () => null,
+        formatStackTrace: () => null,
+      },
+    });
+    programExports = instance.exports;
+
+    const exportKeys = Object.keys(programExports);
+    console.log('[compileToWasm test] Export keys:', exportKeys);
+    assert.ok(exportKeys.includes('main'), `Expected export 'main' in keys: ${exportKeys.join(', ')}`);
+
+    const mainFn = programExports.main as () => void;
+    mainFn();
+    assert.strictEqual(loggedMessage, 'Hello from test main');
   });
 });
