@@ -496,3 +496,35 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Severity**: high
 - **Workaround**: Explicitly assign to a new local instead of overriding: `let classType = unnarrowedType as ClassType;`
 - **Details**: When a variable is narrowed by `if (x is ClassType)`, the Zena type system treats it as narrowed logic-wise, but the underlying Wasm local remains its original generic uncasted type (e.g. `(ref null $Type)`). The bootstrap compiler does not inject dynamic `ref.cast` when later reading this variable to evaluate a property access. Wasm compilation fails with: `type mismatch: expected (ref null $ClassType), found (ref null $Type)`. Assigning it explicitly circumvents the flaw.
+
+### String literal bytes are stored twice; tests wasm is 85 MB
+- **Found**: 2026-07-26 (attempting full literal registration)
+- **Severity**: medium-high (binary bloat; blocks completing the
+  literal registry; __all_tests__.zena output is already 85 MB)
+- **Workaround**: none needed for correctness; leave method-body-only
+  literals out of the registry until storage is deduplicated.
+- **Details**: Every literal that enters the registry gets BOTH a raw
+  per-literal data segment (getStringLiteralDataIndex) and a copy
+  inside the subsequence-packed shared segment. The raw segments are
+  only needed by the inline-construction fallback's array.new_data;
+  registered literals are materialized from the shared segment. For
+  the tests build (huge expected-output fixtures) this doubling
+  dominates: registering the currently-missed method-body literals
+  (SymbolDependencies.stringLiterals is declared but NEVER populated,
+  and the node-referrer path skips discoverNodeTypes when checker deps
+  exist — that gap, not a deliberate tier, is why ~390 literals were
+  unregistered) grows the output 85 MB -> 135 MB. Fix direction: make
+  the shared packed segment the single source of truth — registration
+  stops creating raw segments, and inline construction reads a slice
+  of the shared segment via array.new_data's offset/length operands.
+
+### fd_write of >= 128 MiB fails with ENOMEM instead of chunking
+- **Found**: 2026-07-26 (the 135 MB write above)
+- **Severity**: low-medium (hard failure with an unhelpful message)
+- **Workaround**: keep outputs under 128 MiB.
+- **Details**: zena:fs Descriptor.writeString copies the whole payload
+  into linear memory (allocOrPanic) and issues ONE fd_write; at
+  ~2^27 bytes this fails with WASI errno 48 (ENOMEM), reported as
+  "UNKNOWN" because __errnoToString has no case for 48 (and prints no
+  number). Chunked writes + numeric errnos in the message would fix
+  both halves.
