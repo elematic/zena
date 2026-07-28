@@ -323,8 +323,11 @@ async function runCheckTest(
     (e) => !e.regex.test('never read') && !e.regex.test('never written to'),
   );
 
-  // Check if the test has imports - if so, use the full compiler
-  const hasImports = content.includes('import ');
+  // Check if the test depends on other modules - if so, use the full
+  // compiler. Re-exports (export {X} from './dep') pull in modules without
+  // any `import` statement.
+  const hasImports =
+    content.includes('import ') || /^\s*export\s+.*\bfrom\s/m.test(content);
 
   let diagnostics: Diagnostic[];
 

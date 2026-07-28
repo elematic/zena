@@ -847,7 +847,7 @@ final class CheckerContext {
     this.#pendingTypes.add(target.id);
     this.#pendingTypes.add(info.id);
 
-    let t = this.#materializeType(target);
+    var t: Type | null = this.#materializeType(target);
     if (t != null) {
       let materialized = t as Type;
       this.#materializedTypes[info.id] = materialized;
@@ -893,18 +893,31 @@ final class CheckerContext {
             }
           }
           case EnumDeclaration as ed: {
+            let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
+            let backingType = if (isStringEnum) { this.resolvePreludeType("String") as Type } else { new I32Type() as Type };
+            let enumType = new TypeAliasType(ed.name.name, null, backingType, true, null);
+            let fields = new HashMap<String, Type>();
+            for (let member in ed.members) {
+              fields[member.name.name] = enumType;
+            }
+            let enumValueType = new RecordT(fields, null);
+            enumValueType.enumDeclaration = ed;
             let valueInfo = this.model.resolveDeclaration(declNode);
             if (valueInfo != null) {
-              let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
-              let backingType = if (isStringEnum) { this.resolvePreludeType("String") as Type } else { new I32Type() as Type };
-              let enumType = new TypeAliasType(ed.name.name, null, backingType, true, null);
-              let fields = new HashMap<String, Type>();
-              for (let member in ed.members) {
-                fields[member.name.name] = enumType;
-              }
-              let enumValueType = new RecordT(fields, null);
               this.declareBinding(valueInfo as Symbol, enumValueType);
             }
+            // An enum's BINDING (value-namespace) type is its member record,
+            // not the alias type #materializeType produced — the alias would
+            // make `Enum.Member` resolve against the backing type. Rebind the
+            // import-alias symbols and caches that were set above.
+            this.#materializedTypes[info.id] = enumValueType;
+            this.#materializedTypes[target.id] = enumValueType;
+            this.model.setBindingType(info, enumValueType);
+            if (declNode.loc != null) {
+              let declLoc = declNode.loc as SourceLocation;
+              this.#materializedDeclTypes[declLoc.start] = enumValueType;
+            }
+            t = enumValueType;
           }
           case _: {}
         }
@@ -1563,7 +1576,27 @@ export let checkModule = (
   for (let {key as expName, value as exInfo} in scopeResult.exports) {
     let declaration = exInfo.declaration;
     
-    let exportType = ctx.resolveTypeName(expName);
+    var exportType = ctx.resolveTypeName(expName);
+    if (exportType == null) {
+      // Re-exported types (export {X} from './dep'): this module has no local
+      // type registration for the name, so forward the origin module's export
+      // type. Without this, importers fall back to the export symbol's VALUE
+      // binding for the type — wrong for enums, whose type (the alias) and
+      // value (the member record) differ.
+      let models = ctx.depModels;
+      if (models != null) {
+        let depModels = models as HashMap<String, SemanticModel>;
+        for (let depKey in depModels.keys()) {
+          if (let (true, depModel) = depModels.get(depKey)) {
+            let depExportType = depModel.getExportType(expName);
+            if (depExportType != null) {
+              exportType = depExportType;
+              break;
+            }
+          }
+        }
+      }
+    }
     if (exportType != null) {
       ctx.model.setExportType(expName, exportType);
     }
@@ -1574,6 +1607,14 @@ export let checkModule = (
       if (localSi != null) {
         valueType = ctx.model.getBindingType(localSi);
       }
+    }
+    if (valueType == null) {
+      // Re-exported symbols (export {X} from './dep') were already bound by
+      // the origin module's finalize pass — reuse that binding. Falling
+      // through to `exportType` here would bind the TYPE, which is wrong for
+      // enums: their value namespace is the member record, and the stale
+      // type binding would shadow the origin's record for importers.
+      valueType = lookupBindingTypeInDeps(ctx, exInfo);
     }
     if (valueType == null) {
       valueType = exportType;
