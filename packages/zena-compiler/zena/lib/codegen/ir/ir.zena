@@ -259,7 +259,9 @@ export enum IrOp {
   /** Multi-value return: all result values at once. */
   ret_multi,
   throw,
-  unreachable
+  unreachable,
+  /** Sentinel: the number of ops. Keep last. */
+  op_count
 }
 
 export let isIrTerminator = (op: IrOp): boolean => {
@@ -645,186 +647,201 @@ export final class IrBody {
   }
 }
 
+/**
+ * Wasm-style mnemonic per op, indexed by the dense IrOp value; ops
+ * without an entry (empty string) print as op#N.
+ */
+let buildIrOpNames = (): Array<String> => {
+  let count = IrOp.op_count as i32;
+  let n = new Array<String>(count);
+  for (var i = 0; i < count; i += 1) {
+    n.push('');
+  }
+  n[IrOp.nop as i32] = 'nop';
+  n[IrOp.param as i32] = 'param';
+  n[IrOp.const_i32 as i32] = 'const.i32';
+  n[IrOp.const_i64 as i32] = 'const.i64';
+  n[IrOp.const_f32 as i32] = 'const.f32';
+  n[IrOp.const_f64 as i32] = 'const.f64';
+  n[IrOp.i32_add as i32] = 'i32.add';
+  n[IrOp.i32_sub as i32] = 'i32.sub';
+  n[IrOp.i32_mul as i32] = 'i32.mul';
+  n[IrOp.i32_div_s as i32] = 'i32.div_s';
+  n[IrOp.i32_rem_s as i32] = 'i32.rem_s';
+  n[IrOp.i32_and as i32] = 'i32.and';
+  n[IrOp.i32_or as i32] = 'i32.or';
+  n[IrOp.i32_xor as i32] = 'i32.xor';
+  n[IrOp.i32_shl as i32] = 'i32.shl';
+  n[IrOp.i32_shr_s as i32] = 'i32.shr_s';
+  n[IrOp.i32_shr_u as i32] = 'i32.shr_u';
+  n[IrOp.i32_eqz as i32] = 'i32.eqz';
+  n[IrOp.i32_eq as i32] = 'i32.eq';
+  n[IrOp.i32_ne as i32] = 'i32.ne';
+  n[IrOp.i32_lt_s as i32] = 'i32.lt_s';
+  n[IrOp.i32_le_s as i32] = 'i32.le_s';
+  n[IrOp.i32_gt_s as i32] = 'i32.gt_s';
+  n[IrOp.i32_ge_s as i32] = 'i32.ge_s';
+  n[IrOp.i32_div_u as i32] = 'i32.div_u';
+  n[IrOp.i32_rem_u as i32] = 'i32.rem_u';
+  n[IrOp.i32_lt_u as i32] = 'i32.lt_u';
+  n[IrOp.i32_le_u as i32] = 'i32.le_u';
+  n[IrOp.i32_gt_u as i32] = 'i32.gt_u';
+  n[IrOp.i32_ge_u as i32] = 'i32.ge_u';
+  n[IrOp.i64_add as i32] = 'i64.add';
+  n[IrOp.i64_sub as i32] = 'i64.sub';
+  n[IrOp.i64_mul as i32] = 'i64.mul';
+  n[IrOp.i64_div_s as i32] = 'i64.div_s';
+  n[IrOp.i64_rem_s as i32] = 'i64.rem_s';
+  n[IrOp.i64_and as i32] = 'i64.and';
+  n[IrOp.i64_or as i32] = 'i64.or';
+  n[IrOp.i64_xor as i32] = 'i64.xor';
+  n[IrOp.i64_shl as i32] = 'i64.shl';
+  n[IrOp.i64_shr_s as i32] = 'i64.shr_s';
+  n[IrOp.i64_shr_u as i32] = 'i64.shr_u';
+  n[IrOp.i64_eq as i32] = 'i64.eq';
+  n[IrOp.i64_ne as i32] = 'i64.ne';
+  n[IrOp.i64_lt_s as i32] = 'i64.lt_s';
+  n[IrOp.i64_le_s as i32] = 'i64.le_s';
+  n[IrOp.i64_gt_s as i32] = 'i64.gt_s';
+  n[IrOp.i64_ge_s as i32] = 'i64.ge_s';
+  n[IrOp.i64_div_u as i32] = 'i64.div_u';
+  n[IrOp.i64_rem_u as i32] = 'i64.rem_u';
+  n[IrOp.i64_lt_u as i32] = 'i64.lt_u';
+  n[IrOp.i64_le_u as i32] = 'i64.le_u';
+  n[IrOp.i64_gt_u as i32] = 'i64.gt_u';
+  n[IrOp.i64_ge_u as i32] = 'i64.ge_u';
+  n[IrOp.f64_add as i32] = 'f64.add';
+  n[IrOp.f64_sub as i32] = 'f64.sub';
+  n[IrOp.f64_mul as i32] = 'f64.mul';
+  n[IrOp.f64_div as i32] = 'f64.div';
+  n[IrOp.f64_eq as i32] = 'f64.eq';
+  n[IrOp.f64_ne as i32] = 'f64.ne';
+  n[IrOp.f64_lt as i32] = 'f64.lt';
+  n[IrOp.f64_le as i32] = 'f64.le';
+  n[IrOp.f64_gt as i32] = 'f64.gt';
+  n[IrOp.f64_ge as i32] = 'f64.ge';
+  n[IrOp.f32_add as i32] = 'f32.add';
+  n[IrOp.f32_sub as i32] = 'f32.sub';
+  n[IrOp.f32_mul as i32] = 'f32.mul';
+  n[IrOp.f32_div as i32] = 'f32.div';
+  n[IrOp.f32_eq as i32] = 'f32.eq';
+  n[IrOp.f32_ne as i32] = 'f32.ne';
+  n[IrOp.f32_lt as i32] = 'f32.lt';
+  n[IrOp.f32_le as i32] = 'f32.le';
+  n[IrOp.f32_gt as i32] = 'f32.gt';
+  n[IrOp.f32_ge as i32] = 'f32.ge';
+  n[IrOp.i64_eqz as i32] = 'i64.eqz';
+  n[IrOp.f64_neg as i32] = 'f64.neg';
+  n[IrOp.f32_neg as i32] = 'f32.neg';
+  n[IrOp.i32_wrap_i64 as i32] = 'i32.wrap_i64';
+  n[IrOp.i64_extend_i32_s as i32] = 'i64.extend_i32_s';
+  n[IrOp.f64_convert_i32_s as i32] = 'f64.convert_i32_s';
+  n[IrOp.f32_convert_i32_s as i32] = 'f32.convert_i32_s';
+  n[IrOp.f64_convert_i64_s as i32] = 'f64.convert_i64_s';
+  n[IrOp.f32_convert_i64_s as i32] = 'f32.convert_i64_s';
+  n[IrOp.i32_trunc_sat_f64_s as i32] = 'i32.trunc_sat_f64_s';
+  n[IrOp.i32_trunc_sat_f32_s as i32] = 'i32.trunc_sat_f32_s';
+  n[IrOp.i64_trunc_sat_f64_s as i32] = 'i64.trunc_sat_f64_s';
+  n[IrOp.i64_trunc_sat_f32_s as i32] = 'i64.trunc_sat_f32_s';
+  n[IrOp.f64_promote_f32 as i32] = 'f64.promote_f32';
+  n[IrOp.f32_demote_f64 as i32] = 'f32.demote_f64';
+  n[IrOp.i64_reinterpret_f64 as i32] = 'i64.reinterpret_f64';
+  n[IrOp.i32_reinterpret_f32 as i32] = 'i32.reinterpret_f32';
+  n[IrOp.f32_reinterpret_i32 as i32] = 'f32.reinterpret_i32';
+  n[IrOp.f64_reinterpret_i64 as i32] = 'f64.reinterpret_i64';
+  n[IrOp.i32_trunc_sat_f32_u as i32] = 'i32.trunc_sat_f32_u';
+  n[IrOp.i32_trunc_sat_f64_u as i32] = 'i32.trunc_sat_f64_u';
+  n[IrOp.i64_trunc_sat_f32_u as i32] = 'i64.trunc_sat_f32_u';
+  n[IrOp.i64_trunc_sat_f64_u as i32] = 'i64.trunc_sat_f64_u';
+  n[IrOp.i32_clz as i32] = 'i32.clz';
+  n[IrOp.i32_ctz as i32] = 'i32.ctz';
+  n[IrOp.i32_popcnt as i32] = 'i32.popcnt';
+  n[IrOp.i64_clz as i32] = 'i64.clz';
+  n[IrOp.i64_ctz as i32] = 'i64.ctz';
+  n[IrOp.i64_popcnt as i32] = 'i64.popcnt';
+  n[IrOp.f32_abs as i32] = 'f32.abs';
+  n[IrOp.f32_ceil as i32] = 'f32.ceil';
+  n[IrOp.f32_floor as i32] = 'f32.floor';
+  n[IrOp.f32_nearest as i32] = 'f32.nearest';
+  n[IrOp.f32_sqrt as i32] = 'f32.sqrt';
+  n[IrOp.f32_trunc as i32] = 'f32.trunc';
+  n[IrOp.f64_abs as i32] = 'f64.abs';
+  n[IrOp.f64_ceil as i32] = 'f64.ceil';
+  n[IrOp.f64_floor as i32] = 'f64.floor';
+  n[IrOp.f64_nearest as i32] = 'f64.nearest';
+  n[IrOp.f64_sqrt as i32] = 'f64.sqrt';
+  n[IrOp.f64_trunc as i32] = 'f64.trunc';
+  n[IrOp.f32_min as i32] = 'f32.min';
+  n[IrOp.f32_max as i32] = 'f32.max';
+  n[IrOp.f32_copysign as i32] = 'f32.copysign';
+  n[IrOp.f64_min as i32] = 'f64.min';
+  n[IrOp.f64_max as i32] = 'f64.max';
+  n[IrOp.f64_copysign as i32] = 'f64.copysign';
+  n[IrOp.i32_load as i32] = 'i32.load';
+  n[IrOp.i32_load8_u as i32] = 'i32.load8_u';
+  n[IrOp.i64_load as i32] = 'i64.load';
+  n[IrOp.f32_load as i32] = 'f32.load';
+  n[IrOp.f64_load as i32] = 'f64.load';
+  n[IrOp.i64_store as i32] = 'i64.store';
+  n[IrOp.f32_store as i32] = 'f32.store';
+  n[IrOp.f64_store as i32] = 'f64.store';
+  n[IrOp.memory_size as i32] = 'memory.size';
+  n[IrOp.memory_grow as i32] = 'memory.grow';
+  n[IrOp.ref_null as i32] = 'ref.null';
+  n[IrOp.ref_is_null as i32] = 'ref.is_null';
+  n[IrOp.ref_as_non_null as i32] = 'ref.as_non_null';
+  n[IrOp.ref_eq as i32] = 'ref.eq';
+  n[IrOp.ref_test as i32] = 'ref.test';
+  n[IrOp.ref_cast as i32] = 'ref.cast';
+  n[IrOp.ref_func as i32] = 'ref.func';
+  n[IrOp.extern_convert_any as i32] = 'extern.convert_any';
+  n[IrOp.any_convert_extern as i32] = 'any.convert_extern';
+  n[IrOp.i32_store as i32] = 'i32.store';
+  n[IrOp.i32_store8 as i32] = 'i32.store8';
+  n[IrOp.struct_new as i32] = 'struct.new';
+  n[IrOp.struct_new_default as i32] = 'struct.new_default';
+  n[IrOp.struct_get as i32] = 'struct.get';
+  n[IrOp.struct_set as i32] = 'struct.set';
+  n[IrOp.array_new as i32] = 'array.new';
+  n[IrOp.array_new_data as i32] = 'array.new_data';
+  n[IrOp.array_new_fixed as i32] = 'array.new_fixed';
+  n[IrOp.array_get as i32] = 'array.get';
+  n[IrOp.array_get_u as i32] = 'array.get_u';
+  n[IrOp.array_set as i32] = 'array.set';
+  n[IrOp.array_copy as i32] = 'array.copy';
+  n[IrOp.array_len as i32] = 'array.len';
+  n[IrOp.global_get as i32] = 'global.get';
+  n[IrOp.global_set as i32] = 'global.set';
+  n[IrOp.str_lit as i32] = 'str.lit';
+  n[IrOp.vt_load as i32] = 'vt.load';
+  n[IrOp.vt_slot as i32] = 'vt.slot';
+  n[IrOp.iface_pack as i32] = 'iface.pack';
+  n[IrOp.iface_vtable as i32] = 'iface.vtable';
+  n[IrOp.iface_instance as i32] = 'iface.instance';
+  n[IrOp.call as i32] = 'call';
+  n[IrOp.call_ref as i32] = 'call_ref';
+  n[IrOp.mv_get as i32] = 'mv.get';
+  n[IrOp.br as i32] = 'br';
+  n[IrOp.br_if as i32] = 'br_if';
+  n[IrOp.br_table as i32] = 'br_table';
+  n[IrOp.br_on_cast as i32] = 'br_on_cast';
+  n[IrOp.br_on_cast_fail as i32] = 'br_on_cast_fail';
+  n[IrOp.ret as i32] = 'ret';
+  n[IrOp.ret_multi as i32] = 'ret.multi';
+  n[IrOp.throw as i32] = 'throw';
+  n[IrOp.unreachable as i32] = 'unreachable';
+  return n;
+};
+
+let irOpNames = buildIrOpNames();
+
 export let irOpName = (op: IrOp): String => {
-  var name = '';
-  match (op) {
-    case IrOp.nop: { name = 'nop'; }
-    case IrOp.param: { name = 'param'; }
-    case IrOp.const_i32: { name = 'const.i32'; }
-    case IrOp.const_i64: { name = 'const.i64'; }
-    case IrOp.const_f32: { name = 'const.f32'; }
-    case IrOp.const_f64: { name = 'const.f64'; }
-    case IrOp.i32_add: { name = 'i32.add'; }
-    case IrOp.i32_sub: { name = 'i32.sub'; }
-    case IrOp.i32_mul: { name = 'i32.mul'; }
-    case IrOp.i32_div_s: { name = 'i32.div_s'; }
-    case IrOp.i32_rem_s: { name = 'i32.rem_s'; }
-    case IrOp.i32_and: { name = 'i32.and'; }
-    case IrOp.i32_or: { name = 'i32.or'; }
-    case IrOp.i32_xor: { name = 'i32.xor'; }
-    case IrOp.i32_shl: { name = 'i32.shl'; }
-    case IrOp.i32_shr_s: { name = 'i32.shr_s'; }
-    case IrOp.i32_shr_u: { name = 'i32.shr_u'; }
-    case IrOp.i32_eqz: { name = 'i32.eqz'; }
-    case IrOp.i32_eq: { name = 'i32.eq'; }
-    case IrOp.i32_ne: { name = 'i32.ne'; }
-    case IrOp.i32_lt_s: { name = 'i32.lt_s'; }
-    case IrOp.i32_le_s: { name = 'i32.le_s'; }
-    case IrOp.i32_gt_s: { name = 'i32.gt_s'; }
-    case IrOp.i32_ge_s: { name = 'i32.ge_s'; }
-    case IrOp.i32_div_u: { name = 'i32.div_u'; }
-    case IrOp.i32_rem_u: { name = 'i32.rem_u'; }
-    case IrOp.i32_lt_u: { name = 'i32.lt_u'; }
-    case IrOp.i32_le_u: { name = 'i32.le_u'; }
-    case IrOp.i32_gt_u: { name = 'i32.gt_u'; }
-    case IrOp.i32_ge_u: { name = 'i32.ge_u'; }
-    case IrOp.i64_add: { name = 'i64.add'; }
-    case IrOp.i64_sub: { name = 'i64.sub'; }
-    case IrOp.i64_mul: { name = 'i64.mul'; }
-    case IrOp.i64_div_s: { name = 'i64.div_s'; }
-    case IrOp.i64_rem_s: { name = 'i64.rem_s'; }
-    case IrOp.i64_and: { name = 'i64.and'; }
-    case IrOp.i64_or: { name = 'i64.or'; }
-    case IrOp.i64_xor: { name = 'i64.xor'; }
-    case IrOp.i64_shl: { name = 'i64.shl'; }
-    case IrOp.i64_shr_s: { name = 'i64.shr_s'; }
-    case IrOp.i64_shr_u: { name = 'i64.shr_u'; }
-    case IrOp.i64_eq: { name = 'i64.eq'; }
-    case IrOp.i64_ne: { name = 'i64.ne'; }
-    case IrOp.i64_lt_s: { name = 'i64.lt_s'; }
-    case IrOp.i64_le_s: { name = 'i64.le_s'; }
-    case IrOp.i64_gt_s: { name = 'i64.gt_s'; }
-    case IrOp.i64_ge_s: { name = 'i64.ge_s'; }
-    case IrOp.i64_div_u: { name = 'i64.div_u'; }
-    case IrOp.i64_rem_u: { name = 'i64.rem_u'; }
-    case IrOp.i64_lt_u: { name = 'i64.lt_u'; }
-    case IrOp.i64_le_u: { name = 'i64.le_u'; }
-    case IrOp.i64_gt_u: { name = 'i64.gt_u'; }
-    case IrOp.i64_ge_u: { name = 'i64.ge_u'; }
-    case IrOp.f64_add: { name = 'f64.add'; }
-    case IrOp.f64_sub: { name = 'f64.sub'; }
-    case IrOp.f64_mul: { name = 'f64.mul'; }
-    case IrOp.f64_div: { name = 'f64.div'; }
-    case IrOp.f64_eq: { name = 'f64.eq'; }
-    case IrOp.f64_ne: { name = 'f64.ne'; }
-    case IrOp.f64_lt: { name = 'f64.lt'; }
-    case IrOp.f64_le: { name = 'f64.le'; }
-    case IrOp.f64_gt: { name = 'f64.gt'; }
-    case IrOp.f64_ge: { name = 'f64.ge'; }
-    case IrOp.f32_add: { name = 'f32.add'; }
-    case IrOp.f32_sub: { name = 'f32.sub'; }
-    case IrOp.f32_mul: { name = 'f32.mul'; }
-    case IrOp.f32_div: { name = 'f32.div'; }
-    case IrOp.f32_eq: { name = 'f32.eq'; }
-    case IrOp.f32_ne: { name = 'f32.ne'; }
-    case IrOp.f32_lt: { name = 'f32.lt'; }
-    case IrOp.f32_le: { name = 'f32.le'; }
-    case IrOp.f32_gt: { name = 'f32.gt'; }
-    case IrOp.f32_ge: { name = 'f32.ge'; }
-    case IrOp.i64_eqz: { name = 'i64.eqz'; }
-    case IrOp.f64_neg: { name = 'f64.neg'; }
-    case IrOp.f32_neg: { name = 'f32.neg'; }
-    case IrOp.i32_wrap_i64: { name = 'i32.wrap_i64'; }
-    case IrOp.i64_extend_i32_s: { name = 'i64.extend_i32_s'; }
-    case IrOp.f64_convert_i32_s: { name = 'f64.convert_i32_s'; }
-    case IrOp.f32_convert_i32_s: { name = 'f32.convert_i32_s'; }
-    case IrOp.f64_convert_i64_s: { name = 'f64.convert_i64_s'; }
-    case IrOp.f32_convert_i64_s: { name = 'f32.convert_i64_s'; }
-    case IrOp.i32_trunc_sat_f64_s: { name = 'i32.trunc_sat_f64_s'; }
-    case IrOp.i32_trunc_sat_f32_s: { name = 'i32.trunc_sat_f32_s'; }
-    case IrOp.i64_trunc_sat_f64_s: { name = 'i64.trunc_sat_f64_s'; }
-    case IrOp.i64_trunc_sat_f32_s: { name = 'i64.trunc_sat_f32_s'; }
-    case IrOp.f64_promote_f32: { name = 'f64.promote_f32'; }
-    case IrOp.f32_demote_f64: { name = 'f32.demote_f64'; }
-    case IrOp.i64_reinterpret_f64: { name = 'i64.reinterpret_f64'; }
-    case IrOp.i32_reinterpret_f32: { name = 'i32.reinterpret_f32'; }
-    case IrOp.f32_reinterpret_i32: { name = 'f32.reinterpret_i32'; }
-    case IrOp.f64_reinterpret_i64: { name = 'f64.reinterpret_i64'; }
-    case IrOp.i32_trunc_sat_f32_u: { name = 'i32.trunc_sat_f32_u'; }
-    case IrOp.i32_trunc_sat_f64_u: { name = 'i32.trunc_sat_f64_u'; }
-    case IrOp.i64_trunc_sat_f32_u: { name = 'i64.trunc_sat_f32_u'; }
-    case IrOp.i64_trunc_sat_f64_u: { name = 'i64.trunc_sat_f64_u'; }
-    case IrOp.i32_clz: { name = 'i32.clz'; }
-    case IrOp.i32_ctz: { name = 'i32.ctz'; }
-    case IrOp.i32_popcnt: { name = 'i32.popcnt'; }
-    case IrOp.i64_clz: { name = 'i64.clz'; }
-    case IrOp.i64_ctz: { name = 'i64.ctz'; }
-    case IrOp.i64_popcnt: { name = 'i64.popcnt'; }
-    case IrOp.f32_abs: { name = 'f32.abs'; }
-    case IrOp.f32_ceil: { name = 'f32.ceil'; }
-    case IrOp.f32_floor: { name = 'f32.floor'; }
-    case IrOp.f32_nearest: { name = 'f32.nearest'; }
-    case IrOp.f32_sqrt: { name = 'f32.sqrt'; }
-    case IrOp.f32_trunc: { name = 'f32.trunc'; }
-    case IrOp.f64_abs: { name = 'f64.abs'; }
-    case IrOp.f64_ceil: { name = 'f64.ceil'; }
-    case IrOp.f64_floor: { name = 'f64.floor'; }
-    case IrOp.f64_nearest: { name = 'f64.nearest'; }
-    case IrOp.f64_sqrt: { name = 'f64.sqrt'; }
-    case IrOp.f64_trunc: { name = 'f64.trunc'; }
-    case IrOp.f32_min: { name = 'f32.min'; }
-    case IrOp.f32_max: { name = 'f32.max'; }
-    case IrOp.f32_copysign: { name = 'f32.copysign'; }
-    case IrOp.f64_min: { name = 'f64.min'; }
-    case IrOp.f64_max: { name = 'f64.max'; }
-    case IrOp.f64_copysign: { name = 'f64.copysign'; }
-    case IrOp.i32_load: { name = 'i32.load'; }
-    case IrOp.i32_load8_u: { name = 'i32.load8_u'; }
-    case IrOp.i64_load: { name = 'i64.load'; }
-    case IrOp.f32_load: { name = 'f32.load'; }
-    case IrOp.f64_load: { name = 'f64.load'; }
-    case IrOp.i64_store: { name = 'i64.store'; }
-    case IrOp.f32_store: { name = 'f32.store'; }
-    case IrOp.f64_store: { name = 'f64.store'; }
-    case IrOp.memory_size: { name = 'memory.size'; }
-    case IrOp.memory_grow: { name = 'memory.grow'; }
-    case IrOp.ref_null: { name = 'ref.null'; }
-    case IrOp.ref_is_null: { name = 'ref.is_null'; }
-    case IrOp.ref_as_non_null: { name = 'ref.as_non_null'; }
-    case IrOp.ref_eq: { name = 'ref.eq'; }
-    case IrOp.ref_test: { name = 'ref.test'; }
-    case IrOp.ref_cast: { name = 'ref.cast'; }
-    case IrOp.ref_func: { name = 'ref.func'; }
-    case IrOp.extern_convert_any: { name = 'extern.convert_any'; }
-    case IrOp.any_convert_extern: { name = 'any.convert_extern'; }
-    case IrOp.i32_store: { name = 'i32.store'; }
-    case IrOp.i32_store8: { name = 'i32.store8'; }
-    case IrOp.struct_new: { name = 'struct.new'; }
-    case IrOp.struct_new_default: { name = 'struct.new_default'; }
-    case IrOp.struct_get: { name = 'struct.get'; }
-    case IrOp.struct_set: { name = 'struct.set'; }
-    case IrOp.array_new: { name = 'array.new'; }
-    case IrOp.array_new_data: { name = 'array.new_data'; }
-    case IrOp.array_new_fixed: { name = 'array.new_fixed'; }
-    case IrOp.array_get: { name = 'array.get'; }
-    case IrOp.array_get_u: { name = 'array.get_u'; }
-    case IrOp.array_set: { name = 'array.set'; }
-    case IrOp.array_copy: { name = 'array.copy'; }
-    case IrOp.array_len: { name = 'array.len'; }
-    case IrOp.global_get: { name = 'global.get'; }
-    case IrOp.global_set: { name = 'global.set'; }
-    case IrOp.str_lit: { name = 'str.lit'; }
-    case IrOp.vt_load: { name = 'vt.load'; }
-    case IrOp.vt_slot: { name = 'vt.slot'; }
-    case IrOp.iface_pack: { name = 'iface.pack'; }
-    case IrOp.iface_vtable: { name = 'iface.vtable'; }
-    case IrOp.iface_instance: { name = 'iface.instance'; }
-    case IrOp.call: { name = 'call'; }
-    case IrOp.call_ref: { name = 'call_ref'; }
-    case IrOp.mv_get: { name = 'mv.get'; }
-    case IrOp.br: { name = 'br'; }
-    case IrOp.br_if: { name = 'br_if'; }
-    case IrOp.br_table: { name = 'br_table'; }
-    case IrOp.br_on_cast: { name = 'br_on_cast'; }
-    case IrOp.br_on_cast_fail: { name = 'br_on_cast_fail'; }
-    case IrOp.ret: { name = 'ret'; }
-    case IrOp.ret_multi: { name = 'ret.multi'; }
-    case IrOp.throw: { name = 'throw'; }
-    case IrOp.unreachable: { name = 'unreachable'; }
+  let raw = op as i32;
+  if (raw >= 0 && raw < irOpNames.length) {
+    let name = irOpNames[raw];
+    if (name.length > 0) {
+      return name;
+    }
   }
-  if (name == '') {
-    let raw = op as i32;
-    return `op#${raw}`;
-  }
-  return name;
+  return `op#${raw}`;
 };

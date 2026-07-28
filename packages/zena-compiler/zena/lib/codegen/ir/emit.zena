@@ -322,270 +322,337 @@ export final class ZirFunctionEmitter {
   #emitInst(inst: i32): void {
     let body = this.body;
     let op = body.op(inst);
-    if (op == IrOp.nop || op == IrOp.param) {
-      return;
-    }
-    if (op == IrOp.const_i32) {
-      this.emitter.emitI32Const(body.a[inst]);
-    } else if (op == IrOp.const_i64) {
-      this.emitter.emitI64Const(body.constI64[body.a[inst]]);
-    } else if (op == IrOp.const_f32) {
-      this.emitter.emitF32Const(body.constF64[body.a[inst]]);
-    } else if (op == IrOp.const_f64) {
-      this.emitter.emitF64Const(body.constF64[body.a[inst]]);
-    } else if (op == IrOp.mv_get) {
-      // The multi-result call already stored this projection's local.
-      return;
-    } else if (op == IrOp.call) {
-      let argsIdx = body.a[inst];
-      let argc = body.extra[argsIdx];
-      for (var k = 0; k < argc; k += 1) {
-        this.#pushValue(body.extra[argsIdx + 1 + k]);
+    match (op) {
+      case IrOp.nop: { return; }
+      case IrOp.param: { return; }
+      case IrOp.mv_get: {
+        // The multi-result call already stored this projection's local.
+        return;
       }
-      let ref = body.refTable[body.b[inst]];
-      match (ref) {
-        case IrRefFunc as f: {
-          this.emitter.emitCall(f.target);
+      case IrOp.const_i32: { this.emitter.emitI32Const(body.a[inst]); }
+      case IrOp.const_i64: {
+        this.emitter.emitI64Const(body.constI64[body.a[inst]]);
+      }
+      case IrOp.const_f32: {
+        this.emitter.emitF32Const(body.constF64[body.a[inst]]);
+      }
+      case IrOp.const_f64: {
+        this.emitter.emitF64Const(body.constF64[body.a[inst]]);
+      }
+      case IrOp.call: { this.#emitCallInst(inst); }
+      case IrOp.call_ref: { this.#emitCallRefInst(inst); }
+      case IrOp.global_get: {
+        this.emitter.emitGlobalGet(this.#globalIndexOf(inst));
+      }
+      case IrOp.global_set: {
+        this.#pushValue(body.a[inst]);
+        this.emitter.emitGlobalSet(this.#globalIndexOf(inst));
+      }
+      case IrOp.struct_new_default: {
+        this.emitter.emitStructNewDefault(this.#typeIndexOf(inst));
+      }
+      case IrOp.struct_new: { this.#emitStructNewInst(inst); }
+      case IrOp.struct_get: {
+        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        let field = this.#fieldRef(body.b[inst]);
+        this.emitter.emitStructGet(field.owner.index, this.#fieldIndexOf(field));
+      }
+      case IrOp.struct_set: {
+        let pairIdx = body.a[inst];
+        this.emitter.emitLocalGet(this.localOf[body.extra[pairIdx]]);
+        this.#pushValue(body.extra[pairIdx + 1]);
+        let field = this.#fieldRef(body.b[inst]);
+        this.emitter.emitStructSet(field.owner.index, this.#fieldIndexOf(field));
+      }
+      case IrOp.ref_func: {
+        let ref = body.refTable[body.b[inst]];
+        if (!(ref is IrRefFunc)) {
+          throw new Error('zir emit: ref_func ref kind');
         }
-        case _: {
-          throw new Error('zir emit: call ref is not a function');
+        this.emitter.emitRefFunc((ref as IrRefFunc).target.index);
+      }
+      case IrOp.ref_null: { this.#emitRefNullInst(inst); }
+      case IrOp.ref_cast: { this.#emitRefCastInst(inst); }
+      case IrOp.ref_test: { this.#emitRefTestInst(inst); }
+      case IrOp.ref_is_null: {
+        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        this.emitter.emitRefIsNull();
+      }
+      case IrOp.ref_as_non_null: {
+        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        this.emitter.emitRefAsNonNull();
+      }
+      case IrOp.iface_pack: { this.#emitIfacePackInst(inst); }
+      case IrOp.iface_instance: { this.#emitIfaceFieldInst(inst, 0); }
+      case IrOp.iface_vtable: { this.#emitIfaceFieldInst(inst, 1); }
+      case IrOp.array_len: {
+        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        this.emitter.emitArrayLen();
+      }
+      case IrOp.array_new: { this.#emitArrayNewInst(inst); }
+      case IrOp.array_new_data: { this.#emitArrayNewDataInst(inst); }
+      case IrOp.array_new_fixed: { this.#emitArrayNewFixedInst(inst); }
+      case IrOp.array_get: {
+        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
+        this.emitter.emitArrayGet(this.#arrayTargetOf(body.a[inst]).index);
+      }
+      case IrOp.array_get_u: {
+        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
+        this.emitter.emitArrayGetU(this.#arrayTargetOf(body.a[inst]).index);
+      }
+      case IrOp.array_set: { this.#emitArraySetInst(inst); }
+      case IrOp.array_copy: { this.#emitArrayCopyInst(inst); }
+      case IrOp.extern_convert_any: {
+        this.#pushValue(body.a[inst]);
+        this.emitter.emitExternConvertAny();
+      }
+      case IrOp.any_convert_extern: {
+        this.#pushValue(body.a[inst]);
+        this.emitter.emitAnyConvertExtern();
+      }
+      case IrOp.i32_store: { this.#emitMemStoreInst(inst); }
+      case IrOp.i32_store8: { this.#emitMemStoreInst(inst); }
+      case IrOp.i64_store: { this.#emitMemStoreInst(inst); }
+      case IrOp.f32_store: { this.#emitMemStoreInst(inst); }
+      case IrOp.f64_store: { this.#emitMemStoreInst(inst); }
+      case IrOp.i32_load: { this.#emitMemLoadInst(inst); }
+      case IrOp.i32_load8_u: { this.#emitMemLoadInst(inst); }
+      case IrOp.i64_load: { this.#emitMemLoadInst(inst); }
+      case IrOp.f32_load: { this.#emitMemLoadInst(inst); }
+      case IrOp.f64_load: { this.#emitMemLoadInst(inst); }
+      case IrOp.memory_size: { this.emitter.emitMemorySize(); }
+      case IrOp.memory_grow: {
+        this.#pushValue(body.a[inst]);
+        this.emitter.emitMemoryGrow();
+      }
+      case _: {
+        if (isUnaryNumericOp(op)) {
+          this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+          this.#emitOp(op);
+        } else {
+          // Binary numerics: two inline value operands.
+          this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+          this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
+          this.#emitOp(op);
         }
       }
-      this.#storeMultiResults(inst);
-    } else if (op == IrOp.global_get) {
-      let ref = body.refTable[body.b[inst]];
-      if (!(ref is IrRefGlobal)) {
-        throw new Error('zir emit: global_get ref kind');
-      }
-      this.emitter.emitGlobalGet((ref as IrRefGlobal).target.index);
-    } else if (op == IrOp.global_set) {
-      this.#pushValue(body.a[inst]);
-      let ref = body.refTable[body.b[inst]];
-      if (!(ref is IrRefGlobal)) {
-        throw new Error('zir emit: global_set ref kind');
-      }
-      this.emitter.emitGlobalSet((ref as IrRefGlobal).target.index);
-    } else if (op == IrOp.struct_new_default) {
-      let ref = body.refTable[body.b[inst]];
-      if (!(ref is IrRefType)) {
-        throw new Error('zir emit: struct_new_default ref kind');
-      }
-      this.emitter.emitStructNewDefault((ref as IrRefType).target.index);
-    } else if (op == IrOp.struct_new) {
-      let argsIdx = body.a[inst];
-      let argc = body.extra[argsIdx];
-      for (var k = 0; k < argc; k += 1) {
-        this.#pushValue(body.extra[argsIdx + 1 + k]);
-      }
-      let ref = body.refTable[body.b[inst]];
-      if (!(ref is IrRefType)) {
-        throw new Error('zir emit: struct_new ref kind');
-      }
-      this.emitter.emitStructNew((ref as IrRefType).target.index);
-    } else if (op == IrOp.array_new_fixed) {
-      let argsIdx = body.a[inst];
-      let argc = body.extra[argsIdx];
-      for (var k = 0; k < argc; k += 1) {
-        this.#pushValue(body.extra[argsIdx + 1 + k]);
-      }
-      let ref = body.refTable[body.b[inst]];
-      if (!(ref is IrRefType)) {
-        throw new Error('zir emit: array_new_fixed ref kind');
-      }
-      this.emitter.emitArrayNewFixed((ref as IrRefType).target.index, argc);
-    } else if (op == IrOp.ref_func) {
-      let ref = body.refTable[body.b[inst]];
-      if (!(ref is IrRefFunc)) {
-        throw new Error('zir emit: ref_func ref kind');
-      }
-      this.emitter.emitRefFunc((ref as IrRefFunc).target.index);
-    } else if (op == IrOp.struct_get) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      let field = this.#fieldRef(body.b[inst]);
-      this.emitter.emitStructGet(field.owner.index, this.#fieldIndexOf(field));
-    } else if (op == IrOp.struct_set) {
-      let pairIdx = body.a[inst];
-      this.emitter.emitLocalGet(this.localOf[body.extra[pairIdx]]);
-      this.#pushValue(body.extra[pairIdx + 1]);
-      let field = this.#fieldRef(body.b[inst]);
-      this.emitter.emitStructSet(field.owner.index, this.#fieldIndexOf(field));
-    } else if (op == IrOp.ref_null) {
-      let vt = body.resultType(inst) as ValType;
-      match (vt) {
-        case ValTypeRefNull as r: { this.emitter.emitRefNull(r.target.index); }
-        case ValTypeAnyRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.any)); }
-        case ValTypeEqRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.eq)); }
-        case ValTypeStructRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.struct)); }
-        case _: {
-          throw new Error('zir emit: ref.null type');
-        }
-      }
-    } else if (op == IrOp.ref_cast) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      match (body.typeTable[body.b[inst]]) {
-        case ValTypeRef as r: { this.emitter.emitRefCast(r.target.index); }
-        case ValTypeRefNull as rn: { this.emitter.emitRefCastNull(rn.target.index); }
-        case ValTypeEqRef: { this.emitter.emitRefCastEqNull(); }
-        case _: {
-          throw new Error('zir emit: ref.cast target kind');
-        }
-      }
-    } else if (op == IrOp.ref_test) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      match (body.typeTable[body.b[inst]]) {
-        case ValTypeRef as r: { this.emitter.emitRefTest(r.target.index); }
-        case ValTypeRefNull as rn: { this.emitter.emitRefTestNull(rn.target.index); }
-        case _: {
-          throw new Error('zir emit: ref.test target kind');
-        }
-      }
-    } else if (op == IrOp.call_ref) {
-      let idx = body.a[inst];
-      let callee = body.extra[idx];
-      let argc = body.extra[idx + 1];
-      for (var k = 0; k < argc; k += 1) {
-        this.#pushValue(body.extra[idx + 2 + k]);
-      }
-      this.#pushValue(callee);
-      this.emitter.emitCallRef(this.#signatureOf(callee).index);
-      this.#storeMultiResults(inst);
-    } else if (op == IrOp.iface_pack) {
-      this.#pushValue(body.a[inst]);
-      match (body.refTable[body.b[inst]]) {
-        case IrRefGlobal as g: { this.emitter.emitGlobalGet(g.target.index); }
-        case _: { throw new Error('zir emit: iface_pack ref kind'); }
-      }
-      match (body.resultType(inst)) {
-        case ValTypeRef as r: {
-          if (!(r.target is WasmStruct)) {
-            throw new Error('zir emit: iface_pack result kind');
-          }
-          this.emitter.emitStructNew((r.target as WasmStruct).index);
-        }
-        case _: { throw new Error('zir emit: iface_pack result kind'); }
-      }
-    } else if (op == IrOp.iface_instance || op == IrOp.iface_vtable) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      let fatPtr = this.#structTargetOf(body.a[inst]);
-      let fieldIdx = if (op == IrOp.iface_instance) 0 else 1;
-      this.emitter.emitStructGet(fatPtr.index, fieldIdx);
-    } else if (op == IrOp.array_len) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      this.emitter.emitArrayLen();
-    } else if (op == IrOp.array_new) {
-      let pairIdx = body.a[inst];
-      let init = body.extra[pairIdx + 1];
-      let ref = body.refTable[body.b[inst]];
-      if (!(ref is IrRefType)) {
-        throw new Error('zir emit: array_new ref kind');
-      }
-      let typeIndex = (ref as IrRefType).target.index;
-      if (init >= 0) {
-        // array.new pops (init value, length); default form pops length only.
-        this.#pushValue(init);
-        this.#pushValue(body.extra[pairIdx]);
-        this.emitter.emitArrayNew(typeIndex);
-      } else {
-        this.#pushValue(body.extra[pairIdx]);
-        this.emitter.emitArrayNewDefault(typeIndex);
-      }
-    } else if (op == IrOp.array_new_data) {
-      let idx = body.a[inst];
-      this.#pushValue(body.extra[idx]);
-      this.#pushValue(body.extra[idx + 1]);
-      let ref = body.refTable[body.b[inst]];
-      if (!(ref is IrRefType)) {
-        throw new Error('zir emit: array_new_data ref kind');
-      }
-      this.emitter.emitArrayNewData(
-          (ref as IrRefType).target.index, body.extra[idx + 2]);
-    } else if (op == IrOp.array_get) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
-      this.emitter.emitArrayGet(this.#arrayTargetOf(body.a[inst]).index);
-    } else if (op == IrOp.array_get_u) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
-      this.emitter.emitArrayGetU(this.#arrayTargetOf(body.a[inst]).index);
-    } else if (op == IrOp.array_copy) {
-      let tupleIdx = body.a[inst];
-      for (var k = 0; k < 5; k += 1) {
-        this.#pushValue(body.extra[tupleIdx + k]);
-      }
-      this.emitter.emitArrayCopy(
-          this.#arrayTargetOf(body.extra[tupleIdx]).index,
-          this.#arrayTargetOf(body.extra[tupleIdx + 2]).index);
-    } else if (op == IrOp.array_set) {
-      let tripleIdx = body.a[inst];
-      this.emitter.emitLocalGet(this.localOf[body.extra[tripleIdx]]);
-      this.emitter.emitLocalGet(this.localOf[body.extra[tripleIdx + 1]]);
-      this.#pushValue(body.extra[tripleIdx + 2]);
-      this.emitter.emitArraySet(this.#arrayTargetOf(body.extra[tripleIdx]).index);
-    } else if (op == IrOp.extern_convert_any) {
-      this.#pushValue(body.a[inst]);
-      this.emitter.emitExternConvertAny();
-    } else if (op == IrOp.any_convert_extern) {
-      this.#pushValue(body.a[inst]);
-      this.emitter.emitAnyConvertExtern();
-    } else if (op == IrOp.i32_store || op == IrOp.i32_store8 ||
-        op == IrOp.i64_store || op == IrOp.f32_store ||
-        op == IrOp.f64_store) {
-      let pairIdx = body.a[inst];
-      let align = body.b[inst];
-      this.#pushValue(body.extra[pairIdx]);
-      this.#pushValue(body.extra[pairIdx + 1]);
-      if (op == IrOp.i32_store) {
-        this.emitter.emitI32Store(align, 0);
-      } else if (op == IrOp.i32_store8) {
-        this.emitter.emitI32Store8(align, 0);
-      } else if (op == IrOp.i64_store) {
-        this.emitter.emitI64Store(align, 0);
-      } else if (op == IrOp.f32_store) {
-        this.emitter.emitF32Store(align, 0);
-      } else {
-        this.emitter.emitF64Store(align, 0);
-      }
-    } else if (op == IrOp.i32_load || op == IrOp.i32_load8_u ||
-        op == IrOp.i64_load || op == IrOp.f32_load ||
-        op == IrOp.f64_load) {
-      let align = body.b[inst];
-      this.#pushValue(body.a[inst]);
-      if (op == IrOp.i32_load) {
-        this.emitter.emitI32Load(align, 0);
-      } else if (op == IrOp.i32_load8_u) {
-        this.emitter.emitI32Load8U(align, 0);
-      } else if (op == IrOp.i64_load) {
-        this.emitter.emitI64Load(align, 0);
-      } else if (op == IrOp.f32_load) {
-        this.emitter.emitF32Load(align, 0);
-      } else {
-        this.emitter.emitF64Load(align, 0);
-      }
-    } else if (op == IrOp.memory_size) {
-      this.emitter.emitMemorySize();
-    } else if (op == IrOp.memory_grow) {
-      this.#pushValue(body.a[inst]);
-      this.emitter.emitMemoryGrow();
-    } else if (op == IrOp.ref_is_null) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      this.emitter.emitRefIsNull();
-    } else if (op == IrOp.ref_as_non_null) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      this.emitter.emitRefAsNonNull();
-    } else if (isUnaryNumericOp(op)) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      this.#emitOp(op);
-    } else {
-      // Binary numerics: two inline value operands.
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-      this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
-      this.#emitOp(op);
     }
     if (body.producesValue(inst)) {
       this.emitter.emitLocalSet(this.localOf[inst]);
     }
   }
 
+  /** The module index of the global-ref payload in slot b. */
+  #globalIndexOf(inst: i32): i32 {
+    let ref = this.body.refTable[this.body.b[inst]];
+    if (!(ref is IrRefGlobal)) {
+      throw new Error('zir emit: ' + irOpName(this.body.op(inst)) + ' ref kind');
+    }
+    return (ref as IrRefGlobal).target.index;
+  }
+
+  /** The module index of the type-ref payload in slot b. */
+  #typeIndexOf(inst: i32): i32 {
+    let ref = this.body.refTable[this.body.b[inst]];
+    if (!(ref is IrRefType)) {
+      throw new Error('zir emit: ' + irOpName(this.body.op(inst)) + ' ref kind');
+    }
+    return (ref as IrRefType).target.index;
+  }
+
+  #emitCallInst(inst: i32): void {
+    let body = this.body;
+    let argsIdx = body.a[inst];
+    let argc = body.extra[argsIdx];
+    for (var k = 0; k < argc; k += 1) {
+      this.#pushValue(body.extra[argsIdx + 1 + k]);
+    }
+    let ref = body.refTable[body.b[inst]];
+    match (ref) {
+      case IrRefFunc as f: {
+        this.emitter.emitCall(f.target);
+      }
+      case _: {
+        throw new Error('zir emit: call ref is not a function');
+      }
+    }
+    this.#storeMultiResults(inst);
+  }
+
+  #emitCallRefInst(inst: i32): void {
+    let body = this.body;
+    let idx = body.a[inst];
+    let callee = body.extra[idx];
+    let argc = body.extra[idx + 1];
+    for (var k = 0; k < argc; k += 1) {
+      this.#pushValue(body.extra[idx + 2 + k]);
+    }
+    this.#pushValue(callee);
+    this.emitter.emitCallRef(this.#signatureOf(callee).index);
+    this.#storeMultiResults(inst);
+  }
+
+  #emitStructNewInst(inst: i32): void {
+    let body = this.body;
+    let argsIdx = body.a[inst];
+    let argc = body.extra[argsIdx];
+    for (var k = 0; k < argc; k += 1) {
+      this.#pushValue(body.extra[argsIdx + 1 + k]);
+    }
+    this.emitter.emitStructNew(this.#typeIndexOf(inst));
+  }
+
+  #emitRefNullInst(inst: i32): void {
+    let vt = this.body.resultType(inst) as ValType;
+    match (vt) {
+      case ValTypeRefNull as r: { this.emitter.emitRefNull(r.target.index); }
+      case ValTypeAnyRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.any)); }
+      case ValTypeEqRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.eq)); }
+      case ValTypeStructRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.struct)); }
+      case _: {
+        throw new Error('zir emit: ref.null type');
+      }
+    }
+  }
+
+  #emitRefCastInst(inst: i32): void {
+    let body = this.body;
+    this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+    match (body.typeTable[body.b[inst]]) {
+      case ValTypeRef as r: { this.emitter.emitRefCast(r.target.index); }
+      case ValTypeRefNull as rn: { this.emitter.emitRefCastNull(rn.target.index); }
+      case ValTypeEqRef: { this.emitter.emitRefCastEqNull(); }
+      case _: {
+        throw new Error('zir emit: ref.cast target kind');
+      }
+    }
+  }
+
+  #emitRefTestInst(inst: i32): void {
+    let body = this.body;
+    this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+    match (body.typeTable[body.b[inst]]) {
+      case ValTypeRef as r: { this.emitter.emitRefTest(r.target.index); }
+      case ValTypeRefNull as rn: { this.emitter.emitRefTestNull(rn.target.index); }
+      case _: {
+        throw new Error('zir emit: ref.test target kind');
+      }
+    }
+  }
+
+  #emitIfacePackInst(inst: i32): void {
+    let body = this.body;
+    this.#pushValue(body.a[inst]);
+    match (body.refTable[body.b[inst]]) {
+      case IrRefGlobal as g: { this.emitter.emitGlobalGet(g.target.index); }
+      case _: { throw new Error('zir emit: iface_pack ref kind'); }
+    }
+    match (body.resultType(inst)) {
+      case ValTypeRef as r: {
+        if (!(r.target is WasmStruct)) {
+          throw new Error('zir emit: iface_pack result kind');
+        }
+        this.emitter.emitStructNew((r.target as WasmStruct).index);
+      }
+      case _: { throw new Error('zir emit: iface_pack result kind'); }
+    }
+  }
+
+  /** Fat-pointer field read: 0 = instance, 1 = vtable. */
+  #emitIfaceFieldInst(inst: i32, fieldIdx: i32): void {
+    let body = this.body;
+    this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+    let fatPtr = this.#structTargetOf(body.a[inst]);
+    this.emitter.emitStructGet(fatPtr.index, fieldIdx);
+  }
+
+  #emitArrayNewInst(inst: i32): void {
+    let body = this.body;
+    let pairIdx = body.a[inst];
+    let init = body.extra[pairIdx + 1];
+    let typeIndex = this.#typeIndexOf(inst);
+    if (init >= 0) {
+      // array.new pops (init value, length); default form pops length only.
+      this.#pushValue(init);
+      this.#pushValue(body.extra[pairIdx]);
+      this.emitter.emitArrayNew(typeIndex);
+    } else {
+      this.#pushValue(body.extra[pairIdx]);
+      this.emitter.emitArrayNewDefault(typeIndex);
+    }
+  }
+
+  #emitArrayNewDataInst(inst: i32): void {
+    let body = this.body;
+    let idx = body.a[inst];
+    this.#pushValue(body.extra[idx]);
+    this.#pushValue(body.extra[idx + 1]);
+    this.emitter.emitArrayNewData(this.#typeIndexOf(inst), body.extra[idx + 2]);
+  }
+
+  #emitArrayNewFixedInst(inst: i32): void {
+    let body = this.body;
+    let argsIdx = body.a[inst];
+    let argc = body.extra[argsIdx];
+    for (var k = 0; k < argc; k += 1) {
+      this.#pushValue(body.extra[argsIdx + 1 + k]);
+    }
+    this.emitter.emitArrayNewFixed(this.#typeIndexOf(inst), argc);
+  }
+
+  #emitArraySetInst(inst: i32): void {
+    let body = this.body;
+    let tripleIdx = body.a[inst];
+    this.emitter.emitLocalGet(this.localOf[body.extra[tripleIdx]]);
+    this.emitter.emitLocalGet(this.localOf[body.extra[tripleIdx + 1]]);
+    this.#pushValue(body.extra[tripleIdx + 2]);
+    this.emitter.emitArraySet(this.#arrayTargetOf(body.extra[tripleIdx]).index);
+  }
+
+  #emitArrayCopyInst(inst: i32): void {
+    let body = this.body;
+    let tupleIdx = body.a[inst];
+    for (var k = 0; k < 5; k += 1) {
+      this.#pushValue(body.extra[tupleIdx + k]);
+    }
+    this.emitter.emitArrayCopy(
+        this.#arrayTargetOf(body.extra[tupleIdx]).index,
+        this.#arrayTargetOf(body.extra[tupleIdx + 2]).index);
+  }
+
+  /** Linear-memory store: [addr, value] pair, alignment in slot b. */
+  #emitMemStoreInst(inst: i32): void {
+    let body = this.body;
+    let op = body.op(inst);
+    let pairIdx = body.a[inst];
+    let align = body.b[inst];
+    this.#pushValue(body.extra[pairIdx]);
+    this.#pushValue(body.extra[pairIdx + 1]);
+    match (op) {
+      case IrOp.i32_store: { this.emitter.emitI32Store(align, 0); }
+      case IrOp.i32_store8: { this.emitter.emitI32Store8(align, 0); }
+      case IrOp.i64_store: { this.emitter.emitI64Store(align, 0); }
+      case IrOp.f32_store: { this.emitter.emitF32Store(align, 0); }
+      case _: { this.emitter.emitF64Store(align, 0); }
+    }
+  }
+
+  /** Linear-memory load: address in slot a, alignment in slot b. */
+  #emitMemLoadInst(inst: i32): void {
+    let body = this.body;
+    let op = body.op(inst);
+    let align = body.b[inst];
+    this.#pushValue(body.a[inst]);
+    match (op) {
+      case IrOp.i32_load: { this.emitter.emitI32Load(align, 0); }
+      case IrOp.i32_load8_u: { this.emitter.emitI32Load8U(align, 0); }
+      case IrOp.i64_load: { this.emitter.emitI64Load(align, 0); }
+      case IrOp.f32_load: { this.emitter.emitF32Load(align, 0); }
+      case _: { this.emitter.emitF64Load(align, 0); }
+    }
+  }
 
   /** The wasm signature behind a funcref-typed value (call_ref callee). */
   #signatureOf(inst: i32): WasmSignature {

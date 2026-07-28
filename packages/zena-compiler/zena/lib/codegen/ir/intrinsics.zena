@@ -276,6 +276,31 @@ let threeValues = (a: i32, b: i32, c: i32): Array<i32> => {
   return out;
 };
 
+/** memory.grow(pages) -> previous size in pages. */
+let lowerMemoryGrow = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let lowerExpr = cx.lowerExpr;
+  let pages = lowerExpr(call.args[0], null);
+  return cx.b.emit(IrOp.memory_grow, new ValTypeI32(), pages, -1);
+};
+
+/** wasi_write_string(fd, s): call the synthesized write helper. */
+let lowerWasiWriteString = (cx: IntrinsicCx, call: CallExpression): i32 => {
+  let lowerExpr = cx.lowerExpr;
+  let fail = cx.fail;
+  let helperOpt = cx.wasm.wasiWriteStringHelper;
+  if (helperOpt == null) {
+    fail('wasi write helper missing');
+  }
+  let helper = helperOpt as WasmFunction;
+  let sig = helper.signature;
+  let args = new Array<i32>();
+  let fd = lowerExpr(call.args[0], sig.params[0]);
+  args.push(fd);
+  let s = lowerExpr(call.args[1], sig.params[1]);
+  args.push(s);
+  return cx.b.callFunc(cx.b.addRef(new IrRefFunc(helper)), args, null);
+};
+
 /**
  * The single name -> lowering router for call-position intrinsics.
  * Array-builtin notes: the __byte_array_* variants differ only in
@@ -288,100 +313,83 @@ let threeValues = (a: i32, b: i32, c: i32): Array<i32> => {
  * __array_new_empty / __byte_array_new are both array.new_default.
  */
 export let lowerIntrinsic = (cx: IntrinsicCx, name: String, call: CallExpression): i32 => {
-  if (name == '__array_len' || name == '__byte_array_length') {
-    return lowerArrayLen(cx, call);
-  }
-  if (name == '__array_get') { return lowerArrayGet(cx, call); }
-  if (name == '__byte_array_get') { return lowerByteArrayGet(cx, call); }
-  if (name == '__array_set') { return lowerArraySet(cx, call); }
-  if (name == '__byte_array_set') { return lowerByteArraySet(cx, call); }
-  if (name == '__array_new') { return lowerArrayNew(cx, call); }
-  if (name == '__array_new_empty' || name == '__byte_array_new') {
-    return lowerArrayNewDefault(cx, call);
-  }
-  if (name == '__byte_array_copy') { return lowerByteArrayCopy(cx, call); }
-  if (name == 'i32.div_s') { return lowerInstr(cx, call, IrOp.i32_div_s, new ValTypeI32()); }
-  if (name == 'i32.div_u') { return lowerInstr(cx, call, IrOp.i32_div_u, new ValTypeI32()); }
-  if (name == 'i64.div_s') { return lowerInstr(cx, call, IrOp.i64_div_s, new ValTypeI64()); }
-  if (name == 'i64.div_u') { return lowerInstr(cx, call, IrOp.i64_div_u, new ValTypeI64()); }
-  if (name == 'i64.reinterpret_f64') { return lowerInstr(cx, call, IrOp.i64_reinterpret_f64, new ValTypeI64()); }
-  if (name == 'i32.clz') { return lowerInstr(cx, call, IrOp.i32_clz, new ValTypeI32()); }
-  if (name == 'i32.ctz') { return lowerInstr(cx, call, IrOp.i32_ctz, new ValTypeI32()); }
-  if (name == 'i32.popcnt') { return lowerInstr(cx, call, IrOp.i32_popcnt, new ValTypeI32()); }
-  if (name == 'i64.clz') { return lowerInstr(cx, call, IrOp.i64_clz, new ValTypeI64()); }
-  if (name == 'i64.ctz') { return lowerInstr(cx, call, IrOp.i64_ctz, new ValTypeI64()); }
-  if (name == 'i64.popcnt') { return lowerInstr(cx, call, IrOp.i64_popcnt, new ValTypeI64()); }
-  if (name == 'i32.reinterpret_f32') { return lowerInstr(cx, call, IrOp.i32_reinterpret_f32, new ValTypeI32()); }
-  if (name == 'f32.reinterpret_i32') { return lowerInstr(cx, call, IrOp.f32_reinterpret_i32, new ValTypeF32()); }
-  if (name == 'f64.reinterpret_i64') { return lowerInstr(cx, call, IrOp.f64_reinterpret_i64, new ValTypeF64()); }
-  if (name == 'i32.trunc_sat_f32_s') { return lowerInstr(cx, call, IrOp.i32_trunc_sat_f32_s, new ValTypeI32()); }
-  if (name == 'i32.trunc_sat_f32_u') { return lowerInstr(cx, call, IrOp.i32_trunc_sat_f32_u, new ValTypeI32()); }
-  if (name == 'i32.trunc_sat_f64_s') { return lowerInstr(cx, call, IrOp.i32_trunc_sat_f64_s, new ValTypeI32()); }
-  if (name == 'i32.trunc_sat_f64_u') { return lowerInstr(cx, call, IrOp.i32_trunc_sat_f64_u, new ValTypeI32()); }
-  if (name == 'i64.trunc_sat_f32_s') { return lowerInstr(cx, call, IrOp.i64_trunc_sat_f32_s, new ValTypeI64()); }
-  if (name == 'i64.trunc_sat_f32_u') { return lowerInstr(cx, call, IrOp.i64_trunc_sat_f32_u, new ValTypeI64()); }
-  if (name == 'i64.trunc_sat_f64_s') { return lowerInstr(cx, call, IrOp.i64_trunc_sat_f64_s, new ValTypeI64()); }
-  if (name == 'i64.trunc_sat_f64_u') { return lowerInstr(cx, call, IrOp.i64_trunc_sat_f64_u, new ValTypeI64()); }
-  if (name == 'f32.abs') { return lowerInstr(cx, call, IrOp.f32_abs, new ValTypeF32()); }
-  if (name == 'f32.ceil') { return lowerInstr(cx, call, IrOp.f32_ceil, new ValTypeF32()); }
-  if (name == 'f32.floor') { return lowerInstr(cx, call, IrOp.f32_floor, new ValTypeF32()); }
-  if (name == 'f32.nearest') { return lowerInstr(cx, call, IrOp.f32_nearest, new ValTypeF32()); }
-  if (name == 'f32.sqrt') { return lowerInstr(cx, call, IrOp.f32_sqrt, new ValTypeF32()); }
-  if (name == 'f32.trunc') { return lowerInstr(cx, call, IrOp.f32_trunc, new ValTypeF32()); }
-  if (name == 'f32.neg') { return lowerInstr(cx, call, IrOp.f32_neg, new ValTypeF32()); }
-  if (name == 'f64.abs') { return lowerInstr(cx, call, IrOp.f64_abs, new ValTypeF64()); }
-  if (name == 'f64.ceil') { return lowerInstr(cx, call, IrOp.f64_ceil, new ValTypeF64()); }
-  if (name == 'f64.floor') { return lowerInstr(cx, call, IrOp.f64_floor, new ValTypeF64()); }
-  if (name == 'f64.nearest') { return lowerInstr(cx, call, IrOp.f64_nearest, new ValTypeF64()); }
-  if (name == 'f64.sqrt') { return lowerInstr(cx, call, IrOp.f64_sqrt, new ValTypeF64()); }
-  if (name == 'f64.trunc') { return lowerInstr(cx, call, IrOp.f64_trunc, new ValTypeF64()); }
-  if (name == 'f64.neg') { return lowerInstr(cx, call, IrOp.f64_neg, new ValTypeF64()); }
-  if (name == 'f32.min') { return lowerInstr(cx, call, IrOp.f32_min, new ValTypeF32()); }
-  if (name == 'f32.max') { return lowerInstr(cx, call, IrOp.f32_max, new ValTypeF32()); }
-  if (name == 'f32.copysign') { return lowerInstr(cx, call, IrOp.f32_copysign, new ValTypeF32()); }
-  if (name == 'f64.min') { return lowerInstr(cx, call, IrOp.f64_min, new ValTypeF64()); }
-  if (name == 'f64.max') { return lowerInstr(cx, call, IrOp.f64_max, new ValTypeF64()); }
-  if (name == 'f64.copysign') { return lowerInstr(cx, call, IrOp.f64_copysign, new ValTypeF64()); }
-  if (name == 'i32.load') { return lowerMemLoad(cx, call, IrOp.i32_load, new ValTypeI32(), 2); }
-  if (name == 'i32.load8_u') { return lowerMemLoad(cx, call, IrOp.i32_load8_u, new ValTypeI32(), 0); }
-  if (name == 'i64.load') { return lowerMemLoad(cx, call, IrOp.i64_load, new ValTypeI64(), 3); }
-  if (name == 'f32.load') { return lowerMemLoad(cx, call, IrOp.f32_load, new ValTypeF32(), 2); }
-  if (name == 'f64.load') { return lowerMemLoad(cx, call, IrOp.f64_load, new ValTypeF64(), 3); }
-  if (name == 'i32.store') { return lowerMemStore(cx, call, IrOp.i32_store, 0); }
-  if (name == 'i32.store8') { return lowerMemStore(cx, call, IrOp.i32_store8, 0); }
-  if (name == 'i64.store') { return lowerMemStore(cx, call, IrOp.i64_store, 0); }
-  if (name == 'f32.store') { return lowerMemStore(cx, call, IrOp.f32_store, 0); }
-  if (name == 'f64.store') { return lowerMemStore(cx, call, IrOp.f64_store, 0); }
-  if (name == 'memory.size') { return cx.b.emit(IrOp.memory_size, new ValTypeI32(), -1, -1); }
-  if (name == 'memory.grow') {
-    let lowerExpr = cx.lowerExpr;
-    let pages = lowerExpr(call.args[0], null);
-    return cx.b.emit(IrOp.memory_grow, new ValTypeI32(), pages, -1);
-  }
-  if (name == 'wasi_write_string') {
-    let lowerExpr = cx.lowerExpr;
-    let fail = cx.fail;
-    let helperOpt = cx.wasm.wasiWriteStringHelper;
-    if (helperOpt == null) {
-      fail('wasi write helper missing');
+  return match (name) {
+    case '__array_len': lowerArrayLen(cx, call)
+    case '__byte_array_length': lowerArrayLen(cx, call)
+    case '__array_get': lowerArrayGet(cx, call)
+    case '__byte_array_get': lowerByteArrayGet(cx, call)
+    case '__array_set': lowerArraySet(cx, call)
+    case '__byte_array_set': lowerByteArraySet(cx, call)
+    case '__array_new': lowerArrayNew(cx, call)
+    case '__array_new_empty': lowerArrayNewDefault(cx, call)
+    case '__byte_array_new': lowerArrayNewDefault(cx, call)
+    case '__byte_array_copy': lowerByteArrayCopy(cx, call)
+    case 'i32.div_s': lowerInstr(cx, call, IrOp.i32_div_s, new ValTypeI32())
+    case 'i32.div_u': lowerInstr(cx, call, IrOp.i32_div_u, new ValTypeI32())
+    case 'i64.div_s': lowerInstr(cx, call, IrOp.i64_div_s, new ValTypeI64())
+    case 'i64.div_u': lowerInstr(cx, call, IrOp.i64_div_u, new ValTypeI64())
+    case 'i64.reinterpret_f64': lowerInstr(cx, call, IrOp.i64_reinterpret_f64, new ValTypeI64())
+    case 'i32.clz': lowerInstr(cx, call, IrOp.i32_clz, new ValTypeI32())
+    case 'i32.ctz': lowerInstr(cx, call, IrOp.i32_ctz, new ValTypeI32())
+    case 'i32.popcnt': lowerInstr(cx, call, IrOp.i32_popcnt, new ValTypeI32())
+    case 'i64.clz': lowerInstr(cx, call, IrOp.i64_clz, new ValTypeI64())
+    case 'i64.ctz': lowerInstr(cx, call, IrOp.i64_ctz, new ValTypeI64())
+    case 'i64.popcnt': lowerInstr(cx, call, IrOp.i64_popcnt, new ValTypeI64())
+    case 'i32.reinterpret_f32': lowerInstr(cx, call, IrOp.i32_reinterpret_f32, new ValTypeI32())
+    case 'f32.reinterpret_i32': lowerInstr(cx, call, IrOp.f32_reinterpret_i32, new ValTypeF32())
+    case 'f64.reinterpret_i64': lowerInstr(cx, call, IrOp.f64_reinterpret_i64, new ValTypeF64())
+    case 'i32.trunc_sat_f32_s': lowerInstr(cx, call, IrOp.i32_trunc_sat_f32_s, new ValTypeI32())
+    case 'i32.trunc_sat_f32_u': lowerInstr(cx, call, IrOp.i32_trunc_sat_f32_u, new ValTypeI32())
+    case 'i32.trunc_sat_f64_s': lowerInstr(cx, call, IrOp.i32_trunc_sat_f64_s, new ValTypeI32())
+    case 'i32.trunc_sat_f64_u': lowerInstr(cx, call, IrOp.i32_trunc_sat_f64_u, new ValTypeI32())
+    case 'i64.trunc_sat_f32_s': lowerInstr(cx, call, IrOp.i64_trunc_sat_f32_s, new ValTypeI64())
+    case 'i64.trunc_sat_f32_u': lowerInstr(cx, call, IrOp.i64_trunc_sat_f32_u, new ValTypeI64())
+    case 'i64.trunc_sat_f64_s': lowerInstr(cx, call, IrOp.i64_trunc_sat_f64_s, new ValTypeI64())
+    case 'i64.trunc_sat_f64_u': lowerInstr(cx, call, IrOp.i64_trunc_sat_f64_u, new ValTypeI64())
+    case 'f32.abs': lowerInstr(cx, call, IrOp.f32_abs, new ValTypeF32())
+    case 'f32.ceil': lowerInstr(cx, call, IrOp.f32_ceil, new ValTypeF32())
+    case 'f32.floor': lowerInstr(cx, call, IrOp.f32_floor, new ValTypeF32())
+    case 'f32.nearest': lowerInstr(cx, call, IrOp.f32_nearest, new ValTypeF32())
+    case 'f32.sqrt': lowerInstr(cx, call, IrOp.f32_sqrt, new ValTypeF32())
+    case 'f32.trunc': lowerInstr(cx, call, IrOp.f32_trunc, new ValTypeF32())
+    case 'f32.neg': lowerInstr(cx, call, IrOp.f32_neg, new ValTypeF32())
+    case 'f64.abs': lowerInstr(cx, call, IrOp.f64_abs, new ValTypeF64())
+    case 'f64.ceil': lowerInstr(cx, call, IrOp.f64_ceil, new ValTypeF64())
+    case 'f64.floor': lowerInstr(cx, call, IrOp.f64_floor, new ValTypeF64())
+    case 'f64.nearest': lowerInstr(cx, call, IrOp.f64_nearest, new ValTypeF64())
+    case 'f64.sqrt': lowerInstr(cx, call, IrOp.f64_sqrt, new ValTypeF64())
+    case 'f64.trunc': lowerInstr(cx, call, IrOp.f64_trunc, new ValTypeF64())
+    case 'f64.neg': lowerInstr(cx, call, IrOp.f64_neg, new ValTypeF64())
+    case 'f32.min': lowerInstr(cx, call, IrOp.f32_min, new ValTypeF32())
+    case 'f32.max': lowerInstr(cx, call, IrOp.f32_max, new ValTypeF32())
+    case 'f32.copysign': lowerInstr(cx, call, IrOp.f32_copysign, new ValTypeF32())
+    case 'f64.min': lowerInstr(cx, call, IrOp.f64_min, new ValTypeF64())
+    case 'f64.max': lowerInstr(cx, call, IrOp.f64_max, new ValTypeF64())
+    case 'f64.copysign': lowerInstr(cx, call, IrOp.f64_copysign, new ValTypeF64())
+    case 'i32.load': lowerMemLoad(cx, call, IrOp.i32_load, new ValTypeI32(), 2)
+    case 'i32.load8_u': lowerMemLoad(cx, call, IrOp.i32_load8_u, new ValTypeI32(), 0)
+    case 'i64.load': lowerMemLoad(cx, call, IrOp.i64_load, new ValTypeI64(), 3)
+    case 'f32.load': lowerMemLoad(cx, call, IrOp.f32_load, new ValTypeF32(), 2)
+    case 'f64.load': lowerMemLoad(cx, call, IrOp.f64_load, new ValTypeF64(), 3)
+    case 'i32.store': lowerMemStore(cx, call, IrOp.i32_store, 0)
+    case 'i32.store8': lowerMemStore(cx, call, IrOp.i32_store8, 0)
+    case 'i64.store': lowerMemStore(cx, call, IrOp.i64_store, 0)
+    case 'f32.store': lowerMemStore(cx, call, IrOp.f32_store, 0)
+    case 'f64.store': lowerMemStore(cx, call, IrOp.f64_store, 0)
+    case 'memory.size': cx.b.emit(IrOp.memory_size, new ValTypeI32(), -1, -1)
+    case 'memory.grow': lowerMemoryGrow(cx, call)
+    case 'wasi_write_string': lowerWasiWriteString(cx, call)
+    case 'eq': {
+      let lowerEq = cx.lowerEq;
+      lowerEq(call)
     }
-    let helper = helperOpt as WasmFunction;
-    let sig = helper.signature;
-    let args = new Array<i32>();
-    let fd = lowerExpr(call.args[0], sig.params[0]);
-    args.push(fd);
-    let s = lowerExpr(call.args[1], sig.params[1]);
-    args.push(s);
-    return cx.b.callFunc(cx.b.addRef(new IrRefFunc(helper)), args, null);
-  }
-  if (name == 'eq') {
-    let lowerEq = cx.lowerEq;
-    return lowerEq(call);
-  }
-  if (name == 'hash') {
-    let lowerHash = cx.lowerHash;
-    return lowerHash(call);
-  }
-  let fail = cx.fail;
-  return fail('intrinsic ' + name);
+    case 'hash': {
+      let lowerHash = cx.lowerHash;
+      lowerHash(call)
+    }
+    case _: {
+      let fail = cx.fail;
+      fail('intrinsic ' + name)
+    }
+  };
 };
