@@ -40,7 +40,7 @@ import {
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
   IsExpression, RangeExpression, PipelineExpression, SuperExpression,
   ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression,
-  LetPatternCondition, TuplePattern
+  LetPatternCondition, TuplePattern, PropertyAssignment
 } from '../../ast.zena';
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
@@ -51,7 +51,7 @@ import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
-import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo } from '../wasm-module.zena';
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -2669,8 +2669,119 @@ final class FunctionLowerer {
       case TemplateLiteral: this.#bailValue('template literal')
       case IsExpression as isExpr: this.#lowerIs(isExpr)
       case ArrayLiteral as arrLit: this.#lowerArrayLiteral(arrLit)
+      case RecordLiteral as recLit: this.#lowerRecordLiteral(recLit)
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
+  }
+
+  /**
+   * The record dispatch registered for a record type's (sorted) field
+   * shape. Discovery registers every checked record shape, so a miss
+   * means the type never reached discovery — bail.
+   */
+  #recordDispatchOf(rt: RecordType): RecordDispatchInfo {
+    let fields = new Array<WasmField>();
+    for (let pair in rt.properties) {
+      fields.push(new WasmField(pair.key,
+          typeToValTypeWithSub(this.wasm, pair.value, this.func), false));
+    }
+    sortWasmFields(fields);
+    let infoOpt = this.wasm.findRecordDispatch(fields);
+    if (infoOpt == null) {
+      this.#bail('record shape not discovered');
+    }
+    return infoOpt as RecordDispatchInfo;
+  }
+
+  /**
+   * `{ x: 1, y: 2 }`: field values in sorted-field order into one
+   * struct.new, then the shape's vtable global packs the fat pointer
+   * — streaming's shape. Spread properties bail. The last assignment
+   * to a repeated key wins, matching streaming's back-to-front scan.
+   */
+  #lowerRecordLiteral(lit: RecordLiteral): i32 {
+    let tOpt = this.#substitutedNodeType(lit);
+    if (tOpt == null) {
+      this.#bail('untyped record literal');
+    }
+    let bt = baseType(tOpt as Type);
+    if (!(bt is RecordType)) {
+      this.#bail('record literal type');
+    }
+    let dispatch = this.#recordDispatchOf(bt as RecordType);
+    for (let prop in lit.properties) {
+      if (!(prop is PropertyAssignment)) {
+        this.#bail('record spread');
+      }
+    }
+    let args = new Array<i32>();
+    for (let f in dispatch.fields) {
+      let key = if (f.name != null) f.name as String else '';
+      var valueOpt: Expression | null = null;
+      for (let prop in lit.properties) {
+        let pa = prop as PropertyAssignment;
+        if (pa.name.name == key) {
+          valueOpt = pa.value;
+        }
+      }
+      if (valueOpt == null) {
+        this.#bail('record literal field missing');
+      }
+      let v = this.#lowerExpressionCtx(valueOpt as Expression, f.type);
+      if (!isValSubtype(this.#valueType(v), f.type)) {
+        this.#bail('record literal field type');
+      }
+      args.push(v);
+    }
+    let instance = this.b.emit(IrOp.struct_new,
+        new ValTypeRef(dispatch.concreteType) as ValType,
+        this.b.pushArgList(args),
+        this.b.addRef(new IrRefType(dispatch.concreteType)));
+    return this.b.emit(IrOp.iface_pack,
+        new ValTypeRef(dispatch.fatPtrType) as ValType, instance,
+        this.b.addRef(new IrRefGlobal(dispatch.vtableGlobal)));
+  }
+
+  /**
+   * Reading a record member: the fat pointer's vtable slot holds the
+   * getter for the field (record values may be adapted views, so the
+   * read always dispatches — streaming's shape).
+   */
+  #lowerRecordRead(rt: RecordType, member: MemberExpression): i32 {
+    let dispatch = this.#recordDispatchOf(rt);
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    var fieldIdx = -1;
+    for (var i = 0; i < dispatch.fields.length; i += 1) {
+      let f = dispatch.fields[i];
+      if (f.name != null && (f.name as String) == propName) {
+        fieldIdx = i;
+      }
+    }
+    if (fieldIdx < 0) {
+      this.#bail('record member not found');
+    }
+    var recv = this.#lowerExpression(member.object);
+    let fatVt = new ValTypeRefNull(dispatch.fatPtrType) as ValType;
+    if (!isValSubtype(this.#valueType(recv), fatVt)) {
+      let castVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
+      recv = this.b.emit(IrOp.ref_cast, castVt, recv,
+          this.b.internType(castVt));
+    }
+    let instance = this.b.emit(IrOp.iface_instance,
+        new ValTypeStructRef() as ValType, recv, -1);
+    let vtable = this.b.emit(IrOp.iface_vtable,
+        new ValTypeRef(dispatch.vtableType) as ValType, recv, -1);
+    let getterSig = dispatch.getterTypes[fieldIdx];
+    let getter = this.b.emit(IrOp.struct_get,
+        new ValTypeRef(getterSig) as ValType, vtable,
+        this.b.addRef(new IrRefField(dispatch.vtableType, propName)));
+    if (getterSig.returns.length != 1) {
+      this.#bail('record getter shape');
+    }
+    let result = this.b.callRef(getter,
+        this.#oneArg(instance), getterSig.returns[0]);
+    return this.#reassertNonNull(result, this.#exprValType(member));
   }
 
   /**
@@ -4247,6 +4358,7 @@ final class FunctionLowerer {
             return this.#lowerEnumMember(
                 rt.enumDeclaration as EnumDeclaration, member);
           }
+          return this.#lowerRecordRead(rt, member);
         }
         case _: {}
       }
