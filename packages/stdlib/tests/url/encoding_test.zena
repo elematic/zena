@@ -1,0 +1,223 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {
+  EncodeSet,
+  byteNeedsPercentEncoding,
+  percentEncode,
+  percentDecode,
+  parseFormUrlencoded,
+  serializeFormUrlencoded
+} from 'zena:url';
+import {Array} from 'zena:array';
+
+// Hand-written from the WHATWG URL Standard (https://url.spec.whatwg.org/).
+// Each suite links the spec section it covers. See DESIGN.md for the plan to
+// supplement these with generated WPT conformance suites.
+export let tests = suite('URL percent-encoding', (): void => {
+  // Set definitions: https://url.spec.whatwg.org/#percent-encoded-bytes
+  // (one anchor per set is noted on its test below).
+  suite('encode sets', (): void => {
+    // https://url.spec.whatwg.org/#c0-control-percent-encode-set
+    test('C0 control set encodes controls, DEL, and non-ASCII only', (ctx: TestContext): void => {
+      isTrue(byteNeedsPercentEncoding(0x00, EncodeSet.C0Control));
+      isTrue(byteNeedsPercentEncoding(0x1F, EncodeSet.C0Control));
+      isTrue(byteNeedsPercentEncoding(0x7F, EncodeSet.C0Control));
+      isTrue(byteNeedsPercentEncoding(0xC3, EncodeSet.C0Control));
+      isFalse(byteNeedsPercentEncoding(0x20, EncodeSet.C0Control));
+      isFalse(byteNeedsPercentEncoding(0x7E, EncodeSet.C0Control));
+    });
+
+    // https://url.spec.whatwg.org/#fragment-percent-encode-set
+    test('fragment set', (ctx: TestContext): void => {
+      // C0 + space, '"', '<', '>', '`'
+      isTrue(byteNeedsPercentEncoding(0x20, EncodeSet.Fragment));
+      isTrue(byteNeedsPercentEncoding(0x22, EncodeSet.Fragment));
+      isTrue(byteNeedsPercentEncoding(0x3C, EncodeSet.Fragment));
+      isTrue(byteNeedsPercentEncoding(0x3E, EncodeSet.Fragment));
+      isTrue(byteNeedsPercentEncoding(0x60, EncodeSet.Fragment));
+      isFalse(byteNeedsPercentEncoding(0x23, EncodeSet.Fragment)); // '#'
+      isFalse(byteNeedsPercentEncoding(0x2F, EncodeSet.Fragment)); // '/'
+    });
+
+    // https://url.spec.whatwg.org/#query-percent-encode-set
+    test('query set adds "#" but not backtick', (ctx: TestContext): void => {
+      isTrue(byteNeedsPercentEncoding(0x23, EncodeSet.Query));
+      isFalse(byteNeedsPercentEncoding(0x60, EncodeSet.Query));
+      isFalse(byteNeedsPercentEncoding(0x27, EncodeSet.Query));  // '\''
+    });
+
+    // https://url.spec.whatwg.org/#special-query-percent-encode-set
+    test('special-query set adds single quote', (ctx: TestContext): void => {
+      isTrue(byteNeedsPercentEncoding(0x27, EncodeSet.SpecialQuery));
+    });
+
+    // https://url.spec.whatwg.org/#path-percent-encode-set
+    test('path set adds "?", backtick, braces', (ctx: TestContext): void => {
+      isTrue(byteNeedsPercentEncoding(0x3F, EncodeSet.Path));
+      isTrue(byteNeedsPercentEncoding(0x60, EncodeSet.Path));
+      isTrue(byteNeedsPercentEncoding(0x7B, EncodeSet.Path));
+      isTrue(byteNeedsPercentEncoding(0x7D, EncodeSet.Path));
+      isFalse(byteNeedsPercentEncoding(0x2F, EncodeSet.Path)); // '/'
+      isFalse(byteNeedsPercentEncoding(0x3A, EncodeSet.Path)); // ':'
+    });
+
+    // https://url.spec.whatwg.org/#userinfo-percent-encode-set
+    test('userinfo set adds separators and brackets', (ctx: TestContext): void => {
+      isTrue(byteNeedsPercentEncoding(0x2F, EncodeSet.Userinfo));  // '/'
+      isTrue(byteNeedsPercentEncoding(0x3A, EncodeSet.Userinfo));  // ':'
+      isTrue(byteNeedsPercentEncoding(0x3B, EncodeSet.Userinfo));  // ';'
+      isTrue(byteNeedsPercentEncoding(0x3D, EncodeSet.Userinfo));  // '='
+      isTrue(byteNeedsPercentEncoding(0x40, EncodeSet.Userinfo));  // '@'
+      isTrue(byteNeedsPercentEncoding(0x5B, EncodeSet.Userinfo));  // '['
+      isTrue(byteNeedsPercentEncoding(0x5C, EncodeSet.Userinfo));  // '\\'
+      isTrue(byteNeedsPercentEncoding(0x5D, EncodeSet.Userinfo));  // ']'
+      isTrue(byteNeedsPercentEncoding(0x5E, EncodeSet.Userinfo));  // '^'
+      isTrue(byteNeedsPercentEncoding(0x7C, EncodeSet.Userinfo));  // '|'
+      isFalse(byteNeedsPercentEncoding(0x24, EncodeSet.Userinfo)); // '$'
+    });
+
+    // https://url.spec.whatwg.org/#component-percent-encode-set
+    test('component set adds $ % & + ,', (ctx: TestContext): void => {
+      isTrue(byteNeedsPercentEncoding(0x24, EncodeSet.Component));
+      isTrue(byteNeedsPercentEncoding(0x25, EncodeSet.Component));
+      isTrue(byteNeedsPercentEncoding(0x26, EncodeSet.Component));
+      isTrue(byteNeedsPercentEncoding(0x2B, EncodeSet.Component));
+      isTrue(byteNeedsPercentEncoding(0x2C, EncodeSet.Component));
+      isFalse(byteNeedsPercentEncoding(0x21, EncodeSet.Component)); // '!'
+    });
+
+    // https://url.spec.whatwg.org/#application-x-www-form-urlencoded-percent-encode-set
+    test('form-urlencoded set adds ! \' ( ) ~', (ctx: TestContext): void => {
+      isTrue(byteNeedsPercentEncoding(0x21, EncodeSet.FormUrlencoded));
+      isTrue(byteNeedsPercentEncoding(0x27, EncodeSet.FormUrlencoded));
+      isTrue(byteNeedsPercentEncoding(0x28, EncodeSet.FormUrlencoded));
+      isTrue(byteNeedsPercentEncoding(0x29, EncodeSet.FormUrlencoded));
+      isTrue(byteNeedsPercentEncoding(0x7E, EncodeSet.FormUrlencoded));
+      isFalse(byteNeedsPercentEncoding(0x2A, EncodeSet.FormUrlencoded)); // '*'
+      isFalse(byteNeedsPercentEncoding(0x2D, EncodeSet.FormUrlencoded)); // '-'
+      isFalse(byteNeedsPercentEncoding(0x2E, EncodeSet.FormUrlencoded)); // '.'
+      isFalse(byteNeedsPercentEncoding(0x5F, EncodeSet.FormUrlencoded)); // '_'
+    });
+  });
+
+  // https://url.spec.whatwg.org/#string-percent-encode-after-encoding
+  // (UTF-8 percent-encode of a string; spaceAsPlus is the form-urlencoded
+  // serializer's 0x20 special case).
+  suite('percentEncode', (): void => {
+    test('passes through safe ASCII', (ctx: TestContext): void => {
+      equal(percentEncode('abc123-._~', EncodeSet.Component), 'abc123-._~');
+    });
+
+    test('encodes with uppercase hex', (ctx: TestContext): void => {
+      equal(percentEncode(' ', EncodeSet.Fragment), '%20');
+      equal(percentEncode('a b', EncodeSet.Path), 'a%20b');
+    });
+
+    test('encodes UTF-8 bytes of non-ASCII characters', (ctx: TestContext): void => {
+      equal(percentEncode('é', EncodeSet.C0Control), '%C3%A9');
+      equal(percentEncode('€', EncodeSet.Query), '%E2%82%AC');
+      equal(percentEncode('☃', EncodeSet.Component), '%E2%98%83');
+    });
+
+    test('space as plus for form-urlencoded', (ctx: TestContext): void => {
+      equal(percentEncode('a b', EncodeSet.FormUrlencoded, true), 'a+b');
+      equal(percentEncode('a+b', EncodeSet.FormUrlencoded, true), 'a%2Bb');
+    });
+
+    test('path segment example from the design doc', (ctx: TestContext): void => {
+      equal(percentEncode('a/b team', EncodeSet.Component), 'a%2Fb%20team');
+    });
+  });
+
+  // https://url.spec.whatwg.org/#percent-decode
+  // (a '%' not followed by two hex digits passes through unchanged).
+  suite('percentDecode', (): void => {
+    test('decodes hex escapes case-insensitively', (ctx: TestContext): void => {
+      equal(percentDecode('%20'), ' ');
+      equal(percentDecode('a%20b'), 'a b');
+      equal(percentDecode('%C3%A9'), 'é');
+      equal(percentDecode('%c3%a9'), 'é');
+    });
+
+    test('passes through malformed escapes', (ctx: TestContext): void => {
+      equal(percentDecode('%'), '%');
+      equal(percentDecode('%2'), '%2');
+      equal(percentDecode('%zz'), '%zz');
+      equal(percentDecode('100%'), '100%');
+      equal(percentDecode('%%41'), '%A');
+    });
+
+    test('plus is literal unless plusAsSpace', (ctx: TestContext): void => {
+      equal(percentDecode('a+b'), 'a+b');
+      equal(percentDecode('a+b', true), 'a b');
+    });
+
+    test('round-trips every byte value', (ctx: TestContext): void => {
+      for (var b = 0; b < 256; b += 1) {
+        let hi = (b >> 4) & 0xF;
+        let lo = b & 0xF;
+        let digits = '0123456789ABCDEF';
+        let encoded = '%' + digits.sliceBytes(hi, hi + 1) + digits.sliceBytes(lo, lo + 1);
+        let decoded = percentDecode(encoded);
+        equal(decoded.length, 1);
+        equal(decoded.getByteAt(0), b);
+      }
+    });
+  });
+
+  // Parser: https://url.spec.whatwg.org/#concept-urlencoded-parser
+  // Serializer: https://url.spec.whatwg.org/#concept-urlencoded-serializer
+  suite('form-urlencoded', (): void => {
+    test('parses pairs in order', (ctx: TestContext): void => {
+      let pairs = parseFormUrlencoded('a=1&b=2&a=3');
+      equal(pairs.length, 3);
+      let (n0, v0) = pairs[0];
+      equal(n0, 'a');
+      equal(v0, '1');
+      let (n1, v1) = pairs[1];
+      equal(n1, 'b');
+      equal(v1, '2');
+      let (n2, v2) = pairs[2];
+      equal(n2, 'a');
+      equal(v2, '3');
+    });
+
+    test('handles missing values and empty segments', (ctx: TestContext): void => {
+      let pairs = parseFormUrlencoded('a&&b=&=c');
+      equal(pairs.length, 3);
+      let (n0, v0) = pairs[0];
+      equal(n0, 'a');
+      equal(v0, '');
+      let (n1, v1) = pairs[1];
+      equal(n1, 'b');
+      equal(v1, '');
+      let (n2, v2) = pairs[2];
+      equal(n2, '');
+      equal(v2, 'c');
+    });
+
+    test('decodes plus and percent escapes', (ctx: TestContext): void => {
+      let pairs = parseFormUrlencoded('q=a+b%21');
+      equal(pairs.length, 1);
+      let (name, value) = pairs[0];
+      equal(name, 'q');
+      equal(value, 'a b!');
+    });
+
+    test('empty input parses to no pairs', (ctx: TestContext): void => {
+      equal(parseFormUrlencoded('').length, 0);
+    });
+
+    test('serializes with encoding and plus-for-space', (ctx: TestContext): void => {
+      let pairs = new Array<(String, String)>();
+      pairs.push(('q', 'a b'));
+      pairs.push(('x', '1&2=3'));
+      equal(serializeFormUrlencoded(pairs), 'q=a+b&x=1%262%3D3');
+    });
+
+    test('round-trips', (ctx: TestContext): void => {
+      let input = 'name=Jane+Doe&tags=a%2Cb&note=100%25';
+      equal(serializeFormUrlencoded(parseFormUrlencoded(input)), input);
+    });
+  });
+});
