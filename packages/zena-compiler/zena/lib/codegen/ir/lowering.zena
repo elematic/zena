@@ -42,7 +42,7 @@ import {
   ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression,
   LetPatternCondition, TuplePattern
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -2827,6 +2827,27 @@ final class FunctionLowerer {
         }
       }
     }
+    // == / != on ERASED operands (an unbounded T, anyref, eqref):
+    // streaming's runtime type-dispatch diamond — identity, then
+    // null, then String content, then boxed-primitive unwraps.
+    if ((bin.operator == "==" || bin.operator == "!=") &&
+        leftBaseOpt != null) {
+      let lb = leftBaseOpt as Type;
+      if (lb is TypeParameterType || lb is AnyType || lb is AnyRefType ||
+          lb is EqRefType) {
+        let left = this.#lowerExpression(bin.left);
+        let right = this.#lowerExpression(bin.right);
+        if (!isRefValType(this.#valueType(left)) ||
+            !isRefValType(this.#valueType(right))) {
+          this.#bail('erased eq operands');
+        }
+        let same = this.#lowerErasedEq(left, right);
+        if (bin.operator == "!=") {
+          return this.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+        }
+        return same;
+      }
+    }
     // == / != on references whose type declares NO operator== compare
     // identity (streaming's ref.eq fallback). The member branch above
     // already claimed types with a content-equality operator; nullable
@@ -2864,6 +2885,152 @@ final class FunctionLowerer {
         bin.operator == ">" || bin.operator == ">=";
     let resultType = if (isComparison) new ValTypeI32() as ValType else leftType;
     return this.b.binary(op, resultType, left, right);
+  }
+
+  /**
+   * Erased-operand equality: streaming's runtime type-dispatch
+   * diamond, tier for tier. Identity first (which also makes
+   * null == null true); then not-ref-equal + either-null -> false;
+   * then String content equality when BOTH are Strings; then each
+   * REACHED Box<primitive> specialization unwraps field 1 and
+   * compares at its width; anything else -> false. Operands coerce
+   * anyref -> eqref first, since ref.eq requires eqref.
+   */
+  #lowerErasedEq(leftIn: i32, rightIn: i32): i32 {
+    let i32vt = new ValTypeI32() as ValType;
+    let eqVt = new ValTypeEqRef() as ValType;
+    var left = leftIn;
+    var right = rightIn;
+    if (this.#valueType(left) is ValTypeAnyRef) {
+      left = this.b.emit(IrOp.ref_cast, eqVt, left, this.b.internType(eqVt));
+    }
+    if (this.#valueType(right) is ValTypeAnyRef) {
+      right = this.b.emit(IrOp.ref_cast, eqVt, right, this.b.internType(eqVt));
+    }
+    let merge = this.b.newBlock();
+    let res = this.b.blockParam(merge, i32vt);
+    let one = this.b.constI32(1, i32vt);
+    let zero = this.b.constI32(0, i32vt);
+
+    let same = this.b.binary(IrOp.ref_eq, i32vt, left, right);
+    let notSameB = this.b.newBlock();
+    this.b.brIf(same, merge, this.#oneArg(one), notSameB, this.#noArgs());
+
+    this.b.switchTo(notSameB);
+    let lNull = this.b.emit(IrOp.ref_is_null, i32vt, left, -1);
+    let rNull = this.b.emit(IrOp.ref_is_null, i32vt, right, -1);
+    let anyNull = this.b.binary(IrOp.i32_or, i32vt, lNull, rNull);
+    var contB = this.b.newBlock();
+    this.b.brIf(anyNull, merge, this.#oneArg(zero), contB, this.#noArgs());
+
+    // String content tier.
+    this.b.switchTo(contB);
+    let stringClassOpt = this.wasm.stringClass;
+    if (stringClassOpt != null) {
+      let sKey = getClassKey(stringClassOpt as ClassType);
+      var sStructOpt: WasmStruct | null = null;
+      if (let (true, info) = this.wasm.classInfos.get(sKey)) {
+        sStructOpt = info.structType;
+      }
+      var eqFuncOpt: WasmFunction | null = null;
+      if (let (true, f) = this.wasm.classMethodMap.get(
+          getClassMethodKey(sKey, '=='))) {
+        eqFuncOpt = f;
+      }
+      if (sStructOpt != null && eqFuncOpt != null) {
+        let sStruct = sStructOpt as WasmStruct;
+        let strVt = new ValTypeRef(sStruct) as ValType;
+        let lIsS = this.b.emit(IrOp.ref_test, i32vt, left,
+            this.b.internType(strVt));
+        let rIsS = this.b.emit(IrOp.ref_test, i32vt, right,
+            this.b.internType(strVt));
+        let bothS = this.b.binary(IrOp.i32_and, i32vt, lIsS, rIsS);
+        let strB = this.b.newBlock();
+        let afterStrB = this.b.newBlock();
+        this.b.brIf(bothS, strB, this.#noArgs(), afterStrB, this.#noArgs());
+        this.b.switchTo(strB);
+        let eqFunc = eqFuncOpt as WasmFunction;
+        let lS = this.b.emit(IrOp.ref_cast, strVt, left,
+            this.b.internType(strVt));
+        let rS = this.b.emit(IrOp.ref_cast, strVt, right,
+            this.b.internType(strVt));
+        var content = this.b.callFunc(
+            this.b.addRef(new IrRefFunc(eqFunc)),
+            this.#twoValues(lS, rS),
+            if (eqFunc.signature.returns.length == 1) {
+              eqFunc.signature.returns[0]
+            } else {
+              null
+            });
+        this.b.br(merge, this.#oneArg(content));
+        this.b.switchTo(afterStrB);
+        contB = afterStrB;
+      }
+    }
+
+    // Boxed-primitive tiers, in streaming's order.
+    let boxClassOpt = this.wasm.boxClass;
+    if (boxClassOpt != null) {
+      let boxTypes = new Array<Type>();
+      boxTypes.push(new I32Type());
+      boxTypes.push(new BooleanType());
+      boxTypes.push(new F64Type());
+      boxTypes.push(new F32Type());
+      boxTypes.push(new I64Type());
+      for (var bi = 0; bi < boxTypes.length; bi += 1) {
+        let t = boxTypes[bi];
+        let typeArgs = new Array<Type>();
+        typeArgs.push(t);
+        let boxCt = instantiateClassType(boxClassOpt as ClassType, typeArgs);
+        var boxStructOpt: WasmStruct | null = null;
+        if (let (true, info) = this.wasm.classInfos.get(getClassKey(boxCt))) {
+          boxStructOpt = info.structType;
+        }
+        if (boxStructOpt == null) {
+          continue;
+        }
+        let boxStruct = boxStructOpt as WasmStruct;
+        if (boxStruct.fields.length < 2 || boxStruct.fields[1].name == null) {
+          continue;
+        }
+        let boxVt = new ValTypeRef(boxStruct) as ValType;
+        let valueField = boxStruct.fields[1].name as String;
+        let valueVt = boxStruct.fields[1].type;
+        let lIsB = this.b.emit(IrOp.ref_test, i32vt, left,
+            this.b.internType(boxVt));
+        let rIsB = this.b.emit(IrOp.ref_test, i32vt, right,
+            this.b.internType(boxVt));
+        let bothB = this.b.binary(IrOp.i32_and, i32vt, lIsB, rIsB);
+        let unwrapB = this.b.newBlock();
+        let nextB = this.b.newBlock();
+        this.b.brIf(bothB, unwrapB, this.#noArgs(), nextB, this.#noArgs());
+        this.b.switchTo(unwrapB);
+        let lC = this.b.emit(IrOp.ref_cast, boxVt, left,
+            this.b.internType(boxVt));
+        let rC = this.b.emit(IrOp.ref_cast, boxVt, right,
+            this.b.internType(boxVt));
+        let fieldRef = this.b.addRef(new IrRefField(boxStruct, valueField));
+        let lV = this.b.emit(IrOp.struct_get, valueVt, lC, fieldRef);
+        let rVref = this.b.addRef(new IrRefField(boxStruct, valueField));
+        let rV = this.b.emit(IrOp.struct_get, valueVt, rC, rVref);
+        var cmpOp = IrOp.i32_eq;
+        if (t is F64Type) {
+          cmpOp = IrOp.f64_eq;
+        } else if (t is F32Type) {
+          cmpOp = IrOp.f32_eq;
+        } else if (t is I64Type) {
+          cmpOp = IrOp.i64_eq;
+        }
+        let cmp = this.b.binary(cmpOp, i32vt, lV, rV);
+        this.b.br(merge, this.#oneArg(cmp));
+        this.b.switchTo(nextB);
+      }
+    }
+
+    // Different or non-comparable references: false.
+    this.b.br(merge, this.#oneArg(zero));
+    this.b.switchTo(merge);
+    return res;
   }
 
   /**
@@ -3772,7 +3939,31 @@ final class FunctionLowerer {
     }
     let ct = classType as ClassType;
     if (ct.isExtension) {
-      this.#bail('new extension class');
+      // Extension `new` is a plain call: the constructor takes the
+      // declared arguments (no receiver) and RETURNS the underlying
+      // value (streaming's extension branch in generateNewExpression).
+      let ctorKey2 = getClassMethodKey(getClassKey(ct), '<constructor>');
+      let ctorOpt = if (let (true, c) = this.wasm.classMethodMap.get(ctorKey2)) c else null;
+      if (ctorOpt == null) {
+        this.#bail('extension constructor not found');
+      }
+      let ctor = ctorOpt as WasmFunction;
+      let sig = ctor.signature;
+      if (sig.returns.length != 1 || sig.params.length != expr.args.length) {
+        this.#bail('extension constructor shape');
+      }
+      let args = new Array<i32>();
+      for (var i = 0; i < expr.args.length; i += 1) {
+        this.#requireSupported(sig.params[i], 'constructor param type');
+        let value = this.#lowerExpressionCtx(expr.args[i], sig.params[i]);
+        if (!isValSubtype(this.#valueType(value), sig.params[i])) {
+          this.#bail('constructor argument type');
+        }
+        args.push(value);
+      }
+      this.#requireSupported(sig.returns[0], 'extension constructor type');
+      return this.b.callFunc(this.b.addRef(new IrRefFunc(ctor)), args,
+          sig.returns[0]);
     }
     let cKey = getClassKey(ct);
     let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;

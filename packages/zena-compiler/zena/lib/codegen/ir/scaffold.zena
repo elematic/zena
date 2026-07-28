@@ -11,7 +11,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import { ValType, ValTypeI32, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeExternRef } from '../wasm.zena';
-import { WasmModule, WasmFunction, WasmStruct, WasmArray, WasmGlobal } from '../wasm-module.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmArray, WasmGlobal, StringLiteralLocation } from '../wasm-module.zena';
 import { ClassType } from '../../types.zena';
 import { getClassKey } from '../codegen-utils.zena';
 import { IrBody, IrOp, IrRefType, IrRefField, IrRefGlobal, IrRefFunc } from './ir.zena';
@@ -378,6 +378,163 @@ let synthWasiWriteString = (wasm: WasmModule, func: WasmFunction): IrBody => {
 };
 
 /**
+ * string_from_shared(offset, len): a String struct.new with every
+ * field in declaration order — vtable global, #data = the shared
+ * byte-array global, #start = offset, #end = offset + len, scalars
+ * (#encoding, #hashCode) zero. Mirrors streaming; any field shape it
+ * does not recognize is a layout change and fails loudly.
+ */
+let synthStringFromShared = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let lay = stringLayoutOf(wasm);
+  let sharedOpt = wasm.sharedStringsGlobal;
+  if (sharedOpt == null) {
+    throw new Error('string_from_shared: shared strings global missing');
+  }
+  let shared = sharedOpt as WasmGlobal;
+  let b = new IrBuilder();
+  let params = entryOf(b, func);
+  let args = new Array<i32>();
+  for (let f in lay.st.fields) {
+    let fname = if (f.name != null) f.name as String else '';
+    if (fname == '<vtable>') {
+      if (lay.vtable == null) {
+        throw new Error('string_from_shared: String vtable missing');
+      }
+      let vtg = lay.vtable as WasmGlobal;
+      args.push(b.emit(IrOp.global_get, vtg.type, -1,
+          b.addRef(new IrRefGlobal(vtg))));
+    } else if (fname == lay.data) {
+      args.push(b.emit(IrOp.global_get, shared.type, -1,
+          b.addRef(new IrRefGlobal(shared))));
+    } else if (fname == lay.start) {
+      args.push(params[0]);
+    } else if (fname == lay.end) {
+      args.push(b.binary(IrOp.i32_add, new ValTypeI32(), params[0], params[1]));
+    } else if (f.type is ValTypeI32) {
+      args.push(i32c(b, 0));
+    } else {
+      throw new Error('string_from_shared: unexpected String field ' + fname);
+    }
+  }
+  let inst = b.emit(IrOp.struct_new, new ValTypeRef(lay.st) as ValType,
+      b.pushArgList(args), b.addRef(new IrRefType(lay.st)));
+  b.ret(inst);
+  return b.finish();
+};
+
+/**
+ * get_string_literal(id): the lazy literal cache — a non-null
+ * array[id] returns directly; otherwise an id-dispatch chain calls
+ * string_from_shared with the literal's (offset, length) in the
+ * packed shared segment, stores it back, and returns it. Mirrors
+ * streaming's if-chain shape.
+ */
+let synthGetStringLiteral = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let arrGlobalOpt = wasm.stringLiteralsArrayGlobal;
+  let arrTypeOpt = wasm.stringArrayType;
+  let sfsOpt = wasm.stringFromSharedFunc;
+  if (arrGlobalOpt == null || arrTypeOpt == null || sfsOpt == null) {
+    throw new Error('get_string_literal: literal infrastructure missing');
+  }
+  let arrGlobal = arrGlobalOpt as WasmGlobal;
+  let sfs = sfsOpt as WasmFunction;
+  if (sfs.signature.returns.length != 1) {
+    throw new Error('get_string_literal: string_from_shared shape');
+  }
+  // string_from_shared is declared with a nullable String return, so
+  // values it types are nullable; this function's own return is
+  // non-null, so both return paths re-assert explicitly.
+  let strVt = sfs.signature.returns[0];
+  if (func.signature.returns.length != 1) {
+    throw new Error('get_string_literal: signature shape');
+  }
+  let retVt = func.signature.returns[0];
+  let i32vt = new ValTypeI32() as ValType;
+  let b = new IrBuilder();
+  let params = entryOf(b, func);
+  let id = params[0];
+  let arr = b.emit(IrOp.global_get, arrGlobal.type, -1,
+      b.addRef(new IrRefGlobal(arrGlobal)));
+  let cached = b.emit(IrOp.array_get, strVt, arr, id);
+  let isNull = b.emit(IrOp.ref_is_null, i32vt, cached, -1);
+  let missB = b.newBlock();
+  let hitB = b.newBlock();
+  b.brIf(isNull, missB, new Array<i32>(), hitB, new Array<i32>());
+  b.switchTo(hitB);
+  b.ret(b.emit(IrOp.ref_as_non_null, retVt, cached, -1));
+
+  b.switchTo(missB);
+  // ids are dense 0..n-1 in assignment order.
+  let count = wasm.stringLiteralIds.size;
+  let byId = new Array<String>(count);
+  for (var k = 0; k < count; k += 1) {
+    byId.push('');
+  }
+  for (let pair in wasm.stringLiteralIds) {
+    byId[pair.value] = pair.key;
+  }
+  let storeB = b.newBlock();
+  let fresh = b.blockParam(storeB, strVt);
+  if (count == 0) {
+    b.unreachable();
+  } else {
+    // Binary split over the dense id range rather than a linear else
+    // chain: block nesting (and the emitter's per-block recursion)
+    // stays logarithmic even with thousands of literals. Driven by an
+    // explicit worklist of (lo, hi, block) triples so lowering itself
+    // does not recurse either. A range of one id calls
+    // string_from_shared unconditionally — callers only pass ids the
+    // compiler assigned, matching streaming's untested trailing else.
+    let work = new Array<i32>();
+    work.push(0);
+    work.push(count);
+    work.push(missB);
+    while (work.length > 0) {
+      let blk = work.pop();
+      let hi = work.pop();
+      let lo = work.pop();
+      b.switchTo(blk);
+      if (hi - lo == 1) {
+        let locOpt = if (let (true, l) = wasm.stringLiteralLocations.get(byId[lo])) l else null;
+        if (locOpt == null) {
+          throw new Error('get_string_literal: literal location missing');
+        }
+        let loc = locOpt as StringLiteralLocation;
+        let callArgs = new Array<i32>();
+        callArgs.push(i32c(b, loc.offset));
+        callArgs.push(i32c(b, loc.length));
+        let v = b.callFunc(b.addRef(new IrRefFunc(sfs)), callArgs, strVt);
+        let brArgs = new Array<i32>();
+        brArgs.push(v);
+        b.br(storeB, brArgs);
+      } else {
+        let mid = lo + ((hi - lo) >> 1);
+        let isLow = b.binary(IrOp.i32_lt_s, i32vt, id, i32c(b, mid));
+        let lowB = b.newBlock();
+        let highB = b.newBlock();
+        b.brIf(isLow, lowB, new Array<i32>(), highB, new Array<i32>());
+        work.push(lo);
+        work.push(mid);
+        work.push(lowB);
+        work.push(mid);
+        work.push(hi);
+        work.push(highB);
+      }
+    }
+  }
+  b.switchTo(storeB);
+  let arr2 = b.emit(IrOp.global_get, arrGlobal.type, -1,
+      b.addRef(new IrRefGlobal(arrGlobal)));
+  let triple = new Array<i32>();
+  triple.push(arr2);
+  triple.push(id);
+  triple.push(fresh);
+  b.emitVoid(IrOp.array_set, b.pushExtra(triple), -1);
+  b.ret(b.emit(IrOp.ref_as_non_null, retVt, fresh, -1));
+  return b.finish();
+};
+
+/**
  * Routes a named scaffold helper to its synthesizer, or null when the
  * name is not one of the seven.
  */
@@ -393,5 +550,7 @@ export let synthesizeScaffold = (wasm: WasmModule, func: WasmFunction): IrBody |
   if (name == '$stringHash') { return synthStringHash(wasm, func); }
   if (name == 'string_hash_helper') { return synthStringHashHelper(wasm, func); }
   if (name == 'wasi_write_string_helper') { return synthWasiWriteString(wasm, func); }
+  if (name == 'string_from_shared') { return synthStringFromShared(wasm, func); }
+  if (name == 'get_string_literal') { return synthGetStringLiteral(wasm, func); }
   return null;
 };
