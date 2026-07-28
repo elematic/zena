@@ -40,7 +40,7 @@ import {
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
   IsExpression, RangeExpression, PipelineExpression, SuperExpression,
   ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression,
-  LetPatternCondition, TuplePattern, PropertyAssignment
+  LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant
 } from '../../ast.zena';
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
@@ -1171,10 +1171,15 @@ final class FunctionLowerer {
       this.#bail('extension constructor');
     }
     let classDecl = this.func.classDecl;
-    if (classDecl == null || !(classDecl is ClassDeclaration)) {
+    // Sealed-class variants (`case Lit(...)`) declare via a
+    // SealedVariant node: no class body, so no local field defaults —
+    // inherited initializers run in the base constructor via super.
+    var cdOpt: ClassDeclaration | null = null;
+    if (classDecl != null && classDecl is ClassDeclaration) {
+      cdOpt = classDecl as ClassDeclaration;
+    } else if (classDecl == null || !(classDecl is SealedVariant)) {
       this.#bail('constructor declaration shape');
     }
-    let cd = classDecl as ClassDeclaration;
 
     let entry = this.b.newBlock();
     let params = new Array<i32>();
@@ -1186,16 +1191,16 @@ final class FunctionLowerer {
     this.thisValue = params[0];
 
     if (ct.isCaseClass) {
-      this.#lowerCaseClassCtorBody(ct, structType, cd, params);
+      this.#lowerCaseClassCtorBody(ct, structType, cdOpt, params);
     } else {
-      this.#lowerDefaultCtorBody(ct, structType, cd, params);
+      this.#lowerDefaultCtorBody(ct, structType, cdOpt, params);
     }
     this.b.retVoid();
     return this.b.finish();
   }
 
   #lowerDefaultCtorBody(ct: ClassType, structType: WasmStruct,
-      cd: ClassDeclaration, params: Array<i32>): void {
+      cdOpt: ClassDeclaration | null, params: Array<i32>): void {
     if (ct.superType != null) {
       let superType = ct.superType as ClassType;
       let ctorKey = getClassMethodKey(getClassKey(superType), '<constructor>');
@@ -1217,6 +1222,10 @@ final class FunctionLowerer {
         this.b.callFunc(fr, args, null);
       }
     }
+    if (cdOpt == null) {
+      return;
+    }
+    let cd = cdOpt as ClassDeclaration;
     for (let member in cd.body) {
       if (member is FieldDefinition) {
         let fd = member as FieldDefinition;
@@ -1261,7 +1270,7 @@ final class FunctionLowerer {
   }
 
   #lowerCaseClassCtorBody(ct: ClassType, structType: WasmStruct,
-      cd: ClassDeclaration, params: Array<i32>): void {
+      cdOpt: ClassDeclaration | null, params: Array<i32>): void {
     if (ct.superType != null) {
       let superType = ct.superType as ClassType;
       let ctorKey = getClassMethodKey(getClassKey(superType), '<constructor>');
@@ -1304,6 +1313,10 @@ final class FunctionLowerer {
         }
       }
     }
+    if (cdOpt == null) {
+      return;
+    }
+    let cd = cdOpt as ClassDeclaration;
     for (let member in cd.body) {
       if (member is FieldDefinition) {
         let fd = member as FieldDefinition;
