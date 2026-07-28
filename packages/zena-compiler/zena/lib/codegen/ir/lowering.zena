@@ -4288,7 +4288,8 @@ final class FunctionLowerer {
     let receiverCt = this.#receiverClass(receiver, member);
     let target = this.#resolveMemberTarget(member, receiverCt);
     if (target.fieldName == null) {
-      this.#bail('write through accessor');
+      return this.#lowerSetterWrite(assign, member, receiver, receiverCt,
+          target.getter as WasmFunction);
     }
     let fieldName = target.fieldName as String;
     // Setter-side override checks (the read-side resolve checked get#):
@@ -4346,6 +4347,98 @@ final class FunctionLowerer {
       this.#bail('field not found on struct');
     }
     return owner.fields[idx].type;
+  }
+
+  /**
+   * Writes through an accessor: a direct call to a non-overridden
+   * setter. Private setters resolve lexically (never virtual); public
+   * setters walk the receiver's super chain (through generic sources),
+   * bailing when any transitive subclass overrides the slot — the same
+   * devirt-safety rule as method calls. Compound assignments read the
+   * current value through the already-resolved getter, so the receiver
+   * evaluates once.
+   */
+  #lowerSetterWrite(assign: AssignmentExpression, member: MemberExpression,
+      receiver: i32, receiverCt: ClassType, getter: WasmFunction): i32 {
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
+    var setterOpt: WasmFunction | null = null;
+    if (isPrivate) {
+      if (this.func.classType == null) {
+        this.#bail('private access outside class');
+      }
+      let lexicalCt = this.#lexicalClassOf(member, receiverCt);
+      setterOpt = this.#resolvePrivateAccessor(
+          receiverCt, lexicalCt, 'set#' + propName);
+    } else {
+      var currClass: ClassType | null = receiverCt;
+      while (currClass != null && setterOpt == null) {
+        var g: ClassType | null = currClass;
+        while (g != null && setterOpt == null) {
+          let key = getClassMethodKey(
+              getClassKey(g as ClassType), 'set#' + propName);
+          if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+            setterOpt = f;
+          }
+          g = (g as ClassType).genericSource;
+        }
+        currClass = (currClass as ClassType).superType;
+      }
+      if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
+        if (this.#memberProvidedBySubclass(info, 'set#' + propName)) {
+          this.#bail('overridden setter');
+        }
+      }
+    }
+    if (setterOpt == null) {
+      this.#bail('setter not found');
+    }
+    let setter = setterOpt as WasmFunction;
+    if (setter.isStatic ||
+        (setter.typeParameters != null && setter.typeArguments == null) ||
+        setter.intrinsic != null) {
+      this.#bail('setter shape');
+    }
+    let sig = setter.signature;
+    if (sig.params.length != 2 || sig.returns.length != 0) {
+      this.#bail('setter shape');
+    }
+    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
+      this.#bail('setter receiver type');
+    }
+    let valueVt = sig.params[1];
+    this.#requireSupported(valueVt, 'setter param type');
+    var value = -1;
+    if (assign.operator == null) {
+      value = this.#lowerExpressionCtx(assign.value, valueVt);
+    } else {
+      let gsig = getter.signature;
+      if (gsig.returns.length != 1) {
+        this.#bail('getter shape');
+      }
+      let getterRef = this.b.addRef(new IrRefFunc(getter));
+      var current = this.b.callFunc(
+          getterRef, this.#oneArg(receiver), gsig.returns[0]);
+      current = this.#reassertNonNull(current, this.#exprValType(member));
+      let rhs = this.#lowerExpression(assign.value);
+      let vt = this.#valueType(current);
+      if (!valTypeEquals(vt, this.#valueType(rhs))) {
+        this.#bail('mixed member compound types');
+      }
+      let unsigned = this.#isUnsignedNode(member as Expression) ||
+          this.#isUnsignedNode(assign.value);
+      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
+      value = this.b.binary(op, vt, current, rhs);
+    }
+    if (!isValSubtype(this.#valueType(value), valueVt)) {
+      this.#bail('setter value type');
+    }
+    let args = new Array<i32>();
+    args.push(receiver);
+    args.push(value);
+    this.b.callFunc(this.b.addRef(new IrRefFunc(setter)), args, null);
+    return value;
   }
 
   /**
