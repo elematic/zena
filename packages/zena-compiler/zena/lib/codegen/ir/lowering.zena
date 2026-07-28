@@ -2668,8 +2668,46 @@ final class FunctionLowerer {
       case IndexExpression as idx: this.#lowerIndexRead(idx)
       case TemplateLiteral: this.#bailValue('template literal')
       case IsExpression as isExpr: this.#lowerIs(isExpr)
+      case ArrayLiteral as arrLit: this.#lowerArrayLiteral(arrLit)
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
+  }
+
+  /**
+   * `[a, b, c]`: each element lowers against the array's element
+   * type, then one array.new_fixed builds the array — streaming's
+   * shape. The literal's checked type names the wasm array type.
+   */
+  #lowerArrayLiteral(lit: ArrayLiteral): i32 {
+    let vt = this.#exprValType(lit);
+    var arrOpt: WasmArray | null = null;
+    match (vt) {
+      case ValTypeRef as r: {
+        if (r.target is WasmArray) { arrOpt = r.target as WasmArray; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmArray) { arrOpt = rn.target as WasmArray; }
+      }
+      case _: {}
+    }
+    if (arrOpt == null) {
+      this.#bail('array literal type');
+    }
+    let arr = arrOpt as WasmArray;
+    let elemVt = arr.elementType;
+    let args = new Array<i32>();
+    for (let el in lit.elements) {
+      let v = this.#lowerExpressionCtx(el, elemVt);
+      // Packed i8 elements store i32 values; everything else must
+      // conform to the element type.
+      if (!(elemVt is ValTypeI8) &&
+          !isValSubtype(this.#valueType(v), elemVt)) {
+        this.#bail('array literal element type');
+      }
+      args.push(v);
+    }
+    return this.b.emit(IrOp.array_new_fixed, vt,
+        this.b.pushArgList(args), this.b.addRef(new IrRefType(arr)));
   }
 
   /**
