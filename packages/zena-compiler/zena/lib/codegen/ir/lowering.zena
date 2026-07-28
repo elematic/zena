@@ -52,10 +52,10 @@ import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
-import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive } from '../type-mapping.zena';
+import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey, getSpecializedFunctionKey, getSpecializedName } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
 import { IntrinsicCx, lowerIntrinsic, asWasmArray } from './intrinsics.zena';
@@ -490,8 +490,19 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   if (func.isImport || func.importWrapperTarget != null ||
       func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
       func.isClosureWrapper || func.isClosureTrampoline ||
-      func.isCaseClassEq || func.isCaseClassHash ||
-      func.typeParameters != null || func.typeArguments != null) {
+      func.isCaseClassEq || func.isCaseClassHash) {
+    throw new ZirUnsupported("function shape");
+  }
+  // Monomorphized generic bodies (_spec_ copies) carry both the
+  // template's type parameters and the solved arguments; every type
+  // query routes through substituteTypeParamsInFunctionContext, so
+  // they lower like plain functions. A generic with no solved
+  // arguments is an erased vtable copy (params become anyref) and
+  // still bails.
+  if (func.typeParameters != null && func.typeArguments == null) {
+    throw new ZirUnsupported("erased generic body");
+  }
+  if (func.typeParameters == null && func.typeArguments != null) {
     throw new ZirUnsupported("function shape");
   }
   if (func.isClosure) {
@@ -514,7 +525,8 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     // initializer machinery would be malformed; decorated constructors
     // (synthetic case-class ctors) have argument-forwarding rules the
     // prologue lowering does not model.
-    if (md.isDeclare || md.isAbstract || md.typeParameters != null ||
+    if (md.isDeclare || md.isAbstract ||
+        (md.typeParameters != null && func.typeArguments == null) ||
         (!isCtor && (md.body == null || md.initializerList != null ||
                      md.superInitializer != null)) ||
         (isCtor && md.decorators.length > 0)) {
@@ -2403,6 +2415,85 @@ final class FunctionLowerer {
   }
 
   /**
+   * The checker-solved type arguments recorded on a generic call's
+   * callee type, substituted into this function's context; null when
+   * the callee's checked type records none (non-generic call).
+   */
+  #solvedCallTypeArguments(call: CallExpression): Array<Type> | null {
+    let ftNode = this.func.model.getNodeType(call.callee);
+    if (ftNode == null || !(ftNode is FunctionType)) {
+      return null;
+    }
+    let ft = ftNode as FunctionType;
+    if (ft.typeArguments == null) {
+      return null;
+    }
+    let raw = ft.typeArguments as Array<Type>;
+    if (raw.length == 0) {
+      return null;
+    }
+    let out = new Array<Type>();
+    for (let a in raw) {
+      out.push(substituteTypeParamsInFunctionContext(this.func, a));
+    }
+    return out;
+  }
+
+  /**
+   * Direct call to a monomorphized (_spec_) copy of a top-level
+   * generic function: the solved type arguments named a fully typed
+   * specialization, so this is an ordinary direct call. Generic
+   * METHODS resolve through the devirt path instead — their
+   * specializations register under mangled classMethodMap slot names.
+   */
+  #lowerSpecializedCall(call: CallExpression, target: WasmFunction,
+      multiOut: Array<i32> | null): i32 {
+    let sig = target.signature;
+    if (sig.returns.length > 1 && multiOut == null) {
+      this.#bail('method multi-value return');
+    }
+    if (sig.params.length != call.args.length) {
+      this.#bail('specialized call arity');
+    }
+    let args = new Array<i32>();
+    for (var i = 0; i < call.args.length; i += 1) {
+      let pt = sig.params[i];
+      this.#requireSupported(pt, 'method param type');
+      let v = this.#lowerExpressionCtx(call.args[i], pt);
+      if (!isValSubtype(this.#valueType(v), pt)) {
+        this.#bail('method argument type');
+      }
+      args.push(v);
+    }
+    let fr = this.b.addRef(new IrRefFunc(target));
+    if (sig.returns.length > 1) {
+      for (let r in sig.returns) {
+        this.#requireSupported(r, 'method result type');
+      }
+      let projs = this.b.callFuncMulti(fr, args, sig.returns);
+      let outs = multiOut as Array<i32>;
+      for (let p in projs) {
+        outs.push(p);
+      }
+      return projs[0];
+    }
+    var resultType: ValType | null = null;
+    if (sig.returns.length == 1) {
+      this.#requireSupported(sig.returns[0], 'method result type');
+      resultType = sig.returns[0];
+    }
+    let result = this.b.callFunc(fr, args, resultType);
+    if (resultType != null) {
+      let nodeType = this.func.model.getNodeType(call);
+      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
+        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+        return this.#reassertNonNull(result, want);
+      }
+    }
+    return result;
+  }
+
+  /**
    * Dispatches a receiver-only interface method through the vtable of
    * an already-lowered fat-pointer VALUE. The fat pointer's own struct
    * type names the vtable struct, so no InterfaceType resolution is
@@ -4202,9 +4293,6 @@ final class FunctionLowerer {
     if (member.optional || call.optional) {
       this.#bail('optional method call');
     }
-    if (call.typeArguments != null) {
-      this.#bail('generic method call');
-    }
     if (this.func.model.isStaticAccess(member)) {
       return this.#lowerStaticCall(call, member, multiOut);
     }
@@ -4271,11 +4359,27 @@ final class FunctionLowerer {
     // record exists, ONLY that slot is acceptable — a plain-name
     // fallback could bind a different overload.
     let chosenFt = this.func.model.getResolvedOverload(call);
-    let slotName = if (chosenFt != null) {
+    var slotName = if (chosenFt != null) {
       propName + getSignatureKey(chosenFt as FunctionType)
     } else {
       propName
     };
+    // Generic methods register one monomorphized copy per solved
+    // type-argument list, under a specialized slot name — when the
+    // class declares the member generic, the call resolves that copy.
+    if (let (true, declInfo) = ct.members.get(propName)) {
+      if (declInfo.type is FunctionType) {
+        let declFt = declInfo.type as FunctionType;
+        if (declFt.typeParameters != null &&
+            (declFt.typeParameters as Array<TypeParameterType>).length > 0) {
+          let targs = this.#solvedCallTypeArguments(call);
+          if (targs == null) {
+            this.#bail('generic method call');
+          }
+          slotName = getSpecializedName(propName, targs as Array<Type>);
+        }
+      }
+    }
 
     var methodOpt: WasmFunction | null = null;
     let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
@@ -4346,7 +4450,8 @@ final class FunctionLowerer {
       this.#bail('method not found');
     }
     let method = methodOpt as WasmFunction;
-    if (method.isStatic || method.typeParameters != null ||
+    if (method.isStatic ||
+        (method.typeParameters != null && method.typeArguments == null) ||
         method.intrinsic != null) {
       this.#bail('method shape');
     }
@@ -5583,9 +5688,6 @@ final class FunctionLowerer {
     if (isArrayIntrinsic(calleeName)) {
       return lowerIntrinsic(this.#intrinsicCx(), calleeName, call);
     }
-    if (call.typeArguments != null) {
-      this.#bail('generic call');
-    }
     if (this.func.model.getUnionCallCalleeType(call.callee) != null) {
       this.#bail('union callee');
     }
@@ -5613,6 +5715,26 @@ final class FunctionLowerer {
       if (let (true, intrName) = this.wasm.intrinsics.get((intrDecl as DeclareFunction).id)) {
         return lowerIntrinsic(this.#intrinsicCx(), intrName, call);
       }
+    }
+    // A generic call: the solved type arguments name a monomorphized
+    // copy registered under the resolved symbol's name. A miss means
+    // the specialization was never instantiated — bail, don't fall
+    // through to the erased template.
+    let solvedTargs = this.#solvedCallTypeArguments(call);
+    if (solvedTargs != null) {
+      let specKey = getSpecializedFunctionKey(
+          resolved.name, solvedTargs as Array<Type>);
+      let specOpt = if (let (true, f) = this.wasm.specializedFunctions.get(specKey)) f else null;
+      if (specOpt == null) {
+        this.#bail('generic call');
+      }
+      return this.#lowerSpecializedCall(
+          call, specOpt as WasmFunction, multiOut);
+    }
+    if (call.typeArguments != null) {
+      // Explicit type arguments but no solution recorded on the
+      // callee's checked type: not a shape lowering models.
+      this.#bail('generic call');
     }
     let targetOpt = if (let (true, t) = this.wasm.functionMap.get(resolved.id)) t else null;
     if (targetOpt == null) {
