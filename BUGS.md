@@ -16,6 +16,26 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Self-hosted streaming: primitive-to-any auto-boxing is not implemented (invalid wasm)
+- **Found**: 2026-07-29 (probing `any` support while tagging ZIR's auto-box bail)
+- **Severity**: medium (any program assigning or passing a primitive as `any`
+  fails to instantiate under the self-hosted compiler; silent at compile time)
+- **Workaround**: box explicitly (`new Box<i32>(n)`), or avoid `any` with
+  primitives (the suite and compiler already do — the only `any` execution
+  test assigns Box objects, never raw primitives, which is why this was
+  never noticed).
+- **Details**: The bootstrap boxes primitives flowing into `any` contexts
+  (needsBoxing sites in codegen/expressions.ts); the self-hosted streaming
+  backend emits the raw scalar where anyref is expected — e.g.
+  `let x: any = 7` becomes `i32.const 7; local.set <anyref local>` and
+  `show(42)` with `show: (v: any) => ...` passes the bare i32 — producing
+  wasm that fails validation ("expected anyref, found i32"). Reproduced on
+  main's compiler, so it predates the ZIR stack. ZIR deliberately bails on
+  these sites under the permanent reason 'auto-box to any' rather than
+  implementing boxing: `any` is slated for removal (see
+  docs/design/primitive-boxing-semantic-types.md); this bug is expected to
+  become moot with that removal rather than being fixed.
+
 ### Unsigned widening casts: bootstrap uses _u opcodes, self-hosted signs-extends
 - **Found**: 2026-07-27 (lowering `as` casts from unsigned in ZIR)
 - **Severity**: medium (silent wrong values for u32 >= 2^31 / u64 >=

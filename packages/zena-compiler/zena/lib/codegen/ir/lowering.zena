@@ -1032,7 +1032,7 @@ final class FunctionLowerer {
     this.#requireSupported(sig.returns[0], 'extension constructor type');
     let value = this.#lowerExpressionCtx(si.args[0], sig.returns[0]);
     if (!isValSubtype(this.#valueType(value), sig.returns[0])) {
-      this.#bail('extension constructor value type');
+      this.#failConformance(value, sig.returns[0], 'extension constructor value type');
     }
     this.thisValue = value;
     if (md.body != null) {
@@ -1151,7 +1151,7 @@ final class FunctionLowerer {
     };
     this.func.model = saved;
     if (!isValSubtype(this.#valueType(value), g.type)) {
-      this.#bail('global init type');
+      this.#failConformance(value, g.type, 'global init type');
     }
     this.b.emitVoid(IrOp.global_set, value,
         this.b.addRef(new IrRefGlobal(g)));
@@ -1448,7 +1448,7 @@ final class FunctionLowerer {
         this.#requireSupported(paramVt, 'super arg type');
         let value = this.#lowerExpressionCtx(si.args[i], paramVt);
         if (!isValSubtype(this.#valueType(value), paramVt)) {
-          this.#bail('super argument type');
+          this.#failConformance(value, paramVt, 'super argument type');
         }
         args.push(value);
       }
@@ -1491,7 +1491,7 @@ final class FunctionLowerer {
     let fieldVt = this.#fieldValType(structType, lookupName);
     let lowered = this.#lowerExpressionCtx(value, fieldVt);
     if (!isValSubtype(this.#valueType(lowered), fieldVt)) {
-      this.#bail('constructor field type');
+      this.#failConformance(lowered, fieldVt, 'constructor field type');
     }
     let fieldRef = this.b.addRef(new IrRefField(structType, lookupName));
     let pairIdx = this.b.pushExtra(this.#twoValues(this.thisValue, lowered));
@@ -1535,7 +1535,7 @@ final class FunctionLowerer {
         v = this.#lowerExpressionCtx(el, expected);
       }
       if (!isValSubtype(this.#valueType(v), expected)) {
-        this.#bail('multi-value return type');
+        this.#failConformance(v, expected, 'multi-value return type');
       }
       values.push(v);
     }
@@ -1570,7 +1570,7 @@ final class FunctionLowerer {
       this.#bail('return value in void function');
     }
     if (!isValSubtype(this.#valueType(value), sig.returns[0])) {
-      this.#bail('return requires conversion');
+      this.#failConformance(value, sig.returns[0], 'return requires conversion');
     }
     this.b.ret(value);
   }
@@ -2395,7 +2395,7 @@ final class FunctionLowerer {
       this.#requireSupported(sig.params[i], 'method param type');
       let v = this.#lowerExpressionCtx(call.args[i], sig.params[i]);
       if (!isValSubtype(this.#valueType(v), sig.params[i])) {
-        this.#bail('method argument type');
+        this.#failConformance(v, sig.params[i], 'method argument type');
       }
       args.push(v);
     }
@@ -2474,7 +2474,7 @@ final class FunctionLowerer {
       this.#requireSupported(pt, 'method param type');
       let v = this.#lowerExpressionCtx(call.args[i], pt);
       if (!isValSubtype(this.#valueType(v), pt)) {
-        this.#bail('method argument type');
+        this.#failConformance(v, pt, 'method argument type');
       }
       args.push(v);
     }
@@ -2564,7 +2564,7 @@ final class FunctionLowerer {
     let inst = this.b.emit(
         IrOp.iface_instance, fatPtr.fields[0].type, recv, -1);
     if (!isValSubtype(this.#valueType(inst), sig.params[0])) {
-      this.#bail('interface receiver adaptation');
+      this.#failConformance(inst, sig.params[0], 'interface receiver adaptation');
     }
     let vt = this.b.emit(IrOp.iface_vtable, fatPtr.fields[1].type, recv, -1);
     let fieldRef = this.b.addRef(new IrRefField(vst, memberName));
@@ -2742,7 +2742,7 @@ final class FunctionLowerer {
       }
       let v = this.#lowerExpressionCtx(valueOpt as Expression, f.type);
       if (!isValSubtype(this.#valueType(v), f.type)) {
-        this.#bail('record literal field type');
+        this.#failConformance(v, f.type, 'record literal field type');
       }
       args.push(v);
     }
@@ -2894,7 +2894,7 @@ final class FunctionLowerer {
     let payload = payloadOpt as WasmGlobal;
     let value = this.#lowerExpressionCtx(thr.argument, payload.type);
     if (!isValSubtype(this.#valueType(value), payload.type)) {
-      this.#bail('throw payload type');
+      this.#failConformance(value, payload.type, 'throw payload type');
     }
     this.b.emitVoid(IrOp.global_set, value,
         this.b.addRef(new IrRefGlobal(payload)));
@@ -3887,7 +3887,7 @@ final class FunctionLowerer {
   /** Allocates a fresh cell holding `value` for a celled binding. */
   #cellAlloc(bindingVt: ValType, value: i32): i32 {
     if (!isValSubtype(this.#valueType(value), bindingVt)) {
-      this.#bail('cell init type');
+      this.#failConformance(value, bindingVt, 'cell init type');
     }
     let cellStruct = getCellStruct(this.wasm, bindingVt);
     let typeRef = this.b.addRef(new IrRefType(cellStruct));
@@ -3923,7 +3923,7 @@ final class FunctionLowerer {
   #cellWrite(cell: i32, value: i32): void {
     let cs = this.#cellStructOf(cell);
     if (!isValSubtype(this.#valueType(value), cs.fields[0].type)) {
-      this.#bail('cell write type');
+      this.#failConformance(value, cs.fields[0].type, 'cell write type');
     }
     let fieldRef = this.b.addRef(new IrRefField(cs, 'value'));
     let pairIdx = this.b.pushExtra(this.#twoValues(cell, value));
@@ -4210,7 +4210,7 @@ final class FunctionLowerer {
         this.#requireSupported(sig.params[i], 'constructor param type');
         let value = this.#lowerExpressionCtx(expr.args[i], sig.params[i]);
         if (!isValSubtype(this.#valueType(value), sig.params[i])) {
-          this.#bail('constructor argument type');
+          this.#failConformance(value, sig.params[i], 'constructor argument type');
         }
         args.push(value);
       }
@@ -4258,7 +4258,7 @@ final class FunctionLowerer {
         this.#requireSupported(paramVt, 'constructor param type');
         let value = this.#lowerExpressionCtx(expr.args[i], paramVt);
         if (!isValSubtype(this.#valueType(value), paramVt)) {
-          this.#bail('constructor argument type');
+          this.#failConformance(value, paramVt, 'constructor argument type');
         }
         args.push(value);
       }
@@ -4333,7 +4333,7 @@ final class FunctionLowerer {
       value = this.b.binary(op, vt, current, rhs);
     }
     if (!isValSubtype(this.#valueType(value), fieldVt)) {
-      this.#bail('member write type');
+      this.#failConformance(value, fieldVt, 'member write type');
     }
     let fieldRef = this.b.addRef(new IrRefField(target.owner, fieldName));
     let pairIdx = this.b.pushExtra(this.#twoValues(receiver, value));
@@ -4405,7 +4405,7 @@ final class FunctionLowerer {
       this.#bail('setter shape');
     }
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#bail('setter receiver type');
+      this.#failConformance(receiver, sig.params[0], 'setter receiver type');
     }
     let valueVt = sig.params[1];
     this.#requireSupported(valueVt, 'setter param type');
@@ -4432,7 +4432,7 @@ final class FunctionLowerer {
       value = this.b.binary(op, vt, current, rhs);
     }
     if (!isValSubtype(this.#valueType(value), valueVt)) {
-      this.#bail('setter value type');
+      this.#failConformance(value, valueVt, 'setter value type');
     }
     let args = new Array<i32>();
     args.push(receiver);
@@ -4727,7 +4727,7 @@ final class FunctionLowerer {
     }
 
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#bail('method receiver type');
+      this.#failConformance(receiver, sig.params[0], 'method receiver type');
     }
     let args = new Array<i32>();
     args.push(receiver);
@@ -4736,7 +4736,7 @@ final class FunctionLowerer {
       this.#requireSupported(paramVt, 'method param type');
       let value = this.#lowerExpressionCtx(call.args[i], paramVt);
       if (!isValSubtype(this.#valueType(value), paramVt)) {
-        this.#bail('method argument type');
+        this.#failConformance(value, paramVt, 'method argument type');
       }
       args.push(value);
     }
@@ -4886,12 +4886,12 @@ final class FunctionLowerer {
       this.#bail('index method arity');
     }
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#bail('index receiver type');
+      this.#failConformance(receiver, sig.params[0], 'index receiver type');
     }
     this.#requireSupported(sig.params[1], 'index param type');
     let indexValue = this.#lowerExpressionCtx(idx.index, sig.params[1]);
     if (!isValSubtype(this.#valueType(indexValue), sig.params[1])) {
-      this.#bail('index operand type');
+      this.#failConformance(indexValue, sig.params[1], 'index operand type');
     }
     let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
     if (resultType != null) {
@@ -4995,7 +4995,7 @@ final class FunctionLowerer {
     let inst = this.b.emit(
         IrOp.iface_instance, fatPtr.fields[0].type, recv, -1);
     if (!isValSubtype(this.#valueType(inst), sig.params[0])) {
-      this.#bail('interface receiver adaptation');
+      this.#failConformance(inst, sig.params[0], 'interface receiver adaptation');
     }
     let args = new Array<i32>();
     args.push(inst);
@@ -5006,7 +5006,7 @@ final class FunctionLowerer {
         this.#requireSupported(paramVt, 'interface param type');
         let value = this.#lowerExpressionCtx(list[i], paramVt);
         if (!isValSubtype(this.#valueType(value), paramVt)) {
-          this.#bail('interface argument type');
+          this.#failConformance(value, paramVt, 'interface argument type');
         }
         args.push(value);
       }
@@ -5323,7 +5323,7 @@ final class FunctionLowerer {
       }
       let value = this.#lowerExpressionCtx(assign.value, elemCtx);
       if (!isValSubtype(this.#valueType(value), elemCtx)) {
-        this.#bail('array write type');
+        this.#failConformance(value, elemCtx, 'array write type');
       }
       let tripleIdx = this.b.pushExtra(this.#threeValues(receiver, index, value));
       this.b.emitVoid(IrOp.array_set, tripleIdx, -1);
@@ -5367,15 +5367,15 @@ final class FunctionLowerer {
       this.#bail('index setter shape');
     }
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#bail('index receiver type');
+      this.#failConformance(receiver, sig.params[0], 'index receiver type');
     }
     let index = this.#lowerExpressionCtx(idx.index, sig.params[1]);
     if (!isValSubtype(this.#valueType(index), sig.params[1])) {
-      this.#bail('index operand type');
+      this.#failConformance(index, sig.params[1], 'index operand type');
     }
     let value = this.#lowerExpressionCtx(assign.value, sig.params[2]);
     if (!isValSubtype(this.#valueType(value), sig.params[2])) {
-      this.#bail('index write type');
+      this.#failConformance(value, sig.params[2], 'index write type');
     }
     let funcRef = this.b.addRef(new IrRefFunc(method));
     let args = new Array<i32>();
@@ -5409,7 +5409,7 @@ final class FunctionLowerer {
       value = this.b.binary(op, vt, current, rhs);
     }
     if (!isValSubtype(this.#valueType(value), g.type)) {
-      this.#bail('global write type');
+      this.#failConformance(value, g.type, 'global write type');
     }
     let writeRef = this.b.addRef(new IrRefGlobal(g));
     this.b.emitVoid(IrOp.global_set, value, writeRef);
@@ -5664,7 +5664,7 @@ final class FunctionLowerer {
     }
     let nonNull = this.b.emit(IrOp.ref_as_non_null, this.#nonNullOf(vt), value, -1);
     if (!isValSubtype(this.#valueType(nonNull), target)) {
-      this.#bail('intrinsic operand type');
+      this.#failConformance(nonNull, target, 'intrinsic operand type');
     }
     return nonNull;
   }
@@ -5843,14 +5843,14 @@ final class FunctionLowerer {
     }
     let receiver = this.#lowerExpressionCtx(member.object, sig.params[0]);
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#bail('array extension receiver');
+      this.#failConformance(receiver, sig.params[0], 'array extension receiver');
     }
     let args = new Array<i32>();
     args.push(receiver);
     for (var i = 0; i < call.args.length; i += 1) {
       let value = this.#lowerExpressionCtx(call.args[i], sig.params[i + 1]);
       if (!isValSubtype(this.#valueType(value), sig.params[i + 1])) {
-        this.#bail('array extension argument');
+        this.#failConformance(value, sig.params[i + 1], 'array extension argument');
       }
       args.push(value);
     }
@@ -6020,7 +6020,7 @@ final class FunctionLowerer {
     for (var i = 0; i < call.args.length; i += 1) {
       let value = this.#lowerExpressionCtx(call.args[i], sig.params[i]);
       if (!isValSubtype(this.#valueType(value), sig.params[i])) {
-        this.#bail('call argument type');
+        this.#failConformance(value, sig.params[i], 'call argument type');
       }
       args.push(value);
     }
@@ -6229,7 +6229,7 @@ final class FunctionLowerer {
       this.#requireSupported(paramVt, 'closure param type');
       let value = this.#lowerExpressionCtx(call.args[i], paramVt);
       if (!isValSubtype(this.#valueType(value), paramVt)) {
-        this.#bail('closure argument type');
+        this.#failConformance(value, paramVt, 'closure argument type');
       }
       args.push(value);
     }
@@ -6596,6 +6596,22 @@ final class FunctionLowerer {
     let result = new Array<i32>();
     result.push(value);
     return result;
+  }
+
+  /**
+   * Value-conformance failure: a lowered value does not satisfy the
+   * type its consumer requires. A scalar flowing into an any/eqref
+   * context would need auto-boxing, which ZIR deliberately does not
+   * implement (the `any` type is slated for removal) — that case
+   * bails under its own permanent name so the histogram tracks it.
+   */
+  #failConformance(value: i32, want: ValType, reason: String): never {
+    let vt = this.#valueType(value);
+    if (!isRefValType(vt) &&
+        (want is ValTypeAnyRef || want is ValTypeEqRef)) {
+      this.#bail('auto-box to any');
+    }
+    this.#bail(reason);
   }
 
   #bail(reason: String): never {

@@ -3,6 +3,34 @@
 > [!NOTE]
 > This document describes the **current/legacy auto-boxing architecture** of the bootstrap and early self-hosted compilers. In order to make all memory allocations and performance characteristics explicit, the long-term goal of Zena is to **eliminate all auto-boxing** by deprecating the `any` type, banning optional chaining on primitive fields (making it return `T` instead of `T | null` via required coalescence), and fully monomorphizing generic methods inside class and interface vtables.
 
+## Removal plan for `any` (status as of 2026-07-29)
+
+`anyref` stays; `any` goes. The difference between them is exactly
+auto-boxing: `any` accepts primitives by silently allocating a `Box<T>`,
+`anyref` accepts only references. Two findings sharpen the case:
+
+1. The self-hosted streaming backend **never implemented** primitive→`any`
+   boxing — it emits the raw scalar and produces invalid wasm (see BUGS.md).
+   Nothing noticed, because no stdlib surface, compiler code, or execution
+   test passes a raw primitive as `any`.
+2. The ZIR backend's box machinery is read-side only (unwrap tiers in
+   erased-operand equality and eq/hash); it has no box-creation path.
+
+Staged plan:
+
+1. **ZIR never auto-boxes** (done): every value-conformance failure where a
+   scalar flows into an `any`/`eqref` context bails under the permanent
+   reason `auto-box to any`. This is a deliberate hole, not a coverage gap;
+   the bail histogram measures real-world `any` dependence.
+2. **Measure**: `ZENA_ZIR_STATS=1` over the suite and self-compile counts
+   the sites (zero in both at time of writing).
+3. **Checker deprecation**: reject primitive-to-`any` assignments/arguments
+   in both checkers (explicit `new Box<T>(x)` remains available — `Box` is
+   an ordinary class and runtime `is Box<i32>` tests keep working).
+4. **Remove `any`** from the prelude, leaving `anyref`. The streaming
+   backends' boxing code and the bootstrap's `boxPrimitive` semantic-type
+   machinery below become dead and can be deleted.
+
 ## Problem Statement
 
 When boxing primitives for the `any` type, WASM cannot distinguish between
