@@ -16,10 +16,10 @@ suite('JS Runtime Lazy Stack Trace', () => {
       import { String } from 'zena:string';
 
       @external("env", "captureStackTrace")
-      declare function __captureStackTrace(): any;
+      declare function __captureStackTrace(): anyref;
 
       @external("env", "formatStackTrace")
-      declare function __formatStackTrace(stack: any): String | null;
+      declare function __formatStackTrace(stack: anyref): String | null;
 
       export let testCaptureAndFormat = (): String | null => {
         let stack = __captureStackTrace();
@@ -51,10 +51,10 @@ suite('JS Runtime Lazy Stack Trace', () => {
       import { String } from 'zena:string';
 
       @external("env", "formatStackTrace")
-      declare function __formatStackTrace(stack: any): String | null;
+      declare function __formatStackTrace(stack: anyref): String | null;
 
       export let testFormatInvalid = (): String | null => {
-        let val: any = 123;
+        let val: anyref = new Box<i32>(123);
         return __formatStackTrace(val);
       };
     `;
