@@ -36,7 +36,7 @@ suite('CodeGenerator - Is Operator', () => {
   test('should check primitives (boxed in any)', async () => {
     const source = `
       export let main = (): i32 => {
-        let x: any = 10;
+        let x: any = new Box<i32>(10);
         if (!(x is i32)) return 10;
         
         // Note: In Zena, 10 is i32. It is NOT f32.

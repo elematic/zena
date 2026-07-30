@@ -24,9 +24,12 @@ Staged plan:
    the bail histogram measures real-world `any` dependence.
 2. **Measure**: `ZENA_ZIR_STATS=1` over the suite and self-compile counts
    the sites (zero in both at time of writing).
-3. **Checker deprecation**: reject primitive-to-`any` assignments/arguments
-   in both checkers (explicit `new Box<T>(x)` remains available — `Box` is
-   an ordinary class and runtime `is Box<i32>` tests keep working).
+3. **Checker deprecation** (done): both checkers reject value primitives
+   (numerics, booleans, and literals of either) flowing into `any` — the
+   `isAssignableTo` top-type acceptance is now conditional on the source
+   not being a boxable primitive. Explicit `new Box<T>(x)` remains
+   available — `Box` is an ordinary class and runtime `is Box<i32>` tests
+   keep working. Pinned by `tests/language/semantics/any/`.
 4. **Remove `any`** from the prelude, leaving `anyref`. The streaming
    backends' boxing code and the bootstrap's `boxPrimitive` semantic-type
    machinery below become dead and can be deleted.

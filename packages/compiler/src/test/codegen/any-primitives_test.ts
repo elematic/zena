@@ -6,9 +6,9 @@ suite('any with primitives', () => {
   test('is check distinguishes boxed primitive types', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let x: any = 42;
-        let y: any = 3.14;
-        let z: any = true;
+        let x: any = new Box<i32>(42);
+        let y: any = new Box<f64>(3.14);
+        let z: any = new Box<boolean>(true);
         let s: any = "hello";
         
         var result = 0;
@@ -26,7 +26,7 @@ suite('any with primitives', () => {
   test('is check does not confuse i32 with f32', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let x: any = 42;
+        let x: any = new Box<i32>(42);
         
         if (x is f32) return 1;      // Should be false
         if (x is boolean) return 2;  // Should be false
@@ -40,7 +40,7 @@ suite('any with primitives', () => {
   test('can extract value after is check', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let x: any = 42;
+        let x: any = new Box<i32>(42);
         
         if (x is i32) {
           let n = x as i32;  // auto-unbox

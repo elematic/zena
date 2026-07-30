@@ -2852,6 +2852,22 @@ let tryInstantiateGenericFunction = (
   return source;
 };
 
+/**
+ * A value primitive (numeric, boolean, or a literal of either): the
+ * types whose flow into `any` used to auto-box. Boxing is being
+ * removed, so these are no longer assignable to `any`.
+ */
+let isBoxablePrimitive = (t: Type): boolean => match (baseType(t)) {
+  case I32Type: true
+  case U32Type: true
+  case I64Type: true
+  case U64Type: true
+  case F32Type: true
+  case F64Type: true
+  case BooleanType: true
+  case _: false
+};
+
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
   // Automatically unwrap non-distinct type aliases
   match (source) {
@@ -2921,8 +2937,10 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case _: {}
   }
 
-  // Anything is assignable to `any`.
-  if (target is AnyType) { return true; }
+  // `any` no longer auto-boxes: value primitives are not assignable
+  // to it — box explicitly (new Box<T>(v)) or use a reference type.
+  // References and null remain assignable.
+  if (target is AnyType) { return !isBoxablePrimitive(source); }
 
   // `null` is assignable to nullable unions.
   if (source is NullType) {

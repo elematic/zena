@@ -2,11 +2,11 @@ import {suite, test} from 'node:test';
 import {compileAndRun} from './utils.js';
 import * as assert from 'node:assert';
 
-suite('CodeGenerator - Any Type', () => {
+suite('CodeGenerator - Any Type (explicit Box: implicit primitive boxing is removed)', () => {
   test('should assign primitive to any and unbox', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let x: any = 42;
+        let x: any = new Box<i32>(42);
         let y = x as i32;
         return y;
       };
@@ -33,7 +33,7 @@ suite('CodeGenerator - Any Type', () => {
   test('should return any from function', async () => {
     const result = await compileAndRun(`
       let getAny = (val: i32): any => {
-        return val;
+        return new Box<i32>(val);
       };
       export let main = (): i32 => {
         let x = getAny(100);
@@ -49,7 +49,7 @@ suite('CodeGenerator - Any Type', () => {
         return val;
       };
       export let main = (): i32 => {
-        let x = identity(55);
+        let x = identity(new Box<i32>(55));
         return x as i32;
       };
     `);
@@ -59,7 +59,7 @@ suite('CodeGenerator - Any Type', () => {
   test('should handle boolean boxing', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let x: any = true;
+        let x: any = new Box<boolean>(true);
         let y = x as boolean;
         if (y) { return 1; } else { return 0; }
       };

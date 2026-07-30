@@ -6,7 +6,7 @@ suite('primitive boxing to any', () => {
   test('boolean is distinct from i32 when boxed', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let z: any = true;
+        let z: any = new Box<boolean>(true);
         if (z is boolean) return 1;
         return 0;
       };
@@ -17,7 +17,7 @@ suite('primitive boxing to any', () => {
   test('i32 is check works correctly', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let x: any = 42;
+        let x: any = new Box<i32>(42);
         if (x is i32) return 1;
         return 0;
       };
@@ -28,7 +28,7 @@ suite('primitive boxing to any', () => {
   test('i32 is not confused with boolean', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let x: any = 42;
+        let x: any = new Box<i32>(42);
         if (x is boolean) return 1;
         return 0;
       };
@@ -39,7 +39,7 @@ suite('primitive boxing to any', () => {
   test('unbox any to i32', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let x: any = 42;
+        let x: any = new Box<i32>(42);
         let n = x as i32;
         return n;
       };
@@ -50,7 +50,7 @@ suite('primitive boxing to any', () => {
   test('unbox any to i32 after is check (type narrowing)', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let x: any = 42;
+        let x: any = new Box<i32>(42);
         
         if (x is i32) {
           let n = x as i32;

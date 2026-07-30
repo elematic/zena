@@ -1866,6 +1866,22 @@ export function typeToString(type: Type): string {
   }
 }
 
+/**
+ * A value primitive (numeric, boolean, or a literal of either): the
+ * types whose flow into `any` used to auto-box. Boxing is being
+ * removed, so these are no longer assignable to `any`.
+ */
+function isBoxablePrimitive(type: Type): boolean {
+  if (type.kind === TypeKind.Number || type.kind === TypeKind.Boolean) {
+    return true;
+  }
+  if (type.kind === TypeKind.Literal) {
+    const lit = type as LiteralType;
+    return typeof lit.value === 'number' || typeof lit.value === 'boolean';
+  }
+  return false;
+}
+
 export function isAssignableTo(
   ctx: CheckerContext,
   source: Type,
@@ -1900,7 +1916,12 @@ export function isAssignableTo(
     return true;
   }
 
-  if (target.kind === TypeKind.Any) return true;
+  if (target.kind === TypeKind.Any) {
+    // `any` no longer auto-boxes: value primitives are not assignable
+    // to it. Box explicitly (new Box<T>(v)) or use a reference type.
+    // See docs/design/primitive-boxing-semantic-types.md (removal plan).
+    return !isBoxablePrimitive(source);
+  }
   if (source.kind === TypeKind.Any) return false;
 
   // Literal type assignability
