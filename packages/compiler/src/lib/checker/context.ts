@@ -593,8 +593,6 @@ export class CheckerContext {
         return Types.Symbol;
       case TypeNames.AnyRef:
         return Types.AnyRef;
-      case TypeNames.Any:
-        return Types.Any;
       case TypeNames.String: {
         // The String type is sometimes used in tests where the prelude isn't
         // available so we need to provide it here.

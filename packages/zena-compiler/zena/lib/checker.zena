@@ -1239,7 +1239,6 @@ final class CheckerContext {
  */
 let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   // Builtin types
-  ctx.registerPreludeType("any", new AnyType());
   ctx.registerPreludeType("anyref", new AnyRefType());
 
   // =========================
@@ -2857,6 +2856,32 @@ let tryInstantiateGenericFunction = (
  * types whose flow into `any` used to auto-box. Boxing is being
  * removed, so these are no longer assignable to `any`.
  */
+/**
+ * Types with a heap (reference) runtime representation — the sources
+ * `anyref` accepts. Inline tuples are excluded: they are flattened
+ * multi-value aggregates, not single references.
+ */
+let isAnyRefSource = (t: Type): boolean => {
+  if (t is ClassType || t is InterfaceType || t is ArrayType ||
+      t is RecordT || t is TupleT || t is FunctionType ||
+      t is NullType || t is ByteArrayType || t is AnyRefType ||
+      t is StringLiteralType) {
+    return true;
+  }
+  if (t is TypeAliasType) {
+    return isAnyRefSource((t as TypeAliasType).target);
+  }
+  if (t is UnionT) {
+    for (let member in (t as UnionT).types) {
+      if (!isAnyRefSource(member)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+};
+
 let isBoxablePrimitive = (t: Type): boolean => match (baseType(t)) {
   case I32Type: true
   case U32Type: true
@@ -2939,8 +2964,13 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
 
   // `any` no longer auto-boxes: value primitives are not assignable
   // to it — box explicitly (new Box<T>(v)) or use a reference type.
-  // References and null remain assignable.
+  // (`any` is no longer user-denotable; the type survives internally
+  // for erased generic copies until per-type-argument dispatch lands.)
   if (target is AnyType) { return !isBoxablePrimitive(source); }
+
+  // `anyref` is the top type for references: anything with a heap
+  // representation is assignable; primitives are not.
+  if (target is AnyRefType) { return isAnyRefSource(source); }
 
   // `null` is assignable to nullable unions.
   if (source is NullType) {

@@ -30,9 +30,15 @@ Staged plan:
    not being a boxable primitive. Explicit `new Box<T>(x)` remains
    available — `Box` is an ordinary class and runtime `is Box<i32>` tests
    keep working. Pinned by `tests/language/semantics/any/`.
-4. **Remove `any`** from the prelude, leaving `anyref`. The streaming
-   backends' boxing code and the bootstrap's `boxPrimitive` semantic-type
-   machinery below become dead and can be deleted.
+4. **Remove `any`** (done, 2026-07-30): `any` is no longer registered as a
+   type name in either compiler; `anyref` gained an explicit acceptance rule
+   (references, string literals, null, ref-only unions — never primitives)
+   in both checkers. `TypeKind.Any`/`AnyType` survive as internal artifacts
+   for erased generic vtable copies until per-type-argument dispatch
+   (generic-specialization-strategy.md) replaces them. Remaining cleanup:
+   the streaming backends' boxing code and the bootstrap's `boxPrimitive`
+   semantic-type machinery below are now dead for user code and can be
+   deleted with the erased copies.
 
 ## Problem Statement
 

@@ -33,20 +33,18 @@ suite('CodeGenerator - Is Operator', () => {
     assert.strictEqual(result, 0);
   });
 
-  test('should check primitives (boxed in any)', async () => {
+  test('should discriminate class types behind anyref', async () => {
     const source = `
+      class Cat { lives: i32; new(this.lives); }
+      class Dog { tricks: i32; new(this.tricks); }
       export let main = (): i32 => {
-        let x: any = new Box<i32>(10);
-        if (!(x is i32)) return 10;
-        
-        // Note: In Zena, 10 is i32. It is NOT f32.
-        // Boxing 10 creates Box<i32>.
-        // x is f32 checks for Box<f32>.
-        if (x is f32) return 11;
+        let x: anyref = new Cat(9);
+        if (!(x is Cat)) return 10;
+        if (x is Dog) return 11;
 
-        let s: any = "hello";
+        let s: anyref = "hello";
         if (!(s is String)) return 12;
-        if (s is i32) return 13;
+        if (s is Cat) return 13;
 
         return 0;
       };

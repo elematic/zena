@@ -118,37 +118,30 @@ as f64`).
 - **`ByteArray`**: A mutable array of 8-bit integers. This is a low-level type
   primarily used for implementing strings and binary data manipulation.
 
-### The `any` Type
+### The `anyref` Type
 
-The `any` type is a special type that can hold any value, including primitives.
-It is similar to `any` in TypeScript or `Object` in Java, but with stricter
-safety guarantees.
+`anyref` is the top type for references: any value with a heap
+representation — class instances, strings, arrays, records, tuples,
+functions, and `null` — can be assigned to it. Primitives (`i32`,
+`f64`, `boolean`, …) cannot: there is no implicit boxing in Zena. To
+put a primitive behind an `anyref`, box it explicitly with the
+ordinary `Box<T>` class from `zena:box`.
 
-- **Assignment**: Any value (primitive or reference) can be assigned to a
-  variable of type `any`.
-- **Auto-boxing**: Primitive values (`i32`, `f32`, `boolean`) are automatically
-  boxed into a `Box<T>` when assigned to `any`.
-- **Safety**: You cannot perform operations on an `any` value directly. You must
-  explicitly cast it back to a specific type using the `as` operator.
-- **Unboxing**: Casting an `any` value back to a primitive type automatically
-  unboxes it.
+- **Safety**: You cannot perform operations on an `anyref` value
+  directly. Test it with `is` and cast it back with `as`.
+- **No auto-boxing**: allocation never happens implicitly. `Box<T>`
+  construction is visible in the source.
 
 ```zena
-let x: any = 42;       // Auto-boxed to Box<i32>
-let y: any = "hello";  // Reference type (String)
+import { Box } from 'zena:box';
 
-let n = x as i32;      // Unboxed to 42
-let s = y as String;   // Cast to String
+let y: anyref = "hello";           // Reference type (String)
+let x: anyref = new Box<i32>(42);  // Explicit box for a primitive
+// let z: anyref = 42;             // Error: no implicit boxing
 
-// let z = x + 1;      // Error: Operator '+' cannot be applied to type 'any'
+let s = y as String;               // Cast to String
+let n = (x as Box<i32>).value;     // Unwrap the box explicitly
 ```
-
-The `any` type is useful for generic data structures or interop scenarios where
-the type is not known at compile time. Under the hood, it maps to the WASM
-`anyref` type.
-
-> [!NOTE]
-> We are strongly considering removing the `any` type and all auto-boxing in a future release. This will make boxing and heap-allocation costs explicit by requiring developers to perform manual boxing (e.g., using `Box<T>`) when passing primitive types to reference contexts.
 
 ## 2.1 Enums
 

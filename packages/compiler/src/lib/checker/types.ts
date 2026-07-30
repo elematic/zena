@@ -1968,6 +1968,14 @@ export function isAssignableTo(
       case TypeKind.ByteArray:
       case TypeKind.AnyRef:
         return true;
+      case TypeKind.Literal:
+        // String literals are references; numeric/boolean literals are not.
+        return typeof (source as LiteralType).value === 'string';
+      case TypeKind.Union:
+        // A union is anyref-assignable when every member is.
+        return (source as UnionType).types.every((m) =>
+          isAssignableTo(ctx, m, target),
+        );
       case TypeKind.TypeAlias:
         return isAssignableTo(ctx, (source as TypeAliasType).target, target);
       default:
