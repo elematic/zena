@@ -2223,7 +2223,6 @@ function generateIndexExpression(
         const arrayType = objCheckerType as ArrayType;
         // If element type is 'any' or 'anyref', we may need to cast
         if (
-          arrayType.elementType.kind === TypeKind.Any ||
           arrayType.elementType.kind === TypeKind.AnyRef
         ) {
           const expectedType = inferType(ctx, expr);

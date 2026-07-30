@@ -2963,7 +2963,6 @@ function isReferenceLikeType(t: Type): boolean {
     case TypeKind.Union:
     case TypeKind.Null:
     case TypeKind.ByteArray:
-    case TypeKind.Any:
     case TypeKind.AnyRef:
     case TypeKind.EqRef:
       return true;

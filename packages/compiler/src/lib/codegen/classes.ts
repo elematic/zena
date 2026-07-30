@@ -5379,8 +5379,6 @@ export function getTypeKeyForSpecialization(
       return 'null';
     case TypeKind.Never:
       return 'never';
-    case TypeKind.Any:
-      return 'any';
     case TypeKind.AnyRef:
       return 'anyref';
     case TypeKind.ByteArray:
@@ -8477,8 +8475,7 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Never) return [];
   if (type.kind === TypeKind.Hole) return [];
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
-  if (type.kind === TypeKind.Any || type.kind === TypeKind.AnyRef)
-    return [ValType.anyref];
+  if (type.kind === TypeKind.AnyRef) return [ValType.anyref];
   if (type.kind === TypeKind.EqRef) return [ValType.eqref];
   if (type.kind === TypeKind.ByteArray) {
     return adjustNullability(

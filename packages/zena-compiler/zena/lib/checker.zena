@@ -89,7 +89,7 @@ import {
 } from './ast.zena';
 import {
   Type, TypeId, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
-  BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType, AnyType,
+  BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType,
   AnyRefType, EqRefType, ByteArrayType,
   BoolLiteralType, StringLiteralType, NumLiteralType,
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
@@ -2851,11 +2851,17 @@ let tryInstantiateGenericFunction = (
   return source;
 };
 
-/**
- * A value primitive (numeric, boolean, or a literal of either): the
- * types whose flow into `any` used to auto-box. Boxing is being
- * removed, so these are no longer assignable to `any`.
- */
+let isBoxablePrimitive = (t: Type): boolean => match (baseType(t)) {
+  case I32Type: true
+  case U32Type: true
+  case I64Type: true
+  case U64Type: true
+  case F32Type: true
+  case F64Type: true
+  case BooleanType: true
+  case _: false
+};
+
 /**
  * Types with a heap (reference) runtime representation — the sources
  * `anyref` accepts. Inline tuples are excluded: they are flattened
@@ -2880,17 +2886,6 @@ let isAnyRefSource = (t: Type): boolean => {
     return true;
   }
   return false;
-};
-
-let isBoxablePrimitive = (t: Type): boolean => match (baseType(t)) {
-  case I32Type: true
-  case U32Type: true
-  case I64Type: true
-  case U64Type: true
-  case F32Type: true
-  case F64Type: true
-  case BooleanType: true
-  case _: false
 };
 
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
@@ -2961,12 +2956,6 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case TypeAliasType as tb: { return isAssignableTo(ctx, source, tb.target); }
     case _: {}
   }
-
-  // `any` no longer auto-boxes: value primitives are not assignable
-  // to it — box explicitly (new Box<T>(v)) or use a reference type.
-  // (`any` is no longer user-denotable; the type survives internally
-  // for erased generic copies until per-type-argument dispatch lands.)
-  if (target is AnyType) { return !isBoxablePrimitive(source); }
 
   // `anyref` is the top type for references: anything with a heap
   // representation is assignable; primitives are not.
@@ -3240,7 +3229,6 @@ let typesEqual = (a: Type, b: Type): boolean => {
     case HoleType: b is HoleType
     case ErrorType: b is ErrorType
     case UnknownType: b is UnknownType
-    case AnyType: b is AnyType
     case AnyRefType: b is AnyRefType
     case EqRefType: b is EqRefType
     case ByteArrayType: b is ByteArrayType
@@ -6378,7 +6366,7 @@ let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
   ct.members["hashCode"] = new MethodInfo(hashType, false, false, false, false);
 
   let eqParams = new Array<Type>();
-  eqParams.push(new AnyType());
+  eqParams.push(ct);
   let eqType = new FunctionType(eqParams, null, new BooleanType());
   ct.members["=="] = new MethodInfo(eqType, false, false, false, false);
 
@@ -10998,9 +10986,9 @@ let checkFunctionExpression = (
         }
       } else {
         // If it lacks a guaranteed return, error.
-        if (!(retType is VoidType) && !(retType is AnyType) && !branchDefinitelyExits(block)) {
+        if (!(retType is VoidType) && !branchDefinitelyExits(block)) {
           ctx.error(
-            "A function whose declared type is neither 'void' nor 'any' must return a value.",
+            "A function with a non-void declared return type must return a value.",
             DiagnosticCode.MissingReturnType,
             loc
           );

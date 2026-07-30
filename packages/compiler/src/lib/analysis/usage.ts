@@ -820,7 +820,7 @@ class UsageAnalyzer {
               if (
                 !argType ||
                 argType.kind === TypeKind.TypeParameter ||
-                argType.kind === TypeKind.Any ||
+                argType.kind === TypeKind.AnyRef ||
                 argType.kind === TypeKind.Error
               ) {
                 // Find String class and mark its == method

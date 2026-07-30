@@ -24,7 +24,6 @@ export const TypeKind = {
   TypeAlias: 'TypeAlias',
   AnyRef: 'AnyRef',
   EqRef: 'EqRef',
-  Any: 'Any',
   Unknown: 'Unknown',
   Error: 'Error',
   Never: 'Never',
@@ -260,7 +259,6 @@ export const Types = {
   F64: F64,
   AnyRef: {kind: TypeKind.AnyRef} as Type,
   EqRef: {kind: TypeKind.EqRef} as Type,
-  Any: {kind: TypeKind.Any} as Type,
   Never: {kind: TypeKind.Never} as Type,
   Hole: {kind: TypeKind.Hole} as Type,
   /** Base symbol type used for 'symbol' type annotations. ID -1 means "any symbol". */
@@ -283,7 +281,6 @@ export const TypeNames = {
   Null: 'null',
   Boolean: 'boolean',
   String: 'String',
-  Any: 'any',
   AnyRef: 'anyref',
   EqRef: 'eqref',
   Struct: 'struct',

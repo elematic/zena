@@ -736,7 +736,6 @@ export class CheckerContext {
       case TypeKind.Void:
       case TypeKind.Null:
       case TypeKind.Never:
-      case TypeKind.Any:
       case TypeKind.AnyRef:
       case TypeKind.ByteArray:
       case TypeKind.Symbol:
