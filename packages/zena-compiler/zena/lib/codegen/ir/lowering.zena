@@ -110,8 +110,12 @@ final class MemberTarget {
   owner: WasmStruct;
   /** Set for physical-field reads. */
   fieldName: String | null;
-  /** Set for direct getter calls. */
+  /** Set for getter calls (direct, or the slot signature when virtual). */
   getter: WasmFunction | null;
+  /** Set when the getter dispatches through the class vtable. */
+  var vtSlot: String | null = null;
+  /** The receiver class's codegen info, when vtSlot is set. */
+  var vtInfo: ClassCodegenInfo | null = null;
   new(this.owner, this.fieldName, this.getter);
 }
 
@@ -4299,7 +4303,7 @@ final class FunctionLowerer {
     let target = this.#resolveMemberTarget(member, receiverCt);
     if (target.fieldName == null) {
       return this.#lowerSetterWrite(assign, member, receiver, receiverCt,
-          target.getter as WasmFunction);
+          target.getter as WasmFunction, target.vtSlot != null);
     }
     let fieldName = target.fieldName as String;
     // Setter-side override checks (the read-side resolve checked get#):
@@ -4307,17 +4311,18 @@ final class FunctionLowerer {
     // transitive-subclass setter may exist for a direct struct.set.
     let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
     let isPrivateWrite = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
-    if (!isPrivateWrite &&
-        this.#accessorRedefined(receiverCt, propName, 'set#' + propName)) {
-      this.#bail('field with redefined setter');
-    }
     var infoOpt: ClassCodegenInfo | null = null;
     if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
       infoOpt = info;
     }
-    if (!isPrivateWrite && infoOpt != null &&
-        this.#memberProvidedBySubclass(infoOpt as ClassCodegenInfo, 'set#' + propName)) {
-      this.#bail('field with overriding setter');
+    if (!isPrivateWrite &&
+        (this.#accessorRedefined(receiverCt, propName, 'set#' + propName) ||
+         (infoOpt != null && this.#memberProvidedBySubclass(
+             infoOpt as ClassCodegenInfo, 'set#' + propName)))) {
+      // An accessor shadows the physical field somewhere between the
+      // receiver and a subclass: the write must dispatch.
+      return this.#lowerVirtualSetterWrite(
+          assign, member, receiver, receiverCt, propName);
     }
 
     if (!isValSubtype(this.#valueType(receiver),
@@ -4369,10 +4374,13 @@ final class FunctionLowerer {
    * evaluates once.
    */
   #lowerSetterWrite(assign: AssignmentExpression, member: MemberExpression,
-      receiver: i32, receiverCt: ClassType, getter: WasmFunction): i32 {
+      receiver: i32, receiverCt: ClassType, getter: WasmFunction,
+      getterVirtual: boolean): i32 {
     let propName = getMemberPropertyName(
         member.isSymbolAccess, member.property.name);
     let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
+    var setterVirtual = false;
+    var vtInfoOpt: ClassCodegenInfo | null = null;
     var setterOpt: WasmFunction | null = null;
     if (isPrivate) {
       if (this.func.classType == null) {
@@ -4396,8 +4404,13 @@ final class FunctionLowerer {
         currClass = (currClass as ClassType).superType;
       }
       if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
+        vtInfoOpt = info;
         if (this.#memberProvidedBySubclass(info, 'set#' + propName)) {
-          this.#bail('overridden setter');
+          // A subclass overrides the setter: the write must dispatch.
+          if (this.#vtableSlotIndex(info, 'set#' + propName) < 0) {
+            this.#bail('overridden setter without vtable slot');
+          }
+          setterVirtual = true;
         }
       }
     }
@@ -4427,9 +4440,13 @@ final class FunctionLowerer {
       if (gsig.returns.length != 1) {
         this.#bail('getter shape');
       }
-      let getterRef = this.b.addRef(new IrRefFunc(getter));
-      var current = this.b.callFunc(
-          getterRef, this.#oneArg(receiver), gsig.returns[0]);
+      var current = if (getterVirtual) {
+        this.#lowerVtableCall(receiver, vtInfoOpt as ClassCodegenInfo,
+            'get#' + propName, gsig, this.#oneArg(receiver), gsig.returns[0])
+      } else {
+        this.b.callFunc(this.b.addRef(new IrRefFunc(getter)),
+            this.#oneArg(receiver), gsig.returns[0])
+      };
       current = this.#reassertNonNull(current, this.#exprValType(member));
       let rhs = this.#lowerExpression(assign.value);
       let vt = this.#valueType(current);
@@ -4447,7 +4464,103 @@ final class FunctionLowerer {
     let args = new Array<i32>();
     args.push(receiver);
     args.push(value);
-    this.b.callFunc(this.b.addRef(new IrRefFunc(setter)), args, null);
+    if (setterVirtual) {
+      this.#lowerVtableCall(receiver, vtInfoOpt as ClassCodegenInfo,
+          'set#' + propName, sig, args, null);
+    } else {
+      this.b.callFunc(this.b.addRef(new IrRefFunc(setter)), args, null);
+    }
+    return value;
+  }
+
+  /**
+   * A write whose physical field is shadowed by an accessor somewhere
+   * between the receiver and a subclass: resolve the nearest default
+   * setter for the slot signature and dispatch through the vtable.
+   * Compound assignments read the current value through the get# slot.
+   */
+  #lowerVirtualSetterWrite(assign: AssignmentExpression,
+      member: MemberExpression, receiver: i32, receiverCt: ClassType,
+      propName: String): i32 {
+    var infoOpt: ClassCodegenInfo | null = null;
+    if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
+      infoOpt = info;
+    }
+    if (infoOpt == null) {
+      this.#bail('method receiver not discovered');
+    }
+    let info = infoOpt as ClassCodegenInfo;
+    if (this.#vtableSlotIndex(info, 'set#' + propName) < 0) {
+      this.#bail('overridden field without setter slot');
+    }
+    var setterOpt: WasmFunction | null = null;
+    var currClass: ClassType | null = receiverCt;
+    while (currClass != null && setterOpt == null) {
+      var g: ClassType | null = currClass;
+      while (g != null && setterOpt == null) {
+        let key = getClassMethodKey(
+            getClassKey(g as ClassType), 'set#' + propName);
+        if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+          setterOpt = f;
+        }
+        g = (g as ClassType).genericSource;
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (setterOpt == null) {
+      this.#bail('overridden field without setter slot');
+    }
+    let setter = setterOpt as WasmFunction;
+    let sig = setter.signature;
+    if (sig.params.length != 2 || sig.returns.length != 0) {
+      this.#bail('setter shape');
+    }
+    let valueVt = sig.params[1];
+    this.#requireSupported(valueVt, 'setter param type');
+    var value = -1;
+    if (assign.operator == null) {
+      value = this.#lowerExpressionCtx(assign.value, valueVt);
+    } else {
+      if (this.#vtableSlotIndex(info, 'get#' + propName) < 0) {
+        this.#bail('overridden field without getter slot');
+      }
+      var getterOpt: WasmFunction | null = null;
+      var gc: ClassType | null = receiverCt;
+      while (gc != null && getterOpt == null) {
+        let key = getClassMethodKey(
+            getClassKey(gc as ClassType), 'get#' + propName);
+        if (let (true, g) = this.wasm.classMethodMap.get(key)) {
+          getterOpt = g;
+        }
+        gc = (gc as ClassType).superType;
+      }
+      if (getterOpt == null) {
+        this.#bail('overridden field without getter slot');
+      }
+      let gsig = (getterOpt as WasmFunction).signature;
+      if (gsig.returns.length != 1) {
+        this.#bail('getter shape');
+      }
+      var current = this.#lowerVtableCall(receiver, info,
+          'get#' + propName, gsig, this.#oneArg(receiver), gsig.returns[0]);
+      current = this.#reassertNonNull(current, this.#exprValType(member));
+      let rhs = this.#lowerExpression(assign.value);
+      let vt = this.#valueType(current);
+      if (!valTypeEquals(vt, this.#valueType(rhs))) {
+        this.#bail('mixed member compound types');
+      }
+      let unsigned = this.#isUnsignedNode(member as Expression) ||
+          this.#isUnsignedNode(assign.value);
+      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
+      value = this.b.binary(op, vt, current, rhs);
+    }
+    if (!isValSubtype(this.#valueType(value), valueVt)) {
+      this.#failConformance(value, valueVt, 'setter value type');
+    }
+    let args = new Array<i32>();
+    args.push(receiver);
+    args.push(value);
+    this.#lowerVtableCall(receiver, info, 'set#' + propName, sig, args, null);
     return value;
   }
 
@@ -4534,6 +4647,17 @@ final class FunctionLowerer {
     if (!isValSubtype(receiverVt,
         new ValTypeRefNull(target.owner) as ValType)) {
       this.#bail('member receiver struct mismatch');
+    }
+    if (target.vtSlot != null) {
+      let vgetter = target.getter as WasmFunction;
+      let vsig = vgetter.signature;
+      if (vsig.returns.length != 1) {
+        this.#bail('getter shape');
+      }
+      let vresult = this.#lowerVtableCall(receiver,
+          target.vtInfo as ClassCodegenInfo, target.vtSlot as String,
+          vsig, this.#oneArg(receiver), vsig.returns[0]);
+      return this.#reassertNonNull(vresult, this.#exprValType(member));
     }
     if (target.fieldName != null) {
       let fieldName = target.fieldName as String;
@@ -4933,12 +5057,15 @@ final class FunctionLowerer {
         method.intrinsic != null) {
       this.#bail('method shape');
     }
+    // Private access is never virtual; overload slots are overridden
+    // independently (member-lookup.md §5.3), so the check keys on the
+    // SLOT name. An overridden slot dispatches through the vtable.
+    var isVirtual = false;
     if (!isPrivate && this.#memberProvidedBySubclass(classInfo, slotName)) {
-      // Private access is never virtual, so the devirt-safety check
-      // only applies to public members. Overload slots are overridden
-      // independently (member-lookup.md §5.3), so the check keys
-      // on the SLOT name.
-      this.#bail('overridden method');
+      if (this.#vtableSlotIndex(classInfo, slotName) < 0) {
+        this.#bail('overridden method without vtable slot');
+      }
+      isVirtual = true;
     }
     let sig = method.signature;
     if (sig.returns.length > 1 && multiOut == null) {
@@ -4963,6 +5090,9 @@ final class FunctionLowerer {
       args.push(value);
     }
     if (sig.returns.length > 1) {
+      if (isVirtual) {
+        this.#bail('virtual multi-value method');
+      }
       for (let r in sig.returns) {
         this.#requireSupported(r, 'method result type');
       }
@@ -4978,8 +5108,11 @@ final class FunctionLowerer {
     if (resultType != null) {
       this.#requireSupported(resultType, 'method result type');
     }
-    let methodRef = this.b.addRef(new IrRefFunc(method));
-    let result = this.b.callFunc(methodRef, args, resultType);
+    let result = if (isVirtual) {
+      this.#lowerVtableCall(receiver, classInfo, slotName, sig, args, resultType)
+    } else {
+      this.b.callFunc(this.b.addRef(new IrRefFunc(method)), args, resultType)
+    };
     if (resultType != null) {
       let nodeType = this.func.model.getNodeType(call);
       if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
@@ -5384,6 +5517,51 @@ final class FunctionLowerer {
   }
 
   /**
+   * Whether the receiver class's vtable struct carries `slotName` —
+   * the precondition for virtual dispatch through it.
+   */
+  #vtableSlotIndex(classInfo: ClassCodegenInfo, slotName: String): i32 {
+    let vtOpt = classInfo.vtableStructType;
+    if (vtOpt == null) {
+      return -1;
+    }
+    return (vtOpt as WasmStruct).fieldIndexByName(slotName);
+  }
+
+  /**
+   * Virtual dispatch through the class vtable: load the receiver's
+   * `<vtable>` field, cast to the class's vtable struct, load the
+   * named slot, cast to the resolved method's exact signature, and
+   * call_ref — streaming's shape. The slot signature is the STATIC
+   * class's resolved method signature; overrides conform to it via
+   * the vtable-init adapters.
+   */
+  #lowerVtableCall(receiver: i32, classInfo: ClassCodegenInfo,
+      slotName: String, sig: WasmSignature, args: Array<i32>,
+      resultType: ValType | null): i32 {
+    let structType = classInfo.structType;
+    let vtStruct = classInfo.vtableStructType as WasmStruct;
+    let vtFieldVt = this.#fieldValType(structType, '<vtable>');
+    let vtRaw = this.b.emit(IrOp.struct_get, vtFieldVt, receiver,
+        this.b.addRef(new IrRefField(structType, '<vtable>')));
+    var vt = vtRaw;
+    let wantVtVt: ValType = new ValTypeRef(vtStruct);
+    if (!isValSubtype(this.#valueType(vtRaw), new ValTypeRefNull(vtStruct) as ValType)) {
+      vt = this.b.emit(IrOp.ref_cast, wantVtVt, vtRaw,
+          this.b.internType(wantVtVt));
+    } else {
+      vt = this.#reassertNonNull(vtRaw, wantVtVt);
+    }
+    let slotVt = this.#fieldValType(vtStruct, slotName);
+    let slotRaw = this.b.emit(IrOp.struct_get, slotVt, vt,
+        this.b.addRef(new IrRefField(vtStruct, slotName)));
+    let sigVt: ValType = new ValTypeRef(sig);
+    let slot = this.b.emit(IrOp.ref_cast, sigVt, slotRaw,
+        this.b.internType(sigVt));
+    return this.b.callRef(slot, args, resultType);
+  }
+
+  /**
    * Resolves a member read against the receiver's class: either a
    * physical field (fieldName set) or a non-overridden getter function.
    */
@@ -5436,7 +5614,11 @@ final class FunctionLowerer {
     }
     if (hasField && !this.#accessorRedefined(ct, propName, 'get#' + propName)) {
       if (this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
-        this.#bail('field with overriding accessor');
+        // A subclass overrides the accessor: the read must dispatch.
+        // The slot signature is the DEFAULT getter registered by the
+        // declaring class (present whenever the slot is).
+        return this.#virtualGetterTarget(
+            structType, classInfo, ct, propName);
       }
       return new MemberTarget(structType, lookupName, null);
     }
@@ -5459,9 +5641,44 @@ final class FunctionLowerer {
       this.#bail('static member');
     }
     if (!isPrivate && this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
-      this.#bail('overridden getter');
+      let target = new MemberTarget(structType, null, getter);
+      if (this.#vtableSlotIndex(classInfo, 'get#' + propName) < 0) {
+        this.#bail('overridden getter without vtable slot');
+      }
+      target.vtSlot = 'get#' + propName;
+      target.vtInfo = classInfo;
+      return target;
     }
     return new MemberTarget(structType, null, getter);
+  }
+
+  /**
+   * A virtual-getter member target: resolves the slot's signature
+   * from the nearest registered getter and marks the target for
+   * vtable dispatch.
+   */
+  #virtualGetterTarget(structType: WasmStruct, classInfo: ClassCodegenInfo,
+      ct: ClassType, propName: String): MemberTarget {
+    var getter: WasmFunction | null = null;
+    var currClass: ClassType | null = ct;
+    while (currClass != null && getter == null) {
+      let key = getClassMethodKey(
+          getClassKey(currClass as ClassType), 'get#' + propName);
+      if (let (true, g) = this.wasm.classMethodMap.get(key)) {
+        getter = g;
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (getter == null) {
+      this.#bail('overridden field without getter slot');
+    }
+    if (this.#vtableSlotIndex(classInfo, 'get#' + propName) < 0) {
+      this.#bail('overridden field without vtable slot');
+    }
+    let target = new MemberTarget(structType, null, getter);
+    target.vtSlot = 'get#' + propName;
+    target.vtInfo = classInfo;
+    return target;
   }
 
   /**

@@ -1,0 +1,35 @@
+// @mode: run
+// @result: 4321
+// Writes and compound writes through an accessor that a subclass
+// overrides must dispatch on the runtime type: the base declares a
+// physical field, the subclass shadows it with get/set that scale by
+// 10. Reads and writes through a Base-typed reference observe the
+// override.
+
+class Base {
+  var x: i32;
+  new(this.x);
+}
+
+class Scaled extends Base {
+  var raw: i32 = 0;
+  new() : super(0);
+  x: i32 {
+    get { return this.raw * 10; }
+    set(v) { this.raw = v + 1; }
+  }
+}
+
+export let main = (): i32 => {
+  var acc = 0;
+  let plain: Base = new Base(5);
+  plain.x = 7;
+  if (plain.x == 7) { acc += 1; }
+  let s: Base = new Scaled();
+  s.x = 1;                       // raw = 2
+  if (s.x == 20) { acc += 20; }
+  s.x += 5;                      // set(20 + 5) -> raw = 26
+  if (s.x == 260) { acc += 300; }
+  if (plain.x == 7) { acc += 4000; }
+  return acc;
+};
