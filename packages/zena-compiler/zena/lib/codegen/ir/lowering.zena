@@ -2761,6 +2761,13 @@ final class FunctionLowerer {
    * read always dispatches — streaming's shape).
    */
   #lowerRecordRead(rt: RecordType, member: MemberExpression): i32 {
+    let recv = this.#lowerExpression(member.object);
+    return this.#lowerRecordReadOn(rt, member, recv);
+  }
+
+  /** The receiver-value core of a record member read. */
+  #lowerRecordReadOn(rt: RecordType, member: MemberExpression,
+      recvIn: i32): i32 {
     let dispatch = this.#recordDispatchOf(rt);
     let propName = getMemberPropertyName(
         member.isSymbolAccess, member.property.name);
@@ -2774,7 +2781,7 @@ final class FunctionLowerer {
     if (fieldIdx < 0) {
       this.#bail('record member not found');
     }
-    var recv = this.#lowerExpression(member.object);
+    var recv = recvIn;
     let fatVt = new ValTypeRefNull(dispatch.fatPtrType) as ValType;
     if (!isValSubtype(this.#valueType(recv), fatVt)) {
       let castVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
@@ -2996,6 +3003,9 @@ final class FunctionLowerer {
   #lowerBinary(bin: BinaryExpression): i32 {
     if (bin.operator == "&&" || bin.operator == "||") {
       return this.#lowerLogical(bin);
+    }
+    if (bin.operator == "??") {
+      return this.#lowerNullishCoalesce(bin);
     }
     // Null comparisons: x == null / x != null (either side).
     let leftIsNull = bin.left is NullLiteral;
@@ -4450,7 +4460,7 @@ final class FunctionLowerer {
    */
   #lowerMemberRead(member: MemberExpression): i32 {
     if (member.optional) {
-      this.#bail('optional member access');
+      return this.#lowerOptionalChainExpr(member as Expression);
     }
     let objectType = this.#substitutedNodeType(member.object);
     // Enum member access lowers to a constant, mirroring the
@@ -4482,6 +4492,15 @@ final class FunctionLowerer {
       return this.#reassertNonNull(result, this.#exprValType(member));
     }
     let receiver = this.#lowerExpression(member.object);
+    return this.#lowerMemberReadOn(member, receiver);
+  }
+
+  /**
+   * The receiver-value core of a member read: array .length, then
+   * field / non-overridden getter resolution against the receiver's
+   * class. Shared by the plain path and the optional-chain hit arm.
+   */
+  #lowerMemberReadOn(member: MemberExpression, receiver: i32): i32 {
     // .length on wasm-array receivers: array.len (mirrors the
     // FixedArray length intrinsic in the streaming backend).
     var recvArr: WasmArray | null = null;
@@ -4535,6 +4554,209 @@ final class FunctionLowerer {
     // Getter signatures return the field's (nullable) storage type; the
     // member's checked type may be non-null.
     return this.#reassertNonNull(call, this.#exprValType(member));
+  }
+
+  /**
+   * A ref-typed value with the null stripped from its type: the raw
+   * value when already non-null, else a re-asserted copy.
+   */
+  #strippedNonNull(value: i32): i32 {
+    let vt = this.#valueType(value);
+    return if (vt is ValTypeRefNull) {
+      this.#reassertNonNull(
+          value, new ValTypeRef((vt as ValTypeRefNull).target) as ValType)
+    } else {
+      value
+    };
+  }
+
+  /**
+   * The receiver of an optional chain, WITHOUT the checked-type
+   * re-assert: the checker narrows the receiver non-null at the
+   * access node (it must be accessible to type the chain), but the
+   * whole point of `?.` is that the runtime value may be null — the
+   * re-assert would trap before the null test. Identifier and
+   * global receivers read raw; other expressions produce their own
+   * (nullable) values.
+   */
+  #lowerChainReceiver(obj: Expression): i32 {
+    if (obj is Identifier) {
+      let sym = this.func.model.resolve(obj as Identifier);
+      if (sym != null) {
+        let resolved = (sym as Symbol).resolveTarget();
+        if (this.env.has(resolved.id)) {
+          var value = this.env[resolved.id];
+          if (this.#isCelled(resolved.id)) {
+            value = this.#cellRead(value);
+          }
+          return value;
+        }
+        if (let (true, g) = this.wasm.globalMap.get(resolved.id)) {
+          let globalRef = this.b.addRef(new IrRefGlobal(g));
+          return this.b.emit(IrOp.global_get, g.type, -1, globalRef);
+        }
+      }
+    }
+    return this.#lowerExpression(obj);
+  }
+
+  /** The receiver/callee expression of an optional-chain access. */
+  #optionalChainObject(expr: Expression): Expression {
+    if (expr is MemberExpression) {
+      return (expr as MemberExpression).object;
+    }
+    if (expr is IndexExpression) {
+      return (expr as IndexExpression).object;
+    }
+    return (expr as CallExpression).callee;
+  }
+
+  /**
+   * The hit arm of an optional-chain access: the access itself,
+   * performed on the already-null-checked receiver value.
+   */
+  #lowerOptionalHit(expr: Expression, receiver: i32): i32 {
+    if (expr is MemberExpression) {
+      let member = expr as MemberExpression;
+      let objectType = this.#substitutedNodeType(member.object);
+      if (objectType != null) {
+        let nonNull = baseType(getNonNullableType(objectType as Type));
+        if (nonNull is RecordType) {
+          return this.#lowerRecordReadOn(nonNull as RecordType, member, receiver);
+        }
+      }
+      return this.#lowerMemberReadOn(member, receiver);
+    }
+    if (expr is IndexExpression) {
+      let idx = expr as IndexExpression;
+      let objectType = this.#substitutedNodeType(idx.object);
+      if (objectType == null) {
+        this.#bail('untyped index receiver');
+      }
+      let selfResolved = this.#resolveSelfType(
+          getNonNullableType(objectType as Type));
+      return this.#lowerIndexReadOn(idx, selfResolved, receiver);
+    }
+    return this.#lowerClosureCallOn(expr as CallExpression, receiver);
+  }
+
+  /**
+   * A standalone optional-chain access (`obj?.prop`, `arr?[i]`,
+   * `fn?()`): the receiver evaluates once; null short-circuits to a
+   * null result of the access's checked (nullable) type. Accesses
+   * producing primitives would need a boxed `T | null`, which
+   * lowering does not model — those bail (a fused `?? rhs` handles
+   * them via #lowerNullishCoalesce instead).
+   */
+  #lowerOptionalChainExpr(expr: Expression): i32 {
+    let exprVt = this.#exprValType(expr);
+    if (!isRefValType(exprVt)) {
+      this.#bail('optional primitive result');
+    }
+    let receiver0 = this.#lowerChainReceiver(this.#optionalChainObject(expr));
+    if (!isRefValType(this.#valueType(receiver0))) {
+      this.#bail('optional receiver kind');
+    }
+    let isNull = this.b.emit(
+        IrOp.ref_is_null, new ValTypeI32() as ValType, receiver0, -1);
+    let nullB = this.b.newBlock();
+    let okB = this.b.newBlock();
+    this.b.brIf(isNull, nullB, this.#noArgs(), okB, this.#noArgs());
+
+    let mergeB = this.b.newBlock();
+    let resultParam = this.b.blockParam(mergeB, exprVt);
+
+    this.b.switchTo(okB);
+    let value = this.#lowerOptionalHit(expr, this.#strippedNonNull(receiver0));
+    if (!isValSubtype(this.#valueType(value), exprVt)) {
+      this.#bail('optional chain type');
+    }
+    this.b.br(mergeB, this.#oneArg(value));
+
+    this.b.switchTo(nullB);
+    let nullValue = this.#nullDefault(exprVt);
+    this.b.br(mergeB, this.#oneArg(nullValue));
+
+    this.b.switchTo(mergeB);
+    this.reachable = true;
+    return resultParam;
+  }
+
+  /** A null constant conforming to a (nullable) reference valtype. */
+  #nullDefault(vt: ValType): i32 {
+    return this.b.emit(IrOp.ref_null, vt, -1, -1);
+  }
+
+  /**
+   * `left ?? right`: the left evaluates once; null short-circuits to
+   * the right operand. When the left is an optional member access,
+   * the chain fuses: a null object jumps straight to the right
+   * operand — the SSA form of the streaming backend's short-circuit
+   * flag — which also covers primitive members (the miss produces no
+   * value that needs representing).
+   */
+  #lowerNullishCoalesce(bin: BinaryExpression): i32 {
+    let overallVt = this.#exprValType(bin);
+    let mergeSyms = this.#assignedEnvSyms(bin.right);
+
+    let leftIsOptionalChain =
+        (bin.left is MemberExpression && (bin.left as MemberExpression).optional) ||
+        (bin.left is IndexExpression && (bin.left as IndexExpression).optional) ||
+        (bin.left is CallExpression && (bin.left as CallExpression).optional);
+    var testValue = -1;
+    if (leftIsOptionalChain) {
+      testValue = this.#lowerChainReceiver(this.#optionalChainObject(bin.left));
+      if (!isRefValType(this.#valueType(testValue))) {
+        this.#bail('optional receiver kind');
+      }
+    } else {
+      testValue = this.#lowerExpression(bin.left);
+      if (!isRefValType(this.#valueType(testValue))) {
+        this.#bail('nullish on non-reference');
+      }
+    }
+
+    let isNull = this.b.emit(
+        IrOp.ref_is_null, new ValTypeI32() as ValType, testValue, -1);
+    let rightB = this.b.newBlock();
+    let okB = this.b.newBlock();
+    this.b.brIf(isNull, rightB, this.#noArgs(), okB, this.#noArgs());
+
+    let saved = this.#copyEnv();
+    this.b.switchTo(okB);
+    let okValue = if (leftIsOptionalChain) {
+      this.#lowerOptionalHit(bin.left, this.#strippedNonNull(testValue))
+    } else {
+      this.#strippedNonNull(testValue)
+    };
+    if (!isValSubtype(this.#valueType(okValue), overallVt)) {
+      this.#bail('nullish arm type');
+    }
+    let mergeB = this.b.newBlock();
+    let mergeParams = this.#addParams(mergeB, mergeSyms);
+    let resultParam = this.b.blockParam(mergeB, overallVt);
+    let okArgs = this.#envValues(mergeSyms);
+    okArgs.push(okValue);
+    this.b.br(mergeB, okArgs);
+
+    this.env = this.#copyOf(saved);
+    this.reachable = true;
+    this.b.switchTo(rightB);
+    let rightValue = this.#lowerExpressionCtx(bin.right, overallVt);
+    if (this.reachable) {
+      if (!isValSubtype(this.#valueType(rightValue), overallVt)) {
+        this.#bail('nullish arm type');
+      }
+      let rightArgs = this.#envValues(mergeSyms);
+      rightArgs.push(rightValue);
+      this.b.br(mergeB, rightArgs);
+    }
+
+    this.env = saved;
+    this.#applyParams(mergeSyms, mergeParams);
+    this.b.switchTo(mergeB);
+    this.reachable = true;
+    return resultParam;
   }
 
   /**
@@ -4781,7 +5003,7 @@ final class FunctionLowerer {
    */
   #lowerIndexRead(idx: IndexExpression): i32 {
     if (idx.optional) {
-      this.#bail('optional index');
+      return this.#lowerOptionalChainExpr(idx as Expression);
     }
     let objectType = this.#substitutedNodeType(idx.object);
     if (objectType == null) {
@@ -4797,6 +5019,17 @@ final class FunctionLowerer {
       return this.#reassertNonNull(result, this.#exprValType(idx));
     }
 
+    let receiver = this.#lowerExpression(idx.object);
+    return this.#lowerIndexReadOn(idx, selfResolved, receiver);
+  }
+
+  /**
+   * The receiver-value core of an index read: boxed-tuple fields,
+   * array elements, then [] overloads on classes. Shared by the plain
+   * path and the optional-chain hit arm.
+   */
+  #lowerIndexReadOn(idx: IndexExpression, selfResolved: Type,
+      receiver: i32): i32 {
     if (baseType(selfResolved) is TupleType) {
       if (!(idx.index is NumberLiteral)) {
         this.#bail('dynamic tuple index');
@@ -4805,7 +5038,6 @@ final class FunctionLowerer {
       if (elemIdx < 0) {
         this.#bail('tuple index literal');
       }
-      let receiver = this.#lowerExpression(idx.object);
       let stOpt = match (this.#valueType(receiver)) {
         case ValTypeRef as r:
             if (r.target is WasmStruct) r.target as WasmStruct else null
@@ -4827,7 +5059,6 @@ final class FunctionLowerer {
       return this.#reassertNonNull(read, this.#exprValType(idx));
     }
 
-    let receiver = this.#lowerExpression(idx.object);
     let arrOpt = asWasmArray(this.#valueType(receiver));
     if (arrOpt != null) {
       let arr = arrOpt as WasmArray;
@@ -5932,7 +6163,8 @@ final class FunctionLowerer {
       this.#bail('call callee kind');
     }
     if (call.optional) {
-      this.#bail('optional call');
+      // `fn?()`: a null closure value short-circuits to a null result.
+      return this.#lowerOptionalChainExpr(call as Expression);
     }
     // Prelude array builtins (__array_new_empty & co.) are checker-
     // registered values with no declaration and no compiled function;
@@ -6174,6 +6406,11 @@ final class FunctionLowerer {
    */
   #lowerClosureCall(call: CallExpression): i32 {
     let callee = this.#lowerExpression(call.callee);
+    return this.#lowerClosureCallOn(call, callee);
+  }
+
+  /** The callee-value core of a closure call. */
+  #lowerClosureCallOn(call: CallExpression, callee: i32): i32 {
     // The callee value's OWN type carries the authoritative closure
     // struct; recomputing it from the checked node type drifted
     // whenever substitution or nullability normalization disagreed
@@ -6275,6 +6512,9 @@ final class FunctionLowerer {
     }
     let celled = this.#isCelled(resolved.id);
     var value = -1;
+    if (assign.operator != null && (assign.operator as String) == "??") {
+      return this.#lowerNullishAssign(assign, resolved.id, celled);
+    }
     if (assign.operator == null) {
       var assignCtx: ValType | null = null;
       let targetBinding = this.func.model.getBindingType(resolved);
@@ -6305,6 +6545,73 @@ final class FunctionLowerer {
       this.env[resolved.id] = value;
     }
     return value;
+  }
+
+  /**
+   * `x ??= rhs` on a local binding: the current value is kept when
+   * non-null, else the right side evaluates and stores. The whole
+   * expression's value is the binding's post-assignment value. Celled
+   * bindings write through their heap cell; plain bindings merge the
+   * two SSA values through a block param.
+   */
+  #lowerNullishAssign(assign: AssignmentExpression, symId: SymbolId,
+      celled: boolean): i32 {
+    let current = if (celled) this.#cellRead(this.env[symId])
+        else this.env[symId];
+    if (!isRefValType(this.#valueType(current))) {
+      this.#bail('nullish on non-reference');
+    }
+    let isNull = this.b.emit(
+        IrOp.ref_is_null, new ValTypeI32() as ValType, current, -1);
+    let mergeSyms = this.#assignedEnvSyms(assign.value);
+    if (!celled && !this.#containsSym(mergeSyms, symId)) {
+      mergeSyms.push(symId);
+    }
+    let assignB = this.b.newBlock();
+    let skipB = this.b.newBlock();
+    this.b.brIf(isNull, assignB, this.#noArgs(), skipB, this.#noArgs());
+
+    let resultVt = this.#valueType(current);
+    let saved = this.#copyEnv();
+    this.b.switchTo(assignB);
+    let rhs = this.#lowerExpressionCtx(assign.value, resultVt);
+    if (!isValSubtype(this.#valueType(rhs), resultVt)) {
+      this.#bail('nullish assign type');
+    }
+    if (celled) {
+      this.#cellWrite(this.env[symId], rhs);
+    } else {
+      this.env[symId] = rhs;
+    }
+    let mergeB = this.b.newBlock();
+    let mergeParams = this.#addParams(mergeB, mergeSyms);
+    let resultParam = this.b.blockParam(mergeB, resultVt);
+    let assignArgs = this.#envValues(mergeSyms);
+    assignArgs.push(rhs);
+    this.b.br(mergeB, assignArgs);
+
+    this.env = this.#copyOf(saved);
+    this.reachable = true;
+    this.b.switchTo(skipB);
+    let skipArgs = this.#envValues(mergeSyms);
+    skipArgs.push(current);
+    this.b.br(mergeB, skipArgs);
+
+    this.env = saved;
+    this.#applyParams(mergeSyms, mergeParams);
+    this.b.switchTo(mergeB);
+    this.reachable = true;
+    return resultParam;
+  }
+
+  /** Whether `syms` already contains `symId`. */
+  #containsSym(syms: Array<SymbolId>, symId: SymbolId): boolean {
+    for (let s in syms) {
+      if (s == symId) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // -- Helpers ---------------------------------------------------------
