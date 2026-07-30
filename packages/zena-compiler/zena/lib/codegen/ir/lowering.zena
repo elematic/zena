@@ -2683,7 +2683,7 @@ final class FunctionLowerer {
       case FunctionExpression as fExpr: this.#lowerFunctionExpression(fExpr)
       case NullLiteral: this.#bailValue('null without context')
       case IndexExpression as idx: this.#lowerIndexRead(idx)
-      case TemplateLiteral: this.#bailValue('template literal')
+      case TemplateLiteral as tpl: this.#lowerTemplateLiteral(tpl)
       case IsExpression as isExpr: this.#lowerIs(isExpr)
       case ArrayLiteral as arrLit: this.#lowerArrayLiteral(arrLit)
       case RecordLiteral as recLit: this.#lowerRecordLiteral(recLit)
@@ -6356,9 +6356,134 @@ final class FunctionLowerer {
     let id = this.b.constI32(litId, new ValTypeI32());
     let funcRef = this.b.addRef(new IrRefFunc(helper));
     let call = this.b.callFunc(funcRef, this.#oneArg(id), helper.signature.returns[0]);
-    // The literal's checked type is a non-null String; the helper returns
-    // nullable. Re-assert non-nullness so merges and returns type-check.
+    // The literal is a non-null String; the helper returns nullable.
+    // Re-assert so merges and returns type-check. Synthesized quasi
+    // literals (template parts) carry no checker type — strip via the
+    // value's own type instead.
+    if (this.func.model.getNodeType(lit) == null) {
+      return this.#strippedNonNull(call);
+    }
     return this.#reassertNonNull(call, this.#exprValType(lit));
+  }
+
+
+  /**
+   * Template literals: quasi/expression parts in order, primitives
+   * converted through the zena:string-convert helpers, then joined —
+   * __concatN for 2..5 parts, else array.new_fixed + String.fromParts
+   * (streaming's shape exactly).
+   */
+  #lowerTemplateLiteral(tpl: TemplateLiteral): i32 {
+    if (tpl.quasis.length + tpl.expressions.length == 0) {
+      return this.#lowerStringLiteral(new StringLiteral('', tpl.loc));
+    }
+    if (tpl.expressions.length == 0) {
+      return this.#lowerStringLiteral(
+          new StringLiteral(tpl.quasis[0].cooked, tpl.loc));
+    }
+    let parts = new Array<i32>();
+    for (var i = 0; i < tpl.expressions.length; i += 1) {
+      parts.push(this.#lowerStringLiteral(
+          new StringLiteral(tpl.quasis[i].cooked, tpl.quasis[i].loc)));
+      parts.push(this.#templateOperandString(tpl.expressions[i]));
+    }
+    parts.push(this.#lowerStringLiteral(new StringLiteral(
+        tpl.quasis[tpl.quasis.length - 1].cooked,
+        tpl.quasis[tpl.quasis.length - 1].loc)));
+
+    if (parts.length >= 2 && parts.length <= 5) {
+      let concatOpt = this.wasm.getStdlibFunc(
+          'zena:string', '__concat' + i32ToString(parts.length));
+      if (concatOpt != null) {
+        let concat = concatOpt as WasmFunction;
+        let sig = concat.signature;
+        if (sig.returns.length != 1 || sig.params.length != parts.length) {
+          this.#bail('concat helper shape');
+        }
+        let call = this.b.callFunc(
+            this.b.addRef(new IrRefFunc(concat)), parts, sig.returns[0]);
+        return this.#reassertNonNull(call, this.#exprValType(tpl as Expression));
+      }
+    }
+    let fromPartsOpt = if (this.wasm.stringClass != null) {
+      let key = getClassMethodKey(
+          getClassKey(this.wasm.stringClass as ClassType), 'fromParts');
+      if (let (true, f) = this.wasm.classMethodMap.get(key)) f else null
+    } else {
+      null
+    };
+    if (fromPartsOpt == null) {
+      this.#bail('String.fromParts missing');
+    }
+    let fromParts = fromPartsOpt as WasmFunction;
+    let fsig = fromParts.signature;
+    if (fsig.returns.length != 1 || fsig.params.length != 1) {
+      this.#bail('fromParts shape');
+    }
+    let elemVt = if (parts.length > 0) {
+      match (this.#valueType(parts[0])) {
+        case ValTypeRef as r: new ValTypeRefNull(r.target) as ValType
+        case _: this.#valueType(parts[0])
+      }
+    } else {
+      new ValTypeI32() as ValType
+    };
+    let arr = this.wasm.getArray(elemVt, true);
+    let arrValue = this.b.emit(IrOp.array_new_fixed,
+        new ValTypeRef(arr) as ValType,
+        this.b.pushArgList(parts), this.b.addRef(new IrRefType(arr)));
+    if (!isValSubtype(this.#valueType(arrValue), fsig.params[0])) {
+      this.#bail('fromParts operand type');
+    }
+    let args = new Array<i32>();
+    args.push(arrValue);
+    let call = this.b.callFunc(
+        this.b.addRef(new IrRefFunc(fromParts)), args, fsig.returns[0]);
+    return this.#reassertNonNull(call, this.#exprValType(tpl as Expression));
+  }
+
+  /**
+   * A template interpolation as a String value: primitives convert
+   * through the zena:string-convert helpers; String values pass
+   * through; anything else bails.
+   */
+  #templateOperandString(expr: Expression): i32 {
+    let value = this.#lowerExpression(expr);
+    let tOpt = this.#substitutedNodeType(expr);
+    if (tOpt == null) {
+      this.#bail('untyped template operand');
+    }
+    let bt = baseType(tOpt as Type);
+    let helperName = match (bt) {
+      case I32Type: 'i32ToString'
+      case U32Type: 'u32ToString'
+      case I64Type: 'i64ToString'
+      case U64Type: 'u64ToString'
+      case F32Type: 'f32ToString'
+      case F64Type: 'f64ToString'
+      case BooleanType: 'boolToString'
+      case _: ''
+    };
+    if (helperName == '') {
+      if (bt is ClassType && (bt as ClassType).name == 'String') {
+        return value;
+      }
+      this.#bail('template operand type');
+    }
+    let helperOpt = this.wasm.getStdlibFunc('zena:string-convert', helperName);
+    if (helperOpt == null) {
+      this.#bail('template helper missing');
+    }
+    let helper = helperOpt as WasmFunction;
+    let sig = helper.signature;
+    if (sig.params.length != 1 || sig.returns.length != 1) {
+      this.#bail('template helper shape');
+    }
+    if (!isValSubtype(this.#valueType(value), sig.params[0])) {
+      this.#failConformance(value, sig.params[0], 'template operand type');
+    }
+    return this.b.callFunc(
+        this.b.addRef(new IrRefFunc(helper)), this.#oneArg(value), sig.returns[0]);
   }
 
   /**
