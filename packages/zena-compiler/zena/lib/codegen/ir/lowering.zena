@@ -4296,7 +4296,7 @@ final class FunctionLowerer {
       this.#bail('optional member write');
     }
     if (this.func.model.isStaticAccess(member)) {
-      this.#bail('static member write');
+      return this.#lowerStaticMemberWrite(assign, member);
     }
     let receiver = this.#lowerExpression(member.object);
     let receiverCt = this.#receiverClass(receiver, member);
@@ -4604,8 +4604,128 @@ final class FunctionLowerer {
           it, 'get#' + propName, member.object, null);
       return this.#reassertNonNull(result, this.#exprValType(member));
     }
+    if (objectType != null && this.func.model.isStaticAccess(member)) {
+      let selfR = this.#resolveSelfType(objectType as Type);
+      if (selfR is ClassType) {
+        return this.#lowerStaticMemberRead(
+            member, eraseTypeParameters(selfR) as ClassType);
+      }
+    }
     let receiver = this.#lowerExpression(member.object);
     return this.#lowerMemberReadOn(member, receiver);
+  }
+
+
+  /**
+   * Static member writes: the field's module global, with compound
+   * assignments reading the same global first. Static setters bail.
+   */
+  #lowerStaticMemberWrite(assign: AssignmentExpression,
+      member: MemberExpression): i32 {
+    let objectType = this.#substitutedNodeType(member.object);
+    if (objectType == null) {
+      this.#bail('untyped static receiver');
+    }
+    let selfR = this.#resolveSelfType(objectType as Type);
+    if (!(selfR is ClassType)) {
+      this.#bail('static receiver kind');
+    }
+    let ct = eraseTypeParameters(selfR) as ClassType;
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    let gOpt = this.#staticFieldGlobal(ct, propName);
+    if (gOpt == null) {
+      this.#bail('static member not found');
+    }
+    let g = gOpt as WasmGlobal;
+    var value = -1;
+    if (assign.operator == null) {
+      value = this.#lowerExpressionCtx(assign.value, g.type);
+    } else {
+      let current = this.b.emit(IrOp.global_get, g.type, -1,
+          this.b.addRef(new IrRefGlobal(g)));
+      let rhs = this.#lowerExpression(assign.value);
+      let vt = this.#valueType(current);
+      if (!valTypeEquals(vt, this.#valueType(rhs))) {
+        this.#bail('mixed compound assignment types');
+      }
+      let unsigned = this.#isUnsignedNode(member as Expression) ||
+          this.#isUnsignedNode(assign.value);
+      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
+      value = this.b.binary(op, vt, current, rhs);
+    }
+    if (!isValSubtype(this.#valueType(value), g.type)) {
+      this.#failConformance(value, g.type, 'global write type');
+    }
+    this.b.emitVoid(IrOp.global_set, value,
+        this.b.addRef(new IrRefGlobal(g)));
+    return value;
+  }
+
+  /**
+   * Static member reads: a static getter registered in the class
+   * hierarchy wins; otherwise the field's module global (named
+   * '<ClassName>_<prop>'), cast to the member's checked type when the
+   * global's declared type is wider — streaming's shape.
+   */
+  #lowerStaticMemberRead(member: MemberExpression, ct: ClassType): i32 {
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    var getterOpt: WasmFunction | null = null;
+    var currClass: ClassType | null = ct;
+    while (currClass != null && getterOpt == null) {
+      let key = getClassMethodKey(
+          getClassKey(currClass as ClassType), 'get#' + propName);
+      if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+        if (f.isStatic) {
+          getterOpt = f;
+        }
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (getterOpt != null) {
+      let getter = getterOpt as WasmFunction;
+      let sig = getter.signature;
+      if (sig.params.length != 0 || sig.returns.length != 1) {
+        this.#bail('static getter shape');
+      }
+      let call = this.b.callFunc(this.b.addRef(new IrRefFunc(getter)),
+          this.#noArgs(), sig.returns[0]);
+      return this.#reassertNonNull(call, this.#exprValType(member));
+    }
+    let gOpt = this.#staticFieldGlobal(ct, propName);
+    if (gOpt == null) {
+      this.#bail('static member not found');
+    }
+    let g = gOpt as WasmGlobal;
+    let raw = this.b.emit(IrOp.global_get, g.type, -1,
+        this.b.addRef(new IrRefGlobal(g)));
+    let want = this.#exprValType(member);
+    if (valTypeEquals(g.type, want)) {
+      return raw;
+    }
+    if (isRefValType(want) && isRefValType(g.type)) {
+      if (isValSubtype(g.type, want)) {
+        return this.#reassertNonNull(raw, want);
+      }
+      return this.b.emit(IrOp.ref_cast, want, raw, this.b.internType(want));
+    }
+    return this.#bailValue('static member type');
+  }
+
+  /** The module global backing a static field, walking the supers. */
+  #staticFieldGlobal(ct: ClassType, propName: String): WasmGlobal | null {
+    var currClass: ClassType | null = ct;
+    while (currClass != null) {
+      let wanted = (currClass as ClassType).name + '_' + propName;
+      for (let g in this.wasm.globals) {
+        if (g.name == wanted) {
+          return g;
+        }
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    return null;
   }
 
   /**
