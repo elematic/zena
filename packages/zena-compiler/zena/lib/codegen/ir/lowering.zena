@@ -44,7 +44,7 @@ import {
   RecordPattern, BindingProperty
 } from '../../ast.zena';
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType } from '../../types.zena';
-import { InterfaceAdaptation } from '../../semantic-model.zena';
+import { InterfaceAdaptation, RecordAdaptation, FunctionAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
@@ -53,7 +53,7 @@ import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo } from '../wasm-module.zena';
-import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
+import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey, getSpecializedFunctionKey, getSpecializedName } from '../codegen-utils.zena';
@@ -135,6 +135,74 @@ let lowerImportWrapper = (func: WasmFunction): IrBody => {
   } else if (!isValSubtype(b.body.resultType(raw) as ValType, wantVt)) {
     result = b.emit(IrOp.ref_cast, wantVt, result, b.internType(wantVt));
   }
+  b.ret(result);
+  return b.finish();
+};
+
+/**
+ * A function-adaptation wrapper's body: its context (param 0) is the
+ * WHOLE source closure pair. Unpack it, forward the source arity's
+ * worth of parameters (casting where the target declared a wider
+ * type), and call_ref through the source pair's func field —
+ * streaming's generateFunctionAdaptationBody.
+ */
+let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let actualFt = func.functionAdaptationSource as FunctionType;
+  let actualStruct = func.functionAdaptationResolvedSourceStruct ??
+      getClosureStruct(wasm, actualFt);
+  var actualSig: WasmSignature | null = null;
+  match (actualStruct.fields[0].type) {
+    case ValTypeRef as r: {
+      if (r.target is WasmSignature) {
+        actualSig = r.target as WasmSignature;
+      }
+    }
+    case _: {}
+  }
+  if (actualSig == null) {
+    throw new ZirUnsupported('adaptation source shape');
+  }
+  let srcSig = actualSig as WasmSignature;
+  let b = new IrBuilder();
+  let entry = b.newBlock();
+  let params = new Array<i32>();
+  for (let vt in func.signature.params) {
+    params.push(b.blockParam(entry, vt));
+  }
+  b.switchTo(entry);
+  let pairVt = new ValTypeRef(actualStruct) as ValType;
+  let pair = b.emit(IrOp.ref_cast, pairVt, params[0], b.internType(pairVt));
+  let ctxVal = b.emit(IrOp.struct_get, actualStruct.fields[1].type, pair,
+      b.addRef(new IrRefField(actualStruct, 'ctx')));
+  let args = new Array<i32>();
+  args.push(ctxVal);
+  // The wrapper's own params cover the target arity; the source
+  // consumes a prefix of them.
+  if (srcSig.params.length > func.signature.params.length) {
+    throw new ZirUnsupported('adaptation arity shape');
+  }
+  for (var i = 1; i < srcSig.params.length; i += 1) {
+    var v = params[i];
+    let want = srcSig.params[i];
+    if (!isValSubtype(b.body.resultType(v) as ValType, want)) {
+      if (!(want is ValTypeRef || want is ValTypeRefNull)) {
+        throw new ZirUnsupported('adaptation param shape');
+      }
+      v = b.emit(IrOp.ref_cast, want, v, b.internType(want));
+    }
+    args.push(v);
+  }
+  let funcVal = b.emit(IrOp.struct_get, actualStruct.fields[0].type, pair,
+      b.addRef(new IrRefField(actualStruct, 'func')));
+  if (srcSig.returns.length == 0) {
+    b.callRef(funcVal, args, null);
+    b.retVoid();
+    return b.finish();
+  }
+  if (srcSig.returns.length != 1 || func.signature.returns.length != 1) {
+    throw new ZirUnsupported('adaptation result shape');
+  }
+  let result = b.callRef(funcVal, args, srcSig.returns[0]);
   b.ret(result);
   return b.finish();
 };
@@ -499,6 +567,9 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     }
     if (func.isClosureWrapper) {
       return synthesizeClosureWrapper(func);
+    }
+    if (func.isFunctionAdaptation) {
+      return lowerFunctionAdaptation(wasm, func);
     }
     if (func.name != null && (func.name as String) == '__start') {
       let lowerer = new FunctionLowerer(wasm, func);
@@ -2897,12 +2968,95 @@ final class FunctionLowerer {
    * loudly, since silently skipping a required repack would miscompile.
    */
   #applyAdaptations(expr: Expression, value: i32): i32 {
-    if (this.func.model.getRecordAdaptation(expr) != null) {
-      this.#bail('record adaptation');
+    var v = value;
+    let raOpt = this.func.model.getRecordAdaptation(expr);
+    if (raOpt != null) {
+      v = this.#applyRecordAdaptation(raOpt as RecordAdaptation, v);
     }
-    if (this.func.model.getFunctionAdaptation(expr) != null) {
-      this.#bail('function adaptation');
+    v = this.#applyInterfaceAdaptation(expr, v);
+    let faOpt = this.func.model.getFunctionAdaptation(expr);
+    if (faOpt != null) {
+      v = this.#applyFunctionAdaptation(
+          expr, faOpt as FunctionAdaptation, v);
     }
+    return v;
+  }
+
+  /**
+   * Record repack: the value is a record fat pointer; the adapted view
+   * keeps the same instance and swaps in the vtable whose getters
+   * were generated for the target shape (registered during discovery
+   * — a missing registration bails).
+   */
+  #applyRecordAdaptation(ra: RecordAdaptation, value: i32): i32 {
+    if (value < 0 || this.b.body.typeId[value] < 0) {
+      this.#bail('record adaptation without value');
+    }
+    let inFields = new Array<WasmField>();
+    for (let pair in ra.source.properties) {
+      inFields.push(new WasmField(pair.key,
+          typeToValType(this.wasm, pair.value), false));
+    }
+    let inInfo = this.wasm.getRecordDispatch(this.func.model, inFields);
+    let outFields = new Array<WasmField>();
+    for (let pair in ra.target.properties) {
+      outFields.push(new WasmField(pair.key,
+          typeToValType(this.wasm, pair.value), false));
+    }
+    let outInfo = this.wasm.getAdaptedRecordDispatch(
+        this.func.model, inFields, outFields);
+    if (outInfo.vtableGlobal.index < 0) {
+      this.#bail('record adaptation vtable unregistered');
+    }
+    let inVt = new ValTypeRef(inInfo.fatPtrType) as ValType;
+    var src = value;
+    if (!isValSubtype(this.#valueType(src), inVt)) {
+      src = this.b.emit(IrOp.ref_cast, inVt, src, this.b.internType(inVt));
+    }
+    let inst = this.b.emit(IrOp.iface_instance,
+        inInfo.fatPtrType.fields[0].type, src, -1);
+    return this.b.emit(IrOp.iface_pack,
+        new ValTypeRef(outInfo.fatPtrType) as ValType, inst,
+        this.b.addRef(new IrRefGlobal(outInfo.vtableGlobal)));
+  }
+
+  /**
+   * Function repack: the wrapper registered for this site (during
+   * discovery) forwards the target arity to the source closure; the
+   * adapted value is a target-shaped pair whose context is the WHOLE
+   * source pair.
+   */
+  #applyFunctionAdaptation(expr: Expression, fa: FunctionAdaptation,
+      value: i32): i32 {
+    if (value < 0 || this.b.body.typeId[value] < 0) {
+      this.#bail('function adaptation without value');
+    }
+    let wOpt = if (let (true, w) = this.wasm.functionAdaptationWrappers.get(expr)) w else null;
+    if (wOpt == null) {
+      this.#bail('function adaptation wrapper unregistered');
+    }
+    let wrapper = wOpt as WasmFunction;
+    let actualStruct = wrapper.functionAdaptationResolvedSourceStruct ??
+        getClosureStruct(this.wasm, fa.source);
+    let expectedStruct = wrapper.functionAdaptationResolvedTargetStruct ??
+        getClosureStruct(this.wasm, fa.target);
+    let actualVt = new ValTypeRef(actualStruct) as ValType;
+    var pair = value;
+    if (!isValSubtype(this.#valueType(pair), actualVt)) {
+      pair = this.b.emit(IrOp.ref_cast, actualVt, pair,
+          this.b.internType(actualVt));
+    }
+    let funcVal = this.b.emit(IrOp.ref_func,
+        expectedStruct.fields[0].type, -1,
+        this.b.addRef(new IrRefFunc(wrapper)));
+    let pairArgs = this.#twoValues(funcVal, pair);
+    return this.b.emit(IrOp.struct_new,
+        new ValTypeRef(expectedStruct) as ValType,
+        this.b.pushArgList(pairArgs),
+        this.b.addRef(new IrRefType(expectedStruct)));
+  }
+
+  #applyInterfaceAdaptation(expr: Expression, value: i32): i32 {
     let iaOpt = this.func.model.getInterfaceAdaptation(expr);
     if (iaOpt == null) {
       return value;
@@ -3372,8 +3526,19 @@ final class FunctionLowerer {
     }
     // Reference identity: === / !== between eq-typed references.
     if (bin.operator == "===" || bin.operator == "!==") {
-      let left = this.#lowerExpression(bin.left);
-      let right = this.#lowerExpression(bin.right);
+      var left = this.#lowerExpression(bin.left);
+      var right = this.#lowerExpression(bin.right);
+      // Record identity is the INSTANCE's, not the fat pointer's: an
+      // adapted view is the same record (streaming unwraps both sides
+      // the same way).
+      let lb = this.#substitutedBaseType(bin.left);
+      if (lb != null && lb is RecordType) {
+        left = this.#recordInstanceOf(lb as RecordType, left);
+      }
+      let rb = this.#substitutedBaseType(bin.right);
+      if (rb != null && rb is RecordType) {
+        right = this.#recordInstanceOf(rb as RecordType, right);
+      }
       let lt = this.#valueType(left);
       let rt = this.#valueType(right);
       if (!isRefValType(lt) || !isRefValType(rt)) {
@@ -3488,6 +3653,23 @@ final class FunctionLowerer {
    * compares at its width; anything else -> false. Operands coerce
    * anyref -> eqref first, since ref.eq requires eqref.
    */
+  /** A record value as its eq-typed instance (fat-ptr field 0). */
+  #recordInstanceOf(rt: RecordType, value: i32): i32 {
+    let dispatch = this.#recordDispatchOf(rt);
+    let fatVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
+    var v = value;
+    if (!isValSubtype(this.#valueType(v), fatVt)) {
+      v = this.b.emit(IrOp.ref_cast, fatVt, v, this.b.internType(fatVt));
+    }
+    let inst = this.b.emit(IrOp.iface_instance,
+        dispatch.fatPtrType.fields[0].type, v, -1);
+    let eqVt = new ValTypeEqRef() as ValType;
+    if (this.#valueType(inst) is ValTypeAnyRef) {
+      return this.b.emit(IrOp.ref_cast, eqVt, inst, this.b.internType(eqVt));
+    }
+    return inst;
+  }
+
   #lowerErasedEq(leftIn: i32, rightIn: i32): i32 {
     let i32vt = new ValTypeI32() as ValType;
     let eqVt = new ValTypeEqRef() as ValType;
@@ -8309,7 +8491,7 @@ final class FunctionLowerer {
       }
       let vt = contextVt as ValType;
       let nullable = vt is ValTypeRefNull || vt is ValTypeAnyRef ||
-          vt is ValTypeEqRef;
+          vt is ValTypeEqRef || vt is ValTypeStructRef;
       if (!nullable) {
         this.#bail('null into non-nullable context');
       }
