@@ -1404,9 +1404,21 @@ export function generateLocalVariableDeclaration(
 
     if (actualType.length > 0) {
       // Try to find a member type that requires adaptation
+      const initKind = decl.init.inferredType?.kind;
       for (const member of unionType.types) {
         const memberWasmType = mapCheckerTypeToWasmType(ctx, member);
-        if (isAdaptable(ctx, actualType, memberWasmType)) {
+        // A class value assigned into a nullable interface member (or a
+        // record into a nullable record member) needs its fat-pointer
+        // pack exactly like the non-union declaration would emit — the
+        // union changes nothing but nullability.
+        const memberNeedsFatAdapt =
+          (member.kind === TypeKind.Interface &&
+            initKind === TypeKind.Class) ||
+          (member.kind === TypeKind.Record && initKind === TypeKind.Record);
+        if (
+          memberNeedsFatAdapt ||
+          isAdaptable(ctx, actualType, memberWasmType)
+        ) {
           generateAdaptedArgument(ctx, decl.init, memberWasmType, body);
           adapted = true;
           exprType = memberWasmType;

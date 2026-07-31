@@ -2,7 +2,7 @@ import { Node, UnaryExpression, BinaryExpression, Expression, NullLiteral } from
 import { console } from 'zena:console';
 import { Type, F64Type, F32Type, I32Type, U32Type, I64Type, U64Type, RecordType, ClassType, ArrayType,
   isFloatType, baseType, typeToString,
-  InterfaceType, TypeParameterType, ThisType, AnyRefType, EqRefType, FunctionType, TupleType, NullType,
+  InterfaceType, TypeParameterType, ThisType, AnyRefType, EqRefType, FunctionType, TupleType, NullType, UnionType,
   isRefType, isNumericType, isBooleanLike, BooleanType, instantiateClassType
 } from '../../types.zena';
 import { FunctionContext } from '../function-context.zena';
@@ -94,6 +94,77 @@ export let generateUnaryExpression = (ctx: FunctionContext, un: UnaryExpression,
   }
 };
  
+/**
+ * Fat-pointer operands of identity compares unwrap to their instance
+ * (field 0): fat pointers are an implementation detail with no
+ * identity of their own. Handles direct interface/record types and
+ * single-member nullable unions of them — a nullable operand unwraps
+ * behind a null guard so null stays null. Expects the value on the
+ * stack; returns false (stack untouched) when the type is not a
+ * fat-pointer shape.
+ */
+let emitFatPointerInstance = (ctx: FunctionContext, base: Type): boolean => {
+  var inner = base;
+  var nullable = false;
+  if (base is UnionType) {
+    let ut = base as UnionType;
+    var nonNull: Type | null = null;
+    var nonNullCount = 0;
+    var nullCount = 0;
+    for (let m in ut.types) {
+      if (m is NullType) {
+        nullCount += 1;
+      } else {
+        nonNull = m;
+        nonNullCount += 1;
+      }
+    }
+    if (nonNullCount != 1 || nullCount == 0) {
+      return false;
+    }
+    inner = unwrapAliases(nonNull as Type);
+    nullable = true;
+  }
+  var fatOpt: WasmStruct | null = null;
+  if (inner is RecordType) {
+    let rt = inner as RecordType;
+    let fields = new Array<WasmField>();
+    for (let pair in rt.properties) {
+      fields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
+    }
+    fatOpt = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, fields).fatPtrType;
+  } else if (inner is InterfaceType) {
+    let iKey = getInterfaceKey(inner as InterfaceType);
+    if (ctx.wasm.interfaceStructs.has(iKey)) {
+      fatOpt = ctx.wasm.interfaceStructs[iKey];
+    }
+  }
+  if (fatOpt == null) {
+    return false;
+  }
+  let fat = fatOpt as WasmStruct;
+  if (nullable) {
+    let guard = ctx.allocLocal(new ValTypeRefNull(fat));
+    ctx.emitter.emitRefCastNull(fat.index);
+    ctx.emitter.emitLocalTee(guard);
+    ctx.emitter.emitRefIsNull();
+    ctx.emitter.emitIf(new ValTypeEqRef());
+    ctx.enterBlockStructure();
+    ctx.emitter.emitRefNull(-19); // null stays null (eqref)
+    ctx.emitter.emitElse();
+    ctx.emitter.emitLocalGet(guard);
+    ctx.emitter.emitStructGet(fat.index, 0);
+    ctx.emitter.emitRefCastEqNull();
+    ctx.exitBlockStructure();
+    ctx.emitter.emitEnd();
+  } else {
+    ctx.emitter.emitRefCast(fat.index);
+    ctx.emitter.emitStructGet(fat.index, 0);
+    ctx.emitter.emitRefCastEqNull();
+  }
+  return true;
+};
+
 export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpression, genExpr: (e: Expression, discardValue: boolean) => void): void => {
   if (bin.operator == "??") {
     let model = ctx.wasmFunction.model;
@@ -560,26 +631,9 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
   // Fallback for non-numeric (references, records, etc.)
   // Evaluate left operand
   genExpr(bin.left, false);
-  if (leftBase is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-    let leftRT = leftBase as RecordType;
-    let leftFields = new Array<WasmField>();
-    for (let pair in leftRT.properties) {
-      leftFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
-    }
-    let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, leftFields);
-    ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
-    ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
-    ctx.emitter.emitRefCastEqNull();
-  } else if (leftBase is InterfaceType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-    // Interface fat pointers repack at every adaptation site; identity
-    // belongs to the instance (field 0), like records above.
-    let iKey = getInterfaceKey(leftBase as InterfaceType);
-    if (ctx.wasm.interfaceStructs.has(iKey)) {
-      let fatPtr = ctx.wasm.interfaceStructs[iKey];
-      ctx.emitter.emitRefCast(fatPtr.index);
-      ctx.emitter.emitStructGet(fatPtr.index, 0);
-      ctx.emitter.emitRefCastEqNull();
-    }
+  if ((bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=") &&
+      emitFatPointerInstance(ctx, leftBase)) {
+    // Unwrapped to the instance: fat pointers carry no identity.
   } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
     let leftWasmType = typeToValType(ctx.wasm, leftType);
     if (leftWasmType is ValTypeAnyRef) {
@@ -589,24 +643,9 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
 
   // Evaluate right operand
   genExpr(bin.right, false);
-  if (rightBase is RecordType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-    let rightRT = rightBase as RecordType;
-    let rightFields = new Array<WasmField>();
-    for (let pair in rightRT.properties) {
-      rightFields.push(new WasmField(pair.key, typeToValType(ctx.wasm, pair.value), false));
-    }
-    let dispatchInfo = ctx.wasm.getRecordDispatch(ctx.wasmFunction.model, rightFields);
-    ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
-    ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
-    ctx.emitter.emitRefCastEqNull();
-  } else if (rightBase is InterfaceType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
-    let iKey = getInterfaceKey(rightBase as InterfaceType);
-    if (ctx.wasm.interfaceStructs.has(iKey)) {
-      let fatPtr = ctx.wasm.interfaceStructs[iKey];
-      ctx.emitter.emitRefCast(fatPtr.index);
-      ctx.emitter.emitStructGet(fatPtr.index, 0);
-      ctx.emitter.emitRefCastEqNull();
-    }
+  if ((bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=") &&
+      emitFatPointerInstance(ctx, rightBase)) {
+    // Unwrapped to the instance: fat pointers carry no identity.
   } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
     let rightWasmType = typeToValType(ctx.wasm, rightType);
     if (rightWasmType is ValTypeAnyRef) {

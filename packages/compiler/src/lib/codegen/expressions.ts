@@ -6585,60 +6585,94 @@ function generateBinaryExpression(
 
   if (isRefType(leftType) && isRefType(rightType)) {
     // Unwrap interface and record fat pointers before reference comparison.
-    // Fat pointers are (instance, vtable) structs — comparing them directly
-    // with ref_eq would fail when the same object is boxed with different
-    // vtables (e.g., upcasted to different interfaces, or adapted records).
-    // Extract field 0 (the instance) so ref_eq compares the underlying objects.
-    const leftIsInterface = expr.left.inferredType?.kind === TypeKind.Interface;
-    const rightIsInterface =
-      expr.right.inferredType?.kind === TypeKind.Interface;
-    const leftIsRecord = expr.left.inferredType?.kind === TypeKind.Record;
-    const rightIsRecord = expr.right.inferredType?.kind === TypeKind.Record;
-
-    if (leftIsInterface || rightIsInterface || leftIsRecord || rightIsRecord) {
-      let leftStructIndex = -1;
-      if (leftIsInterface) {
-        leftStructIndex =
-          ctx.getInterfaceInfo(expr.left.inferredType as InterfaceType)
-            ?.structTypeIndex ?? -1;
-      } else if (leftIsRecord) {
-        leftStructIndex = ensureRecordDispatchType(
-          ctx,
-          expr.left.inferredType as import('../types.js').RecordType,
-        ).fatPtrTypeIndex;
+    // Fat pointers are (instance, vtable) structs — an implementation
+    // detail with no identity of their own. Comparing them directly with
+    // ref_eq would fail when the same object is boxed with different
+    // vtables (upcasted to different interfaces, adapted records, or the
+    // same interface packed at two separate sites). Extract field 0 (the
+    // instance) so ref_eq compares the underlying objects. A nullable
+    // operand (`Shape | null`) unwraps behind a null guard: null stays
+    // null and compares like any null reference.
+    const classifyFatPointer = (
+      t: import('../types.js').Type | undefined,
+    ): {structIndex: number; nullable: boolean} | null => {
+      if (!t) return null;
+      let inner = t;
+      let nullable = false;
+      if (t.kind === TypeKind.Union) {
+        const members = (t as UnionType).types;
+        const nonNull = members.filter((m) => m.kind !== TypeKind.Null);
+        if (nonNull.length !== 1 || nonNull.length === members.length) {
+          return null;
+        }
+        inner = nonNull[0];
+        nullable = true;
       }
-
-      let rightStructIndex = -1;
-      if (rightIsInterface) {
-        rightStructIndex =
-          ctx.getInterfaceInfo(expr.right.inferredType as InterfaceType)
-            ?.structTypeIndex ?? -1;
-      } else if (rightIsRecord) {
-        rightStructIndex = ensureRecordDispatchType(
-          ctx,
-          expr.right.inferredType as import('../types.js').RecordType,
-        ).fatPtrTypeIndex;
+      if (inner.kind === TypeKind.Interface) {
+        const idx =
+          ctx.getInterfaceInfo(inner as InterfaceType)?.structTypeIndex ?? -1;
+        return idx === -1 ? null : {structIndex: idx, nullable};
       }
+      if (inner.kind === TypeKind.Record) {
+        return {
+          structIndex: ensureRecordDispatchType(
+            ctx,
+            inner as import('../types.js').RecordType,
+          ).fatPtrTypeIndex,
+          nullable,
+        };
+      }
+      return null;
+    };
 
-      // Stack: [left, right]. Save right to temp, unwrap left, reload & unwrap right.
-      const tempRight = ctx.declareLocal('$$eq_fatptr_right', rightType);
+    const leftFat = classifyFatPointer(expr.left.inferredType);
+    const rightFat = classifyFatPointer(expr.right.inferredType);
+
+    if (leftFat || rightFat) {
+      // Scratch locals are eqref-typed so one local serves every compare
+      // in the function: a name-keyed local reused at a different
+      // concrete type is invalid wasm.
+      const eqRefNull = [ValType.ref_null, 0x6d];
+      const unwrapTop = (fat: {structIndex: number; nullable: boolean}) => {
+        // Stack: [value]. Yields the instance as nullable eqref.
+        if (fat.nullable) {
+          const guard = ctx.declareLocal('$$eq_fatptr_guard', eqRefNull);
+          body.push(
+            Opcode.local_tee,
+            ...WasmModule.encodeSignedLEB128(guard),
+          );
+          body.push(Opcode.ref_is_null);
+          body.push(Opcode.if, ValType.ref_null, 0x6d); // if (result eqref)
+          body.push(Opcode.ref_null, 0x6d); // null stays null
+          body.push(Opcode.else);
+          body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(guard));
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(...WasmModule.encodeSignedLEB128(fat.structIndex));
+          body.push(0xfb, GcOpcode.struct_get);
+          body.push(...WasmModule.encodeSignedLEB128(fat.structIndex));
+          body.push(...WasmModule.encodeSignedLEB128(0));
+          body.push(0xfb, GcOpcode.ref_cast_null, 0x6d);
+          body.push(Opcode.end);
+        } else {
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(...WasmModule.encodeSignedLEB128(fat.structIndex));
+          body.push(0xfb, GcOpcode.struct_get);
+          body.push(...WasmModule.encodeSignedLEB128(fat.structIndex));
+          body.push(...WasmModule.encodeSignedLEB128(0));
+          body.push(0xfb, GcOpcode.ref_cast_null, 0x6d);
+        }
+      };
+
+      // Stack: [left, right]. Save right to temp, unwrap left, reload &
+      // unwrap right.
+      const tempRight = ctx.declareLocal('$$eq_fatptr_right', eqRefNull);
       body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempRight));
-
-      if (leftStructIndex !== -1) {
-        // Extract instance (field 0) from fat pointer and cast anyref -> eqref
-        body.push(0xfb, GcOpcode.struct_get);
-        body.push(...WasmModule.encodeSignedLEB128(leftStructIndex));
-        body.push(...WasmModule.encodeSignedLEB128(0));
-        body.push(0xfb, GcOpcode.ref_cast_null, 0x6d); // ref.cast null eq
+      if (leftFat) {
+        unwrapTop(leftFat);
       }
-
       body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempRight));
-      if (rightStructIndex !== -1) {
-        // Extract instance (field 0) from fat pointer and cast anyref -> eqref
-        body.push(0xfb, GcOpcode.struct_get);
-        body.push(...WasmModule.encodeSignedLEB128(rightStructIndex));
-        body.push(...WasmModule.encodeSignedLEB128(0));
-        body.push(0xfb, GcOpcode.ref_cast_null, 0x6d); // ref.cast null eq
+      if (rightFat) {
+        unwrapTop(rightFat);
       }
     }
 

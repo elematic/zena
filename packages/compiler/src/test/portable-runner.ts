@@ -8,6 +8,7 @@ import {
   existsSync,
 } from 'node:fs';
 import {join, resolve, dirname, relative, basename} from 'node:path';
+import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {suite, test} from 'node:test';
 
@@ -634,8 +635,13 @@ async function runExecutionTest(
       },
     });
   } catch (e) {
-    writeFileSync('/Users/justin/Projects/Zena/zena/temp_error.wasm', bytes);
-    console.error('WASM INSTANTIATION FAILED, WRITING TO temp_error.wasm:', e);
+    const errPath = join(tmpdir(), 'zena_temp_error.wasm');
+    try {
+      writeFileSync(errPath, bytes);
+      console.error(`WASM INSTANTIATION FAILED, WRITING TO ${errPath}:`, e);
+    } catch {
+      console.error('WASM INSTANTIATION FAILED:', e);
+    }
     throw e;
   }
   instanceExports = (result as any).instance.exports;

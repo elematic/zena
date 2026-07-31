@@ -3676,6 +3676,51 @@ final class FunctionLowerer {
       }
       return this.#fatPointerInstance(fatOpt as WasmStruct, value);
     }
+    if (base is UnionType) {
+      // A nullable fat pointer (`Shape | null`) unwraps behind a null
+      // guard: null stays null and compares like any null reference.
+      let ut = base as UnionType;
+      var nonNull: Type | null = null;
+      var nonNullCount = 0;
+      var nullCount = 0;
+      for (let m in ut.types) {
+        if (m is NullType) {
+          nullCount += 1;
+        } else {
+          nonNull = m;
+          nonNullCount += 1;
+        }
+      }
+      if (nonNullCount != 1 || nullCount == 0) {
+        return value;
+      }
+      let inner = baseType(nonNull as Type);
+      var fatOpt: WasmStruct | null = null;
+      if (inner is RecordType) {
+        fatOpt = this.#recordDispatchOf(inner as RecordType).fatPtrType;
+      } else if (inner is InterfaceType) {
+        let iName = getInterfaceKey(inner as InterfaceType);
+        if (let (true, st) = this.wasm.interfaceStructs.get(iName)) {
+          fatOpt = st;
+        }
+      }
+      if (fatOpt == null) {
+        return value;
+      }
+      let eqVt = new ValTypeEqRef() as ValType;
+      let isNull = this.b.emit(IrOp.ref_is_null, new ValTypeI32(), value, -1);
+      let extractB = this.b.newBlock();
+      let merge = this.b.newBlock();
+      let result = this.b.blockParam(merge, eqVt);
+      let nullEq = this.b.emit(IrOp.ref_null, eqVt, -1, -1);
+      this.b.brIf(isNull, merge, this.#oneArg(nullEq),
+          extractB, this.#noArgs());
+      this.b.switchTo(extractB);
+      let inst = this.#fatPointerInstance(fatOpt as WasmStruct, value);
+      this.b.br(merge, this.#oneArg(inst));
+      this.b.switchTo(merge);
+      return result;
+    }
     return value;
   }
 

@@ -1,0 +1,39 @@
+// @mode: run
+// @result: 127
+
+interface Shape {
+  area(): i32;
+}
+
+class Circle implements Shape {
+  area(): i32 {
+    return 3;
+  }
+}
+
+export let main = (): i32 => {
+  let c = new Circle();
+  var sNull: Shape | null = null;
+  var sNull2: Shape | null = null;
+  var sSome: Shape | null = c;
+  var sSome2: Shape | null = c;
+  let sPlain: Shape = c;
+  var got = 0;
+
+  // null vs null
+  if (sNull === sNull2) { got += 1; }
+  // null vs non-null fat pointer
+  if (sNull !== sSome) { got += 2; }
+  // nullable fat ptr vs nullable fat ptr, same instance
+  if (sSome === sSome2) { got += 4; }
+  // nullable fat ptr vs non-null fat ptr, same instance
+  if (sSome === sPlain) { got += 8; }
+  // fat ptr vs plain class instance ref, same object
+  if (sPlain === c) { got += 16; }
+  // nullable fat ptr vs plain class instance ref, same object
+  if (sSome === c) { got += 32; }
+  // plain ASSIGNMENT (not initializer) into the nullable slot
+  sNull = c;
+  if (sNull === c) { got += 64; }
+  return got;
+};
