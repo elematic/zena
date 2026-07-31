@@ -7,6 +7,31 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ```
+### Method/field same-name semantics are unsettled
+- **Found**: 2026-07-31 (review discussion on #87's field-closure calls)
+- **Severity**: medium (silent acceptance with resolution divergence)
+- **Workaround**: none needed yet; ZIR refuses the ambiguous case.
+- **Details**: Members share one string-keyed namespace, but the
+  interactions between function-typed FIELDS and METHODS are only
+  half-settled:
+  - A field of function type does NOT satisfy an interface method —
+    both checkers reject ("incorrectly implements"). Pinned by
+    tests/language/semantics/interfaces/
+    field-does-not-implement-method.zena.
+  - A field whose name shadows an inherited METHOD is accepted
+    silently, and resolution diverged by backend: streaming resolves
+    d.f() to the BASE METHOD (even through a Derived-typed receiver);
+    the checker's member map for Derived says the FIELD. ZIR now
+    bails loudly ('field shadows inherited method') rather than pick
+    a side, so both backends agree (streaming's method-wins result)
+    while the construct stays compilable.
+  - Needs a language ruling: reject the shadowing declaration
+    outright (probably right — one namespace should mean one owner
+    per name in a hierarchy), or define override semantics for
+    fields implementing/overriding methods. Then execution tests for
+    whichever ruling lands, and the ZIR bail becomes either a checker
+    diagnostic or a real lowering.
+
 ### [Short description]
 - **Found**: [Date]
 - **Severity**: [low/medium/high/blocking]

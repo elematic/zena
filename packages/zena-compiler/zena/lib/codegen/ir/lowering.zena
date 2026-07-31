@@ -43,7 +43,7 @@ import {
   LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant,
   RecordPattern, BindingProperty
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -5947,6 +5947,35 @@ final class FunctionLowerer {
     }
     let classInfo = infoOpt as ClassCodegenInfo;
     let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+    // One namespace, one lookup: the checker's member info names the
+    // KIND. A field holding a function value is a member read plus a
+    // closure call — decided here, before method resolution, never as
+    // a fallback to a failed method lookup.
+    if (let (true, kindInfo) = ct.members.get(propName)) {
+      if (kindInfo is FieldInfo) {
+        if (!(kindInfo.type is FunctionType)) {
+          this.#bail('call of non-function field');
+        }
+        // A field whose name shadows an inherited METHOD has no
+        // settled semantics (streaming resolves the call to the base
+        // method; the checker accepts the declaration silently — see
+        // BUGS.md). Refuse to pick a side.
+        var superWalk: ClassType | null = ct.superType;
+        while (superWalk != null) {
+          if (let (true, superInfo) = (superWalk as ClassType).members.get(propName)) {
+            if (superInfo is MethodInfo) {
+              this.#bail('field shadows inherited method');
+            }
+          }
+          superWalk = (superWalk as ClassType).superType;
+        }
+        if (multiOut != null) {
+          this.#bail('closure call in multi-value position');
+        }
+        let calleeValue = this.#lowerMemberReadOn(member, receiver);
+        return this.#lowerClosureCallOn(call, calleeValue);
+      }
+    }
     // Overloaded methods register under per-signature slot names; the
     // checker records its (static, subtype-sensitive) selection per
     // call node, and we reproduce the exact slot name from it. When a
