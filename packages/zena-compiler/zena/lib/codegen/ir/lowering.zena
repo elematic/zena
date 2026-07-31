@@ -39,7 +39,7 @@ import {
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
   IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression,
-  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, CatchClause,
+  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, CatchClause, TaggedTemplateExpression,
   LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant,
   RecordPattern, BindingProperty
 } from '../../ast.zena';
@@ -3159,6 +3159,7 @@ final class FunctionLowerer {
       case MapLiteral as mapLit: this.#lowerMapLiteral(mapLit)
       case PipelineExpression as pipe: this.#lowerPipeline(pipe)
       case PipePlaceholder: this.#lowerPipePlaceholder()
+      case TaggedTemplateExpression as tagged: this.#lowerTaggedTemplate(tagged)
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
   }
@@ -7931,6 +7932,226 @@ final class FunctionLowerer {
    * __concatN for 2..5 parts, else array.new_fixed + String.fromParts
    * (streaming's shape exactly).
    */
+  /**
+   * Tagged templates: the TemplateStringsArray is built once and
+   * cached in the expression's pre-registered global (discovery
+   * created it); the interpolated values become a FixedArray typed by
+   * the tag's second parameter; then the tag is called — directly for
+   * top-level functions, through the closure pair for local values.
+   * Streaming's shape throughout, including the lazy-init null check.
+   */
+  #lowerTaggedTemplate(expr: TaggedTemplateExpression): i32 {
+    let tsaClassOpt = this.wasm.templateStringsArrayClass;
+    if (tsaClassOpt == null) {
+      this.#bail('template strings array class missing');
+    }
+    let tsaKey = getClassKey(tsaClassOpt as ClassType);
+    let tsaInfoOpt = if (let (true, info) = this.wasm.classInfos.get(tsaKey)) info else null;
+    if (tsaInfoOpt == null) {
+      this.#bail('template strings array struct missing');
+    }
+    let tsaInfo = tsaInfoOpt as ClassCodegenInfo;
+    let tsaStruct = tsaInfo.structType;
+    let stringClassOpt = this.wasm.stringClass;
+    if (stringClassOpt == null) {
+      this.#bail('string class missing');
+    }
+    let stringKey = getClassKey(stringClassOpt as ClassType);
+    let strInfoOpt = if (let (true, info) = this.wasm.classInfos.get(stringKey)) info else null;
+    if (strInfoOpt == null) {
+      this.#bail('string struct missing');
+    }
+    let stringStruct = (strInfoOpt as ClassCodegenInfo).structType;
+    let stringsArr = this.wasm.getArray(
+        new ValTypeRefNull(stringStruct) as ValType, true);
+    let gOpt = if (this.wasm.templateLiteralGlobals.has(expr)) {
+      this.wasm.templateLiteralGlobals[expr]
+    } else {
+      null
+    };
+    if (gOpt == null) {
+      this.#bail('tagged template global missing');
+    }
+    let g = gOpt as WasmGlobal;
+
+    // Lazy init: build the TSA on first evaluation, cache it.
+    let cached = this.b.emit(IrOp.global_get, g.type, -1,
+        this.b.addRef(new IrRefGlobal(g)));
+    let isNull = this.b.emit(IrOp.ref_is_null, new ValTypeI32(), cached, -1);
+    let initB = this.b.newBlock();
+    let doneB = this.b.newBlock();
+    this.b.brIf(isNull, initB, this.#noArgs(), doneB, this.#noArgs());
+
+    this.b.switchTo(initB);
+    let cookedParts = new Array<i32>();
+    for (let quasi in expr.quasi.quasis) {
+      cookedParts.push(this.#lowerStringLiteral(
+          new StringLiteral(quasi.cooked, quasi.loc)));
+    }
+    let cooked = this.b.emit(IrOp.array_new_fixed,
+        new ValTypeRef(stringsArr) as ValType,
+        this.b.pushArgList(cookedParts),
+        this.b.addRef(new IrRefType(stringsArr)));
+    let rawParts = new Array<i32>();
+    for (let quasi in expr.quasi.quasis) {
+      rawParts.push(this.#lowerStringLiteral(
+          new StringLiteral(quasi.raw, quasi.loc)));
+    }
+    let raw = this.b.emit(IrOp.array_new_fixed,
+        new ValTypeRef(stringsArr) as ValType,
+        this.b.pushArgList(rawParts),
+        this.b.addRef(new IrRefType(stringsArr)));
+    let tsaArgs = new Array<i32>();
+    if (tsaInfo.vtableGlobal != null) {
+      let vtG = tsaInfo.vtableGlobal as WasmGlobal;
+      tsaArgs.push(this.b.emit(IrOp.global_get, vtG.type, -1,
+          this.b.addRef(new IrRefGlobal(vtG))));
+    } else {
+      tsaArgs.push(this.b.emit(IrOp.ref_null,
+          tsaStruct.fields[0].type, -1, -1));
+    }
+    for (var f = 1; f < tsaStruct.fields.length; f += 1) {
+      let fieldName = if (tsaStruct.fields[f].name != null) {
+        tsaStruct.fields[f].name as String
+      } else {
+        ''
+      };
+      if (fieldName.endsWith('::#strings')) {
+        tsaArgs.push(cooked);
+      } else if (fieldName.endsWith('::#raw')) {
+        tsaArgs.push(raw);
+      } else {
+        let ft = tsaStruct.fields[f].type;
+        tsaArgs.push(match (ft) {
+          case ValTypeI32: this.b.constI32(0, new ValTypeI32())
+          case _: this.b.emit(IrOp.ref_null, ft, -1, -1)
+        });
+      }
+    }
+    let tsaNew = this.b.emit(IrOp.struct_new,
+        new ValTypeRef(tsaStruct) as ValType,
+        this.b.pushArgList(tsaArgs),
+        this.b.addRef(new IrRefType(tsaStruct)));
+    this.b.emitVoid(IrOp.global_set, tsaNew,
+        this.b.addRef(new IrRefGlobal(g)));
+    this.b.br(doneB, this.#noArgs());
+
+    this.b.switchTo(doneB);
+    let tsaLoaded = this.b.emit(IrOp.global_get, g.type, -1,
+        this.b.addRef(new IrRefGlobal(g)));
+    let tsa = this.b.emit(IrOp.ref_as_non_null,
+        new ValTypeRef(tsaStruct) as ValType, tsaLoaded, -1);
+
+    // Interpolated values, typed by the tag's second parameter.
+    let calleeType = this.func.model.getNodeType(expr.tag);
+    var valueType: Type = new AnyRefType();
+    if (calleeType != null && calleeType is FunctionType) {
+      let ft = calleeType as FunctionType;
+      if (ft.parameters.length >= 2) {
+        let vp = baseType(ft.parameters[1]);
+        if (vp is ClassType && (vp as ClassType).typeArguments != null &&
+            ((vp as ClassType).typeArguments as Array<Type>).length > 0) {
+          valueType = ((vp as ClassType).typeArguments as Array<Type>)[0];
+        } else if (vp is ArrayType) {
+          valueType = (vp as ArrayType).elementType;
+        }
+      }
+    }
+    let valVt = typeToValTypeWithSub(this.wasm, valueType, this.func);
+    this.#requireSupported(valVt, 'tagged template value type');
+    let valuesArr = this.wasm.getArray(valVt, true);
+    let valueParts = new Array<i32>();
+    for (let sub in expr.quasi.expressions) {
+      let v = this.#lowerExpressionCtx(sub, valVt);
+      if (!isValSubtype(this.#valueType(v), valVt)) {
+        this.#failConformance(v, valVt, 'tagged template value type');
+      }
+      valueParts.push(v);
+    }
+    let values = this.b.emit(IrOp.array_new_fixed,
+        new ValTypeRef(valuesArr) as ValType,
+        this.b.pushArgList(valueParts),
+        this.b.addRef(new IrRefType(valuesArr)));
+
+    // Call the tag.
+    if (!(expr.tag is Identifier)) {
+      this.#bail('tagged template tag kind');
+    }
+    let symOpt = this.func.model.resolve(expr.tag);
+    if (symOpt == null) {
+      this.#bail('tagged template tag unresolved');
+    }
+    let resolved = (symOpt as Symbol).resolveTarget();
+    let callArgs = this.#twoValues(tsa, values);
+    if (let (true, target) = this.wasm.functionMap.get(resolved.id)) {
+      let sig = target.signature;
+      if (sig.params.length != 2 || sig.returns.length > 1) {
+        this.#bail('tagged template tag shape');
+      }
+      let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
+      return this.b.callFunc(
+          this.b.addRef(new IrRefFunc(target)), callArgs, resultType);
+    }
+    // A local value: call through its closure pair.
+    if (!this.env.has(resolved.id)) {
+      this.#bail('tagged template tag target');
+    }
+    let callee = this.env[resolved.id];
+    var structOpt: WasmStruct | null = null;
+    match (this.#valueType(callee)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) {
+          structOpt = r.target as WasmStruct;
+        }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) {
+          structOpt = rn.target as WasmStruct;
+        }
+      }
+      case _: {}
+    }
+    if (structOpt == null) {
+      this.#bail('tagged template tag kind');
+    }
+    let closureStruct = structOpt as WasmStruct;
+    if (closureStruct.fields.length != 2) {
+      this.#bail('tagged template tag kind');
+    }
+    var sigOpt: WasmSignature | null = null;
+    match (closureStruct.fields[0].type) {
+      case ValTypeRef as r: {
+        if (r.target is WasmSignature) {
+          sigOpt = r.target as WasmSignature;
+        }
+      }
+      case _: {}
+    }
+    if (sigOpt == null) {
+      this.#bail('tagged template tag kind');
+    }
+    let csig = sigOpt as WasmSignature;
+    if (csig.params.length != 3 || csig.returns.length > 1) {
+      this.#bail('tagged template tag shape');
+    }
+    let ctxVal = this.b.emit(IrOp.struct_get, closureStruct.fields[1].type,
+        callee, this.b.addRef(new IrRefField(closureStruct, 'ctx')));
+    let funcVal = this.b.emit(IrOp.struct_get, closureStruct.fields[0].type,
+        callee, this.b.addRef(new IrRefField(closureStruct, 'func')));
+    let clArgs = new Array<i32>();
+    clArgs.push(ctxVal);
+    clArgs.push(tsa);
+    clArgs.push(values);
+    for (var i = 1; i < csig.params.length; i += 1) {
+      if (!isValSubtype(this.#valueType(clArgs[i]), csig.params[i])) {
+        this.#failConformance(clArgs[i], csig.params[i],
+            'tagged template argument type');
+      }
+    }
+    let resultType = if (csig.returns.length == 1) csig.returns[0] else null;
+    return this.b.callRef(funcVal, clArgs, resultType);
+  }
+
   #lowerTemplateLiteral(tpl: TemplateLiteral): i32 {
     if (tpl.quasis.length + tpl.expressions.length == 0) {
       return this.#lowerStringLiteral(new StringLiteral('', tpl.loc));
