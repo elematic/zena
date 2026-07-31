@@ -40,7 +40,8 @@ import {
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
   IsExpression, RangeExpression, PipelineExpression, SuperExpression,
   ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression,
-  LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant
+  LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant,
+  RecordPattern, BindingProperty
 } from '../../ast.zena';
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType } from '../../types.zena';
 import { InterfaceAdaptation } from '../../semantic-model.zena';
@@ -1658,6 +1659,10 @@ final class FunctionLowerer {
       this.#lowerTupleDeclaration(vd, pat as TuplePattern);
       return;
     }
+    if (pat is RecordPattern) {
+      this.#lowerObjectPatternDeclaration(vd, (pat as RecordPattern).properties);
+      return;
+    }
     if (!(pat is IdentifierPattern)) {
       this.#bail('destructuring declaration');
     }
@@ -1817,7 +1822,15 @@ final class FunctionLowerer {
    * downcast when the source slot is erased/nullable.
    */
   #lowerTupleDeclaration(vd: VariableDeclaration, tp: TuplePattern): void {
-    let values = this.#lowerMultiSource(vd.init);
+    var values = this.#lowerMultiSource(vd.init);
+    if (values.length == 1 && tp.elements.length != 1) {
+      // A single value can still be a BOXED tuple (fields "0"..):
+      // non-inline tuple returns arrive as one struct reference.
+      let unboxed = this.#unboxTupleValue(values[0], tp.elements.length);
+      if (unboxed != null) {
+        values = unboxed as Array<i32>;
+      }
+    }
     if (values.length != tp.elements.length) {
       this.#bail('destructuring arity');
     }
@@ -1855,6 +1868,186 @@ final class FunctionLowerer {
       }
       this.symbols[sym.id] = sym;
     }
+  }
+
+
+  /**
+   * Splits a boxed-tuple struct value (fields "0".."n-1") into its
+   * element values, or null when the value is not that shape.
+   */
+  #unboxTupleValue(value: i32, n: i32): Array<i32> | null {
+    var stOpt: WasmStruct | null = null;
+    match (this.#valueType(value)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) { stOpt = r.target as WasmStruct; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) { stOpt = rn.target as WasmStruct; }
+      }
+      case _: {}
+    }
+    if (stOpt == null) {
+      return null;
+    }
+    let st = stOpt as WasmStruct;
+    let out = new Array<i32>();
+    for (var i = 0; i < n; i += 1) {
+      let fieldName = i32ToString(i);
+      if (st.fieldIndexByName(fieldName) < 0) {
+        return null;
+      }
+      let fieldRef = this.b.addRef(new IrRefField(st, fieldName));
+      out.push(this.b.emit(IrOp.struct_get,
+          this.#fieldValType(st, fieldName), value, fieldRef));
+    }
+    return out;
+  }
+
+
+  /**
+   * `let { x, y } = value`: the source evaluates once; each property
+   * binds via an ordinary member read on it (class fields/getters or
+   * record dispatch), with the binding's own checked type.
+   */
+  #lowerObjectPatternDeclaration(vd: VariableDeclaration,
+      properties: Array<BindingProperty>): void {
+    if (vd.init == null) {
+      this.#bail('destructuring without initializer');
+    }
+    let source = this.#lowerExpression(vd.init);
+    let initTypeOpt = this.#substitutedNodeType(vd.init);
+    if (initTypeOpt == null) {
+      this.#bail('untyped destructuring source');
+    }
+    let initBase = baseType(getNonNullableType(initTypeOpt as Type));
+    for (let prop in properties) {
+      if (!(prop.value is IdentifierPattern)) {
+        this.#bail('nested destructuring pattern');
+      }
+      let symOpt = this.func.model.resolveDeclaration(prop.value);
+      if (symOpt == null) {
+        this.#bail('unresolved declaration');
+      }
+      let sym = symOpt as Symbol;
+      let bindingType = this.func.model.getBindingType(sym);
+      if (bindingType == null) {
+        this.#bail('untyped binding');
+      }
+      let bindVt = typeToValTypeWithSub(
+          this.wasm, bindingType as Type, this.func);
+      this.#requireSupported(bindVt, 'binding type');
+      var bound = -1;
+      if (initBase is RecordType) {
+        bound = this.#lowerRecordPropertyRead(
+            initBase as RecordType, prop.name.name, source, bindVt);
+      } else {
+        bound = this.#lowerObjectPropertyRead(prop.name.name, source, bindVt);
+      }
+      if (!isValSubtype(this.#valueType(bound), bindVt)) {
+        if (!isRefValType(bindVt)) {
+          this.#bail('destructured element type');
+        }
+        bound = this.b.emit(IrOp.ref_cast, bindVt, bound,
+            this.b.internType(bindVt));
+      }
+      if (this.#isCelled(sym.id)) {
+        this.env[sym.id] = this.#cellAlloc(bindVt, bound);
+      } else {
+        this.env[sym.id] = bound;
+      }
+      this.symbols[sym.id] = sym;
+    }
+  }
+
+  /** A record property read on an already-lowered receiver value. */
+  #lowerRecordPropertyRead(rt: RecordType, propName: String,
+      receiver: i32, want: ValType): i32 {
+    let dispatch = this.#recordDispatchOf(rt);
+    var fieldIdx = -1;
+    for (var i = 0; i < dispatch.fields.length; i += 1) {
+      let f = dispatch.fields[i];
+      if (f.name != null && (f.name as String) == propName) {
+        fieldIdx = i;
+      }
+    }
+    if (fieldIdx < 0) {
+      this.#bail('record member not found');
+    }
+    var recv = receiver;
+    let fatVt = new ValTypeRefNull(dispatch.fatPtrType) as ValType;
+    if (!isValSubtype(this.#valueType(recv), fatVt)) {
+      let castVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
+      recv = this.b.emit(IrOp.ref_cast, castVt, recv,
+          this.b.internType(castVt));
+    }
+    let instance = this.b.emit(IrOp.iface_instance,
+        new ValTypeStructRef() as ValType, recv, -1);
+    let vtable = this.b.emit(IrOp.iface_vtable,
+        new ValTypeRef(dispatch.vtableType) as ValType, recv, -1);
+    let getterSig = dispatch.getterTypes[fieldIdx];
+    if (getterSig.returns.length != 1) {
+      this.#bail('record getter shape');
+    }
+    let getter = this.b.emit(IrOp.struct_get,
+        new ValTypeRef(getterSig) as ValType, vtable,
+        this.b.addRef(new IrRefField(dispatch.vtableType, propName)));
+    let result = this.b.callRef(getter,
+        this.#oneArg(instance), getterSig.returns[0]);
+    return this.#reassertNonNull(result, want);
+  }
+
+  /**
+   * A class field/getter read by name on an already-lowered receiver
+   * value: physical field first, else a registered non-static getter
+   * up the super chain. Override safety mirrors the member-read path.
+   */
+  #lowerObjectPropertyRead(propName: String, receiver: i32,
+      want: ValType): i32 {
+    var stOpt: WasmStruct | null = null;
+    match (this.#valueType(receiver)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) { stOpt = r.target as WasmStruct; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) { stOpt = rn.target as WasmStruct; }
+      }
+      case _: {}
+    }
+    if (stOpt == null) {
+      this.#bail('destructuring source kind');
+    }
+    let st = stOpt as WasmStruct;
+    if (st.fieldIndexByName(propName) >= 0) {
+      let fieldRef = this.b.addRef(new IrRefField(st, propName));
+      let read = this.b.emit(IrOp.struct_get,
+          this.#fieldValType(st, propName), receiver, fieldRef);
+      return this.#reassertNonNull(read, want);
+    }
+    let ctOpt = this.#classTypeOfValue(receiver);
+    if (ctOpt == null) {
+      this.#bail('destructuring source kind');
+    }
+    var getterOpt: WasmFunction | null = null;
+    var currClass: ClassType | null = ctOpt as ClassType;
+    while (currClass != null && getterOpt == null) {
+      let key = getClassMethodKey(
+          getClassKey(currClass as ClassType), 'get#' + propName);
+      if (let (true, g) = this.wasm.classMethodMap.get(key)) {
+        getterOpt = g;
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (getterOpt == null || (getterOpt as WasmFunction).isStatic) {
+      this.#bail('member not found');
+    }
+    let getter = getterOpt as WasmFunction;
+    let sig = getter.signature;
+    if (sig.returns.length != 1) {
+      this.#bail('getter shape');
+    }
+    let call = this.b.callFunc(this.b.addRef(new IrRefFunc(getter)),
+        this.#oneArg(receiver), sig.returns[0]);
+    return this.#reassertNonNull(call, want);
   }
 
   #lowerIf(stmt: IfStatement): void {
@@ -2687,8 +2880,49 @@ final class FunctionLowerer {
       case IsExpression as isExpr: this.#lowerIs(isExpr)
       case ArrayLiteral as arrLit: this.#lowerArrayLiteral(arrLit)
       case RecordLiteral as recLit: this.#lowerRecordLiteral(recLit)
+      case TupleLiteral as tupLit: this.#lowerTupleLiteralExpr(tupLit)
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
+  }
+
+
+  /**
+   * A tuple literal in value position: the boxed form only — one
+   * struct with fields "0".."n-1" (the same shape-deduped struct the
+   * return-type mapping uses). Inline tuples never appear in value
+   * position; their construction lives in the multi-value paths.
+   */
+  #lowerTupleLiteralExpr(tl: TupleLiteral): i32 {
+    let tOpt = this.#substitutedNodeType(tl);
+    if (tOpt == null) {
+      this.#bail('untyped tuple literal');
+    }
+    let bt = baseType(tOpt as Type);
+    if (!(bt is TupleType)) {
+      this.#bail('inline tuple in value position');
+    }
+    let tt = bt as TupleType;
+    let fields = new Array<WasmField>();
+    for (var i = 0; i < tt.elementTypes.length; i += 1) {
+      fields.push(new WasmField(i32ToString(i),
+          typeToValTypeWithSub(this.wasm, tt.elementTypes[i], this.func),
+          false));
+    }
+    let st = this.wasm.getStruct(null, fields);
+    if (tl.elements.length != fields.length) {
+      this.#bail('tuple literal arity');
+    }
+    let args = new Array<i32>();
+    for (var i = 0; i < tl.elements.length; i += 1) {
+      let fieldVt = fields[i].type;
+      let v = this.#lowerExpressionCtx(tl.elements[i], fieldVt);
+      if (!isValSubtype(this.#valueType(v), fieldVt)) {
+        this.#failConformance(v, fieldVt, 'tuple literal element type');
+      }
+      args.push(v);
+    }
+    return this.b.emit(IrOp.struct_new, new ValTypeRef(st) as ValType,
+        this.b.pushArgList(args), this.b.addRef(new IrRefType(st)));
   }
 
   /**
