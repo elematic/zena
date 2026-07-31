@@ -9,7 +9,7 @@ import { FunctionContext } from '../function-context.zena';
 import { Error } from 'zena:error';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeRef, ValTypeRefNull, ValTypeVoid, ValTypeEqRef, ValTypeStructRef, ValTypeFuncRef, ValTypeExternRef, ValTypeOptRef } from '../wasm.zena';
 import { WasmField, WasmFunction, WasmModule, WasmStruct, WasmGlobal } from '../wasm-module.zena';
-import { getClassKey, getSignatureKey, unwrapAliases, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getSignatureKey, unwrapAliases, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getClassMemberSignature, getNodeType } from '../type-mapping.zena';
 import { Array } from 'zena:array';
 
@@ -570,6 +570,16 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
     ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
     ctx.emitter.emitRefCastEqNull();
+  } else if (leftBase is InterfaceType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+    // Interface fat pointers repack at every adaptation site; identity
+    // belongs to the instance (field 0), like records above.
+    let iKey = getInterfaceKey(leftBase as InterfaceType);
+    if (ctx.wasm.interfaceStructs.has(iKey)) {
+      let fatPtr = ctx.wasm.interfaceStructs[iKey];
+      ctx.emitter.emitRefCast(fatPtr.index);
+      ctx.emitter.emitStructGet(fatPtr.index, 0);
+      ctx.emitter.emitRefCastEqNull();
+    }
   } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
     let leftWasmType = typeToValType(ctx.wasm, leftType);
     if (leftWasmType is ValTypeAnyRef) {
@@ -589,6 +599,14 @@ export let generateBinaryExpression = (ctx: FunctionContext, bin: BinaryExpressi
     ctx.emitter.emitRefCast(dispatchInfo.fatPtrType.index);
     ctx.emitter.emitStructGet(dispatchInfo.fatPtrType.index, 0); // Get Instance AnyRef
     ctx.emitter.emitRefCastEqNull();
+  } else if (rightBase is InterfaceType && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
+    let iKey = getInterfaceKey(rightBase as InterfaceType);
+    if (ctx.wasm.interfaceStructs.has(iKey)) {
+      let fatPtr = ctx.wasm.interfaceStructs[iKey];
+      ctx.emitter.emitRefCast(fatPtr.index);
+      ctx.emitter.emitStructGet(fatPtr.index, 0);
+      ctx.emitter.emitRefCastEqNull();
+    }
   } else if (isRefContext && (bin.operator == "===" || bin.operator == "!==" || bin.operator == "==" || bin.operator == "!=")) {
     let rightWasmType = typeToValType(ctx.wasm, rightType);
     if (rightWasmType is ValTypeAnyRef) {

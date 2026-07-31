@@ -3528,16 +3528,16 @@ final class FunctionLowerer {
     if (bin.operator == "===" || bin.operator == "!==") {
       var left = this.#lowerExpression(bin.left);
       var right = this.#lowerExpression(bin.right);
-      // Record identity is the INSTANCE's, not the fat pointer's: an
-      // adapted view is the same record (streaming unwraps both sides
-      // the same way).
+      // Fat-pointer identity is the INSTANCE's, not the pointer's: an
+      // adapted record view or a re-packed interface value IS the same
+      // object (the bootstrap compiler unwraps both the same way).
       let lb = this.#substitutedBaseType(bin.left);
-      if (lb != null && lb is RecordType) {
-        left = this.#recordInstanceOf(lb as RecordType, left);
+      if (lb != null) {
+        left = this.#unwrapFatPointer(lb as Type, left);
       }
       let rb = this.#substitutedBaseType(bin.right);
-      if (rb != null && rb is RecordType) {
-        right = this.#recordInstanceOf(rb as RecordType, right);
+      if (rb != null) {
+        right = this.#unwrapFatPointer(rb as Type, right);
       }
       let lt = this.#valueType(left);
       let rt = this.#valueType(right);
@@ -3614,11 +3614,16 @@ final class FunctionLowerer {
     if ((bin.operator == "==" || bin.operator == "!=") &&
         leftBaseOpt != null &&
         this.#refIdentityEqType(leftBaseOpt as Type)) {
-      let left = this.#lowerExpression(bin.left);
-      let right = this.#lowerExpression(bin.right);
+      var left = this.#lowerExpression(bin.left);
+      var right = this.#lowerExpression(bin.right);
       if (!isRefValType(this.#valueType(left)) ||
           !isRefValType(this.#valueType(right))) {
         this.#bail('identity compare on non-refs');
+      }
+      left = this.#unwrapFatPointer(leftBaseOpt as Type, left);
+      let rBase = this.#substitutedBaseType(bin.right);
+      if (rBase != null) {
+        right = this.#unwrapFatPointer(rBase as Type, right);
       }
       let same = this.b.binary(IrOp.ref_eq, new ValTypeI32(), left, right);
       if (bin.operator == "!=") {
@@ -3653,16 +3658,35 @@ final class FunctionLowerer {
    * compares at its width; anything else -> false. Operands coerce
    * anyref -> eqref first, since ref.eq requires eqref.
    */
-  /** A record value as its eq-typed instance (fat-ptr field 0). */
-  #recordInstanceOf(rt: RecordType, value: i32): i32 {
-    let dispatch = this.#recordDispatchOf(rt);
-    let fatVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
+  /**
+   * Identity compares see through fat pointers: a record or interface
+   * value becomes its eq-typed instance (field 0); everything else
+   * passes through unchanged.
+   */
+  #unwrapFatPointer(base: Type, value: i32): i32 {
+    if (base is RecordType) {
+      let dispatch = this.#recordDispatchOf(base as RecordType);
+      return this.#fatPointerInstance(dispatch.fatPtrType, value);
+    }
+    if (base is InterfaceType) {
+      let iName = getInterfaceKey(base as InterfaceType);
+      let fatOpt = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
+      if (fatOpt == null) {
+        this.#bail('interface struct not found');
+      }
+      return this.#fatPointerInstance(fatOpt as WasmStruct, value);
+    }
+    return value;
+  }
+
+  #fatPointerInstance(fatPtr: WasmStruct, value: i32): i32 {
+    let fatVt = new ValTypeRef(fatPtr) as ValType;
     var v = value;
     if (!isValSubtype(this.#valueType(v), fatVt)) {
       v = this.b.emit(IrOp.ref_cast, fatVt, v, this.b.internType(fatVt));
     }
     let inst = this.b.emit(IrOp.iface_instance,
-        dispatch.fatPtrType.fields[0].type, v, -1);
+        fatPtr.fields[0].type, v, -1);
     let eqVt = new ValTypeEqRef() as ValType;
     if (this.#valueType(inst) is ValTypeAnyRef) {
       return this.b.emit(IrOp.ref_cast, eqVt, inst, this.b.internType(eqVt));
