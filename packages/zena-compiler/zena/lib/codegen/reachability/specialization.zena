@@ -1472,8 +1472,22 @@ export final class Specializer implements SpecializerInterface {
     // Register it
     this.pass.wasm.specializedFunctions[specKey] = wasmFunc;
     this.pass.wasm.addFunction(wasmFunc);
+    // markFunctionReached queues a node referrer for the body with
+    // this specialization's type arguments; without these entries the
+    // referrer finds no node and the per-specialization traversal is
+    // silently skipped, so classes the body constructs never
+    // instantiate under the substituted type arguments.
+    this.pass.nodeIdToNode[(funcExpr as Node).id as i32] = funcExpr;
+    this.pass.nodeIdToModel[(funcExpr as Node).id as i32] = model;
     this.pass.markFunctionReached(wasmFunc);
-    
+    // A module-level function's checker-recorded dependencies live on
+    // its SYMBOL, which the node referrer above never consults. Without
+    // this substituted traversal, generic functions this body calls
+    // only specialize during emission, after type layout is frozen.
+    if (let (true, deps) = model.symbolDependencies.get(symId)) {
+      this.pass.traverseDependencies(deps, model, null, typeArgs, funcExpr);
+    }
+
     return wasmFunc;
   }
 

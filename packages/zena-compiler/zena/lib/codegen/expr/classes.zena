@@ -109,6 +109,13 @@ export let generateNewExpression = (
       ctx.emitter.emitCall(ctorFunc as WasmFunction);
       ctx.emitter.emitLocalGet(emptyLocal);
       ctx.emitter.emitRefAsNonNull();
+    } else if (expr.args.length > 0) {
+      // Compiler invariant, not a user error: the checker already
+      // proved this constructor call (a `new` with arguments on a
+      // class with no constructor is a checker diagnostic). Reaching
+      // this throw means codegen bookkeeping lost the registration —
+      // silently default-constructing here would drop the arguments.
+      throw new Error("internal: constructor not registered for " + (getClassKey(classType) as String));
     }
   } else {
     throw new Error("generateNewExpression: nodeType is not a ClassType");

@@ -51,7 +51,7 @@ import { walkEnter } from '../../visitor.zena';
 import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
-import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, valTypeEquals, isRefValType, WasmType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo } from '../wasm-module.zena';
 import { typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
@@ -88,6 +88,55 @@ let kindTagOf = (e: Expression): String => {
     case TryExpression: ' try'
     case _: ' other'
   };
+};
+
+
+/**
+ * A HOST-import wrapper's body. "Import" here is a wasm-level host
+ * import (a `declare` function provided by the embedder, like
+ * __captureStackTrace), not a module import — module imports resolve
+ * to their declarations and are plain calls. The host ABI cannot
+ * traffic in wasm-GC references, so the raw import returns externref;
+ * Zena-side callers hold the declared reference type. The wrapper is
+ * that ABI shim: forward the params, call the raw import, convert the
+ * externref result into the GC hierarchy (any.convert_extern), and
+ * cast to the declared type. It exists as a real function (not
+ * inlined at call sites) so the declared function keeps one uniform
+ * callable identity — vtable slots and function values reference it.
+ */
+let lowerImportWrapper = (func: WasmFunction): IrBody => {
+  let target = func.importWrapperTarget as WasmFunction;
+  let b = new IrBuilder();
+  let entry = b.newBlock();
+  let args = new Array<i32>();
+  for (let vt in func.signature.params) {
+    args.push(b.blockParam(entry, vt));
+  }
+  b.switchTo(entry);
+  if (func.signature.returns.length == 0) {
+    b.callFunc(b.addRef(new IrRefFunc(target)), args, null);
+    b.retVoid();
+    return b.finish();
+  }
+  if (func.signature.returns.length != 1 ||
+      target.signature.returns.length != 1) {
+    throw new ZirUnsupported('import wrapper shape');
+  }
+  let raw = b.callFunc(b.addRef(new IrRefFunc(target)), args,
+      target.signature.returns[0]);
+  let wantVt = func.signature.returns[0];
+  var result = raw;
+  if (target.signature.returns[0] is ValTypeExternRef) {
+    result = b.emit(IrOp.any_convert_extern,
+        new ValTypeAnyRef() as ValType, raw, -1);
+    if (!(wantVt is ValTypeAnyRef)) {
+      result = b.emit(IrOp.ref_cast, wantVt, result, b.internType(wantVt));
+    }
+  } else if (!isValSubtype(b.body.resultType(raw) as ValType, wantVt)) {
+    result = b.emit(IrOp.ref_cast, wantVt, result, b.internType(wantVt));
+  }
+  b.ret(result);
+  return b.finish();
 };
 
 /**
@@ -431,6 +480,13 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   // DECLARED accessors also carry getterStruct/setterStruct, but they
   // have real bodies (and often no physical field), so they take the
   // normal lowering path below.
+  // Host-import wrappers keep their declare node but never have a
+  // lowered body: the embedder-provided import trafficks in externref,
+  // and the wrapper is the ABI shim to the declared GC types —
+  // streaming's shape.
+  if (func.importWrapperTarget != null) {
+    return lowerImportWrapper(func);
+  }
   if (func.node == null) {
     if (func.interfaceTrampolineTarget != null) {
       return synthesizeInterfaceTrampoline(func);
