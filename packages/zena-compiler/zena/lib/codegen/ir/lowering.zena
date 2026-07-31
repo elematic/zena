@@ -3376,7 +3376,17 @@ final class FunctionLowerer {
       let lt = this.#valueType(left);
       let rt = this.#valueType(right);
       if (!isRefValType(lt) || !isRefValType(rt)) {
-        this.#bail('identity compare on non-refs');
+        // Scalar identity is plain numeric equality (streaming emits
+        // the same eq instruction for == and ===).
+        if (isRefValType(lt) || isRefValType(rt) || !valTypeEquals(lt, rt)) {
+          this.#bail('identity compare on non-refs');
+        }
+        let eqOp = this.#mapBinaryOp('==', lt, false);
+        let sameScalar = this.b.binary(eqOp, new ValTypeI32(), left, right);
+        if (bin.operator == "!==") {
+          return this.b.emit(IrOp.i32_eqz, new ValTypeI32(), sameScalar, -1);
+        }
+        return sameScalar;
       }
       let same = this.b.binary(IrOp.ref_eq, new ValTypeI32(), left, right);
       if (bin.operator == "!==") {
@@ -3400,26 +3410,7 @@ final class FunctionLowerer {
         if (leftCt.members.has(opMember)) {
           let left = this.#lowerExpression(bin.left);
           let right = this.#lowerExpression(bin.right);
-          // Resolve against the VALUE's class when known (mirrors
-          // method calls); the checked class is the fallback.
-          let fromValue = this.#classTypeOfValue(left);
-          let recvCt = if (fromValue != null) fromValue as ClassType else leftCt;
-          let methodOpt = this.#resolveDevirtualizedMethod(recvCt, opMember);
-          if (methodOpt == null) {
-            this.#bail('operator dispatch');
-          }
-          let method = methodOpt as WasmFunction;
-          let sig = method.signature;
-          if (sig.params.length != 2 || sig.returns.length != 1) {
-            this.#bail('operator method shape');
-          }
-          let recv = this.#coerceTo(left, sig.params[0]);
-          let arg = this.#coerceTo(right, sig.params[1]);
-          let funcRef = this.b.addRef(new IrRefFunc(method));
-          let args = new Array<i32>();
-          args.push(recv);
-          args.push(arg);
-          let raw = this.b.callFunc(funcRef, args, sig.returns[0]);
+          let raw = this.#lowerOperatorMemberOn(opMember, left, right, leftCt);
           if (bin.operator == "!=") {
             return this.b.emit(IrOp.i32_eqz, new ValTypeI32(), raw, -1);
           }
@@ -4959,15 +4950,7 @@ final class FunctionLowerer {
       let fieldRefRead = this.b.addRef(new IrRefField(target.owner, fieldName));
       let readVt = this.#exprValType(member);
       let current = this.b.emit(IrOp.struct_get, readVt, receiver, fieldRefRead);
-      let rhs = this.#lowerExpression(assign.value);
-      let vt = this.#valueType(current);
-      if (!valTypeEquals(vt, this.#valueType(rhs))) {
-        this.#bail('mixed member compound types');
-      }
-      let unsigned = this.#isUnsignedNode(member as Expression) ||
-          this.#isUnsignedNode(assign.value);
-      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
-      value = this.b.binary(op, vt, current, rhs);
+      value = this.#combineCompound(current, assign, member as Expression);
     }
     if (!isValSubtype(this.#valueType(value), fieldVt)) {
       this.#failConformance(value, fieldVt, 'member write type');
@@ -5070,15 +5053,7 @@ final class FunctionLowerer {
             this.#oneArg(receiver), gsig.returns[0])
       };
       current = this.#reassertNonNull(current, this.#exprValType(member));
-      let rhs = this.#lowerExpression(assign.value);
-      let vt = this.#valueType(current);
-      if (!valTypeEquals(vt, this.#valueType(rhs))) {
-        this.#bail('mixed member compound types');
-      }
-      let unsigned = this.#isUnsignedNode(member as Expression) ||
-          this.#isUnsignedNode(assign.value);
-      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
-      value = this.b.binary(op, vt, current, rhs);
+      value = this.#combineCompound(current, assign, member as Expression);
     }
     if (!isValSubtype(this.#valueType(value), valueVt)) {
       this.#failConformance(value, valueVt, 'setter value type');
@@ -5166,15 +5141,7 @@ final class FunctionLowerer {
       var current = this.#lowerVtableCall(receiver, info,
           'get#' + propName, gsig, this.#oneArg(receiver), gsig.returns[0]);
       current = this.#reassertNonNull(current, this.#exprValType(member));
-      let rhs = this.#lowerExpression(assign.value);
-      let vt = this.#valueType(current);
-      if (!valTypeEquals(vt, this.#valueType(rhs))) {
-        this.#bail('mixed member compound types');
-      }
-      let unsigned = this.#isUnsignedNode(member as Expression) ||
-          this.#isUnsignedNode(assign.value);
-      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
-      value = this.b.binary(op, vt, current, rhs);
+      value = this.#combineCompound(current, assign, member as Expression);
     }
     if (!isValSubtype(this.#valueType(value), valueVt)) {
       this.#failConformance(value, valueVt, 'setter value type');
@@ -5369,15 +5336,7 @@ final class FunctionLowerer {
       value = this.#lowerExpressionCtx(assign.value, targetVt);
     } else {
       let current = this.#lowerSuperRead(member);
-      let rhs = this.#lowerExpression(assign.value);
-      let vt = this.#valueType(current);
-      if (!valTypeEquals(vt, this.#valueType(rhs))) {
-        this.#bail('mixed compound assignment types');
-      }
-      let unsigned = this.#isUnsignedNode(member as Expression) ||
-          this.#isUnsignedNode(assign.value);
-      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
-      value = this.b.binary(op, vt, current, rhs);
+      value = this.#combineCompound(current, assign, member as Expression);
     }
     if (!isValSubtype(this.#valueType(value), targetVt)) {
       this.#failConformance(value, targetVt, 'super write type');
@@ -5513,15 +5472,7 @@ final class FunctionLowerer {
     } else {
       let current = this.b.emit(IrOp.global_get, g.type, -1,
           this.b.addRef(new IrRefGlobal(g)));
-      let rhs = this.#lowerExpression(assign.value);
-      let vt = this.#valueType(current);
-      if (!valTypeEquals(vt, this.#valueType(rhs))) {
-        this.#bail('mixed compound assignment types');
-      }
-      let unsigned = this.#isUnsignedNode(member as Expression) ||
-          this.#isUnsignedNode(assign.value);
-      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
-      value = this.b.binary(op, vt, current, rhs);
+      value = this.#combineCompound(current, assign, member as Expression);
     }
     if (!isValSubtype(this.#valueType(value), g.type)) {
       this.#failConformance(value, g.type, 'global write type');
@@ -6776,9 +6727,6 @@ final class FunctionLowerer {
     if (idx.optional) {
       this.#bail('optional index');
     }
-    if (assign.operator != null) {
-      this.#bail('compound index write');
-    }
     let objectType = this.#substitutedNodeType(idx.object);
     if (objectType == null) {
       this.#bail('untyped index receiver');
@@ -6802,7 +6750,19 @@ final class FunctionLowerer {
         this.#requireSupported(arr.elementType, 'array element type');
         elemCtx = arr.elementType;
       }
-      let value = this.#lowerExpressionCtx(assign.value, elemCtx);
+      var value = -1;
+      if (assign.operator == null) {
+        value = this.#lowerExpressionCtx(assign.value, elemCtx);
+      } else {
+        // Compound: SSA reuses the receiver and index values, so the
+        // element reads once and writes once.
+        let current = if (arr.elementType is ValTypeI8) {
+          this.b.emit(IrOp.array_get_u, new ValTypeI32(), receiver, index)
+        } else {
+          this.b.emit(IrOp.array_get, arr.elementType, receiver, index)
+        };
+        value = this.#combineCompound(current, assign, idx as Expression);
+      }
       if (!isValSubtype(this.#valueType(value), elemCtx)) {
         this.#failConformance(value, elemCtx, 'array write type');
       }
@@ -6825,6 +6785,9 @@ final class FunctionLowerer {
     };
     if (ct == null) {
       this.#bail('index receiver kind');
+    }
+    if (assign.operator != null) {
+      this.#bail('compound index write');
     }
     let chosenFt = this.func.model.getResolvedOverload(assign);
     let mangled = if (chosenFt != null) {
@@ -6875,19 +6838,9 @@ final class FunctionLowerer {
     if (assign.operator == null) {
       value = this.#lowerExpressionCtx(assign.value, g.type);
     } else {
-      this.#requireScalarNode(assign.left);
-      this.#requireScalarNode(assign.value);
       let readRef = this.b.addRef(new IrRefGlobal(g));
       let current = this.b.emit(IrOp.global_get, g.type, -1, readRef);
-      let rhs = this.#lowerExpression(assign.value);
-      let vt = this.#valueType(current);
-      if (!valTypeEquals(vt, this.#valueType(rhs))) {
-        this.#bail('mixed global compound types');
-      }
-      let unsigned = this.#isUnsignedNode(assign.left) ||
-          this.#isUnsignedNode(assign.value);
-      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
-      value = this.b.binary(op, vt, current, rhs);
+      value = this.#combineCompound(current, assign, assign.left);
     }
     if (!isValSubtype(this.#valueType(value), g.type)) {
       this.#failConformance(value, g.type, 'global write type');
@@ -7138,6 +7091,65 @@ final class FunctionLowerer {
   /** A value coerced to the target ValType, or a bail: identity when
    * already a subtype, ref.as_non_null for nullable-to-non-null of
    * the same target. */
+  /**
+   * Direct call to a class operator member: a (+) b as a.+(b).
+   * Resolves against the left VALUE's class when known (mirrors
+   * method calls); the given checked class is the fallback.
+   */
+  #lowerOperatorMemberOn(opMember: String, left: i32, right: i32,
+      leftCt: ClassType): i32 {
+    let fromValue = this.#classTypeOfValue(left);
+    let recvCt = if (fromValue != null) fromValue as ClassType else leftCt;
+    let methodOpt = this.#resolveDevirtualizedMethod(recvCt, opMember);
+    if (methodOpt == null) {
+      this.#bail('operator dispatch');
+    }
+    let method = methodOpt as WasmFunction;
+    let sig = method.signature;
+    if (sig.params.length != 2 || sig.returns.length != 1) {
+      this.#bail('operator method shape');
+    }
+    let recv = this.#coerceTo(left, sig.params[0]);
+    let arg = this.#coerceTo(right, sig.params[1]);
+    let funcRef = this.b.addRef(new IrRefFunc(method));
+    let args = new Array<i32>();
+    args.push(recv);
+    args.push(arg);
+    return this.b.callFunc(funcRef, args, sig.returns[0]);
+  }
+
+  /**
+   * The combining step of a compound assignment: current (op) rhs.
+   * Scalar operands map to the numeric operator (unsignedness read
+   * from the target and value expressions); reference operands
+   * resolve the operator member on the current value's class
+   * (String += is String.+), exactly like binary expressions.
+   */
+  #combineCompound(current: i32, assign: AssignmentExpression,
+      target: Expression): i32 {
+    let opName = assign.operator as String;
+    let rhs = this.#lowerExpression(assign.value);
+    let vt = this.#valueType(current);
+    if (isRefValType(vt)) {
+      let ctOpt = this.#classTypeOfValue(current);
+      if (ctOpt == null) {
+        this.#bail('compound operand kind');
+      }
+      let ct = ctOpt as ClassType;
+      if (!ct.members.has(opName)) {
+        this.#bail('compound operator member not found');
+      }
+      return this.#lowerOperatorMemberOn(opName, current, rhs, ct);
+    }
+    if (!valTypeEquals(vt, this.#valueType(rhs))) {
+      this.#bail('mixed compound assignment types');
+    }
+    let unsigned = this.#isUnsignedNode(target) ||
+        this.#isUnsignedNode(assign.value);
+    let op = this.#mapBinaryOp(opName, vt, unsigned);
+    return this.b.binary(op, vt, current, rhs);
+  }
+
   #coerceTo(value: i32, target: ValType): i32 {
     let vt = this.#valueType(value);
     if (isValSubtype(vt, target)) {
@@ -7899,18 +7911,9 @@ final class FunctionLowerer {
       value = this.#lowerExpressionCtx(assign.value, assignCtx);
     } else {
       // Compound assignment: current op= value.
-      this.#requireScalarNode(assign.left);
-      this.#requireScalarNode(assign.value);
       let current = if (celled) this.#cellRead(this.env[resolved.id])
           else this.env[resolved.id];
-      let rhs = this.#lowerExpression(assign.value);
-      let vt = this.#valueType(current);
-      if (!valTypeEquals(vt, this.#valueType(rhs))) {
-        this.#bail('mixed compound assignment types');
-      }
-      let unsigned = this.#isUnsignedNode(assign.left) || this.#isUnsignedNode(assign.value);
-      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
-      value = this.b.binary(op, vt, current, rhs);
+      value = this.#combineCompound(current, assign, assign.left);
     }
     if (celled) {
       // Mutation goes through the heap cell; the env binding (the cell
