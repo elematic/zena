@@ -49,6 +49,8 @@
  *   mv_get:      a = multi-result call value,  b = result index
  *   ret_multi:   a -> [argc, value*]
  *   throw:       a -> [argc, arg*],           b = ref (tag) or -1
+ *   try_br:      a = ref (exception tag),
+ *                b -> [bodyTarget, argc, arg*, catchTarget, argc, arg*]
  *   br:          a -> [target, argc, arg*]
  *   br_if:       a = condition,
  *                b -> [thenTarget, thenArgc, arg*, elseTarget, elseArgc, arg*]
@@ -255,6 +257,11 @@ export enum IrOp {
   br_table,
   br_on_cast,
   br_on_cast_fail,
+  /** Enters a protected region: control flows to the body successor;
+   * an exception thrown anywhere in the body's dynamic extent
+   * transfers to the catch successor (payload via the exception
+   * globals, streaming-compatible). */
+  try_br,
   ret,
   /** Multi-value return: all result values at once. */
   ret_multi,
@@ -566,7 +573,8 @@ export final class IrBody {
     // Branches: the operands are the branch arguments of every successor
     // edge (decoded via successors()), plus — for the conditional forms —
     // the condition/scrutinee/selector riding in slot a.
-    if (op == IrOp.br) {
+    if (op == IrOp.br || op == IrOp.try_br) {
+      // try_br's slot a is the exception-tag ref, not a value.
       this.#appendSuccessorArgs(inst, out);
       return;
     }
@@ -605,7 +613,7 @@ export final class IrBody {
       result.push(new IrSuccessor(this.extra[idx], idx + 2, argc));
       return result;
     }
-    if (op == IrOp.br_if) {
+    if (op == IrOp.br_if || op == IrOp.try_br) {
       var idx = this.b[inst];
       var i = 0;
       while (i < 2) {
@@ -826,6 +834,7 @@ let buildIrOpNames = (): Array<String> => {
   n[IrOp.br_table as i32] = 'br_table';
   n[IrOp.br_on_cast as i32] = 'br_on_cast';
   n[IrOp.br_on_cast_fail as i32] = 'br_on_cast_fail';
+  n[IrOp.try_br as i32] = 'try_br';
   n[IrOp.ret as i32] = 'ret';
   n[IrOp.ret_multi as i32] = 'ret.multi';
   n[IrOp.throw as i32] = 'throw';

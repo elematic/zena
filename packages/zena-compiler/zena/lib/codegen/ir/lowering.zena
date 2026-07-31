@@ -39,7 +39,7 @@ import {
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
   IsExpression, RangeExpression, PipelineExpression, SuperExpression,
-  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression,
+  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, CatchClause,
   LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant,
   RecordPattern, BindingProperty
 } from '../../ast.zena';
@@ -2980,6 +2980,7 @@ final class FunctionLowerer {
       case RecordLiteral as recLit: this.#lowerRecordLiteral(recLit)
       case TupleLiteral as tupLit: this.#lowerTupleLiteralExpr(tupLit)
       case RangeExpression as range: this.#lowerRangeExpr(range)
+      case TryExpression as tryExpr: this.#lowerTryExpression(tryExpr)
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
   }
@@ -3812,6 +3813,128 @@ final class FunctionLowerer {
   }
 
   /**
+   * try/catch, in value or statement position. The protector block
+   * ends with try_br: normal flow enters the body; an exception thrown
+   * anywhere in the body's dynamic extent lands at the catch block
+   * with the payload in the exception global (streaming-compatible).
+   * Both arms join like an if-expression. Finalizers bail. A body
+   * that assigns enclosing locals also bails: the catch edge carries
+   * the state at entry, so assignments made before the throw would
+   * not be visible in the handler — streaming's locals keep them
+   * visible, and the two backends must agree.
+   */
+  #lowerTryExpression(expr: TryExpression): i32 {
+    if (expr.finalizer != null) {
+      this.#bail('try finalizer');
+    }
+    if (expr.handler == null) {
+      this.#bail('try without handler');
+    }
+    if (this.wasm.exceptionTag == null || this.wasm.exceptionPayload == null) {
+      this.#bail('exception infra missing');
+    }
+    let bodyAssigned = this.#assignedEnvSyms(expr.body as Node);
+    if (bodyAssigned.length > 0) {
+      this.#bail('assignment to enclosing local in try body');
+    }
+    let nodeType = this.func.model.getNodeType(expr);
+    if (nodeType == null) {
+      this.#bail('untyped try expression');
+    }
+    let isVoid = isVoidOrNeverType(nodeType as Type);
+    let resultVt = if (!isVoid) {
+      let vt = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+      this.#requireSupported(vt, 'try result type');
+      vt
+    } else {
+      null
+    };
+
+    let handler = expr.handler as CatchClause;
+    let mergeSyms = this.#assignedEnvSyms(handler.body as Node);
+
+    let tagRef = this.b.addRef(new IrRefTag(this.wasm.exceptionTag as WasmTag));
+    let bodyB = this.b.newBlock();
+    let catchB = this.b.newBlock();
+    this.b.tryBr(tagRef, bodyB, this.#noArgs(), catchB, this.#noArgs());
+
+    var mergeB = -1;
+    var mergeParams: Array<i32> | null = null;
+    var resultParam = -1;
+
+    let saved = this.#copyEnv();
+    this.b.switchTo(bodyB);
+    let bodyValue = this.#lowerValueNode(expr.body as Node, isVoid, resultVt);
+    if (this.reachable) {
+      if (!isVoid &&
+          !isValSubtype(this.#valueType(bodyValue), resultVt as ValType)) {
+        this.#bail('try arm type');
+      }
+      mergeB = this.b.newBlock();
+      mergeParams = this.#addParams(mergeB, mergeSyms);
+      if (!isVoid) {
+        resultParam = this.b.blockParam(mergeB, resultVt as ValType);
+      }
+      let args = this.#envValues(mergeSyms);
+      if (!isVoid) {
+        args.push(bodyValue);
+      }
+      this.b.br(mergeB, args);
+    }
+
+    this.env = this.#copyOf(saved);
+    this.reachable = true;
+    this.b.switchTo(catchB);
+    if (handler.param != null) {
+      let paramIdent = handler.param as Identifier;
+      let symOpt = this.func.model.resolveDeclaration(paramIdent);
+      if (symOpt == null) {
+        this.#bail('catch parameter symbol');
+      }
+      let payloadG = this.wasm.exceptionPayload as WasmGlobal;
+      let gRef = this.b.addRef(new IrRefGlobal(payloadG));
+      var payload = this.b.emit(IrOp.global_get, payloadG.type, -1, gRef);
+      match (payloadG.type) {
+        case ValTypeRefNull as rn: {
+          payload = this.b.emit(IrOp.ref_as_non_null,
+              new ValTypeRef(rn.target) as ValType, payload, -1);
+        }
+        case _: {}
+      }
+      this.#bindPatternSym(symOpt as Symbol, payload);
+    }
+    let catchValue = this.#lowerValueNode(handler.body as Node, isVoid, resultVt);
+    if (this.reachable) {
+      if (!isVoid &&
+          !isValSubtype(this.#valueType(catchValue), resultVt as ValType)) {
+        this.#bail('try arm type');
+      }
+      if (mergeB < 0) {
+        mergeB = this.b.newBlock();
+        mergeParams = this.#addParams(mergeB, mergeSyms);
+        if (!isVoid) {
+          resultParam = this.b.blockParam(mergeB, resultVt as ValType);
+        }
+      }
+      let args = this.#envValues(mergeSyms);
+      if (!isVoid) {
+        args.push(catchValue);
+      }
+      this.b.br(mergeB, args);
+    }
+
+    if (mergeB < 0) {
+      this.reachable = false;
+      return -1;
+    }
+    this.env = saved;
+    this.#applyParams(mergeSyms, mergeParams as Array<i32>);
+    this.b.switchTo(mergeB);
+    this.reachable = true;
+    return resultParam;
+  }
+
+  /**
    * Lowers an if-expression or match-case arm: a plain expression, or a
    * value-block whose trailing expression statement supplies the value.
    * `ctxVt` is the arm's contextual result type (for null literals);
@@ -3839,8 +3962,14 @@ final class FunctionLowerer {
       }
       let last = body[body.length - 1];
       if (last is ExpressionStatement) {
-        let value = this.#lowerExpressionCtx(
-            (last as ExpressionStatement).expression, ctxVt);
+        let lastExpr = (last as ExpressionStatement).expression;
+        if (lastExpr is ThrowExpression) {
+          // A throw in arm-tail position: the arm ends unreachable and
+          // produces no value; callers skip their merge branch.
+          this.#lowerThrowStatement(lastExpr as ThrowExpression);
+          return -1;
+        }
+        let value = this.#lowerExpressionCtx(lastExpr, ctxVt);
         return if (isVoid) -1 else value;
       }
       if (isVoid) {

@@ -253,6 +253,36 @@ export final class ZirFunctionEmitter {
       this.#doBranch(from, succs[0]);
       return;
     }
+    if (op == IrOp.try_br) {
+      let ref = body.refTable[body.a[inst]];
+      if (!(ref is IrRefTag)) {
+        throw new Error('zir emit: try_br ref kind');
+      }
+      // The body subtree must place INSIDE the try_table — a br to an
+      // outer label would leave the region unprotected. Lowering
+      // creates the body entry with this single forward edge, so this
+      // only guards emitter regressions.
+      if (this.cfg.rpoIndex[succs[0].target] <= this.cfg.rpoIndex[from] ||
+          this.cfg.isMergeNode(succs[0].target)) {
+        throw new Error('zir emit: try body is not inlineable');
+      }
+      // block $catch { try_table (catch tag -> $catch) { body } }
+      // catch-path...   Exits from the body br straight to their
+      // targets (out through the try_table); nothing falls out of it,
+      // so the code after the inner `end` never runs.
+      this.emitter.emitBlock(new ValTypeVoid());
+      this.frames.push(new EmitFrame(-1, false));
+      this.emitter.emitTryTableCatch(new ValTypeVoid(),
+          (ref as IrRefTag).target.index, 0);
+      this.frames.push(new EmitFrame(-1, false));
+      this.#doBranch(from, succs[0]);
+      this.emitter.emitEnd();
+      this.frames.pop();
+      this.emitter.emitEnd();
+      this.frames.pop();
+      this.#doBranch(from, succs[1]);
+      return;
+    }
     if (op == IrOp.br_if) {
       this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
       this.emitter.emitIf(new ValTypeVoid());

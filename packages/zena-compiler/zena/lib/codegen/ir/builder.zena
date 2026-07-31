@@ -236,6 +236,24 @@ export final class IrBuilder {
     this.#emitInCurrent(IrOp.br_if, -1, cond, idx);
   }
 
+  /** try_br: a = tag ref, b = [bodyTarget, argc, arg*, catchTarget,
+   * argc, arg*]. Terminator; both edges carry block arguments. */
+  tryBr(tagRef: i32, bodyTarget: i32, bodyArgs: Array<i32>,
+      catchTarget: i32, catchArgs: Array<i32>): void {
+    let idx = this.body.extra.length;
+    this.body.extra.push(bodyTarget);
+    this.body.extra.push(bodyArgs.length);
+    for (let v in bodyArgs) {
+      this.body.extra.push(v);
+    }
+    this.body.extra.push(catchTarget);
+    this.body.extra.push(catchArgs.length);
+    for (let v in catchArgs) {
+      this.body.extra.push(v);
+    }
+    this.#emitInCurrent(IrOp.try_br, -1, tagRef, idx);
+  }
+
   ret(value: i32): void {
     this.#emitInCurrent(IrOp.ret, -1, value, -1);
   }
