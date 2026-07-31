@@ -901,7 +901,13 @@ final class FunctionLowerer {
     } else {
       // Expression-bodied function.
       if (sig.returns.length == 0) {
-        this.#bail('void expression body');
+        // Void body: evaluate for effects; any produced value is
+        // simply never used (SSA has no stack to pop).
+        this.#lowerExpression(body as Expression);
+        if (this.reachable) {
+          this.b.retVoid();
+        }
+        return this.b.finish();
       }
       if (sig.returns.length > 1) {
         this.#lowerMultiReturn(body as Expression);
