@@ -39,7 +39,7 @@ import {
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
   IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression,
-  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, CatchClause, TaggedTemplateExpression,
+  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, CatchClause, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module,
   LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant,
   RecordPattern, BindingProperty
 } from '../../ast.zena';
@@ -48,6 +48,8 @@ import { InterfaceAdaptation, RecordAdaptation, FunctionAdaptation } from '../..
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
+import { collectValueExports } from '../function-generator.zena';
+import { dirName, normalizePath } from '../../module-resolver.zena';
 import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
@@ -491,6 +493,42 @@ let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
 };
 
 /** Closure wrapper: forward params[1..] (dropping the ctx) to the target. */
+/**
+ * A closure trampoline: the value-position form of a plain function —
+ * drops the (unused) context param and forwards the rest to the
+ * target, streaming's generateClosureTrampolineBody.
+ */
+let synthesizeClosureTrampoline = (func: WasmFunction): IrBody => {
+  if (func.closureTrampolineTarget == null) {
+    throw new ZirUnsupported('closure trampoline without target');
+  }
+  let target = func.closureTrampolineTarget as WasmFunction;
+  if (func.signature.params.length != target.signature.params.length + 1) {
+    throw new ZirUnsupported('closure trampoline shape');
+  }
+  let b = new IrBuilder();
+  let params = synthEntryParams(b, func);
+  let args = new Array<i32>();
+  for (var i = 1; i < params.length; i += 1) {
+    args.push(params[i]);
+  }
+  let funcRef = b.addRef(new IrRefFunc(target));
+  if (target.signature.returns.length > 1) {
+    throw new ZirUnsupported('closure trampoline result shape');
+  }
+  let resultType = if (target.signature.returns.length == 1) target.signature.returns[0] else null;
+  let result = b.callFunc(funcRef, args, resultType);
+  if (func.signature.returns.length == 1) {
+    if (resultType == null) {
+      throw new ZirUnsupported('closure trampoline result shape');
+    }
+    b.ret(result);
+    return b.finish();
+  }
+  b.retVoid();
+  return b.finish();
+};
+
 let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
   if (func.closureWrapperTarget == null) {
     throw new ZirUnsupported('closure wrapper without target');
@@ -580,6 +618,9 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     if (func.isClosureWrapper) {
       return synthesizeClosureWrapper(func);
     }
+    if (func.isClosureTrampoline) {
+      return synthesizeClosureTrampoline(func);
+    }
     if (func.isFunctionAdaptation) {
       return lowerFunctionAdaptation(wasm, func);
     }
@@ -639,6 +680,8 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
       func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
       func.isClosureWrapper || func.isClosureTrampoline ||
       func.isCaseClassEq || func.isCaseClassHash) {
+    // Wrapper flags on a node-carrying function: not a shape lowering
+    // models (the node-null routes above handle the synthesized ones).
     throw new ZirUnsupported("function shape");
   }
   // Monomorphized generic bodies (_spec_ copies) carry both the
@@ -1214,11 +1257,102 @@ final class FunctionLowerer {
    * string segment materializes first, then each unit's non-literal
    * global initializers in order (memory.zena's unit before all
    * others, then static class fields per unit), each lowered under
-   * ITS OWN unit's model. Namespace-import globals (record structs of
-   * function closures) bail; any bail restores the swapped model
+   * ITS OWN unit's model, after the namespace-import record globals
+   * materialize. Any bail restores the swapped model
    * before propagating, since streaming re-generates this function
    * with the same WasmFunction object.
    */
+  /**
+   * A namespace import's record global: one closure pair per exported
+   * function (its value trampoline when one exists), exported globals
+   * by value, then the record's fat pointer with the shape's vtable —
+   * streaming's __start shape, field for field.
+   */
+  #lowerNamespaceImportInit(g: WasmGlobal): void {
+    let spec = g.namespaceImport as ImportSpecifier;
+    let moduleModel = g.model;
+    let parentNode = moduleModel.getParent(spec);
+    if (parentNode == null || !(parentNode is ImportDeclaration)) {
+      this.#bail('namespace import shape');
+    }
+    let importDecl = parentNode as ImportDeclaration;
+    var canonicalPath = importDecl.moduleSpecifier.value;
+    if (canonicalPath.startsWith('./') || canonicalPath.startsWith('../')) {
+      let referrer = moduleModel.getParent(importDecl);
+      if (referrer != null && referrer is Module) {
+        canonicalPath = normalizePath(
+            dirName((referrer as Module).path) + '/' + canonicalPath);
+      }
+    }
+    let progOpt = this.wasm.program;
+    if (progOpt == null) {
+      this.#bail('namespace import shape');
+    }
+    let prog = progOpt as Program;
+    if (!prog.unitsByPath.has(canonicalPath)) {
+      this.#bail('namespace import module');
+    }
+    let targetUnit = prog.unitsByPath[canonicalPath];
+    let exports = new HashMap<String, Symbol>();
+    collectValueExports(prog, targetUnit, exports);
+
+    let rtOpt = moduleModel.getNodeType(spec as Node);
+    if (rtOpt == null || !(rtOpt is RecordType)) {
+      this.#bail('namespace import shape');
+    }
+    let rt = rtOpt as RecordType;
+    let fields = new Array<WasmField>();
+    for (let pair in rt.properties) {
+      fields.push(new WasmField(pair.key,
+          typeToValType(this.wasm, pair.value), false));
+    }
+    sortWasmFields(fields);
+    let dispatch = this.wasm.getRecordDispatch(moduleModel, fields);
+
+    let args = new Array<i32>();
+    for (let field in fields) {
+      let fieldName = if (field.name != null) field.name as String else '';
+      var value = -1;
+      if (let (true, sym) = exports.get(fieldName)) {
+        if (let (true, f) = this.wasm.functionMap.get(sym.id)) {
+          let closureStruct = this.wasm.getClosureStruct(
+              f.signature.params, f.signature.returns);
+          let refTarget = if (f.closureTrampoline != null) {
+            f.closureTrampoline as WasmFunction
+          } else {
+            f
+          };
+          let funcVal = this.b.emit(IrOp.ref_func,
+              closureStruct.fields[0].type, -1,
+              this.b.addRef(new IrRefFunc(refTarget)));
+          let nullCtx = this.b.emit(IrOp.ref_null,
+              new ValTypeStructRef() as ValType, -1, -1);
+          value = this.b.emit(IrOp.struct_new,
+              new ValTypeRef(closureStruct) as ValType,
+              this.b.pushArgList(this.#twoValues(funcVal, nullCtx)),
+              this.b.addRef(new IrRefType(closureStruct)));
+        } else if (let (true, tg) = this.wasm.globalMap.get(sym.id)) {
+          value = this.b.emit(IrOp.global_get, tg.type, -1,
+              this.b.addRef(new IrRefGlobal(tg)));
+        } else {
+          value = this.b.emit(IrOp.ref_null, field.type, -1, -1);
+        }
+      } else {
+        value = this.b.emit(IrOp.ref_null, field.type, -1, -1);
+      }
+      args.push(value);
+    }
+    let instance = this.b.emit(IrOp.struct_new,
+        new ValTypeRef(dispatch.concreteType) as ValType,
+        this.b.pushArgList(args),
+        this.b.addRef(new IrRefType(dispatch.concreteType)));
+    let packed = this.b.emit(IrOp.iface_pack,
+        new ValTypeRef(dispatch.fatPtrType) as ValType, instance,
+        this.b.addRef(new IrRefGlobal(dispatch.vtableGlobal)));
+    this.b.emitVoid(IrOp.global_set, packed,
+        this.b.addRef(new IrRefGlobal(g)));
+  }
+
   lowerStart(): IrBody {
     let entry = this.b.newBlock();
     this.b.switchTo(entry);
@@ -1235,7 +1369,7 @@ final class FunctionLowerer {
     }
     for (let g in this.wasm.globals) {
       if (g.namespaceImport != null) {
-        this.#bail('start namespace import');
+        this.#lowerNamespaceImportInit(g);
       }
     }
     let progOpt = this.wasm.program;
@@ -5424,6 +5558,24 @@ final class FunctionLowerer {
     if (member.object is SuperExpression) {
       return this.#lowerSuperWrite(assign, member);
     }
+    // Interface receivers write through the set# vtable slot.
+    let objT = this.#substitutedNodeType(member.object);
+    if (objT != null &&
+        this.#resolveSelfType(objT as Type) is InterfaceType) {
+      if (assign.operator != null) {
+        this.#bail('interface compound write');
+      }
+      let it = this.#resolveSelfType(objT as Type) as InterfaceType;
+      let propName2 = getMemberPropertyName(
+          member.isSymbolAccess, member.property.name);
+      let setterArgs = new Array<Expression>();
+      setterArgs.push(assign.value);
+      // Setter dispatch returns no value; assignment-as-expression on
+      // an interface member would need the value replayed — the
+      // verifier's produces-no-value check trips loudly if used.
+      return this.#lowerInterfaceDispatch(
+          it, 'set#' + propName2, member.object, setterArgs);
+    }
     let receiver = this.#lowerExpression(member.object);
     let receiverCt = this.#receiverClass(receiver, member);
     let target = this.#resolveMemberTarget(member, receiverCt);
@@ -6085,10 +6237,40 @@ final class FunctionLowerer {
       if (arrProp == "length") {
         return this.b.emit(IrOp.array_len, new ValTypeI32(), receiver, -1);
       }
-      this.#bail('array member');
+      // An extension class on the array type owns other members:
+      // extensions have no fields or vtable, so the target is always
+      // a getter called directly with the array value as receiver.
+      let objectType = this.#substitutedNodeType(member.object);
+      var extCt: ClassType | null = null;
+      if (objectType != null) {
+        let selfR = this.#resolveSelfType(objectType as Type);
+        if (selfR is ClassType && (selfR as ClassType).isExtension) {
+          extCt = eraseTypeParameters(selfR) as ClassType;
+        }
+      }
+      if (extCt == null) {
+        this.#bail('array member');
+      }
+      let extTarget = this.#resolveMemberTarget(member, extCt as ClassType);
+      if (extTarget.fieldName != null || extTarget.vtSlot != null ||
+          extTarget.getter == null) {
+        this.#bail('array member');
+      }
+      let extGetter = extTarget.getter as WasmFunction;
+      let egSig = extGetter.signature;
+      if (egSig.params.length != 1 || egSig.returns.length != 1) {
+        this.#bail('getter shape');
+      }
+      if (!isValSubtype(this.#valueType(receiver), egSig.params[0])) {
+        this.#failConformance(receiver, egSig.params[0],
+            'member receiver type');
+      }
+      let extCall = this.b.callFunc(this.b.addRef(new IrRefFunc(extGetter)),
+          this.#oneArg(receiver), egSig.returns[0]);
+      return this.#reassertNonNull(extCall, this.#exprValType(member));
     }
-    let target = this.#resolveMemberTarget(
-        member, this.#receiverClass(receiver, member));
+    let receiverCt = this.#receiverClass(receiver, member);
+    let target = this.#resolveMemberTarget(member, receiverCt);
     let receiverVt = this.#valueType(receiver);
     let isStructRef = receiverVt is ValTypeRef || receiverVt is ValTypeRefNull;
     if (!isStructRef) {
@@ -6097,7 +6279,10 @@ final class FunctionLowerer {
     // The receiver value must actually be (a subtype of) the struct the
     // member resolved against — mismatched specialization keys (e.g.
     // intrinsic array classes) would otherwise emit invalid struct.gets.
-    if (!isValSubtype(receiverVt,
+    // Extension receivers are exempt: their getters take the onType
+    // value, checked at the call below.
+    if (!receiverCt.isExtension &&
+        !isValSubtype(receiverVt,
         new ValTypeRefNull(target.owner) as ValType)) {
       this.#bail('member receiver struct mismatch');
     }
@@ -6125,6 +6310,9 @@ final class FunctionLowerer {
     let sig = getter.signature;
     if (sig.returns.length != 1) {
       this.#bail('getter shape');
+    }
+    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
+      this.#failConformance(receiver, sig.params[0], 'member receiver type');
     }
     let getterRef = this.b.addRef(new IrRefFunc(getter));
     let call = this.b.callFunc(getterRef, this.#oneArg(receiver), sig.returns[0]);
@@ -6358,6 +6546,15 @@ final class FunctionLowerer {
     if (objectType == null) {
       this.#bail('untyped method receiver');
     }
+    // Record-typed receivers (including namespace imports, which are
+    // record globals of the module's exports): the member is a field
+    // holding a function value — read it, call the closure pair.
+    if (baseType(objectType as Type) is RecordType) {
+      let rt = baseType(objectType as Type) as RecordType;
+      let recv = this.#lowerExpression(member.object);
+      let fnValue = this.#lowerRecordReadOn(rt, member, recv);
+      return this.#lowerClosureCallOn(call, fnValue);
+    }
     let selfResolved = this.#resolveSelfType(objectType as Type);
     if (selfResolved is InterfaceType) {
       let propName = getMemberPropertyName(
@@ -6401,7 +6598,7 @@ final class FunctionLowerer {
     let receiver = this.#lowerExpression(member.object);
     var ct = eraseTypeParameters(selfResolved) as ClassType;
     let fromValue = this.#classTypeOfValue(receiver);
-    if (fromValue != null) {
+    if (fromValue != null && !ct.isExtension) {
       ct = fromValue as ClassType;
     }
     let cKey = getClassKey(ct);
@@ -6999,6 +7196,15 @@ final class FunctionLowerer {
   /** Receiver class for member/method resolution: the value's own
    * class when its struct carries one, else the checked type. */
   #receiverClass(receiver: i32, member: MemberExpression): ClassType {
+    // Extension receivers: the checked extension class wins — the
+    // VALUE is the underlying onType and never names the extension.
+    let checkedType = this.#substitutedNodeType(member.object);
+    if (checkedType != null) {
+      let selfR = this.#resolveSelfType(checkedType as Type);
+      if (selfR is ClassType && (selfR as ClassType).isExtension) {
+        return eraseTypeParameters(selfR) as ClassType;
+      }
+    }
     let fromValue = this.#classTypeOfValue(receiver);
     if (fromValue != null) {
       return fromValue as ClassType;
@@ -8447,7 +8653,14 @@ final class FunctionLowerer {
       // (global function values still bail when the callee lowers).
       return this.#lowerClosureCall(call);
     }
-    let target = targetOpt as WasmFunction;
+    return this.#lowerDirectCallTo(call, targetOpt as WasmFunction, multiOut);
+  }
+
+  /** The direct-call tail shared by identifier callees and
+   * namespace-import members: shape gates, argument lowering (with
+   * caller-side defaults), and the call itself. */
+  #lowerDirectCallTo(call: CallExpression, target: WasmFunction,
+      multiOut: Array<i32> | null): i32 {
     if (target.typeParameters != null || target.typeArguments != null ||
         target.intrinsic != null || target.isFunctionAdaptation ||
         target.isClosure || target.contextStruct != null ||
