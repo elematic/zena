@@ -4917,6 +4917,9 @@ final class FunctionLowerer {
     if (this.func.model.isStaticAccess(member)) {
       return this.#lowerStaticMemberWrite(assign, member);
     }
+    if (member.object is SuperExpression) {
+      return this.#lowerSuperWrite(assign, member);
+    }
     let receiver = this.#lowerExpression(member.object);
     let receiverCt = this.#receiverClass(receiver, member);
     let target = this.#resolveMemberTarget(member, receiverCt);
@@ -5230,8 +5233,255 @@ final class FunctionLowerer {
             member, eraseTypeParameters(selfR) as ClassType);
       }
     }
+    if (member.object is SuperExpression) {
+      return this.#lowerSuperRead(member);
+    }
     let receiver = this.#lowerExpression(member.object);
     return this.#lowerMemberReadOn(member, receiver);
+  }
+
+  /**
+   * The superclass of the enclosing method's class: the resolution
+   * root for every `super` access. Super dispatch is static — it
+   * names the superclass's implementation directly and never goes
+   * through the vtable, which would loop back to the override.
+   */
+  #superClassOfThis(): ClassType {
+    if (this.func.classType == null) {
+      this.#bail('super outside instance method');
+    }
+    let ct = this.func.classType as ClassType;
+    if (ct.superType == null) {
+      this.#bail('super without superclass');
+    }
+    return ct.superType as ClassType;
+  }
+
+  /**
+   * `super.prop`: a non-static getter registered on the superclass
+   * chain wins (called directly); otherwise the property is a plain
+   * field read against the superclass struct — `this` is a subtype of
+   * it, so the read needs no cast.
+   */
+  #lowerSuperRead(member: MemberExpression): i32 {
+    let superCt = this.#superClassOfThis();
+    let receiver = this.#lowerThis(member as Expression);
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    var getterOpt: WasmFunction | null = null;
+    var curr: ClassType | null = superCt;
+    while (curr != null && getterOpt == null) {
+      var g: ClassType | null = curr;
+      while (g != null && getterOpt == null) {
+        let key = getClassMethodKey(
+            getClassKey(g as ClassType), 'get#' + propName);
+        if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+          if (!f.isStatic) {
+            getterOpt = f;
+          }
+        }
+        g = (g as ClassType).genericSource;
+      }
+      curr = (curr as ClassType).superType;
+    }
+    if (getterOpt != null) {
+      let getter = getterOpt as WasmFunction;
+      let sig = getter.signature;
+      if (sig.params.length != 1 || sig.returns.length != 1) {
+        this.#bail('super getter shape');
+      }
+      if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
+        this.#failConformance(receiver, sig.params[0],
+            'super receiver type');
+      }
+      this.#requireSupported(sig.returns[0], 'super getter type');
+      let result = this.b.callFunc(
+          this.b.addRef(new IrRefFunc(getter)),
+          this.#oneArg(receiver), sig.returns[0]);
+      return this.#reassertNonNull(result, this.#exprValType(member));
+    }
+    let cKey = getClassKey(superCt);
+    let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
+    if (infoOpt == null) {
+      this.#bail('super class not discovered');
+    }
+    let st = (infoOpt as ClassCodegenInfo).structType;
+    if (st.fieldIndexByName(propName) < 0) {
+      this.#bail('super member not found');
+    }
+    let fieldRef = this.b.addRef(new IrRefField(st, propName));
+    let read = this.b.emit(IrOp.struct_get,
+        this.#fieldValType(st, propName), receiver, fieldRef);
+    return this.#reassertNonNull(read, this.#exprValType(member));
+  }
+
+  /**
+   * `super.prop = v`: a non-static setter on the superclass chain wins
+   * (called directly, never through the vtable); otherwise the write
+   * is a plain struct.set against the superclass struct. Compound
+   * assignments read the current value through the super read path.
+   */
+  #lowerSuperWrite(assign: AssignmentExpression,
+      member: MemberExpression): i32 {
+    let superCt = this.#superClassOfThis();
+    let receiver = this.#lowerThis(member as Expression);
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    var setterOpt: WasmFunction | null = null;
+    var curr: ClassType | null = superCt;
+    while (curr != null && setterOpt == null) {
+      var g: ClassType | null = curr;
+      while (g != null && setterOpt == null) {
+        let key = getClassMethodKey(
+            getClassKey(g as ClassType), 'set#' + propName);
+        if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+          if (!f.isStatic) {
+            setterOpt = f;
+          }
+        }
+        g = (g as ClassType).genericSource;
+      }
+      curr = (curr as ClassType).superType;
+    }
+    var targetVt: ValType = new ValTypeI32();
+    var fieldStruct: WasmStruct | null = null;
+    if (setterOpt != null) {
+      let sig = (setterOpt as WasmFunction).signature;
+      if (sig.params.length != 2 || sig.returns.length != 0) {
+        this.#bail('super setter shape');
+      }
+      targetVt = sig.params[1];
+    } else {
+      let infoOpt = if (let (true, info) = this.wasm.classInfos.get(getClassKey(superCt))) info else null;
+      if (infoOpt == null) {
+        this.#bail('super class not discovered');
+      }
+      let st = (infoOpt as ClassCodegenInfo).structType;
+      if (st.fieldIndexByName(propName) < 0) {
+        this.#bail('super member not found');
+      }
+      fieldStruct = st;
+      targetVt = this.#fieldValType(st, propName);
+    }
+    this.#requireSupported(targetVt, 'super write type');
+    var value = -1;
+    if (assign.operator == null) {
+      value = this.#lowerExpressionCtx(assign.value, targetVt);
+    } else {
+      let current = this.#lowerSuperRead(member);
+      let rhs = this.#lowerExpression(assign.value);
+      let vt = this.#valueType(current);
+      if (!valTypeEquals(vt, this.#valueType(rhs))) {
+        this.#bail('mixed compound assignment types');
+      }
+      let unsigned = this.#isUnsignedNode(member as Expression) ||
+          this.#isUnsignedNode(assign.value);
+      let op = this.#mapBinaryOp(assign.operator as String, vt, unsigned);
+      value = this.b.binary(op, vt, current, rhs);
+    }
+    if (!isValSubtype(this.#valueType(value), targetVt)) {
+      this.#failConformance(value, targetVt, 'super write type');
+    }
+    if (setterOpt != null) {
+      let setter = setterOpt as WasmFunction;
+      if (!isValSubtype(this.#valueType(receiver), setter.signature.params[0])) {
+        this.#failConformance(receiver, setter.signature.params[0],
+            'super receiver type');
+      }
+      this.b.callFunc(this.b.addRef(new IrRefFunc(setter)),
+          this.#twoValues(receiver, value), null);
+      return value;
+    }
+    let st = fieldStruct as WasmStruct;
+    let fieldRef = this.b.addRef(new IrRefField(st, propName));
+    let pairIdx = this.b.pushExtra(this.#twoValues(receiver, value));
+    this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+    return value;
+  }
+
+  /**
+   * `super.m(...)`: resolve the method on the superclass chain
+   * (overload slots via the checker's recorded selection, shared
+   * generic templates via the genericSource walk) and call it
+   * directly with `this` as the receiver.
+   */
+  #lowerSuperMethodCall(call: CallExpression, member: MemberExpression,
+      multiOut: Array<i32> | null): i32 {
+    let superCt = this.#superClassOfThis();
+    let receiver = this.#lowerThis(member.object);
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    if (propName.length > 0 && propName.sliceBytes(0, 1) == '#') {
+      this.#bail('super private call');
+    }
+    let chosenFt = this.func.model.getResolvedOverload(call);
+    let slotName = if (chosenFt != null) {
+      propName + getSignatureKey(chosenFt as FunctionType)
+    } else {
+      propName
+    };
+    var methodOpt: WasmFunction | null = null;
+    var currClass: ClassType | null = superCt;
+    while (currClass != null && methodOpt == null) {
+      var g: ClassType | null = currClass;
+      while (g != null && methodOpt == null) {
+        let key = getClassMethodKey(getClassKey(g as ClassType), slotName);
+        if (let (true, m) = this.wasm.classMethodMap.get(key)) {
+          methodOpt = m;
+        }
+        g = (g as ClassType).genericSource;
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (methodOpt == null) {
+      this.#bail('super method not found');
+    }
+    let method = methodOpt as WasmFunction;
+    if (method.isStatic ||
+        (method.typeParameters != null && method.typeArguments == null) ||
+        method.intrinsic != null) {
+      this.#bail('super method shape');
+    }
+    let sig = method.signature;
+    if (sig.returns.length > 1) {
+      this.#bail('super multi-value call');
+    }
+    if (multiOut != null) {
+      this.#bail('super call in multi-value position');
+    }
+    if (sig.params.length != call.args.length + 1) {
+      this.#bail('super method arity');
+    }
+    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
+      this.#failConformance(receiver, sig.params[0], 'super receiver type');
+    }
+    let args = new Array<i32>();
+    args.push(receiver);
+    for (var i = 0; i < call.args.length; i += 1) {
+      let paramVt = sig.params[i + 1];
+      this.#requireSupported(paramVt, 'super param type');
+      let value = this.#lowerExpressionCtx(call.args[i], paramVt);
+      if (!isValSubtype(this.#valueType(value), paramVt)) {
+        this.#failConformance(value, paramVt, 'super argument type');
+      }
+      args.push(value);
+    }
+    let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
+    if (resultType != null) {
+      this.#requireSupported(resultType, 'super result type');
+    }
+    let result = this.b.callFunc(
+        this.b.addRef(new IrRefFunc(method)), args, resultType);
+    if (resultType != null) {
+      let nodeType = this.func.model.getNodeType(call);
+      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
+        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+        if (want is ValTypeRef && (resultType as ValType) is ValTypeRefNull) {
+          return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
+        }
+      }
+    }
+    return result;
   }
 
 
@@ -5636,6 +5886,9 @@ final class FunctionLowerer {
     }
     if (this.func.model.isStaticAccess(member)) {
       return this.#lowerStaticCall(call, member, multiOut);
+    }
+    if (member.object is SuperExpression) {
+      return this.#lowerSuperMethodCall(call, member, multiOut);
     }
     let objectType = this.#substitutedNodeType(member.object);
     if (objectType == null) {
