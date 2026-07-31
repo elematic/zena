@@ -7,6 +7,26 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ```
+### if-let accepts any refutable pattern but only inline tuples are implemented
+- **Found**: 2026-07-31 (review question on #95: "if-let should work
+  with any refutable pattern — do we need more coverage?")
+- **Severity**: medium (checker-accepted syntax crashes codegen)
+- **Workaround**: destructure through an inline-tuple shape, or use a
+  match expression.
+- **Details**: Both checkers accept non-tuple refutable patterns in
+  let-conditions — `if (let Just {v} = maybe)` (class pattern on a
+  sealed variant), `if (let {x} = unionOfRecords)` (record pattern) —
+  but no backend implements them: streaming traps inside
+  generateIfStatement (no diagnostic), the bootstrap fails the same
+  shapes, and ZIR's let-condition machinery expects an inline-tuple
+  scrutinee. Every existing if-let/while-let test starts with an
+  inline tuple; nested class/record patterns are covered only INSIDE
+  tuples (`(true, Point {x, y})`). Either implement top-level
+  refutable patterns in all three compilers (ZIR's #83 pattern
+  machinery — #lowerPatternTest/#lowerPatternBindings — has the
+  pieces) or reject them in the checkers; then port the match-pattern
+  test matrix to if-let/while-let either way.
+
 ### Method/field same-name semantics are unsettled
 - **Found**: 2026-07-31 (review discussion on #87's field-closure calls)
 - **Severity**: medium (silent acceptance with resolution divergence)

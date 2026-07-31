@@ -3997,9 +3997,6 @@ final class FunctionLowerer {
    * if-expressions lower like statements and yield no value.
    */
   #lowerIfExpression(expr: IfExpression): i32 {
-    if (!(expr.test is Expression)) {
-      this.#bail('if-let expression');
-    }
     let nodeType = this.func.model.getNodeType(expr);
     if (nodeType == null) {
       this.#bail('untyped if expression');
@@ -4010,7 +4007,20 @@ final class FunctionLowerer {
       this.#bail('value if without else');
     }
 
-    let cond = this.#lowerExpression(expr.test as Expression);
+    var cond = -1;
+    var letBinds: LetCondBinds | null = null;
+    if (expr.test is Expression) {
+      cond = this.#lowerExpression(expr.test as Expression);
+    } else if (expr.test is LetPatternCondition) {
+      // Pattern-test fail edges target the else arm — which exists
+      // even for the void no-else form (it restores the saved env and
+      // branches to the merge).
+      let binds = this.#lowerLetCondition(expr.test as LetPatternCondition);
+      letBinds = binds;
+      cond = binds.cond;
+    } else {
+      this.#bail('if-let expression');
+    }
     let mergeSyms = this.#assignedEnvSyms(expr.consequent);
     if (expr.alternate != null) {
       this.#appendAssignedEnvSyms(expr.alternate as Node, mergeSyms);
@@ -4026,6 +4036,9 @@ final class FunctionLowerer {
 
     let saved = this.#copyEnv();
     this.b.switchTo(thenB);
+    if (letBinds != null) {
+      this.#applyLetBinds(letBinds as LetCondBinds, elseB);
+    }
     let thenValue = this.#lowerValueNode(expr.consequent, isVoid, resultVt);
     if (this.reachable) {
       if (!isVoid &&
