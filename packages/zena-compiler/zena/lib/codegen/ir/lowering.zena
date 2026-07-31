@@ -2979,6 +2979,7 @@ final class FunctionLowerer {
       case ArrayLiteral as arrLit: this.#lowerArrayLiteral(arrLit)
       case RecordLiteral as recLit: this.#lowerRecordLiteral(recLit)
       case TupleLiteral as tupLit: this.#lowerTupleLiteralExpr(tupLit)
+      case RangeExpression as range: this.#lowerRangeExpr(range)
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
   }
@@ -4818,6 +4819,18 @@ final class FunctionLowerer {
       return this.b.emit(IrOp.global_get, singleton.type, -1, globalRef);
     }
 
+    return this.#constructInstance(classInfo, cKey, expr.args);
+  }
+
+  /**
+   * The shared construction tail of `new` and range literals:
+   * struct.new_default, store the vtable when the class has one, call
+   * the constructor with the given argument expressions.
+   */
+  #constructInstance(classInfo: ClassCodegenInfo, cKey: ClassKey,
+      argExprs: Array<Expression>): i32 {
+    let structType = classInfo.structType;
+    let resultVt: ValType = new ValTypeRef(structType);
     let typeRef = this.b.addRef(new IrRefType(structType));
     let inst = this.b.emit(IrOp.struct_new_default, resultVt, -1, typeRef);
 
@@ -4833,15 +4846,15 @@ final class FunctionLowerer {
     let ctorKey = getClassMethodKey(cKey, '<constructor>');
     if (let (true, ctor) = this.wasm.classMethodMap.get(ctorKey)) {
       let sig = ctor.signature;
-      if (sig.params.length != expr.args.length + 1) {
+      if (sig.params.length != argExprs.length + 1) {
         this.#bail('constructor arity adaptation');
       }
       let args = new Array<i32>();
       args.push(inst);
-      for (var i = 0; i < expr.args.length; i += 1) {
+      for (var i = 0; i < argExprs.length; i += 1) {
         let paramVt = sig.params[i + 1];
         this.#requireSupported(paramVt, 'constructor param type');
-        let value = this.#lowerExpressionCtx(expr.args[i], paramVt);
+        let value = this.#lowerExpressionCtx(argExprs[i], paramVt);
         if (!isValSubtype(this.#valueType(value), paramVt)) {
           this.#failConformance(value, paramVt, 'constructor argument type');
         }
@@ -4849,10 +4862,45 @@ final class FunctionLowerer {
       }
       let ctorRef = this.b.addRef(new IrRefFunc(ctor));
       this.b.callFunc(ctorRef, args, null);
-    } else if (expr.args.length > 0) {
+    } else if (argExprs.length > 0) {
       this.#bail('constructor missing');
     }
     return inst;
+  }
+
+  /**
+   * Range literals construct their prelude range class exactly like
+   * `new`: the range form names the class (BoundedRange carries start
+   * and end, FromRange start, ToRange end, FullRange nothing) and its
+   * operands become the constructor arguments.
+   */
+  #lowerRangeExpr(expr: RangeExpression): i32 {
+    let nodeType = this.#substitutedNodeType(expr);
+    if (nodeType == null) {
+      this.#bail('untyped range');
+    }
+    if (!(nodeType is ClassType)) {
+      this.#bail('range of non-class');
+    }
+    let ct = nodeType as ClassType;
+    // The range form is the AST shape itself: which bounds exist is
+    // exhaustive by construction (start/end presence), so there is
+    // nothing to dispatch on — the checker already resolved the class
+    // for this shape, and the constructor arity check below catches
+    // any operand mismatch loudly.
+    let operands = new Array<Expression>();
+    if (expr.start != null) {
+      operands.push(expr.start as Expression);
+    }
+    if (expr.end != null) {
+      operands.push(expr.end as Expression);
+    }
+    let cKey = getClassKey(ct);
+    let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
+    if (infoOpt == null) {
+      this.#bail('range class not discovered');
+    }
+    return this.#constructInstance(infoOpt as ClassCodegenInfo, cKey, operands);
   }
 
   /**
@@ -5884,7 +5932,19 @@ final class FunctionLowerer {
     }
 
     let arrOpt = asWasmArray(this.#valueType(receiver));
-    if (arrOpt != null) {
+    // A class-typed index (a range: arr[1..3]) is not an element read;
+    // it dispatches to the matching [] overload like any class receiver.
+    // Extension classes stay on the element path: their values ARE
+    // their onType (an i32 index handle reads like an i32).
+    let idxTypeOpt = this.#substitutedNodeType(idx.index);
+    var classIndex = false;
+    if (idxTypeOpt != null) {
+      let idxBase = baseType(idxTypeOpt as Type);
+      if (idxBase is ClassType) {
+        classIndex = !(idxBase as ClassType).isExtension;
+      }
+    }
+    if (arrOpt != null && !classIndex) {
       let arr = arrOpt as WasmArray;
       let index = this.#lowerExpression(idx.index);
       if (!(this.#valueType(index) is ValTypeI32)) {
