@@ -128,7 +128,11 @@ final class LetCondBinds {
   syms: Array<Symbol>;
   values: Array<i32>;
   vts: Array<ValType>;
-  new(this.cond, this.syms, this.values, this.vts);
+  /** Nested destructuring elements, tested/bound in the taken block. */
+  patterns: Array<Node>;
+  patternValues: Array<i32>;
+  new(this.cond, this.syms, this.values, this.vts, this.patterns,
+      this.patternValues);
 }
 
 final class LoopCtx {
@@ -656,27 +660,33 @@ final class FunctionLowerer {
         needsThisDowncast = true;
       }
     }
+    let patternParams = new Array<Node>();
+    let patternValues = new Array<i32>();
     for (var i = 0; i < paramList.length; i += 1) {
       let p = paramList[i];
-      // Only destructuring patterns block lowering. this-params bind
-      // like plain params — the parser already synthesized the
-      // FieldInitializer entries that store them (lowered by the
-      // constructor prologue). Default values are CALLER-supplied
-      // (desugared into each call site's argument list), so the callee
-      // binds the parameter normally; call sites that actually omit
-      // arguments still bail at 'call arity adaptation'.
-      if (p.pattern != null) {
-        this.#bail('parameter shape');
-      }
-      let sym = this.func.model.resolveDeclaration(p.name);
-      if (sym == null) {
-        this.#bail('unresolved parameter');
-      }
+      // this-params bind like plain params — the parser already
+      // synthesized the FieldInitializer entries that store them
+      // (lowered by the constructor prologue). Default values are
+      // CALLER-supplied (desugared into each call site's argument
+      // list), so the callee binds the parameter normally; call sites
+      // that actually omit arguments still bail at 'call arity
+      // adaptation'.
       let vt = sig.params[i + paramOffset];
       this.#requireSupported(vt, 'parameter type');
       let value = this.b.blockParam(entry, vt);
-      this.env[(sym as Symbol).id] = value;
-      this.symbols[(sym as Symbol).id] = sym as Symbol;
+      let sym = this.func.model.resolveDeclaration(p.name);
+      if (sym != null) {
+        this.env[(sym as Symbol).id] = value;
+        this.symbols[(sym as Symbol).id] = sym as Symbol;
+      }
+      // Destructuring parameters bind their pattern from the same
+      // value once the entry block is current (below).
+      if (p.pattern != null) {
+        patternParams.push(p.pattern as Node);
+        patternValues.push(value);
+      } else if (sym == null) {
+        this.#bail('unresolved parameter');
+      }
     }
     if (setterParamIdent != null) {
       let sym = this.func.model.resolveDeclaration(setterParamIdent as Node);
@@ -690,6 +700,10 @@ final class FunctionLowerer {
       this.symbols[(sym as Symbol).id] = sym as Symbol;
     }
     this.b.switchTo(entry);
+    // Destructuring parameters bind now that instructions can emit.
+    for (var i = 0; i < patternParams.length; i += 1) {
+      this.#lowerPatternBindings(patternParams[i], patternValues[i]);
+    }
     // Celled parameters (captured and mutated through a closure) move
     // into their heap cells before any body code runs.
     for (var i = 0; i < paramList.length; i += 1) {
@@ -1724,6 +1738,8 @@ final class FunctionLowerer {
     let syms = new Array<Symbol>();
     let bindValues = new Array<i32>();
     let vts = new Array<ValType>();
+    let patterns = new Array<Node>();
+    let patternValues = new Array<i32>();
     for (var i = 0; i < tp.elements.length; i += 1) {
       let el = tp.elements[i];
       if (el == null || el is LiteralPattern || el is BooleanLiteral ||
@@ -1732,7 +1748,13 @@ final class FunctionLowerer {
       }
       let symOpt = this.func.model.resolveDeclaration(el as Node);
       if (symOpt == null) {
-        // `_` and other non-binding elements: nothing to bind.
+        // Nested destructuring elements defer to the taken block,
+        // where their tests can branch to the not-taken side.
+        if (this.#patternBinds(el as Node) ||
+            this.#patternRefutable(el as Node)) {
+          patterns.push(el as Node);
+          patternValues.push(values[i]);
+        }
         continue;
       }
       let sym = symOpt as Symbol;
@@ -1751,11 +1773,25 @@ final class FunctionLowerer {
       bindValues.push(values[i]);
       vts.push(bindVt);
     }
-    return new LetCondBinds(cond, syms, bindValues, vts);
+    return new LetCondBinds(cond, syms, bindValues, vts, patterns, patternValues);
   }
 
-  /** Applies a let-condition's bindings in the CURRENT (taken) block. */
-  #applyLetBinds(binds: LetCondBinds): void {
+  /** Whether any deferred let-condition pattern is refutable. */
+  #letBindsNeedFail(binds: LetCondBinds): boolean {
+    for (let pat in binds.patterns) {
+      if (this.#patternRefutable(pat)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Applies a let-condition's bindings in the CURRENT (taken) block.
+   * Nested destructuring elements run their tests here, branching to
+   * `failB` (the not-taken side) on mismatch, then bind.
+   */
+  #applyLetBinds(binds: LetCondBinds, failB: i32): void {
     for (var i = 0; i < binds.syms.length; i += 1) {
       var bound = binds.values[i];
       let bindVt = binds.vts[i];
@@ -1767,6 +1803,13 @@ final class FunctionLowerer {
             this.b.internType(bindVt));
       }
       this.#bindPatternSym(binds.syms[i], bound);
+    }
+    for (var i = 0; i < binds.patterns.length; i += 1) {
+      let value = this.#strippedNonNull(binds.patternValues[i]);
+      if (this.#patternRefutable(binds.patterns[i])) {
+        this.#lowerPatternTest(binds.patterns[i], value, failB);
+      }
+      this.#lowerPatternBindings(binds.patterns[i], value);
     }
   }
 
@@ -1785,7 +1828,10 @@ final class FunctionLowerer {
       return out;
     }
     if (!(init is CallExpression)) {
-      this.#bail('let-condition source');
+      // Any other expression: a single value (a boxed tuple splits at
+      // the destructuring site).
+      out.push(this.#lowerExpression(init));
+      return out;
     }
     let call = init as CallExpression;
     if (call.callee is MemberExpression) {
@@ -1810,7 +1856,9 @@ final class FunctionLowerer {
       }
       return out;
     }
-    this.#bail('let-condition source');
+    // Any other expression: a single value (a boxed tuple splits at
+    // the destructuring site).
+    out.push(this.#lowerExpression(init));
     return out;
   }
 
@@ -1840,33 +1888,9 @@ final class FunctionLowerer {
           el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
         continue;
       }
-      let symOpt = this.func.model.resolveDeclaration(el as Node);
-      if (symOpt == null) {
-        // `_` and other non-binding elements.
-        continue;
+      if (this.#patternBinds(el as Node)) {
+        this.#lowerPatternBindings(el as Node, values[i]);
       }
-      let sym = symOpt as Symbol;
-      let bindingType = this.func.model.getBindingType(sym);
-      if (bindingType == null) {
-        this.#bail('untyped binding');
-      }
-      let bindVt = typeToValTypeWithSub(
-          this.wasm, bindingType as Type, this.func);
-      this.#requireSupported(bindVt, 'binding type');
-      var bound = values[i];
-      if (!isValSubtype(this.#valueType(bound), bindVt)) {
-        if (!isRefValType(bindVt)) {
-          this.#bail('destructured element type');
-        }
-        bound = this.b.emit(IrOp.ref_cast, bindVt, bound,
-            this.b.internType(bindVt));
-      }
-      if (this.#isCelled(sym.id)) {
-        this.env[sym.id] = this.#cellAlloc(bindVt, bound);
-      } else {
-        this.env[sym.id] = bound;
-      }
-      this.symbols[sym.id] = sym;
     }
   }
 
@@ -1921,47 +1945,22 @@ final class FunctionLowerer {
     }
     let initBase = baseType(getNonNullableType(initTypeOpt as Type));
     for (let prop in properties) {
-      if (!(prop.value is IdentifierPattern)) {
-        this.#bail('nested destructuring pattern');
+      if (!this.#patternBinds(prop.value)) {
+        continue;
       }
-      let symOpt = this.func.model.resolveDeclaration(prop.value);
-      if (symOpt == null) {
-        this.#bail('unresolved declaration');
-      }
-      let sym = symOpt as Symbol;
-      let bindingType = this.func.model.getBindingType(sym);
-      if (bindingType == null) {
-        this.#bail('untyped binding');
-      }
-      let bindVt = typeToValTypeWithSub(
-          this.wasm, bindingType as Type, this.func);
-      this.#requireSupported(bindVt, 'binding type');
-      var bound = -1;
-      if (initBase is RecordType) {
-        bound = this.#lowerRecordPropertyRead(
-            initBase as RecordType, prop.name.name, source, bindVt);
+      let read = if (initBase is RecordType) {
+        this.#lowerRecordPropertyRead(
+            initBase as RecordType, prop.name.name, source)
       } else {
-        bound = this.#lowerObjectPropertyRead(prop.name.name, source, bindVt);
-      }
-      if (!isValSubtype(this.#valueType(bound), bindVt)) {
-        if (!isRefValType(bindVt)) {
-          this.#bail('destructured element type');
-        }
-        bound = this.b.emit(IrOp.ref_cast, bindVt, bound,
-            this.b.internType(bindVt));
-      }
-      if (this.#isCelled(sym.id)) {
-        this.env[sym.id] = this.#cellAlloc(bindVt, bound);
-      } else {
-        this.env[sym.id] = bound;
-      }
-      this.symbols[sym.id] = sym;
+        this.#lowerObjectPropertyRead(prop.name.name, source)
+      };
+      this.#lowerPatternBindings(prop.value, read);
     }
   }
 
   /** A record property read on an already-lowered receiver value. */
   #lowerRecordPropertyRead(rt: RecordType, propName: String,
-      receiver: i32, want: ValType): i32 {
+      receiver: i32): i32 {
     let dispatch = this.#recordDispatchOf(rt);
     var fieldIdx = -1;
     for (var i = 0; i < dispatch.fields.length; i += 1) {
@@ -1991,18 +1990,16 @@ final class FunctionLowerer {
     let getter = this.b.emit(IrOp.struct_get,
         new ValTypeRef(getterSig) as ValType, vtable,
         this.b.addRef(new IrRefField(dispatch.vtableType, propName)));
-    let result = this.b.callRef(getter,
+    return this.b.callRef(getter,
         this.#oneArg(instance), getterSig.returns[0]);
-    return this.#reassertNonNull(result, want);
   }
 
   /**
    * A class field/getter read by name on an already-lowered receiver
    * value: physical field first, else a registered non-static getter
-   * up the super chain. Override safety mirrors the member-read path.
+   * up the super chain.
    */
-  #lowerObjectPropertyRead(propName: String, receiver: i32,
-      want: ValType): i32 {
+  #lowerObjectPropertyRead(propName: String, receiver: i32): i32 {
     var stOpt: WasmStruct | null = null;
     match (this.#valueType(receiver)) {
       case ValTypeRef as r: {
@@ -2019,9 +2016,8 @@ final class FunctionLowerer {
     let st = stOpt as WasmStruct;
     if (st.fieldIndexByName(propName) >= 0) {
       let fieldRef = this.b.addRef(new IrRefField(st, propName));
-      let read = this.b.emit(IrOp.struct_get,
+      return this.b.emit(IrOp.struct_get,
           this.#fieldValType(st, propName), receiver, fieldRef);
-      return this.#reassertNonNull(read, want);
     }
     let ctOpt = this.#classTypeOfValue(receiver);
     if (ctOpt == null) {
@@ -2045,9 +2041,8 @@ final class FunctionLowerer {
     if (sig.returns.length != 1) {
       this.#bail('getter shape');
     }
-    let call = this.b.callFunc(this.b.addRef(new IrRefFunc(getter)),
+    return this.b.callFunc(this.b.addRef(new IrRefFunc(getter)),
         this.#oneArg(receiver), sig.returns[0]);
-    return this.#reassertNonNull(call, want);
   }
 
   #lowerIf(stmt: IfStatement): void {
@@ -2073,7 +2068,22 @@ final class FunctionLowerer {
       let saved = this.#copyEnv();
       this.b.switchTo(thenB);
       if (letBinds != null) {
-        this.#applyLetBinds(letBinds as LetCondBinds);
+        let binds = letBinds as LetCondBinds;
+        let needsFail = this.#letBindsNeedFail(binds);
+        var failB = mergeB;
+        if (needsFail) {
+          // The merge takes args; pattern tests branch argless, so a
+          // trampoline forwards the (unmodified) env.
+          failB = this.b.newBlock();
+        }
+        this.#applyLetBinds(binds, failB);
+        if (needsFail) {
+          let resumeB = this.b.newBlock();
+          this.b.br(resumeB, this.#noArgs());
+          this.b.switchTo(failB);
+          this.b.br(mergeB, this.#envValues(mergeSyms));
+          this.b.switchTo(resumeB);
+        }
       }
       this.#lowerStatement(stmt.consequent);
       if (this.reachable) {
@@ -2101,7 +2111,7 @@ final class FunctionLowerer {
     let saved = this.#copyEnv();
     this.b.switchTo(thenB);
     if (letBinds != null) {
-      this.#applyLetBinds(letBinds as LetCondBinds);
+      this.#applyLetBinds(letBinds as LetCondBinds, elseB);
     }
     this.#lowerStatement(stmt.consequent);
     if (this.reachable) {
@@ -2166,7 +2176,22 @@ final class FunctionLowerer {
     this.loops.push(new LoopCtx(header, exitB, carried));
     this.b.switchTo(bodyB);
     if (letBinds != null) {
-      this.#applyLetBinds(letBinds as LetCondBinds);
+      let binds = letBinds as LetCondBinds;
+      let needsFail = this.#letBindsNeedFail(binds);
+      var failB = exitB;
+      if (needsFail) {
+        // The exit takes carried args; tests branch argless — forward
+        // through a trampoline.
+        failB = this.b.newBlock();
+      }
+      this.#applyLetBinds(binds, failB);
+      if (needsFail) {
+        let resumeB = this.b.newBlock();
+        this.b.br(resumeB, this.#noArgs());
+        this.b.switchTo(failB);
+        this.b.br(exitB, this.#envValues(carried));
+        this.b.switchTo(resumeB);
+      }
     }
     this.#lowerStatement(stmt.body);
     if (this.reachable) {
@@ -2361,8 +2386,10 @@ final class FunctionLowerer {
     var symOpt: Symbol | null = null;
     if (pat is IdentifierPattern || pat is Identifier) {
       symOpt = this.func.model.resolveDeclaration(pat);
-    }
-    if (symOpt == null) {
+      if (symOpt == null) {
+        this.#bail('for-in pattern');
+      }
+    } else if (!this.#patternBinds(pat)) {
       this.#bail('for-in pattern');
     }
 
@@ -2388,7 +2415,11 @@ final class FunctionLowerer {
 
     this.b.switchTo(bodyB);
     let elem = this.b.emit(IrOp.array_get, elemVt, buf, idxParam);
-    this.#bindPatternSym(symOpt as Symbol, elem);
+    if (symOpt != null) {
+      this.#bindPatternSym(symOpt as Symbol, elem);
+    } else {
+      this.#lowerPatternBindings(pat, elem);
+    }
 
     let updateB = this.b.newBlock();
     let updateParams = this.#addParams(updateB, carried);
@@ -2461,17 +2492,22 @@ final class FunctionLowerer {
     var symOpt: Symbol | null = null;
     if (pat is IdentifierPattern || pat is Identifier) {
       symOpt = this.func.model.resolveDeclaration(pat);
-    }
-    if (symOpt == null) {
+      if (symOpt == null) {
+        this.#bail('for-in pattern');
+      }
+    } else if (!this.#patternBinds(pat)) {
       this.#bail('for-in pattern');
     }
-    let sym = symOpt as Symbol;
-    let bindingType = this.func.model.getBindingType(sym);
-    if (bindingType == null) {
-      this.#bail('untyped binding');
+    var bindVtOpt: ValType | null = null;
+    if (symOpt != null) {
+      let bindingType = this.func.model.getBindingType(symOpt as Symbol);
+      if (bindingType == null) {
+        this.#bail('untyped binding');
+      }
+      let vt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
+      this.#requireSupported(vt, 'for-in element type');
+      bindVtOpt = vt;
     }
-    let bindVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
-    this.#requireSupported(bindVt, 'for-in element type');
 
     let carried = this.#assignedEnvSyms(stmt.body);
     let header = this.b.newBlock();
@@ -2493,15 +2529,21 @@ final class FunctionLowerer {
     this.b.brIf(ok, bodyB, this.#noArgs(), exitB, this.#envValues(carried));
 
     this.b.switchTo(bodyB);
-    if (!isValSubtype(this.#valueType(elem), bindVt)) {
-      // The slot's element type is erased/nullable relative to the
-      // binding: runtime downcast, streaming's ref.cast on elemTemp.
-      if (!isRefValType(bindVt)) {
-        this.#bail('for-in element type');
+    if (symOpt != null) {
+      let bindVt = bindVtOpt as ValType;
+      if (!isValSubtype(this.#valueType(elem), bindVt)) {
+        // The slot's element type is erased/nullable relative to the
+        // binding: runtime downcast, streaming's ref.cast on elemTemp.
+        if (!isRefValType(bindVt)) {
+          this.#bail('for-in element type');
+        }
+        elem = this.b.emit(IrOp.ref_cast, bindVt, elem, this.b.internType(bindVt));
       }
-      elem = this.b.emit(IrOp.ref_cast, bindVt, elem, this.b.internType(bindVt));
+      this.#bindPatternSym(symOpt as Symbol, elem);
+    } else {
+      // Destructuring patterns split the (boxed tuple) element.
+      this.#lowerPatternBindings(pat, this.#strippedNonNull(elem));
     }
-    this.#bindPatternSym(sym, elem);
 
     let updateB = this.b.newBlock();
     let updateParams = this.#addParams(updateB, carried);
@@ -3927,11 +3969,25 @@ final class FunctionLowerer {
       case LogicalPattern as lp: {
         if (lp.operator == "||") {
           if (this.#patternBinds(lp.left) || this.#patternBinds(lp.right)) {
-            // Bindings under an or-pattern would need the per-side
-            // values merged into the arm; not lowered yet.
-            this.#bail('or-pattern bindings');
-          }
-          if (this.#patternRefutable(lp.left) &&
+            // Both sides bind the same symbols (checker-enforced); each
+            // side's values merge into the arm through block params.
+            let syms = new Array<SymbolId>();
+            this.#collectPatternBindSyms(lp.left, syms);
+            let tryRight = this.b.newBlock();
+            this.#lowerPatternTest(lp.left, value, tryRight);
+            this.#lowerPatternBindings(lp.left, value);
+            // Params are added after the left side binds, so the
+            // symbols' binding types are registered for #addParams.
+            let successB = this.b.newBlock();
+            let successParams = this.#addParams(successB, syms);
+            this.b.br(successB, this.#envValues(syms));
+            this.b.switchTo(tryRight);
+            this.#lowerPatternTest(lp.right, value, failB);
+            this.#lowerPatternBindings(lp.right, value);
+            this.b.br(successB, this.#envValues(syms));
+            this.b.switchTo(successB);
+            this.#applyParams(syms, successParams);
+          } else if (this.#patternRefutable(lp.left) &&
               this.#patternRefutable(lp.right)) {
             let tryRight = this.b.newBlock();
             let successB = this.b.newBlock();
@@ -4021,8 +4077,175 @@ final class FunctionLowerer {
         let cond = this.b.binary(op, new ValTypeI32(), value, expected);
         this.#branchUnless(cond, failB);
       }
+      case TuplePattern as tp: {
+        for (var i = 0; i < tp.elements.length; i += 1) {
+          let el = tp.elements[i];
+          if (el != null && this.#patternRefutable(el as Node)) {
+            let fieldVal = this.#tupleFieldRead(value, i);
+            this.#lowerPatternTest(el as Node, fieldVal, failB);
+          }
+        }
+      }
+      case RecordPattern as rp: {
+        let dispatchOpt = this.#recordDispatchOfValue(value);
+        if (dispatchOpt == null) {
+          this.#bail('record pattern operand');
+        }
+        for (let prop in rp.properties) {
+          if (this.#patternRefutable(prop.value)) {
+            let read = this.#recordDispatchRead(
+                dispatchOpt as RecordDispatchInfo, prop.name.name, value);
+            this.#lowerPatternTest(prop.value, read, failB);
+          }
+        }
+      }
       case _: {
         this.#bail('pattern kind');
+      }
+    }
+  }
+
+
+  /** The struct behind a (boxed) tuple or class value; bails otherwise. */
+  #structOfValue(value: i32): WasmStruct {
+    var stOpt: WasmStruct | null = null;
+    match (this.#valueType(value)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) { stOpt = r.target as WasmStruct; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) { stOpt = rn.target as WasmStruct; }
+      }
+      case _: {}
+    }
+    if (stOpt == null) {
+      this.#bail('pattern operand kind');
+    }
+    return stOpt as WasmStruct;
+  }
+
+  /** The record dispatch whose fat-pointer struct backs `value`, if any. */
+  #recordDispatchOfValue(value: i32): RecordDispatchInfo | null {
+    var stOpt: WasmStruct | null = null;
+    match (this.#valueType(value)) {
+      case ValTypeRef as r: {
+        if (r.target is WasmStruct) { stOpt = r.target as WasmStruct; }
+      }
+      case ValTypeRefNull as rn: {
+        if (rn.target is WasmStruct) { stOpt = rn.target as WasmStruct; }
+      }
+      case _: {}
+    }
+    if (stOpt == null) {
+      return null;
+    }
+    for (let info in this.wasm.recordDispatchInfos) {
+      if (info.fatPtrType == stOpt) {
+        return info;
+      }
+    }
+    return null;
+  }
+
+  /** A record property read through an already-known dispatch. */
+  #recordDispatchRead(dispatch: RecordDispatchInfo, propName: String,
+      receiver: i32): i32 {
+    var fieldIdx = -1;
+    for (var i = 0; i < dispatch.fields.length; i += 1) {
+      let f = dispatch.fields[i];
+      if (f.name != null && (f.name as String) == propName) {
+        fieldIdx = i;
+      }
+    }
+    if (fieldIdx < 0) {
+      this.#bail('record member not found');
+    }
+    let recv = this.#strippedNonNull(receiver);
+    let instance = this.b.emit(IrOp.iface_instance,
+        new ValTypeStructRef() as ValType, recv, -1);
+    let vtable = this.b.emit(IrOp.iface_vtable,
+        new ValTypeRef(dispatch.vtableType) as ValType, recv, -1);
+    let getterSig = dispatch.getterTypes[fieldIdx];
+    if (getterSig.returns.length != 1) {
+      this.#bail('record getter shape');
+    }
+    let getter = this.b.emit(IrOp.struct_get,
+        new ValTypeRef(getterSig) as ValType, vtable,
+        this.b.addRef(new IrRefField(dispatch.vtableType, propName)));
+    return this.b.callRef(getter, this.#oneArg(instance), getterSig.returns[0]);
+  }
+
+  /** The boxed-tuple field value at `index` of a tuple-struct value. */
+  #tupleFieldRead(value: i32, index: i32): i32 {
+    let st = this.#structOfValue(value);
+    let fieldName = i32ToString(index);
+    if (st.fieldIndexByName(fieldName) < 0) {
+      this.#bail('tuple pattern arity');
+    }
+    let fieldRef = this.b.addRef(new IrRefField(st, fieldName));
+    return this.b.emit(IrOp.struct_get,
+        this.#fieldValType(st, fieldName), value, fieldRef);
+  }
+
+  /** All symbols a pattern binds, in source order. */
+  #collectPatternBindSyms(pattern: Node, out: Array<SymbolId>): void {
+    if (pattern is IdentifierPattern) {
+      if ((pattern as IdentifierPattern).name != "_") {
+        let sym = this.func.model.resolveDeclaration(pattern);
+        if (sym != null) {
+          out.push((sym as Symbol).id);
+        }
+      }
+      return;
+    }
+    if (pattern is Identifier) {
+      let ident = pattern as Identifier;
+      if (ident.name != "_") {
+        let sym = this.func.model.resolveDeclaration(ident);
+        if (sym != null && !(sym as Symbol).isType()) {
+          out.push((sym as Symbol).id);
+        }
+      }
+      return;
+    }
+    if (pattern is AsPattern) {
+      let ap = pattern as AsPattern;
+      let sym = this.func.model.resolveDeclaration(ap.name);
+      if (sym != null) {
+        out.push((sym as Symbol).id);
+      }
+      this.#collectPatternBindSyms(ap.pattern, out);
+      return;
+    }
+    if (pattern is BindingPattern) {
+      this.#collectPatternBindSyms((pattern as BindingPattern).pattern, out);
+      return;
+    }
+    if (pattern is TuplePattern) {
+      for (let el in (pattern as TuplePattern).elements) {
+        if (el != null) {
+          this.#collectPatternBindSyms(el as Node, out);
+        }
+      }
+      return;
+    }
+    if (pattern is RecordPattern) {
+      for (let prop in (pattern as RecordPattern).properties) {
+        this.#collectPatternBindSyms(prop.value, out);
+      }
+      return;
+    }
+    if (pattern is ClassPattern) {
+      for (let prop in (pattern as ClassPattern).properties) {
+        this.#collectPatternBindSyms(prop.value, out);
+      }
+      return;
+    }
+    if (pattern is LogicalPattern) {
+      let lp = pattern as LogicalPattern;
+      this.#collectPatternBindSyms(lp.left, out);
+      if (lp.operator != "||") {
+        this.#collectPatternBindSyms(lp.right, out);
       }
     }
   }
@@ -4085,7 +4308,29 @@ final class FunctionLowerer {
           this.#lowerPatternBindings(lp.left, value);
           this.#lowerPatternBindings(lp.right, value);
         }
-        // Or-patterns with bindings bailed during the test phase.
+        // Or-pattern bindings were merged during the test phase.
+      }
+      case TuplePattern as tp: {
+        for (var i = 0; i < tp.elements.length; i += 1) {
+          let el = tp.elements[i];
+          if (el != null && this.#patternBinds(el as Node)) {
+            this.#lowerPatternBindings(el as Node, this.#tupleFieldRead(value, i));
+          }
+        }
+      }
+      case RecordPattern as rp: {
+        let dispatchOpt = this.#recordDispatchOfValue(value);
+        for (let prop in rp.properties) {
+          if (this.#patternBinds(prop.value)) {
+            let read = if (dispatchOpt != null) {
+              this.#recordDispatchRead(
+                  dispatchOpt as RecordDispatchInfo, prop.name.name, value)
+            } else {
+              this.#lowerObjectPropertyRead(prop.name.name, value)
+            };
+            this.#lowerPatternBindings(prop.value, read);
+          }
+        }
       }
       case _: {}
     }
@@ -4199,6 +4444,24 @@ final class FunctionLowerer {
           this.#patternRefutable(lp.left) || this.#patternRefutable(lp.right)
         }
       }
+      case TuplePattern as tp: {
+        var refutable = false;
+        for (let el in tp.elements) {
+          if (el != null && this.#patternRefutable(el as Node)) {
+            refutable = true;
+          }
+        }
+        refutable
+      }
+      case RecordPattern as rp: {
+        var refutable = false;
+        for (let prop in rp.properties) {
+          if (this.#patternRefutable(prop.value)) {
+            refutable = true;
+          }
+        }
+        refutable
+      }
       case _: true
     };
   }
@@ -4229,6 +4492,24 @@ final class FunctionLowerer {
       }
       case LogicalPattern as lp:
           this.#patternBinds(lp.left) || this.#patternBinds(lp.right)
+      case TuplePattern as tp: {
+        var binds = false;
+        for (let el in tp.elements) {
+          if (el != null && this.#patternBinds(el as Node)) {
+            binds = true;
+          }
+        }
+        binds
+      }
+      case RecordPattern as rp: {
+        var binds = false;
+        for (let prop in rp.properties) {
+          if (this.#patternBinds(prop.value)) {
+            binds = true;
+          }
+        }
+        binds
+      }
       case _: false
     };
   }
