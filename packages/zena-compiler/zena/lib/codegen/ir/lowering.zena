@@ -38,7 +38,7 @@ import {
   AccessorDeclaration, SetterInfo,
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
-  IsExpression, RangeExpression, PipelineExpression, SuperExpression,
+  IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression,
   ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, CatchClause,
   LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant,
   RecordPattern, BindingProperty
@@ -704,6 +704,8 @@ final class FunctionLowerer {
   /** Symbols behind env entries, for binding-type lookups at merges. */
   symbols = new HashMap<SymbolId, Symbol>();
   loops = new Array<LoopCtx>();
+  /** Values piped by enclosing |> expressions; $ reads the top. */
+  pipelineValues = new Array<i32>();
   var reachable = true;
   /** The receiver value for instance methods; -1 elsewhere. */
   var thisValue = -1;
@@ -3154,6 +3156,9 @@ final class FunctionLowerer {
       case TupleLiteral as tupLit: this.#lowerTupleLiteralExpr(tupLit)
       case RangeExpression as range: this.#lowerRangeExpr(range)
       case TryExpression as tryExpr: this.#lowerTryExpression(tryExpr)
+      case MapLiteral as mapLit: this.#lowerMapLiteral(mapLit)
+      case PipelineExpression as pipe: this.#lowerPipeline(pipe)
+      case PipePlaceholder: this.#lowerPipePlaceholder()
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
   }
@@ -5219,19 +5224,7 @@ final class FunctionLowerer {
    */
   #constructInstance(classInfo: ClassCodegenInfo, cKey: ClassKey,
       argExprs: Array<Expression>): i32 {
-    let structType = classInfo.structType;
-    let resultVt: ValType = new ValTypeRef(structType);
-    let typeRef = this.b.addRef(new IrRefType(structType));
-    let inst = this.b.emit(IrOp.struct_new_default, resultVt, -1, typeRef);
-
-    if (classInfo.vtableGlobal != null) {
-      let vtGlobal = classInfo.vtableGlobal as WasmGlobal;
-      let vtRef = this.b.addRef(new IrRefGlobal(vtGlobal));
-      let vtValue = this.b.emit(IrOp.global_get, vtGlobal.type, -1, vtRef);
-      let fieldRef = this.b.addRef(new IrRefField(structType, '<vtable>'));
-      let pairIdx = this.b.pushExtra(this.#twoValues(inst, vtValue));
-      this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
-    }
+    let inst = this.#instanceShell(classInfo);
 
     let ctorKey = getClassMethodKey(cKey, '<constructor>');
     if (let (true, ctor) = this.wasm.classMethodMap.get(ctorKey)) {
@@ -5256,6 +5249,113 @@ final class FunctionLowerer {
       this.#bail('constructor missing');
     }
     return inst;
+  }
+
+  /** struct.new_default plus the vtable store: a default-initialized
+   * instance, ready for its constructor call. */
+  #instanceShell(classInfo: ClassCodegenInfo): i32 {
+    let structType = classInfo.structType;
+    let resultVt: ValType = new ValTypeRef(structType);
+    let typeRef = this.b.addRef(new IrRefType(structType));
+    let inst = this.b.emit(IrOp.struct_new_default, resultVt, -1, typeRef);
+    if (classInfo.vtableGlobal != null) {
+      let vtGlobal = classInfo.vtableGlobal as WasmGlobal;
+      let vtRef = this.b.addRef(new IrRefGlobal(vtGlobal));
+      let vtValue = this.b.emit(IrOp.global_get, vtGlobal.type, -1, vtRef);
+      let fieldRef = this.b.addRef(new IrRefField(structType, '<vtable>'));
+      let pairIdx = this.b.pushExtra(this.#twoValues(inst, vtValue));
+      this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+    }
+    return inst;
+  }
+
+  /**
+   * Map literals construct their checked HashMap class (shell +
+   * constructor with the capacity argument) and then call `[]=` once
+   * per entry — streaming's shape, including the minimum capacity.
+   */
+  #lowerMapLiteral(lit: MapLiteral): i32 {
+    let tOpt = this.#substitutedNodeType(lit);
+    if (tOpt == null) {
+      this.#bail('untyped map literal');
+    }
+    if (!(tOpt is ClassType)) {
+      this.#bail('map literal type');
+    }
+    let ct = tOpt as ClassType;
+    let cKey = getClassKey(ct);
+    let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
+    if (infoOpt == null) {
+      this.#bail('map class not discovered');
+    }
+    let ctorOpt = if (let (true, c) = this.wasm.classMethodMap.get(
+        getClassMethodKey(cKey, '<constructor>'))) c else null;
+    if (ctorOpt == null) {
+      this.#bail('map constructor missing');
+    }
+    let ctor = ctorOpt as WasmFunction;
+    if (ctor.signature.params.length != 2 ||
+        !(ctor.signature.params[1] is ValTypeI32)) {
+      this.#bail('map constructor shape');
+    }
+    let setOpt = if (let (true, f) = this.wasm.classMethodMap.get(
+        getClassMethodKey(cKey, '[]='))) f else null;
+    if (setOpt == null) {
+      this.#bail('map setter missing');
+    }
+    let setFn = setOpt as WasmFunction;
+    let setSig = setFn.signature;
+    if (setSig.params.length != 3 || setSig.returns.length != 0) {
+      this.#bail('map setter shape');
+    }
+    let inst = this.#instanceShell(infoOpt as ClassCodegenInfo);
+    let capacity = if (lit.entries.length > 16) lit.entries.length else 16;
+    let capValue = this.b.constI32(capacity, new ValTypeI32());
+    this.b.callFunc(this.b.addRef(new IrRefFunc(ctor)),
+        this.#twoValues(inst, capValue), null);
+    for (let entry in lit.entries) {
+      this.#requireSupported(setSig.params[1], 'map key type');
+      this.#requireSupported(setSig.params[2], 'map value type');
+      let key = this.#lowerExpressionCtx(entry.key, setSig.params[1]);
+      if (!isValSubtype(this.#valueType(key), setSig.params[1])) {
+        this.#failConformance(key, setSig.params[1], 'map key type');
+      }
+      let value = this.#lowerExpressionCtx(entry.value, setSig.params[2]);
+      if (!isValSubtype(this.#valueType(value), setSig.params[2])) {
+        this.#failConformance(value, setSig.params[2], 'map value type');
+      }
+      let args = new Array<i32>();
+      args.push(inst);
+      args.push(key);
+      args.push(value);
+      this.b.callFunc(this.b.addRef(new IrRefFunc(setFn)), args, null);
+    }
+    return inst;
+  }
+
+  /**
+   * `left |> right`: the left value is an SSA value on the pipeline
+   * stack; every $ inside the right side reads it directly — no
+   * temporaries needed.
+   */
+  #lowerPipeline(pipe: PipelineExpression): i32 {
+    let left = this.#lowerExpression(pipe.left);
+    this.pipelineValues.push(left);
+    let result = try {
+      this.#lowerExpression(pipe.right)
+    } catch (e) {
+      this.pipelineValues.pop();
+      throw e
+    };
+    this.pipelineValues.pop();
+    return result;
+  }
+
+  #lowerPipePlaceholder(): i32 {
+    if (this.pipelineValues.length == 0) {
+      this.#bail('pipeline placeholder outside pipeline');
+    }
+    return this.pipelineValues[this.pipelineValues.length - 1];
   }
 
   /**
