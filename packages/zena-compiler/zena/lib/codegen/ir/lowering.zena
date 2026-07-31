@@ -224,6 +224,18 @@ let usesSynthesizedMachinery = (func: WasmFunction): boolean => {
       func.intrinsic != null;
 };
 
+/** Injected-default bookkeeping for one call site (see
+ * #defaultArgInfo): where the defaults start, the callee's parameter
+ * symbols, the declaring class of this-referencing defaults, and the
+ * argument values lowered so far. */
+final class DefaultArgInfo {
+  originalCount: i32;
+  paramSymbols: Array<SymbolId> | null;
+  owner: ClassType | null;
+  values = new Array<i32>();
+  new(this.originalCount, this.paramSymbols, this.owner);
+}
+
 final class MemberTarget {
   owner: WasmStruct;
   /** Set for physical-field reads. */
@@ -2834,11 +2846,12 @@ final class FunctionLowerer {
     if (sig.params.length != call.args.length) {
       this.#bail('specialized call arity');
     }
+    let defaults = this.#defaultArgInfo(call);
     let args = new Array<i32>();
     for (var i = 0; i < call.args.length; i += 1) {
       let pt = sig.params[i];
       this.#requireSupported(pt, 'method param type');
-      let v = this.#lowerExpressionCtx(call.args[i], pt);
+      let v = this.#lowerArgWithDefaults(call, i, pt, defaults, -1);
       if (!isValSubtype(this.#valueType(v), pt)) {
         this.#failConformance(v, pt, 'method argument type');
       }
@@ -6430,12 +6443,13 @@ final class FunctionLowerer {
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
       this.#failConformance(receiver, sig.params[0], 'method receiver type');
     }
+    let defaults = this.#defaultArgInfo(call);
     let args = new Array<i32>();
     args.push(receiver);
     for (var i = 0; i < call.args.length; i += 1) {
       let paramVt = sig.params[i + 1];
       this.#requireSupported(paramVt, 'method param type');
-      let value = this.#lowerExpressionCtx(call.args[i], paramVt);
+      let value = this.#lowerArgWithDefaults(call, i, paramVt, defaults, receiver);
       if (!isValSubtype(this.#valueType(value), paramVt)) {
         this.#failConformance(value, paramVt, 'method argument type');
       }
@@ -7912,6 +7926,102 @@ final class FunctionLowerer {
   }
 
   /**
+   * Caller-supplied default arguments: the checker injects each
+   * omitted parameter's default expression into the call's argument
+   * list, so args at index >= the ORIGINAL count are the callee's
+   * own expressions. They lower here, in the caller, with the
+   * callee's context bound: `this` is the call's receiver, the
+   * callee's earlier parameters are the argument values already
+   * computed, and the lexical class is the default's declaring class
+   * (private-field defaults resolve against it). Null when the call
+   * carries no injected defaults.
+   */
+  #defaultArgInfo(call: CallExpression): DefaultArgInfo | null {
+    let orig = this.func.model.getOriginalArgCount(call);
+    if (orig == -1 || orig >= call.args.length) {
+      return null;
+    }
+    let ftNode = this.func.model.getNodeType(call.callee);
+    let paramSyms = if (ftNode != null && ftNode is FunctionType) {
+      (ftNode as FunctionType).parameterSymbols
+    } else {
+      null
+    };
+    let ownerT = this.func.model.getDefaultArgsOwner(call);
+    let owner = if (ownerT != null && ownerT is ClassType) {
+      ownerT as ClassType
+    } else {
+      null
+    };
+    return new DefaultArgInfo(orig, paramSyms, owner);
+  }
+
+  /**
+   * Lowers one call argument. Explicit arguments lower as written;
+   * injected defaults lower under the callee's bindings (see
+   * #defaultArgInfo), restored even when lowering bails — a leaked
+   * swap would corrupt the streaming fallback's regeneration.
+   */
+  #lowerArgWithDefaults(call: CallExpression, i: i32, paramVt: ValType,
+      info: DefaultArgInfo | null, receiver: i32): i32 {
+    if (info == null || i < (info as DefaultArgInfo).originalCount) {
+      let value = this.#lowerExpressionCtx(call.args[i], paramVt);
+      if (info != null) {
+        (info as DefaultArgInfo).values.push(value);
+      }
+      return value;
+    }
+    let inf = info as DefaultArgInfo;
+    let savedThis = this.thisValue;
+    let savedClass = this.func.classType;
+    let savedSyms = new Array<SymbolId>();
+    let savedVals = new Array<i32>();
+    let syms = inf.paramSymbols;
+    if (syms != null) {
+      let symList = syms as Array<SymbolId>;
+      for (var j = 0; j < inf.values.length && j < symList.length; j += 1) {
+        let symId = symList[j];
+        if (symId == (-1 as SymbolId)) {
+          continue;
+        }
+        savedSyms.push(symId);
+        savedVals.push(
+            if (let (true, v) = this.env.get(symId)) v else -1);
+        this.env[symId] = inf.values[j];
+      }
+    }
+    if (receiver >= 0) {
+      this.thisValue = receiver;
+    }
+    if (inf.owner != null) {
+      this.func.classType = inf.owner;
+    }
+    let value = try {
+      this.#lowerExpressionCtx(call.args[i], paramVt)
+    } catch (e) {
+      this.thisValue = savedThis;
+      this.func.classType = savedClass;
+      this.#restoreEnvBindings(savedSyms, savedVals);
+      throw e
+    };
+    this.thisValue = savedThis;
+    this.func.classType = savedClass;
+    this.#restoreEnvBindings(savedSyms, savedVals);
+    inf.values.push(value);
+    return value;
+  }
+
+  #restoreEnvBindings(syms: Array<SymbolId>, vals: Array<i32>): void {
+    for (var j = 0; j < syms.length; j += 1) {
+      if (vals[j] < 0) {
+        this.env.delete(syms[j]);
+      } else {
+        this.env[syms[j]] = vals[j];
+      }
+    }
+  }
+
+  /**
    * Direct calls only: the callee is an identifier statically resolving
    * to a non-generic, non-adapted top-level function (or import) whose
    * signature is all scalars and whose arity matches the call exactly
@@ -8015,9 +8125,10 @@ final class FunctionLowerer {
     for (var i = 0; i < sig.params.length; i += 1) {
       this.#requireSupported(sig.params[i], 'call param type');
     }
+    let defaults = this.#defaultArgInfo(call);
     let args = new Array<i32>();
     for (var i = 0; i < call.args.length; i += 1) {
-      let value = this.#lowerExpressionCtx(call.args[i], sig.params[i]);
+      let value = this.#lowerArgWithDefaults(call, i, sig.params[i], defaults, -1);
       if (!isValSubtype(this.#valueType(value), sig.params[i])) {
         this.#failConformance(value, sig.params[i], 'call argument type');
       }
