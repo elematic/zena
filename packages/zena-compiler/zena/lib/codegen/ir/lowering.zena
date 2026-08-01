@@ -769,6 +769,15 @@ final class FunctionLowerer {
   loops = new Array<LoopCtx>();
   /** Values piped by enclosing |> expressions; $ reads the top. */
   pipelineValues = new Array<i32>();
+  /**
+   * Values known to be EXACTLY their class (freshly constructed by
+   * struct.new in this function, or a singleton global). A method
+   * call on an exact receiver never needs the vtable, even when
+   * subclasses override the slot — no subclass instance can be here.
+   * Merges, cells, and casts produce new ids, so exactness is
+   * conservatively local.
+   */
+  exactValues = new HashSet<i32>();
   var reachable = true;
   /** The receiver value for instance methods; -1 elsewhere. */
   var thisValue = -1;
@@ -5650,7 +5659,9 @@ final class FunctionLowerer {
     if (classInfo.singletonGlobal != null) {
       let singleton = classInfo.singletonGlobal as WasmGlobal;
       let globalRef = this.b.addRef(new IrRefGlobal(singleton));
-      return this.b.emit(IrOp.global_get, singleton.type, -1, globalRef);
+      let sv = this.b.emit(IrOp.global_get, singleton.type, -1, globalRef);
+      this.exactValues.add(sv);
+      return sv;
     }
 
     return this.#constructInstance(classInfo, cKey, expr.args);
@@ -5695,6 +5706,7 @@ final class FunctionLowerer {
     let resultVt: ValType = new ValTypeRef(structType);
     let typeRef = this.b.addRef(new IrRefType(structType));
     let inst = this.b.emit(IrOp.struct_new_default, resultVt, -1, typeRef);
+    this.exactValues.add(inst);
     if (classInfo.vtableGlobal != null) {
       let vtGlobal = classInfo.vtableGlobal as WasmGlobal;
       let vtRef = this.b.addRef(new IrRefGlobal(vtGlobal));
@@ -7086,7 +7098,8 @@ final class FunctionLowerer {
     // independently (member-lookup.md §5.3), so the check keys on the
     // SLOT name. An overridden slot dispatches through the vtable.
     var isVirtual = false;
-    if (!isPrivate && this.#memberProvidedBySubclass(classInfo, slotName)) {
+    if (!isPrivate && !this.exactValues.has(receiver) &&
+        this.#memberProvidedBySubclass(classInfo, slotName)) {
       if (this.#vtableSlotIndex(classInfo, slotName) < 0) {
         this.#bail('overridden method without vtable slot');
       }
