@@ -11,6 +11,9 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Found**: 2026-07-31 (review question on #95: "if-let should work
   with any refutable pattern — do we need more coverage?")
 - **Severity**: medium (checker-accepted syntax crashes codegen)
+- **Deferred**: per review (2026-07-31) — implement once the bootstrap
+  compiler and streaming backend are retired; one implementation
+  instead of three.
 - **Workaround**: destructure through an inline-tuple shape, or use a
   match expression.
 - **Details**: Both checkers accept non-tuple refutable patterns in
@@ -30,6 +33,10 @@ immediately trying to fix it (which can pollute the current task's context).
 ### Method/field same-name semantics are unsettled
 - **Found**: 2026-07-31 (review discussion on #87's field-closure calls)
 - **Severity**: medium (silent acceptance with resolution divergence)
+- **Deferred**: per review (2026-07-31) — fix once the bootstrap
+  compiler and streaming backend are retired; one implementation to
+  change instead of three. ZIR's loud bail keeps the backends agreeing
+  until then.
 - **Workaround**: none needed yet; ZIR refuses the ambiguous case.
 - **Details**: Members share one string-keyed namespace, but the
   interactions between function-typed FIELDS and METHODS are only
