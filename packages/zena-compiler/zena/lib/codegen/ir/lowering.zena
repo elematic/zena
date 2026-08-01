@@ -1971,7 +1971,8 @@ final class FunctionLowerer {
     }
     let bindingVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
     this.#requireSupported(bindingVt, 'binding type');
-    let value = this.#lowerExpressionCtx(vd.init, bindingVt);
+    let value = this.#conformToBinding(
+        this.#lowerExpressionCtx(vd.init, bindingVt), bindingVt);
     if (this.#isCelled((sym as Symbol).id)) {
       // The binding lives in a heap cell shared with capturing
       // closures; the environment holds the (invariant) cell ref.
@@ -3641,12 +3642,21 @@ final class FunctionLowerer {
       if (wantTarget == haveTarget) {
         return this.b.emit(IrOp.ref_as_non_null, wantVt, value, -1);
       }
-      this.#bail('narrowed to subtype');
     }
     if (isValSubtype(haveVt, wantVt)) {
       // Widening (e.g. a non-null value read at a nullable type): the
       // value passes as-is under wasm subtyping.
       return value;
+    }
+    // Downcast narrowing: the checker's flow analysis licenses reads
+    // at a SUBTYPE of the stored value's type (`x is Dog` narrowing
+    // later reads to Dog). Narrowing arrives as explicit coercions
+    // (ir.md §5): emit the cast at the use. Only strictly-downward
+    // casts qualify — any other mismatch stays a loud bail.
+    if ((wantVt is ValTypeRef || wantVt is ValTypeRefNull) &&
+        isRefValType(haveVt) && isValSubtype(wantVt, haveVt)) {
+      return this.b.emit(IrOp.ref_cast, wantVt, value,
+          this.b.internType(wantVt));
     }
     return this.#bailValue('identifier type shift');
   }
@@ -4940,6 +4950,26 @@ final class FunctionLowerer {
    * Binds a pattern symbol, downcasting to the (narrowed) binding type
    * when needed — the preceding ref.test guarantees the cast succeeds.
    */
+  /**
+   * Values stored into a binding conform to the binding's DECLARED
+   * type: env-merge params are typed from the binding, so a wider
+   * value (an erased eqref flowing out of a merge-typed expression)
+   * must cast down at the store — streaming's typed locals enforce
+   * exactly this at local.set. Only downward ref casts qualify; any
+   * other mismatch bails loudly.
+   */
+  #conformToBinding(value: i32, bindingVt: ValType): i32 {
+    let have = this.#valueType(value);
+    if (isValSubtype(have, bindingVt)) {
+      return value;
+    }
+    if (isRefValType(have) && isValSubtype(bindingVt, have)) {
+      return this.b.emit(IrOp.ref_cast, bindingVt, value,
+          this.b.internType(bindingVt));
+    }
+    return this.#bailValue('binding value type');
+  }
+
   #bindPatternSym(sym: Symbol, value: i32): void {
     let bindingType = this.func.model.getBindingType(sym);
     if (bindingType == null) {
@@ -8958,6 +8988,14 @@ final class FunctionLowerer {
       let current = if (celled) this.#cellRead(this.env[resolved.id])
           else this.env[resolved.id];
       value = this.#combineCompound(current, assign, assign.left);
+    }
+    if (let (true, storeSym) = this.symbols.get(resolved.id)) {
+      let bt = this.func.model.getBindingType(storeSym);
+      if (bt != null) {
+        let bvt = typeToValTypeWithSub(this.wasm, bt as Type, this.func);
+        this.#requireSupported(bvt, 'binding type');
+        value = this.#conformToBinding(value, bvt);
+      }
     }
     if (celled) {
       // Mutation goes through the heap cell; the env binding (the cell

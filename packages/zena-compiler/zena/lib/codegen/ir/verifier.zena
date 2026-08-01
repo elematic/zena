@@ -17,10 +17,26 @@
  */
 import { Array } from 'zena:array';
 import { i32ToString } from 'zena:string-convert';
-import { valTypeEquals } from '../wasm.zena';
+import { valTypeEquals, ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeRefNull } from '../wasm.zena';
 import { IrBody, IrOp, isIrTerminator, irOpName } from './ir.zena';
-import { isValSubtype } from '../wasm-module.zena';
+import { isValSubtype, WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
+
+let debugValType = (vt: ValType): String => {
+  return match (vt) {
+    case ValTypeI32: 'i32'
+    case ValTypeI64: 'i64'
+    case ValTypeF32: 'f32'
+    case ValTypeF64: 'f64'
+    case ValTypeAnyRef: 'anyref'
+    case ValTypeEqRef: 'eqref'
+    case ValTypeStructRef: 'structref'
+    case ValTypeRef as r: 'ref ' + (if (r.target is WasmStruct) ((r.target as WasmStruct).name ?? '?') else 'other')
+    case ValTypeRefNull as rn: 'refnull ' + (if (rn.target is WasmStruct) ((rn.target as WasmStruct).name ?? '?') else 'other')
+    case _: 'other'
+  };
+};
+
 
 export final class IrVerifier {
   body: IrBody;
@@ -146,7 +162,11 @@ export final class IrVerifier {
             if (!isValSubtype(argType, paramType)) {
               this.#error('b' + i32ToString(blockId) + ': branch arg %' +
                   i32ToString(arg) + ' type does not match param %' +
-                  i32ToString(param) + ' of b' + i32ToString(s.target));
+                  i32ToString(param) + ' of b' + i32ToString(s.target) +
+                  ' [arg ' + debugValType(argType) + ' vs param ' +
+                  debugValType(paramType) + '; arg op ' +
+                  irOpName(body.op(arg)) + ', param op ' +
+                  irOpName(body.op(param)) + ']');
             }
           }
           i += 1;
