@@ -605,6 +605,18 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   if (func.importWrapperTarget != null) {
     return lowerImportWrapper(func);
   }
+  // Case-class synthesizers win over any carried node: a leaf variant
+  // whose sealed base writes hashCode()/== keeps the base's METHOD
+  // NODE attached while the flag says "synthesize structurally" —
+  // streaming dispatches on the flag first, so mirror that.
+  if (func.isCaseClassEq) {
+    let lowerer = new FunctionLowerer(wasm, func);
+    return lowerer.lowerCaseClassEq();
+  }
+  if (func.isCaseClassHash) {
+    let lowerer = new FunctionLowerer(wasm, func);
+    return lowerer.lowerCaseClassHash();
+  }
   if (func.node == null) {
     if (func.interfaceTrampolineTarget != null) {
       return synthesizeInterfaceTrampoline(func);
@@ -643,14 +655,6 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
       let lowerer = new FunctionLowerer(wasm, func);
       return lowerer.lowerSynthesizedConstructor();
     }
-    if (func.isCaseClassEq) {
-      let lowerer = new FunctionLowerer(wasm, func);
-      return lowerer.lowerCaseClassEq();
-    }
-    if (func.isCaseClassHash) {
-      let lowerer = new FunctionLowerer(wasm, func);
-      return lowerer.lowerCaseClassHash();
-    }
     // Vtable slot stubs: the vtable struct declares one exactly-typed
     // funcref field per method of the hierarchy, so a method with no
     // proven call still needs a function of the right signature in its
@@ -678,10 +682,9 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   // no AST node (field-backed synthesized accessors above).
   if (func.isImport || func.importWrapperTarget != null ||
       func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
-      func.isClosureWrapper || func.isClosureTrampoline ||
-      func.isCaseClassEq || func.isCaseClassHash) {
+      func.isClosureWrapper || func.isClosureTrampoline) {
     // Wrapper flags on a node-carrying function: not a shape lowering
-    // models (the node-null routes above handle the synthesized ones).
+    // models (the hoisted routes above handle the synthesized ones).
     throw new ZirUnsupported("function shape");
   }
   // Monomorphized generic bodies (_spec_ copies) carry both the
@@ -3802,12 +3805,33 @@ final class FunctionLowerer {
     }
     this.#requireScalarNode(bin.left);
     this.#requireScalarNode(bin.right);
-    let left = this.#lowerExpression(bin.left);
-    let right = this.#lowerExpression(bin.right);
-    let leftType = this.#valueType(left);
+    var left = this.#lowerExpression(bin.left);
+    var right = this.#lowerExpression(bin.right);
+    var leftType = this.#valueType(left);
     let rightType = this.#valueType(right);
     if (!valTypeEquals(leftType, rightType)) {
-      this.#bail('mixed operand types');
+      // Mixed numeric operands promote to the wider type, mirroring
+      // streaming's table: f64 wins; f32 wins unless the other side
+      // is i64 (then f64); i64 wins over i32.
+      var targetOpt: ValType | null = null;
+      if (leftType is ValTypeF64 || rightType is ValTypeF64) {
+        targetOpt = new ValTypeF64();
+      } else if (leftType is ValTypeF32 || rightType is ValTypeF32) {
+        targetOpt = if (leftType is ValTypeI64 || rightType is ValTypeI64) {
+          new ValTypeF64()
+        } else {
+          new ValTypeF32()
+        };
+      } else if (leftType is ValTypeI64 || rightType is ValTypeI64) {
+        targetOpt = new ValTypeI64();
+      }
+      if (targetOpt == null) {
+        this.#bail('mixed operand types');
+      }
+      let target = targetOpt as ValType;
+      left = this.#scalarConvert(left, target);
+      right = this.#scalarConvert(right, target);
+      leftType = target;
     }
     let unsigned = this.#isUnsignedNode(bin.left) || this.#isUnsignedNode(bin.right);
     let op = this.#mapBinaryOp(bin.operator, leftType, unsigned);
@@ -5252,11 +5276,23 @@ final class FunctionLowerer {
       return this.b.emit(IrOp.ref_cast, dstVt, value,
           this.b.internType(dstVt));
     }
-    // NOTE: unsigned sources use the SIGNED conversion ops below,
-    // matching the self-hosted streaming backend exactly (it has no
-    // _u conversion path). The bootstrap DOES use _u opcodes here, so
-    // u32 values >= 2^31 cast to i64/f64 diverge between compilers —
-    // filed in BUGS.md; parity with streaming wins until that ruling.
+    return this.#scalarConvert(value, dstVt);
+  }
+
+  /**
+   * Numeric conversions between scalar wasm types, shared by `as`
+   * casts and mixed-operand promotion. NOTE: unsigned sources use the
+   * SIGNED conversion ops, matching the self-hosted streaming backend
+   * exactly (it has no _u conversion path). The bootstrap DOES use _u
+   * opcodes here, so u32 values >= 2^31 cast to i64/f64 diverge
+   * between compilers — filed in BUGS.md; parity with streaming wins
+   * until that ruling.
+   */
+  #scalarConvert(value: i32, dstVt: ValType): i32 {
+    let srcVt = this.#valueType(value);
+    if (valTypeEquals(srcVt, dstVt)) {
+      return value;
+    }
     if (srcVt is ValTypeI32) {
       if (dstVt is ValTypeI64) { return this.b.emit(IrOp.i64_extend_i32_s, dstVt, value, -1); }
       if (dstVt is ValTypeF64) { return this.b.emit(IrOp.f64_convert_i32_s, dstVt, value, -1); }
@@ -7654,9 +7690,15 @@ final class FunctionLowerer {
     if (this.#isNullableRef(va) || this.#isNullableRef(vb)) {
       this.#bail('nullable eq operand');
     }
+    if (!(ctA as ClassType).members.has('==')) {
+      // No content equality declared: eq() compares identity. The
+      // operands are non-null same-class references here, so plain
+      // ref.eq is streaming's diamond minus its dead arms.
+      return this.b.binary(IrOp.ref_eq, new ValTypeI32(), a, b2);
+    }
     let eqMethod = this.#resolveDevirtualizedMethod(ctA as ClassType, "==");
     if (eqMethod == null) {
-      this.#bail('eq operand type');
+      this.#bail('eq dispatch');
     }
     return this.#refEqFastPathCall(eqMethod as WasmFunction, a, b2, false);
   }
@@ -7667,8 +7709,8 @@ final class FunctionLowerer {
    *   i64              -> lo ^ hi fold (mirrors streaming);
    *   String           -> the runtime string-hash helper;
    *   class w/hashCode -> DEVIRTUALIZED direct call;
-   *   floats (no reinterpret IrOps yet), nullable refs, erased
-   *   operands, virtual hashCode -> bail to streaming.
+   *   floats           -> +0.0 normalize, reinterpret (f64 folds);
+   *   nullable refs, erased operands, virtual hashCode -> bail.
    */
   #lowerHashIntrinsic(call: CallExpression): i32 {
     let i32vt = new ValTypeI32() as ValType;
@@ -7682,6 +7724,20 @@ final class FunctionLowerer {
     }
     if (vv is ValTypeI64) {
       return this.#hashI64Fold(v);
+    }
+    // Floats hash by bit pattern after adding +0.0 (streaming's shape
+    // exactly — the add canonicalizes -0.0 to +0.0 so both zeros land
+    // in one bucket; both backends must produce identical hashes).
+    if (vv is ValTypeF32) {
+      let zero32 = this.b.constF32(0.0, new ValTypeF32());
+      let norm32 = this.b.binary(IrOp.f32_add, new ValTypeF32() as ValType, v, zero32);
+      return this.b.emit(IrOp.i32_reinterpret_f32, new ValTypeI32(), norm32, -1);
+    }
+    if (vv is ValTypeF64) {
+      let zero64 = this.b.constF64(0.0, new ValTypeF64());
+      let norm64 = this.b.binary(IrOp.f64_add, new ValTypeF64() as ValType, v, zero64);
+      let bits = this.b.emit(IrOp.i64_reinterpret_f64, new ValTypeI64(), norm64, -1);
+      return this.#hashI64Fold(bits);
     }
     let ctV = this.#classTypeOfValue(v);
     if (ctV == null) {
@@ -7851,21 +7907,60 @@ final class FunctionLowerer {
     let fromValue = this.#classTypeOfValue(left);
     let recvCt = if (fromValue != null) fromValue as ClassType else leftCt;
     let methodOpt = this.#resolveDevirtualizedMethod(recvCt, opMember);
-    if (methodOpt == null) {
+    if (methodOpt != null) {
+      let method = methodOpt as WasmFunction;
+      let sig = method.signature;
+      if (sig.params.length != 2 || sig.returns.length != 1) {
+        this.#bail('operator method shape');
+      }
+      let recv = this.#coerceTo(left, sig.params[0]);
+      let arg = this.#coerceTo(right, sig.params[1]);
+      let funcRef = this.b.addRef(new IrRefFunc(method));
+      let args = new Array<i32>();
+      args.push(recv);
+      args.push(arg);
+      return this.b.callFunc(funcRef, args, sig.returns[0]);
+    }
+    // Overridden operators dispatch through the class vtable like any
+    // other overridden method (member-lookup.md §5.5 — operators fold
+    // into method resolution). The slot signature is the statically
+    // resolved member's.
+    var resolvedOpt: WasmFunction | null = null;
+    var currClass: ClassType | null = recvCt;
+    while (currClass != null && resolvedOpt == null) {
+      var g: ClassType | null = currClass;
+      while (g != null && resolvedOpt == null) {
+        let key = getClassMethodKey(getClassKey(g as ClassType), opMember);
+        if (let (true, m) = this.wasm.classMethodMap.get(key)) {
+          resolvedOpt = m;
+        }
+        g = (g as ClassType).genericSource;
+      }
+      currClass = (currClass as ClassType).superType;
+    }
+    if (resolvedOpt == null) {
       this.#bail('operator dispatch');
     }
-    let method = methodOpt as WasmFunction;
-    let sig = method.signature;
-    if (sig.params.length != 2 || sig.returns.length != 1) {
+    let resolvedM = resolvedOpt as WasmFunction;
+    let vsig = resolvedM.signature;
+    if (vsig.params.length != 2 || vsig.returns.length != 1) {
       this.#bail('operator method shape');
     }
-    let recv = this.#coerceTo(left, sig.params[0]);
-    let arg = this.#coerceTo(right, sig.params[1]);
-    let funcRef = this.b.addRef(new IrRefFunc(method));
-    let args = new Array<i32>();
-    args.push(recv);
-    args.push(arg);
-    return this.b.callFunc(funcRef, args, sig.returns[0]);
+    let infoOpt = if (let (true, info) = this.wasm.classInfos.get(getClassKey(recvCt))) info else null;
+    if (infoOpt == null) {
+      this.#bail('operator dispatch');
+    }
+    let classInfo = infoOpt as ClassCodegenInfo;
+    if (this.#vtableSlotIndex(classInfo, opMember) < 0) {
+      this.#bail('operator dispatch');
+    }
+    let vrecv = this.#coerceTo(left, vsig.params[0]);
+    let varg = this.#coerceTo(right, vsig.params[1]);
+    let vargs = new Array<i32>();
+    vargs.push(vrecv);
+    vargs.push(varg);
+    return this.#lowerVtableCall(vrecv, classInfo, opMember, vsig,
+        vargs, vsig.returns[0]);
   }
 
   /**
