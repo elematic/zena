@@ -1,7 +1,9 @@
 /**
- * ZIR → wasm emission (docs/design/ir.md §12), M2 form: every value gets
- * a wasm local (no stack scheduling yet), and the CFG is reconstructed
- * into wasm's structured control flow with the dominator-based stackifier
+ * ZIR → wasm emission (docs/design/ir.md §12). Values get wasm locals
+ * except where stack scheduling (#scheduleStack) keeps them on the wasm
+ * value stack; copy coalescing (#coalesceCopies) lets branch arguments
+ * share their target params' locals. The CFG is reconstructed into
+ * wasm's structured control flow with the dominator-based stackifier
  * (Ramsey, "Beyond Relooper" — reducible CFGs only, which lowering
  * guarantees).
  *
@@ -12,14 +14,16 @@
  *  - Branch edges either `br` to a label (backward edges to loop headers,
  *    forward edges to merge nodes) or inline the target's subtree in
  *    place (targets with a single forward predecessor).
- *  - Branch arguments become local copies into the target's param locals,
- *    via per-param temporaries when more than one argument could alias.
+ *  - Branch arguments become local copies into the target's param locals.
+ *    Coalescing turns most into identity moves, which #planMoves drops;
+ *    residual moves are ordered so no source is clobbered before it is
+ *    read, with a per-param temp breaking genuine cycles (param swaps).
  */
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
-import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, WasmType, heapTypeToSigned, HeapType } from '../wasm.zena';
+import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, WasmType, heapTypeToSigned, HeapType, valTypeEquals } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
 import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isIrTerminator } from './ir.zena';
@@ -41,8 +45,16 @@ export final class ZirFunctionEmitter {
   cfg: IrCfg;
   /** Per instruction id: assigned wasm local index, or -1. */
   localOf = new Array<i32>();
-  /** Per block-param instruction id: copy temp local, or -1. */
+  /** Per block-param instruction id: cycle-breaking temp local, or -1. */
   tempOf = new Array<i32>();
+  /** Per instruction id: copy-coalescing class representative. */
+  #classOf = new Array<i32>();
+  /**
+   * Residual copy sequence per branch edge, keyed by the edge's
+   * argStart (unique per successor record): flat (src, dst) local
+   * pairs. Edges whose moves all coalesced away have no entry.
+   */
+  #movePlans = new HashMap<i32, Array<i32>>();
   /** Locals beyond the signature params, in index order. */
   localTypes = new Array<ValType>();
   /** Multi-result call -> its mv_get projections, ascending index. */
@@ -105,11 +117,19 @@ export final class ZirFunctionEmitter {
       this.localOf[entryParams[i]] = i;
       i += 1;
     }
+    this.#coalesceCopies();
     i = 0;
     while (i < body.instCount()) {
       if (body.producesValue(i) && this.localOf[i] < 0 && !this.streamed[i]) {
-        this.localOf[i] = paramCount + this.localTypes.length;
-        this.localTypes.push(this.#localTypeFor(body.resultType(i) as ValType));
+        let r = this.#classOf[i];
+        if (this.localOf[r] >= 0) {
+          this.localOf[i] = this.localOf[r];
+        } else {
+          let idx = paramCount + this.localTypes.length;
+          this.localTypes.push(this.#localTypeFor(body.resultType(i) as ValType));
+          this.localOf[r] = idx;
+          this.localOf[i] = idx;
+        }
       }
       if (body.op(i) == IrOp.mv_get) {
         // Instruction ids ascend, and the builder emits projections in
@@ -125,28 +145,369 @@ export final class ZirFunctionEmitter {
       }
       i += 1;
     }
-    // Copy temporaries: any edge passing more than one argument routes the
-    // copies through per-param temps, so a swap of a loop's own params
-    // cannot clobber a source before it is read.
-    var blockId = 0;
-    while (blockId < body.blocks.length) {
-      let blk = body.blocks[blockId];
-      if (blk.insts.length == 0) {
-        blockId += 1;
-        continue;
+    this.#planMoves();
+  }
+
+  /**
+   * Copy coalescing over branch edges (ir.md §12): a branch argument
+   * and its target block param share one wasm local when their live
+   * ranges do not interfere — the argument's definition then writes
+   * the param's local directly, and the edge copy degenerates to an
+   * identity move that #planMoves drops. Classes are built with a
+   * union-find over every (arg, param) edge pair, guarded by an SSA
+   * liveness analysis: values may share a local only if neither is
+   * live just after the other's definition (uses read their operands
+   * before the definition writes, so a definition's own operands do
+   * not conflict). Entry params keep their exact signature locals —
+   * possibly non-nullable, unlike the nullable locals #localTypeFor
+   * hands out — so their classes never grow.
+   */
+  #coalesceCopies(): void {
+    let body = this.body;
+    let count = body.instCount();
+    let blocks = body.blocks;
+    let nb = blocks.length;
+    let streamed = this.streamed;
+    let localOf = this.localOf;
+
+    // Decoded value operands (uses) per instruction, computed once.
+    let usesOf = new Array<Array<i32>>();
+    for (var i = 0; i < count; i += 1) {
+      let ops = new Array<i32>();
+      body.appendValueOperands(i, ops);
+      usesOf.push(ops);
+    }
+
+    // Position of each instruction within its block; params sit at -1,
+    // before every instruction. mv_get projections adopt their call's
+    // position: the call's emission is what writes projection locals,
+    // so their live ranges must start there.
+    let posOf = new Array<i32>();
+    for (var i = 0; i < count; i += 1) {
+      posOf.push(-1);
+    }
+    for (let blk in blocks) {
+      for (var k = 0; k < blk.insts.length; k += 1) {
+        posOf[blk.insts[k]] = k;
       }
-      let term = blk.insts[blk.insts.length - 1];
-      for (let s in body.successors(term)) {
-        if (s.argCount > 1) {
-          for (let p in body.blocks[s.target].params) {
-            if (this.tempOf[p] < 0) {
-              this.tempOf[p] = paramCount + this.localTypes.length;
-              this.localTypes.push(this.#localTypeFor(body.resultType(p) as ValType));
+    }
+    for (var i = 0; i < count; i += 1) {
+      if (body.op(i) == IrOp.mv_get &&
+          body.instBlock[i] == body.instBlock[body.a[i]]) {
+        posOf[i] = posOf[body.a[i]];
+      }
+    }
+
+    // Block-granularity liveness bitsets, flattened [block * words + w].
+    let words = (count + 31) >> 5;
+    let liveIn = new Array<i32>();
+    let liveOut = new Array<i32>();
+    let defs = new Array<i32>();
+    let upUse = new Array<i32>();
+    for (var i = 0; i < nb * words; i += 1) {
+      liveIn.push(0);
+      liveOut.push(0);
+      defs.push(0);
+      upUse.push(0);
+    }
+    let bitGet = (arr: Array<i32>, blk: i32, v: i32): boolean =>
+        (arr[blk * words + (v >> 5)] & (1 << (v & 31))) != 0;
+    let bitSet = (arr: Array<i32>, blk: i32, v: i32): void => {
+      let at = blk * words + (v >> 5);
+      arr[at] = arr[at] | (1 << (v & 31));
+    };
+
+    var b = 0;
+    while (b < nb) {
+      let blk = blocks[b];
+      for (let p in blk.params) {
+        bitSet(defs, b, p);
+      }
+      for (let inst in blk.insts) {
+        if (body.producesValue(inst)) {
+          bitSet(defs, b, inst);
+        }
+        for (let v in usesOf[inst]) {
+          if (v >= 0 && v < count && body.instBlock[v] != b) {
+            bitSet(upUse, b, v);
+          }
+        }
+      }
+      b += 1;
+    }
+
+    // Backward fixpoint: liveOut(B) = union of liveIn over successors;
+    // liveIn(B) = upUse(B) | (liveOut(B) & ~defs(B)). A successor's
+    // params are its own defs, so they never flow back into liveOut —
+    // branch arguments are already uses at the predecessor's terminator.
+    var changed = true;
+    while (changed) {
+      changed = false;
+      b = nb - 1;
+      while (b >= 0) {
+        let blk = blocks[b];
+        if (blk.insts.length > 0) {
+          let term = blk.insts[blk.insts.length - 1];
+          if (isIrTerminator(body.op(term))) {
+            for (let s in body.successors(term)) {
+              var w = 0;
+              while (w < words) {
+                let merged = liveOut[b * words + w] |
+                    liveIn[s.target * words + w];
+                if (merged != liveOut[b * words + w]) {
+                  liveOut[b * words + w] = merged;
+                  changed = true;
+                }
+                w += 1;
+              }
+            }
+          }
+        }
+        var w = 0;
+        while (w < words) {
+          let vIn = upUse[b * words + w] |
+              (liveOut[b * words + w] & (defs[b * words + w] ^ -1));
+          if (vIn != liveIn[b * words + w]) {
+            liveIn[b * words + w] = vIn;
+            changed = true;
+          }
+          w += 1;
+        }
+        b -= 1;
+      }
+    }
+
+    // Is x live just after y's definition point?
+    let liveAtDef = (x: i32, y: i32): boolean => {
+      let yb = body.instBlock[y];
+      if (body.instBlock[x] == yb && posOf[x] > posOf[y]) {
+        return false; // x is defined later in the same block
+      }
+      if (bitGet(liveOut, yb, x)) {
+        return true;
+      }
+      let insts = blocks[yb].insts;
+      var k = posOf[y] + 1;
+      while (k < insts.length) {
+        for (let v in usesOf[insts[k]]) {
+          if (v == x) {
+            return true;
+          }
+        }
+        k += 1;
+      }
+      return false;
+    };
+
+    let interferes = (x: i32, y: i32): boolean => {
+      if (body.op(x) == IrOp.param && body.op(y) == IrOp.param &&
+          body.instBlock[x] == body.instBlock[y]) {
+        return true; // same-block params are simultaneously live at entry
+      }
+      return liveAtDef(x, y) || liveAtDef(y, x);
+    };
+
+    // The local a value's class would occupy (mirrors #localTypeFor).
+    let localShape = (v: i32): ValType => {
+      let vt = body.resultType(v) as ValType;
+      return match (vt) {
+        case ValTypeRef as r: new ValTypeRefNull(r.target)
+        case _: vt
+      };
+    };
+
+    let parent = this.#classOf;
+    for (var i = 0; i < count; i += 1) {
+      parent.push(i);
+    }
+    let find = (v: i32): i32 => {
+      var c = v;
+      while (parent[c] != c) {
+        c = parent[c];
+      }
+      return c;
+    };
+    let membersOf = new HashMap<i32, Array<i32>>();
+    let members = (root: i32): Array<i32> => {
+      if (let (true, list) = membersOf.get(root)) {
+        return list;
+      }
+      let list = new Array<i32>();
+      list.push(root);
+      membersOf[root] = list;
+      return list;
+    };
+
+    let tryUnion = (arg: i32, param: i32): void => {
+      if (arg < 0 || arg >= count || !body.producesValue(arg) ||
+          streamed[arg]) {
+        return;
+      }
+      let ra = find(arg);
+      let rp = find(param);
+      if (ra == rp) {
+        return;
+      }
+      if (!valTypeEquals(localShape(arg), localShape(param))) {
+        return;
+      }
+      let ma = members(ra);
+      let mp = members(rp);
+      // A pinned local (an entry param's signature slot) never merges.
+      for (let x in ma) {
+        if (localOf[x] >= 0) {
+          return;
+        }
+      }
+      for (let y in mp) {
+        if (localOf[y] >= 0) {
+          return;
+        }
+      }
+      for (let x in ma) {
+        for (let y in mp) {
+          if (interferes(x, y)) {
+            return;
+          }
+        }
+      }
+      parent[rp] = ra;
+      for (let y in mp) {
+        ma.push(y);
+      }
+      membersOf.delete(rp);
+    };
+
+    b = 0;
+    while (b < nb) {
+      let blk = blocks[b];
+      if (blk.insts.length > 0) {
+        let term = blk.insts[blk.insts.length - 1];
+        if (isIrTerminator(body.op(term))) {
+          for (let s in body.successors(term)) {
+            let params = blocks[s.target].params;
+            var i = 0;
+            while (i < s.argCount) {
+              tryUnion(body.extra[s.argStart + i], params[i]);
+              i += 1;
             }
           }
         }
       }
-      blockId += 1;
+      b += 1;
+    }
+
+    // Flatten chains to final representatives (find tolerates the
+    // in-place rewrite: replacing a link with its root keeps roots).
+    for (var i = 0; i < count; i += 1) {
+      this.#classOf[i] = find(i);
+    }
+  }
+
+  /**
+   * Precomputes the residual copy sequence for every branch edge:
+   * identity moves (coalesced classes, or the same value passed
+   * through) are dropped, the rest are ordered so no source local is
+   * overwritten before it is read, and a genuine cycle — a loop
+   * swapping its own params — is broken by saving one param's old
+   * value to a per-param temp.
+   */
+  #planMoves(): void {
+    let body = this.body;
+    let paramCount = this.func.signature.params.length;
+    for (let blk in body.blocks) {
+      if (blk.insts.length == 0) {
+        continue;
+      }
+      let term = blk.insts[blk.insts.length - 1];
+      if (!isIrTerminator(body.op(term))) {
+        continue;
+      }
+      for (let s in body.successors(term)) {
+        let params = body.blocks[s.target].params;
+        if (params.length == 0) {
+          continue;
+        }
+        let srcL = new Array<i32>();
+        let dstL = new Array<i32>();
+        let paramIds = new Array<i32>();
+        var i = 0;
+        while (i < params.length) {
+          let arg = body.extra[s.argStart + i];
+          let src = this.localOf[arg];
+          let dst = this.localOf[params[i]];
+          if (src < 0 || dst < 0) {
+            throw new Error('zir emit: branch argument %' + i32ToString(arg) +
+                ' has no local');
+          }
+          if (src != dst) {
+            srcL.push(src);
+            dstL.push(dst);
+            paramIds.push(params[i]);
+          }
+          i += 1;
+        }
+        if (srcL.length == 0) {
+          continue;
+        }
+        let plan = new Array<i32>();
+        let done = new Array<boolean>();
+        i = 0;
+        while (i < srcL.length) {
+          done.push(false);
+          i += 1;
+        }
+        var remaining = srcL.length;
+        while (remaining > 0) {
+          var progressed = false;
+          i = 0;
+          while (i < srcL.length) {
+            if (!done[i]) {
+              // Emittable when no pending move still reads this dst.
+              var blocked = false;
+              var j = 0;
+              while (j < srcL.length) {
+                if (j != i && !done[j] && srcL[j] == dstL[i]) {
+                  blocked = true;
+                }
+                j += 1;
+              }
+              if (!blocked) {
+                plan.push(srcL[i]);
+                plan.push(dstL[i]);
+                done[i] = true;
+                remaining -= 1;
+                progressed = true;
+              }
+            }
+            i += 1;
+          }
+          if (!progressed) {
+            // Cycle: save the first pending destination to its temp and
+            // redirect the readers of that local to the temp.
+            var k = 0;
+            while (done[k]) {
+              k += 1;
+            }
+            if (this.tempOf[paramIds[k]] < 0) {
+              this.tempOf[paramIds[k]] = paramCount + this.localTypes.length;
+              this.localTypes.push(this.#localTypeFor(
+                  body.resultType(paramIds[k]) as ValType));
+            }
+            let t = this.tempOf[paramIds[k]];
+            plan.push(dstL[k]);
+            plan.push(t);
+            var j = 0;
+            while (j < srcL.length) {
+              if (!done[j] && srcL[j] == dstL[k]) {
+                srcL[j] = t;
+              }
+              j += 1;
+            }
+          }
+        }
+        this.#movePlans[s.argStart] = plan;
+      }
     }
   }
 
@@ -419,30 +780,16 @@ export final class ZirFunctionEmitter {
   }
 
   #copyArgs(s: IrSuccessor): void {
-    let body = this.body;
-    let params = body.blocks[s.target].params;
-    if (params.length == 0) {
-      return;
-    }
-    if (params.length == 1) {
-      let arg = body.extra[s.argStart];
-      if (this.localOf[arg] != this.localOf[params[0]]) {
-        this.emitter.emitLocalGet(this.localOf[arg]);
-        this.emitter.emitLocalSet(this.localOf[params[0]]);
+    // Copy semantics, not value reads: sources load raw (the target
+    // param's local is as nullable as the source's), and edges whose
+    // moves all coalesced away have no plan entry.
+    if (let (true, plan) = this.#movePlans.get(s.argStart)) {
+      var i = 0;
+      while (i < plan.length) {
+        this.emitter.emitLocalGet(plan[i]);
+        this.emitter.emitLocalSet(plan[i + 1]);
+        i += 2;
       }
-      return;
-    }
-    var i = 0;
-    while (i < params.length) {
-      this.emitter.emitLocalGet(this.localOf[body.extra[s.argStart + i]]);
-      this.emitter.emitLocalSet(this.tempOf[params[i]]);
-      i += 1;
-    }
-    i = 0;
-    while (i < params.length) {
-      this.emitter.emitLocalGet(this.tempOf[params[i]]);
-      this.emitter.emitLocalSet(this.localOf[params[i]]);
-      i += 1;
     }
   }
 
