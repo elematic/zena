@@ -39,7 +39,7 @@ import {
   MatchExpression, AsPattern, ClassPattern, LogicalPattern, LiteralPattern,
   TupleLiteral, EnumDeclaration, DeclareFunction, getMemberPropertyName,
   IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression,
-  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, CatchClause, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module,
+  ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, CatchClause, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement,
   LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant,
   RecordPattern, BindingProperty
 } from '../../ast.zena';
@@ -58,7 +58,7 @@ import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignat
 import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey, getSpecializedFunctionKey, getSpecializedName } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
 import { IntrinsicCx, lowerIntrinsic, asWasmArray } from './intrinsics.zena';
@@ -76,6 +76,7 @@ export final class ZirUnsupported extends Error {
 }
 
 /** Bail-reason tag for expression kinds without a dispatch arm. */
+
 let kindTagOf = (e: Expression): String => {
   return match (e) {
     case IsExpression: ' is'
@@ -3377,25 +3378,76 @@ final class FunctionLowerer {
       this.#bail('record literal type');
     }
     let dispatch = this.#recordDispatchOf(bt as RecordType);
+    // Spread sources evaluate first, once each (streaming's order);
+    // their values are looked up per field below.
+    let spreadIds = new Array<i32>();
+    let spreadVals = new Array<i32>();
     for (let prop in lit.properties) {
-      if (!(prop is PropertyAssignment)) {
-        this.#bail('record spread');
+      if (prop is SpreadElement) {
+        let sp = prop as SpreadElement;
+        spreadIds.push((sp as Node).id as i32);
+        spreadVals.push(this.#lowerExpression(sp.argument));
       }
     }
     let args = new Array<i32>();
     for (let f in dispatch.fields) {
       let key = if (f.name != null) f.name as String else '';
-      var valueOpt: Expression | null = null;
-      for (let prop in lit.properties) {
-        let pa = prop as PropertyAssignment;
-        if (pa.name.name == key) {
-          valueOpt = pa.value;
+      var v = -1;
+      var found = false;
+      // Last property wins, scanning explicit assignments and spreads
+      // alike from the end — streaming's override order.
+      var pi = lit.properties.length - 1;
+      while (pi >= 0 && !found) {
+        let prop = lit.properties[pi];
+        if (prop is PropertyAssignment) {
+          let pa = prop as PropertyAssignment;
+          if (pa.name.name == key) {
+            v = this.#lowerExpressionCtx(pa.value, f.type);
+            found = true;
+          }
+        } else if (prop is SpreadElement) {
+          let sp = prop as SpreadElement;
+          let spT = this.#substitutedNodeType(sp.argument);
+          if (spT != null) {
+            var sv = -1;
+            for (var si = 0; si < spreadIds.length; si += 1) {
+              if (spreadIds[si] == ((sp as Node).id as i32)) {
+                sv = spreadVals[si];
+              }
+            }
+            let nn = baseType(getNonNullableType(spT as Type));
+            if (nn is RecordType && (nn as RecordType).properties.has(key)) {
+              let srcDispatch = this.#recordDispatchOf(nn as RecordType);
+              v = this.#recordDispatchRead(srcDispatch, key, sv);
+              found = true;
+            } else if (nn is ClassType) {
+              // Class spreads copy PHYSICAL public fields; anything
+              // else falls through and the missing-field bail fires.
+              var ct = eraseTypeParameters(
+                  this.#resolveSelfType(nn as Type)) as ClassType;
+              if (ct.members.has(key) &&
+                  !(key.length > 0 && key.sliceBytes(0, 1) == '#')) {
+                let infoOpt = if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) info else null;
+                if (infoOpt != null) {
+                  let st = (infoOpt as ClassCodegenInfo).structType;
+                  if (st.fieldIndexByName(key) >= 0) {
+                    let fieldRef = this.b.addRef(new IrRefField(st, key));
+                    v = this.b.emit(IrOp.struct_get,
+                        this.#fieldValType(st, key),
+                        this.#coerceTo(sv, new ValTypeRef(st) as ValType),
+                        fieldRef);
+                    found = true;
+                  }
+                }
+              }
+            }
+          }
         }
+        pi -= 1;
       }
-      if (valueOpt == null) {
+      if (!found) {
         this.#bail('record literal field missing');
       }
-      let v = this.#lowerExpressionCtx(valueOpt as Expression, f.type);
       if (!isValSubtype(this.#valueType(v), f.type)) {
         this.#failConformance(v, f.type, 'record literal field type');
       }
@@ -3618,6 +3670,35 @@ final class FunctionLowerer {
         let globalRef = this.b.addRef(new IrRefGlobal(g));
         let raw = this.b.emit(IrOp.global_get, g.type, -1, globalRef);
         return this.#reassertNonNull(raw, this.#exprValType(ident));
+      }
+      // A function referenced as a VALUE: a fresh closure pair around
+      // the discovery-registered value wrapper (already
+      // reference-taken for the elem section) — streaming's shape,
+      // which also makes two references of one function compare
+      // unequal by identity.
+      let identT = this.#substitutedNodeType(ident);
+      if (identT != null && identT is FunctionType) {
+        let ft = identT as FunctionType;
+        let isSpecialized = ft.typeArguments != null &&
+            (ft.typeArguments as Array<Type>).length > 0;
+        let keyName = if (isSpecialized) {
+          getSpecializedName(ident.name, ft.typeArguments as Array<Type>)
+        } else {
+          i32ToString(resolved.id as i32)
+        };
+        let wrapperKey = getFunctionValueWrapperKey(keyName, ft);
+        if (let (true, wrapper) = this.wasm.functionValueWrappers.get(wrapperKey)) {
+          let closureStruct = getClosureStruct(this.wasm, ft);
+          let funcVal = this.b.emit(IrOp.ref_func,
+              closureStruct.fields[0].type, -1,
+              this.b.addRef(new IrRefFunc(wrapper)));
+          let nullCtx = this.b.emit(IrOp.ref_null,
+              new ValTypeStructRef() as ValType, -1, -1);
+          return this.b.emit(IrOp.struct_new,
+              new ValTypeRef(closureStruct) as ValType,
+              this.b.pushArgList(this.#twoValues(funcVal, nullCtx)),
+              this.b.addRef(new IrRefType(closureStruct)));
+        }
       }
       this.#bail('non-local identifier');
     }
@@ -8725,7 +8806,7 @@ final class FunctionLowerer {
       return lowerIntrinsic(this.#intrinsicCx(), calleeName, call);
     }
     if (this.func.model.getUnionCallCalleeType(call.callee) != null) {
-      this.#bail('union callee');
+      return this.#lowerUnionCall(call);
     }
     let sym = this.func.model.resolve(call.callee);
     if (sym == null) {
@@ -8960,6 +9041,111 @@ final class FunctionLowerer {
    * exact-signature func field. Only the CALLING side is lowered —
    * closure creation and closure bodies still bail.
    */
+  /**
+   * A callee whose static type is a UNION of function types: the
+   * runtime value is one member's closure pair, found by ref.test
+   * against each member's closure struct in order (streaming's
+   * chain). The matching arm passes that member's ARITY worth of the
+   * pre-evaluated arguments — extra arguments simply go unused, which
+   * is the union-call adaptation semantics. No member matching traps.
+   */
+  #lowerUnionCall(call: CallExpression): i32 {
+    let ut = this.func.model.getUnionCallCalleeType(call.callee) as UnionType;
+    // RAW read: the checker records the SELECTED member's type on the
+    // callee node, but the runtime value may be any member — the
+    // normal identifier read would re-assert the wrong closure struct.
+    let callee = this.#lowerChainReceiver(call.callee);
+    let args = new Array<i32>();
+    for (let a in call.args) {
+      args.push(this.#lowerExpression(a));
+    }
+    let callT = this.func.model.getNodeType(call);
+    let isVoid = callT == null || isVoidOrNeverType(callT as Type);
+    var resultVt: ValType | null = null;
+    if (!isVoid) {
+      let vt = typeToValTypeWithSub(this.wasm, callT as Type, this.func);
+      this.#requireSupported(vt, 'union call result');
+      resultVt = vt;
+    }
+    let merge = this.b.newBlock();
+    var resultParam = -1;
+    if (resultVt != null) {
+      resultParam = this.b.blockParam(merge, resultVt as ValType);
+    }
+    for (let member in ut.types) {
+      if (!(member is FunctionType)) {
+        continue;
+      }
+      let ftm = member as FunctionType;
+      let cs = getClosureStruct(this.wasm, ftm);
+      let csVt = new ValTypeRef(cs) as ValType;
+      let hit = this.b.emit(IrOp.ref_test, new ValTypeI32(), callee,
+          this.b.internType(csVt));
+      let callB = this.b.newBlock();
+      let nextB = this.b.newBlock();
+      this.b.brIf(hit, callB, this.#noArgs(), nextB, this.#noArgs());
+      this.b.switchTo(callB);
+      let cv = this.b.emit(IrOp.ref_cast, csVt, callee,
+          this.b.internType(csVt));
+      var sigOpt: WasmSignature | null = null;
+      match (cs.fields[0].type) {
+        case ValTypeRef as r: {
+          if (r.target is WasmSignature) {
+            sigOpt = r.target as WasmSignature;
+          }
+        }
+        case _: {}
+      }
+      if (sigOpt == null) {
+        this.#bail('union member shape');
+      }
+      let sig = sigOpt as WasmSignature;
+      if (sig.returns.length > 1) {
+        this.#bail('union member shape');
+      }
+      let arity = sig.params.length - 1;
+      if (arity > args.length) {
+        this.#bail('union call arity');
+      }
+      let ctxVal = this.b.emit(IrOp.struct_get, cs.fields[1].type, cv,
+          this.b.addRef(new IrRefField(cs, 'ctx')));
+      let callArgs = new Array<i32>();
+      callArgs.push(ctxVal);
+      for (var i = 0; i < arity; i += 1) {
+        if (!isValSubtype(this.#valueType(args[i]), sig.params[i + 1])) {
+          this.#failConformance(args[i], sig.params[i + 1],
+              'union call argument type');
+        }
+        callArgs.push(args[i]);
+      }
+      let fnVal = this.b.emit(IrOp.struct_get, cs.fields[0].type, cv,
+          this.b.addRef(new IrRefField(cs, 'func')));
+      let memberResult = if (sig.returns.length == 1) {
+        this.b.callRef(fnVal, callArgs, sig.returns[0])
+      } else {
+        this.b.callRef(fnVal, callArgs, null)
+      };
+      if (resultVt != null) {
+        if (sig.returns.length != 1 ||
+            !isValSubtype(this.#valueType(memberResult), resultVt as ValType)) {
+          this.#failConformance(memberResult, resultVt as ValType,
+              'union call result type');
+        }
+        this.b.br(merge, this.#oneArg(memberResult));
+      } else {
+        this.b.br(merge, this.#noArgs());
+      }
+      this.b.switchTo(nextB);
+    }
+    // The checker proved the value is one of the members.
+    this.b.unreachable();
+    this.b.switchTo(merge);
+    if (resultParam >= 0) {
+      return resultParam;
+    }
+    return this.b.constI32(0, new ValTypeI32());
+  }
+
   #lowerClosureCall(call: CallExpression): i32 {
     let callee = this.#lowerExpression(call.callee);
     return this.#lowerClosureCallOn(call, callee);
