@@ -22,7 +22,7 @@ import { i32ToString } from 'zena:string-convert';
 import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, WasmType, heapTypeToSigned, HeapType } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
-import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp } from './ir.zena';
+import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isIrTerminator } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
 
@@ -48,6 +48,17 @@ export final class ZirFunctionEmitter {
   /** Multi-result call -> its mv_get projections, ascending index. */
   #mvProjections = new HashMap<i32, Array<i32>>();
   frames = new Array<EmitFrame>();
+  /**
+   * Stack-scheduled values (ir.md §12, first step): used exactly
+   * once, by the IMMEDIATELY next instruction in the block, as its
+   * FIRST value operand — such a value stays on the wasm stack with
+   * no local, no set/get round-trip, and no nullable-local re-assert.
+   */
+  streamed = new Array<boolean>();
+  /** The streamed value currently on the stack, or -1. */
+  var stackHead = -1;
+  /** The instruction currently being emitted (diagnostics). */
+  var currentEmit = -1;
 
   new(this.wasm, this.emitter, this.func, this.body, this.cfg);
 
@@ -79,8 +90,10 @@ export final class ZirFunctionEmitter {
     while (i < body.instCount()) {
       this.localOf.push(-1);
       this.tempOf.push(-1);
+      this.streamed.push(false);
       i += 1;
     }
+    this.#scheduleStack();
     let entryParams = body.blocks[0].params;
     if (entryParams.length != paramCount) {
       throw new Error('zir emit: entry block params (' +
@@ -94,7 +107,7 @@ export final class ZirFunctionEmitter {
     }
     i = 0;
     while (i < body.instCount()) {
-      if (body.producesValue(i) && this.localOf[i] < 0) {
+      if (body.producesValue(i) && this.localOf[i] < 0 && !this.streamed[i]) {
         this.localOf[i] = paramCount + this.localTypes.length;
         this.localTypes.push(this.#localTypeFor(body.resultType(i) as ValType));
       }
@@ -138,6 +151,82 @@ export final class ZirFunctionEmitter {
   }
 
   /**
+   * Marks values that can live on the wasm stack: single use, by the
+   * immediately following instruction in the same block, as its first
+   * value operand, where that consumer's emission is known to push
+   * its first operand before anything else (the whitelist below).
+   * Everything is verified again at emission time — a violated
+   * schedule throws rather than emitting misordered stack code.
+   */
+  #scheduleStack(): void {
+    let body = this.body;
+    let count = body.instCount();
+    let useCount = new Array<i32>();
+    for (var i = 0; i < count; i += 1) {
+      useCount.push(0);
+    }
+    for (var i = 0; i < count; i += 1) {
+      let operands = new Array<i32>();
+      body.appendValueOperands(i, operands);
+      for (let v in operands) {
+        if (v >= 0 && v < count) {
+          useCount[v] = useCount[v] + 1;
+        }
+      }
+    }
+    for (let blk in body.blocks) {
+      for (var k = 0; k + 1 < blk.insts.length; k += 1) {
+        let producer = blk.insts[k];
+        let consumer = blk.insts[k + 1];
+        if (!body.producesValue(producer) || useCount[producer] != 1) {
+          continue;
+        }
+        if (body.op(producer) == IrOp.mv_get) {
+          continue;
+        }
+        if (!this.#streamsFirstOperand(body.op(consumer))) {
+          continue;
+        }
+        let consumerOps = new Array<i32>();
+        body.appendValueOperands(consumer, consumerOps);
+        if (consumerOps.length > 0 && consumerOps[0] == producer) {
+          this.streamed[producer] = true;
+        }
+      }
+    }
+  }
+
+  /**
+   * Consumers whose emission provably pushes the first value operand
+   * before anything else. Ops that interleave non-operand pushes
+   * (iface_pack's vtable global) or use copy semantics (branch args)
+   * stay off the list.
+   */
+  #streamsFirstOperand(op: IrOp): boolean {
+    if (isIrTerminator(op)) {
+      return false;
+    }
+    if (isUnaryNumericOp(op) || isBinaryNumericOp(op)) {
+      return true;
+    }
+    return op == IrOp.ref_cast || op == IrOp.ref_as_non_null ||
+        op == IrOp.ref_test || op == IrOp.ref_eq || op == IrOp.ref_is_null ||
+        op == IrOp.struct_get || op == IrOp.struct_set ||
+        op == IrOp.array_get || op == IrOp.array_get_u ||
+        op == IrOp.array_len || op == IrOp.array_set ||
+        op == IrOp.call ||
+        // call_ref is OFF the list: its decode order is callee-first
+        // but wasm pushes the callee funcref LAST, after the args.
+        op == IrOp.struct_new || op == IrOp.array_new_fixed ||
+        op == IrOp.global_set || op == IrOp.iface_instance ||
+        op == IrOp.iface_vtable ||
+        op == IrOp.i32_load || op == IrOp.i32_load8_u ||
+        op == IrOp.i64_load || op == IrOp.f32_load || op == IrOp.f64_load ||
+        op == IrOp.i32_store || op == IrOp.i32_store8 ||
+        op == IrOp.i64_store || op == IrOp.f32_store || op == IrOp.f64_store;
+  }
+
+  /**
    * Non-nullable reference values are stored in nullable locals, and
    * #pushValue re-asserts non-nullness on reads that need the declared
    * type (docs/design/ir.md §12). Wasm locals CAN be non-defaultable
@@ -167,6 +256,23 @@ export final class ZirFunctionEmitter {
 
   /** Loads a value at its declared IR type. */
   #pushValue(inst: i32): void {
+    if (inst == this.stackHead) {
+      // Already on the stack from the previous instruction, at its
+      // declared IR type — no local, no re-assert.
+      this.stackHead = -1;
+      return;
+    }
+    if (this.stackHead >= 0) {
+      throw new Error('zir emit: stack schedule violated (pushed %' +
+          i32ToString(inst) + ' over pending %' +
+          i32ToString(this.stackHead) + ' [' +
+          irOpName(this.body.op(this.stackHead)) + '] in ' +
+          irOpName(this.body.op(this.currentEmit)) + ')');
+    }
+    if (this.localOf[inst] < 0) {
+      throw new Error('zir emit: streamed value %' + i32ToString(inst) +
+          ' read outside its schedule');
+    }
     this.emitter.emitLocalGet(this.localOf[inst]);
     if (this.#storedNullable(inst)) {
       this.emitter.emitRefAsNonNull();
@@ -212,6 +318,10 @@ export final class ZirFunctionEmitter {
   }
 
   #emitTerminator(inst: i32, from: i32): void {
+    if (this.stackHead >= 0) {
+      throw new Error('zir emit: streamed value %' +
+          i32ToString(this.stackHead) + ' left on stack at terminator');
+    }
     let body = this.body;
     let op = body.op(inst);
     if (op == IrOp.ret) {
@@ -352,6 +462,7 @@ export final class ZirFunctionEmitter {
   #emitInst(inst: i32): void {
     let body = this.body;
     let op = body.op(inst);
+    this.currentEmit = inst;
     match (op) {
       case IrOp.nop: { return; }
       case IrOp.param: { return; }
@@ -383,13 +494,13 @@ export final class ZirFunctionEmitter {
       }
       case IrOp.struct_new: { this.#emitStructNewInst(inst); }
       case IrOp.struct_get: {
-        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        this.#pushValue(body.a[inst]);
         let field = this.#fieldRef(body.b[inst]);
         this.emitter.emitStructGet(field.owner.index, this.#fieldIndexOf(field));
       }
       case IrOp.struct_set: {
         let pairIdx = body.a[inst];
-        this.emitter.emitLocalGet(this.localOf[body.extra[pairIdx]]);
+        this.#pushValue(body.extra[pairIdx]);
         this.#pushValue(body.extra[pairIdx + 1]);
         let field = this.#fieldRef(body.b[inst]);
         this.emitter.emitStructSet(field.owner.index, this.#fieldIndexOf(field));
@@ -405,31 +516,31 @@ export final class ZirFunctionEmitter {
       case IrOp.ref_cast: { this.#emitRefCastInst(inst); }
       case IrOp.ref_test: { this.#emitRefTestInst(inst); }
       case IrOp.ref_is_null: {
-        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        this.#pushValue(body.a[inst]);
         this.emitter.emitRefIsNull();
       }
       case IrOp.ref_as_non_null: {
-        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        this.#pushValue(body.a[inst]);
         this.emitter.emitRefAsNonNull();
       }
       case IrOp.iface_pack: { this.#emitIfacePackInst(inst); }
       case IrOp.iface_instance: { this.#emitIfaceFieldInst(inst, 0); }
       case IrOp.iface_vtable: { this.#emitIfaceFieldInst(inst, 1); }
       case IrOp.array_len: {
-        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+        this.#pushValue(body.a[inst]);
         this.emitter.emitArrayLen();
       }
       case IrOp.array_new: { this.#emitArrayNewInst(inst); }
       case IrOp.array_new_data: { this.#emitArrayNewDataInst(inst); }
       case IrOp.array_new_fixed: { this.#emitArrayNewFixedInst(inst); }
       case IrOp.array_get: {
-        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-        this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
+        this.#pushValue(body.a[inst]);
+        this.#pushValue(body.b[inst]);
         this.emitter.emitArrayGet(this.#arrayTargetOf(body.a[inst]).index);
       }
       case IrOp.array_get_u: {
-        this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-        this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
+        this.#pushValue(body.a[inst]);
+        this.#pushValue(body.b[inst]);
         this.emitter.emitArrayGetU(this.#arrayTargetOf(body.a[inst]).index);
       }
       case IrOp.array_set: { this.#emitArraySetInst(inst); }
@@ -459,18 +570,22 @@ export final class ZirFunctionEmitter {
       }
       case _: {
         if (isUnaryNumericOp(op)) {
-          this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+          this.#pushValue(body.a[inst]);
           this.#emitOp(op);
         } else {
           // Binary numerics: two inline value operands.
-          this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
-          this.emitter.emitLocalGet(this.localOf[body.b[inst]]);
+          this.#pushValue(body.a[inst]);
+          this.#pushValue(body.b[inst]);
           this.#emitOp(op);
         }
       }
     }
     if (body.producesValue(inst)) {
-      this.emitter.emitLocalSet(this.localOf[inst]);
+      if (this.streamed[inst]) {
+        this.stackHead = inst;
+      } else {
+        this.emitter.emitLocalSet(this.localOf[inst]);
+      }
     }
   }
 
@@ -549,7 +664,7 @@ export final class ZirFunctionEmitter {
 
   #emitRefCastInst(inst: i32): void {
     let body = this.body;
-    this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+    this.#pushValue(body.a[inst]);
     match (body.typeTable[body.b[inst]]) {
       case ValTypeRef as r: { this.emitter.emitRefCast(r.target.index); }
       case ValTypeRefNull as rn: { this.emitter.emitRefCastNull(rn.target.index); }
@@ -562,7 +677,7 @@ export final class ZirFunctionEmitter {
 
   #emitRefTestInst(inst: i32): void {
     let body = this.body;
-    this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+    this.#pushValue(body.a[inst]);
     match (body.typeTable[body.b[inst]]) {
       case ValTypeRef as r: { this.emitter.emitRefTest(r.target.index); }
       case ValTypeRefNull as rn: { this.emitter.emitRefTestNull(rn.target.index); }
@@ -593,7 +708,7 @@ export final class ZirFunctionEmitter {
   /** Fat-pointer field read: 0 = instance, 1 = vtable. */
   #emitIfaceFieldInst(inst: i32, fieldIdx: i32): void {
     let body = this.body;
-    this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+    this.#pushValue(body.a[inst]);
     let fatPtr = this.#structTargetOf(body.a[inst]);
     this.emitter.emitStructGet(fatPtr.index, fieldIdx);
   }
@@ -635,8 +750,8 @@ export final class ZirFunctionEmitter {
   #emitArraySetInst(inst: i32): void {
     let body = this.body;
     let tripleIdx = body.a[inst];
-    this.emitter.emitLocalGet(this.localOf[body.extra[tripleIdx]]);
-    this.emitter.emitLocalGet(this.localOf[body.extra[tripleIdx + 1]]);
+    this.#pushValue(body.extra[tripleIdx]);
+    this.#pushValue(body.extra[tripleIdx + 1]);
     this.#pushValue(body.extra[tripleIdx + 2]);
     this.emitter.emitArraySet(this.#arrayTargetOf(body.extra[tripleIdx]).index);
   }
