@@ -233,6 +233,35 @@ function resolveMemberType(
   return substituteType(memberType, typeMap, ctx);
 }
 
+/**
+ * An optional chain whose result is a boxable primitive has no wasm
+ * representation for `primitive | null`, so it is only legal as the
+ * immediate left operand of `??` (sanctioned before typing) — there
+ * the miss becomes the coalesce arm and the union never materializes
+ * as a value. Reports the error and returns true when violated.
+ */
+function requiresCoalescence(
+  ctx: CheckerContext,
+  expr: Expression,
+  resultType: Type,
+): boolean {
+  let t = resultType;
+  if (t.kind === TypeKind.TypeAlias) {
+    t = (t as TypeAliasType).target;
+  }
+  const primitive =
+    t.kind === TypeKind.Number || t.kind === TypeKind.Boolean;
+  if (!primitive || ctx.nullishSanctionedNodes.has(expr)) {
+    return false;
+  }
+  ctx.diagnostics.reportError(
+    `Optional access to a primitive requires immediate coalescence: follow it with '?? <default>'.`,
+    DiagnosticCode.TypeMismatch,
+    ctx.getLocation(expr.loc),
+  );
+  return true;
+}
+
 export function checkExpression(
   ctx: CheckerContext,
   expr: Expression,
@@ -1900,6 +1929,9 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       type.kind !== TypeKind.Error &&
       type.kind !== TypeKind.Void
     ) {
+      if (requiresCoalescence(ctx, expr, type)) {
+        return Types.Error;
+      }
       return makeNullable(type, ctx);
     }
     return type;
@@ -3018,6 +3050,10 @@ function checkBinaryExpression(
   } else if (expr.operator === '??') {
     // Nullish coalescing operator: lhs ?? rhs
     // If lhs is null, returns rhs; otherwise returns lhs
+    // Sanction the immediate left operand: a primitive-yielding
+    // optional chain is only legal here, where the miss becomes the
+    // coalesce arm and `primitive | null` never materializes.
+    ctx.nullishSanctionedNodes.add(expr.left);
     left = checkExpression(ctx, expr.left);
     right = checkExpression(ctx, expr.right);
 
@@ -3907,6 +3943,9 @@ function checkMemberExpression(
   // Helper to wrap result in nullable if needed
   const wrapResult = (type: Type): Type => {
     if (shouldMakeNullable && type.kind !== TypeKind.Error) {
+      if (requiresCoalescence(ctx, expr, type)) {
+        return Types.Error;
+      }
       return makeNullable(type, ctx);
     }
     return type;
@@ -4721,6 +4760,9 @@ function checkIndexExpression(
   // Helper to wrap result in nullable if needed
   const wrapResult = (type: Type): Type => {
     if (shouldMakeNullable && type.kind !== TypeKind.Error) {
+      if (requiresCoalescence(ctx, expr, type)) {
+        return Types.Error;
+      }
       return makeNullable(type, ctx);
     }
     return type;

@@ -185,6 +185,14 @@ final class CheckerContext {
   #typeScopes = new Array<HashMap<String, Type>>();
 
   /**
+   * Optional-chain nodes sanctioned as the immediate left operand of
+   * `??`. A chain yielding a boxable primitive is only legal there:
+   * the miss becomes the coalesce arm, so `primitive | null` never
+   * materializes as a value. Any unsanctioned primitive chain errors.
+   */
+  nullishSanctioned = new HashSet<i32>();
+
+  /**
    * Narrowed types (control-flow narrowing) per scope level.
    * Keyed by Symbol.id so narrowing survives across scopes that
    * reference the same binding, and is robust against shadowing.
@@ -9347,8 +9355,20 @@ let checkMemberExpression = (
   }
 
   // If the original type was nullable and this is optional chaining,
-  // wrap the result in a union with null.
+  // wrap the result in a union with null. A boxable-primitive result
+  // has no wasm representation for that union, so the chain is only
+  // legal as the immediate left operand of `??` — where the miss is
+  // the coalesce arm and no `primitive | null` value ever exists.
   if (isNullable && optional) {
+    if (isBoxablePrimitive(resultType) &&
+        !ctx.nullishSanctioned.has(expr.id as i32)) {
+      ctx.error(
+        "Optional access to a primitive member requires immediate coalescence: follow it with '?? <default>'.",
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return new ErrorType();
+    }
     let types = new Array<Type>();
     types.push(resultType);
     types.push(new NullType());
@@ -9635,6 +9655,15 @@ let checkIndexExpression = (
   let resultType = resolveIndexType(ctx, baseType_, index, loc, node);
 
   if (isNullable && optional) {
+    if (isBoxablePrimitive(resultType) && (node == null ||
+        !ctx.nullishSanctioned.has((node as Node).id as i32))) {
+      ctx.error(
+        "Optional access to a primitive element requires immediate coalescence: follow it with '?? <default>'.",
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return new ErrorType();
+    }
     let types = new Array<Type>();
     types.push(resultType);
     types.push(new NullType());
@@ -10073,6 +10102,10 @@ let checkBinaryExpression = (
   // Type is the union of (non-null left type) and right type, or just right type
   // if left is definitely nullable.
   if (operator == "??") {
+    // The immediate left operand may be a primitive-yielding optional
+    // chain: sanction exactly this node before typing it (see
+    // CheckerContext.nullishSanctioned).
+    ctx.nullishSanctioned.add(left.id as i32);
     let leftType = checkExpression(ctx, left, null);
     let rightType = checkExpression(ctx, right, null);
 
@@ -11119,6 +11152,15 @@ let checkCallExpression = (
   let resultType = checkCallExpressionInner(ctx, call, baseCalleeType, expectedType);
 
   if (isNullable && call.optional) {
+    if (isBoxablePrimitive(resultType) &&
+        !ctx.nullishSanctioned.has((call as Node).id as i32)) {
+      ctx.error(
+        "Optional call yielding a primitive requires immediate coalescence: follow it with '?? <default>'.",
+        DiagnosticCode.InvalidOperator,
+        call.loc
+      );
+      return new ErrorType();
+    }
     let types = new Array<Type>();
     types.push(resultType);
     types.push(new NullType());

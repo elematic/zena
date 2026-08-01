@@ -1404,6 +1404,22 @@ let display = user?.name ?? 'Anonymous';
 The result type of an optional chain is `T | null`, where `T` is the type of
 the accessed property, element, or call result.
 
+**Primitive results require immediate coalescence.** When `T` is a primitive
+(`i32`, `f64`, `boolean`, …), the union `T | null` has no runtime
+representation — primitives are not references and are never boxed — so the
+chain must appear directly as the left operand of `??`:
+
+```zena
+let p: Point | null = null;
+
+let x = p?.x ?? 0;   // OK: the miss becomes the ?? arm; only i32 exists
+let y = p?.x;        // error: optional access to a primitive requires
+                     //        immediate coalescence
+```
+
+This guarantees `primitive | null` never flows into a variable, field,
+parameter, or return value. Reference-typed results are unaffected.
+
 ### Operator Precedence
 
 Operators are listed from highest to lowest precedence:

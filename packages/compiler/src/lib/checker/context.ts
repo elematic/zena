@@ -84,6 +84,13 @@ const createLibraryState = (): LibraryState => ({
 });
 
 export class CheckerContext {
+  /**
+   * Optional-chain nodes sanctioned as the immediate left operand of
+   * `??`; primitive-yielding chains are only legal there. See
+   * requiresCoalescence in expressions.ts.
+   */
+  readonly nullishSanctionedNodes = new Set<unknown>();
+
   // ============================================================
   // Per-library state (reset when switching modules)
   // ============================================================
