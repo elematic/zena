@@ -953,8 +953,28 @@ final class FunctionLowerer {
 
     let body = bodyNode as Node;
     if (body is BlockStatement) {
-      this.#lowerStatement(body as Statement);
-      if (this.reachable) {
+      // Value-block function bodies: a trailing expression statement
+      // that conforms to the return type IS the return value (the
+      // checker accepts exactly that shape).
+      let stmts = (body as BlockStatement).body;
+      var tailExpr: Expression | null = null;
+      if (sig.returns.length == 1 && stmts.length > 0 &&
+          stmts[stmts.length - 1] is ExpressionStatement) {
+        let te = (stmts[stmts.length - 1] as ExpressionStatement).expression;
+        let tt = this.func.model.getNodeType(te);
+        if (tt != null && !isVoidOrNeverType(tt as Type)) {
+          tailExpr = te;
+        }
+      }
+      let bodyCount = if (tailExpr != null) stmts.length - 1 else stmts.length;
+      for (var si = 0; si < bodyCount; si += 1) {
+        this.#lowerStatement(stmts[si]);
+      }
+      if (tailExpr != null && this.reachable) {
+        let tailValue = this.#lowerExpressionCtx(
+            tailExpr as Expression, sig.returns[0]);
+        this.#emitCheckedRet(tailValue);
+      } else if (this.reachable) {
         if (sig.returns.length == 0) {
           this.b.retVoid();
         } else {

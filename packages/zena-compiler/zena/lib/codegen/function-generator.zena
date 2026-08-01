@@ -932,7 +932,38 @@ export final class FunctionGenerator {
     if (body != null) {
       match (body as Node) {
         case BlockStatement as blk: {
-          this.generateStatement(blk as Statement);
+          // Value-block bodies: a trailing non-void expression
+          // statement is the function's return value (the checker
+          // accepts exactly that shape when no explicit return
+          // guarantees the exit).
+          var tailExpr: Expression | null = null;
+          let isCtor = this.ctx.wasmFunction.methodName != null &&
+              (this.ctx.wasmFunction.methodName as String) == "<constructor>";
+          if (!isCtor &&
+              this.ctx.wasmFunction.signature.returns.length > 0 &&
+              blk.body.length > 0 &&
+              blk.body[blk.body.length - 1] is ExpressionStatement) {
+            let te = (blk.body[blk.body.length - 1] as ExpressionStatement).expression;
+            let tt = this.ctx.wasmFunction.model.getNodeType(te);
+            if (tt != null && !isVoidOrNeverType(tt as Type)) {
+              tailExpr = te;
+            }
+          }
+          if (tailExpr != null) {
+            var bi = 0;
+            while (bi < blk.body.length - 1) {
+              this.generateStatement(blk.body[bi]);
+              bi += 1;
+            }
+            if (this.ctx.isReachable) {
+              generateValueReturn(this.ctx, tailExpr as Expression,
+                  (e: Expression, d: boolean = false) => this.generateExpression(e, d));
+              this.ctx.emitter.emitReturn();
+              this.ctx.isReachable = false;
+            }
+          } else {
+            this.generateStatement(blk as Statement);
+          }
           if (this.ctx.wasmFunction.signature.returns.length > 0) {
             let isExtCtor = this.ctx.wasmFunction.methodName != null &&
                             (this.ctx.wasmFunction.methodName as String) == "<constructor>" &&

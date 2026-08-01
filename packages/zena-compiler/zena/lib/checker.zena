@@ -10991,10 +10991,28 @@ let checkFunctionExpression = (
   // Check the body.
   match (body) {
     case BlockStatement as block: {
+      // A trailing expression statement in a non-void function is the
+      // function's result (value-block bodies): check it WITH the
+      // return type as context, so statement-position expressions
+      // (a match with value arms) type as values, not void.
+      var tailConforms = false;
+      let tailIndex = if (!needsInference && !(retType is VoidType) &&
+          block.body.length > 0 &&
+          block.body[block.body.length - 1] is ExpressionStatement) {
+        block.body.length - 1
+      } else {
+        -1
+      };
       var j = 0;
       while (j < block.body.length) {
         let stmtNode = block.body[j];
-        checkStatement(ctx, stmtNode);
+        if (j == tailIndex && !branchDefinitelyExits(stmtNode)) {
+          let tailT = checkExpression(ctx,
+              (stmtNode as ExpressionStatement).expression, retType);
+          tailConforms = isAssignableTo(ctx, tailT, retType);
+        } else {
+          checkStatement(ctx, stmtNode);
+        }
         if (branchDefinitelyExits(stmtNode) && j < block.body.length - 1) {
           ctx.error(
             "Unreachable code detected.",
@@ -11018,8 +11036,11 @@ let checkFunctionExpression = (
           retType = inferred[0];
         }
       } else {
-        // If it lacks a guaranteed return, error.
-        if (!(retType is VoidType) && !branchDefinitelyExits(block)) {
+        // If it lacks a guaranteed return, a conforming trailing
+        // expression (checked against the return type above) is the
+        // function's result.
+        if (!(retType is VoidType) && !branchDefinitelyExits(block) &&
+            !tailConforms) {
           ctx.error(
             "A function with a non-void declared return type must return a value.",
             DiagnosticCode.MissingReturnType,
