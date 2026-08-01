@@ -1,0 +1,137 @@
+/**
+ * Global value numbering over the dominator tree (docs/design/ir.md's
+ * optimization loop, first pass): a pure instruction whose key —
+ * opcode, canonical value operands, interned payload, result type —
+ * already has a definition in a DOMINATING block reuses that
+ * definition instead of recomputing. The dominant client is the
+ * narrowing contract (ir.md §5): every read of a flow-narrowed
+ * binding emits its own ref_cast, and dominated repeats collapse to
+ * the first. Repeated ref_tests, fat-pointer unwraps, immutable
+ * global reads (vtables), and numeric recomputation fold the same
+ * way.
+ *
+ * Determinism: instructions process in id order along a
+ * deterministic dominator-tree walk, and keys are plain strings —
+ * stage-2 byte-parity is preserved.
+ *
+ * Replaced instructions become nops (their result type cleared);
+ * emission already skips nops, and every consumer was rewritten to
+ * the canonical id via IrBody.rewriteValueOperands.
+ */
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { String } from 'zena:string';
+import { i32ToString } from 'zena:string-convert';
+import { IrBody, IrOp, IrRef, IrRefGlobal, isBinaryNumericOp, isUnaryNumericOp } from './ir.zena';
+import { IrCfg } from './cfg.zena';
+
+export let runGvn = (body: IrBody, cfg: IrCfg): void => {
+  let count = body.instCount();
+  let repl = new Array<i32>();
+  for (var i = 0; i < count; i += 1) {
+    repl.push(i);
+  }
+  let canon = (v: i32): i32 => {
+    if (v < 0 || v >= count) {
+      return v;
+    }
+    var c = v;
+    while (repl[c] != c) {
+      c = repl[c];
+    }
+    return c;
+  };
+
+  let table = new HashMap<String, i32>();
+  let scopeKeys = new Array<String>();
+
+  // Iterative dominator-tree DFS: negative entries mark subtree exits
+  // (pop this block's insertions from the scope table).
+  let work = new Array<i32>();
+  let marks = new Array<i32>();
+  work.push(0);
+  while (work.length > 0) {
+    let item = work.pop();
+    if (item < 0) {
+      let mark = marks.pop();
+      while (scopeKeys.length > mark) {
+        table.delete(scopeKeys.pop());
+      }
+      continue;
+    }
+    marks.push(scopeKeys.length);
+    work.push(-1);
+
+    let insts = body.blocks[item].insts;
+    for (var j = 0; j < insts.length; j += 1) {
+      let inst = insts[j];
+      body.rewriteValueOperands(inst, canon);
+      let key = gvnKey(body, inst);
+      if (key == null) {
+        continue;
+      }
+      let k = key as String;
+      if (let (true, prior) = table.get(k)) {
+        repl[inst] = prior;
+        body.opcode[inst] = IrOp.nop as i32;
+        body.typeId[inst] = -1;
+        body.a[inst] = -1;
+        body.b[inst] = -1;
+      } else {
+        table[k] = inst;
+        scopeKeys.push(k);
+      }
+    }
+
+    // Children push in REVERSE so the walk visits them in ascending
+    // order (pure determinism hygiene; any fixed order is correct).
+    let children = cfg.domChildren[item];
+    var ci = children.length - 1;
+    while (ci >= 0) {
+      work.push(children[ci]);
+      ci -= 1;
+    }
+  }
+};
+
+/**
+ * The value-numbering key for pure instructions; null for anything
+ * with effects, allocation identity, or unknown shape. Operands are
+ * already canonical (rewritten before keying).
+ */
+let gvnKey = (body: IrBody, inst: i32): String | null => {
+  let op = body.op(inst);
+  let av = body.a[inst];
+  let bv = body.b[inst];
+  let ty = body.typeId[inst];
+  if (op == IrOp.const_i32) {
+    // a IS the value.
+    return 'c32|' + i32ToString(av) + '|' + i32ToString(ty);
+  }
+  if (op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64) {
+    // a is a pool index; identical indices are identical values
+    // (missing equal-value pool duplicates is fine).
+    return 'cp|' + i32ToString(op as i32) + '|' + i32ToString(av) +
+        '|' + i32ToString(ty);
+  }
+  if (isBinaryNumericOp(op) || op == IrOp.ref_eq) {
+    return 'b|' + i32ToString(op as i32) + '|' + i32ToString(av) + '|' +
+        i32ToString(bv) + '|' + i32ToString(ty);
+  }
+  if (isUnaryNumericOp(op) || op == IrOp.ref_test || op == IrOp.ref_cast ||
+      op == IrOp.ref_as_non_null || op == IrOp.iface_instance ||
+      op == IrOp.iface_vtable) {
+    // a = value operand; b = interned typeTable/refTable index or -1.
+    return 'u|' + i32ToString(op as i32) + '|' + i32ToString(av) + '|' +
+        i32ToString(bv) + '|' + i32ToString(ty);
+  }
+  if (op == IrOp.global_get) {
+    // Only immutable globals (vtables, singletons) are pure reads.
+    let r = body.refTable[bv];
+    if (r is IrRefGlobal && !(r as IrRefGlobal).target.isMutable) {
+      return 'g|' + i32ToString(bv) + '|' + i32ToString(ty);
+    }
+    return null;
+  }
+  return null;
+};

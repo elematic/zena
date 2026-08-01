@@ -28,6 +28,8 @@ import { Error } from 'zena:error';
 import { IrBody } from './ir/ir.zena';
 import { tryLowerFunction } from './ir/lowering.zena';
 import { verifyIr } from './ir/verifier.zena';
+import { runGvn } from './ir/gvn.zena';
+import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
 
 export final class ModuleGenerator {
@@ -681,6 +683,7 @@ export final class ModuleGenerator {
           let irBody = tryLowerFunction(wasm, wasmFunc, this.zirStrict, zirBailReasons);
           if (irBody != null) {
             let body = irBody as IrBody;
+            runGvn(body, new IrCfg(body));
             // Loud on verifier failure: a broken lowering must never limp
             // into emission (and must not silently fall back either).
             let verifyErrors = verifyIr(body);

@@ -582,6 +582,124 @@ export final class IrBody {
     throw new Error(`appendValueOperands: unhandled opcode ${irOpName(op)}`);
   }
 
+  /**
+   * Rewrites every VALUE operand of `inst` through `map`, in place —
+   * the mutating mirror of appendValueOperands, branch for branch
+   * (keep the two in sync). Non-value payloads (refTable/typeTable
+   * indices, immediates, alignments) are untouched.
+   */
+  rewriteValueOperands(inst: i32, map: (v: i32) => i32): void {
+    let op = this.op(inst);
+    let av = this.a[inst];
+    if (op == IrOp.nop || op == IrOp.param || op == IrOp.const_i32 ||
+        op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
+        op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
+        op == IrOp.global_get || op == IrOp.struct_new_default ||
+        op == IrOp.memory_size || op == IrOp.unreachable) {
+      return;
+    }
+    if (isSingleValueOp(op)) {
+      this.a[inst] = map(av);
+      return;
+    }
+    if (op == IrOp.array_get || op == IrOp.array_get_u || op == IrOp.ref_eq ||
+        isBinaryNumericOp(op)) {
+      this.a[inst] = map(av);
+      this.b[inst] = map(this.b[inst]);
+      return;
+    }
+    if (op == IrOp.struct_set || op == IrOp.i32_store ||
+        op == IrOp.i32_store8 || op == IrOp.i64_store ||
+        op == IrOp.f32_store || op == IrOp.f64_store) {
+      this.extra[av] = map(this.extra[av]);
+      this.extra[av + 1] = map(this.extra[av + 1]);
+      return;
+    }
+    if (op == IrOp.array_set) {
+      this.extra[av] = map(this.extra[av]);
+      this.extra[av + 1] = map(this.extra[av + 1]);
+      this.extra[av + 2] = map(this.extra[av + 2]);
+      return;
+    }
+    if (op == IrOp.array_copy) {
+      var ci = 0;
+      while (ci < 5) {
+        this.extra[av + ci] = map(this.extra[av + ci]);
+        ci += 1;
+      }
+      return;
+    }
+    if (op == IrOp.array_new_data) {
+      this.extra[av] = map(this.extra[av]);
+      this.extra[av + 1] = map(this.extra[av + 1]);
+      return;
+    }
+    if (op == IrOp.array_new) {
+      this.extra[av] = map(this.extra[av]);
+      let init = this.extra[av + 1];
+      if (init >= 0) {
+        this.extra[av + 1] = map(init);
+      }
+      return;
+    }
+    if (op == IrOp.struct_new || op == IrOp.call || op == IrOp.throw ||
+        op == IrOp.array_new_fixed) {
+      let argc = this.extra[av];
+      var i = 0;
+      while (i < argc) {
+        this.extra[av + 1 + i] = map(this.extra[av + 1 + i]);
+        i += 1;
+      }
+      return;
+    }
+    if (op == IrOp.call_ref) {
+      this.extra[av] = map(this.extra[av]);
+      let argc = this.extra[av + 1];
+      var i = 0;
+      while (i < argc) {
+        this.extra[av + 2 + i] = map(this.extra[av + 2 + i]);
+        i += 1;
+      }
+      return;
+    }
+    if (op == IrOp.ret) {
+      if (av >= 0) {
+        this.a[inst] = map(av);
+      }
+      return;
+    }
+    if (op == IrOp.ret_multi) {
+      let argc = this.extra[av];
+      var i = 0;
+      while (i < argc) {
+        this.extra[av + 1 + i] = map(this.extra[av + 1 + i]);
+        i += 1;
+      }
+      return;
+    }
+    if (op == IrOp.br || op == IrOp.try_br) {
+      this.#rewriteSuccessorArgs(inst, map);
+      return;
+    }
+    if (op == IrOp.br_if || op == IrOp.br_on_cast ||
+        op == IrOp.br_on_cast_fail || op == IrOp.br_table) {
+      this.a[inst] = map(av);
+      this.#rewriteSuccessorArgs(inst, map);
+      return;
+    }
+    throw new Error(`rewriteValueOperands: unhandled opcode ${irOpName(op)}`);
+  }
+
+  #rewriteSuccessorArgs(inst: i32, map: (v: i32) => i32): void {
+    for (let s in this.successors(inst)) {
+      var i = 0;
+      while (i < s.argCount) {
+        this.extra[s.argStart + i] = map(this.extra[s.argStart + i]);
+        i += 1;
+      }
+    }
+  }
+
   #appendSuccessorArgs(inst: i32, out: Array<i32>): void {
     let succs = this.successors(inst);
     for (let s in succs) {
