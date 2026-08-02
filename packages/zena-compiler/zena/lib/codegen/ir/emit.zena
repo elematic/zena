@@ -565,7 +565,12 @@ export final class ZirFunctionEmitter {
    */
   #streamsFirstOperand(op: IrOp): boolean {
     if (isIrTerminator(op)) {
-      return false;
+      // These terminators push their first decoded operand first,
+      // via #pushValue (a br_if condition, a returned/thrown value).
+      // br's operands are branch args — copy semantics — and try_br
+      // opens control structure before any operand.
+      return op == IrOp.br_if || op == IrOp.ret || op == IrOp.ret_multi ||
+          op == IrOp.throw;
     }
     if (isUnaryNumericOp(op) || isBinaryNumericOp(op)) {
       return true;
@@ -641,21 +646,80 @@ export final class ZirFunctionEmitter {
   }
 
   #doTree(x: i32): void {
-    let mergeChildren = new Array<i32>();
-    for (let c in this.cfg.domChildren[x]) {
-      if (this.cfg.isMergeNode(c)) {
-        mergeChildren.push(c);
-      }
-    }
     if (this.cfg.isLoopHeader(x)) {
-      this.frames.push(new EmitFrame(x, true));
-      this.emitter.emitLoop(new ValTypeVoid());
+      // Dominator children OUTSIDE the natural loop are its exits:
+      // they emit AFTER the loop `end`, behind labeled blocks, so a
+      // loop exit is one `br_if` instead of an if/else diamond
+      // carrying the exit code inside the loop body. Membership is a
+      // backward flood from the back-edge predecessors (everything
+      // that reaches a latch without passing the header is in the
+      // loop) — RPO ranges are not reliable here: the DFS can order
+      // an exit block between the header and the loop body.
+      let inLoop = new Array<boolean>();
+      var b = 0;
+      while (b < this.body.blocks.length) {
+        inLoop.push(false);
+        b += 1;
+      }
+      inLoop[x] = true;
+      let work = new Array<i32>();
+      for (let p in this.cfg.preds[x]) {
+        if (this.cfg.rpoIndex[p] >= this.cfg.rpoIndex[x]) {
+          work.push(p);
+        }
+      }
+      while (work.length > 0) {
+        let m = work.pop();
+        if (!inLoop[m]) {
+          inLoop[m] = true;
+          for (let q in this.cfg.preds[m]) {
+            work.push(q);
+          }
+        }
+      }
+      let inLoopMerge = new Array<i32>();
+      let exits = new Array<i32>();
+      for (let c in this.cfg.domChildren[x]) {
+        if (!inLoop[c]) {
+          exits.push(c);
+        } else if (this.cfg.isMergeNode(c)) {
+          inLoopMerge.push(c);
+        }
+      }
+      this.#loopWithExits(x, inLoopMerge, exits, exits.length);
+    } else {
+      let mergeChildren = new Array<i32>();
+      for (let c in this.cfg.domChildren[x]) {
+        if (this.cfg.isMergeNode(c)) {
+          mergeChildren.push(c);
+        }
+      }
       this.#nodeWithin(x, mergeChildren, mergeChildren.length);
+    }
+  }
+
+  /**
+   * Opens one labeled block per loop exit (outermost = latest in RPO,
+   * mirroring #nodeWithin), emits the loop inside them, then each
+   * exit's subtree after its block's end.
+   */
+  #loopWithExits(x: i32, inLoopMerge: Array<i32>, exits: Array<i32>,
+      count: i32): void {
+    if (count > 0) {
+      let y = exits[count - 1];
+      this.frames.push(new EmitFrame(y, false));
+      this.emitter.emitBlock(new ValTypeVoid());
+      this.#loopWithExits(x, inLoopMerge, exits, count - 1);
       this.emitter.emitEnd();
       this.frames.pop();
-    } else {
-      this.#nodeWithin(x, mergeChildren, mergeChildren.length);
+      this.#doTree(y);
+      return;
     }
+    this.frames.push(new EmitFrame(x, true));
+    this.emitter.emitLoop(new ValTypeVoid());
+    this.#nodeWithin(x, inLoopMerge, inLoopMerge.length);
+    this.emitter.emitEnd();
+    this.frames.pop();
   }
 
   #nodeWithin(x: i32, mergeChildren: Array<i32>, count: i32): void {
@@ -679,12 +743,22 @@ export final class ZirFunctionEmitter {
   }
 
   #emitTerminator(inst: i32, from: i32): void {
-    if (this.stackHead >= 0) {
-      throw new Error('zir emit: streamed value %' +
-          i32ToString(this.stackHead) + ' left on stack at terminator');
-    }
     let body = this.body;
     let op = body.op(inst);
+    if (this.stackHead >= 0) {
+      // ret / ret_multi / throw / br_if push their first decoded
+      // operand first, through #pushValue, which consumes a matching
+      // stack head. Anything else with a pending head is a schedule
+      // violation.
+      let operands = new Array<i32>();
+      body.appendValueOperands(inst, operands);
+      if (operands.length == 0 || operands[0] != this.stackHead ||
+          !this.#streamsFirstOperand(op)) {
+        throw new Error('zir emit: streamed value %' +
+            i32ToString(this.stackHead) + ' left on stack at terminator');
+      }
+    }
+    this.currentEmit = inst;
     if (op == IrOp.ret) {
       let value = body.a[inst];
       if (value >= 0) {
@@ -755,7 +829,26 @@ export final class ZirFunctionEmitter {
       return;
     }
     if (op == IrOp.br_if) {
-      this.emitter.emitLocalGet(this.localOf[body.a[inst]]);
+      // Fast forms: when one arm is a copy-free br to an open label
+      // (typically a loop exit or back edge after coalescing), a bare
+      // br_if replaces the if/else diamond and the other arm's code
+      // continues in the current block.
+      let d0 = this.#findDepth(succs[0].target);
+      if (d0 >= 0 && this.#edgeHasNoMoves(succs[0])) {
+        this.#pushValue(body.a[inst]);
+        this.emitter.emitBrIf(d0);
+        this.#doBranch(from, succs[1]);
+        return;
+      }
+      let d1 = this.#findDepth(succs[1].target);
+      if (d1 >= 0 && this.#edgeHasNoMoves(succs[1])) {
+        this.#pushValue(body.a[inst]);
+        this.emitter.emitI32Eqz();
+        this.emitter.emitBrIf(d1);
+        this.#doBranch(from, succs[0]);
+        return;
+      }
+      this.#pushValue(body.a[inst]);
       this.emitter.emitIf(new ValTypeVoid());
       this.frames.push(new EmitFrame(-1, false));
       this.#doBranch(from, succs[0]);
@@ -770,13 +863,28 @@ export final class ZirFunctionEmitter {
 
   #doBranch(from: i32, s: IrSuccessor): void {
     this.#copyArgs(s);
+    // Anything with an open frame (loop headers, merge nodes, loop
+    // exits placed after their loop) brs to its label.
+    let d = this.#findDepth(s.target);
+    if (d >= 0) {
+      this.emitter.emitBr(d);
+      return;
+    }
     if (this.cfg.rpoIndex[s.target] <= this.cfg.rpoIndex[from] ||
         this.cfg.isMergeNode(s.target)) {
-      this.emitter.emitBr(this.#depthOf(s.target));
-      return;
+      throw new Error('zir emit: no enclosing label for b' +
+          i32ToString(s.target));
     }
     // Single forward predecessor: place the target's subtree right here.
     this.#doTree(s.target);
+  }
+
+  /** True when the edge's copies all coalesced away (no move plan). */
+  #edgeHasNoMoves(s: IrSuccessor): boolean {
+    if (let (true, plan) = this.#movePlans.get(s.argStart)) {
+      return plan.length == 0;
+    }
+    return true;
   }
 
   #copyArgs(s: IrSuccessor): void {
@@ -804,6 +912,20 @@ export final class ZirFunctionEmitter {
       i -= 1;
     }
     throw new Error('zir emit: no enclosing label for b' + i32ToString(target));
+  }
+
+  /** Label depth for `target`, or -1 when it has no open frame. */
+  #findDepth(target: i32): i32 {
+    var i = this.frames.length - 1;
+    var depth = 0;
+    while (i >= 0) {
+      if (this.frames[i].blockId == target) {
+        return depth;
+      }
+      depth += 1;
+      i -= 1;
+    }
+    return -1;
   }
 
   #emitInst(inst: i32): void {
