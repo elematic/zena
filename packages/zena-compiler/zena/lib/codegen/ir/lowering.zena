@@ -68,6 +68,10 @@ import {
   lowerCaseClassEq, lowerCaseClassHash, lowerErasedEq, lowerEqIntrinsic,
   lowerHashIntrinsic,
 } from './equality.zena';
+import {
+  branchUnless, collectPatternBindSyms, lowerPatternBindings,
+  lowerPatternTest, patternBinds, patternRefutable,
+} from './patterns.zena';
 
 // ZirUnsupported now lives in lowering-context.zena (imported above):
 // split modules throw it too, and importing it from lowering would
@@ -4100,226 +4104,11 @@ final class FunctionLowerer {
     return this.#finishMerge(m, saved);
   }
 
-  /**
-   * Emits the refutable tests for `pattern` against `value`, branching
-   * to `failB` at the first failure; on success execution falls through
-   * in the current block. Pattern kinds not lowered yet (tuples,
-   * records) bail here, falling the whole function back to streaming.
-   */
+  /** Refutable tests for `pattern` (see ir/patterns.zena). */
   #lowerPatternTest(pattern: Node, value: i32, failB: i32): void {
-    match (pattern) {
-      case IdentifierPattern: {}
-      case Identifier as ident: {
-        if (ident.name != "_") {
-          // `case Foo:` where Foo names a class is a type test; any
-          // other identifier is an irrefutable binding (mirrors
-          // streaming's check emitter).
-          let patType = this.func.model.getNodeType(pattern);
-          if (patType is ClassType) {
-            let st = this.#classStructOf(patType as ClassType);
-            this.#emitRefTest(value, st, failB);
-          }
-        }
-      }
-      case AsPattern as ap: {
-        this.#lowerPatternTest(ap.pattern, value, failB);
-      }
-      case BindingPattern as bp: {
-        this.#lowerPatternTest(bp.pattern, value, failB);
-      }
-      case LiteralPattern as lp: {
-        this.#lowerPatternTest(lp.value, value, failB);
-      }
-      case ClassPattern as cp: {
-        let ct = this.func.model.getNodeType(cp.name);
-        if (!(ct is ClassType)) {
-          this.#bail('untyped class pattern');
-        }
-        let st = this.#classStructOf(ct as ClassType);
-        this.#emitRefTest(value, st, failB);
-        let castVt = new ValTypeRef(st) as ValType;
-        var casted = -1;
-        for (let prop in cp.properties) {
-          // Streaming parity on both filters: irrefutable property
-          // patterns contribute no test, and properties without a
-          // physical struct field are skipped.
-          if (this.#patternRefutable(prop.value)) {
-            let fieldIdx = this.#structFieldIndex(st, prop.name.name);
-            if (fieldIdx >= 0) {
-              if (casted < 0) {
-                casted = this.b.emit(IrOp.ref_cast, castVt, value,
-                    this.b.internType(castVt));
-              }
-              let fieldRef = this.b.addRef(new IrRefField(st, prop.name.name));
-              let fieldVal = this.b.emit(
-                  IrOp.struct_get, st.fields[fieldIdx].type, casted, fieldRef);
-              this.#lowerPatternTest(prop.value, fieldVal, failB);
-            }
-          }
-        }
-      }
-      case LogicalPattern as lp: {
-        if (lp.operator == "||") {
-          if (this.#patternBinds(lp.left) || this.#patternBinds(lp.right)) {
-            // Both sides bind the same symbols (checker-enforced); each
-            // side's values merge into the arm through block params.
-            let syms = new Array<SymbolId>();
-            this.#collectPatternBindSyms(lp.left, syms);
-            let tryRight = this.b.newBlock();
-            this.#lowerPatternTest(lp.left, value, tryRight);
-            this.#lowerPatternBindings(lp.left, value);
-            // Params are added after the left side binds, so the
-            // symbols' binding types are registered for #addParams.
-            let successB = this.b.newBlock();
-            let successParams = this.#addParams(successB, syms);
-            this.b.br(successB, this.#envValues(syms));
-            this.b.switchTo(tryRight);
-            this.#lowerPatternTest(lp.right, value, failB);
-            this.#lowerPatternBindings(lp.right, value);
-            this.b.br(successB, this.#envValues(syms));
-            this.b.switchTo(successB);
-            this.#applyParams(syms, successParams);
-          } else if (this.#patternRefutable(lp.left) &&
-              this.#patternRefutable(lp.right)) {
-            let tryRight = this.b.newBlock();
-            let successB = this.b.newBlock();
-            this.#lowerPatternTest(lp.left, value, tryRight);
-            this.b.br(successB, this.#noArgs());
-            this.b.switchTo(tryRight);
-            this.#lowerPatternTest(lp.right, value, failB);
-            this.b.br(successB, this.#noArgs());
-            this.b.switchTo(successB);
-          }
-          // Otherwise one side always matches, so the whole pattern does.
-        } else {
-          this.#lowerPatternTest(lp.left, value, failB);
-          this.#lowerPatternTest(lp.right, value, failB);
-        }
-      }
-      case NumberLiteral as num: {
-        let vt = this.#valueType(value);
-        var cond = -1;
-        if (vt is ValTypeI32) {
-          if (let (true, parsed) = parseI64OrU64Literal(num.raw)) {
-            let lit = this.b.constI32(parsed as i32, vt);
-            cond = this.b.binary(IrOp.i32_eq, new ValTypeI32(), value, lit);
-          } else {
-            this.#bail('unparseable pattern literal');
-          }
-        } else if (vt is ValTypeI64) {
-          if (let (true, parsed) = parseI64OrU64Literal(num.raw)) {
-            let lit = this.b.constI64(parsed, vt);
-            cond = this.b.binary(IrOp.i64_eq, new ValTypeI32(), value, lit);
-          } else {
-            this.#bail('unparseable pattern literal');
-          }
-        } else if (vt is ValTypeF64) {
-          let lit = this.b.constF64(parseF64(num.raw), vt);
-          cond = this.b.binary(IrOp.f64_eq, new ValTypeI32(), value, lit);
-        } else if (vt is ValTypeF32) {
-          let lit = this.b.constF32(parseF64(num.raw), vt);
-          cond = this.b.binary(IrOp.f32_eq, new ValTypeI32(), value, lit);
-        } else {
-          this.#bail('number pattern operand');
-        }
-        this.#branchUnless(cond, failB);
-      }
-      case BooleanLiteral as bl: {
-        let vt = this.#valueType(value);
-        if (!(vt is ValTypeI32)) {
-          this.#bail('boolean pattern operand');
-        }
-        let lit = this.b.constI32(if (bl.value) 1 else 0, vt);
-        let cond = this.b.binary(IrOp.i32_eq, new ValTypeI32(), value, lit);
-        this.#branchUnless(cond, failB);
-      }
-      case NullLiteral: {
-        let vt = this.#valueType(value);
-        let nullable = vt is ValTypeRefNull || vt is ValTypeAnyRef ||
-            vt is ValTypeEqRef;
-        if (!nullable) {
-          this.#bail('null pattern operand');
-        }
-        let cond = this.b.emit(IrOp.ref_is_null, new ValTypeI32(), value, -1);
-        this.#branchUnless(cond, failB);
-      }
-      case StringLiteral as sl: {
-        let cond = this.#stringPatternEq(value, sl);
-        this.#branchUnless(cond, failB);
-      }
-      case MemberExpression as me: {
-        // Enum constants and other member reads: compare by value.
-        let expected = this.#lowerExpression(me as Expression);
-        let vt = this.#valueType(value);
-        if (!valTypeEquals(vt, this.#valueType(expected))) {
-          this.#bail('member pattern type');
-        }
-        var op = IrOp.i32_eq;
-        if (vt is ValTypeI32) {
-          op = IrOp.i32_eq;
-        } else if (vt is ValTypeI64) {
-          op = IrOp.i64_eq;
-        } else if (vt is ValTypeF32) {
-          op = IrOp.f32_eq;
-        } else if (vt is ValTypeF64) {
-          op = IrOp.f64_eq;
-        } else {
-          this.#bail('member pattern operand');
-        }
-        let cond = this.b.binary(op, new ValTypeI32(), value, expected);
-        this.#branchUnless(cond, failB);
-      }
-      case TuplePattern as tp: {
-        for (var i = 0; i < tp.elements.length; i += 1) {
-          let el = tp.elements[i];
-          if (el != null && this.#patternRefutable(el as Node)) {
-            let fieldVal = this.#tupleFieldRead(value, i);
-            this.#lowerPatternTest(el as Node, fieldVal, failB);
-          }
-        }
-      }
-      case RecordPattern as rp: {
-        let dispatchOpt = this.#recordDispatchOfValue(value);
-        if (dispatchOpt == null) {
-          this.#bail('record pattern operand');
-        }
-        for (let prop in rp.properties) {
-          if (this.#patternRefutable(prop.value)) {
-            let read = this.#recordDispatchRead(
-                dispatchOpt as RecordDispatchInfo, prop.name.name, value);
-            this.#lowerPatternTest(prop.value, read, failB);
-          }
-        }
-      }
-      case _: {
-        this.#bail('pattern kind');
-      }
-    }
+    lowerPatternTest(this.#loweringContext(), pattern, value, failB);
   }
 
-
-  /** The struct behind a (boxed) tuple or class value; bails otherwise. */
-  #structOfValue(value: i32): WasmStruct {
-    let stOpt = asWasmStruct(this.#valueType(value));
-    if (stOpt == null) {
-      this.#bail('pattern operand kind');
-    }
-    return stOpt as WasmStruct;
-  }
-
-  /** The record dispatch whose fat-pointer struct backs `value`, if any. */
-  #recordDispatchOfValue(value: i32): RecordDispatchInfo | null {
-    let stOpt = asWasmStruct(this.#valueType(value));
-    if (stOpt == null) {
-      return null;
-    }
-    for (let info in this.wasm.recordDispatchInfos) {
-      if (info.fatPtrType == stOpt) {
-        return info;
-      }
-    }
-    return null;
-  }
 
   /** A record property read through an already-known dispatch. */
   #recordDispatchRead(dispatch: RecordDispatchInfo, propName: String,
@@ -4349,165 +4138,14 @@ final class FunctionLowerer {
     return this.b.callRef(getter, this.#oneArg(instance), getterSig.returns[0]);
   }
 
-  /** The boxed-tuple field value at `index` of a tuple-struct value. */
-  #tupleFieldRead(value: i32, index: i32): i32 {
-    let st = this.#structOfValue(value);
-    let fieldName = i32ToString(index);
-    if (st.fieldIndexByName(fieldName) < 0) {
-      this.#bail('tuple pattern arity');
-    }
-    let fieldRef = this.b.addRef(new IrRefField(st, fieldName));
-    return this.b.emit(IrOp.struct_get,
-        this.#fieldValType(st, fieldName), value, fieldRef);
-  }
-
-  /** All symbols a pattern binds, in source order. */
+  /** All symbols a pattern binds (see ir/patterns.zena). */
   #collectPatternBindSyms(pattern: Node, out: Array<SymbolId>): void {
-    if (pattern is IdentifierPattern) {
-      if ((pattern as IdentifierPattern).name != "_") {
-        let sym = this.func.model.resolveDeclaration(pattern);
-        if (sym != null) {
-          out.push((sym as Symbol).id);
-        }
-      }
-      return;
-    }
-    if (pattern is Identifier) {
-      let ident = pattern as Identifier;
-      if (ident.name != "_") {
-        let sym = this.func.model.resolveDeclaration(ident);
-        if (sym != null && !(sym as Symbol).isType()) {
-          out.push((sym as Symbol).id);
-        }
-      }
-      return;
-    }
-    if (pattern is AsPattern) {
-      let ap = pattern as AsPattern;
-      let sym = this.func.model.resolveDeclaration(ap.name);
-      if (sym != null) {
-        out.push((sym as Symbol).id);
-      }
-      this.#collectPatternBindSyms(ap.pattern, out);
-      return;
-    }
-    if (pattern is BindingPattern) {
-      this.#collectPatternBindSyms((pattern as BindingPattern).pattern, out);
-      return;
-    }
-    if (pattern is TuplePattern) {
-      for (let el in (pattern as TuplePattern).elements) {
-        if (el != null) {
-          this.#collectPatternBindSyms(el as Node, out);
-        }
-      }
-      return;
-    }
-    if (pattern is RecordPattern) {
-      for (let prop in (pattern as RecordPattern).properties) {
-        this.#collectPatternBindSyms(prop.value, out);
-      }
-      return;
-    }
-    if (pattern is ClassPattern) {
-      for (let prop in (pattern as ClassPattern).properties) {
-        this.#collectPatternBindSyms(prop.value, out);
-      }
-      return;
-    }
-    if (pattern is LogicalPattern) {
-      let lp = pattern as LogicalPattern;
-      this.#collectPatternBindSyms(lp.left, out);
-      if (lp.operator != "||") {
-        this.#collectPatternBindSyms(lp.right, out);
-      }
-    }
+    collectPatternBindSyms(this.#loweringContext(), pattern, out);
   }
 
-  /** Binds `pattern`'s variables against `value` in the current block. */
+  /** Binds `pattern`'s variables (see ir/patterns.zena). */
   #lowerPatternBindings(pattern: Node, value: i32): void {
-    match (pattern) {
-      case IdentifierPattern as pat: {
-        if (pat.name != "_") {
-          let sym = this.func.model.resolveDeclaration(pat);
-          if (sym != null) {
-            this.#bindPatternSym(sym as Symbol, value);
-          }
-        }
-      }
-      case Identifier as ident: {
-        if (ident.name != "_") {
-          let sym = this.func.model.resolveDeclaration(ident);
-          if (sym != null && !(sym as Symbol).isType()) {
-            this.#bindPatternSym(sym as Symbol, value);
-          }
-        }
-      }
-      case AsPattern as ap: {
-        let sym = this.func.model.resolveDeclaration(ap.name);
-        if (sym != null) {
-          this.#bindPatternSym(sym as Symbol, value);
-        }
-        this.#lowerPatternBindings(ap.pattern, value);
-      }
-      case BindingPattern as bp: {
-        this.#lowerPatternBindings(bp.pattern, value);
-      }
-      case ClassPattern as cp: {
-        let ct = this.func.model.getNodeType(cp.name);
-        if (!(ct is ClassType)) {
-          this.#bail('untyped class pattern');
-        }
-        let st = this.#classStructOf(ct as ClassType);
-        let castVt = new ValTypeRef(st) as ValType;
-        var casted = -1;
-        for (let prop in cp.properties) {
-          if (this.#patternBinds(prop.value)) {
-            let fieldIdx = this.#structFieldIndex(st, prop.name.name);
-            if (fieldIdx >= 0) {
-              if (casted < 0) {
-                casted = this.b.emit(IrOp.ref_cast, castVt, value,
-                    this.b.internType(castVt));
-              }
-              let fieldRef = this.b.addRef(new IrRefField(st, prop.name.name));
-              let fieldVal = this.b.emit(
-                  IrOp.struct_get, st.fields[fieldIdx].type, casted, fieldRef);
-              this.#lowerPatternBindings(prop.value, fieldVal);
-            }
-          }
-        }
-      }
-      case LogicalPattern as lp: {
-        if (lp.operator != "||") {
-          this.#lowerPatternBindings(lp.left, value);
-          this.#lowerPatternBindings(lp.right, value);
-        }
-        // Or-pattern bindings were merged during the test phase.
-      }
-      case TuplePattern as tp: {
-        for (var i = 0; i < tp.elements.length; i += 1) {
-          let el = tp.elements[i];
-          if (el != null && this.#patternBinds(el as Node)) {
-            this.#lowerPatternBindings(el as Node, this.#tupleFieldRead(value, i));
-          }
-        }
-      }
-      case RecordPattern as rp: {
-        let dispatchOpt = this.#recordDispatchOfValue(value);
-        for (let prop in rp.properties) {
-          if (this.#patternBinds(prop.value)) {
-            let read = if (dispatchOpt != null) {
-              this.#recordDispatchRead(
-                  dispatchOpt as RecordDispatchInfo, prop.name.name, value)
-            } else {
-              this.#lowerObjectPropertyRead(prop.name.name, value)
-            };
-            this.#lowerPatternBindings(prop.value, read);
-          }
-        }
-      }
-      case _: {}
-    }
+    lowerPatternBindings(this.#loweringContext(), pattern, value);
   }
 
   /**
@@ -4634,150 +4272,19 @@ final class FunctionLowerer {
     this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
   }
 
-  /** Whether `pattern` can fail to match (needs a fail edge). */
+  /** Whether `pattern` can fail to match (see ir/patterns.zena). */
   #patternRefutable(pattern: Node): boolean {
-    return match (pattern) {
-      case IdentifierPattern: false
-      case Identifier as ident: {
-        if (ident.name == "_") {
-          false
-        } else {
-          let t = this.func.model.getNodeType(pattern);
-          t is ClassType
-        }
-      }
-      case AsPattern as ap: this.#patternRefutable(ap.pattern)
-      case BindingPattern as bp: this.#patternRefutable(bp.pattern)
-      case LogicalPattern as lp: {
-        if (lp.operator == "||") {
-          this.#patternRefutable(lp.left) && this.#patternRefutable(lp.right)
-        } else {
-          this.#patternRefutable(lp.left) || this.#patternRefutable(lp.right)
-        }
-      }
-      case TuplePattern as tp: {
-        var refutable = false;
-        for (let el in tp.elements) {
-          if (el != null && this.#patternRefutable(el as Node)) {
-            refutable = true;
-          }
-        }
-        refutable
-      }
-      case RecordPattern as rp: {
-        var refutable = false;
-        for (let prop in rp.properties) {
-          if (this.#patternRefutable(prop.value)) {
-            refutable = true;
-          }
-        }
-        refutable
-      }
-      case _: true
-    };
+    return patternRefutable(this.#loweringContext(), pattern);
   }
 
-  /** Whether `pattern` introduces any bindings. */
+  /** Whether `pattern` introduces bindings (see ir/patterns.zena). */
   #patternBinds(pattern: Node): boolean {
-    return match (pattern) {
-      case IdentifierPattern as pat: pat.name != "_"
-      case Identifier as ident: {
-        if (ident.name == "_") {
-          false
-        } else {
-          let sym = this.func.model.resolveDeclaration(ident);
-          sym != null && !(sym as Symbol).isType()
-        }
-      }
-      case AsPattern: true
-      case BindingPattern as bp: this.#patternBinds(bp.pattern)
-      case LiteralPattern: false
-      case ClassPattern as cp: {
-        var binds = false;
-        for (let prop in cp.properties) {
-          if (this.#patternBinds(prop.value)) {
-            binds = true;
-          }
-        }
-        binds
-      }
-      case LogicalPattern as lp:
-          this.#patternBinds(lp.left) || this.#patternBinds(lp.right)
-      case TuplePattern as tp: {
-        var binds = false;
-        for (let el in tp.elements) {
-          if (el != null && this.#patternBinds(el as Node)) {
-            binds = true;
-          }
-        }
-        binds
-      }
-      case RecordPattern as rp: {
-        var binds = false;
-        for (let prop in rp.properties) {
-          if (this.#patternBinds(prop.value)) {
-            binds = true;
-          }
-        }
-        binds
-      }
-      case _: false
-    };
+    return patternBinds(this.#loweringContext(), pattern);
   }
 
-  /** Branches to `failB` when `cond` is false; continues in a new block. */
+  /** Branch to `failB` unless `cond` (see ir/patterns.zena). */
   #branchUnless(cond: i32, failB: i32): void {
-    let contB = this.b.newBlock();
-    this.b.brIf(cond, contB, this.#noArgs(), failB, this.#noArgs());
-    this.b.switchTo(contB);
-  }
-
-  /** ref.test `value` against `st`, branching to `failB` on failure. */
-  #emitRefTest(value: i32, st: WasmStruct, failB: i32): void {
-    let vt = this.#valueType(value);
-    if (!isRefValType(vt)) {
-      this.#bail('type test operand');
-    }
-    let targetVt = new ValTypeRef(st) as ValType;
-    let cond = this.b.emit(IrOp.ref_test, new ValTypeI32(), value,
-        this.b.internType(targetVt));
-    this.#branchUnless(cond, failB);
-  }
-
-  /** `case "lit":` — a direct call to String.==, mirroring streaming. */
-  #stringPatternEq(value: i32, sl: StringLiteral): i32 {
-    if (this.wasm.stringClass == null) {
-      this.#bail('string pattern without String class');
-    }
-    let key = getClassMethodKey(
-        getClassKey(this.wasm.stringClass as ClassType), "==");
-    let eqFuncOpt = if (let (true, f) = this.wasm.classMethodMap.get(key)) f else null;
-    if (eqFuncOpt == null) {
-      this.#bail('string pattern without String.==');
-    }
-    let eqFunc = eqFuncOpt as WasmFunction;
-    let sig = eqFunc.signature;
-    if (sig.returns.length != 1 || sig.params.length != 2) {
-      this.#bail('String.== shape');
-    }
-    let lit = this.#lowerStringLiteral(sl);
-    if (!isValSubtype(this.#valueType(value), sig.params[0]) ||
-        !isValSubtype(this.#valueType(lit), sig.params[1])) {
-      this.#bail('string pattern operand');
-    }
-    let funcRef = this.b.addRef(new IrRefFunc(eqFunc));
-    return this.b.callFunc(funcRef, this.#twoValues(value, lit), sig.returns[0]);
-  }
-
-  #structFieldIndex(st: WasmStruct, name: String): i32 {
-    return st.fieldIndexByName(name);
-  }
-
-  #classStructOf(ct: ClassType): WasmStruct {
-    if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) {
-      return info.structType;
-    }
-    throw new ZirUnsupported('pattern class not discovered');
+    branchUnless(this.#loweringContext(), cond, failB);
   }
 
   /**
@@ -7599,7 +7106,20 @@ final class FunctionLowerer {
             sig: WasmSignature, args: Array<i32>,
             resultType: ValType | null): i32 =>
             this.#lowerVtableCall(receiver, classInfo, slotName, sig, args,
-                resultType));
+                resultType),
+        (sym: Symbol, value: i32): void => {
+          this.#bindPatternSym(sym, value);
+        },
+        (dispatch: RecordDispatchInfo, propName: String, receiver: i32): i32 =>
+            this.#recordDispatchRead(dispatch, propName, receiver),
+        (propName: String, receiver: i32): i32 =>
+            this.#lowerObjectPropertyRead(propName, receiver),
+        (block: i32, syms: Array<SymbolId>): Array<i32> =>
+            this.#addParams(block, syms),
+        (syms: Array<SymbolId>): Array<i32> => this.#envValues(syms),
+        (syms: Array<SymbolId>, params: Array<i32>): void => {
+          this.#applyParams(syms, params);
+        });
     this.#loweringContextCache = cx;
     return cx;
   }

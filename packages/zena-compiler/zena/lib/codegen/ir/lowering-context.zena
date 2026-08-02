@@ -15,9 +15,10 @@ import { Type, ClassType } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, ClassCodegenInfo,
+  RecordDispatchInfo,
 } from '../wasm-module.zena';
 import { IrBuilder } from './builder.zena';
-import { SymbolId } from '../../scope/symbol.zena';
+import { Symbol, SymbolId } from '../../scope/symbol.zena';
 
 /**
  * Thrown for constructs lowering does not model YET: tryLowerFunction
@@ -68,12 +69,27 @@ export final class LoweringContext {
   lowerVtableCall: (receiver: i32, classInfo: ClassCodegenInfo,
       slotName: String, sig: WasmSignature, args: Array<i32>,
       resultType: ValType | null) => i32;
+  /** Binds a pattern symbol into the SSA env (cell-aware, coercing). */
+  bindPatternSym: (sym: Symbol, value: i32) => void;
+  /** A record property read through an already-known dispatch. */
+  recordDispatchRead: (dispatch: RecordDispatchInfo, propName: String,
+      receiver: i32) => i32;
+  /** A record property read resolved from the receiver's own struct. */
+  objectPropertyRead: (propName: String, receiver: i32) => i32;
+  /** Adds one block param per symbol, typed from its binding. */
+  addParams: (block: i32, syms: Array<SymbolId>) => Array<i32>;
+  /** The syms' current env values, in order (branch-argument lists). */
+  envValues: (syms: Array<SymbolId>) => Array<i32>;
+  /** Rebinds each symbol to its block param after a merge. */
+  applyParams: (syms: Array<SymbolId>, params: Array<i32>) => void;
   new(this.b, this.wasm, this.func, this.lowerExpr, this.valueTypeOf,
       this.exprVt, this.substitutedNodeType, this.reassertNonNull,
       this.stripNonNull, this.requireSupported, this.failConformance,
       this.fail, this.envValueOf, this.coerceTo, this.classTypeOfValue,
       this.canonicalKeyOf, this.resolveDevirtualizedMethod,
-      this.vtableSlotIndex, this.lowerVtableCall);
+      this.vtableSlotIndex, this.lowerVtableCall, this.bindPatternSym,
+      this.recordDispatchRead, this.objectPropertyRead, this.addParams,
+      this.envValues, this.applyParams);
 }
 
 /** An empty argument list (branch with no args, nullary call). */
