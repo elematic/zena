@@ -915,13 +915,13 @@ Declared wasm types must equal Zena types everywhere a value is
 stored — in particular, Zena non-nullable references land in
 `(ref $T)` locals, never `(ref null $T)`. Engines don't null-check
 `local.get`/`local.set` themselves, but inaccurate local types cost
-real money at the *uses*: an explicit `ref.as_non_null` re-assert
+real money at the _uses_: an explicit `ref.as_non_null` re-assert
 compiles to a compare-and-trap (there is no dereference for the
 trap-handler trick to ride), and a nullable declared type pessimizes
 engine-side redundant-check elimination, `call_ref` handling, and
 inlining even where the hardware makes the check itself free.
 
-The obstacle is wasm's *scoped* initialization tracking for
+The obstacle is wasm's _scoped_ initialization tracking for
 non-defaultable locals (all rules below verified against wasm-tools):
 a `local.set` is forgotten at the `end` of the block containing it,
 even when control provably flowed through it — and the rollback is
@@ -932,7 +932,7 @@ Structured init visibility is strictly weaker than CFG dominance.
 This is exactly why the interim every-value-a-local emitter stores
 non-null values in nullable locals: its synthetic merge labels
 routinely sit between a def and its uses, and a merge parameter's
-copies *always* sit inside the label they branch to, with the reads
+copies _always_ sit inside the label they branch to, with the reads
 after its `end`.
 
 The reason full accuracy is reachable at all is a source-language
@@ -974,10 +974,10 @@ through five mechanisms:
      local, reconstructs the source variable: its first set is the
      declaration's init in the enclosing scope, and arm assignments
      are re-sets, which init tracking ignores.
-   The naive per-SSA-value emission that sets a local on each arm —
-   the shape the validator rejects even when both arms set (per
-   above) — is therefore always avoidable for source-derived CFGs;
-   it only exists if the emitter chooses it.
+     The naive per-SSA-value emission that sets a local on each arm —
+     the shape the validator rejects even when both arms set (per
+     above) — is therefore always avoidable for source-derived CFGs;
+     it only exists if the emitter chooses it.
 5. **Init-discipline typing** as the backstop: type every local
    `(ref $T)` and demote to nullable only what a one-pass simulation
    of the validator's scoped init tracking rejects. Demotions are
@@ -992,7 +992,7 @@ For a demoted local that does survive, `ref.as_non_null` is inserted
 only where the consumer's type discipline demands non-null (call and
 branch arguments, non-null struct fields); dereferencing consumers
 accept nullable refs with identical trap semantics and hardware-priced
-checks, so they read the local raw. What we deliberately do *not* do
+checks, so they read the local raw. What we deliberately do _not_ do
 is thread multi-use live-across values through label results (full
 multi-value stackification): that trades cheap-or-free null checks for
 real operand shuffling on every path. If the demotion counter ever

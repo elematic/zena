@@ -6,8 +6,4 @@ import 'codemirror-elements/lib/cm-theme-nord.js';
 import 'codemirror-elements/lib/cm-theme-vscode-dark.js';
 import 'codemirror-elements/lib/cm-theme-solarized-dark.js';
 
-export {
-  cssVars,
-  cssVarsTheme,
-} from 'codemirror-elements/lib/css-vars-theme.js';
-
+export {cssVars, cssVarsTheme} from 'codemirror-elements/lib/css-vars-theme.js';

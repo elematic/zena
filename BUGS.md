@@ -461,6 +461,7 @@ immediately trying to fix it (which can pollute the current task's context).
   comment there).
 
 ### Checker does not narrow after calls to never-returning functions
+
 - **Found**: 2026-07-21
 - **Severity**: low (ergonomics; forces redundant casts)
 - **Workaround**: inline `throw`, or keep an `as` cast after the guard.
@@ -486,8 +487,8 @@ immediately trying to fix it (which can pollute the current task's context).
   treated like throw for reachability/narrowing. Both compilers agree
   (checked with the bootstrap checker).
 
-
 ### Host mutations after a read-only capture are invisible to the closure
+
 - **Found**: 2026-07-21
 - **Severity**: medium
 - **Workaround**: mutate the variable somewhere inside a closure that
@@ -519,10 +520,11 @@ immediately trying to fix it (which can pollute the current task's context).
   tests/language/execution/closures/celled_captures.zena.
 
 ### Self-hosted codegen fails member access on &&-narrowed values
+
 - **Found**: 2026-07-21
 - **Severity**: medium
 - **Workaround**: hoist the narrowing to a statement (`if (x is T) {
-  ... x.member ... }`) or use an explicit cast after the `is` test.
+... x.member ... }`) or use an explicit cast after the `is` test.
 - **Details**: `x is T && x.member ...` — the checker narrows `x` in the
   right-hand side of `&&`, and the BOOTSTRAP codegen compiles it, but the
   SELF-HOSTED streaming codegen resolves `x.member` against the
@@ -533,7 +535,6 @@ immediately trying to fix it (which can pollute the current task's context).
   path in zena/lib/codegen/expr/member.zena uses the node's declared type
   where the bootstrap consults the narrowed type. Statement-level `is`
   narrowing (including member access in the if-body) works in both.
-
 
 ### Self-hosted checker does not surface inherited members on sealed variant types
 

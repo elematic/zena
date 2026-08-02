@@ -1,7 +1,7 @@
-import { StreamLanguage, LanguageSupport } from '@codemirror/language';
-import { hoverTooltip } from '@codemirror/view';
-import { customElement } from 'lit/decorators.js';
-import { CodeMirrorExtensionElement } from 'codemirror-elements/lib/cm-extension-element.js';
+import {StreamLanguage, LanguageSupport} from '@codemirror/language';
+import {hoverTooltip} from '@codemirror/view';
+import {customElement} from 'lit/decorators.js';
+import {CodeMirrorExtensionElement} from 'codemirror-elements/lib/cm-extension-element.js';
 
 const keywords = new Set([
   'let',
@@ -167,10 +167,12 @@ export const zenaLanguage = StreamLanguage.define<ZenaState>({
     // 5. Operators
     if (stream.match('|>')) return 'operator';
     if (stream.match('??')) return 'operator';
-    if (stream.match('?.') || stream.match('?(') || stream.match('?[')) return 'operator';
+    if (stream.match('?.') || stream.match('?(') || stream.match('?['))
+      return 'operator';
     if (stream.match('=>')) return 'operator';
     if (stream.match(/^(===[^=]|!==|==|!=|<=|>=|<|>)/)) return 'operator';
-    if (stream.match(/^(\+=|-=|\*=|\/=|%=|&=|\|=|\^=|<<=|>>=|\+|-|\*|\/|%)/)) return 'operator';
+    if (stream.match(/^(\+=|-=|\*=|\/=|%=|&=|\|=|\^=|<<=|>>=|\+|-|\*|\/|%)/))
+      return 'operator';
     if (stream.match(/^(&&|\|\||!)/)) return 'operator';
     if (stream.match('...')) return 'operator';
     if (stream.match(/^[=|&|^~]/)) return 'operator';
@@ -184,7 +186,8 @@ export const zenaLanguage = StreamLanguage.define<ZenaState>({
     if (stream.match(/^[a-zA-Z_$][a-zA-Z0-9_$]*/)) {
       const word = stream.current();
       if (keywords.has(word)) {
-        if (word === 'true' || word === 'false' || word === 'null') return 'atom';
+        if (word === 'true' || word === 'false' || word === 'null')
+          return 'atom';
         if (word === 'this' || word === 'super') return 'keyword';
         return 'keyword';
       }
@@ -250,7 +253,11 @@ export class CodeMirrorHoverZena extends CodeMirrorExtensionElement {
       const line = view.state.doc.lineAt(pos);
       const lineText = line.text;
       const linePos = pos - line.from;
-      if (linePos < 0 || linePos >= lineText.length || !/[a-zA-Z0-9_$#]/.test(lineText[linePos])) {
+      if (
+        linePos < 0 ||
+        linePos >= lineText.length ||
+        !/[a-zA-Z0-9_$#]/.test(lineText[linePos])
+      ) {
         return null;
       }
       var start = linePos;
@@ -288,7 +295,7 @@ export class CodeMirrorHoverZena extends CodeMirrorExtensionElement {
           labelEl.textContent = hoverData.label || hoverData.typeStr;
           dom.appendChild(labelEl);
 
-          return { dom };
+          return {dom};
         },
       };
     });

@@ -1,5 +1,10 @@
-export { ZenaPlayground } from './zena-playground.js';
-export { CodeMirrorLangZena, CodeMirrorHoverZena, zenaLanguage, zena } from './cm-lang-zena.js';
+export {ZenaPlayground} from './zena-playground.js';
+export {
+  CodeMirrorLangZena,
+  CodeMirrorHoverZena,
+  zenaLanguage,
+  zena,
+} from './cm-lang-zena.js';
 export * from './cm-themes.js';
 export type {
   PlaygroundDiagnostic,
@@ -7,4 +12,4 @@ export type {
   WorkerResponse,
   ConsoleEntry,
 } from './types.js';
-export { default as STDLIB_FILES } from './stdlib-data.json' with { type: 'json' };
+export {default as STDLIB_FILES} from './stdlib-data.json' with {type: 'json'};

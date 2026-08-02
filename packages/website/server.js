@@ -22,9 +22,7 @@ app.use(
 );
 
 // Serve built site files
-app.use(
-  serveStatic(siteDir),
-);
+app.use(serveStatic(siteDir));
 
 app.listen(port).then(() => {
   console.log(`🚀 Zipadee dev server running at http://localhost:${port}`);
