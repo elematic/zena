@@ -6280,10 +6280,16 @@ final class FunctionLowerer {
     let resultVt = this.#exprValType(assign as Expression);
     let isNull = this.b.emit(IrOp.ref_is_null, new ValTypeI32(), current, -1);
     let writeB = this.b.newBlock();
+    let keepB = this.b.newBlock();
     let merge = this.b.newBlock();
     let result = this.b.blockParam(merge, resultVt);
+    this.b.brIf(isNull, writeB, this.#noArgs(), keepB, this.#noArgs());
+    // The keep-path conform narrows nullable -> non-null, so it MUST
+    // sit in its own arm: emitted before the branch it would trap on
+    // exactly the null values the write arm exists to handle.
+    this.b.switchTo(keepB);
     let keep = this.#conformToSlot(current, resultVt, 'nullish member value');
-    this.b.brIf(isNull, writeB, this.#noArgs(), merge, this.#oneArg(keep));
+    this.b.br(merge, this.#oneArg(keep));
     this.b.switchTo(writeB);
     var rhs = this.#lowerExpressionCtx(assign.value, fieldVt);
     rhs = this.#conformToSlot(rhs, fieldVt, 'member write type');
