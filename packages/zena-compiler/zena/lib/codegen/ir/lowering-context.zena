@@ -8,6 +8,8 @@
  * predates this and keeps its narrower IntrinsicCx).
  */
 import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import { BinaryExpression, Expression } from '../../ast.zena';
@@ -33,10 +35,41 @@ export final class ZirUnsupported extends Error {
   new(reason: String) : super('zir unsupported: ' + reason);
 }
 
+/** One loop's break/continue targets and carried symbols. */
+export final class LoopCtx {
+  /** Where `continue` jumps: the header for while, the update block for for. */
+  continueTarget: i32;
+  exit: i32;
+  carried: Array<SymbolId>;
+  new(this.continueTarget, this.exit, this.carried);
+}
+
 export final class LoweringContext {
   b: IrBuilder;
   wasm: WasmModule;
   func: WasmFunction;
+  // ---- Mutable per-function lowering state (single-homed HERE; the
+  // coordinator and every split module read and write the same
+  // instance). SSA construction is the structured-AST form: `env`
+  // maps each variable symbol to its current value.
+  var env = new HashMap<SymbolId, i32>();
+  /** Symbols behind env entries, for binding-type lookups at merges. */
+  symbols = new HashMap<SymbolId, Symbol>();
+  loops = new Array<LoopCtx>();
+  /** Values piped by enclosing |> expressions; $ reads the top. */
+  pipelineValues = new Array<i32>();
+  /**
+   * Values known to be EXACTLY their class (freshly constructed by
+   * struct.new in this function, or a singleton global). A method
+   * call on an exact receiver never needs the vtable, even when
+   * subclasses override the slot — no subclass instance can be here.
+   * Merges, cells, and casts produce new ids, so exactness is
+   * conservatively local.
+   */
+  exactValues = new HashSet<i32>();
+  var reachable = true;
+  /** The receiver value for instance methods; -1 elsewhere. */
+  var thisValue = -1;
   /** Lowers an expression; a non-null `want` supplies the context type. */
   lowerExpr: (e: Expression, want: ValType | null) => i32;
   /** The storage ValType of an already-lowered value. */
@@ -53,8 +86,6 @@ export final class LoweringContext {
   failConformance: (value: i32, want: ValType, reason: String) => void;
   /** Throws ZirUnsupported; the i32 never arrives (value positions). */
   fail: (reason: String) => i32;
-  /** The SSA value bound to a symbol, or -1 when not in the env. */
-  envValueOf: (id: SymbolId) => i32;
   /** Coerce a value to a target ValType (identity or as_non_null). */
   coerceTo: (value: i32, target: ValType) => i32;
   /** The receiver's ClassType when the value's type maps to one. */
@@ -92,7 +123,7 @@ export final class LoweringContext {
   new(this.b, this.wasm, this.func, this.lowerExpr, this.valueTypeOf,
       this.exprVt, this.substitutedNodeType, this.reassertNonNull,
       this.stripNonNull, this.requireSupported, this.failConformance,
-      this.fail, this.envValueOf, this.coerceTo, this.classTypeOfValue,
+      this.fail, this.coerceTo, this.classTypeOfValue,
       this.canonicalKeyOf, this.resolveDevirtualizedMethod,
       this.vtableSlotIndex, this.lowerVtableCall, this.bindPatternSym,
       this.recordDispatchRead, this.objectPropertyRead, this.addParams,

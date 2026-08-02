@@ -62,7 +62,7 @@ import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootC
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
 import { IntrinsicCx, lowerIntrinsic } from './intrinsics.zena';
-import { LoweringContext, ZirUnsupported } from './lowering-context.zena';
+import { LoopCtx, LoweringContext, ZirUnsupported } from './lowering-context.zena';
 import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
   lowerCaseClassEq, lowerCaseClassHash, lowerErasedEq, lowerEqIntrinsic,
@@ -279,14 +279,6 @@ final class MergeState {
   var params: Array<i32> | null = null;
   var resultParam = -1;
   new(this.syms, this.isVoid, this.resultVt);
-}
-
-final class LoopCtx {
-  /** Where `continue` jumps: the header for while, the update block for for. */
-  continueTarget: i32;
-  exit: i32;
-  carried: Array<SymbolId>;
-  new(this.continueTarget, this.exit, this.carried);
 }
 
 /**
@@ -752,26 +744,11 @@ final class FunctionLowerer {
   wasm: WasmModule;
   func: WasmFunction;
   b = new IrBuilder();
-  var env = new HashMap<SymbolId, i32>();
-  /** Symbols behind env entries, for binding-type lookups at merges. */
-  symbols = new HashMap<SymbolId, Symbol>();
-  loops = new Array<LoopCtx>();
-  /** Values piped by enclosing |> expressions; $ reads the top. */
-  pipelineValues = new Array<i32>();
-  /**
-   * Values known to be EXACTLY their class (freshly constructed by
-   * struct.new in this function, or a singleton global). A method
-   * call on an exact receiver never needs the vtable, even when
-   * subclasses override the slot — no subclass instance can be here.
-   * Merges, cells, and casts produce new ids, so exactness is
-   * conservatively local.
-   */
-  exactValues = new HashSet<i32>();
-  var reachable = true;
-  /** The receiver value for instance methods; -1 elsewhere. */
-  var thisValue = -1;
-  /** Backing store for #loweringContext(); built on first use. */
-  var #loweringContextCache: LoweringContext | null = null;
+  // Mutable lowering state lives on the shared LoweringContext (the
+  // split modules operate on the same env/reachability the
+  // coordinator does); see ir/lowering-context.zena.
+  /** Backing store for #cx(); built on first use. */
+  var #cxCache: LoweringContext | null = null;
 
   new(this.wasm, this.func);
 
@@ -850,7 +827,7 @@ final class FunctionLowerer {
       if (this.func.isClosure) {
         ctxParam = p0;
       } else {
-        this.thisValue = p0;
+        this.#cx().thisValue = p0;
       }
     }
     var needsThisDowncast = false;
@@ -880,8 +857,8 @@ final class FunctionLowerer {
       let value = this.b.blockParam(entry, vt);
       let sym = this.func.model.resolveDeclaration(p.name);
       if (sym != null) {
-        this.env[(sym as Symbol).id] = value;
-        this.symbols[(sym as Symbol).id] = sym as Symbol;
+        this.#cx().env[(sym as Symbol).id] = value;
+        this.#cx().symbols[(sym as Symbol).id] = sym as Symbol;
       }
       // Destructuring parameters bind their pattern from the same
       // value once the entry block is current (below).
@@ -900,8 +877,8 @@ final class FunctionLowerer {
       let vt = sig.params[paramOffset];
       this.#requireSupported(vt, 'parameter type');
       let value = this.b.blockParam(entry, vt);
-      this.env[(sym as Symbol).id] = value;
-      this.symbols[(sym as Symbol).id] = sym as Symbol;
+      this.#cx().env[(sym as Symbol).id] = value;
+      this.#cx().symbols[(sym as Symbol).id] = sym as Symbol;
     }
     this.b.switchTo(entry);
     // Destructuring parameters bind now that instructions can emit.
@@ -914,8 +891,8 @@ final class FunctionLowerer {
       let sym = this.func.model.resolveDeclaration(paramList[i].name);
       if (sym != null && this.#isCelled((sym as Symbol).id)) {
         let symId = (sym as Symbol).id;
-        this.env[symId] = this.#cellAlloc(
-            sig.params[i + paramOffset], this.env[symId]);
+        this.#cx().env[symId] = this.#cellAlloc(
+            sig.params[i + paramOffset], this.#cx().env[symId]);
       }
     }
     if (needsThisDowncast) {
@@ -929,7 +906,7 @@ final class FunctionLowerer {
       }
       let ownStruct = (infoOpt as ClassCodegenInfo).structType;
       let castVt = new ValTypeRef(ownStruct) as ValType;
-      this.thisValue = this.b.emit(IrOp.ref_cast, castVt, this.thisValue,
+      this.#cx().thisValue = this.b.emit(IrOp.ref_cast, castVt, this.#cx().thisValue,
           this.b.internType(castVt));
     }
     if (this.func.isClosure) {
@@ -945,7 +922,7 @@ final class FunctionLowerer {
       if (bodyNode != null) {
         this.#lowerStatement(bodyNode as Statement);
       }
-      if (this.reachable) {
+      if (this.#cx().reachable) {
         this.b.retVoid();
       }
       return this.b.finish();
@@ -970,11 +947,11 @@ final class FunctionLowerer {
       for (var si = 0; si < bodyCount; si += 1) {
         this.#lowerStatement(stmts[si]);
       }
-      if (tailExpr != null && this.reachable) {
+      if (tailExpr != null && this.#cx().reachable) {
         let tailValue = this.#lowerExpressionCtx(
             tailExpr as Expression, sig.returns[0]);
         this.#emitCheckedRet(tailValue);
-      } else if (this.reachable) {
+      } else if (this.#cx().reachable) {
         if (sig.returns.length == 0) {
           this.b.retVoid();
         } else {
@@ -989,7 +966,7 @@ final class FunctionLowerer {
         // Void body: evaluate for effects; any produced value is
         // simply never used (SSA has no stack to pop).
         this.#lowerExpression(body as Expression);
-        if (this.reachable) {
+        if (this.#cx().reachable) {
           this.b.retVoid();
         }
         return this.b.finish();
@@ -1016,12 +993,12 @@ final class FunctionLowerer {
    */
   /** Synthesized case-class operator== (see ir/equality.zena). */
   lowerCaseClassEq(): IrBody {
-    return lowerCaseClassEq(this.#loweringContext());
+    return lowerCaseClassEq(this.#cx());
   }
 
   /** Synthesized case-class hashCode (see ir/equality.zena). */
   lowerCaseClassHash(): IrBody {
-    return lowerCaseClassHash(this.#loweringContext());
+    return lowerCaseClassHash(this.#cx());
   }
 
   /**
@@ -1053,12 +1030,12 @@ final class FunctionLowerer {
     if (!isValSubtype(this.#valueType(value), sig.returns[0])) {
       this.#failConformance(value, sig.returns[0], 'extension constructor value type');
     }
-    this.thisValue = value;
+    this.#cx().thisValue = value;
     if (md.body != null) {
       this.#lowerStatement(md.body as Statement);
     }
-    if (this.reachable) {
-      this.b.ret(this.thisValue);
+    if (this.#cx().reachable) {
+      this.b.ret(this.#cx().thisValue);
     }
   }
 
@@ -1298,7 +1275,7 @@ final class FunctionLowerer {
       params.push(this.b.blockParam(entry, vt));
     }
     this.b.switchTo(entry);
-    this.thisValue = params[0];
+    this.#cx().thisValue = params[0];
 
     if (ct.isCaseClass) {
       this.#lowerCaseClassCtorBody(ct, structType, cdOpt, params);
@@ -1417,7 +1394,7 @@ final class FunctionLowerer {
             }
             let fieldRef = this.b.addRef(new IrRefField(structType, lookupName));
             let pairIdx = this.b.pushExtra(
-                this.#twoValues(this.thisValue, params[pi + 1]));
+                this.#twoValues(this.#cx().thisValue, params[pi + 1]));
             this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
           }
         }
@@ -1466,7 +1443,7 @@ final class FunctionLowerer {
         this.#bail('unnamed context field');
       }
       let fieldRef = this.b.addRef(new IrRefField(cs, fieldName as String));
-      this.thisValue = this.b.emit(IrOp.struct_get, field.type, casted, fieldRef);
+      this.#cx().thisValue = this.b.emit(IrOp.struct_get, field.type, casted, fieldRef);
       fieldIdx = 1;
     }
     for (let symId in this.func.captures) {
@@ -1478,7 +1455,7 @@ final class FunctionLowerer {
       this.#requireSupported(field.type, 'capture type');
       let fieldRef = this.b.addRef(new IrRefField(cs, fieldName as String));
       let value = this.b.emit(IrOp.struct_get, field.type, casted, fieldRef);
-      this.env[symId] = value;
+      this.#cx().env[symId] = value;
       fieldIdx += 1;
     }
   }
@@ -1552,7 +1529,7 @@ final class FunctionLowerer {
         this.#bail('super constructor arity');
       }
       let args = new Array<i32>();
-      args.push(this.thisValue);
+      args.push(this.#cx().thisValue);
       for (var i = 0; i < si.args.length; i += 1) {
         let paramVt = superSig.params[i + 1];
         this.#requireSupported(paramVt, 'super arg type');
@@ -1602,7 +1579,7 @@ final class FunctionLowerer {
     var lowered = this.#lowerExpressionCtx(value, fieldVt);
     lowered = this.#conformToSlot(lowered, fieldVt, 'constructor field type');
     let fieldRef = this.b.addRef(new IrRefField(structType, lookupName));
-    let pairIdx = this.b.pushExtra(this.#twoValues(this.thisValue, lowered));
+    let pairIdx = this.b.pushExtra(this.#twoValues(this.#cx().thisValue, lowered));
     this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
   }
 
@@ -1636,7 +1613,7 @@ final class FunctionLowerer {
         }
       }
       this.b.retMulti(outs);
-      this.reachable = false;
+      this.#cx().reachable = false;
       return;
     }
     if (!(arg is TupleLiteral)) {
@@ -1715,7 +1692,7 @@ final class FunctionLowerer {
   // -- Statements ------------------------------------------------------
 
   #lowerStatement(stmt: Statement): void {
-    if (!this.reachable) {
+    if (!this.#cx().reachable) {
       // Statically dead statements after return/break/continue: skip.
       return;
     }
@@ -1746,7 +1723,7 @@ final class FunctionLowerer {
           let value = this.#lowerExpressionCtx(argument as Expression, ctx);
           this.#emitCheckedRet(value);
         }
-        this.reachable = false;
+        this.#cx().reachable = false;
       }
       case IfStatement as ifStmt: {
         this.#lowerIf(ifStmt);
@@ -1761,20 +1738,20 @@ final class FunctionLowerer {
         this.#lowerForIn(forIn);
       }
       case BreakStatement {}: {
-        if (this.loops.length == 0) {
+        if (this.#cx().loops.length == 0) {
           this.#bail('break outside loop');
         }
-        let loop = this.loops[this.loops.length - 1];
+        let loop = this.#cx().loops[this.#cx().loops.length - 1];
         this.b.br(loop.exit, this.#envValues(loop.carried));
-        this.reachable = false;
+        this.#cx().reachable = false;
       }
       case ContinueStatement {}: {
-        if (this.loops.length == 0) {
+        if (this.#cx().loops.length == 0) {
           this.#bail('continue outside loop');
         }
-        let loop = this.loops[this.loops.length - 1];
+        let loop = this.#cx().loops[this.#cx().loops.length - 1];
         this.b.br(loop.continueTarget, this.#envValues(loop.carried));
-        this.reachable = false;
+        this.#cx().reachable = false;
       }
       case _: {
         this.#bail('statement kind');
@@ -1813,11 +1790,11 @@ final class FunctionLowerer {
     if (this.#isCelled((sym as Symbol).id)) {
       // The binding lives in a heap cell shared with capturing
       // closures; the environment holds the (invariant) cell ref.
-      this.env[(sym as Symbol).id] = this.#cellAlloc(bindingVt, value);
+      this.#cx().env[(sym as Symbol).id] = this.#cellAlloc(bindingVt, value);
     } else {
-      this.env[(sym as Symbol).id] = value;
+      this.#cx().env[(sym as Symbol).id] = value;
     }
-    this.symbols[(sym as Symbol).id] = sym as Symbol;
+    this.#cx().symbols[(sym as Symbol).id] = sym as Symbol;
   }
 
   /**
@@ -2173,13 +2150,13 @@ final class FunctionLowerer {
         }
       }
       this.#lowerStatement(stmt.consequent);
-      if (this.reachable) {
+      if (this.#cx().reachable) {
         this.b.br(mergeB, this.#envValues(mergeSyms));
       }
-      this.env = saved;
+      this.#cx().env = saved;
       this.#applyParams(mergeSyms, mergeParams);
       this.b.switchTo(mergeB);
-      this.reachable = true;
+      this.#cx().reachable = true;
       return;
     }
 
@@ -2200,15 +2177,15 @@ final class FunctionLowerer {
       this.#applyLetBinds(letBinds as LetCondBinds, elseB);
     }
     this.#lowerStatement(stmt.consequent);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       this.#mergeArm(m, -1);
     }
 
-    this.env = this.#copyOf(saved);
-    this.reachable = true;
+    this.#cx().env = this.#copyOf(saved);
+    this.#cx().reachable = true;
     this.b.switchTo(elseB);
     this.#lowerStatement(alternate);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       this.#mergeArm(m, -1);
     }
 
@@ -2246,7 +2223,7 @@ final class FunctionLowerer {
     let exitParams = this.#addParams(exitB, carried);
     this.b.brIf(cond, bodyB, this.#noArgs(), exitB, this.#envValues(carried));
 
-    this.loops.push(new LoopCtx(header, exitB, carried));
+    this.#cx().loops.push(new LoopCtx(header, exitB, carried));
     this.b.switchTo(bodyB);
     if (letBinds != null) {
       let binds = letBinds as LetCondBinds;
@@ -2267,14 +2244,14 @@ final class FunctionLowerer {
       }
     }
     this.#lowerStatement(stmt.body);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       this.b.br(header, this.#envValues(carried));
     }
-    this.loops.pop();
+    this.#cx().loops.pop();
 
     this.#applyParams(carried, exitParams);
     this.b.switchTo(exitB);
-    this.reachable = true;
+    this.#cx().reachable = true;
   }
 
   #lowerFor(stmt: ForStatement): void {
@@ -2322,16 +2299,16 @@ final class FunctionLowerer {
     let exitParams = this.#addParams(exitB, carried);
     this.b.brIf(cond, bodyB, this.#noArgs(), exitB, this.#envValues(carried));
 
-    this.loops.push(new LoopCtx(updateB, exitB, carried));
+    this.#cx().loops.push(new LoopCtx(updateB, exitB, carried));
     this.b.switchTo(bodyB);
     this.#lowerStatement(stmt.body);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       this.b.br(updateB, this.#envValues(carried));
     }
-    this.loops.pop();
+    this.#cx().loops.pop();
 
     this.b.switchTo(updateB);
-    this.reachable = true;
+    this.#cx().reachable = true;
     this.#applyParams(carried, updateParams);
     if (stmt.update != null) {
       this.#lowerExpression(stmt.update as Expression);
@@ -2340,7 +2317,7 @@ final class FunctionLowerer {
 
     this.#applyParams(carried, exitParams);
     this.b.switchTo(exitB);
-    this.reachable = true;
+    this.#cx().reachable = true;
   }
 
   /**
@@ -2483,15 +2460,15 @@ final class FunctionLowerer {
 
     let updateB = this.b.newBlock();
     let updateParams = this.#addParams(updateB, carried);
-    this.loops.push(new LoopCtx(updateB, exitB, carried));
+    this.#cx().loops.push(new LoopCtx(updateB, exitB, carried));
     this.#lowerStatement(stmt.body);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       this.b.br(updateB, this.#envValues(carried));
     }
-    this.loops.pop();
+    this.#cx().loops.pop();
 
     this.b.switchTo(updateB);
-    this.reachable = true;
+    this.#cx().reachable = true;
     this.#applyParams(carried, updateParams);
     let one = this.b.constI32(1, new ValTypeI32());
     let next = this.b.binary(IrOp.i32_add, new ValTypeI32(), idxParam, one);
@@ -2501,7 +2478,7 @@ final class FunctionLowerer {
 
     this.#applyParams(carried, exitParams);
     this.b.switchTo(exitB);
-    this.reachable = true;
+    this.#cx().reachable = true;
   }
 
   /**
@@ -2607,21 +2584,21 @@ final class FunctionLowerer {
 
     let updateB = this.b.newBlock();
     let updateParams = this.#addParams(updateB, carried);
-    this.loops.push(new LoopCtx(updateB, exitB, carried));
+    this.#cx().loops.push(new LoopCtx(updateB, exitB, carried));
     this.#lowerStatement(stmt.body);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       this.b.br(updateB, this.#envValues(carried));
     }
-    this.loops.pop();
+    this.#cx().loops.pop();
 
     this.b.switchTo(updateB);
-    this.reachable = true;
+    this.#cx().reachable = true;
     this.#applyParams(carried, updateParams);
     this.b.br(header, this.#envValues(carried));
 
     this.#applyParams(carried, exitParams);
     this.b.switchTo(exitB);
-    this.reachable = true;
+    this.#cx().reachable = true;
   }
 
   /** #slotCallOnValue for members returning exactly one value. */
@@ -3304,7 +3281,7 @@ final class FunctionLowerer {
         this.b.addRef(new IrRefGlobal(payload)));
     this.b.throwWithTag(this.#noArgs(),
         this.b.addRef(new IrRefTag(tagOpt as WasmTag)));
-    this.reachable = false;
+    this.#cx().reachable = false;
   }
 
   #lowerNumberLiteral(lit: NumberLiteral): i32 {
@@ -3352,7 +3329,7 @@ final class FunctionLowerer {
       this.#bail('unresolved identifier');
     }
     let resolved = (sym as Symbol).resolveTarget();
-    if (!this.env.has(resolved.id)) {
+    if (!this.#cx().env.has(resolved.id)) {
       // Module-level globals read via global.get; the checked type of
       // the identifier reasserts non-nullness where the global's wasm
       // type is a nullable ref.
@@ -3392,7 +3369,7 @@ final class FunctionLowerer {
       }
       this.#bail('non-local identifier');
     }
-    var value = this.env[resolved.id];
+    var value = this.#cx().env[resolved.id];
     if (this.#isCelled(resolved.id)) {
       value = this.#cellRead(value);
     }
@@ -3437,7 +3414,7 @@ final class FunctionLowerer {
 
   /** Binary operators (see ir/operators.zena). */
   #lowerBinary(bin: BinaryExpression): i32 {
-    return lowerBinary(this.#loweringContext(), bin);
+    return lowerBinary(this.#cx(), bin);
   }
 
   /**
@@ -3532,12 +3509,12 @@ final class FunctionLowerer {
 
   /** Erased (eqref-tiered) equality (see ir/equality.zena). */
   #lowerErasedEq(leftIn: i32, rightIn: i32): i32 {
-    return lowerErasedEq(this.#loweringContext(), leftIn, rightIn);
+    return lowerErasedEq(this.#cx(), leftIn, rightIn);
   }
 
   /** Unary operators (see ir/operators.zena). */
   #lowerUnary(un: UnaryExpression): i32 {
-    return lowerUnary(this.#loweringContext(), un);
+    return lowerUnary(this.#cx(), un);
   }
 
   /**
@@ -3588,16 +3565,16 @@ final class FunctionLowerer {
       this.#applyLetBinds(letBinds as LetCondBinds, elseB);
     }
     let thenValue = this.#lowerValueNode(expr.consequent, isVoid, resultVt);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       this.#mergeArm(m, thenValue, 'if arm type');
     }
 
-    this.env = this.#copyOf(saved);
-    this.reachable = true;
+    this.#cx().env = this.#copyOf(saved);
+    this.#cx().reachable = true;
     this.b.switchTo(elseB);
     if (expr.alternate != null) {
       let elseValue = this.#lowerValueNode(expr.alternate as Node, isVoid, resultVt);
-      if (this.reachable) {
+      if (this.#cx().reachable) {
         this.#mergeArm(m, elseValue, 'if arm type');
       }
     } else {
@@ -3659,12 +3636,12 @@ final class FunctionLowerer {
     let saved = this.#copyEnv();
     this.b.switchTo(bodyB);
     let bodyValue = this.#lowerValueNode(expr.body as Node, isVoid, resultVt);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       this.#mergeArm(m, bodyValue, 'try arm type');
     }
 
-    this.env = this.#copyOf(saved);
-    this.reachable = true;
+    this.#cx().env = this.#copyOf(saved);
+    this.#cx().reachable = true;
     this.b.switchTo(catchB);
     if (handler.param != null) {
       let paramIdent = handler.param as Identifier;
@@ -3683,7 +3660,7 @@ final class FunctionLowerer {
       this.#bindPatternSym(symOpt as Symbol, payload);
     }
     let catchValue = this.#lowerValueNode(handler.body as Node, isVoid, resultVt);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       this.#mergeArm(m, catchValue, 'try arm type');
     }
 
@@ -3718,7 +3695,7 @@ final class FunctionLowerer {
       }
       for (var i = 0; i < body.length - 1; i += 1) {
         this.#lowerStatement(body[i]);
-        if (!this.reachable) {
+        if (!this.#cx().reachable) {
           return -1;
         }
       }
@@ -3788,7 +3765,7 @@ final class FunctionLowerer {
     var i = 0;
     while (i < expr.cases.length && !exhausted) {
       let mc = expr.cases[i];
-      this.env = this.#copyOf(saved);
+      this.#cx().env = this.#copyOf(saved);
       // An irrefutable, guardless case consumes everything; later cases
       // are statically dead (and their blocks, having no predecessors,
       // would fail verification).
@@ -3805,12 +3782,12 @@ final class FunctionLowerer {
         this.#branchUnless(cond, failB);
       }
       let value = this.#lowerValueNode(mc.body, isVoid, resultVt);
-      if (this.reachable) {
+      if (this.#cx().reachable) {
         this.#mergeArm(m, value, 'match arm type');
       }
       if (failB >= 0) {
         this.b.switchTo(failB);
-        this.reachable = true;
+        this.#cx().reachable = true;
       }
       i += 1;
     }
@@ -3824,7 +3801,7 @@ final class FunctionLowerer {
 
   /** Refutable tests for `pattern` (see ir/patterns.zena). */
   #lowerPatternTest(pattern: Node, value: i32, failB: i32): void {
-    lowerPatternTest(this.#loweringContext(), pattern, value, failB);
+    lowerPatternTest(this.#cx(), pattern, value, failB);
   }
 
 
@@ -3858,12 +3835,12 @@ final class FunctionLowerer {
 
   /** All symbols a pattern binds (see ir/patterns.zena). */
   #collectPatternBindSyms(pattern: Node, out: Array<SymbolId>): void {
-    collectPatternBindSyms(this.#loweringContext(), pattern, out);
+    collectPatternBindSyms(this.#cx(), pattern, out);
   }
 
   /** Binds `pattern`'s variables (see ir/patterns.zena). */
   #lowerPatternBindings(pattern: Node, value: i32): void {
-    lowerPatternBindings(this.#loweringContext(), pattern, value);
+    lowerPatternBindings(this.#cx(), pattern, value);
   }
 
   /**
@@ -3934,11 +3911,11 @@ final class FunctionLowerer {
           this.b.internType(bindingVt));
     }
     if (this.#isCelled(sym.id)) {
-      this.env[sym.id] = this.#cellAlloc(bindingVt, bound);
+      this.#cx().env[sym.id] = this.#cellAlloc(bindingVt, bound);
     } else {
-      this.env[sym.id] = bound;
+      this.#cx().env[sym.id] = bound;
     }
-    this.symbols[sym.id] = sym;
+    this.#cx().symbols[sym.id] = sym;
   }
 
   /**
@@ -3992,27 +3969,27 @@ final class FunctionLowerer {
 
   /** Whether `pattern` can fail to match (see ir/patterns.zena). */
   #patternRefutable(pattern: Node): boolean {
-    return patternRefutable(this.#loweringContext(), pattern);
+    return patternRefutable(this.#cx(), pattern);
   }
 
   /** Whether `pattern` introduces bindings (see ir/patterns.zena). */
   #patternBinds(pattern: Node): boolean {
-    return patternBinds(this.#loweringContext(), pattern);
+    return patternBinds(this.#cx(), pattern);
   }
 
   /** Branch to `failB` unless `cond` (see ir/patterns.zena). */
   #branchUnless(cond: i32, failB: i32): void {
-    branchUnless(this.#loweringContext(), cond, failB);
+    branchUnless(this.#cx(), cond, failB);
   }
 
   /** Scalar and reference `as` casts (see ir/operators.zena). */
   #lowerAs(expr: AsExpression): i32 {
-    return lowerAs(this.#loweringContext(), expr);
+    return lowerAs(this.#cx(), expr);
   }
 
   /** u32/u64-typed operand test (see ir/operators.zena). */
   #isUnsignedNode(expr: Expression): boolean {
-    return isUnsignedNode(this.#loweringContext(), expr);
+    return isUnsignedNode(this.#cx(), expr);
   }
 
   /**
@@ -4021,7 +3998,7 @@ final class FunctionLowerer {
    * are nullable for vtable compatibility, but `this` is never null).
    */
   #lowerThis(expr: Expression): i32 {
-    if (this.thisValue < 0) {
+    if (this.#cx().thisValue < 0) {
       // NOT checker-impossible: default-parameter expressions are
       // supplied by the CALLER (desugared into the call's argument
       // list), so `this` in a default like `end = this.length - start`
@@ -4030,12 +4007,12 @@ final class FunctionLowerer {
       // the receiver for default-argument expressions, bail.
       this.#bail('this outside instance method');
     }
-    let haveVt = this.#valueType(this.thisValue);
+    let haveVt = this.#valueType(this.#cx().thisValue);
     if (haveVt is ValTypeRefNull) {
       let want: ValType = new ValTypeRef(haveVt.target);
-      return this.b.emit(IrOp.ref_as_non_null, want, this.thisValue, -1);
+      return this.b.emit(IrOp.ref_as_non_null, want, this.#cx().thisValue, -1);
     }
-    return this.thisValue;
+    return this.#cx().thisValue;
   }
 
   /**
@@ -4121,7 +4098,7 @@ final class FunctionLowerer {
       let singleton = classInfo.singletonGlobal as WasmGlobal;
       let globalRef = this.b.addRef(new IrRefGlobal(singleton));
       let sv = this.b.emit(IrOp.global_get, singleton.type, -1, globalRef);
-      this.exactValues.add(sv);
+      this.#cx().exactValues.add(sv);
       return sv;
     }
 
@@ -4167,7 +4144,7 @@ final class FunctionLowerer {
     let resultVt: ValType = new ValTypeRef(structType);
     let typeRef = this.b.addRef(new IrRefType(structType));
     let inst = this.b.emit(IrOp.struct_new_default, resultVt, -1, typeRef);
-    this.exactValues.add(inst);
+    this.#cx().exactValues.add(inst);
     if (classInfo.vtableGlobal != null) {
       let vtGlobal = classInfo.vtableGlobal as WasmGlobal;
       let vtRef = this.b.addRef(new IrRefGlobal(vtGlobal));
@@ -4250,22 +4227,22 @@ final class FunctionLowerer {
    */
   #lowerPipeline(pipe: PipelineExpression): i32 {
     let left = this.#lowerExpression(pipe.left);
-    this.pipelineValues.push(left);
+    this.#cx().pipelineValues.push(left);
     let result = try {
       this.#lowerExpression(pipe.right)
     } catch (e) {
-      this.pipelineValues.pop();
+      this.#cx().pipelineValues.pop();
       throw e
     };
-    this.pipelineValues.pop();
+    this.#cx().pipelineValues.pop();
     return result;
   }
 
   #lowerPipePlaceholder(): i32 {
-    if (this.pipelineValues.length == 0) {
+    if (this.#cx().pipelineValues.length == 0) {
       this.#bail('pipeline placeholder outside pipeline');
     }
-    return this.pipelineValues[this.pipelineValues.length - 1];
+    return this.#cx().pipelineValues[this.#cx().pipelineValues.length - 1];
   }
 
   /**
@@ -5146,8 +5123,8 @@ final class FunctionLowerer {
       let sym = this.func.model.resolve(obj as Identifier);
       if (sym != null) {
         let resolved = (sym as Symbol).resolveTarget();
-        if (this.env.has(resolved.id)) {
-          var value = this.env[resolved.id];
+        if (this.#cx().env.has(resolved.id)) {
+          var value = this.#cx().env[resolved.id];
           if (this.#isCelled(resolved.id)) {
             value = this.#cellRead(value);
           }
@@ -5240,7 +5217,7 @@ final class FunctionLowerer {
     this.b.br(mergeB, this.#oneArg(nullValue));
 
     this.b.switchTo(mergeB);
-    this.reachable = true;
+    this.#cx().reachable = true;
     return resultParam;
   }
 
@@ -5301,11 +5278,11 @@ final class FunctionLowerer {
     okArgs.push(okValue);
     this.b.br(mergeB, okArgs);
 
-    this.env = this.#copyOf(saved);
-    this.reachable = true;
+    this.#cx().env = this.#copyOf(saved);
+    this.#cx().reachable = true;
     this.b.switchTo(rightB);
     let rightValue = this.#lowerExpressionCtx(bin.right, overallVt);
-    if (this.reachable) {
+    if (this.#cx().reachable) {
       if (!isValSubtype(this.#valueType(rightValue), overallVt)) {
         this.#bail('nullish arm type');
       }
@@ -5314,10 +5291,10 @@ final class FunctionLowerer {
       this.b.br(mergeB, rightArgs);
     }
 
-    this.env = saved;
+    this.#cx().env = saved;
     this.#applyParams(mergeSyms, mergeParams);
     this.b.switchTo(mergeB);
-    this.reachable = true;
+    this.#cx().reachable = true;
     return resultParam;
   }
 
@@ -5547,7 +5524,7 @@ final class FunctionLowerer {
     // independently (member-lookup.md §5.3), so the check keys on the
     // SLOT name. An overridden slot dispatches through the vtable.
     var isVirtual = false;
-    if (!isPrivate && !this.exactValues.has(receiver) &&
+    if (!isPrivate && !this.#cx().exactValues.has(receiver) &&
         this.#memberProvidedBySubclass(classInfo, slotName)) {
       if (this.#vtableSlotIndex(classInfo, slotName) < 0) {
         this.#bail('overridden method without vtable slot');
@@ -6381,12 +6358,12 @@ final class FunctionLowerer {
 
   /** equals<T> intrinsic (see ir/equality.zena). */
   #lowerEqIntrinsic(call: CallExpression): i32 {
-    return lowerEqIntrinsic(this.#loweringContext(), call);
+    return lowerEqIntrinsic(this.#cx(), call);
   }
 
   /** hash<T> intrinsic (see ir/equality.zena). */
   #lowerHashIntrinsic(call: CallExpression): i32 {
-    return lowerHashIntrinsic(this.#loweringContext(), call);
+    return lowerHashIntrinsic(this.#cx(), call);
   }
 
   /** A value coerced to the target ValType, or a bail: identity when
@@ -6704,8 +6681,8 @@ final class FunctionLowerer {
    * lazily (field initializers cannot call methods): the closures
    * defer to `this` at call time, so early construction is safe.
    */
-  #loweringContext(): LoweringContext {
-    let cached = this.#loweringContextCache;
+  #cx(): LoweringContext {
+    let cached = this.#cxCache;
     if (cached != null) {
       return cached as LoweringContext;
     }
@@ -6726,8 +6703,6 @@ final class FunctionLowerer {
           this.#failConformance(value, want, reason);
         },
         (reason: String): i32 => this.#bailValue(reason),
-        (id: SymbolId): i32 =>
-            if (this.env.has(id)) this.env[id] else -1,
         (value: i32, target: ValType): i32 => this.#coerceTo(value, target),
         (value: i32): ClassType | null => this.#classTypeOfValue(value),
         (ct: ClassType): String => this.#canonicalKeyOf(ct),
@@ -6757,20 +6732,20 @@ final class FunctionLowerer {
         (opMember: String, left: i32, right: i32, leftCt: ClassType): i32 =>
             this.#lowerOperatorMemberOn(opMember, left, right, leftCt),
         (bin: BinaryExpression): i32 => this.#lowerNullishCoalesce(bin));
-    this.#loweringContextCache = cx;
+    this.#cxCache = cx;
     return cx;
   }
 
   #lowerStringLiteral(lit: StringLiteral): i32 {
-    return lowerStringLiteral(this.#loweringContext(), lit);
+    return lowerStringLiteral(this.#cx(), lit);
   }
 
   #lowerTaggedTemplate(expr: TaggedTemplateExpression): i32 {
-    return lowerTaggedTemplate(this.#loweringContext(), expr);
+    return lowerTaggedTemplate(this.#cx(), expr);
   }
 
   #lowerTemplateLiteral(tpl: TemplateLiteral): i32 {
-    return lowerTemplateLiteral(this.#loweringContext(), tpl);
+    return lowerTemplateLiteral(this.#cx(), tpl);
   }
 
 
@@ -6825,7 +6800,7 @@ final class FunctionLowerer {
       return value;
     }
     let inf = info as DefaultArgInfo;
-    let savedThis = this.thisValue;
+    let savedThis = this.#cx().thisValue;
     let savedClass = this.func.classType;
     let savedSyms = new Array<SymbolId>();
     let savedVals = new Array<i32>();
@@ -6839,12 +6814,12 @@ final class FunctionLowerer {
         }
         savedSyms.push(symId);
         savedVals.push(
-            if (let (true, v) = this.env.get(symId)) v else -1);
-        this.env[symId] = inf.values[j];
+            if (let (true, v) = this.#cx().env.get(symId)) v else -1);
+        this.#cx().env[symId] = inf.values[j];
       }
     }
     if (receiver >= 0) {
-      this.thisValue = receiver;
+      this.#cx().thisValue = receiver;
     }
     if (inf.owner != null) {
       this.func.classType = inf.owner;
@@ -6852,12 +6827,12 @@ final class FunctionLowerer {
     let value = try {
       this.#lowerExpressionCtx(call.args[i], paramVt)
     } catch (e) {
-      this.thisValue = savedThis;
+      this.#cx().thisValue = savedThis;
       this.func.classType = savedClass;
       this.#restoreEnvBindings(savedSyms, savedVals);
       throw e
     };
-    this.thisValue = savedThis;
+    this.#cx().thisValue = savedThis;
     this.func.classType = savedClass;
     this.#restoreEnvBindings(savedSyms, savedVals);
     inf.values.push(value);
@@ -6867,9 +6842,9 @@ final class FunctionLowerer {
   #restoreEnvBindings(syms: Array<SymbolId>, vals: Array<i32>): void {
     for (var j = 0; j < syms.length; j += 1) {
       if (vals[j] < 0) {
-        this.env.delete(syms[j]);
+        this.#cx().env.delete(syms[j]);
       } else {
-        this.env[syms[j]] = vals[j];
+        this.#cx().env[syms[j]] = vals[j];
       }
     }
   }
@@ -6914,7 +6889,7 @@ final class FunctionLowerer {
       this.#bail('unresolved callee');
     }
     let resolved = (sym as Symbol).resolveTarget();
-    if (this.env.has(resolved.id)) {
+    if (this.#cx().env.has(resolved.id)) {
       // A local variable holding a function value: closure call.
       return this.#lowerClosureCall(call);
     }
@@ -7080,21 +7055,21 @@ final class FunctionLowerer {
       let ctxArgs = new Array<i32>();
       var fieldIdx = 0;
       if (impl.capturesThis) {
-        if (this.thisValue < 0) {
+        if (this.#cx().thisValue < 0) {
           this.#bail('closure captures this outside method');
         }
-        if (!isValSubtype(this.#valueType(this.thisValue),
+        if (!isValSubtype(this.#valueType(this.#cx().thisValue),
             contextStruct.fields[0].type)) {
           this.#bail('closure this capture type');
         }
-        ctxArgs.push(this.thisValue);
+        ctxArgs.push(this.#cx().thisValue);
         fieldIdx = 1;
       }
       for (let symId in impl.captures) {
-        if (!this.env.has(symId)) {
+        if (!this.#cx().env.has(symId)) {
           this.#bail('captured symbol not local');
         }
-        let v = this.env[symId];
+        let v = this.#cx().env[symId];
         if (!isValSubtype(this.#valueType(v),
             contextStruct.fields[fieldIdx].type)) {
           // Celled capture (context field wants a cell ref).
@@ -7301,7 +7276,7 @@ final class FunctionLowerer {
       this.#bail('unresolved assignment target');
     }
     let resolved = (sym as Symbol).resolveTarget();
-    if (!this.env.has(resolved.id)) {
+    if (!this.#cx().env.has(resolved.id)) {
       if (let (true, g) = this.wasm.globalMap.get(resolved.id)) {
         return this.#lowerGlobalAssign(assign, g);
       }
@@ -7321,11 +7296,11 @@ final class FunctionLowerer {
       value = this.#lowerExpressionCtx(assign.value, assignCtx);
     } else {
       // Compound assignment: current op= value.
-      let current = if (celled) this.#cellRead(this.env[resolved.id])
-          else this.env[resolved.id];
+      let current = if (celled) this.#cellRead(this.#cx().env[resolved.id])
+          else this.#cx().env[resolved.id];
       value = this.#combineCompound(current, assign, assign.left);
     }
-    if (let (true, storeSym) = this.symbols.get(resolved.id)) {
+    if (let (true, storeSym) = this.#cx().symbols.get(resolved.id)) {
       let bt = this.func.model.getBindingType(storeSym);
       if (bt != null) {
         let bvt = typeToValTypeWithSub(this.wasm, bt as Type, this.func);
@@ -7336,9 +7311,9 @@ final class FunctionLowerer {
     if (celled) {
       // Mutation goes through the heap cell; the env binding (the cell
       // ref) is invariant.
-      this.#cellWrite(this.env[resolved.id], value);
+      this.#cellWrite(this.#cx().env[resolved.id], value);
     } else {
-      this.env[resolved.id] = value;
+      this.#cx().env[resolved.id] = value;
     }
     return value;
   }
@@ -7352,8 +7327,8 @@ final class FunctionLowerer {
    */
   #lowerNullishAssign(assign: AssignmentExpression, symId: SymbolId,
       celled: boolean): i32 {
-    let current = if (celled) this.#cellRead(this.env[symId])
-        else this.env[symId];
+    let current = if (celled) this.#cellRead(this.#cx().env[symId])
+        else this.#cx().env[symId];
     if (!isRefValType(this.#valueType(current))) {
       this.#bail('nullish on non-reference');
     }
@@ -7375,9 +7350,9 @@ final class FunctionLowerer {
       this.#bail('nullish assign type');
     }
     if (celled) {
-      this.#cellWrite(this.env[symId], rhs);
+      this.#cellWrite(this.#cx().env[symId], rhs);
     } else {
-      this.env[symId] = rhs;
+      this.#cx().env[symId] = rhs;
     }
     let mergeB = this.b.newBlock();
     let mergeParams = this.#addParams(mergeB, mergeSyms);
@@ -7386,17 +7361,17 @@ final class FunctionLowerer {
     assignArgs.push(rhs);
     this.b.br(mergeB, assignArgs);
 
-    this.env = this.#copyOf(saved);
-    this.reachable = true;
+    this.#cx().env = this.#copyOf(saved);
+    this.#cx().reachable = true;
     this.b.switchTo(skipB);
     let skipArgs = this.#envValues(mergeSyms);
     skipArgs.push(current);
     this.b.br(mergeB, skipArgs);
 
-    this.env = saved;
+    this.#cx().env = saved;
     this.#applyParams(mergeSyms, mergeParams);
     this.b.switchTo(mergeB);
-    this.reachable = true;
+    this.#cx().reachable = true;
     return resultParam;
   }
 
@@ -7414,7 +7389,7 @@ final class FunctionLowerer {
 
   /** Operator -> IrOp table (see ir/operators.zena). */
   #mapBinaryOp(operator: String, vt: ValType, unsigned: boolean): IrOp {
-    return mapBinaryOp(this.#loweringContext(), operator, vt, unsigned);
+    return mapBinaryOp(this.#cx(), operator, vt, unsigned);
   }
 
   /** The wasm type of an already-lowered value. */
@@ -7565,11 +7540,11 @@ final class FunctionLowerer {
             let resolved = (sym as Symbol).resolveTarget();
             // Celled bindings mutate their heap cell, not the env
             // entry, so they never need merge parameters.
-            if (this.env.has(resolved.id) && !seen.has(resolved.id) &&
+            if (this.#cx().env.has(resolved.id) && !seen.has(resolved.id) &&
                 !this.#isCelled(resolved.id)) {
               seen.add(resolved.id);
               out.push(resolved.id);
-              this.symbols[resolved.id] = resolved;
+              this.#cx().symbols[resolved.id] = resolved;
             }
           }
         }
@@ -7610,13 +7585,13 @@ final class FunctionLowerer {
    */
   #finishMerge(m: MergeState, saved: HashMap<SymbolId, i32>): i32 {
     if (m.block < 0) {
-      this.reachable = false;
+      this.#cx().reachable = false;
       return -1;
     }
-    this.env = saved;
+    this.#cx().env = saved;
     this.#applyParams(m.syms, m.params as Array<i32>);
     this.b.switchTo(m.block);
-    this.reachable = true;
+    this.#cx().reachable = true;
     return m.resultParam;
   }
 
@@ -7632,10 +7607,10 @@ final class FunctionLowerer {
   }
 
   #bindingValType(symId: SymbolId): ValType {
-    if (!this.symbols.has(symId)) {
+    if (!this.#cx().symbols.has(symId)) {
       this.#bail('unknown merge symbol');
     }
-    let t = this.func.model.getBindingType(this.symbols[symId]);
+    let t = this.func.model.getBindingType(this.#cx().symbols[symId]);
     if (t == null) {
       this.#bail('untyped merge binding');
     }
@@ -7646,20 +7621,20 @@ final class FunctionLowerer {
 
   #applyParams(syms: Array<SymbolId>, params: Array<i32>): void {
     for (var i = 0; i < syms.length; i += 1) {
-      this.env[syms[i]] = params[i];
+      this.#cx().env[syms[i]] = params[i];
     }
   }
 
   #envValues(syms: Array<SymbolId>): Array<i32> {
     let values = new Array<i32>();
     for (let symId in syms) {
-      values.push(this.env[symId]);
+      values.push(this.#cx().env[symId]);
     }
     return values;
   }
 
   #copyEnv(): HashMap<SymbolId, i32> {
-    return this.#copyOf(this.env);
+    return this.#copyOf(this.#cx().env);
   }
 
   #copyOf(source: HashMap<SymbolId, i32>): HashMap<SymbolId, i32> {
