@@ -14,7 +14,15 @@ import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import { BinaryExpression, Expression } from '../../ast.zena';
 import { Type, ClassType } from '../../types.zena';
-import { ValType } from '../wasm.zena';
+import {
+  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64,
+  ValTypeI32, ValTypeI64, ValTypeRef, ValTypeRefNull, ValTypeStructRef,
+  isRefValType,
+} from '../wasm.zena';
+import {
+  substituteTypeParamsInFunctionContext, typeToValTypeWithSub,
+} from '../type-mapping.zena';
+import { IrOp } from './ir.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, ClassCodegenInfo,
   RecordDispatchInfo,
@@ -72,20 +80,6 @@ export final class LoweringContext {
   var thisValue = -1;
   /** Lowers an expression; a non-null `want` supplies the context type. */
   lowerExpr: (e: Expression, want: ValType | null) => i32;
-  /** The storage ValType of an already-lowered value. */
-  valueTypeOf: (value: i32) => ValType;
-  /** The expression's own checked type, substituted and supported. */
-  exprVt: (e: Expression) => ValType;
-  /** The checked semantic type, substituted; null when untyped. */
-  substitutedNodeType: (e: Expression) => Type | null;
-  reassertNonNull: (value: i32, want: ValType) => i32;
-  /** ref.as_non_null when the value's own storage type is nullable. */
-  stripNonNull: (value: i32) => i32;
-  requireSupported: (vt: ValType, what: String) => void;
-  /** Conformance failure: throws ZirUnsupported, never returns. */
-  failConformance: (value: i32, want: ValType, reason: String) => void;
-  /** Throws ZirUnsupported; the i32 never arrives (value positions). */
-  fail: (reason: String) => i32;
   /** Coerce a value to a target ValType (identity or as_non_null). */
   coerceTo: (value: i32, target: ValType) => i32;
   /** The receiver's ClassType when the value's type maps to one. */
@@ -120,15 +114,95 @@ export final class LoweringContext {
       leftCt: ClassType) => i32;
   /** `left ?? right` (env-merging short-circuit; stays lowerer-side). */
   nullishCoalesce: (bin: BinaryExpression) => i32;
-  new(this.b, this.wasm, this.func, this.lowerExpr, this.valueTypeOf,
-      this.exprVt, this.substitutedNodeType, this.reassertNonNull,
-      this.stripNonNull, this.requireSupported, this.failConformance,
-      this.fail, this.coerceTo, this.classTypeOfValue,
+  new(this.b, this.wasm, this.func, this.lowerExpr,
+      this.coerceTo, this.classTypeOfValue,
       this.canonicalKeyOf, this.resolveDevirtualizedMethod,
       this.vtableSlotIndex, this.lowerVtableCall, this.bindPatternSym,
       this.recordDispatchRead, this.objectPropertyRead, this.addParams,
       this.envValues, this.applyParams, this.unwrapFatPointer,
       this.operatorMemberOn, this.nullishCoalesce);
+
+  /** Throws ZirUnsupported; the i32 never arrives (value positions). */
+  fail(reason: String): i32 {
+    throw new ZirUnsupported(reason + ' @' + (this.func.name ?? '?'));
+  }
+
+  /** The storage ValType of an already-lowered value. */
+  valueTypeOf(value: i32): ValType {
+    return this.b.body.typeTable[this.b.body.typeId[value]];
+  }
+
+  /**
+   * Re-asserts non-nullness when the checked type is non-null but the
+   * value's storage type is nullable with the same heap target. Other
+   * shape differences pass through unchanged — downstream subtype
+   * checks bail on actual misuse.
+   */
+  reassertNonNull(value: i32, want: ValType): i32 {
+    let have = this.valueTypeOf(value);
+    if (want is ValTypeRef && have is ValTypeRefNull &&
+        (want as ValTypeRef).target == (have as ValTypeRefNull).target) {
+      return this.b.emit(IrOp.ref_as_non_null, want, value, -1);
+    }
+    return value;
+  }
+
+  /** ref.as_non_null when the value's own storage type is nullable. */
+  stripNonNull(value: i32): i32 {
+    let vt = this.valueTypeOf(value);
+    return if (vt is ValTypeRefNull) {
+      this.reassertNonNull(
+          value, new ValTypeRef((vt as ValTypeRefNull).target) as ValType)
+    } else {
+      value
+    };
+  }
+
+  /** Types values may HAVE in the lowered subset (see lowering docs). */
+  requireSupported(vt: ValType, what: String): void {
+    let ok = vt is ValTypeI32 || vt is ValTypeI64 || vt is ValTypeF32 ||
+        vt is ValTypeF64 || vt is ValTypeRef || vt is ValTypeRefNull ||
+        vt is ValTypeAnyRef || vt is ValTypeEqRef || vt is ValTypeStructRef;
+    if (!ok) {
+      this.fail(what);
+    }
+  }
+
+  /** The expression's own checked type, substituted and supported. */
+  exprVt(expr: Expression): ValType {
+    let t = this.func.model.getNodeType(expr);
+    if (t == null) {
+      this.fail('untyped expression');
+    }
+    let vt = typeToValTypeWithSub(this.wasm, t as Type, this.func);
+    this.requireSupported(vt, 'expression type');
+    return vt;
+  }
+
+  /** The checked semantic type, substituted; null when untyped. */
+  substitutedNodeType(expr: Expression): Type | null {
+    let t = this.func.model.getNodeType(expr);
+    if (t == null) {
+      return null;
+    }
+    return substituteTypeParamsInFunctionContext(this.func, t as Type);
+  }
+
+  /**
+   * Value-conformance failure: a lowered value does not satisfy the
+   * type its consumer requires. A scalar flowing into an any/eqref
+   * context would need auto-boxing, which ZIR deliberately does not
+   * implement — that case bails under its own permanent name so the
+   * histogram tracks it.
+   */
+  failConformance(value: i32, want: ValType, reason: String): void {
+    let vt = this.valueTypeOf(value);
+    if (!isRefValType(vt) &&
+        (want is ValTypeAnyRef || want is ValTypeEqRef)) {
+      this.fail('auto-box to any');
+    }
+    this.fail(reason);
+  }
 }
 
 /** An empty argument list (branch with no args, nullary call). */

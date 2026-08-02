@@ -5100,13 +5100,7 @@ final class FunctionLowerer {
    * value when already non-null, else a re-asserted copy.
    */
   #strippedNonNull(value: i32): i32 {
-    let vt = this.#valueType(value);
-    return if (vt is ValTypeRefNull) {
-      this.#reassertNonNull(
-          value, new ValTypeRef((vt as ValTypeRefNull).target) as ValType)
-    } else {
-      value
-    };
+    return this.#cx().stripNonNull(value);
   }
 
   /**
@@ -6693,16 +6687,6 @@ final class FunctionLowerer {
         (e: Expression, want: ValType | null): i32 =>
             if (want == null) this.#lowerExpression(e)
             else this.#lowerExpressionCtx(e, want as ValType),
-        (value: i32): ValType => this.#valueType(value),
-        (e: Expression): ValType => this.#exprValType(e),
-        (e: Expression): Type | null => this.#substitutedNodeType(e),
-        (value: i32, want: ValType): i32 => this.#reassertNonNull(value, want),
-        (value: i32): i32 => this.#strippedNonNull(value),
-        (vt: ValType, what: String): void => this.#requireSupported(vt, what),
-        (value: i32, want: ValType, reason: String): void => {
-          this.#failConformance(value, want, reason);
-        },
-        (reason: String): i32 => this.#bailValue(reason),
         (value: i32, target: ValType): i32 => this.#coerceTo(value, target),
         (value: i32): ClassType | null => this.#classTypeOfValue(value),
         (ct: ClassType): String => this.#canonicalKeyOf(ct),
@@ -7394,7 +7378,7 @@ final class FunctionLowerer {
 
   /** The wasm type of an already-lowered value. */
   #valueType(value: i32): ValType {
-    return this.b.body.typeTable[this.b.body.typeId[value]];
+    return this.#cx().valueTypeOf(value);
   }
 
   /**
@@ -7423,22 +7407,11 @@ final class FunctionLowerer {
    * checks bail on actual misuse.
    */
   #reassertNonNull(value: i32, want: ValType): i32 {
-    let have = this.#valueType(value);
-    if (want is ValTypeRef && have is ValTypeRefNull &&
-        (want as ValTypeRef).target == (have as ValTypeRefNull).target) {
-      return this.b.emit(IrOp.ref_as_non_null, want, value, -1);
-    }
-    return value;
+    return this.#cx().reassertNonNull(value, want);
   }
 
   #exprValType(expr: Expression): ValType {
-    let t = this.func.model.getNodeType(expr);
-    if (t == null) {
-      this.#bail('untyped expression');
-    }
-    let vt = typeToValTypeWithSub(this.wasm, t as Type, this.func);
-    this.#requireSupported(vt, 'expression type');
-    return vt;
+    return this.#cx().exprVt(expr);
   }
 
   /**
@@ -7459,11 +7432,7 @@ final class FunctionLowerer {
    * uses the concrete one.
    */
   #substitutedNodeType(expr: Expression): Type | null {
-    let t = this.func.model.getNodeType(expr);
-    if (t == null) {
-      return null;
-    }
-    return substituteTypeParamsInFunctionContext(this.func, t as Type);
+    return this.#cx().substitutedNodeType(expr);
   }
 
   /** Base type of #substitutedNodeType (unions unwrapped by baseType). */
@@ -7490,12 +7459,7 @@ final class FunctionLowerer {
    * assignment; anything else still bails at its own site.
    */
   #requireSupported(vt: ValType, what: String): void {
-    let ok = vt is ValTypeI32 || vt is ValTypeI64 || vt is ValTypeF32 ||
-        vt is ValTypeF64 || vt is ValTypeRef || vt is ValTypeRefNull ||
-        vt is ValTypeAnyRef || vt is ValTypeEqRef || vt is ValTypeStructRef;
-    if (!ok) {
-      this.#bail(what);
-    }
+    this.#cx().requireSupported(vt, what);
   }
 
   /**
@@ -7663,12 +7627,8 @@ final class FunctionLowerer {
    * bails under its own permanent name so the histogram tracks it.
    */
   #failConformance(value: i32, want: ValType, reason: String): never {
-    let vt = this.#valueType(value);
-    if (!isRefValType(vt) &&
-        (want is ValTypeAnyRef || want is ValTypeEqRef)) {
-      this.#bail('auto-box to any');
-    }
-    this.#bail(reason);
+    this.#cx().failConformance(value, want, reason);
+    throw new ZirUnsupported(reason);
   }
 
   #bail(reason: String): never {
@@ -7676,6 +7636,6 @@ final class FunctionLowerer {
   }
 
   #bailValue(reason: String): i32 {
-    throw new ZirUnsupported(reason + ' @' + (this.func.name ?? '?'));
+    return this.#cx().fail(reason);
   }
 }
