@@ -46,6 +46,13 @@ interface LspExports extends WebAssembly.Exports {
   getHoverType(result: unknown): unknown;
   getHoverLabel(result: unknown): unknown;
   getHoverDoc(result: unknown): unknown;
+  getCompletions(path: unknown, offset: number): unknown;
+  getCompletionCount(items: unknown): number;
+  getCompletionItem(items: unknown, index: number): unknown;
+  getCompletionLabel(item: unknown): unknown;
+  getCompletionKind(item: unknown): number;
+  getCompletionDetail(item: unknown): unknown;
+  getCompletionDoc(item: unknown): unknown;
   getDocumentSymbols(path: unknown, source: unknown): unknown;
   getSymbolCount(symbols: unknown): number;
   getSymbol(symbols: unknown, index: number): unknown;
@@ -67,6 +74,7 @@ interface LspHandle {
   exports: LspExports;
   writeString: (s: string) => unknown;
   readString: (ref: unknown, len: number) => string;
+  openDocs: Map<string, string>;
 }
 
 /** Load lsp.wasm and wire up imports. */
@@ -81,18 +89,17 @@ async function loadLsp(): Promise<LspHandle> {
 
   const consoleImports = createConsoleImports(() => exports);
 
+  const openDocs = new Map<string, string>();
   const compilerImports = {
     read_file: (pathRef: unknown, pathLen: number): unknown => {
       const filePath = readString!(pathRef, pathLen);
-      console.log(`  [read_file] ${filePath}`);
+      if (openDocs.has(filePath)) {
+        return writeString!(openDocs.get(filePath)!);
+      }
       try {
         const content = readFileSync(filePath, 'utf8');
         return writeString!(content);
       } catch (e: any) {
-        console.error(
-          `lsp_test: read_file failed for: ${filePath}`,
-          e?.message,
-        );
         return writeString!('');
       }
     },
@@ -125,12 +132,13 @@ async function loadLsp(): Promise<LspHandle> {
   const stdlibRoot = resolve(__dirname, '..', '../stdlib/zena');
   exports.init(writeString(stdlibRoot));
 
-  return {exports, writeString, readString};
+  return {exports, writeString, readString, openDocs};
 }
 
 /** Helper: check source and return diagnostics as plain objects. */
 function checkSource(lsp: LspHandle, source: string, path = '/test/main.zena') {
-  const {exports, writeString, readString} = lsp;
+  const {exports, writeString, readString, openDocs} = lsp;
+  openDocs.set(path, source);
   const sourceRef = writeString(source);
   const pathRef = writeString(path);
   const handle = exports.check(pathRef, sourceRef);
@@ -1034,7 +1042,7 @@ export let main = (): void => {
 };`;
     const wasmRef = lsp.exports.compileToWasm(
       lsp.writeString('/main.zena'),
-      lsp.writeString(src)
+      lsp.writeString(src),
     );
     assert.ok(wasmRef, 'compileToWasm should return a ByteArray reference');
     const len = lsp.exports.getByteArrayLength(wasmRef);
@@ -1047,7 +1055,7 @@ export let main = (): void => {
 
     let programExports: WebAssembly.Exports | undefined;
     let loggedMessage = '';
-    const { instance } = await WebAssembly.instantiate(uint8.buffer, {
+    const {instance} = await WebAssembly.instantiate(uint8.buffer, {
       console: {
         ...createConsoleImports(() => programExports),
         log_string: (strRef: unknown, strLen: number) => {
@@ -1072,10 +1080,136 @@ export let main = (): void => {
 
     const exportKeys = Object.keys(programExports);
     console.log('[compileToWasm test] Export keys:', exportKeys);
-    assert.ok(exportKeys.includes('main'), `Expected export 'main' in keys: ${exportKeys.join(', ')}`);
+    assert.ok(
+      exportKeys.includes('main'),
+      `Expected export 'main' in keys: ${exportKeys.join(', ')}`,
+    );
 
     const mainFn = programExports.main as () => void;
     mainFn();
     assert.strictEqual(loggedMessage, 'Hello from test main');
+  });
+
+  test('getCompletions: returns keywords, builtins, and scope symbols', () => {
+    const src = 'let foo = 42;\nlet bar = "hello";\n';
+    const filePath = '/test.zena';
+    lsp.exports.check(lsp.writeString(filePath), lsp.writeString(src));
+
+    const completionsRef = lsp.exports.getCompletions(
+      lsp.writeString(filePath),
+      src.length,
+    );
+    assert.ok(completionsRef, 'Expected completions array reference');
+
+    const count = lsp.exports.getCompletionCount(completionsRef);
+    assert.ok(count > 0, `Expected completions count > 0, got ${count}`);
+
+    const labels: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = lsp.exports.getCompletionItem(completionsRef, i);
+      const strRef = lsp.exports.getCompletionLabel(item);
+      const len = lsp.exports.$stringGetLength(strRef);
+      const label = lsp.readString(strRef, len);
+      labels.push(label);
+    }
+
+    assert.ok(
+      labels.includes('let'),
+      'Completions should include keyword "let"',
+    );
+    assert.ok(
+      labels.includes('String'),
+      'Completions should include builtin type "String"',
+    );
+    assert.ok(
+      labels.includes('foo'),
+      'Completions should include scope variable "foo"',
+    );
+    assert.ok(
+      labels.includes('bar'),
+      'Completions should include scope variable "bar"',
+    );
+  });
+
+  test('getCompletions: returns member methods for object access', () => {
+    const src =
+      'class Person {\n  name: String;\n  sayHello() {}\n}\nlet main = () => {\n  let p = new Person();\n  p.\n};';
+    const filePath = '/test.zena';
+    lsp.exports.check(lsp.writeString(filePath), lsp.writeString(src));
+
+    const offset = src.indexOf('p.') + 2; // position right after `p.`
+    const completionsRef = lsp.exports.getCompletions(
+      lsp.writeString(filePath),
+      offset,
+    );
+    assert.ok(completionsRef, 'Expected completions array reference');
+
+    const count = lsp.exports.getCompletionCount(completionsRef);
+    assert.ok(count > 0, `Expected completions count > 0, got ${count}`);
+
+    const labels: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = lsp.exports.getCompletionItem(completionsRef, i);
+      const strRef = lsp.exports.getCompletionLabel(item);
+      const len = lsp.exports.$stringGetLength(strRef);
+      const label = lsp.readString(strRef, len);
+      labels.push(label);
+    }
+
+    assert.ok(
+      labels.includes('sayHello'),
+      'Member completions should include method "sayHello"',
+    );
+    assert.ok(
+      labels.includes('name'),
+      'Member completions should include field "name"',
+    );
+    assert.ok(
+      !labels.includes('let'),
+      'Member completions should not include top-level keyword "let"',
+    );
+    assert.ok(
+      !labels.includes('class'),
+      'Member completions should not include top-level keyword "class"',
+    );
+  });
+
+  test('getCompletions: returns console methods for console.l access', () => {
+    const src = 'export let main = () => {\n  console.l\n};';
+    const filePath = '/console_test.zena';
+    lsp.openDocs.set(filePath, src);
+    lsp.exports.check(lsp.writeString(filePath), lsp.writeString(src));
+
+    const offset = src.indexOf('console.l') + 9; // right after console.l
+    const completionsRef = lsp.exports.getCompletions(
+      lsp.writeString(filePath),
+      offset,
+    );
+    assert.ok(completionsRef, 'Expected completions array reference');
+
+    const count = lsp.exports.getCompletionCount(completionsRef);
+    assert.ok(count > 0, `Expected completions count > 0, got ${count}`);
+
+    const labels: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = lsp.exports.getCompletionItem(completionsRef, i);
+      const strRef = lsp.exports.getCompletionLabel(item);
+      const len = lsp.exports.$stringGetLength(strRef);
+      const label = lsp.readString(strRef, len);
+      labels.push(label);
+    }
+
+    assert.ok(
+      labels.includes('log'),
+      'Console member completions should include method "log"',
+    );
+    assert.ok(
+      !labels.includes('error'),
+      'Console member completions for console.l should not include "error"',
+    );
+    assert.ok(
+      !labels.includes('let'),
+      'Console member completions for console.l should not include keyword "let"',
+    );
   });
 });

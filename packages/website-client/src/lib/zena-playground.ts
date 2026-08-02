@@ -1,6 +1,13 @@
 import {LitElement, html, css} from 'lit';
 import {customElement, property, state, query} from 'lit/decorators.js';
 import {
+  acceptCompletion,
+  autocompletion,
+  completionKeymap,
+  CompletionContext,
+  type CompletionResult,
+} from '@codemirror/autocomplete';
+import {
   setDiagnostics,
   lintGutter,
   type Diagnostic as CMLintDiagnostic,
@@ -357,7 +364,10 @@ export class ZenaPlayground extends LitElement {
     .cm-zena-hover-doc {
       font-size: 0.8rem;
       color: #cbd5e1;
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family:
+        system-ui,
+        -apple-system,
+        sans-serif;
       white-space: pre-wrap;
       border-top: 1px solid rgba(255, 255, 255, 0.1);
       padding-top: 4px;
@@ -440,6 +450,11 @@ export let main = () => {
     (res: WorkerResponse['hover']) => void
   >();
 
+  private pendingCompletionResolvers = new Map<
+    number,
+    (res: WorkerResponse['completions']) => void
+  >();
+
   public queryHover(
     path: string = 'main.zena',
     offset: number = 0,
@@ -454,6 +469,27 @@ export let main = () => {
         type: 'hover',
         id,
         path,
+        offset,
+      } as WorkerRequest);
+    });
+  }
+
+  public queryCompletions(
+    path: string = 'main.zena',
+    source: string,
+    offset: number = 0,
+  ): Promise<WorkerResponse['completions']> {
+    if (!this.worker || this.status === 'loading') {
+      return Promise.resolve([]);
+    }
+    const id = ++this.requestId;
+    return new Promise((resolve) => {
+      this.pendingCompletionResolvers.set(id, resolve);
+      this.worker!.postMessage({
+        type: 'completions',
+        id,
+        path,
+        source,
         offset,
       } as WorkerRequest);
     });
@@ -474,9 +510,61 @@ export let main = () => {
       ]),
     );
 
+    const tabCompletionKeymap = keymap.of([
+      {key: 'Tab', run: acceptCompletion},
+      ...completionKeymap,
+    ]);
+
+    const zenaCompletions = async (
+      context: CompletionContext,
+    ): Promise<CompletionResult | null> => {
+      const word = context.matchBefore(/[\w#.]*/);
+      if (!word) return null;
+      if (word.from === word.to && !context.explicit) return null;
+
+      const lastDot = word.text.lastIndexOf('.');
+      const from = lastDot >= 0 ? word.from + lastDot + 1 : word.from;
+
+      const fullSource = context.state.doc.toString();
+      const items = await this.queryCompletions(
+        'main.zena',
+        fullSource,
+        context.pos,
+      );
+      if (!items || items.length === 0) return null;
+
+      return {
+        from,
+        options: items.map((item) => ({
+          label: item.label,
+          type:
+            item.kind === 14
+              ? 'keyword'
+              : item.kind === 7
+                ? 'class'
+                : item.kind === 3
+                  ? 'function'
+                  : item.kind === 2
+                    ? 'method'
+                    : 'variable',
+          detail: item.detail || undefined,
+          info: item.doc || undefined,
+        })),
+      };
+    };
+
     try {
       if (typeof this.codeMirrorEl.addExtensions === 'function') {
-        this.codeMirrorEl.addExtensions([lintGutter(), runKeymap]);
+        this.codeMirrorEl.addExtensions([
+          lintGutter(),
+          runKeymap,
+          tabCompletionKeymap,
+          autocompletion({
+            override: [zenaCompletions],
+            selectOnOpen: true,
+            defaultKeymap: true,
+          }),
+        ]);
       }
     } catch (err) {
       console.warn(
@@ -518,9 +606,14 @@ export let main = () => {
         this.addLog('error', `Worker Exception: ${err.message}`);
       };
 
+      const cacheBustUrl =
+        this.wasmUrl +
+        (this.wasmUrl.includes('?') ? '&' : '?') +
+        't=' +
+        Date.now();
       const initReq: WorkerRequest = {
         type: 'init',
-        wasmUrl: this.wasmUrl,
+        wasmUrl: cacheBustUrl,
       };
       console.log('[Zena Playground] Posting init request to worker:', initReq);
       this.worker.postMessage(initReq);
@@ -552,6 +645,12 @@ export let main = () => {
       if (resolver) {
         this.pendingHoverResolvers.delete(res.id);
         resolver(res.hover ?? null);
+      }
+    } else if (res.type === 'completions' && res.id !== undefined) {
+      const resolver = this.pendingCompletionResolvers.get(res.id);
+      if (resolver) {
+        this.pendingCompletionResolvers.delete(res.id);
+        resolver(res.completions ?? []);
       }
     } else if (res.type === 'error') {
       this.status = 'error';

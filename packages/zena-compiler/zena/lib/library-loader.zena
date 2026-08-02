@@ -16,7 +16,7 @@ import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
 import { Module, Statement, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, NodeId } from './ast.zena';
 import { parse } from './parser.zena';
-import { ModuleResolver, ResolvedModule } from './module-resolver.zena';
+import { ModuleResolver, ResolvedModule, normalizePath } from './module-resolver.zena';
 import { ScopeResult } from './scope/scope-builder.zena';
 import { performance } from './time.zena';
 
@@ -163,7 +163,7 @@ export class LibraryLoader {
       this.#cache.delete(path);
     }
 
-    let isStdlib = path.startsWith("zena:");
+    let isStdlib = path.startsWith("zena:") || path.contains("stdlib");
     let packageName = this.#resolver.findPackageForPath(path);
 
     let tLoad = performance.start("load");
@@ -221,8 +221,9 @@ export class LibraryLoader {
    * compilation, use `refreshCache()` instead.
    */
   invalidate(path: String): void {
-    if (!this.#cache.has(path)) { return; }
-    this.#cache.delete(path);
+    let norm = normalizePath(path);
+    if (this.#cache.has(norm)) { this.#cache.delete(norm); }
+    if (this.#cache.has(path)) { this.#cache.delete(path); }
 
     // Clear scopeResult on cached files that directly import this path.
     let iter = this.#cache.keys();

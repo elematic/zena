@@ -3,14 +3,17 @@ import {
   createStringWriter,
   createConsoleImports,
 } from '@zena-lang/runtime';
-import stdlibJson from '../stdlib-data.json' with { type: 'json' };
+import stdlibJson from '../stdlib-data.json' with {type: 'json'};
 import type {
   PlaygroundDiagnostic,
   WorkerRequest,
   WorkerResponse,
 } from '../types.js';
 
-const STDLIB_FILES: Record<string, string> = stdlibJson as Record<string, string>;
+const STDLIB_FILES: Record<string, string> = stdlibJson as Record<
+  string,
+  string
+>;
 
 interface LspExports extends WebAssembly.Exports {
   init(stdlibRoot: unknown): void;
@@ -43,7 +46,7 @@ let writeString: ((s: string) => unknown) | undefined;
 let readString: ((ref: unknown, len: number) => string) | undefined;
 
 function sendLog(level: 'log' | 'warn' | 'error' | 'info', message: string) {
-  self.postMessage({ type: 'console', level, message } as WorkerResponse);
+  self.postMessage({type: 'console', level, message} as WorkerResponse);
 }
 
 function handleReadFile(pathRef: unknown, pathLen: number): unknown {
@@ -55,7 +58,10 @@ function handleReadFile(pathRef: unknown, pathLen: number): unknown {
     return writeString(openDocuments.get(rawPath)!);
   }
 
-  const normalizedPath = rawPath.replace(/\/+/g, '/');
+  const normalizedPath =
+    rawPath.startsWith('/') || rawPath.startsWith('zena:')
+      ? rawPath
+      : '/' + rawPath;
 
   if (openDocuments.has(normalizedPath)) {
     return writeString(openDocuments.get(normalizedPath)!);
@@ -86,29 +92,46 @@ function handleReadFile(pathRef: unknown, pathLen: number): unknown {
     }
   }
 
-  console.warn('[Zena Compiler Worker] Host read_file file not found, returning empty for:', rawPath);
+  console.warn(
+    '[Zena Compiler Worker] Host read_file file not found, returning empty for:',
+    rawPath,
+  );
   return writeString('');
 }
 
 console.log('[Zena Compiler Worker] Worker script loaded and initializing.');
 
-async function initializeCompiler(wasmBytesOrUrl: ArrayBuffer | string): Promise<void> {
-  console.log('[Zena Compiler Worker] Initializing compiler. Source:', typeof wasmBytesOrUrl === 'string' ? wasmBytesOrUrl : 'ArrayBuffer');
+async function initializeCompiler(
+  wasmBytesOrUrl: ArrayBuffer | string,
+): Promise<void> {
+  console.log(
+    '[Zena Compiler Worker] Initializing compiler. Source:',
+    typeof wasmBytesOrUrl === 'string' ? wasmBytesOrUrl : 'ArrayBuffer',
+  );
   let wasmBuffer: ArrayBuffer;
   if (typeof wasmBytesOrUrl === 'string') {
-    console.log('[Zena Compiler Worker] Fetching WASM binary from URL:', wasmBytesOrUrl);
+    console.log(
+      '[Zena Compiler Worker] Fetching WASM binary from URL:',
+      wasmBytesOrUrl,
+    );
     const res = await fetch(wasmBytesOrUrl);
-    console.log(`[Zena Compiler Worker] Fetch response status: ${res.status} ${res.statusText}`);
+    console.log(
+      `[Zena Compiler Worker] Fetch response status: ${res.status} ${res.statusText}`,
+    );
     if (!res.ok) {
       const errorMsg = `HTTP Error ${res.status} (${res.statusText}) while fetching WASM from ${wasmBytesOrUrl}`;
       console.error('[Zena Compiler Worker]', errorMsg);
       throw new Error(errorMsg);
     }
     wasmBuffer = await res.arrayBuffer();
-    console.log(`[Zena Compiler Worker] WASM binary fetched successfully. Length: ${wasmBuffer.byteLength} bytes.`);
+    console.log(
+      `[Zena Compiler Worker] WASM binary fetched successfully. Length: ${wasmBuffer.byteLength} bytes.`,
+    );
   } else {
     wasmBuffer = wasmBytesOrUrl;
-    console.log(`[Zena Compiler Worker] Using provided ArrayBuffer. Length: ${wasmBuffer.byteLength} bytes.`);
+    console.log(
+      `[Zena Compiler Worker] Using provided ArrayBuffer. Length: ${wasmBuffer.byteLength} bytes.`,
+    );
   }
 
   const consoleImports = createConsoleImports(() => exports);
@@ -155,18 +178,24 @@ async function initializeCompiler(wasmBytesOrUrl: ArrayBuffer | string): Promise
   };
 
   console.log('[Zena Compiler Worker] Instantiating WebAssembly module...');
-  const { instance } = await WebAssembly.instantiate(wasmBuffer, importObject);
-  console.log('[Zena Compiler Worker] WebAssembly module instantiated successfully.');
+  const {instance} = await WebAssembly.instantiate(wasmBuffer, importObject);
+  console.log(
+    '[Zena Compiler Worker] WebAssembly module instantiated successfully.',
+  );
   exports = instance.exports as LspExports;
   readString = createStringReader(exports);
   writeString = createStringWriter(exports);
 
   // Initialize compiler with stdlibRoot="/stdlib"
-  console.log('[Zena Compiler Worker] Executing compiler init with stdlibRoot="/stdlib"...');
+  console.log(
+    '[Zena Compiler Worker] Executing compiler init with stdlibRoot="/stdlib"...',
+  );
   try {
     exports.init(writeString('/stdlib'));
-    console.log('[Zena Compiler Worker] Compiler init completed successfully. Sending "ready" to main thread.');
-    self.postMessage({ type: 'ready' } as WorkerResponse);
+    console.log(
+      '[Zena Compiler Worker] Compiler init completed successfully. Sending "ready" to main thread.',
+    );
+    self.postMessage({type: 'ready'} as WorkerResponse);
   } catch (err: any) {
     console.error('[Zena Compiler Worker] Compiler init exception:', err);
     self.postMessage({
@@ -176,9 +205,16 @@ async function initializeCompiler(wasmBytesOrUrl: ArrayBuffer | string): Promise
   }
 }
 
-async function runCheck(id: number, path: string, source: string, shouldRun: boolean = false) {
+async function runCheck(
+  id: number,
+  path: string,
+  source: string,
+  shouldRun: boolean = false,
+) {
   if (!exports || !writeString || !readString) {
-    console.error('[Zena Compiler Worker] Check requested before Wasm module is initialized.');
+    console.error(
+      '[Zena Compiler Worker] Check requested before Wasm module is initialized.',
+    );
     self.postMessage({
       type: 'error',
       id,
@@ -188,6 +224,9 @@ async function runCheck(id: number, path: string, source: string, shouldRun: boo
   }
 
   openDocuments.set(path, source);
+  const normPath =
+    path.startsWith('/') || path.startsWith('zena:') ? path : '/' + path;
+  openDocuments.set(normPath, source);
 
   try {
     const handle = exports.check(writeString(path), writeString(source));
@@ -247,15 +286,22 @@ async function runCheck(id: number, path: string, source: string, shouldRun: boo
 async function runProgram(path: string, source: string) {
   if (!exports || !writeString) return;
   try {
-    console.log('[Zena Compiler Worker] Compiling program to WebAssembly binary...');
-    const bytesRef = exports.compileToWasm(writeString(path), writeString(source));
+    console.log(
+      '[Zena Compiler Worker] Compiling program to WebAssembly binary...',
+    );
+    const bytesRef = exports.compileToWasm(
+      writeString(path),
+      writeString(source),
+    );
     if (!bytesRef) {
       console.warn('[Zena Compiler Worker] compileToWasm returned null.');
       return;
     }
 
     const len = exports.getByteArrayLength(bytesRef);
-    console.log(`[Zena Compiler Worker] WebAssembly program generated (${len} bytes). Instantiating...`);
+    console.log(
+      `[Zena Compiler Worker] WebAssembly program generated (${len} bytes). Instantiating...`,
+    );
 
     const uint8 = new Uint8Array(len);
     for (let i = 0; i < len; i++) {
@@ -263,7 +309,9 @@ async function runProgram(path: string, source: string) {
     }
 
     let programInstanceExports: WebAssembly.Exports | undefined;
-    const programConsoleImports = createConsoleImports(() => programInstanceExports);
+    const programConsoleImports = createConsoleImports(
+      () => programInstanceExports,
+    );
 
     const programConsole = {
       ...programConsoleImports,
@@ -305,15 +353,21 @@ async function runProgram(path: string, source: string) {
       },
     };
 
-    const { instance } = await WebAssembly.instantiate(uint8.buffer, programImports);
+    const {instance} = await WebAssembly.instantiate(
+      uint8.buffer,
+      programImports,
+    );
     programInstanceExports = instance.exports;
     const exportKeys = Object.keys(instance.exports);
-    console.log('[Zena Compiler Worker] Instantiated program export keys:', exportKeys);
+    console.log(
+      '[Zena Compiler Worker] Instantiated program export keys:',
+      exportKeys,
+    );
 
     let mainFn: (() => unknown) | undefined = instance.exports.main as any;
     if (typeof mainFn !== 'function') {
       const mainKey = exportKeys.find(
-        (k) => k === 'main' || k.endsWith('main')
+        (k) => k === 'main' || k.endsWith('main'),
       );
       if (mainKey && typeof instance.exports[mainKey] === 'function') {
         mainFn = instance.exports[mainKey] as any;
@@ -327,7 +381,11 @@ async function runProgram(path: string, source: string) {
         console.log('[Zena Compiler Worker] Program return value:', res);
       }
     } else {
-      console.log('[Zena Compiler Worker] Program compiled and instantiated (exports:', exportKeys.join(', '), ')');
+      console.log(
+        '[Zena Compiler Worker] Program compiled and instantiated (exports:',
+        exportKeys.join(', '),
+        ')',
+      );
     }
   } catch (err: any) {
     console.error('[Zena Compiler Worker] Program execution exception:', err);
@@ -336,10 +394,12 @@ async function runProgram(path: string, source: string) {
 }
 
 function runHover(id: number, path: string, offset: number) {
-  console.log(`[Zena Compiler Worker] runHover request path=${path}, offset=${offset}`);
+  console.log(
+    `[Zena Compiler Worker] runHover request path=${path}, offset=${offset}`,
+  );
   if (!exports || !writeString || !readString || !exports.getHover) {
     console.warn('[Zena Compiler Worker] exports.getHover missing');
-    self.postMessage({ type: 'hover', id, hover: null } as WorkerResponse);
+    self.postMessage({type: 'hover', id, hover: null} as WorkerResponse);
     return;
   }
   try {
@@ -347,29 +407,109 @@ function runHover(id: number, path: string, offset: number) {
     const hoverRef = exports.getHover(pathRef, offset);
     console.log(`[Zena Compiler Worker] getHover returned ref:`, hoverRef);
     if (!hoverRef) {
-      self.postMessage({ type: 'hover', id, hover: null } as WorkerResponse);
+      self.postMessage({type: 'hover', id, hover: null} as WorkerResponse);
       return;
     }
 
-    const labelRef = exports.getHoverLabel ? exports.getHoverLabel(hoverRef) : null;
-    const label = labelRef ? readString(labelRef, exports.$stringGetLength(labelRef)) : '';
+    const labelRef = exports.getHoverLabel
+      ? exports.getHoverLabel(hoverRef)
+      : null;
+    const label = labelRef
+      ? readString(labelRef, exports.$stringGetLength(labelRef))
+      : '';
 
-    const typeRef = exports.getHoverType ? exports.getHoverType(hoverRef) : null;
-    const typeStr = typeRef ? readString(typeRef, exports.$stringGetLength(typeRef)) : '';
+    const typeRef = exports.getHoverType
+      ? exports.getHoverType(hoverRef)
+      : null;
+    const typeStr = typeRef
+      ? readString(typeRef, exports.$stringGetLength(typeRef))
+      : '';
 
     const docRef = exports.getHoverDoc ? exports.getHoverDoc(hoverRef) : null;
-    const doc = docRef ? readString(docRef, exports.$stringGetLength(docRef)) : '';
+    const doc = docRef
+      ? readString(docRef, exports.$stringGetLength(docRef))
+      : '';
 
-    console.log('[Zena Compiler Worker] Hover result:', { label, typeStr, doc });
+    console.log('[Zena Compiler Worker] Hover result:', {label, typeStr, doc});
 
     self.postMessage({
       type: 'hover',
       id,
-      hover: { label, typeStr, doc },
+      hover: {label, typeStr, doc},
     } as WorkerResponse);
   } catch (err) {
     console.error('[Zena Compiler Worker] Exception during runHover:', err);
-    self.postMessage({ type: 'hover', id, hover: null } as WorkerResponse);
+    self.postMessage({type: 'hover', id, hover: null} as WorkerResponse);
+  }
+}
+
+function runCompletions(
+  id: number,
+  path: string,
+  source: string | undefined,
+  offset: number,
+) {
+  if (!exports || !writeString || !readString || !exports.getCompletions) {
+    self.postMessage({
+      type: 'completions',
+      id,
+      completions: [],
+    } as WorkerResponse);
+    return;
+  }
+  try {
+    const pathRef = writeString(path);
+    if (source && exports.check) {
+      const sourceRef = writeString(source);
+      exports.check(pathRef, sourceRef);
+    }
+    const listRef = exports.getCompletions(pathRef, offset);
+    if (!listRef) {
+      self.postMessage({
+        type: 'completions',
+        id,
+        completions: [],
+      } as WorkerResponse);
+      return;
+    }
+    const count = exports.getCompletionCount
+      ? exports.getCompletionCount(listRef)
+      : 0;
+    const completions: any[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = exports.getCompletionItem!(listRef, i);
+      const labelRef = exports.getCompletionLabel!(item);
+      const label = labelRef
+        ? readString(labelRef, exports.$stringGetLength(labelRef))
+        : '';
+      const kind = exports.getCompletionKind
+        ? exports.getCompletionKind(item)
+        : 6;
+      const detailRef = exports.getCompletionDetail
+        ? exports.getCompletionDetail(item)
+        : null;
+      const detail = detailRef
+        ? readString(detailRef, exports.$stringGetLength(detailRef))
+        : '';
+      const docRef = exports.getCompletionDoc
+        ? exports.getCompletionDoc(item)
+        : null;
+      const doc = docRef
+        ? readString(docRef, exports.$stringGetLength(docRef))
+        : '';
+      completions.push({label, kind, detail, doc});
+    }
+    self.postMessage({type: 'completions', id, completions} as WorkerResponse);
+  } catch (err) {
+    console.error(
+      '[Zena Compiler Worker] Exception during runCompletions:',
+      err,
+    );
+    self.postMessage({
+      type: 'completions',
+      id,
+      completions: [],
+    } as WorkerResponse);
   }
 }
 
@@ -381,7 +521,9 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       if (msg.wasmBytes || msg.wasmUrl) {
         await initializeCompiler(msg.wasmBytes || msg.wasmUrl!);
       } else {
-        console.error('[Zena Compiler Worker] Init error: No wasmBytes or wasmUrl provided.');
+        console.error(
+          '[Zena Compiler Worker] Init error: No wasmBytes or wasmUrl provided.',
+        );
         self.postMessage({
           type: 'error',
           message: 'No WASM bytes or WASM URL provided for init.',
@@ -401,6 +543,10 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   } else if (msg.type === 'hover') {
     if (msg.id !== undefined && msg.path && msg.offset !== undefined) {
       runHover(msg.id, msg.path, msg.offset);
+    }
+  } else if (msg.type === 'completions') {
+    if (msg.id !== undefined && msg.path && msg.offset !== undefined) {
+      runCompletions(msg.id, msg.path, msg.source, msg.offset);
     }
   }
 };

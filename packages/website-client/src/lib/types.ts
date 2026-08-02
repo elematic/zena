@@ -8,8 +8,15 @@ export interface PlaygroundDiagnostic {
   message: string;
 }
 
+export interface CompletionOption {
+  label: string;
+  kind: number;
+  detail: string;
+  doc: string;
+}
+
 export interface WorkerRequest {
-  type: 'init' | 'check' | 'hover';
+  type: 'init' | 'check' | 'hover' | 'completions';
   id?: number;
   path?: string;
   source?: string;
@@ -20,7 +27,7 @@ export interface WorkerRequest {
 }
 
 export interface WorkerResponse {
-  type: 'ready' | 'diagnostics' | 'console' | 'error' | 'hover';
+  type: 'ready' | 'diagnostics' | 'console' | 'error' | 'hover' | 'completions';
   id?: number;
   diagnostics?: PlaygroundDiagnostic[];
   level?: 'log' | 'warn' | 'error' | 'info';
@@ -30,6 +37,7 @@ export interface WorkerResponse {
     typeStr: string;
     doc: string;
   } | null;
+  completions?: CompletionOption[];
 }
 
 export interface ConsoleEntry {

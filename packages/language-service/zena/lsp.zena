@@ -25,7 +25,8 @@ import { Error } from 'zena:error';
 import {
   Compiler, createCompiler, checkCompilation, CompilerOptions, CompilerHost,
   ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition,
-  CompilationResult, typeToString, SemanticModel, SourceFile, CheckResult
+  CompilationResult, typeToString, SemanticModel, SourceFile, CheckResult,
+  findMemberExpressionAtOffset, resolveObjectType
 } from 'zena-compiler:compiler';
 import { parse as parseSource } from 'zena-compiler:parser';
 import { Type, ClassType, InterfaceType, FunctionType, MemberInfo, FieldInfo, MethodInfo } from 'zena-compiler:types';
@@ -161,6 +162,15 @@ export class DocumentSymbol {
   var children: Array<DocumentSymbol> = new Array<DocumentSymbol>();
 
   new(this.name, this.kind, this.start, this.end, this.selStart, this.selEnd);
+}
+
+export class CompletionItem {
+  label: String;
+  kind: i32;
+  detail: String;
+  docComment: String;
+
+  new(this.label, this.kind, this.detail, this.docComment);
 }
 
 /**
@@ -812,6 +822,12 @@ export class LanguageService {
 
   new(host: LspHost, compiler: Compiler) : #host = host, #compiler = compiler;
 
+  preloadStdlib(): void {
+    let result = this.#compiler.compile("zena:prelude");
+    let checkResult = checkCompilation(result, this.#cachedCheckResult);
+    this.#cachedCheckResult = checkResult;
+  }
+
   /**
    * Parse, scope-analyze, and type-check a source string with full
    * cross-module import resolution.
@@ -835,10 +851,14 @@ export class LanguageService {
       while (fi < result.files.length) {
         let sf = result.files[fi];
         if (sf.scopeResult != null) {
+          let sfNormPath = if (!sf.path.startsWith("/") && !sf.path.startsWith("zena:")) "/" + sf.path else sf.path;
+          this.#scopeResults[sfNormPath] = sf.scopeResult as ScopeResult;
           this.#scopeResults[sf.path] = sf.scopeResult as ScopeResult;
         }
         fi += 1;
       }
+      let normPath = if (!path.startsWith("/") && !path.startsWith("zena:")) "/" + path else path;
+      this.#compilations[normPath] = result;
       this.#compilations[path] = result;
 
       // Type-check all modules, carrying forward unchanged results.
@@ -1167,6 +1187,180 @@ export class LanguageService {
   }
 
   /**
+   * Get code completions at the specified offset.
+   */
+  getCompletions(path: String, offset: i32): Array<CompletionItem> {
+    let normPath = if (!path.startsWith("/") && !path.startsWith("zena:")) "/" + path else path;
+
+    if ((this.#compilations.has(normPath) || this.#compilations.has(path)) && this.#cachedCheckResult != null) {
+      let compilation = if (this.#compilations.has(normPath)) { this.#compilations[normPath] } else { this.#compilations[path] };
+      let ast = compilation.entry.ast;
+      let checkResult = this.#cachedCheckResult as ProgramCheckResult;
+      let entryPath = compilation.entry.path;
+      if (checkResult.results.has(entryPath)) {
+        let model = checkResult.results[entryPath].model;
+        let scopeResultOpt = if (this.#scopeResults.has(normPath)) { this.#scopeResults[normPath] } else if (this.#scopeResults.has(path)) { this.#scopeResults[path] } else { null };
+
+        if (scopeResultOpt != null) {
+          let scopeResult = scopeResultOpt as ScopeResult;
+
+          var me: MemberExpression | null = findMemberExpressionAtOffset(ast, offset);
+          if (me == null && offset > 0) {
+            me = findMemberExpressionAtOffset(ast, offset - 1);
+          }
+
+          if (me != null) {
+            let memberExpr = me as MemberExpression;
+            let objType = resolveObjectType(memberExpr.object, model, scopeResult, memberExpr.loc, ast, checkResult.sharedState);
+            if (objType != null) {
+              let t = objType as Type;
+              let memberItems = new Array<CompletionItem>();
+              let addedMembers = new HashMap<String, boolean>();
+
+              if (t is ClassType) {
+                var currClass: ClassType | null = t as ClassType;
+                while (currClass != null) {
+                  let ct = currClass as ClassType;
+                  let mKeys = ct.members.keys();
+                  while (let (true, mName) = mKeys.next()) {
+                    if (!addedMembers.has(mName)) {
+                      addedMembers[mName] = true;
+                      let mInfo = ct.members[mName];
+                      var mKind = 6;
+                      if (mInfo is MethodInfo) { mKind = 2; }
+                      memberItems.push(new CompletionItem(mName, mKind, "member", ""));
+                    }
+                  }
+                  for (let implIt in ct.implementsList) {
+                    let itKeys = implIt.members.keys();
+                    while (let (true, mName) = itKeys.next()) {
+                      if (!addedMembers.has(mName)) {
+                        addedMembers[mName] = true;
+                        let mInfo = implIt.members[mName];
+                        var mKind = 6;
+                        if (mInfo is MethodInfo) { mKind = 2; }
+                        memberItems.push(new CompletionItem(mName, mKind, "member", ""));
+                      }
+                    }
+                  }
+                  currClass = ct.superType;
+                }
+              } else if (t is InterfaceType) {
+                let it = t as InterfaceType;
+                let mKeys = it.members.keys();
+                while (let (true, mName) = mKeys.next()) {
+                  if (!addedMembers.has(mName)) {
+                    addedMembers[mName] = true;
+                    let mInfo = it.members[mName];
+                    var mKind = 6;
+                    if (mInfo is MethodInfo) { mKind = 2; }
+                    memberItems.push(new CompletionItem(mName, mKind, "member", ""));
+                  }
+                }
+                for (let extIt in it.extendsList) {
+                  let extKeys = extIt.members.keys();
+                  while (let (true, mName) = extKeys.next()) {
+                    if (!addedMembers.has(mName)) {
+                      addedMembers[mName] = true;
+                      let mInfo = extIt.members[mName];
+                      var mKind = 6;
+                      if (mInfo is MethodInfo) { mKind = 2; }
+                      memberItems.push(new CompletionItem(mName, mKind, "member", ""));
+                    }
+                  }
+                }
+              }
+
+              // Filter member items by prefix if property is non-empty identifier
+              let prefix = match (memberExpr.property as Node) {
+                case Identifier {name}: name
+                case _: ""
+              };
+              if (prefix != "") {
+                let filtered = new Array<CompletionItem>();
+                var fi = 0;
+                while (fi < memberItems.length) {
+                  let item = memberItems[fi];
+                  if (item.label.startsWith(prefix)) {
+                    filtered.push(item);
+                  }
+                  fi += 1;
+                }
+                return filtered;
+              }
+              return memberItems;
+            }
+          }
+        }
+      }
+    }
+
+    let items = new Array<CompletionItem>();
+
+    let keywords = [
+      "let", "var", "class", "sealed", "enum", "type", "import", "export",
+      "return", "if", "else", "match", "case", "for", "in", "while",
+      "new", "this", "extends", "implements", "true", "false", "null", "try", "catch"
+    ];
+    for (let kw in keywords) {
+      items.push(new CompletionItem(kw, 14, "keyword", ""));
+    }
+
+    let builtins = [
+      ("String", "class String"),
+      ("i32", "primitive i32"),
+      ("i64", "primitive i64"),
+      ("f32", "primitive f32"),
+      ("f64", "primitive f64"),
+      ("bool", "primitive bool"),
+      ("void", "primitive void"),
+      ("any", "primitive any"),
+      ("ByteArray", "class ByteArray"),
+      ("Map", "class Map<K, V>"),
+      ("GrowableArray", "class GrowableArray<T>"),
+      ("FixedArray", "class FixedArray<T>"),
+      ("ImmutableArray", "class ImmutableArray<T>"),
+      ("Range", "class Range"),
+      ("Sequence", "interface Sequence<T>"),
+      ("Iterator", "interface Iterator<T>"),
+      ("console", "WasiConsole / Console")
+    ];
+    for (let b in builtins) {
+      let (name, detail) = b;
+      items.push(new CompletionItem(name, 7, detail, ""));
+    }
+
+    let searchPath = if (this.#scopeResults.has(normPath)) normPath else path;
+    if (this.#scopeResults.has(searchPath)) {
+      let scopeResult = this.#scopeResults[searchPath];
+      let added = new HashMap<String, boolean>();
+      for (let kw in keywords) { added[kw] = true; }
+      for (let b in builtins) { let (name, _) = b; added[name] = true; }
+
+      let scopeBindings = scopeResult.rootScope.bindings;
+      let keys = scopeBindings.keys();
+      while (let (true, name) = keys.next()) {
+        if (name.length > 0 && !added.has(name)) {
+          added[name] = true;
+          let s = scopeBindings[name];
+          var kind = 6;
+          if (s.declaration != null) {
+            let decl = s.declaration as Node;
+            if (decl is ClassDeclaration || decl is InterfaceDeclaration || decl is EnumDeclaration) {
+              kind = 7;
+            } else if (decl is DeclareFunction || decl is FunctionExpression || decl is MethodDefinition) {
+              kind = 3;
+            }
+          }
+          items.push(new CompletionItem(name, kind, "", ""));
+        }
+      }
+    }
+
+    return items;
+  }
+
+  /**
    * Look up a cross-file symbol's type from its source module's SemanticModel.
    *
    * When a symbol is imported from another module, its declaration is an
@@ -1396,7 +1590,9 @@ export let createLanguageService = (stdlibRoot: String): LanguageService => {
   let packages = new HashMap<String, PackageConfig>();
   let options = new CompilerOptions("host", stdlibRoot, packages);
   let compiler = createCompiler(host, options);
-  return new LanguageService(host, compiler);
+  let ls = new LanguageService(host, compiler);
+  ls.preloadStdlib();
+  return ls;
 };
 
 // ============================================================================
@@ -1699,4 +1895,35 @@ export let getByteArrayLength = (bytes: ByteArray): i32 => {
  */
 export let getByteArrayByte = (bytes: ByteArray, index: i32): i32 => {
   return bytes[index];
+};
+
+/**
+ * Get code completions at the specified offset.
+ */
+export let getCompletions = (path: String, offset: i32): Array<CompletionItem> => {
+  return (__ls as LanguageService).getCompletions(path, offset);
+};
+
+export let getCompletionCount = (items: Array<CompletionItem>): i32 => {
+  return items.length;
+};
+
+export let getCompletionItem = (items: Array<CompletionItem>, index: i32): CompletionItem => {
+  return items[index];
+};
+
+export let getCompletionLabel = (item: CompletionItem): String => {
+  return item.label;
+};
+
+export let getCompletionKind = (item: CompletionItem): i32 => {
+  return item.kind;
+};
+
+export let getCompletionDetail = (item: CompletionItem): String => {
+  return item.detail;
+};
+
+export let getCompletionDoc = (item: CompletionItem): String => {
+  return item.docComment;
 };
