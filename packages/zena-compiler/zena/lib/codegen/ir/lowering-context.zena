@@ -97,8 +97,18 @@ export final class LoweringContext {
   var reachable = true;
   /** The receiver value for instance methods; -1 elsewhere. */
   var thisValue = -1;
-  /** Lowers an expression; a non-null `want` supplies the context type. */
-  lowerExpr: (e: Expression, want: ValType | null) => i32;
+  /**
+   * THE recursion seam. Split modules lower subexpressions through
+   * this late-bound field; the coordinator assigns it at
+   * construction (a module importing the dispatcher directly would
+   * cycle). A non-null `want` supplies the context type. This is the
+   * one injected function the workaround for module cycles costs; a
+   * future JS-style import-cycle fix deletes it.
+   */
+  var lowerExpr: (e: Expression, want: ValType | null) => i32 =
+      (e: Expression, want: ValType | null): i32 => {
+        throw new Error('LoweringContext.lowerExpr not yet bound');
+      };
   /** The receiver's ClassType when the value's type maps to one. */
   classTypeOfValue: (value: i32) => ClassType | null;
   /** Specialization-independent class key (generic source's key). */
@@ -123,7 +133,7 @@ export final class LoweringContext {
       leftCt: ClassType) => i32;
   /** `left ?? right` (env-merging short-circuit; stays lowerer-side). */
   nullishCoalesce: (bin: BinaryExpression) => i32;
-  new(this.b, this.wasm, this.func, this.lowerExpr,
+  new(this.b, this.wasm, this.func,
       this.classTypeOfValue,
       this.canonicalKeyOf, this.resolveDevirtualizedMethod,
       this.vtableSlotIndex, this.lowerVtableCall,
