@@ -222,7 +222,12 @@ export class WasmModule {
       codeBuffer.push(...local.type);
     }
 
-    codeBuffer.push(...body);
+    // A spread here would pass one argument per byte, overflowing the call
+    // stack for large function bodies (same failure the #writeSection fix
+    // addressed; a generated 883-case test suite hit it again at ~100KB).
+    for (const byte of body) {
+      codeBuffer.push(byte);
+    }
     // codeBuffer.push(0x0b); // end - Removed to avoid double end
 
     this.#codes[definedIndex] = codeBuffer;
