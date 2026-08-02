@@ -6,6 +6,7 @@ import {
   ClassPattern, NewExpression
 } from '../../ast.zena';
 import { FunctionContext } from '../function-context.zena';
+import { FunctionAdaptation } from '../../semantic-model.zena';
 import { typeToValType, typeToValTypeWithSub, getCellStruct } from '../type-mapping.zena';
 import { 
   Type, InlineTupleType, UnionType, TypeAliasType, NullType, VoidType, 
@@ -425,7 +426,15 @@ export let generateVariableDeclaration = (
 ): void => {
   if (stmt.init != null) {
     let initExpr = stmt.init;
-    let initType = ctx.wasmFunction.model.getNodeType(initExpr);
+    var initType = ctx.wasmFunction.model.getNodeType(initExpr);
+    // genExpr applies the checker's adaptations, so what lands on the
+    // stack is the adapted shape — already repacked and cast. Reconcile
+    // against THAT rather than the expression's own static type, which
+    // would look like a mismatch and emit a second identical cast.
+    let faOpt = ctx.wasmFunction.model.getFunctionAdaptation(initExpr);
+    if (faOpt != null) {
+      initType = (faOpt as FunctionAdaptation).target;
+    }
     let loadInit = (): void => {
       genExpr(initExpr, false);
     };

@@ -8,6 +8,7 @@ import { WasmFunction, WasmArray, WasmStruct, ClassCodegenInfo } from '../wasm-m
 import { getClassKey, getInterfaceKey, getSignatureKey, getClassPrivateFieldKey, ClassMethodKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValType, getCellStruct, getInterfaceMemberSignature, getClassMemberSignature, substituteTypeParamsInCodegen, getNodeType, typeToValTypeWithSub, eraseTypeParameters, castValTypeRefNullIfNeeded } from '../type-mapping.zena';
 import { ValTypeRefNull, ValTypeRef, ValType, ValTypeStructRef, valTypeEquals, isWasmSubtype, HeapType, heapTypeToSigned } from '../wasm.zena';
+import { FunctionAdaptation } from '../../semantic-model.zena';
 
 /**
  * Reconciles the wasm type of an assigned value with the binding's wasm
@@ -27,6 +28,14 @@ let castAssignedValueIfNeeded = (ctx: FunctionContext, value: Expression, target
   }
   if (vType == null) {
     vType = new AnyRefType();
+  }
+  // Adaptations run between generateExpression and here, so the value on
+  // the stack has already been repacked (and cast) to the adapted shape.
+  // Reconcile against THAT, not the expression's own static type, which
+  // would otherwise look like a mismatch and emit a second identical cast.
+  let faOpt = ctx.wasmFunction.model.getFunctionAdaptation(value);
+  if (faOpt != null) {
+    vType = (faOpt as FunctionAdaptation).target;
   }
   let valueWasmType = typeToValTypeWithSub(ctx.wasm, vType as Type, ctx.wasmFunction);
   var targetWasmType = typeToValTypeWithSub(ctx.wasm, targetType, ctx.wasmFunction);
