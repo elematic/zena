@@ -1,0 +1,13 @@
+// Recursive fib(27): pure call overhead + scalar arithmetic. Matches
+// milestones/fib.wat and fib-node.js — all three compute the same thing.
+//
+// No self-timing here, on purpose: module variants (zena/wasm/wat) are
+// measured by the `zena-cli sample` worker, which instantiates the
+// module fresh and times exactly one `main` call host-side — the worker
+// does the self-reporting. Only `command` variants (fib-node.js) time
+// themselves, because from outside a Node process the closest
+// observable region would include interpreter startup. Both timed
+// regions are "one fib(27) call"; the difference is who holds the
+// stopwatch (host clock here, process.hrtime in Node).
+let fib = (n: i32): i32 => if (n < 2) { n } else { fib(n - 1) + fib(n - 2) };
+export let main = (): i32 => fib(27);

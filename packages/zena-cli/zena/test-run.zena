@@ -1,0 +1,124 @@
+/**
+ * Orchestrator for `zena-cli test`: runs each test file in its own
+ * `zena-cli test --single` worker process via zena:process, with a
+ * bounded pool, and formats the results. One process per test keeps a
+ * trapping or leaking test from taking the runner (or its siblings)
+ * down with it.
+ *
+ * Usage (spawned by `zena-cli test`):
+ *   test-run <selfExe> <parallelism> <debug 0|1> <testFile>...
+ *
+ * Worker protocol: exit 0 = pass, anything else = fail; stdout/stderr
+ * are the test's captured streams, shown only for failures.
+ */
+
+import { getArguments } from 'zena:cli';
+import { console } from 'zena:console';
+import { Array } from 'zena:growable-array';
+import { StringBuilder } from 'zena:string-builder';
+import { parseI64 } from 'zena:string-convert';
+import { Process, spawn } from 'zena:process';
+
+/** A test whose worker process has been started. */
+class RunningTest {
+  path: String;
+  process: Process;
+  new(this.path, this.process);
+}
+
+/** ANSI SGR sequence (string literals have no escape for ESC). */
+let sgr = (code: String): String => {
+  let b = new StringBuilder();
+  b.appendByte(27);
+  b.append('[');
+  b.append(code);
+  b.append('m');
+  return b.toString();
+};
+
+let green = sgr('32');
+let red = sgr('31');
+let reset = sgr('0');
+
+/** Waits on a finished test and prints its result line. Returns pass? */
+let report = (running: RunningTest): boolean => {
+  let res = running.process.wait();
+  let ms = (res.wallNanos as f64) / 1000000.0;
+  let tenths = ((ms * 10.0) as i64 as f64) / 10.0;
+  if (res.exitCode == 0) {
+    console.log(`${green}PASS${reset}  ${running.path} (${tenths}ms)`);
+    return true;
+  }
+  console.log(`${red}FAIL${reset}  ${running.path} (${tenths}ms)`);
+  if (res.stdout.length > 0) {
+    console.log('      --- Stdout ---');
+    for (let line in res.stdout.split('\n')) {
+      console.log(`      ${line}`);
+    }
+  }
+  if (res.stderr.length > 0) {
+    console.log('      --- Stderr ---');
+    for (let line in res.stderr.split('\n')) {
+      console.log(`      ${line}`);
+    }
+  }
+  return false;
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  if (args.length < 5) {
+    console.error('Usage: test-run <selfExe> <parallelism> <debug 0|1> <testFile>...');
+    return 1;
+  }
+  let selfExe = args[1];
+  var parallelism = 1;
+  if (let (true, n) = parseI64(args[2])) {
+    if (n > 1) {
+      parallelism = n as i32;
+    }
+  }
+  let debug = args[3] == '1';
+
+  let files = new Array<String>();
+  var i = 4;
+  while (i < args.length) {
+    files.push(args[i]);
+    i += 1;
+  }
+
+  // Sliding-window pool: at most `parallelism` workers in flight;
+  // results print in submission order as the window advances.
+  var passed = 0;
+  var failed = 0;
+  let running = new Array<RunningTest>();
+  var reported = 0;
+  var next = 0;
+  while (next < files.length || reported < running.length) {
+    if (running.length - reported >= parallelism || next >= files.length) {
+      let oldest = running[reported];
+      reported += 1;
+      if (report(oldest)) {
+        passed += 1;
+      } else {
+        failed += 1;
+      }
+      continue;
+    }
+    let file = files[next];
+    next += 1;
+    let argv = new Array<String>();
+    argv.push(selfExe);
+    if (debug) {
+      argv.push('-g');
+    }
+    argv.push('test');
+    argv.push('--single');
+    argv.push(file);
+    running.push(new RunningTest(file, spawn(argv)));
+  }
+
+  console.log('');
+  console.log(`Test Summary: ${passed} passed, ${failed} failed`);
+  return if (failed > 0) { 1 } else { 0 };
+};

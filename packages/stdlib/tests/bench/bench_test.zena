@@ -7,12 +7,16 @@ import {parseJson, JsonObject} from 'zena:json';
 import {
   BenchRunner,
   BenchContext,
+  BenchOptions,
+  NamedSamples,
+  analyze,
   formatFixed,
   nowMs,
   reportToString,
   reportToJson,
   collectMachineInfo,
 } from 'zena:bench';
+import {Array} from 'zena:growable-array';
 
 // Deterministic busy work the optimizer can't delete: the result feeds an
 // (always-false) branch the caller asserts on.
@@ -139,6 +143,27 @@ export let tests = suite('zena:bench runner', (): void => {
     isTrue(obj.has('machine'), 'has machine');
     isTrue(obj.has('options'), 'has options');
     isTrue(obj.has('timestampMs'), 'has timestampMs');
+  });
+
+  test('analyze builds a report from external samples', (ctx: TestContext): void => {
+    let slow = new Array<f64>();
+    slow.push(10.0); slow.push(10.1); slow.push(9.9); slow.push(10.05); slow.push(9.95);
+    let fast = new Array<f64>();
+    fast.push(5.0); fast.push(5.1); fast.push(4.9); fast.push(5.05); fast.push(4.95);
+    let cases = new Array<NamedSamples>();
+    cases.push(new NamedSamples('slow', slow));
+    cases.push(new NamedSamples('fast', fast));
+
+    let report = analyze('external', cases, new BenchOptions(), 123.0);
+    equal(report.suiteName, 'external');
+    equal(report.durationMs, 123.0);
+    isTrue(report.resolved, 'clearly separated samples resolve');
+    equal(report.results.length, 2);
+    isTrue(report.results[0].stats.mean > report.results[1].stats.mean,
+      'order and stats preserved');
+    equal(report.results[0].differences.length, 1);
+    isTrue(report.results[0].differences[0].diff.excludesZero(),
+      'difference excludes zero');
   });
 
   test('machine info collection does not throw', (ctx: TestContext): void => {

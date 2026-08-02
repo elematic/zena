@@ -1,0 +1,390 @@
+/**
+ * Orchestrator for `zena-cli bench`: the whole Tachometer-style loop in
+ * Zena. Parses the bench config, collects samples round-robin across
+ * variants via zena:process, analyzes with zena:bench (the single
+ * implementation of the statistics), prints the report, and writes the
+ * result JSON.
+ *
+ * The host contributes two things this program cannot do itself: the
+ * zena_process capability, and the hidden `zena-cli sample` worker that
+ * instantiates a wasm/wat/zena module fresh per sample and prints the
+ * timed milliseconds of one exported call.
+ *
+ * Usage (spawned by `zena-cli bench`):
+ *   bench-run <config.json> <outPath|-> <selfExe> <debug 0|1>
+ *
+ * Sample semantics per variant kind:
+ * - `zena` / `wasm` / `wat`: one `sample` worker run per sample; the
+ *   worker self-reports the timed call, so worker startup and module
+ *   instantiation are excluded from the measurement.
+ * - `command`: one process run per sample; the last non-empty stdout
+ *   line parsing as a float is taken as milliseconds (ANSI-stripped —
+ *   Node colorizes numbers through some pipes). If nothing parses, wall
+ *   time is used and the report calls out that it includes startup.
+ */
+
+import { getArguments, exit } from 'zena:cli';
+import { console } from 'zena:console';
+import { readFile, writeFile } from 'zena:fs';
+import { Array } from 'zena:growable-array';
+import { FixedArray } from 'zena:fixed-array';
+import { Box } from 'zena:box';
+import { StringBuilder } from 'zena:string-builder';
+import { parseF64 } from 'zena:string-convert';
+import { parseJson, JsonObject, JsonArray, JsonValue } from 'zena:json';
+import { runIn } from 'zena:process';
+import {
+  BenchOptions,
+  NamedSamples,
+  analyze,
+  reportToString,
+  reportToJson,
+  nowMs,
+} from 'zena:bench';
+
+/** One benchmark variant: a command to run once per sample. */
+class BenchVariant {
+  name: String;
+  argv: Array<String>;
+  cwd: String | null;
+  /**
+   * Command variants may fall back to wall time when they don't
+   * self-report; `sample` worker variants must always parse.
+   */
+  isCommand: boolean;
+  samples: Array<f64>;
+  var wallClockFallback: boolean = false;
+
+  new(this.name, this.argv, this.cwd, this.isCommand)
+    : samples = new Array<f64>();
+}
+
+let numberOf = (v: JsonValue, fallback: f64): f64 => {
+  return if (v is Box<f64>) { (v as Box<f64>).value } else { fallback };
+};
+
+let stringOf = (v: JsonValue, fallback: String): String => {
+  return if (v is String) { v as String } else { fallback };
+};
+
+/** Directory part of a path ('.' when there is no '/'). */
+let dirName = (path: String): String => {
+  var i = path.length - 1;
+  while (i >= 0) {
+    if (path.getByteAt(i) == 47) {
+      return if (i == 0) { '/' } else { path.sliceBytes(0, i) };
+    }
+    i -= 1;
+  }
+  return '.';
+};
+
+let joinPath = (dir: String, rel: String): String => {
+  return if (rel.startsWith('/')) { rel } else { dir + '/' + rel };
+};
+
+/** Drops ANSI SGR escape sequences (ESC '[' … final-letter). */
+let stripAnsi = (s: String): String => {
+  let out = new StringBuilder();
+  var i = 0;
+  while (i < s.length) {
+    let b = s.getByteAt(i);
+    if (b == 27 && i + 1 < s.length && s.getByteAt(i + 1) == 91) {
+      i += 2;
+      while (i < s.length) {
+        let e = s.getByteAt(i);
+        i += 1;
+        if ((e >= 65 && e <= 90) || (e >= 97 && e <= 122)) {
+          break;
+        }
+      }
+    } else {
+      out.appendByte(b);
+      i += 1;
+    }
+  }
+  return out.toString();
+};
+
+let isWhitespaceByte = (b: i32): boolean => {
+  return b == 32 || b == 9 || b == 13 || b == 10;
+};
+
+let trim = (s: String): String => {
+  var start = 0;
+  var end = s.length;
+  while (start < end && isWhitespaceByte(s.getByteAt(start))) {
+    start += 1;
+  }
+  while (end > start && isWhitespaceByte(s.getByteAt(end - 1))) {
+    end -= 1;
+  }
+  return s.sliceBytes(start, end);
+};
+
+/**
+ * Strict float check (parseF64 itself is lenient and prefix-parses):
+ * optional sign, digits with at most one dot, optional exponent.
+ */
+let looksLikeFloat = (s: String): boolean => {
+  if (s.length == 0) {
+    return false;
+  }
+  var i = 0;
+  if (s.getByteAt(0) == 43 || s.getByteAt(0) == 45) {
+    i = 1;
+  }
+  var digits = 0;
+  var dots = 0;
+  while (i < s.length) {
+    let b = s.getByteAt(i);
+    if (b >= 48 && b <= 57) {
+      digits += 1;
+    } else if (b == 46) {
+      dots += 1;
+      if (dots > 1) {
+        return false;
+      }
+    } else if (b == 101 || b == 69) {
+      // Exponent: needs digits before it and a valid integer after.
+      if (digits == 0) {
+        return false;
+      }
+      i += 1;
+      if (i < s.length && (s.getByteAt(i) == 43 || s.getByteAt(i) == 45)) {
+        i += 1;
+      }
+      if (i >= s.length) {
+        return false;
+      }
+      while (i < s.length) {
+        let eb = s.getByteAt(i);
+        if (eb < 48 || eb > 57) {
+          return false;
+        }
+        i += 1;
+      }
+      return true;
+    } else {
+      return false;
+    }
+    i += 1;
+  }
+  return digits > 0;
+};
+
+/** The last non-empty stdout line as milliseconds, or (false, 0). */
+let parseReportedMs = (stdout: String): (boolean, f64) => {
+  let lines = stdout.split('\n');
+  var i = lines.length - 1;
+  while (i >= 0) {
+    let line = trim(stripAnsi(lines[i]));
+    if (line.length > 0) {
+      return if (looksLikeFloat(line)) { (true, parseF64(line)) } else { (false, 0.0) };
+    }
+    i -= 1;
+  }
+  return (false, 0.0);
+};
+
+/** Takes one sample of a variant; exits the program on variant failure. */
+let sampleVariant = (v: BenchVariant): f64 => {
+  let res = runIn(v.argv, v.cwd);
+  if (res.exitCode != 0) {
+    console.error(`variant '${v.name}' failed (exit ${res.exitCode}):`);
+    console.error(res.stderr);
+    exit(1);
+  }
+  let (parsed, ms) = parseReportedMs(res.stdout);
+  if (parsed) {
+    return ms;
+  }
+  if (!v.isCommand) {
+    console.error(`variant '${v.name}': sample worker printed no timing:`);
+    console.error(res.stdout);
+    console.error(res.stderr);
+    exit(1);
+  }
+  v.wallClockFallback = true;
+  return (res.wallNanos as f64) / 1000000.0;
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  if (args.length < 5) {
+    console.error('Usage: bench-run <config.json> <outPath|-> <selfExe> <debug 0|1>');
+    return 1;
+  }
+  let configPath = args[1];
+  let outArg = args[2];
+  let selfExe = args[3];
+  let debug = args[4] == '1';
+  let configDir = dirName(configPath);
+
+  let parsed = parseJson(readFile(configPath));
+  if (!(parsed is JsonObject)) {
+    console.error('bench-run: config is not a JSON object');
+    return 1;
+  }
+  let root = parsed as JsonObject;
+
+  var suite = stringOf(root['suite'], '');
+  if (suite.length == 0) {
+    // Default the suite name to the config's file stem.
+    let base = configPath.split('/');
+    let file = base[base.length - 1];
+    suite = if (file.endsWith('.json')) { file.sliceBytes(0, file.length - 5) } else { file };
+  }
+
+  let options = new BenchOptions();
+  let optionsVal = root['options'];
+  if (optionsVal is JsonObject) {
+    let o = optionsVal as JsonObject;
+    options.minSamples = numberOf(o['minSamples'], options.minSamples as f64) as i32;
+    options.extraSamples = numberOf(o['extraSamples'], options.extraSamples as f64) as i32;
+    options.warmupRuns = numberOf(o['warmupRuns'], options.warmupRuns as f64) as i32;
+    options.timeBudgetMs = numberOf(o['timeBudgetMs'], options.timeBudgetMs);
+    let horizonsVal = o['horizons'];
+    if (horizonsVal is JsonArray) {
+      let hs = horizonsVal as JsonArray;
+      if (hs.length > 0) {
+        let specs = new FixedArray<String>(hs.length, '0%');
+        var h = 0;
+        while (h < hs.length) {
+          specs[h] = stringOf(hs[h], '0%');
+          h += 1;
+        }
+        options.horizons = specs;
+      }
+    }
+  }
+
+  let variants = new Array<BenchVariant>();
+  let variantsVal = root['variants'];
+  if (!(variantsVal is JsonArray)) {
+    console.error('bench-run: config needs a `variants` array');
+    return 1;
+  }
+  let specs = variantsVal as JsonArray;
+  var vi = 0;
+  while (vi < specs.length) {
+    let specVal = specs[vi];
+    vi += 1;
+    if (!(specVal is JsonObject)) {
+      console.error('bench-run: variant entries must be objects');
+      return 1;
+    }
+    let spec = specVal as JsonObject;
+    let name = stringOf(spec['name'], '');
+    if (name.length == 0) {
+      console.error('bench-run: every variant needs a `name`');
+      return 1;
+    }
+    for (let existing in variants) {
+      if (existing.name == name) {
+        console.error(`bench-run: duplicate variant name: ${name}`);
+        return 1;
+      }
+    }
+
+    let commandVal = spec['command'];
+    if (commandVal is JsonArray) {
+      let cmd = commandVal as JsonArray;
+      let argv = new Array<String>();
+      var ci = 0;
+      while (ci < cmd.length) {
+        let entry = stringOf(cmd[ci], '');
+        if (entry.length == 0) {
+          console.error(`bench-run: variant ${name}: command argv entries must be strings`);
+          return 1;
+        }
+        argv.push(entry);
+        ci += 1;
+      }
+      if (argv.length == 0) {
+        console.error(`bench-run: variant ${name}: empty command`);
+        return 1;
+      }
+      variants.push(new BenchVariant(name, argv, configDir, true));
+      continue;
+    }
+
+    // zena / wasm / wat variants run through the `sample` worker.
+    var file = stringOf(spec['zena'], '');
+    if (file.length == 0) {
+      file = stringOf(spec['wasm'], '');
+    }
+    if (file.length == 0) {
+      file = stringOf(spec['wat'], '');
+    }
+    if (file.length == 0) {
+      console.error(`bench-run: variant ${name}: needs one of \`zena\`, \`wasm\`, \`wat\`, \`command\``);
+      return 1;
+    }
+    let argv = new Array<String>();
+    argv.push(selfExe);
+    if (debug) {
+      argv.push('-g');
+    }
+    argv.push('sample');
+    argv.push(joinPath(configDir, file));
+    argv.push('--invoke');
+    argv.push(stringOf(spec['invoke'], 'main'));
+    variants.push(new BenchVariant(name, argv, null, false));
+  }
+  if (variants.length == 0) {
+    console.error('bench-run: config has no variants');
+    return 1;
+  }
+
+  let cases = new Array<NamedSamples>();
+  for (let v in variants) {
+    cases.push(new NamedSamples(v.name, v.samples));
+  }
+
+  let rounds = (n: i32): void => {
+    var r = 0;
+    while (r < n) {
+      for (let v in variants) {
+        v.samples.push(sampleVariant(v));
+      }
+      r += 1;
+    }
+  };
+
+  let started = nowMs();
+
+  // Warmup rounds: taken and discarded (fresh worker instances each, so
+  // this mostly warms compile caches, page cache, and CPU state).
+  var w = 0;
+  while (w < options.warmupRuns) {
+    for (let v in variants) {
+      sampleVariant(v);
+    }
+    w += 1;
+  }
+
+  rounds(options.minSamples);
+  var report = analyze(suite, cases, options, nowMs() - started);
+  while (
+    !report.resolved &&
+    nowMs() - started < options.timeBudgetMs &&
+    variants.length > 1
+  ) {
+    rounds(options.extraSamples);
+    report = analyze(suite, cases, options, nowMs() - started);
+  }
+
+  console.log(reportToString(report));
+  for (let v in variants) {
+    if (v.wallClockFallback) {
+      console.log(
+        `note: variant '${v.name}' reported no timing on stdout; samples are process WALL TIME (includes startup)`);
+    }
+  }
+
+  let outPath = if (outArg == '-') { `${configDir}/${suite}.results.json` } else { outArg };
+  writeFile(outPath, reportToJson(report));
+  console.log(`results written to ${outPath}`);
+  return 0;
+};

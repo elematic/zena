@@ -69,6 +69,8 @@ for (const wasmFile of wasmFiles.sort()) {
     {
       encoding: 'utf-8',
       timeout: 30000,
+      // Repo tests are trusted: let them exercise zena:process.
+      env: {...process.env, ZENA_ALLOW_SPAWN: '1'},
     },
   );
 

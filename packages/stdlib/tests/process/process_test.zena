@@ -1,0 +1,63 @@
+// @requires: wasmtime
+// Tests for zena:process. These spawn real host processes, so they need
+// the zena-cli host with the spawn capability granted (repo tests get it;
+// standalone runs need --allow-spawn / ZENA_ALLOW_SPAWN=1).
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {Array} from 'zena:growable-array';
+import {run, runIn, spawn} from 'zena:process';
+
+let argvOf = (parts: FixedArray<String>): Array<String> => {
+  let out = new Array<String>();
+  for (let p in parts) {
+    out.push(p);
+  }
+  return out;
+};
+
+export let tests = suite('zena:process', (): void => {
+  test('run captures stdout, stderr, and the exit code', (ctx: TestContext): void => {
+    let res = run(argvOf(['/bin/sh', '-c', 'printf out; printf err >&2; exit 3']));
+    equal(res.exitCode, 3);
+    equal(res.stdout, 'out');
+    equal(res.stderr, 'err');
+    isFalse(res.succeeded());
+    isTrue(res.wallNanos > 0 as i64, 'wallNanos is positive');
+  });
+
+  test('succeeded on a zero exit', (ctx: TestContext): void => {
+    let res = run(argvOf(['/bin/sh', '-c', 'true']));
+    equal(res.exitCode, 0);
+    isTrue(res.succeeded());
+  });
+
+  test('runIn sets the working directory', (ctx: TestContext): void => {
+    let res = runIn(argvOf(['/bin/sh', '-c', 'pwd']), '/tmp');
+    equal(res.exitCode, 0);
+    // /tmp may be a symlink (e.g. to /private/tmp); accept a suffix match.
+    isTrue(res.stdout.contains('tmp'), `pwd printed ${res.stdout}`);
+  });
+
+  test('spawned processes run concurrently and wait() joins them', (ctx: TestContext): void => {
+    // Two 0.2s sleeps in parallel should finish well under 0.4s of
+    // combined wall time each; mostly this asserts both complete and
+    // report independently.
+    let a = spawn(argvOf(['/bin/sh', '-c', 'sleep 0.2; printf a']));
+    let b = spawn(argvOf(['/bin/sh', '-c', 'sleep 0.2; printf b']));
+    let ra = a.wait();
+    let rb = b.wait();
+    equal(ra.stdout, 'a');
+    equal(rb.stdout, 'b');
+    equal(ra.exitCode, 0);
+    equal(rb.exitCode, 0);
+  });
+
+  test('wait() twice returns the same result', (ctx: TestContext): void => {
+    let p = spawn(argvOf(['/bin/sh', '-c', 'printf once']));
+    let first = p.wait();
+    let second = p.wait();
+    equal(first.stdout, 'once');
+    equal(second.stdout, 'once');
+    equal(second.exitCode, 0);
+  });
+});

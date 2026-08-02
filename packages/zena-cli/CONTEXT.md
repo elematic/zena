@@ -15,7 +15,18 @@ the `zena-cli` Rust package.
      validation errors, verify that Wasmtime feature flags are correctly toggled
      in the configuration.
 
-2. **WASI Virtual Filesystem Boundaries**
+2. **Host Capabilities Beyond WASI (`zena_process`)**
+   - `zena:process` (stdlib) is backed by the `zena_process` import module
+     implemented in `src/process.rs`. Spawning escapes the WASI sandbox, so
+     it is granted per invocation: the orchestrator programs under `zena/`
+     (`bench-run.zena`, `test-run.zena`) and repo tests get real
+     implementations; `zena-cli run` requires `--allow-spawn` or
+     `ZENA_ALLOW_SPAWN=1`; everything else gets trapping stubs.
+   - The `bench` and `test` subcommands are thin: they compile and run
+     those Zena orchestrators via `run_internal_tool`, which also spawns
+     this binary back in hidden worker modes (`sample`, `test --single`).
+
+3. **WASI Virtual Filesystem Boundaries**
    - Zena's `stdlib/fs` interfaces natively with WASI Preview 1.
    - The CLI uses `wasmtime-wasi` to safely expose OS capabilities to the
      sandbox. When the Zena standard library resolves file logic across various
@@ -24,7 +35,7 @@ the `zena-cli` Rust package.
    - If a new system-level module (like `net`) is added to Zena, this CLI will
      be responsible for providing the host capability implementation via WASI.
 
-3. **Output Standardization (Silent by Default)**
+4. **Output Standardization (Silent by Default)**
    - Following strict Unix philosophy and mirroring standard Node CLI behavior,
      the Zena CLI execution engine is **silent by default**.
    - Standard output (`stdout`) represents **only** the executing `.zena`

@@ -5,12 +5,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use walkdir::WalkDir;
-use rayon::prelude::*;
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime::*;
 use wasmtime_wasi::WasiCtxBuilder;
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms};
+
+mod bench;
+mod process;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -72,6 +74,11 @@ enum Commands {
         #[arg(long = "no-cache")]
         no_cache: bool,
 
+        /// Allow the program to spawn host processes via zena:process
+        /// (a deliberate sandbox escape; ZENA_ALLOW_SPAWN=1 also works)
+        #[arg(long = "allow-spawn")]
+        allow_spawn: bool,
+
         /// Arguments to pass to the Wasm program
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -85,6 +92,11 @@ enum Commands {
         /// Filter tests matching a pattern
         #[arg(short, long)]
         filter: Option<String>,
+
+        /// Run exactly one test file in-process and exit with its status
+        /// (worker mode used by the Zena test orchestrator)
+        #[arg(long, hide = true)]
+        single: bool,
     },
     /// Ahead-of-time compile a .wasm file to a .cwasm beside it, so later
     /// invocations skip the in-process Cranelift compile. Build scripts run
@@ -92,6 +104,35 @@ enum Commands {
     Precompile {
         /// The .wasm file to precompile
         file: String,
+    },
+    /// Run a Tachometer-style benchmark comparing wasm/wat/zena/command
+    /// variants round-robin. Orchestration and statistics live in Zena
+    /// (bench-run.zena + zena:bench); the host contributes process
+    /// spawning and the `sample` worker. See docs/design/benchmarking.md.
+    Bench {
+        /// Path to a bench config JSON
+        config: String,
+
+        /// Where to write the report JSON (default: <suite>.results.json
+        /// beside the config)
+        #[arg(short, long)]
+        out: Option<String>,
+    },
+    /// Take timing samples of a wasm/wat/zena module: fresh instance per
+    /// sample, one timed call each, one ms value printed per line
+    /// (worker mode used by the Zena bench orchestrator)
+    #[command(hide = true)]
+    Sample {
+        /// The .zena, .wasm, or .wat file to sample
+        file: String,
+
+        /// The exported function to time
+        #[arg(long, default_value = "main")]
+        invoke: String,
+
+        /// Number of samples to take
+        #[arg(short, default_value = "1")]
+        n: u32,
     },
 }
 
@@ -105,17 +146,26 @@ fn main() -> Result<()> {
         Commands::Build { file, output, time, no_cache, target } => {
             build_file(&file, &output, cli.verbose, time, no_cache, cli.debug, target.as_deref())
         }
-        Commands::Run { file, invoke, dirs, time, no_cache, args } => {
+        Commands::Run { file, invoke, dirs, time, no_cache, allow_spawn, args } => {
+            let allow_spawn = process::spawn_allowed(allow_spawn);
             if file.ends_with(".wasm") {
-                run_wasm(&file, &invoke, cli.verbose, &dirs, &args, cli.debug)
+                run_wasm(&file, &invoke, cli.verbose, &dirs, &args, cli.debug, allow_spawn)
             } else {
-                compile_and_run(&file, &invoke, cli.verbose, time, no_cache, &dirs, &args, cli.debug)
+                compile_and_run(&file, &invoke, cli.verbose, time, no_cache, &dirs, &args, cli.debug, allow_spawn)
             }
         }
-        Commands::Test { paths, filter } => {
-            run_all_tests(&paths, filter.as_deref(), cli.verbose, cli.debug)
+        Commands::Test { paths, filter, single } => {
+            if single {
+                run_single_test_worker(&paths, cli.verbose, cli.debug)
+            } else {
+                run_all_tests(&paths, filter.as_deref(), cli.verbose, cli.debug)
+            }
         }
         Commands::Precompile { file } => precompile_file(&file, cli.debug),
+        Commands::Bench { config, out } => {
+            bench::run_bench(&config, out.as_deref(), cli.verbose, cli.debug)
+        }
+        Commands::Sample { file, invoke, n } => bench::run_sample(&file, &invoke, n, cli.verbose, cli.debug),
     }
 }
 
@@ -177,9 +227,9 @@ fn build_file(file: &str, output: &str, verbose: bool, time: bool, _no_cache: bo
     Ok(())
 }
 
-fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache: bool, dirs: &[String], args: &[String], debug: bool) -> Result<()> {
+fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache: bool, dirs: &[String], args: &[String], debug: bool, allow_spawn: bool) -> Result<()> {
     let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache, debug, None)?;
-    run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args, debug)
+    run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args, debug, allow_spawn)
 }
 
 /// True when the cached cwasm is missing or older than its source wasm.
@@ -609,7 +659,7 @@ fn apply_gc_config(config: &mut Config) {
     }
 }
 
-fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[String], debug: bool) -> Result<()> {
+fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[String], debug: bool, allow_spawn: bool) -> Result<()> {
     let engine = Engine::new(&base_config(debug))?;
     let wasm_path = Path::new(file);
     let cwasm_path = cwasm_path_for(wasm_path, debug);
@@ -618,6 +668,7 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
     let mut linker: Linker<MyState> = Linker::new(&engine);
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
     add_stack_trace_helpers(&mut linker, &engine, &module)?;
+    process::add_process_imports(&mut linker, &module, allow_spawn)?;
 
     let mut wasi_builder = WasiCtxBuilder::new();
     wasi_builder.inherit_stdio().inherit_env();
@@ -826,21 +877,10 @@ fn add_stack_trace_helpers(
     Ok(())
 }
 
-#[derive(Debug)]
-struct TestRunResult {
-    path: String,
-    status: TestStatus,
-    elapsed: std::time::Duration,
-    stdout: String,
-    stderr: String,
-    message: Option<String>,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum TestStatus {
     Pass,
     Fail,
-    Skip(String),
 }
 
 fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: bool) -> Result<()> {
@@ -898,93 +938,106 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: b
 
     println!("Running {} tests...", test_files.len());
 
-    // The test command used to force inlining off, which meant its engine
-    // could never reuse the cwasm produced by build/run engines and silently
-    // recompiled the compiler module on every invocation. It now shares
-    // base_config; pass -g when debugging for un-inlined stack traces.
-    let engine = Engine::new(&base_config(debug))?;
-
-    // Sequential warm-up of compiler cwasm to avoid parallel write collisions
-    {
-        let repo_root = repo_root()?;
-        let compiler_wasm = std::env::var("ZENA_COMPILER_WASM")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| repo_root.join("packages/zena-compiler/zena/out/cli.wasm"));
-        if compiler_wasm.exists() {
-            let cwasm_path = cwasm_path_for(&compiler_wasm, debug);
-            let _ = load_or_compile_module(&engine, &compiler_wasm, &cwasm_path)?;
-        }
+    // Orchestration lives in Zena (test-run.zena): it spawns this binary
+    // back in `test --single` worker mode via zena:process, one process
+    // per test, with a bounded pool. Compiling the orchestrator first
+    // also warms the compiler cwasm before workers race to reuse it.
+    let parallelism = std::env::var("ZENA_TEST_PARALLELISM")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get() as u32)
+                .unwrap_or(4)
+                .min(8)
+        });
+    let self_exe = std::env::current_exe()?;
+    let mut guest_args = vec![
+        self_exe.to_string_lossy().into_owned(),
+        parallelism.to_string(),
+        if debug { "1" } else { "0" }.to_string(),
+    ];
+    for f in &test_files {
+        guest_args.push(std::fs::canonicalize(f)?.to_string_lossy().into_owned());
     }
-
-    let results: Vec<TestRunResult> = test_files
-        .par_iter()
-        .map(|test_file| {
-            let start = std::time::Instant::now();
-            let res = run_single_test(&engine, test_file, verbose, debug);
-            let elapsed = start.elapsed();
-            match res {
-                Ok((status, stdout, stderr, msg)) => TestRunResult {
-                    path: test_file.to_string_lossy().into_owned(),
-                    status,
-                    elapsed,
-                    stdout,
-                    stderr,
-                    message: msg,
-                },
-                Err(e) => TestRunResult {
-                    path: test_file.to_string_lossy().into_owned(),
-                    status: TestStatus::Fail,
-                    elapsed,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    message: Some(format!("Error: {:?}", e)),
-                },
-            }
-        })
-        .collect();
-
-    let mut passed = 0;
-    let mut failed = 0;
-    let mut skipped = 0;
-
-    for r in &results {
-        match &r.status {
-            TestStatus::Pass => {
-                passed += 1;
-                println!("{}PASS{}  {} ({:?})", "\x1b[32m", "\x1b[0m", r.path, r.elapsed);
-            }
-            TestStatus::Skip(reason) => {
-                skipped += 1;
-                println!("{}SKIP{}  {} ({})", "\x1b[33m", "\x1b[0m", r.path, reason);
-            }
-            TestStatus::Fail => {
-                failed += 1;
-                println!("{}FAIL{}  {} ({:?})", "\x1b[31m", "\x1b[0m", r.path, r.elapsed);
-                if let Some(msg) = &r.message {
-                    println!("      {}", msg);
-                }
-                if !r.stdout.is_empty() {
-                    println!("      --- Stdout ---");
-                    for line in r.stdout.lines() {
-                        println!("      {}", line);
-                    }
-                }
-                if !r.stderr.is_empty() {
-                    println!("      --- Stderr ---");
-                    for line in r.stderr.lines() {
-                        println!("      {}", line);
-                    }
-                }
-            }
-        }
-    }
-
-    println!("\nTest Summary: {} passed, {} failed, {} skipped", passed, failed, skipped);
-    if failed > 0 {
+    let code = run_internal_tool("packages/zena-cli/zena/test-run.zena", &guest_args, verbose, debug)?;
+    if code != 0 {
         anyhow::bail!("Some tests failed");
     }
-
     Ok(())
+}
+
+/// `test --single <file>` worker mode: run one test in-process, mirror
+/// its captured output, and exit 0/1. The Zena orchestrator captures
+/// both streams via zena:process and decides what to display.
+fn run_single_test_worker(paths: &[String], verbose: bool, debug: bool) -> Result<()> {
+    anyhow::ensure!(paths.len() == 1, "test --single takes exactly one file");
+    let engine = Engine::new(&base_config(debug))?;
+    match run_single_test(&engine, Path::new(&paths[0]), verbose, debug) {
+        Ok((TestStatus::Pass, stdout, _stderr, _msg)) => {
+            print!("{stdout}");
+            Ok(())
+        }
+        Ok((TestStatus::Fail, stdout, stderr, msg)) => {
+            print!("{stdout}");
+            eprint!("{stderr}");
+            if let Some(m) = msg {
+                eprintln!("{m}");
+            }
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Compiles and runs one of zena-cli's own orchestrator programs
+/// (`packages/zena-cli/zena/*.zena`) with the spawn capability, inherited
+/// stdio, and a full host-root preopen — these are repo tooling, not
+/// sandboxed guests. Returns the program's i32 exit code.
+fn run_internal_tool(
+    src_repo_rel: &str,
+    guest_args: &[String],
+    verbose: bool,
+    debug: bool,
+) -> Result<i32> {
+    let src = repo_root()?.join(src_repo_rel);
+    let cached = compile_to_cache(&src.to_string_lossy(), verbose, false, false, true, false, debug, None)?;
+    let engine = Engine::new(&base_config(debug))?;
+    let cwasm = cwasm_path_for(&cached, debug);
+    let module = load_or_compile_module(&engine, &cached, &cwasm)?;
+
+    let mut linker: Linker<MyState> = Linker::new(&engine);
+    p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
+    add_stack_trace_helpers(&mut linker, &engine, &module)?;
+    process::add_process_imports(&mut linker, &module, true)?;
+
+    let mut args = vec![src_repo_rel.to_string()];
+    args.extend_from_slice(guest_args);
+    let wasi = WasiCtxBuilder::new()
+        .inherit_stdio()
+        .inherit_env()
+        .args(&args)
+        .preopened_dir("/", "/", DirPerms::all(), FilePerms::all())?
+        .build_p1();
+    let mut store = Store::new(&engine, MyState { wasi });
+    reserve_gc_heap(&engine, &mut store)?;
+
+    let instance = linker.instantiate(&mut store, &module)?;
+    let func = instance
+        .get_func(&mut store, "main")
+        .with_context(|| format!("{src_repo_rel} has no main export"))?;
+    let mut results = vec![Val::I32(0)];
+    func.call(&mut store, &[], &mut results)
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("{src_repo_rel} failed"))?;
+    match results.first() {
+        Some(Val::I32(code)) => Ok(*code),
+        _ => Ok(0),
+    }
 }
 
 fn run_single_test(
@@ -1009,6 +1062,8 @@ fn run_single_test(
     let mut linker: Linker<MyState> = Linker::new(engine);
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
     add_stack_trace_helpers(&mut linker, engine, &module)?;
+    // Repo tests are trusted code (they already get full repo preopens).
+    process::add_process_imports(&mut linker, &module, true)?;
 
     let repo_root = repo_root()?;
     let stdlib_dir = std::fs::canonicalize(repo_root.join("packages/stdlib/zena"))?;

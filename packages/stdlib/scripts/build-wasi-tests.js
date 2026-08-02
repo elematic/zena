@@ -31,6 +31,7 @@ const wasiPatterns = [
   'fixed_array/*_test.zena',
   'array/*_test.zena',
   'bench/*_test.zena',
+  'process/*_test.zena',
 ];
 
 console.log('Building WASI tests...');

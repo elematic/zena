@@ -227,29 +227,11 @@ export class BenchRunner {
   }
 
   #computeResults(horizons: Horizons): RoundResults {
-    let results = new Array<BenchResult>();
+    let cases = new Array<NamedSamples>();
     for (let c in this.#cases) {
-      results.push(new BenchResult(c.name, c.samples, summarize(c.samples)));
+      cases.push(new NamedSamples(c.name, c.samples));
     }
-    var allResolved = true;
-    var i = 0;
-    while (i < results.length) {
-      var j = 0;
-      while (j < results.length) {
-        if (i != j) {
-          let d = differenceOfMeans(results[i].stats, results[j].stats);
-          let resolved = isResolved(d, horizons);
-          results[i].differences.push(
-            new PairwiseDifference(results[j].name, d, resolved));
-          if (!resolved) {
-            allResolved = false;
-          }
-        }
-        j += 1;
-      }
-      i += 1;
-    }
-    return new RoundResults(results, allResolved);
+    return computeResults(cases, horizons);
   }
 
   /**
@@ -412,6 +394,67 @@ export let collectMachineInfo = (): MachineInfo => {
   }
 
   return info;
+};
+
+/**
+ * A variant's name and collected samples (milliseconds), for analyzing
+ * measurements gathered outside BenchRunner — e.g. by a host-side
+ * orchestrator round-robining across separate binaries or processes.
+ */
+export class NamedSamples {
+  name: String;
+  samples: Array<f64>;
+
+  new(this.name, this.samples);
+}
+
+let computeResults = (cases: Array<NamedSamples>, horizons: Horizons): RoundResults => {
+  let results = new Array<BenchResult>();
+  for (let c in cases) {
+    results.push(new BenchResult(c.name, c.samples, summarize(c.samples)));
+  }
+  var allResolved = true;
+  var i = 0;
+  while (i < results.length) {
+    var j = 0;
+    while (j < results.length) {
+      if (i != j) {
+        let d = differenceOfMeans(results[i].stats, results[j].stats);
+        let resolved = isResolved(d, horizons);
+        results[i].differences.push(
+          new PairwiseDifference(results[j].name, d, resolved));
+        if (!resolved) {
+          allResolved = false;
+        }
+      }
+      j += 1;
+    }
+    i += 1;
+  }
+  return new RoundResults(results, allResolved);
+};
+
+/**
+ * Builds a full BenchReport from externally collected samples: the same
+ * statistics, resolution, machine-info, and JSON pipeline as
+ * BenchRunner.run(), minus the sampling loop. durationMs is the caller's
+ * total sampling time (0.0 if unknown).
+ */
+export let analyze = (
+  suiteName: String,
+  cases: Array<NamedSamples>,
+  options: BenchOptions,
+  durationMs: f64,
+): BenchReport => {
+  let round = computeResults(cases, parseHorizons(options.horizons));
+  return new BenchReport(
+    suiteName,
+    round.results,
+    collectMachineInfo(),
+    realtimeMs(),
+    durationMs,
+    round.allResolved,
+    options);
 };
 
 // ============================================================================

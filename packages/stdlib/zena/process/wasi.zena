@@ -1,0 +1,123 @@
+/**
+ * zena:process — spawning host processes from Zena programs.
+ *
+ * WASI itself cannot create processes, so these services are host
+ * imports (wasm module `zena_process`) that only the `zena-cli` host
+ * provides — and only to invocations it trusts: its own orchestrator
+ * programs (the bench and test runners), repo tests, and `zena-cli run`
+ * when passed `--allow-spawn` (or ZENA_ALLOW_SPAWN=1). Everywhere else
+ * the host links trapping stubs, so importing this library always
+ * compiles for wasi-family targets, but calling into it without the
+ * grant fails loudly at the first call — spawning is a deliberate
+ * sandbox escape and must stay opt-in.
+ *
+ * Strings cross the boundary via the `$string*` helper exports every
+ * Zena module carries; process handles are opaque host references, so
+ * their lifetime is managed by the GC like any other object.
+ */
+
+import { Array } from 'zena:growable-array';
+
+/** Opaque host-side handle to a command being built. */
+distinct type CmdRef = anyref;
+
+/** Opaque host-side handle to a spawned process. */
+distinct type ProcRef = anyref;
+
+@external("zena_process", "cmd_new")
+declare function __cmdNew(): CmdRef;
+
+@external("zena_process", "cmd_arg")
+declare function __cmdArg(cmd: CmdRef, arg: String): void;
+
+@external("zena_process", "cmd_cwd")
+declare function __cmdCwd(cmd: CmdRef, cwd: String): void;
+
+/** Starts the process; does not block. */
+@external("zena_process", "proc_spawn")
+declare function __procSpawn(cmd: CmdRef): ProcRef;
+
+/** Blocks until exit; returns the exit code (-1 if killed by signal). */
+@external("zena_process", "proc_wait")
+declare function __procWait(p: ProcRef): i32;
+
+@external("zena_process", "proc_stdout")
+declare function __procStdout(p: ProcRef): String;
+
+@external("zena_process", "proc_stderr")
+declare function __procStderr(p: ProcRef): String;
+
+@external("zena_process", "proc_wall_nanos")
+declare function __procWallNanos(p: ProcRef): i64;
+
+/** The captured outcome of a finished process. */
+export class ProcessResult {
+  exitCode: i32;
+  stdout: String;
+  stderr: String;
+  /** Wall-clock nanoseconds from spawn to exit. */
+  wallNanos: i64;
+
+  new(this.exitCode, this.stdout, this.stderr, this.wallNanos);
+
+  succeeded(): boolean {
+    return this.exitCode == 0;
+  }
+}
+
+/**
+ * A running child process. Both stdout and stderr are captured by the
+ * host (there is no streaming in v1); `wait()` blocks until the process
+ * exits and returns the captured outcome. Waiting more than once
+ * returns the same result.
+ */
+export final class Process {
+  #proc: ProcRef;
+  var #result: ProcessResult | null = null;
+
+  new(proc: ProcRef) : #proc = proc;
+
+  wait(): ProcessResult {
+    let cached = this.#result;
+    if (cached != null) {
+      return cached as ProcessResult;
+    }
+    let code = __procWait(this.#proc);
+    let result = new ProcessResult(
+      code,
+      __procStdout(this.#proc),
+      __procStderr(this.#proc),
+      __procWallNanos(this.#proc));
+    this.#result = result;
+    return result;
+  }
+}
+
+/**
+ * Start a process without waiting for it. `argv[0]` is the executable
+ * (resolved against PATH by the host); the child inherits the host's
+ * environment and, with `cwd == null`, its working directory. Spawning
+ * several processes and waiting on each is how a caller runs work in
+ * parallel. A process that cannot be started at all (e.g. the executable
+ * does not exist) traps with a descriptive message when waited on.
+ */
+export let spawnIn = (argv: Array<String>, cwd: String | null): Process => {
+  let cmd = __cmdNew();
+  for (let arg in argv) {
+    __cmdArg(cmd, arg);
+  }
+  if (cwd != null) {
+    __cmdCwd(cmd, cwd as String);
+  }
+  return new Process(__procSpawn(cmd));
+};
+
+/** `spawnIn` with the host's working directory. */
+export let spawn = (argv: Array<String>): Process => spawnIn(argv, null);
+
+/** Run a process to completion in the given working directory. */
+export let runIn = (argv: Array<String>, cwd: String | null): ProcessResult =>
+  spawnIn(argv, cwd).wait();
+
+/** Run a process to completion in the host's working directory. */
+export let run = (argv: Array<String>): ProcessResult => spawnIn(argv, null).wait();

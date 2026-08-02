@@ -1,7 +1,8 @@
 # Benchmarking: `zena:bench`
 
-Status: v1 landed (in-process runner). Cross-binary orchestration and
-result history are follow-ups, sketched at the bottom.
+Status: in-process runner (`zena:bench`) and cross-binary orchestration
+(`zena-cli bench`) landed. Result history and a milestone workload suite
+are follow-ups, sketched at the bottom.
 
 ## Why
 
@@ -89,21 +90,57 @@ timestamp, options, machine info, and per-variant samples + summary +
 pairwise difference CIs. Samples are included on purpose: future tooling
 can re-analyze (different horizons, outlier filters) without re-running.
 
-## What v1 is not (follow-ups)
+## Cross-binary comparison: `zena-cli bench`
 
-- **Cross-binary comparison.** The headline use case — the same workload
-  compiled by two compiler versions, or by the working tree vs `main` —
-  needs a host-side orchestrator, because WASI cannot spawn processes.
-  Plan: a `zena-cli bench` subcommand (Rust) that takes N variant wasm
-  binaries, instantiates each freshly per sample in round-robin order,
-  and either measures the invoke wall time or lets the guest self-report
-  via a `zena:bench` single-sample mode; the stats/report/JSON layer is
-  the same `zena:bench` code, run as an analyzer program over the
-  collected samples.
-- **Fixed milestones.** Hand-written `.wat` reference implementations of
-  a few workloads, checked in and never regenerated, so runs on
-  different machines and years can both be expressed relative to the
-  same milestone. This is the durable answer to "machines change".
+The headline use case — the same workload compiled by two compiler
+versions, or Zena vs a frozen reference vs Node — needs processes,
+which WASI cannot spawn. That capability is now a stdlib library,
+`zena:process` (host imports provided by zena-cli to trusted
+invocations only; see `packages/stdlib/zena/process/README.md`), and
+the orchestrator is itself a Zena program:
+`packages/zena-cli/zena/bench-run.zena` parses the config, runs the
+round-robin sampling loop by spawning one process per sample, analyzes
+with `zena:bench`'s `analyze()` — one implementation of the math — and
+writes the report. The Rust side (`packages/zena-cli/src/bench.rs`)
+contributes only what the guest cannot do: the spawn capability and a
+hidden `zena-cli sample` worker that instantiates a wasm/wat/zena
+module fresh per sample, times one exported call (instantiation
+excluded), and prints the milliseconds — every variant kind is measured
+through self-reported output, uniformly.
+
+```sh
+zena-cli bench benchmarks/fib.json          # prints report, writes fib.results.json
+```
+
+The config lists variants; sample semantics differ by kind, which is the
+answer to "is one iteration per round the right granularity?":
+
+- `zena` / `wasm` / `wat` — each sample is one run of the `sample`
+  worker: a **fresh instance + one timed call** of the exported
+  function (default `main`), the milliseconds self-reported by the
+  worker. Worker startup, module compilation (cached), and
+  instantiation are excluded from the timed region; per-call timing is
+  host-side `Instant` (ns resolution).
+- `command` (e.g. Node) — each sample is **one process run**, but the
+  measurement is the guest's **self-reported** milliseconds: the last
+  non-empty stdout line that parses as a float (ANSI escapes stripped —
+  Node colorizes numbers). This excludes interpreter startup, exactly
+  like Tachometer's self-reported page metrics; the workload inside
+  should loop enough iterations to be stable. If nothing parses, wall
+  time is used and the report calls out that it includes startup.
+  Commands run with the config's directory as cwd.
+
+`benchmarks/fib.json` is the working example: the same fib(27) as Zena
+source, as a frozen hand-written `milestones/fib.wat`, and as a
+self-reporting Node script.
+
+## Follow-ups
+
+- **More milestones.** Hand-written `.wat` reference implementations of
+  a few more workloads (loops/branches, GC-heavy allocation, string
+  processing), checked in and never regenerated, so runs on different
+  machines and years can both be expressed relative to the same
+  milestone. This is the durable answer to "machines change".
 - **Result history.** A `bench-results/` store of `reportToJson` outputs
   keyed by commit + machine, and a comparison tool that diffs a run
   against a stored baseline using the same difference-CI machinery.
