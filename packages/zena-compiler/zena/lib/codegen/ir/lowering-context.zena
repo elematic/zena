@@ -25,8 +25,11 @@ import {
 import { IrOp } from './ir.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, ClassCodegenInfo,
-  RecordDispatchInfo,
+  RecordDispatchInfo, WasmStruct, asWasmStruct, isValSubtype,
 } from '../wasm-module.zena';
+import { valTypeEquals } from '../wasm.zena';
+import { getCellStruct } from '../type-mapping.zena';
+import { IrRefField, IrRefType } from './ir.zena';
 import { IrBuilder } from './builder.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 
@@ -50,6 +53,22 @@ export final class LoopCtx {
   exit: i32;
   carried: Array<SymbolId>;
   new(this.continueTarget, this.exit, this.carried);
+}
+
+/**
+ * The lazily-materialized join point of a value-producing control-flow
+ * expression (if/try/match) or a merging statement. Arms br to it with
+ * the tracked symbols' current values (plus the arm's result in value
+ * position); it exists only once some arm actually reaches it.
+ */
+export final class MergeState {
+  syms: Array<SymbolId>;
+  isVoid: boolean;
+  resultVt: ValType | null;
+  var block = -1;
+  var params: Array<i32> | null = null;
+  var resultParam = -1;
+  new(this.syms, this.isVoid, this.resultVt);
 }
 
 export final class LoweringContext {
@@ -80,8 +99,6 @@ export final class LoweringContext {
   var thisValue = -1;
   /** Lowers an expression; a non-null `want` supplies the context type. */
   lowerExpr: (e: Expression, want: ValType | null) => i32;
-  /** Coerce a value to a target ValType (identity or as_non_null). */
-  coerceTo: (value: i32, target: ValType) => i32;
   /** The receiver's ClassType when the value's type maps to one. */
   classTypeOfValue: (value: i32) => ClassType | null;
   /** Specialization-independent class key (generic source's key). */
@@ -94,19 +111,11 @@ export final class LoweringContext {
   lowerVtableCall: (receiver: i32, classInfo: ClassCodegenInfo,
       slotName: String, sig: WasmSignature, args: Array<i32>,
       resultType: ValType | null) => i32;
-  /** Binds a pattern symbol into the SSA env (cell-aware, coercing). */
-  bindPatternSym: (sym: Symbol, value: i32) => void;
   /** A record property read through an already-known dispatch. */
   recordDispatchRead: (dispatch: RecordDispatchInfo, propName: String,
       receiver: i32) => i32;
   /** A record property read resolved from the receiver's own struct. */
   objectPropertyRead: (propName: String, receiver: i32) => i32;
-  /** Adds one block param per symbol, typed from its binding. */
-  addParams: (block: i32, syms: Array<SymbolId>) => Array<i32>;
-  /** The syms' current env values, in order (branch-argument lists). */
-  envValues: (syms: Array<SymbolId>) => Array<i32>;
-  /** Rebinds each symbol to its block param after a merge. */
-  applyParams: (syms: Array<SymbolId>, params: Array<i32>) => void;
   /** The instance behind a fat-pointer value of checked type `t`. */
   unwrapFatPointer: (t: Type, value: i32) => i32;
   /** Direct call to a class operator member: a (+) b as a.+(b). */
@@ -115,11 +124,11 @@ export final class LoweringContext {
   /** `left ?? right` (env-merging short-circuit; stays lowerer-side). */
   nullishCoalesce: (bin: BinaryExpression) => i32;
   new(this.b, this.wasm, this.func, this.lowerExpr,
-      this.coerceTo, this.classTypeOfValue,
+      this.classTypeOfValue,
       this.canonicalKeyOf, this.resolveDevirtualizedMethod,
-      this.vtableSlotIndex, this.lowerVtableCall, this.bindPatternSym,
-      this.recordDispatchRead, this.objectPropertyRead, this.addParams,
-      this.envValues, this.applyParams, this.unwrapFatPointer,
+      this.vtableSlotIndex, this.lowerVtableCall,
+      this.recordDispatchRead, this.objectPropertyRead,
+      this.unwrapFatPointer,
       this.operatorMemberOn, this.nullishCoalesce);
 
   /** Throws ZirUnsupported; the i32 never arrives (value positions). */
@@ -202,6 +211,229 @@ export final class LoweringContext {
       this.fail('auto-box to any');
     }
     this.fail(reason);
+  }
+
+  coerceTo(value: i32, target: ValType): i32 {
+    let vt = this.valueTypeOf(value);
+    if (isValSubtype(vt, target)) {
+      return value;
+    }
+    let nonNull = this.b.emit(IrOp.ref_as_non_null, this.nonNullOf(vt), value, -1);
+    if (!isValSubtype(this.valueTypeOf(nonNull), target)) {
+      this.failConformance(nonNull, target, 'intrinsic operand type');
+    }
+    return nonNull;
+  }
+
+  nonNullOf(vt: ValType): ValType {
+    return match (vt) {
+      case ValTypeRefNull as rn: new ValTypeRef(rn.target) as ValType
+      case _: vt
+    };
+  }
+
+  /**
+   * Call-boundary conformance: argument and constructor-field slots
+   * accept a strictly-wider ref value via a downcast, exactly like
+   * stores into bindings (the parameter IS the callee's binding);
+   * anything else stays a loud bail.
+   */
+  conformToSlot(value: i32, want: ValType, reason: String): i32 {
+    let have = this.valueTypeOf(value);
+    if (isValSubtype(have, want)) {
+      return value;
+    }
+    // A nullable value whose non-null form already conforms: the
+    // checker proved this use non-null; re-assert (a null here traps,
+    // which is the re-assert contract everywhere else too).
+    if (have is ValTypeRefNull && want is ValTypeRef) {
+      let nn = new ValTypeRef((have as ValTypeRefNull).target) as ValType;
+      if (isValSubtype(nn, want)) {
+        return this.b.emit(IrOp.ref_as_non_null, nn, value, -1);
+      }
+    }
+    if (!isRefValType(have) || !isValSubtype(want, have)) {
+      this.failConformance(value, want, reason);
+    }
+    return this.b.emit(IrOp.ref_cast, want, value, this.b.internType(want));
+  }
+
+  conformToBinding(value: i32, bindingVt: ValType): i32 {
+    let have = this.valueTypeOf(value);
+    if (isValSubtype(have, bindingVt)) {
+      return value;
+    }
+    if (isRefValType(have) && isValSubtype(bindingVt, have)) {
+      return this.b.emit(IrOp.ref_cast, bindingVt, value,
+          this.b.internType(bindingVt));
+    }
+    return this.fail('binding value type');
+  }
+
+  bindPatternSym(sym: Symbol, value: i32): void {
+    let bindingType = this.func.model.getBindingType(sym);
+    if (bindingType == null) {
+      this.fail('untyped match binding');
+    }
+    let bindingVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
+    this.requireSupported(bindingVt, 'match binding type');
+    var bound = value;
+    let have = this.valueTypeOf(value);
+    if (!valTypeEquals(have, bindingVt) && !isValSubtype(have, bindingVt)) {
+      let wantRef = bindingVt is ValTypeRef || bindingVt is ValTypeRefNull;
+      if (!isRefValType(have) || !wantRef) {
+        this.fail('match binding coercion');
+      }
+      bound = this.b.emit(IrOp.ref_cast, bindingVt, value,
+          this.b.internType(bindingVt));
+    }
+    if (this.isCelled(sym.id)) {
+      this.env[sym.id] = this.cellAlloc(bindingVt, bound);
+    } else {
+      this.env[sym.id] = bound;
+    }
+    this.symbols[sym.id] = sym;
+  }
+
+  /**
+   * Celled = captured by a closure and mutated on either side of the
+   * boundary. The variable lives in a heap cell shared through closure
+   * contexts; the environment maps the symbol to the cell REFERENCE,
+   * which is an invariant SSA value — so celled bindings never
+   * participate in merge parameters, and reads/writes go through the
+   * cell's `value` field.
+   */
+  isCelled(symId: SymbolId): boolean {
+    return this.wasm.mutableCapturedSymbols.has(symId);
+  }
+
+  /** Allocates a fresh cell holding `value` for a celled binding. */
+  cellAlloc(bindingVt: ValType, value: i32): i32 {
+    if (!isValSubtype(this.valueTypeOf(value), bindingVt)) {
+      this.failConformance(value, bindingVt, 'cell init type');
+    }
+    let cellStruct = getCellStruct(this.wasm, bindingVt);
+    let typeRef = this.b.addRef(new IrRefType(cellStruct));
+    return this.b.emit(IrOp.struct_new,
+        new ValTypeRef(cellStruct) as ValType,
+        this.b.pushArgList(oneValue(value)), typeRef);
+  }
+
+  /** The cell struct behind a celled environment entry. */
+  cellStructOf(cell: i32): WasmStruct {
+    let st = asWasmStruct(this.valueTypeOf(cell));
+    if (st != null) {
+      return st as WasmStruct;
+    }
+    throw new ZirUnsupported('celled binding shape');
+  }
+
+  cellRead(cell: i32): i32 {
+    let cs = this.cellStructOf(cell);
+    let fieldRef = this.b.addRef(new IrRefField(cs, 'value'));
+    return this.b.emit(IrOp.struct_get, cs.fields[0].type, cell, fieldRef);
+  }
+
+  cellWrite(cell: i32, value: i32): void {
+    let cs = this.cellStructOf(cell);
+    if (!isValSubtype(this.valueTypeOf(value), cs.fields[0].type)) {
+      this.failConformance(value, cs.fields[0].type, 'cell write type');
+    }
+    let fieldRef = this.b.addRef(new IrRefField(cs, 'value'));
+    let pairIdx = this.b.pushExtra(twoValues(cell, value));
+    this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+  }
+
+  /**
+   * Conforms an arm's result and brs to the merge, materializing it on
+   * first use. Callers guard on reachability; `value` is ignored for
+   * void merges.
+   */
+  mergeArm(m: MergeState, value: i32, armKind: String = 'arm type'): void {
+    var v = value;
+    if (!m.isVoid) {
+      v = this.conformToSlot(v, m.resultVt as ValType, armKind);
+    }
+    if (m.block < 0) {
+      m.block = this.b.newBlock();
+      m.params = this.addParams(m.block, m.syms);
+      if (!m.isVoid) {
+        m.resultParam = this.b.blockParam(m.block, m.resultVt as ValType);
+      }
+    }
+    let args = this.envValues(m.syms);
+    if (!m.isVoid) {
+      args.push(v);
+    }
+    this.b.br(m.block, args);
+  }
+
+  /**
+   * Lands at the merge: restores the saved env view, rebinds the
+   * tracked symbols to the merge params, and resumes there. Returns
+   * the result param, or -1 when no arm reached the merge (the
+   * expression is unreachable past this point).
+   */
+  finishMerge(m: MergeState, saved: HashMap<SymbolId, i32>): i32 {
+    if (m.block < 0) {
+      this.reachable = false;
+      return -1;
+    }
+    this.env = saved;
+    this.applyParams(m.syms, m.params as Array<i32>);
+    this.b.switchTo(m.block);
+    this.reachable = true;
+    return m.resultParam;
+  }
+
+  addParams(block: i32, syms: Array<SymbolId>): Array<i32> {
+    let params = new Array<i32>();
+    for (let symId in syms) {
+      // The binding's declared type is the stable merge type: incoming
+      // values may be wasm subtypes (non-null refs, subclass structs,
+      // typed nulls), which the verifier's subtype check admits.
+      params.push(this.b.blockParam(block, this.bindingValType(symId)));
+    }
+    return params;
+  }
+
+  bindingValType(symId: SymbolId): ValType {
+    if (!this.symbols.has(symId)) {
+      this.fail('unknown merge symbol');
+    }
+    let t = this.func.model.getBindingType(this.symbols[symId]);
+    if (t == null) {
+      this.fail('untyped merge binding');
+    }
+    let vt = typeToValTypeWithSub(this.wasm, t as Type, this.func);
+    this.requireSupported(vt, 'merge binding type');
+    return vt;
+  }
+
+  applyParams(syms: Array<SymbolId>, params: Array<i32>): void {
+    for (var i = 0; i < syms.length; i += 1) {
+      this.env[syms[i]] = params[i];
+    }
+  }
+
+  envValues(syms: Array<SymbolId>): Array<i32> {
+    let values = new Array<i32>();
+    for (let symId in syms) {
+      values.push(this.env[symId]);
+    }
+    return values;
+  }
+
+  copyEnv(): HashMap<SymbolId, i32> {
+    return this.copyOf(this.env);
+  }
+
+  copyOf(source: HashMap<SymbolId, i32>): HashMap<SymbolId, i32> {
+    let copy = new HashMap<SymbolId, i32>();
+    for (let pair in source) {
+      copy[pair.key] = pair.value;
+    }
+    return copy;
   }
 }
 
