@@ -1,0 +1,63 @@
+/**
+ * The single shared surface that split-out lowering modules see.
+ * FunctionLowerer cannot be imported by them (import cycle with
+ * lowering.zena), so the mutually-recursive core arrives as closures,
+ * while the builder, module, and function are direct fields. Every
+ * split module shares THIS type — a new module extends it with more
+ * closures rather than minting its own context (ir/intrinsics.zena
+ * predates this and keeps its narrower IntrinsicCx).
+ */
+import { Array } from 'zena:array';
+import { String } from 'zena:string';
+import { Expression } from '../../ast.zena';
+import { Type } from '../../types.zena';
+import { ValType } from '../wasm.zena';
+import { WasmModule, WasmFunction } from '../wasm-module.zena';
+import { IrBuilder } from './builder.zena';
+import { SymbolId } from '../../scope/symbol.zena';
+
+export final class LoweringContext {
+  b: IrBuilder;
+  wasm: WasmModule;
+  func: WasmFunction;
+  /** Lowers an expression; a non-null `want` supplies the context type. */
+  lowerExpr: (e: Expression, want: ValType | null) => i32;
+  /** The storage ValType of an already-lowered value. */
+  valueTypeOf: (value: i32) => ValType;
+  /** The expression's own checked type, substituted and supported. */
+  exprVt: (e: Expression) => ValType;
+  /** The checked semantic type, substituted; null when untyped. */
+  substitutedNodeType: (e: Expression) => Type | null;
+  reassertNonNull: (value: i32, want: ValType) => i32;
+  /** ref.as_non_null when the value's own storage type is nullable. */
+  stripNonNull: (value: i32) => i32;
+  requireSupported: (vt: ValType, what: String) => void;
+  /** Conformance failure: throws ZirUnsupported, never returns. */
+  failConformance: (value: i32, want: ValType, reason: String) => void;
+  /** Throws ZirUnsupported; the i32 never arrives (value positions). */
+  fail: (reason: String) => i32;
+  /** The SSA value bound to a symbol, or -1 when not in the env. */
+  envValueOf: (id: SymbolId) => i32;
+  new(this.b, this.wasm, this.func, this.lowerExpr, this.valueTypeOf,
+      this.exprVt, this.substitutedNodeType, this.reassertNonNull,
+      this.stripNonNull, this.requireSupported, this.failConformance,
+      this.fail, this.envValueOf);
+}
+
+/** An empty argument list (branch with no args, nullary call). */
+export let noValues = (): Array<i32> => new Array<i32>();
+
+/** A one-element argument list (single branch arg or call operand). */
+export let oneValue = (a: i32): Array<i32> => {
+  let list = new Array<i32>();
+  list.push(a);
+  return list;
+};
+
+/** A two-element argument list, in push order. */
+export let twoValues = (a: i32, b: i32): Array<i32> => {
+  let list = new Array<i32>();
+  list.push(a);
+  list.push(b);
+  return list;
+};
