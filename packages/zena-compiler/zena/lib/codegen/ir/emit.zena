@@ -538,13 +538,18 @@ export final class ZirFunctionEmitter {
     for (let blk in body.blocks) {
       for (var k = 0; k + 1 < blk.insts.length; k += 1) {
         let producer = blk.insts[k];
-        let consumer = blk.insts[k + 1];
         if (!body.producesValue(producer) || useCount[producer] != 1) {
           continue;
         }
         if (body.op(producer) == IrOp.mv_get) {
           continue;
         }
+        // The consumer is the next instruction that EMITS code.
+        let j = this.#nextEmittingIndex(blk.insts, k + 1);
+        if (j < 0) {
+          continue;
+        }
+        let consumer = blk.insts[j];
         if (!this.#streamsFirstOperand(body.op(consumer))) {
           continue;
         }
@@ -555,6 +560,22 @@ export final class ZirFunctionEmitter {
         }
       }
     }
+  }
+
+  /**
+   * The index in `insts` of the first instruction at or after `from`
+   * that emits code, or -1 when the block ends first. Nops (GVN
+   * residue) and mv_gets (their values materialize at their call)
+   * never touch the wasm stack, so emission-adjacency questions skip
+   * them.
+   */
+  #nextEmittingIndex(insts: Array<i32>, from: i32): i32 {
+    var j = from;
+    while (j < insts.length && (this.body.op(insts[j]) == IrOp.nop ||
+        this.body.op(insts[j]) == IrOp.mv_get)) {
+      j += 1;
+    }
+    return if (j < insts.length) j else -1;
   }
 
   /**
