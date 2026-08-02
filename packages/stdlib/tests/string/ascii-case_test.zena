@@ -1,0 +1,84 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {String, asciiLowerByte, asciiUpperByte} from 'zena:string';
+
+// ASCII case mapping. Deliberately NOT Unicode-aware — see asciiLowerByte's
+// doc comment. The tests below pin that non-ASCII input passes through
+// untouched, which is the property callers like zena:url depend on.
+export let tests = suite('ASCII case mapping', (): void => {
+  suite('asciiLowerByte / asciiUpperByte', (): void => {
+    test('maps the ASCII letters', (ctx: TestContext): void => {
+      equal(asciiLowerByte(0x41), 0x61);  // A -> a
+      equal(asciiLowerByte(0x5A), 0x7A);  // Z -> z
+      equal(asciiUpperByte(0x61), 0x41);  // a -> A
+      equal(asciiUpperByte(0x7A), 0x5A);  // z -> Z
+    });
+
+    test('leaves already-cased letters alone', (ctx: TestContext): void => {
+      equal(asciiLowerByte(0x61), 0x61);
+      equal(asciiUpperByte(0x41), 0x41);
+    });
+
+    test('leaves the bytes adjacent to the letter ranges alone', (ctx: TestContext): void => {
+      // '@' (0x40) and '[' (0x5B) bracket A-Z; '`' (0x60) and '{' (0x7B)
+      // bracket a-z. Off-by-one here would corrupt real URL characters.
+      equal(asciiLowerByte(0x40), 0x40);
+      equal(asciiLowerByte(0x5B), 0x5B);
+      equal(asciiUpperByte(0x60), 0x60);
+      equal(asciiUpperByte(0x7B), 0x7B);
+    });
+
+    test('leaves digits, punctuation, and non-ASCII bytes alone', (ctx: TestContext): void => {
+      equal(asciiLowerByte(0x30), 0x30);  // '0'
+      equal(asciiLowerByte(0x2F), 0x2F);  // '/'
+      equal(asciiLowerByte(0xC3), 0xC3);  // a UTF-8 lead byte
+      equal(asciiLowerByte(0xA9), 0xA9);  // a UTF-8 continuation byte
+      equal(asciiUpperByte(0xC3), 0xC3);
+    });
+  });
+
+  suite('String.asciiLowerCase / asciiUpperCase', (): void => {
+    test('maps ASCII letters in a string', (ctx: TestContext): void => {
+      equal('Hello, World!'.asciiLowerCase(), 'hello, world!');
+      equal('Hello, World!'.asciiUpperCase(), 'HELLO, WORLD!');
+      equal('HTTP'.asciiLowerCase(), 'http');
+    });
+
+    test('is a no-op on strings with nothing to change', (ctx: TestContext): void => {
+      equal('already lower'.asciiLowerCase(), 'already lower');
+      equal('12345'.asciiLowerCase(), '12345');
+      equal(''.asciiLowerCase(), '');
+    });
+
+    test('leaves non-ASCII characters untouched', (ctx: TestContext): void => {
+      // The whole point: no Unicode case mapping, and — critically — the
+      // multi-byte sequences must come through byte-identical.
+      equal('ÉCOLE'.asciiLowerCase(), 'École');
+      // Note the é stays lowercase: it is not an ASCII letter, so it is not
+      // touched. A Unicode-aware uppercase would produce 'CAFÉ' — that
+      // difference is the whole reason these are separate functions.
+      equal('café'.asciiUpperCase(), 'CAFé');
+      equal('你好'.asciiLowerCase(), '你好');
+      equal('ÀÉÎÕÜ'.asciiLowerCase(), 'ÀÉÎÕÜ');
+    });
+
+    test('does not apply locale-sensitive Unicode rules', (ctx: TestContext): void => {
+      // Under Turkish rules 'I' lowercases to a dotless i; ASCII mapping must
+      // not do that. zena:url depends on this being locale-independent.
+      equal('I'.asciiLowerCase(), 'i');
+      // U+212A KELVIN SIGN case-folds to 'k' in Unicode but is not ASCII.
+      equal('KK'.asciiLowerCase().length, 'kK'.length);
+    });
+
+    test('preserves length in bytes', (ctx: TestContext): void => {
+      let mixed = 'AbÇdE';
+      equal(mixed.asciiLowerCase().length, mixed.length);
+      equal(mixed.asciiUpperCase().length, mixed.length);
+    });
+
+    test('round-trips ASCII through both directions', (ctx: TestContext): void => {
+      let s = 'MixedCase123';
+      equal(s.asciiUpperCase().asciiLowerCase(), s.asciiLowerCase());
+    });
+  });
+});

@@ -1,0 +1,123 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {URL} from 'zena:url';
+import {String} from 'zena:string';
+
+// The Zena-specific API surface, which the generated WPT suite cannot cover:
+// URL.parse's null return, canParse, toString, and derived components. Spec
+// conformance of the parser itself lives in wpt_urltestdata_test.zena.
+
+/** Parses input the test expects to be valid, failing the test if it isn't. */
+let mustParse = (input: String, base: String | null = null): URL => {
+  let u = URL.parse(input, base);
+  isTrue(u != null);
+  return u as URL;
+};
+
+export let tests = suite('URL API', (): void => {
+  suite('parsing', (): void => {
+    test('parses an absolute URL into its components', (ctx: TestContext): void => {
+      let u = mustParse('https://example.com/a/b?q=1#f');
+      equal(u.href, 'https://example.com/a/b?q=1#f');
+      equal(u.protocol, 'https:');
+      equal(u.hostname, 'example.com');
+      equal(u.pathname, '/a/b');
+      equal(u.search, '?q=1');
+      equal(u.hash, '#f');
+    });
+
+    test('resolves against a base', (ctx: TestContext): void => {
+      equal(mustParse('/x', 'https://example.com/a/b').href, 'https://example.com/x');
+      equal(mustParse('y', 'https://example.com/a/b').href, 'https://example.com/a/y');
+      equal(mustParse('../z', 'https://example.com/a/b/c').href, 'https://example.com/a/z');
+      equal(mustParse('?q', 'https://example.com/a').href, 'https://example.com/a?q');
+    });
+  });
+
+  suite('failure is a null return, not an exception', (): void => {
+    // A string that does not parse is an ordinary outcome, so there is no
+    // throwing constructor to test — URL.parse is the only way to build one.
+    test('unparsable input returns null', (ctx: TestContext): void => {
+      isTrue(URL.parse('not a url') == null);
+      isTrue(URL.parse('http://f:b/c') == null);
+      isTrue(URL.parse('') == null);
+    });
+
+    test('an unparsable base returns null', (ctx: TestContext): void => {
+      isTrue(URL.parse('/x', 'not a base') == null);
+    });
+
+    test('a relative input with no base returns null', (ctx: TestContext): void => {
+      isTrue(URL.parse('/just/a/path') == null);
+    });
+
+    test('canParse mirrors parse', (ctx: TestContext): void => {
+      isTrue(URL.canParse('https://example.com/'));
+      isTrue(URL.canParse('sub', 'https://example.com/dir/'));
+      isFalse(URL.canParse('not a url'));
+      isFalse(URL.canParse('http://f:b/c'));
+      isFalse(URL.canParse('/x', 'not a base'));
+    });
+  });
+
+  suite('derived components', (): void => {
+    test('host includes the port only when present', (ctx: TestContext): void => {
+      equal(mustParse('https://example.com/').host(), 'example.com');
+      equal(mustParse('https://example.com:8080/').host(), 'example.com:8080');
+      // A default port is dropped during parsing.
+      let defaulted = mustParse('https://example.com:443/');
+      equal(defaulted.host(), 'example.com');
+      equal(defaulted.port, '');
+    });
+
+    test('origin is opaque for non-tuple schemes', (ctx: TestContext): void => {
+      equal(mustParse('https://example.com:8080/a').origin(), 'https://example.com:8080');
+      equal(mustParse('mailto:a@b.com').origin(), 'null');
+      equal(mustParse('file:///tmp/x').origin(), 'null');
+    });
+
+    test('a blob URL takes the origin of the URL in its path', (ctx: TestContext): void => {
+      equal(mustParse('blob:https://example.com:443/x').origin(), 'https://example.com');
+      equal(mustParse('blob:http://example.org:88/x').origin(), 'http://example.org:88');
+    });
+
+    test('toString equals href', (ctx: TestContext): void => {
+      let u = mustParse('https://example.com/a?b#c');
+      equal(u.toString(), u.href);
+    });
+  });
+
+  suite('normalization', (): void => {
+    test('dot segments are resolved', (ctx: TestContext): void => {
+      equal(mustParse('https://example.com/a/./b/../c').pathname, '/a/c');
+    });
+
+    test('the scheme and host are lowercased', (ctx: TestContext): void => {
+      let u = mustParse('HTTPS://Example.COM/');
+      equal(u.protocol, 'https:');
+      equal(u.hostname, 'example.com');
+    });
+
+    test('IPv6 hosts keep their brackets and compress', (ctx: TestContext): void => {
+      equal(mustParse('http://[2001:0db8:0000:0000:0000:0000:0000:0001]/').hostname,
+            '[2001:db8::1]');
+    });
+
+    test('IPv4 hosts are canonicalized to dotted decimal', (ctx: TestContext): void => {
+      equal(mustParse('http://0x7f.1/').hostname, '127.0.0.1');
+    });
+  });
+
+  suite('IDNA is not implemented yet', (): void => {
+    // DESIGN.md phase 6. Pinned so the behavior is an explicit failure rather
+    // than a silently wrong host; update these when the UTS 46 tables land.
+    test('a non-ASCII domain fails to parse rather than parsing wrongly', (ctx: TestContext): void => {
+      isTrue(URL.parse('http://你好/') == null);
+      isTrue(URL.parse('https://faß.example/') == null);
+    });
+
+    test('ASCII domains are unaffected', (ctx: TestContext): void => {
+      equal(mustParse('http://xn--fsq.example/').hostname, 'xn--fsq.example');
+    });
+  });
+});

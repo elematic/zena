@@ -32,8 +32,8 @@ pieces out of compiled binaries:
 ```zena
 import {URL, URLSearchParams, url} from 'zena:url';
 
-// Parsing — throws URLParseError on invalid input
-let u = new URL('https://example.com:8080/docs/api?q=zena#intro');
+// Parsing — returns null on invalid input; there is no throwing constructor
+let u = URL.parse('https://example.com:8080/docs/api?q=zena#intro') as URL;
 u.protocol;  // 'https:'
 u.hostname;  // 'example.com'
 u.port;      // '8080'
@@ -42,11 +42,10 @@ u.search;    // '?q=zena'
 u.hash;      // '#intro'
 u.href;      // the canonical serialization
 
-// Non-throwing parse
-let maybe = URL.parse('not a url');  // URL | null
+let maybe = URL.parse('not a url');  // null
 
 // Relative URL resolution against a base
-let page = new URL('/guide/intro', 'https://zena.dev/docs/');
+let page = URL.parse('/guide/intro', 'https://zena.dev/docs/');
 
 // URLs are immutable; derive modified copies with `with*` methods
 let secure = u.withProtocol('http:').withPort('');

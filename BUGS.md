@@ -127,6 +127,105 @@ immediately trying to fix it (which can pollute the current task's context).
   u64` sign-extends). ZIR deliberately mirrors streaming until this
   is fixed in both self-hosted backends together (the _u IrOps and
   emitter methods do not exist yet either).
+### Inline-tuple union miscompiles when both arms hole out a reference slot
+- **Found**: 2026-07-28 (evaluating a `Result<V, E>` shape for zena:url)
+- **Severity**: medium (invalid wasm from code both checkers accept; blocks
+  the natural encoding of a two-payload Result)
+- **Workaround**: keep holes in only one arm, or make at most one of the
+  hole-opposed slots a reference type.
+- **Details**: A union of inline tuples where *each* arm holes out a slot that
+  the other arm fills with a REFERENCE type produces a module that fails wasm
+  validation. Both compilers accept the source and emit bad code (bootstrap:
+  "expected (ref null $type), found i32"; self-hosted reports the same
+  mismatch inverted).
+  ```zena
+  let f = (b: boolean): inline (true, String, _) | inline (false, _, String) => {
+    if (b) { return (true, 'v', _); }
+    return (false, _, 'e');
+  };
+  ```
+  It is a narrow gap, not a general limitation — all of these DO work:
+  - `inline (true, i32, _) | inline (false, _, i32)` (crossed holes, all i32)
+  - `inline (true, i32, String) | inline (false, i32, _)` (holes in one arm)
+  - `inline (true, String, _) | inline (false, _, i32)` (crossed, ONE ref)
+  - `inline (true, String) | inline (false, _)` (the stdlib's Option shape)
+
+  Only the two-reference crossed case fails, which is why the shipping
+  `tests/language/execution/tuples/inline_tuples.zena` cases (holes opposite
+  i32, or holes in a single arm) never caught it. Codegen looks correct at a
+  glance — `codegen/expr/literals.zena` resolves a hole's default from
+  `ctx.wasmFunction.signature.returns[i]` and only falls back to i32 when the
+  index is out of range — so the fault is likely in slot-type resolution for
+  this case (construction, or the destructure temp widening in
+  `codegen/stmt/control-flow.zena`), and needs diagnosis rather than a guess.
+
+  Why it matters: `inline (true, V, _) | inline (false, _, E)` is the shape a
+  zero-allocation `Result<V, E>` wants — one slot each so V and E never have
+  to share a representation. NOTE that fixing this is necessary but not
+  sufficient for a *named* Result: inline tuple types are also barred from
+  type aliases ("Inline tuple types can only appear in function return types",
+  pinned by tests/language/semantics/type-system/inline_tuple_restrictions.zena),
+  so `type Result<V, E> = ...` needs a separate, deliberate language change.
+
+### Inline-tuple union with mismatched slot representations is accepted, then miscompiles
+- **Found**: 2026-07-28 (same investigation)
+- **Severity**: medium (silent acceptance of unrepresentable types; the
+  failure surfaces only as invalid wasm at load time)
+- **Workaround**: ensure every arm agrees on each slot's representation — use
+  a hole plus a separate slot instead of two different payload types in one
+  slot.
+- **Details**: The checker does not verify that the arms of an inline-tuple
+  union agree on each slot's wasm representation. A union whose slot 2 is a
+  primitive in one arm and a reference in the other type-checks in both
+  compilers and then emits a module that fails validation.
+  ```zena
+  let f = (b: boolean): inline (true, i32) | inline (false, String) => {
+    if (b) { return (true, 42); }
+    return (false, 'bad');
+  };
+  ```
+  This should be a checker error at the declaration, in the same family as the
+  existing "cannot mix inline tuple types with other representations"
+  diagnostic — a slot that must hold both an i32 and a ref has no multi-value
+  lowering, so it can never be valid. Catching it in the checker also turns
+  the confusing wasm-validation failure into a message that points at the
+  signature.
+
+### Bootstrap parser's generic-call lookahead scans across statement boundaries
+- **Found**: 2026-07-28 (writing the zena:url parser)
+- **Severity**: medium (rejects valid code; bootstrap-only, so it is also a
+  compiler divergence)
+- **Workaround**: avoid writing `>` immediately followed by `(` — hoist the
+  operand into a local (`x > MAX` instead of `x > (255 as i64)`).
+- **Details**: `#isGenericCall()` (parser.ts) scans forward from any `<` for a
+  depth-balanced `>` and commits to parsing type arguments when the token
+  after it is `(`. The scan explicitly ignores `;`, `{`, `}` and `)` ("just
+  rely on depth"), so it happily pairs a `<` in one statement with a `>` in a
+  later one. This rejects ordinary code:
+  ```zena
+  for (var i = 0; i < xs.length; i += 1) {
+    if (xs[i] > (2)) { return 1; }
+  }
+  ```
+  with "Expected '>' after type arguments. Got Dot". The self-hosted parser
+  accepts and correctly compiles the same code, so the two disagree. The scan
+  should stop at a statement boundary (`;`, `{`, `}`) before concluding a
+  generic call.
+
+### Bootstrap parser rejects a method call on a new-expression
+- **Found**: 2026-07-28 (writing the zena:url tests)
+- **Severity**: low-medium (rejects valid code; bootstrap-only divergence)
+- **Workaround**: bind the instance to a local first.
+- **Details**: `new Box().val()` fails to parse under the bootstrap with
+  "Expected ')' after arguments. Got LParen", while `new Box().field` is
+  fine and the self-hosted compiler accepts and correctly runs both (returns
+  7 for the repro below).
+  ```zena
+  class Box { new() {} val(): i32 { return 7; } }
+  export let main = (): i32 => new Box().val();
+  ```
+  Postfix call chaining is evidently not applied to a NewExpression the way
+  member access is. Pin with a syntax test once fixed.
 
 ### Generic interface methods are not virtually dispatchable (diagnostic in place)
 - **Found**: 2026-07-26 (probing primitive type-argument coverage)

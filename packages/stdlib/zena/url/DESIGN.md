@@ -38,7 +38,7 @@ standard library. This document covers the design of the initial `URL` /
 ## Scope
 
 **v1 (`zena:url`)**: `URL` (parse, serialize, resolve against base, derive
-modified copies), `URLSearchParams`, percent-encoding utilities, `URLParseError`.
+modified copies), `URLSearchParams`, percent-encoding utilities.
 
 **Later phases** (still exported from `zena:url`): IDNA/UTS 46 host
 processing, `UrlString` distinct type, `url` template tag, `URLPattern`,
@@ -60,7 +60,7 @@ stdlib's pay-to-play principle.
 packages/stdlib/zena/url/
   README.md, DESIGN.md   # these docs
   index.zena             # public entry for 'zena:url' — re-exports only
-  url.zena               # URL, URLParseError
+  url.zena               # URL
   search-params.zena     # URLSearchParams
   encoding.zena          # percent-encode sets, form-urlencoded codec
   template.zena          # url template tag, UrlString (later)
@@ -71,7 +71,7 @@ packages/stdlib/zena/url/
 
 ```zena
 // index.zena
-export {URL, URLParseError} from './url.zena';
+export {URL} from './url.zena';
 export {URLSearchParams} from './search-params.zena';
 export {url, UrlString} from './template.zena';
 export {URLPattern} from './pattern.zena';
@@ -177,10 +177,10 @@ export final class URL {
   hash: String;       // '#frag' or ''
   href: String;       // full canonical serialization
 
-  /** Parses `input`, optionally against `base`. Throws URLParseError. */
-  new(input: String, base: String | null = null);
-
-  /** Non-throwing parse (mirrors the web's `URL.parse()` static). */
+  /**
+   * Parses `input`, optionally against `base`; null when either fails.
+   * There is no public constructor — see "Failure is a value" below.
+   */
   static parse(input: String, base: String | null = null): URL | null;
   static canParse(input: String, base: String | null = null): boolean;
 
@@ -203,7 +203,7 @@ export final class URL {
   withSearch(value: String): URL;
   withSearchParams(params: URLSearchParams): URL;
   withHash(value: String): URL;
-  withHref(value: String): URL;  // full re-parse; throws like the constructor
+  withHref(value: String): URL | null;  // full re-parse, so it can fail
 
   operator ==(other: URL): boolean;  // href equality
   hashCode(): i32;                   // so URLs work as HashMap/HashSet keys
@@ -309,20 +309,28 @@ let link = url`https://example.com/teams/${team}?from=${ref}`;
 - Both are cheap adornments on top of the parser, so they're scheduled after
   the core is conformant, and are trivially DCE'd when unused.
 
-### Errors
+### Failure is a value, not an exception
 
-Following stdlib convention (`JsonParseError`):
+A string that does not parse is a normal, recoverable outcome — not an
+exceptional one — so `zena:url` never throws. `URL.parse` returns `URL | null`
+and there is no public constructor; `UrlRecord` (which the private constructor
+takes) is not re-exported from `index.zena`, so `parse` is the only way in.
 
-```zena
-export class URLParseError extends Error {
-  input: String;
-  new(message: String, input: String) : ...;
-}
-```
+This is a deliberate divergence from the web API, where `new URL(x)` throws and
+`URL.parse` is the newer non-throwing addition. We keep only the latter.
+
+Returning null rather than an error object loses nothing here: the spec's own
+failure mode is the bare word "failure", with no code, position, or reason to
+report. An earlier draft had a `URLParseError` carrying `input` and a fixed
+message — i.e. the argument the caller had just passed, and no information.
 
 The spec's non-fatal *validation errors* (warnings that don't fail parsing) are
 ignored in v1; if wanted later they can surface as an optional callback, not as
 state on `URL`.
+
+If a future component does need to explain *why* it failed, that is the point
+to revisit a shared `Result`-style return — see BUGS.md for the two compiler
+issues that currently block a zero-allocation `Result<V, E>`.
 
 ## Testing strategy
 
@@ -343,10 +351,11 @@ The data files and their schemas:
   (optionally `relativeTo`) or the expected component strings
   (`href`, `protocol`, `username`, `password`, `host`, `hostname`, `port`,
   `pathname`, `search`, `hash`, optional `origin`). Maps to:
-  `throws(() => new URL(input, base))` or one `equal()` per component.
+  `isTrue(URL.parse(input, base) == null)` or one `equal()` per component.
 - **`setters_tests.json`**: keyed by property name; each entry
   `{href, new_value, expected: {href, ...components}}`. Maps to:
-  `let u2 = new URL(href).withProtocol(new_value); equal(u2.href, expected.href); ...`.
+  `let u2 = (URL.parse(href) as URL).withProtocol(new_value);
+  equal(u2.href, expected.href); ...`.
 - **`percent-encoding.json`**: encode-set cases for `encoding.zena`.
 - **`toascii.json`**: `{input, output: String | null}` host/IDNA cases — for
   the IDNA phase.
@@ -392,20 +401,32 @@ linear first-match-wins scan as the oracle.
 
 Each phase lands with its tests green and the expected-failures list updated.
 
-1. **Encoding foundation** (`encoding.zena`): percent-encode sets
+1. **Encoding foundation** (`encoding.zena`) — **DONE**: percent-encode sets
    from the spec (C0/fragment/query/special-query/path/userinfo/component/
    form-urlencoded), percent encode/decode over UTF-8 bytes (natural fit for
    Zena's UTF-8 strings), form-urlencoded parse/serialize.
-   *Tests*: hand-written unit tests + generated `percent-encoding.json` cases.
-2. **Parser core** (`zena:url`): the basic URL parser state machine
-   (scheme → authority → host → port → path → query → fragment states,
-   file-URL states, opaque paths), ASCII domains + IPv4 (octal/hex/shorthand
-   forms) + IPv6 host parsing, path normalization (`.`/`..`), serializer,
-   `URL` constructor/`parse`/`canParse`/component fields/`href`/`toString`/
-   `host()`/`origin()`, `URLParseError`. Adds the `url` manifest entry (the
-   loader changes above will already have landed).
-   *Tests*: generated `urltestdata.json` suite; non-ASCII-host cases in the
-   expected-failures list.
+   *Tests*: hand-written unit tests (`tests/url/encoding_test.zena`). The
+   generated `percent-encoding.json` cases are still TODO — note that the
+   hand-written set assertions initially missed U+005E (^) in the path set,
+   which only the phase-2 WPT suite caught.
+2. **Parser core** (`zena:url`) — **DONE** (`url.zena`): the basic URL parser
+   state machine (scheme → authority → host → port → path → query → fragment
+   states, file-URL states, opaque paths), ASCII domains + IPv4
+   (octal/hex/shorthand forms) + IPv6 host parsing, path normalization
+   (`.`/`..`), serializer, `URL` constructor/`parse`/`canParse`/component
+   fields/`href`/`toString`/`host()`/`origin()` (including `blob:`).
+   Adds the `url` manifest entry.
+   *Tests*: generated `urltestdata.json` suite — **871/871 passing, 12
+   skipped**, every skip an IDNA case listed in
+   `tests/url/wpt/expected-failures.txt`; plus hand-written
+   `tests/url/url_test.zena` for the Zena-specific API surface.
+
+   Implementation notes worth keeping: components are exposed as getters over
+   a retained `UrlRecord` (the "retain it" option below); the parser walks
+   BYTES rather than code points, which is safe because every state-machine
+   decision is on an ASCII character and UTF-8 continuation bytes are all
+   >= 0x80; and a non-ASCII domain is a hard parse failure rather than a
+   guess, so phase 6 is a strict improvement rather than a behavior change.
 3. **Copy-with setters**: state-override parsing; all `with*` methods.
    *Tests*: generated `setters_tests.json` suite + hand-written immutability
    tests.
@@ -437,16 +458,18 @@ Phases 1–4 are the meat of "a URL object in `zena:url`"; 5 is cheap polish;
   host, so once implemented, the UTS 46 tables are reachable and DCE can't drop
   them. Options: accept the size (Ada does); a compile-time flag/virtual module
   choosing an ASCII-only host parser; or keep v1's behavior (non-ASCII hosts
-  throw `URLParseError` with a clear "IDNA not supported yet" message)
+  fail to parse, which is at least never silently wrong)
   available permanently as the lite variant. Decide when phase 6 starts.
 - **Record-based `with()`**: a single `url.with({pathname: '/x', hash: ''})`
   reads better than chained `with*` calls; depends on optional-field record
   ergonomics. Could be added alongside, not instead.
-- **Retained URL record vs. re-parse in `with*`**: retaining is faster but
-  makes every `URL` carry the record; measure once the benchmark suite covers
-  URLs.
+- **Retained URL record vs. re-parse in `with*`**: SETTLED for now — phase 2
+  retains the record and derives every component with a getter, so nothing is
+  cached and `href` is re-serialized per access. Revisit (cache the serialized
+  components) once the benchmark suite covers URLs.
 - **`searchParams()` naming**: as a snapshot-returning method it arguably wants
   a more honest name (`parseSearchParams()`?) — or `URLSearchParams` could stay
   couple-free and take `new URLSearchParams(url.search)` as the only path.
-- **Origin for blob URLs**: the spec special-cases `blob:`; we likely don't
-  need it — punt until something needs `origin()` of a blob URL.
+- ~~**Origin for blob URLs**~~: RESOLVED in phase 2 — WPT covers it, and it is
+  six lines (parse the path as a URL, return its origin when the inner scheme
+  is http/https/file), so it landed rather than being punted.

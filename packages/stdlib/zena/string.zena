@@ -46,6 +46,25 @@ export enum Encoding {
  * at code point boundaries. Use StringBuilder for efficient construction of
  * strings from parts.
  */
+/**
+ * Returns the ASCII lowercase of `b`, leaving every other byte or code point
+ * unchanged.
+ *
+ * ASCII-only is the point, not a shortcut. It is the operation specifications
+ * such as the WHATWG URL Standard mandate, and it is locale-independent and
+ * table-free. Unicode case mapping is a genuinely different function: it is
+ * locale-sensitive (under Turkish rules `I` lowercases to a dotless i), it can
+ * change length (uppercasing the sharp s yields `SS`), and it needs
+ * case-mapping tables that would then be reachable from every caller. It must
+ * therefore stay a separate function rather than being folded into these.
+ */
+export let asciiLowerByte = (b: i32): i32 =>
+  if (b >= 0x41 && b <= 0x5A) b + 0x20 else b;
+
+/** Returns the ASCII uppercase of `b`. See `asciiLowerByte`. */
+export let asciiUpperByte = (b: i32): i32 =>
+  if (b >= 0x61 && b <= 0x7A) b - 0x20 else b;
+
 export final class String implements Hashable {
   // Internal storage - accessed by compiler intrinsics
   #data: ByteArray;    // Backing storage (may be shared with other Strings)
@@ -408,6 +427,53 @@ export final class String implements Hashable {
    * computation. Delegates to the compiler's shared string hash helper
    * (generateStringHashFunction), which reads and updates the cache field.
    */
+  /**
+   * Returns this string with every ASCII letter lowercased; every other byte
+   * is left alone. See `asciiLowerByte` for why this is deliberately not
+   * Unicode-aware.
+   *
+   * Byte-wise, which is exactly right for WTF-8: an ASCII byte is always a
+   * whole code point, and no continuation byte falls in 0x41..0x5A, so no
+   * multi-byte sequence can be corrupted. A WTF-16 string would instead need
+   * code-unit stepping — and that branch belongs here, on `#encoding`, rather
+   * than in every caller, which is the reason this lives on String at all. No
+   * String method supports WTF-16 yet and nothing constructs one today.
+   *
+   * Returns `this` when there is nothing to change, so the common
+   * already-lowercase case does not allocate.
+   */
+  asciiLowerCase(): String {
+    return this.#mapAscii(true);
+  }
+
+  /** Returns this string with every ASCII letter uppercased. */
+  asciiUpperCase(): String {
+    return this.#mapAscii(false);
+  }
+
+  #mapAscii(lower: boolean): String {
+    let len = this.#end - this.#start;
+    var needsChange = false;
+    for (var i = 0; i < len; i += 1) {
+      let b = __byte_array_get(this.#data, this.#start + i);
+      let mapped = if (lower) asciiLowerByte(b) else asciiUpperByte(b);
+      if (mapped != b) {
+        needsChange = true;
+        break;
+      }
+    }
+    if (!needsChange) {
+      return this;
+    }
+    let newData = __byte_array_new(len);
+    for (var i = 0; i < len; i += 1) {
+      let b = __byte_array_get(this.#data, this.#start + i);
+      let mapped = if (lower) asciiLowerByte(b) else asciiUpperByte(b);
+      __byte_array_set(newData, i, mapped);
+    }
+    return new String(newData, 0, len, this.#encoding);
+  }
+
   hashCode(): i32 {
     return hash(this);
   }

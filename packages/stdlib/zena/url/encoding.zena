@@ -29,7 +29,7 @@ let inQuerySet = (b: i32): boolean =>
   b == 0x20 || b == 0x22 || b == 0x23 || b == 0x3C || b == 0x3E;
 
 let inPathSet = (b: i32): boolean =>
-  inQuerySet(b) || b == 0x3F || b == 0x60 || b == 0x7B || b == 0x7D;
+  inQuerySet(b) || b == 0x3F || b == 0x5E || b == 0x60 || b == 0x7B || b == 0x7D;
 
 let inUserinfoSet = (b: i32): boolean =>
   inPathSet(b) || b == 0x2F || b == 0x3A || b == 0x3B || b == 0x3D ||
@@ -87,6 +87,18 @@ let appendPercentEncodedByte = (sb: StringBuilder, b: i32): void => {
   sb.appendByte(0x25); // '%'
   sb.appendByte(hexDigitUpper((b >> 4) & 0xF));
   sb.appendByte(hexDigitUpper(b & 0xF));
+};
+
+/**
+ * Appends `b` to `sb`, percent-encoded if `set` requires it. This is the
+ * byte-at-a-time form the URL parser builds components with.
+ */
+export let encodeByteInto = (sb: StringBuilder, b: i32, set: EncodeSet): void => {
+  if (byteNeedsPercentEncoding(b, set)) {
+    appendPercentEncodedByte(sb, b);
+  } else {
+    sb.appendByte(b);
+  }
 };
 
 /**

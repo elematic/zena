@@ -2,6 +2,7 @@ import { Array } from 'zena:growable-array';
 import { Error } from 'zena:error';
 import { FixedArray } from 'zena:fixed-array';
 import { StringBuilder } from 'zena:string-builder';
+import { asciiLowerByte, asciiUpperByte } from 'zena:string';
 import { TemplateStringsArray } from 'zena:template-strings-array';
 
 // ============================================================================
@@ -1198,8 +1199,8 @@ final class NfaCompiler {
     if (foldCase && this.#isLetter(c)) {
       // Create a char class matching both cases
       let s = new State(StateType.CharClass);
-      let lower = this.#toLower(c);
-      let upper = this.#toUpper(c);
+      let lower = asciiLowerByte(c);
+      let upper = asciiUpperByte(c);
       if (lower == upper) {
         // Not a letter with case, just match the char
         s.kind = StateType.Char;
@@ -1226,22 +1227,6 @@ final class NfaCompiler {
   // Check if a character is a letter (A-Z or a-z)
   #isLetter(c: i32): boolean {
     return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
-  }
-
-  // Convert to lowercase
-  #toLower(c: i32): i32 {
-    if (c >= 65 && c <= 90) {
-      return c + 32;
-    }
-    return c;
-  }
-
-  // Convert to uppercase
-  #toUpper(c: i32): i32 {
-    if (c >= 97 && c <= 122) {
-      return c - 32;
-    }
-    return c;
   }
 
   #compileCharClass(ast: Ast): Frag {

@@ -43,6 +43,7 @@ export let tests = suite('URL percent-encoding', (): void => {
     test('query set adds "#" but not backtick', (ctx: TestContext): void => {
       isTrue(byteNeedsPercentEncoding(0x23, EncodeSet.Query));
       isFalse(byteNeedsPercentEncoding(0x60, EncodeSet.Query));
+      isFalse(byteNeedsPercentEncoding(0x5E, EncodeSet.Query));  // '^'
       isFalse(byteNeedsPercentEncoding(0x27, EncodeSet.Query));  // '\''
     });
 
@@ -52,8 +53,11 @@ export let tests = suite('URL percent-encoding', (): void => {
     });
 
     // https://url.spec.whatwg.org/#path-percent-encode-set
-    test('path set adds "?", backtick, braces', (ctx: TestContext): void => {
+    test('path set adds "?", "^", backtick, braces', (ctx: TestContext): void => {
       isTrue(byteNeedsPercentEncoding(0x3F, EncodeSet.Path));
+      // '^' is in the path set — missed on the first hand-written pass and
+      // caught by the WPT suite, so it is pinned explicitly here.
+      isTrue(byteNeedsPercentEncoding(0x5E, EncodeSet.Path));
       isTrue(byteNeedsPercentEncoding(0x60, EncodeSet.Path));
       isTrue(byteNeedsPercentEncoding(0x7B, EncodeSet.Path));
       isTrue(byteNeedsPercentEncoding(0x7D, EncodeSet.Path));

@@ -1,0 +1,1121 @@
+// The WHATWG URL Standard's basic URL parser, host parser, and serializers
+// (https://url.spec.whatwg.org/). Step comments cite the spec's algorithm
+// steps so this can be diffed against the prose.
+//
+// Zena strings are UTF-8 byte sequences and every state-machine decision is
+// made on an ASCII character, so the parser walks BYTES: a multi-byte UTF-8
+// sequence has all bytes >= 0x80 and can never collide with an ASCII
+// delimiter. Percent-encoding is likewise bytewise (see encoding.zena).
+//
+// NOT YET IMPLEMENTED: IDNA/UTS 46. A non-ASCII domain is a parse failure
+// rather than a silently wrong host (DESIGN.md phase 6 lands the tables).
+
+import { String, asciiLowerByte } from 'zena:string';
+import { StringBuilder } from 'zena:string-builder';
+import { Array } from 'zena:array';
+import { i32ToString } from 'zena:string-convert';
+import {
+  EncodeSet, percentDecode, encodeByteInto, byteNeedsPercentEncoding
+} from './encoding.zena';
+
+// ============================================================================
+// Byte classification
+// ============================================================================
+
+let EOF: i32 = -1;
+
+// Hoisted so no comparison is written as `> (`: the bootstrap parser's
+// generic-call lookahead scans from any `<` to the next `>` ACROSS statement
+// boundaries and commits to type arguments when that `>` is followed by `(`,
+// which misparses `for (var i = 0; i < xs.length ...) { if (xs[i] > (n)) }`.
+let MAX_IPV4_PART: i64 = 255 as i64;
+let MAX_PORT: i64 = 65535 as i64;
+
+let isASCIIAlpha = (b: i32): boolean =>
+  (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A);
+
+let isASCIIDigit = (b: i32): boolean => b >= 0x30 && b <= 0x39;
+
+let isASCIIAlphanumeric = (b: i32): boolean =>
+  isASCIIAlpha(b) || isASCIIDigit(b);
+
+let isASCIIHexDigit = (b: i32): boolean =>
+  isASCIIDigit(b) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66);
+
+let hexValue = (b: i32): i32 => {
+  if (b >= 0x30 && b <= 0x39) return b - 0x30;
+  if (b >= 0x41 && b <= 0x46) return b - 0x41 + 10;
+  return b - 0x61 + 10;
+};
+
+/** https://url.spec.whatwg.org/#forbidden-host-code-point */
+let isForbiddenHostByte = (b: i32): boolean =>
+  b == 0x00 || b == 0x09 || b == 0x0A || b == 0x0D || b == 0x20 ||
+  b == 0x23 || b == 0x2F || b == 0x3A || b == 0x3C || b == 0x3E ||
+  b == 0x3F || b == 0x40 || b == 0x5B || b == 0x5C || b == 0x5D ||
+  b == 0x5E || b == 0x7C;
+
+/** https://url.spec.whatwg.org/#forbidden-domain-code-point */
+let isForbiddenDomainByte = (b: i32): boolean =>
+  isForbiddenHostByte(b) || b < 0x20 || b == 0x25 || b == 0x7F;
+
+// ============================================================================
+// Schemes
+// ============================================================================
+
+/** https://url.spec.whatwg.org/#special-scheme */
+let isSpecialScheme = (scheme: String): boolean =>
+  scheme == "http" || scheme == "https" || scheme == "ws" ||
+  scheme == "wss" || scheme == "ftp" || scheme == "file";
+
+/** Default port for a special scheme, or -1 when it has none. */
+let defaultPort = (scheme: String): i32 => {
+  if (scheme == "http" || scheme == "ws") return 80;
+  if (scheme == "https" || scheme == "wss") return 443;
+  if (scheme == "ftp") return 21;
+  return -1;
+};
+
+// ============================================================================
+// Small string helpers
+// ============================================================================
+
+/** Strictly split `s` on `sep`, keeping empty pieces. */
+let splitOn = (s: String, sep: i32): Array<String> => {
+  let out = new Array<String>();
+  var start = 0;
+  for (var i = 0; i <= s.length; i += 1) {
+    if (i == s.length || s.getByteAt(i) == sep) {
+      out.push(s.sliceBytes(start, i));
+      start = i + 1;
+    }
+  }
+  return out;
+};
+
+/** True when input[from..] starts with `prefix`. */
+let hasPrefixAt = (input: String, from: i32, prefix: String): boolean => {
+  if (from + prefix.length > input.length) return false;
+  for (var i = 0; i < prefix.length; i += 1) {
+    if (input.getByteAt(from + i) != prefix.getByteAt(i)) return false;
+  }
+  return true;
+};
+
+/** https://url.spec.whatwg.org/#windows-drive-letter */
+let isWindowsDriveLetter = (s: String): boolean =>
+  s.length == 2 && isASCIIAlpha(s.getByteAt(0)) &&
+  (s.getByteAt(1) == 0x3A || s.getByteAt(1) == 0x7C);
+
+/** https://url.spec.whatwg.org/#normalized-windows-drive-letter */
+let isNormalizedWindowsDriveLetter = (s: String): boolean =>
+  isWindowsDriveLetter(s) && s.getByteAt(1) == 0x3A;
+
+/** https://url.spec.whatwg.org/#start-with-a-windows-drive-letter */
+let startsWithWindowsDriveLetter = (input: String, from: i32): boolean => {
+  let remaining = input.length - from;
+  if (remaining < 2) return false;
+  if (!isWindowsDriveLetter(input.sliceBytes(from, from + 2))) return false;
+  if (remaining == 2) return true;
+  let c = input.getByteAt(from + 2);
+  return c == 0x2F || c == 0x5C || c == 0x3F || c == 0x23;
+};
+
+/** https://url.spec.whatwg.org/#single-dot-path-segment */
+let isSingleDotSegment = (s: String): boolean => {
+  if (s == ".") return true;
+  return s.asciiLowerCase() == "%2e";
+};
+
+/** https://url.spec.whatwg.org/#double-dot-path-segment */
+let isDoubleDotSegment = (s: String): boolean => {
+  let l = s.asciiLowerCase();
+  return l == ".." || l == ".%2e" || l == "%2e." || l == "%2e%2e";
+};
+
+// ============================================================================
+// URL record (https://url.spec.whatwg.org/#concept-url)
+// ============================================================================
+
+export class UrlRecord {
+  var scheme: String = "";
+  var username: String = "";
+  var password: String = "";
+  // Already-serialized host ("example.com", "1.2.3.4", "[::1]"), or null for
+  // "no host". The empty string is a real value (file URLs, non-special URLs
+  // with an empty authority) and is distinct from null.
+  var host: String | null = null;
+  var port: i32 = -1;              // -1 means null
+  var path: Array<String> = new Array<String>();
+  var opaquePath: String | null = null;
+  var query: String | null = null;
+  var fragment: String | null = null;
+
+  new() {}
+
+  hasOpaquePath(): boolean { return this.opaquePath != null; }
+
+  isSpecial(): boolean { return isSpecialScheme(this.scheme); }
+
+  includesCredentials(): boolean {
+    return this.username.length > 0 || this.password.length > 0;
+  }
+
+  clonePath(): Array<String> {
+    let out = new Array<String>();
+    for (let seg in this.path) { out.push(seg); }
+    return out;
+  }
+
+  /** https://url.spec.whatwg.org/#shorten-a-urls-path */
+  shortenPath(): void {
+    if (this.scheme == "file" && this.path.length == 1 &&
+        isNormalizedWindowsDriveLetter(this.path[0])) {
+      return;
+    }
+    if (this.path.length > 0) {
+      this.path.pop();
+    }
+  }
+}
+
+// ============================================================================
+// IPv4 (https://url.spec.whatwg.org/#concept-ipv4-parser)
+// ============================================================================
+
+let pow256 = (n: i32): i64 => {
+  var r: i64 = 1 as i64;
+  for (var i = 0; i < n; i += 1) { r = r * (256 as i64); }
+  return r;
+};
+
+/**
+ * https://url.spec.whatwg.org/#ipv4-number-parser
+ * Returns (ok, value, sawNonDecimalPrefix).
+ */
+let parseIPv4Number = (input: String): (boolean, i64, boolean) => {
+  if (input.length == 0) return (false, 0 as i64, false);
+  var validationError = false;
+  var radix = 10;
+  var s = input;
+  if (s.length >= 2 && s.getByteAt(0) == 0x30 &&
+      (s.getByteAt(1) == 0x78 || s.getByteAt(1) == 0x58)) {
+    validationError = true;
+    s = s.sliceBytes(2, s.length);
+    radix = 16;
+  } else if (s.length >= 2 && s.getByteAt(0) == 0x30) {
+    validationError = true;
+    s = s.sliceBytes(1, s.length);
+    radix = 8;
+  }
+  if (s.length == 0) return (true, 0 as i64, true);
+
+  let cap = pow256(4);
+  var out: i64 = 0 as i64;
+  for (var i = 0; i < s.length; i += 1) {
+    let b = s.getByteAt(i);
+    var digit = -1;
+    if (radix == 16) {
+      if (isASCIIHexDigit(b)) { digit = hexValue(b); }
+    } else if (radix == 8) {
+      if (b >= 0x30 && b <= 0x37) { digit = b - 0x30; }
+    } else {
+      if (isASCIIDigit(b)) { digit = b - 0x30; }
+    }
+    if (digit < 0) return (false, 0 as i64, false);
+    out = out * (radix as i64) + (digit as i64);
+    // Saturate rather than fail: the spec's number parser has no upper bound
+    // and "is this a number?" is what drives ends-in-a-number. Every threshold
+    // the IPv4 parser compares against is <= 256^4, so clamping there keeps
+    // those comparisons — and the failures they produce — correct.
+    if (out > cap) { out = cap; }
+  }
+  return (true, out, validationError);
+};
+
+/** https://url.spec.whatwg.org/#concept-ipv4-parser — returns (ok, address). */
+let parseIPv4 = (input: String): (boolean, i64) => {
+  var parts = splitOn(input, 0x2E);
+  if (parts.length > 0 && parts[parts.length - 1].length == 0) {
+    if (parts.length > 1) { parts.pop(); }
+  }
+  if (parts.length > 4) return (false, 0 as i64);
+
+  let numbers = new Array<i64>();
+  for (let part in parts) {
+    let (ok, value, _ve) = parseIPv4Number(part);
+    if (!ok) return (false, 0 as i64);
+    numbers.push(value);
+  }
+  for (var i = 0; i < numbers.length - 1; i += 1) {
+    if (numbers[i] > MAX_IPV4_PART) return (false, 0 as i64);
+  }
+  if (numbers[numbers.length - 1] >= pow256(5 - numbers.length)) {
+    return (false, 0 as i64);
+  }
+
+  var ipv4 = numbers[numbers.length - 1];
+  var counter = 0;
+  for (var i = 0; i < numbers.length - 1; i += 1) {
+    ipv4 = ipv4 + numbers[i] * pow256(3 - counter);
+    counter += 1;
+  }
+  return (true, ipv4);
+};
+
+/** https://url.spec.whatwg.org/#concept-ipv4-serializer */
+let serializeIPv4 = (address: i64): String => {
+  var out = "";
+  var n = address;
+  for (var i = 0; i < 4; i += 1) {
+    let part = (n & MAX_IPV4_PART) as i32;
+    if (i == 0) {
+      out = i32ToString(part);
+    } else {
+      out = i32ToString(part) + "." + out;
+    }
+    n = n >> 8;
+  }
+  return out;
+};
+
+/**
+ * https://url.spec.whatwg.org/#ends-in-a-number-checker
+ * Decides whether a domain should be run through the IPv4 parser.
+ */
+let endsInNumber = (input: String): boolean => {
+  var parts = splitOn(input, 0x2E);
+  if (parts.length > 0 && parts[parts.length - 1].length == 0) {
+    if (parts.length == 1) return false;
+    parts.pop();
+  }
+  let last = parts[parts.length - 1];
+  if (last.length > 0) {
+    var allDigits = true;
+    for (var i = 0; i < last.length; i += 1) {
+      if (!isASCIIDigit(last.getByteAt(i))) { allDigits = false; }
+    }
+    if (allDigits) return true;
+  }
+  let (ok, _v, _ve) = parseIPv4Number(last);
+  return ok;
+};
+
+// ============================================================================
+// IPv6 (https://url.spec.whatwg.org/#concept-ipv6-parser)
+// ============================================================================
+
+let parseIPv6 = (input: String): Array<i32> | null => {
+  let address = new Array<i32>();
+  for (var i = 0; i < 8; i += 1) { address.push(0); }
+  var pieceIndex = 0;
+  var compress = -1;
+  var pointer = 0;
+  let len = input.length;
+
+  let peek = (p: i32): i32 => if (p < len) input.getByteAt(p) else EOF;
+
+  if (peek(pointer) == 0x3A) {
+    if (peek(pointer + 1) != 0x3A) return null;
+    pointer += 2;
+    pieceIndex += 1;
+    compress = pieceIndex;
+  }
+
+  while (peek(pointer) != EOF) {
+    if (pieceIndex == 8) return null;
+    if (peek(pointer) == 0x3A) {
+      if (compress >= 0) return null;
+      pointer += 1;
+      pieceIndex += 1;
+      compress = pieceIndex;
+      continue;
+    }
+    var value = 0;
+    var length = 0;
+    while (length < 4 && isASCIIHexDigit(peek(pointer))) {
+      value = value * 0x10 + hexValue(peek(pointer));
+      pointer += 1;
+      length += 1;
+    }
+    if (peek(pointer) == 0x2E) {
+      if (length == 0) return null;
+      pointer = pointer - length;
+      if (pieceIndex > 6) return null;
+      var numbersSeen = 0;
+      var failed = false;
+      while (peek(pointer) != EOF && !failed) {
+        var ipv4Piece = -1;
+        if (numbersSeen > 0) {
+          if (peek(pointer) == 0x2E && numbersSeen < 4) {
+            pointer += 1;
+          } else {
+            failed = true;
+          }
+        }
+        if (!failed) {
+          if (!isASCIIDigit(peek(pointer))) {
+            failed = true;
+          } else {
+            while (isASCIIDigit(peek(pointer)) && !failed) {
+              let number = peek(pointer) - 0x30;
+              if (ipv4Piece < 0) {
+                ipv4Piece = number;
+              } else if (ipv4Piece == 0) {
+                failed = true;
+              } else {
+                ipv4Piece = ipv4Piece * 10 + number;
+              }
+              if (ipv4Piece > 255) { failed = true; }
+              if (!failed) { pointer += 1; }
+            }
+          }
+        }
+        if (!failed) {
+          address[pieceIndex] = address[pieceIndex] * 0x100 + ipv4Piece;
+          numbersSeen += 1;
+          if (numbersSeen == 2 || numbersSeen == 4) { pieceIndex += 1; }
+        }
+      }
+      if (failed) return null;
+      if (numbersSeen != 4) return null;
+      break;
+    } else if (peek(pointer) == 0x3A) {
+      pointer += 1;
+      if (peek(pointer) == EOF) return null;
+    } else if (peek(pointer) != EOF) {
+      return null;
+    }
+    address[pieceIndex] = value;
+    pieceIndex += 1;
+  }
+
+  if (compress >= 0) {
+    var swaps = pieceIndex - compress;
+    pieceIndex = 7;
+    while (pieceIndex != 0 && swaps > 0) {
+      let tmp = address[pieceIndex];
+      address[pieceIndex] = address[compress + swaps - 1];
+      address[compress + swaps - 1] = tmp;
+      pieceIndex -= 1;
+      swaps -= 1;
+    }
+  } else if (pieceIndex != 8) {
+    return null;
+  }
+  return address;
+};
+
+let toHexLower = (n: i32): String => {
+  if (n == 0) return "0";
+  let digits = "0123456789abcdef";
+  var out = "";
+  var v = n;
+  while (v > 0) {
+    let d = v & 15;
+    out = digits.sliceBytes(d, d + 1) + out;
+    v = v >> 4;
+  }
+  return out;
+};
+
+/** https://url.spec.whatwg.org/#concept-ipv6-serializer */
+let serializeIPv6 = (address: Array<i32>): String => {
+  // Longest run of zero pieces, length > 1, first one wins.
+  var compress = -1;
+  var bestLen = 1;
+  var runStart = -1;
+  var runLen = 0;
+  for (var i = 0; i < 8; i += 1) {
+    if (address[i] == 0) {
+      if (runStart < 0) { runStart = i; runLen = 0; }
+      runLen += 1;
+      if (runLen > bestLen) { bestLen = runLen; compress = runStart; }
+    } else {
+      runStart = -1;
+      runLen = 0;
+    }
+  }
+
+  var out = "";
+  var ignore0 = false;
+  for (var i = 0; i < 8; i += 1) {
+    if (ignore0 && address[i] == 0) { continue; }
+    if (ignore0) { ignore0 = false; }
+    if (compress == i) {
+      out = out + (if (i == 0) "::" else ":");
+      ignore0 = true;
+      continue;
+    }
+    out = out + toHexLower(address[i]);
+    if (i != 7) { out = out + ":"; }
+  }
+  return out;
+};
+
+// ============================================================================
+// Host parsing (https://url.spec.whatwg.org/#concept-host-parser)
+// ============================================================================
+
+/** https://url.spec.whatwg.org/#concept-opaque-host-parser */
+let parseOpaqueHost = (input: String): String | null => {
+  for (var i = 0; i < input.length; i += 1) {
+    if (isForbiddenHostByte(input.getByteAt(i))) return null;
+  }
+  let sb = new StringBuilder(input.length);
+  for (var i = 0; i < input.length; i += 1) {
+    encodeByteInto(sb, input.getByteAt(i), EncodeSet.C0Control);
+  }
+  return sb.toString();
+};
+
+/**
+ * https://url.spec.whatwg.org/#concept-domain-to-ASCII
+ * ASCII-only stand-in for UTS 46 ToASCII: lowercases, and rejects non-ASCII
+ * rather than guessing (DESIGN.md phase 6).
+ */
+let domainToASCII = (domain: String): String | null => {
+  for (var i = 0; i < domain.length; i += 1) {
+    if (domain.getByteAt(i) >= 0x80) return null;
+  }
+  if (domain.length == 0) return null;
+  return domain.asciiLowerCase();
+};
+
+let parseHost = (input: String, isOpaque: boolean): String | null => {
+  // 1. IPv6 literal.
+  if (input.length > 0 && input.getByteAt(0) == 0x5B) {
+    if (input.getByteAt(input.length - 1) != 0x5D) return null;
+    let pieces = parseIPv6(input.sliceBytes(1, input.length - 1));
+    if (pieces == null) return null;
+    return "[" + serializeIPv6(pieces as Array<i32>) + "]";
+  }
+  // 2. Opaque host.
+  if (isOpaque) return parseOpaqueHost(input);
+  // 3-6. Percent-decode, then domain-to-ASCII.
+  let decoded = percentDecode(input);
+  let asciiDomain = domainToASCII(decoded);
+  if (asciiDomain == null) return null;
+  let domain = asciiDomain as String;
+  // 7. Forbidden domain code points.
+  for (var i = 0; i < domain.length; i += 1) {
+    if (isForbiddenDomainByte(domain.getByteAt(i))) return null;
+  }
+  // 8. IPv4.
+  if (endsInNumber(domain)) {
+    let (ok, addr) = parseIPv4(domain);
+    if (!ok) return null;
+    return serializeIPv4(addr);
+  }
+  return domain;
+};
+
+// ============================================================================
+// Basic URL parser (https://url.spec.whatwg.org/#concept-basic-url-parser)
+// ============================================================================
+
+let S_SCHEME_START = 0;
+let S_SCHEME = 1;
+let S_NO_SCHEME = 2;
+let S_SPECIAL_RELATIVE_OR_AUTHORITY = 3;
+let S_PATH_OR_AUTHORITY = 4;
+let S_RELATIVE = 5;
+let S_RELATIVE_SLASH = 6;
+let S_SPECIAL_AUTHORITY_SLASHES = 7;
+let S_SPECIAL_AUTHORITY_IGNORE_SLASHES = 8;
+let S_AUTHORITY = 9;
+let S_HOST = 10;
+let S_PORT = 11;
+let S_FILE = 12;
+let S_FILE_SLASH = 13;
+let S_FILE_HOST = 14;
+let S_PATH_START = 15;
+let S_PATH = 16;
+let S_OPAQUE_PATH = 17;
+let S_QUERY = 18;
+let S_FRAGMENT = 19;
+
+/** Strip leading/trailing C0-control-or-space, then remove tab/LF/CR. */
+let cleanInput = (raw: String): String => {
+  var start = 0;
+  var end = raw.length;
+  while (start < end && raw.getByteAt(start) <= 0x20) { start += 1; }
+  while (end > start && raw.getByteAt(end - 1) <= 0x20) { end -= 1; }
+  let sb = new StringBuilder(end - start);
+  for (var i = start; i < end; i += 1) {
+    let b = raw.getByteAt(i);
+    if (b != 0x09 && b != 0x0A && b != 0x0D) { sb.appendByte(b); }
+  }
+  return sb.toString();
+};
+
+export let basicUrlParse = (rawInput: String, base: UrlRecord | null): UrlRecord | null => {
+  let input = cleanInput(rawInput);
+  let len = input.length;
+  let url = new UrlRecord();
+
+  var state = S_SCHEME_START;
+  var buffer = new StringBuilder();
+  var atSignSeen = false;
+  var insideBrackets = false;
+  var passwordTokenSeen = false;
+  var pointer = 0;
+
+  // Components accumulated after their state is entered; flushed at the end.
+  var queryBuf = new StringBuilder();
+  var hasQueryBuf = false;
+  var fragmentBuf = new StringBuilder();
+  var hasFragmentBuf = false;
+  var opaqueBuf = new StringBuilder();
+  var hasOpaqueBuf = false;
+
+  var failed = false;
+  var running = true;
+
+  while (running && !failed) {
+    let c = if (pointer < len) input.getByteAt(pointer) else EOF;
+    let isSpecial = url.isSpecial();
+
+    if (state == S_SCHEME_START) {
+      if (c != EOF && isASCIIAlpha(c)) {
+        // ASCII by construction: the guard above restricts c, and the spec
+        // requires ASCII lowercasing here regardless of locale.
+        buffer.appendByte(asciiLowerByte(c));
+        state = S_SCHEME;
+      } else {
+        state = S_NO_SCHEME;
+        pointer -= 1;
+      }
+    } else if (state == S_SCHEME) {
+      if (c != EOF && (isASCIIAlphanumeric(c) || c == 0x2B || c == 0x2D || c == 0x2E)) {
+        buffer.appendByte(asciiLowerByte(c));
+      } else if (c == 0x3A) {
+        url.scheme = buffer.toString();
+        buffer = new StringBuilder();
+        if (url.scheme == "file") {
+          state = S_FILE;
+        } else if (url.isSpecial() && base != null &&
+                   (base as UrlRecord).scheme == url.scheme) {
+          state = S_SPECIAL_RELATIVE_OR_AUTHORITY;
+        } else if (url.isSpecial()) {
+          state = S_SPECIAL_AUTHORITY_SLASHES;
+        } else if (hasPrefixAt(input, pointer + 1, "/")) {
+          state = S_PATH_OR_AUTHORITY;
+          pointer += 1;
+        } else {
+          url.opaquePath = "";
+          hasOpaqueBuf = true;
+          opaqueBuf = new StringBuilder();
+          state = S_OPAQUE_PATH;
+        }
+      } else {
+        buffer = new StringBuilder();
+        state = S_NO_SCHEME;
+        pointer = -1;
+      }
+    } else if (state == S_NO_SCHEME) {
+      if (base == null) {
+        failed = true;
+      } else {
+        let b = base as UrlRecord;
+        if (b.hasOpaquePath() && c != 0x23) {
+          failed = true;
+        } else if (b.hasOpaquePath() && c == 0x23) {
+          url.scheme = b.scheme;
+          url.opaquePath = b.opaquePath;
+          url.path = b.clonePath();
+          url.query = b.query;
+          hasFragmentBuf = true;
+          fragmentBuf = new StringBuilder();
+          state = S_FRAGMENT;
+        } else if (b.scheme != "file") {
+          state = S_RELATIVE;
+          pointer -= 1;
+        } else {
+          state = S_FILE;
+          pointer -= 1;
+        }
+      }
+    } else if (state == S_SPECIAL_RELATIVE_OR_AUTHORITY) {
+      if (c == 0x2F && hasPrefixAt(input, pointer + 1, "/")) {
+        state = S_SPECIAL_AUTHORITY_IGNORE_SLASHES;
+        pointer += 1;
+      } else {
+        state = S_RELATIVE;
+        pointer -= 1;
+      }
+    } else if (state == S_PATH_OR_AUTHORITY) {
+      if (c == 0x2F) {
+        state = S_AUTHORITY;
+      } else {
+        state = S_PATH;
+        pointer -= 1;
+      }
+    } else if (state == S_RELATIVE) {
+      let b = base as UrlRecord;
+      url.scheme = b.scheme;
+      if (c == 0x2F) {
+        state = S_RELATIVE_SLASH;
+      } else if (url.isSpecial() && c == 0x5C) {
+        state = S_RELATIVE_SLASH;
+      } else {
+        url.username = b.username;
+        url.password = b.password;
+        url.host = b.host;
+        url.port = b.port;
+        url.path = b.clonePath();
+        url.opaquePath = b.opaquePath;
+        url.query = b.query;
+        if (c == 0x3F) {
+          hasQueryBuf = true;
+          queryBuf = new StringBuilder();
+          state = S_QUERY;
+        } else if (c == 0x23) {
+          hasFragmentBuf = true;
+          fragmentBuf = new StringBuilder();
+          state = S_FRAGMENT;
+        } else if (c != EOF) {
+          url.query = null;
+          hasQueryBuf = false;
+          url.shortenPath();
+          state = S_PATH;
+          pointer -= 1;
+        }
+      }
+    } else if (state == S_RELATIVE_SLASH) {
+      let b = base as UrlRecord;
+      if (url.isSpecial() && (c == 0x2F || c == 0x5C)) {
+        state = S_SPECIAL_AUTHORITY_IGNORE_SLASHES;
+      } else if (c == 0x2F) {
+        state = S_AUTHORITY;
+      } else {
+        url.username = b.username;
+        url.password = b.password;
+        url.host = b.host;
+        url.port = b.port;
+        state = S_PATH;
+        pointer -= 1;
+      }
+    } else if (state == S_SPECIAL_AUTHORITY_SLASHES) {
+      if (c == 0x2F && hasPrefixAt(input, pointer + 1, "/")) {
+        state = S_SPECIAL_AUTHORITY_IGNORE_SLASHES;
+        pointer += 1;
+      } else {
+        state = S_SPECIAL_AUTHORITY_IGNORE_SLASHES;
+        pointer -= 1;
+      }
+    } else if (state == S_SPECIAL_AUTHORITY_IGNORE_SLASHES) {
+      if (c != 0x2F && c != 0x5C) {
+        state = S_AUTHORITY;
+        pointer -= 1;
+      }
+    } else if (state == S_AUTHORITY) {
+      if (c == 0x40) {
+        var bufStr = buffer.toString();
+        if (atSignSeen) { bufStr = "%40" + bufStr; }
+        atSignSeen = true;
+        let userSb = new StringBuilder();
+        let passSb = new StringBuilder();
+        for (var i = 0; i < bufStr.length; i += 1) {
+          let cp = bufStr.getByteAt(i);
+          if (cp == 0x3A && !passwordTokenSeen) {
+            passwordTokenSeen = true;
+            continue;
+          }
+          if (passwordTokenSeen) {
+            encodeByteInto(passSb, cp, EncodeSet.Userinfo);
+          } else {
+            encodeByteInto(userSb, cp, EncodeSet.Userinfo);
+          }
+        }
+        url.username = url.username + userSb.toString();
+        url.password = url.password + passSb.toString();
+        buffer = new StringBuilder();
+      } else if (c == EOF || c == 0x2F || c == 0x3F || c == 0x23 ||
+                 (isSpecial && c == 0x5C)) {
+        if (atSignSeen && buffer.length == 0) {
+          failed = true;
+        } else {
+          pointer = pointer - buffer.length - 1;
+          buffer = new StringBuilder();
+          state = S_HOST;
+        }
+      } else {
+        buffer.appendByte(c);
+      }
+    } else if (state == S_HOST) {
+      if (c == 0x3A && !insideBrackets) {
+        if (buffer.length == 0) {
+          failed = true;
+        } else {
+          let host = parseHost(buffer.toString(), !url.isSpecial());
+          if (host == null) {
+            failed = true;
+          } else {
+            url.host = host;
+            buffer = new StringBuilder();
+            state = S_PORT;
+          }
+        }
+      } else if (c == EOF || c == 0x2F || c == 0x3F || c == 0x23 ||
+                 (isSpecial && c == 0x5C)) {
+        pointer -= 1;
+        if (isSpecial && buffer.length == 0) {
+          failed = true;
+        } else {
+          let host = parseHost(buffer.toString(), !url.isSpecial());
+          if (host == null) {
+            failed = true;
+          } else {
+            url.host = host;
+            buffer = new StringBuilder();
+            state = S_PATH_START;
+          }
+        }
+      } else {
+        if (c == 0x5B) { insideBrackets = true; }
+        if (c == 0x5D) { insideBrackets = false; }
+        buffer.appendByte(c);
+      }
+    } else if (state == S_PORT) {
+      if (c != EOF && isASCIIDigit(c)) {
+        buffer.appendByte(c);
+      } else if (c == EOF || c == 0x2F || c == 0x3F || c == 0x23 ||
+                 (isSpecial && c == 0x5C)) {
+        if (buffer.length > 0) {
+          let digits = buffer.toString();
+          var port: i64 = 0 as i64;
+          for (var i = 0; i < digits.length; i += 1) {
+            port = port * (10 as i64) + ((digits.getByteAt(i) - 0x30) as i64);
+            if (port > MAX_PORT) { break; }
+          }
+          if (port > MAX_PORT) {
+            failed = true;
+          } else {
+            let p = port as i32;
+            url.port = if (p == defaultPort(url.scheme)) -1 else p;
+            buffer = new StringBuilder();
+          }
+        }
+        if (!failed) {
+          state = S_PATH_START;
+          pointer -= 1;
+        }
+      } else {
+        failed = true;
+      }
+    } else if (state == S_FILE) {
+      url.scheme = "file";
+      url.host = "";
+      if (c == 0x2F || c == 0x5C) {
+        state = S_FILE_SLASH;
+      } else if (base != null && (base as UrlRecord).scheme == "file") {
+        let b = base as UrlRecord;
+        url.host = b.host;
+        url.path = b.clonePath();
+        url.query = b.query;
+        if (c == 0x3F) {
+          hasQueryBuf = true;
+          queryBuf = new StringBuilder();
+          state = S_QUERY;
+        } else if (c == 0x23) {
+          hasFragmentBuf = true;
+          fragmentBuf = new StringBuilder();
+          state = S_FRAGMENT;
+        } else if (c != EOF) {
+          url.query = null;
+          hasQueryBuf = false;
+          if (!startsWithWindowsDriveLetter(input, pointer)) {
+            url.shortenPath();
+          } else {
+            url.path = new Array<String>();
+          }
+          state = S_PATH;
+          pointer -= 1;
+        }
+      } else {
+        state = S_PATH;
+        pointer -= 1;
+      }
+    } else if (state == S_FILE_SLASH) {
+      if (c == 0x2F || c == 0x5C) {
+        state = S_FILE_HOST;
+      } else {
+        if (base != null && (base as UrlRecord).scheme == "file") {
+          let b = base as UrlRecord;
+          url.host = b.host;
+          if (!startsWithWindowsDriveLetter(input, pointer) &&
+              b.path.length > 0 && isNormalizedWindowsDriveLetter(b.path[0])) {
+            url.path.push(b.path[0]);
+          }
+        }
+        state = S_PATH;
+        pointer -= 1;
+      }
+    } else if (state == S_FILE_HOST) {
+      if (c == EOF || c == 0x2F || c == 0x5C || c == 0x3F || c == 0x23) {
+        pointer -= 1;
+        let bufStr = buffer.toString();
+        if (isWindowsDriveLetter(bufStr)) {
+          state = S_PATH;
+        } else if (bufStr.length == 0) {
+          url.host = "";
+          state = S_PATH_START;
+        } else {
+          let host = parseHost(bufStr, !url.isSpecial());
+          if (host == null) {
+            failed = true;
+          } else {
+            url.host = if ((host as String) == "localhost") "" else host;
+            buffer = new StringBuilder();
+            state = S_PATH_START;
+          }
+        }
+      } else {
+        buffer.appendByte(c);
+      }
+    } else if (state == S_PATH_START) {
+      if (isSpecial) {
+        state = S_PATH;
+        if (c != 0x2F && c != 0x5C) { pointer -= 1; }
+      } else if (c == 0x3F) {
+        hasQueryBuf = true;
+        queryBuf = new StringBuilder();
+        state = S_QUERY;
+      } else if (c == 0x23) {
+        hasFragmentBuf = true;
+        fragmentBuf = new StringBuilder();
+        state = S_FRAGMENT;
+      } else if (c != EOF) {
+        state = S_PATH;
+        if (c != 0x2F) { pointer -= 1; }
+      }
+    } else if (state == S_PATH) {
+      let atSegmentEnd = c == EOF || c == 0x2F || (isSpecial && c == 0x5C) ||
+                         c == 0x3F || c == 0x23;
+      if (atSegmentEnd) {
+        let bufStr = buffer.toString();
+        let slashLike = c == 0x2F || (isSpecial && c == 0x5C);
+        if (isDoubleDotSegment(bufStr)) {
+          url.shortenPath();
+          if (!slashLike) { url.path.push(""); }
+        } else if (isSingleDotSegment(bufStr) && !slashLike) {
+          url.path.push("");
+        } else if (!isSingleDotSegment(bufStr)) {
+          var seg = bufStr;
+          if (url.scheme == "file" && url.path.length == 0 &&
+              isWindowsDriveLetter(seg)) {
+            seg = seg.sliceBytes(0, 1) + ":";
+          }
+          url.path.push(seg);
+        }
+        buffer = new StringBuilder();
+        if (c == 0x3F) {
+          hasQueryBuf = true;
+          queryBuf = new StringBuilder();
+          state = S_QUERY;
+        } else if (c == 0x23) {
+          hasFragmentBuf = true;
+          fragmentBuf = new StringBuilder();
+          state = S_FRAGMENT;
+        }
+      } else {
+        encodeByteInto(buffer, c, EncodeSet.Path);
+      }
+    } else if (state == S_OPAQUE_PATH) {
+      if (c == 0x3F) {
+        url.opaquePath = opaqueBuf.toString();
+        hasOpaqueBuf = false;
+        hasQueryBuf = true;
+        queryBuf = new StringBuilder();
+        state = S_QUERY;
+      } else if (c == 0x23) {
+        url.opaquePath = opaqueBuf.toString();
+        hasOpaqueBuf = false;
+        hasFragmentBuf = true;
+        fragmentBuf = new StringBuilder();
+        state = S_FRAGMENT;
+      } else if (c == 0x20) {
+        // A space in an opaque path is percent-encoded only when it directly
+        // precedes the query or fragment delimiter; interior spaces stay
+        // literal (https://url.spec.whatwg.org/#opaque-path-state).
+        if (hasPrefixAt(input, pointer + 1, "?") ||
+            hasPrefixAt(input, pointer + 1, "#")) {
+          opaqueBuf.append("%20");
+        } else {
+          opaqueBuf.appendByte(0x20);
+        }
+      } else if (c != EOF) {
+        encodeByteInto(opaqueBuf, c, EncodeSet.C0Control);
+      }
+    } else if (state == S_QUERY) {
+      if (c == 0x23) {
+        url.query = queryBuf.toString();
+        hasQueryBuf = false;
+        hasFragmentBuf = true;
+        fragmentBuf = new StringBuilder();
+        state = S_FRAGMENT;
+      } else if (c != EOF) {
+        let set = if (isSpecial) EncodeSet.SpecialQuery else EncodeSet.Query;
+        encodeByteInto(queryBuf, c, set);
+      }
+    } else if (state == S_FRAGMENT) {
+      if (c != EOF) {
+        encodeByteInto(fragmentBuf, c, EncodeSet.Fragment);
+      }
+    }
+
+    if (pointer >= len) {
+      running = false;
+    } else {
+      pointer += 1;
+    }
+  }
+
+  if (failed) return null;
+
+  if (hasOpaqueBuf) { url.opaquePath = opaqueBuf.toString(); }
+  if (hasQueryBuf) { url.query = queryBuf.toString(); }
+  if (hasFragmentBuf) { url.fragment = fragmentBuf.toString(); }
+  return url;
+};
+
+// ============================================================================
+// Serialization (https://url.spec.whatwg.org/#url-serializing)
+// ============================================================================
+
+/** https://url.spec.whatwg.org/#url-path-serializer */
+let serializePath = (url: UrlRecord): String => {
+  if (url.hasOpaquePath()) return url.opaquePath as String;
+  var out = "";
+  for (let segment in url.path) {
+    out = out + "/" + segment;
+  }
+  return out;
+};
+
+let serializeUrl = (url: UrlRecord, excludeFragment: boolean): String => {
+  var out = url.scheme + ":";
+  if (url.host != null) {
+    out = out + "//";
+    if (url.includesCredentials()) {
+      out = out + url.username;
+      if (url.password.length > 0) { out = out + ":" + url.password; }
+      out = out + "@";
+    }
+    out = out + (url.host as String);
+    if (url.port >= 0) { out = out + ":" + i32ToString(url.port); }
+  } else if (!url.hasOpaquePath() && url.path.length > 1 &&
+             url.path[0].length == 0) {
+    // Guard against a path that would otherwise read as an authority.
+    out = out + "/.";
+  }
+  out = out + serializePath(url);
+  if (url.query != null) { out = out + "?" + (url.query as String); }
+  if (!excludeFragment && url.fragment != null) {
+    out = out + "#" + (url.fragment as String);
+  }
+  return out;
+};
+
+// ============================================================================
+// Public URL class
+// ============================================================================
+
+/**
+ * An immutable, parsed URL. Components are exposed with the same names and
+ * string shapes as the web API (`protocol` includes ':', `search` includes
+ * '?', `hash` includes '#', all empty when absent).
+ */
+export final class URL {
+  var #rec: UrlRecord;
+
+  // Takes an already-parsed record. `UrlRecord` is not re-exported from
+  // index.zena, so outside the library `URL.parse` is the only way in.
+  new(rec: UrlRecord) : #rec = rec {}
+
+  /**
+   * Parses `input`, optionally resolving it against `base`, and returns null
+   * if either fails to parse.
+   *
+   * A URL that does not parse is an ordinary, recoverable outcome rather than
+   * an exceptional one, so there is no throwing constructor. Nothing is lost
+   * by returning null: the spec's own failure mode is the bare word "failure"
+   * — there is no error code, position, or reason to hand back.
+   */
+  static parse(input: String, base: String | null = null): URL | null {
+    var baseRec: UrlRecord | null = null;
+    if (base != null) {
+      baseRec = basicUrlParse(base as String, null);
+      if (baseRec == null) return null;
+    }
+    let rec = basicUrlParse(input, baseRec);
+    if (rec == null) return null;
+    return new URL(rec as UrlRecord);
+  }
+
+  static canParse(input: String, base: String | null = null): boolean {
+    return URL.parse(input, base) != null;
+  }
+
+  protocol: String { get { return this.#rec.scheme + ":"; } }
+  username: String { get { return this.#rec.username; } }
+  password: String { get { return this.#rec.password; } }
+  hostname: String {
+    get {
+      let h = this.#rec.host;
+      return if (h == null) "" else h as String;
+    }
+  }
+  port: String {
+    get {
+      return if (this.#rec.port < 0) "" else i32ToString(this.#rec.port);
+    }
+  }
+  pathname: String { get { return serializePath(this.#rec); } }
+  search: String {
+    get {
+      let q = this.#rec.query;
+      if (q == null) return "";
+      let qs = q as String;
+      return if (qs.length == 0) "" else "?" + qs;
+    }
+  }
+  hash: String {
+    get {
+      let f = this.#rec.fragment;
+      if (f == null) return "";
+      let fs = f as String;
+      return if (fs.length == 0) "" else "#" + fs;
+    }
+  }
+  href: String { get { return serializeUrl(this.#rec, false); } }
+
+  /** "hostname:port", with the port omitted when it is null. */
+  host(): String {
+    let h = this.hostname;
+    return if (this.#rec.port < 0) h else h + ":" + i32ToString(this.#rec.port);
+  }
+
+  /** https://url.spec.whatwg.org/#concept-url-origin ("null" when opaque). */
+  origin(): String {
+    let s = this.#rec.scheme;
+    if (s == "http" || s == "https" || s == "ws" || s == "wss" || s == "ftp") {
+      return s + "://" + this.host();
+    }
+    if (s == "blob") {
+      // A blob: URL's origin is the origin of the URL in its path.
+      let inner = URL.parse(this.pathname, null);
+      if (inner != null) {
+        let iu = inner as URL;
+        let p = iu.protocol;
+        if (p == "http:" || p == "https:" || p == "file:") {
+          return iu.origin();
+        }
+      }
+    }
+    return "null";
+  }
+
+  toString(): String { return this.href; }
+}
