@@ -467,9 +467,18 @@ export final class Parser {
     
     // Initializer
     this.#consume(TokenType.Equals, "Expected '=' after variable name");
-    let init = this.#parseExpression();
+    let init = if (this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+      let st = this.#peek();
+      new Identifier("", this.#makeLocation(st))
+    } else {
+      this.#parseExpression()
+    };
     
-    this.#consume(TokenType.Semi, "Expected ';' after variable declaration");
+    if (this.#check(TokenType.Semi)) {
+      this.#advance();
+    } else if (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      this.#consume(TokenType.Semi, "Expected ';' after variable declaration");
+    }
     
     return new VariableDeclaration(kind, pattern, typeAnnotation, init, exported, this.#makeLocation(startToken));
   }
@@ -639,13 +648,16 @@ export final class Parser {
         break;
       }
       
-      // Block-ended expressions (if, match, try with block body) don't require semicolons
+      body.push(new ExpressionStatement(expr, expr.loc));
       if (!this.#isBlockEndedExpression(expr)) {
-        this.#consume(TokenType.Semi, "Expected ';' after expression");
+        if (this.#check(TokenType.Semi)) {
+          this.#advance();
+        } else if (!this.#check(TokenType.RBrace)) {
+          this.#error("Expected ';' after expression");
+        }
       } else if (this.#check(TokenType.Semi)) {
         this.#advance();
       }
-      body.push(new ExpressionStatement(expr, expr.loc));
     }
     
     this.#consume(TokenType.RBrace, "Expected '}' after block");
@@ -907,7 +919,11 @@ export final class Parser {
         this.#advance();
       }
     } else {
-      this.#consume(TokenType.Semi, "Expected ';' after expression");
+      if (this.#check(TokenType.Semi)) {
+        this.#advance();
+      } else if (!this.#check(TokenType.RBrace) && !this.#check(TokenType.EOF)) {
+        this.#consume(TokenType.Semi, "Expected ';' after expression");
+      }
     }
     return new ExpressionStatement(expr, this.#makeLocation(startToken));
   }
@@ -1384,7 +1400,12 @@ export final class Parser {
     
     while (this.#check(TokenType.Plus) || this.#check(TokenType.Minus)) {
       let op = this.#advance();
-      let right = this.#parseFactor();
+      let right = if (this.#check(TokenType.Semi) || this.#check(TokenType.RParen) || this.#check(TokenType.Comma) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        let st = this.#peek();
+        new Identifier("", this.#makeLocation(st))
+      } else {
+        this.#parseFactor()
+      };
       let opStr = op.value;
       expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
     }
@@ -1397,7 +1418,12 @@ export final class Parser {
     
     while (this.#check(TokenType.Star) || this.#check(TokenType.Slash) || this.#check(TokenType.Percent)) {
       let op = this.#advance();
-      let right = this.#parseUnary();
+      let right = if (this.#check(TokenType.Semi) || this.#check(TokenType.RParen) || this.#check(TokenType.Comma) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        let st = this.#peek();
+        new Identifier("", this.#makeLocation(st))
+      } else {
+        this.#parseUnary()
+      };
       let opStr = op.value;
       expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
     }
@@ -1463,7 +1489,12 @@ export final class Parser {
           let name = new Identifier("#" + fieldId.name, this.#makeLocation(hashToken));
           expr = new MemberExpression(expr, name, false, false, null, this.#makeLocation(callStart));
         } else {
-          let name = this.#parseIdentifier();
+          let name = if (this.#isIdentifier()) {
+            this.#parseIdentifier()
+          } else {
+            let startToken = this.#peek();
+            new Identifier("", this.#makeLocation(startToken))
+          };
           expr = new MemberExpression(expr, name, false, false, null, this.#makeLocation(callStart));
         }
       } else if (this.#match(TokenType.LBracket)) {
@@ -1504,13 +1535,30 @@ export final class Parser {
     let args = new Array<Expression>(4);
     
     if (!this.#check(TokenType.RParen)) {
-      args.push(this.#parseExpression());
-      while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
+      if (this.#check(TokenType.Semi) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        let st = this.#peek();
+        args.push(new Identifier("", this.#makeLocation(st)));
+      } else {
         args.push(this.#parseExpression());
+        while (this.#match(TokenType.Comma)) {
+          if (this.#check(TokenType.RParen)) {
+            break;
+          }
+          if (this.#check(TokenType.Semi) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+            let st = this.#peek();
+            args.push(new Identifier("", this.#makeLocation(st)));
+            break;
+          }
+          args.push(this.#parseExpression());
+        }
       }
     }
     
-    this.#consume(TokenType.RParen, "Expected ')' after arguments");
+    if (this.#check(TokenType.RParen)) {
+      this.#advance();
+    } else if (!this.#check(TokenType.Semi) && !this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      this.#consume(TokenType.RParen, "Expected ')' after arguments");
+    }
     
     return new CallExpression(callee, args, typeArguments, optional, this.#makeLocation(startToken));
   }
@@ -2459,16 +2507,31 @@ export final class Parser {
       if (isExtension) {
         throw this.#error("Extension classes cannot use 'extends'");
       }
-      superClass = this.#parseTypeAnnotation();
+      if (this.#check(TokenType.With) || this.#check(TokenType.Implements) || this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+        let st = this.#peek();
+        superClass = new NamedTypeAnnotation("", null, this.#makeLocation(st));
+      } else {
+        superClass = this.#parseTypeAnnotation();
+      }
     }
     
     // With clause (mixins)
     var mixins: Array<TypeAnnotation> | null = null;
     if (this.#match(TokenType.With)) {
       let ms = new Array<TypeAnnotation>(4);
-      ms.push(this.#parseTypeAnnotation());
-      while (this.#match(TokenType.Comma)) {
+      if (this.#check(TokenType.Implements) || this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+        let st = this.#peek();
+        ms.push(new NamedTypeAnnotation("", null, this.#makeLocation(st)));
+      } else {
         ms.push(this.#parseTypeAnnotation());
+        while (this.#match(TokenType.Comma)) {
+          if (this.#check(TokenType.Implements) || this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+            let st = this.#peek();
+            ms.push(new NamedTypeAnnotation("", null, this.#makeLocation(st)));
+          } else {
+            ms.push(this.#parseTypeAnnotation());
+          }
+        }
       }
       mixins = ms;
     }
@@ -2477,9 +2540,19 @@ export final class Parser {
     var implementsList: Array<TypeAnnotation> | null = null;
     if (this.#match(TokenType.Implements)) {
       let impls = new Array<TypeAnnotation>(4);
-      impls.push(this.#parseTypeAnnotation());
-      while (this.#match(TokenType.Comma)) {
+      if (this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+        let st = this.#peek();
+        impls.push(new NamedTypeAnnotation("", null, this.#makeLocation(st)));
+      } else {
         impls.push(this.#parseTypeAnnotation());
+        while (this.#match(TokenType.Comma)) {
+          if (this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+            let st = this.#peek();
+            impls.push(new NamedTypeAnnotation("", null, this.#makeLocation(st)));
+          } else {
+            impls.push(this.#parseTypeAnnotation());
+          }
+        }
       }
       implementsList = impls;
     }

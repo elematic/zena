@@ -14,7 +14,14 @@ import {
   StringLiteral,
   BooleanLiteral,
   BinaryExpression,
-  ExpressionStatement
+  ExpressionStatement,
+  MemberExpression,
+  BlockStatement,
+  FunctionExpression,
+  ClassDeclaration,
+  TypeAnnotation,
+  NamedTypeAnnotation,
+  CallExpression
 } from '../lib/ast.zena';
 
 // ============================================================================
@@ -229,6 +236,168 @@ export let tests = suite('Parser', (): void => {
       equal(mod.comments[0].value, ' between');
       equal(mod.comments[0].line, 2);
       equal(mod.comments[0].start, 11);
+    });
+  });
+
+  // ==========================================================================
+  // Error Recovery
+  // ==========================================================================
+
+  suite('Error Recovery', (): void => {
+    test('should recover from trailing dot in member access', (ctx: TestContext): void => {
+      let source = 'let main = () => { p. };';
+      let mod = parse(source, 'test.zena');
+
+      equal(mod.body.length, 1);
+      let vdecl = mod.body[0] as VariableDeclaration;
+      let fn = vdecl.init as FunctionExpression;
+      let block = fn.body as BlockStatement;
+
+      equal(block.body.length, 1);
+      let stmt = block.body[0] as ExpressionStatement;
+      let me = stmt.expression as MemberExpression;
+
+      let obj = me.object as Identifier;
+      equal(obj.name, 'p');
+
+      let prop = me.property;
+      equal(prop.name, '');
+    });
+
+    test('should recover from missing semicolon before closing brace', (ctx: TestContext): void => {
+      let source = 'let main = () => { console.l };';
+      let mod = parse(source, 'test.zena');
+
+      equal(mod.body.length, 1);
+      let vdecl = mod.body[0] as VariableDeclaration;
+      let fn = vdecl.init as FunctionExpression;
+      let block = fn.body as BlockStatement;
+
+      equal(block.body.length, 1);
+      let stmt = block.body[0] as ExpressionStatement;
+      let me = stmt.expression as MemberExpression;
+
+      let obj = me.object as Identifier;
+      equal(obj.name, 'console');
+
+      let prop = me.property;
+      equal(prop.name, 'l');
+    });
+
+    test('should recover from trailing dot with incomplete identifier before closing brace', (ctx: TestContext): void => {
+      let source = 'let main = () => {\n  console.l\n};';
+      let mod = parse(source, 'test.zena');
+
+      equal(mod.body.length, 1);
+      let vdecl = mod.body[0] as VariableDeclaration;
+      let fn = vdecl.init as FunctionExpression;
+      let block = fn.body as BlockStatement;
+
+      equal(block.body.length, 1);
+      let stmt = block.body[0] as ExpressionStatement;
+      let me = stmt.expression as MemberExpression;
+
+      let obj = me.object as Identifier;
+      equal(obj.name, 'console');
+
+      let prop = me.property;
+      equal(prop.name, 'l');
+    });
+
+    test('should recover from incomplete variable initializer: let x =', (ctx: TestContext): void => {
+      let source = 'let main = () => { let x = \n};';
+      let mod = parse(source, 'test.zena');
+
+      equal(mod.body.length, 1);
+      let vdecl = mod.body[0] as VariableDeclaration;
+      let fn = vdecl.init as FunctionExpression;
+      let block = fn.body as BlockStatement;
+
+      equal(block.body.length, 1);
+      let innerDecl = block.body[0] as VariableDeclaration;
+      let initId = innerDecl.init as Identifier;
+      equal(initId.name, '');
+    });
+
+    test('should recover from incomplete binary expression: x +', (ctx: TestContext): void => {
+      let source = 'let main = () => { x + \n};';
+      let mod = parse(source, 'test.zena');
+
+      equal(mod.body.length, 1);
+      let vdecl = mod.body[0] as VariableDeclaration;
+      let fn = vdecl.init as FunctionExpression;
+      let block = fn.body as BlockStatement;
+
+      equal(block.body.length, 1);
+      let stmt = block.body[0] as ExpressionStatement;
+      let bin = stmt.expression as BinaryExpression;
+
+      equal(bin.operator, '+');
+      let right = bin.right as Identifier;
+      equal(right.name, '');
+    });
+
+    test('should recover from incomplete class extends clause', (ctx: TestContext): void => {
+      let source = 'class Sub extends {\n}';
+      let mod = parse(source, 'test.zena');
+
+      equal(mod.body.length, 1);
+      let cdecl = mod.body[0] as ClassDeclaration;
+      isTrue(cdecl.superClass != null);
+
+      let superAnn = cdecl.superClass as NamedTypeAnnotation;
+      equal(superAnn.name, '');
+    });
+
+    test('should recover from incomplete class mixins with clause', (ctx: TestContext): void => {
+      let source = 'class Foo with {\n}';
+      let mod = parse(source, 'test.zena');
+
+      equal(mod.body.length, 1);
+      let cdecl = mod.body[0] as ClassDeclaration;
+      isTrue(cdecl.mixins != null);
+
+      let ms = cdecl.mixins as Array<TypeAnnotation>;
+      equal(ms.length, 1);
+      let m0 = ms[0] as NamedTypeAnnotation;
+      equal(m0.name, '');
+    });
+
+    test('should recover from incomplete class implements clause', (ctx: TestContext): void => {
+      let source = 'class Foo implements {\n}';
+      let mod = parse(source, 'test.zena');
+
+      equal(mod.body.length, 1);
+      let cdecl = mod.body[0] as ClassDeclaration;
+      isTrue(cdecl.implementsList != null);
+
+      let impls = cdecl.implementsList as Array<TypeAnnotation>;
+      equal(impls.length, 1);
+      let impl0 = impls[0] as NamedTypeAnnotation;
+      equal(impl0.name, '');
+    });
+
+    test('should recover from incomplete call arguments: foo( and foo(x,', (ctx: TestContext): void => {
+      let source1 = 'let main = () => { foo(\n};';
+      let mod1 = parse(source1, 'test.zena');
+      let vdecl1 = mod1.body[0] as VariableDeclaration;
+      let fn1 = vdecl1.init as FunctionExpression;
+      let block1 = fn1.body as BlockStatement;
+      let stmt1 = block1.body[0] as ExpressionStatement;
+      let call1 = stmt1.expression as CallExpression;
+      equal(call1.args.length, 1);
+      equal((call1.args[0] as Identifier).name, '');
+
+      let source2 = 'let main = () => { foo(x, \n};';
+      let mod2 = parse(source2, 'test.zena');
+      let vdecl2 = mod2.body[0] as VariableDeclaration;
+      let fn2 = vdecl2.init as FunctionExpression;
+      let block2 = fn2.body as BlockStatement;
+      let stmt2 = block2.body[0] as ExpressionStatement;
+      let call2 = stmt2.expression as CallExpression;
+      equal(call2.args.length, 2);
+      equal((call2.args[0] as Identifier).name, 'x');
+      equal((call2.args[1] as Identifier).name, '');
     });
   });
 });
