@@ -9,7 +9,7 @@ import { Hashable } from 'zena:hashable';
 import {
   ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef,
   ValTypeAnyRef, ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32,
-  valTypeToOpcode, nextWasmTypeUid
+  valTypeToOpcode, nextWasmTypeUid, refTargetOf
 } from './wasm.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
@@ -351,6 +351,33 @@ export final class WasmSignature extends WasmType {
   new(this.params, this.returns) : super();
 }
 
+/** The WasmStruct behind a reference ValType, or null. */
+export let asWasmStruct = (vt: ValType): WasmStruct | null => {
+  let t = refTargetOf(vt);
+  if (t != null && (t as WasmType) is WasmStruct) {
+    return t as WasmStruct;
+  }
+  return null;
+};
+
+/** The WasmSignature behind a reference ValType, or null. */
+export let asWasmSignature = (vt: ValType): WasmSignature | null => {
+  let t = refTargetOf(vt);
+  if (t != null && (t as WasmType) is WasmSignature) {
+    return t as WasmSignature;
+  }
+  return null;
+};
+
+/** The WasmArray behind a reference ValType, or null. */
+export let asWasmArray = (vt: ValType): WasmArray | null => {
+  let t = refTargetOf(vt);
+  if (t != null && (t as WasmType) is WasmArray) {
+    return t as WasmArray;
+  }
+  return null;
+};
+
 /**
  * Wasm-level assignability between value types: may a value of type `a`
  * flow where `b` is expected? Conservative: scalar types must match
@@ -387,15 +414,6 @@ export let isValSubtype = (a: ValType, b: ValType): boolean => {
     return false;
   }
   return heapSubtype(aTarget as WasmType, bTarget as WasmType);
-};
-
-/** The heap type behind a concrete reference ValType, else null. */
-let refTargetOf = (t: ValType): WasmType | null => {
-  return match (t) {
-    case ValTypeRef {target}: target
-    case ValTypeRefNull {target}: target
-    case _: null
-  };
 };
 
 /** Declared-subtype check between heap types (struct super chains). */

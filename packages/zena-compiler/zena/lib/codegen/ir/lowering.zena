@@ -53,15 +53,15 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
-import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, valTypeEquals, isWasmSubtype, isRefValType, WasmType } from '../wasm.zena';
-import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo } from '../wasm-module.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray } from '../wasm-module.zena';
 import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
-import { IntrinsicCx, lowerIntrinsic, asWasmArray } from './intrinsics.zena';
+import { IntrinsicCx, lowerIntrinsic } from './intrinsics.zena';
 
 /**
  * Thrown for constructs lowering does not model YET: tryLowerFunction
@@ -154,15 +154,7 @@ let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => 
   let actualFt = func.functionAdaptationSource as FunctionType;
   let actualStruct = func.functionAdaptationResolvedSourceStruct ??
       getClosureStruct(wasm, actualFt);
-  var actualSig: WasmSignature | null = null;
-  match (actualStruct.fields[0].type) {
-    case ValTypeRef as r: {
-      if (r.target is WasmSignature) {
-        actualSig = r.target as WasmSignature;
-      }
-    }
-    case _: {}
-  }
+  let actualSig = asWasmSignature(actualStruct.fields[0].type);
   if (actualSig == null) {
     throw new ZirUnsupported('adaptation source shape');
   }
@@ -268,6 +260,22 @@ final class LetCondBinds {
       this.patternValues);
 }
 
+/**
+ * The lazily-materialized join point of a value-producing control-flow
+ * expression (if/try/match) or a merging statement. Arms br to it with
+ * the tracked symbols' current values (plus the arm's result in value
+ * position); it exists only once some arm actually reaches it.
+ */
+final class MergeState {
+  syms: Array<SymbolId>;
+  isVoid: boolean;
+  resultVt: ValType | null;
+  var block = -1;
+  var params: Array<i32> | null = null;
+  var resultParam = -1;
+  new(this.syms, this.isVoid, this.resultVt);
+}
+
 final class LoopCtx {
   /** Where `continue` jumps: the header for while, the update block for for. */
   continueTarget: i32;
@@ -348,16 +356,11 @@ let synthEntryParams = (b: IrBuilder, func: WasmFunction): Array<i32> => {
  * target slot is declared nullable. Non-concrete targets pass through.
  */
 let castToConcreteRef = (b: IrBuilder, value: i32, targetVt: ValType): i32 => {
-  var castVt: ValType | null = null;
-  match (targetVt) {
-    case ValTypeRef as r: { castVt = new ValTypeRef(r.target); }
-    case ValTypeRefNull as rn: { castVt = new ValTypeRef(rn.target); }
-    case _: {}
-  }
-  if (castVt == null) {
+  let target = refTargetOf(targetVt);
+  if (target == null) {
     return value;
   }
-  let vt = castVt as ValType;
+  let vt = new ValTypeRef(target as WasmType) as ValType;
   return b.emit(IrOp.ref_cast, vt, value, b.internType(vt));
 };
 
@@ -463,36 +466,13 @@ let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
   // The getter's declared return is the vtable slot's erased type; cast
   // when the field's storage type differs (mirrors streaming).
   let expected = func.signature.returns[0];
-  match (expected) {
-    case ValTypeRefNull as r: {
-      var same = false;
-      match (actual) {
-        case ValTypeRefNull as a: { same = a.target == r.target; }
-        case _: {}
-      }
-      if (!same) {
-        let vt: ValType = new ValTypeRefNull(r.target);
-        read = b.emit(IrOp.ref_cast, vt, read, b.internType(vt));
-      }
+  if (refTargetOf(expected) != null) {
+    if (!valTypeEquals(actual, expected)) {
+      read = b.emit(IrOp.ref_cast, expected, read, b.internType(expected));
     }
-    case ValTypeRef as r: {
-      var same = false;
-      match (actual) {
-        case ValTypeRef as a: { same = a.target == r.target; }
-        case _: {}
-      }
-      if (!same) {
-        let vt: ValType = new ValTypeRef(r.target);
-        read = b.emit(IrOp.ref_cast, vt, read, b.internType(vt));
-      }
-    }
-    case ValTypeEqRef: {
-      if (!(actual is ValTypeEqRef)) {
-        let vt: ValType = new ValTypeEqRef();
-        read = b.emit(IrOp.ref_cast, vt, read, b.internType(vt));
-      }
-    }
-    case _: {}
+  } else if (expected is ValTypeEqRef && !(actual is ValTypeEqRef)) {
+    let vt: ValType = new ValTypeEqRef();
+    read = b.emit(IrOp.ref_cast, vt, read, b.internType(vt));
   }
   b.ret(read);
   return b.finish();
@@ -1112,13 +1092,8 @@ final class FunctionLowerer {
     if (ft is ValTypeF64) {
       return this.b.binary(IrOp.f64_eq, i32vt, a, b2);
     }
-    var targetOpt: WasmType | null = null;
-    match (ft) {
-      case ValTypeRef as r: { targetOpt = r.target; }
-      case ValTypeRefNull as rn: { targetOpt = rn.target; }
-      case _: {}
-    }
-    if (targetOpt != null && targetOpt is WasmStruct) {
+    let targetOpt = refTargetOf(ft);
+    if (targetOpt != null && (targetOpt as WasmType) is WasmStruct) {
       let fieldStruct = targetOpt as WasmStruct;
       var eqFunc: WasmFunction | null = null;
       if (this.#isStringStruct(fieldStruct)) {
@@ -1215,13 +1190,8 @@ final class FunctionLowerer {
     // Fresh binding: the narrowing state after the bail/return chain
     // above over-narrows `ft` (see BUGS.md narrowing entries).
     let ftRef: ValType = f.type;
-    var targetOpt: WasmType | null = null;
-    match (ftRef) {
-      case ValTypeRef as r: { targetOpt = r.target; }
-      case ValTypeRefNull as rn: { targetOpt = rn.target; }
-      case _: {}
-    }
-    if (targetOpt != null && targetOpt is WasmStruct) {
+    let targetOpt = refTargetOf(ftRef);
+    if (targetOpt != null && (targetOpt as WasmType) is WasmStruct) {
       let fieldStruct = targetOpt as WasmStruct;
       var hashFunc: WasmFunction | null = null;
       if (this.#isStringStruct(fieldStruct) && this.wasm.stringHashFunc != null) {
@@ -2295,16 +2265,7 @@ final class FunctionLowerer {
    * element values, or null when the value is not that shape.
    */
   #unboxTupleValue(value: i32, n: i32): Array<i32> | null {
-    var stOpt: WasmStruct | null = null;
-    match (this.#valueType(value)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) { stOpt = r.target as WasmStruct; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) { stOpt = rn.target as WasmStruct; }
-      }
-      case _: {}
-    }
+    let stOpt = asWasmStruct(this.#valueType(value));
     if (stOpt == null) {
       return null;
     }
@@ -2357,36 +2318,22 @@ final class FunctionLowerer {
   #lowerRecordPropertyRead(rt: RecordType, propName: String,
       receiver: i32): i32 {
     let dispatch = this.#recordDispatchOf(rt);
-    var fieldIdx = -1;
-    for (var i = 0; i < dispatch.fields.length; i += 1) {
-      let f = dispatch.fields[i];
-      if (f.name != null && (f.name as String) == propName) {
-        fieldIdx = i;
-      }
-    }
-    if (fieldIdx < 0) {
-      this.#bail('record member not found');
-    }
-    var recv = receiver;
+    let recv = this.#conformRecordReceiver(dispatch, receiver);
+    return this.#recordDispatchRead(dispatch, propName, recv);
+  }
+
+  /**
+   * Conforms a receiver to the dispatch's fat-pointer type: adapted
+   * or wider receivers cast down; exact ones pass through.
+   */
+  #conformRecordReceiver(dispatch: RecordDispatchInfo, recv: i32): i32 {
     let fatVt = new ValTypeRefNull(dispatch.fatPtrType) as ValType;
-    if (!isValSubtype(this.#valueType(recv), fatVt)) {
-      let castVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
-      recv = this.b.emit(IrOp.ref_cast, castVt, recv,
-          this.b.internType(castVt));
+    if (isValSubtype(this.#valueType(recv), fatVt)) {
+      return recv;
     }
-    let instance = this.b.emit(IrOp.iface_instance,
-        new ValTypeStructRef() as ValType, recv, -1);
-    let vtable = this.b.emit(IrOp.iface_vtable,
-        new ValTypeRef(dispatch.vtableType) as ValType, recv, -1);
-    let getterSig = dispatch.getterTypes[fieldIdx];
-    if (getterSig.returns.length != 1) {
-      this.#bail('record getter shape');
-    }
-    let getter = this.b.emit(IrOp.struct_get,
-        new ValTypeRef(getterSig) as ValType, vtable,
-        this.b.addRef(new IrRefField(dispatch.vtableType, propName)));
-    return this.b.callRef(getter,
-        this.#oneArg(instance), getterSig.returns[0]);
+    let castVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
+    return this.b.emit(IrOp.ref_cast, castVt, recv,
+        this.b.internType(castVt));
   }
 
   /**
@@ -2395,16 +2342,7 @@ final class FunctionLowerer {
    * up the super chain.
    */
   #lowerObjectPropertyRead(propName: String, receiver: i32): i32 {
-    var stOpt: WasmStruct | null = null;
-    match (this.#valueType(receiver)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) { stOpt = r.target as WasmStruct; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) { stOpt = rn.target as WasmStruct; }
-      }
-      case _: {}
-    }
+    let stOpt = asWasmStruct(this.#valueType(receiver));
     if (stOpt == null) {
       this.#bail('destructuring source kind');
     }
@@ -2500,8 +2438,7 @@ final class FunctionLowerer {
 
     // The merge block is created lazily: if both branches terminate, no
     // merge exists (and an unreachable block would fail verification).
-    var mergeB = -1;
-    var mergeParams: Array<i32> | null = null;
+    let m = new MergeState(mergeSyms, true, null);
 
     let saved = this.#copyEnv();
     this.b.switchTo(thenB);
@@ -2510,9 +2447,7 @@ final class FunctionLowerer {
     }
     this.#lowerStatement(stmt.consequent);
     if (this.reachable) {
-      mergeB = this.b.newBlock();
-      mergeParams = this.#addParams(mergeB, mergeSyms);
-      this.b.br(mergeB, this.#envValues(mergeSyms));
+      this.#mergeArm(m, -1);
     }
 
     this.env = this.#copyOf(saved);
@@ -2520,21 +2455,10 @@ final class FunctionLowerer {
     this.b.switchTo(elseB);
     this.#lowerStatement(alternate);
     if (this.reachable) {
-      if (mergeB < 0) {
-        mergeB = this.b.newBlock();
-        mergeParams = this.#addParams(mergeB, mergeSyms);
-      }
-      this.b.br(mergeB, this.#envValues(mergeSyms));
+      this.#mergeArm(m, -1);
     }
 
-    if (mergeB < 0) {
-      this.reachable = false;
-      return;
-    }
-    this.env = saved;
-    this.#applyParams(mergeSyms, mergeParams as Array<i32>);
-    this.b.switchTo(mergeB);
-    this.reachable = true;
+    this.#finishMerge(m, saved);
   }
 
   #lowerWhile(stmt: WhileStatement): void {
@@ -2754,20 +2678,7 @@ final class FunctionLowerer {
       buf = this.b.emit(IrOp.struct_get,
           this.#fieldValType(structType, bufferName), iterable, bufRef);
     }
-    var bufTarget: WasmArray | null = null;
-    match (this.#valueType(buf)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmArray) {
-          bufTarget = r.target as WasmArray;
-        }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmArray) {
-          bufTarget = rn.target as WasmArray;
-        }
-      }
-      case _: {}
-    }
+    let bufTarget = asWasmArray(this.#valueType(buf));
     if (bufTarget == null) {
       this.#bail('for-in buffer kind');
     }
@@ -3049,14 +2960,7 @@ final class FunctionLowerer {
       resultType = sig.returns[0];
     }
     let result = this.b.callFunc(fr, args, resultType);
-    if (resultType != null) {
-      let nodeType = this.func.model.getNodeType(call);
-      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
-        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
-        return this.#reassertNonNull(result, want);
-      }
-    }
-    return result;
+    return this.#reassertCallResult(call, result, resultType);
   }
 
   /**
@@ -3127,14 +3031,7 @@ final class FunctionLowerer {
       resultType = sig.returns[0];
     }
     let result = this.b.callFunc(fr, args, resultType);
-    if (resultType != null) {
-      let nodeType = this.func.model.getNodeType(call);
-      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
-        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
-        return this.#reassertNonNull(result, want);
-      }
-    }
-    return result;
+    return this.#reassertCallResult(call, result, resultType);
   }
 
   /**
@@ -3146,30 +3043,12 @@ final class FunctionLowerer {
    * Returns the call's result values (empty for void).
    */
   #slotCallOnValue(recv: i32, memberName: String): Array<i32> {
-    var fatOpt: WasmStruct | null = null;
-    match (this.#valueType(recv)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) { fatOpt = r.target as WasmStruct; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) { fatOpt = rn.target as WasmStruct; }
-      }
-      case _: {}
-    }
+    let fatOpt = asWasmStruct(this.#valueType(recv));
     if (fatOpt == null || (fatOpt as WasmStruct).fields.length != 2) {
       this.#bail('interface receiver type');
     }
     let fatPtr = fatOpt as WasmStruct;
-    var vstOpt: WasmStruct | null = null;
-    match (fatPtr.fields[1].type) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) { vstOpt = r.target as WasmStruct; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) { vstOpt = rn.target as WasmStruct; }
-      }
-      case _: {}
-    }
+    let vstOpt = asWasmStruct(fatPtr.fields[1].type);
     if (vstOpt == null) {
       this.#bail('interface receiver type');
     }
@@ -3178,13 +3057,7 @@ final class FunctionLowerer {
     if (slot < 0) {
       this.#bail('interface member not in vtable');
     }
-    var sigOpt: WasmSignature | null = null;
-    match (vst.fields[slot].type) {
-      case ValTypeRef as r: {
-        if (r.target is WasmSignature) { sigOpt = r.target as WasmSignature; }
-      }
-      case _: {}
-    }
+    let sigOpt = asWasmSignature(vst.fields[slot].type);
     if (sigOpt == null) {
       this.#bail('interface slot shape');
     }
@@ -3583,36 +3456,8 @@ final class FunctionLowerer {
     let dispatch = this.#recordDispatchOf(rt);
     let propName = getMemberPropertyName(
         member.isSymbolAccess, member.property.name);
-    var fieldIdx = -1;
-    for (var i = 0; i < dispatch.fields.length; i += 1) {
-      let f = dispatch.fields[i];
-      if (f.name != null && (f.name as String) == propName) {
-        fieldIdx = i;
-      }
-    }
-    if (fieldIdx < 0) {
-      this.#bail('record member not found');
-    }
-    var recv = recvIn;
-    let fatVt = new ValTypeRefNull(dispatch.fatPtrType) as ValType;
-    if (!isValSubtype(this.#valueType(recv), fatVt)) {
-      let castVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
-      recv = this.b.emit(IrOp.ref_cast, castVt, recv,
-          this.b.internType(castVt));
-    }
-    let instance = this.b.emit(IrOp.iface_instance,
-        new ValTypeStructRef() as ValType, recv, -1);
-    let vtable = this.b.emit(IrOp.iface_vtable,
-        new ValTypeRef(dispatch.vtableType) as ValType, recv, -1);
-    let getterSig = dispatch.getterTypes[fieldIdx];
-    let getter = this.b.emit(IrOp.struct_get,
-        new ValTypeRef(getterSig) as ValType, vtable,
-        this.b.addRef(new IrRefField(dispatch.vtableType, propName)));
-    if (getterSig.returns.length != 1) {
-      this.#bail('record getter shape');
-    }
-    let result = this.b.callRef(getter,
-        this.#oneArg(instance), getterSig.returns[0]);
+    let recv = this.#conformRecordReceiver(dispatch, recvIn);
+    let result = this.#recordDispatchRead(dispatch, propName, recv);
     return this.#reassertNonNull(result, this.#exprValType(member));
   }
 
@@ -3623,16 +3468,7 @@ final class FunctionLowerer {
    */
   #lowerArrayLiteral(lit: ArrayLiteral): i32 {
     let vt = this.#exprValType(lit);
-    var arrOpt: WasmArray | null = null;
-    match (vt) {
-      case ValTypeRef as r: {
-        if (r.target is WasmArray) { arrOpt = r.target as WasmArray; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmArray) { arrOpt = rn.target as WasmArray; }
-      }
-      case _: {}
-    }
+    let arrOpt = asWasmArray(vt);
     if (arrOpt == null) {
       this.#bail('array literal type');
     }
@@ -3681,12 +3517,7 @@ final class FunctionLowerer {
       this.#bail('is operand type');
     }
     let targetVt = typeToValTypeWithSub(this.wasm, targetType, this.func);
-    var target: WasmType | null = null;
-    match (targetVt) {
-      case ValTypeRef as r: { target = r.target; }
-      case ValTypeRefNull as rn: { target = rn.target; }
-      case _: {}
-    }
+    let target = refTargetOf(targetVt);
     if (target == null) {
       this.#bail('is target kind');
     }
@@ -4412,72 +4243,32 @@ final class FunctionLowerer {
     let elseB = this.b.newBlock();
     this.b.brIf(cond, thenB, this.#noArgs(), elseB, this.#noArgs());
 
-    var mergeB = -1;
-    var mergeParams: Array<i32> | null = null;
-    var resultParam = -1;
+    let m = new MergeState(mergeSyms, isVoid, resultVt);
 
     let saved = this.#copyEnv();
     this.b.switchTo(thenB);
     if (letBinds != null) {
       this.#applyLetBinds(letBinds as LetCondBinds, elseB);
     }
-    var thenValue = this.#lowerValueNode(expr.consequent, isVoid, resultVt);
+    let thenValue = this.#lowerValueNode(expr.consequent, isVoid, resultVt);
     if (this.reachable) {
-      if (!isVoid) {
-        thenValue = this.#conformToSlot(thenValue, resultVt as ValType, 'if arm type');
-      }
-      mergeB = this.b.newBlock();
-      mergeParams = this.#addParams(mergeB, mergeSyms);
-      if (!isVoid) {
-        resultParam = this.b.blockParam(mergeB, resultVt as ValType);
-      }
-      let args = this.#envValues(mergeSyms);
-      if (!isVoid) {
-        args.push(thenValue);
-      }
-      this.b.br(mergeB, args);
+      this.#mergeArm(m, thenValue, 'if arm type');
     }
 
     this.env = this.#copyOf(saved);
     this.reachable = true;
     this.b.switchTo(elseB);
     if (expr.alternate != null) {
-      var elseValue = this.#lowerValueNode(expr.alternate as Node, isVoid, resultVt);
+      let elseValue = this.#lowerValueNode(expr.alternate as Node, isVoid, resultVt);
       if (this.reachable) {
-        if (!isVoid) {
-          elseValue = this.#conformToSlot(elseValue, resultVt as ValType, 'if arm type');
-        }
-        if (mergeB < 0) {
-          mergeB = this.b.newBlock();
-          mergeParams = this.#addParams(mergeB, mergeSyms);
-          if (!isVoid) {
-            resultParam = this.b.blockParam(mergeB, resultVt as ValType);
-          }
-        }
-        let args = this.#envValues(mergeSyms);
-        if (!isVoid) {
-          args.push(elseValue);
-        }
-        this.b.br(mergeB, args);
+        this.#mergeArm(m, elseValue, 'if arm type');
       }
     } else {
       // Void if-expression without else: fall through to the merge.
-      if (mergeB < 0) {
-        mergeB = this.b.newBlock();
-        mergeParams = this.#addParams(mergeB, mergeSyms);
-      }
-      this.b.br(mergeB, this.#envValues(mergeSyms));
+      this.#mergeArm(m, -1);
     }
 
-    if (mergeB < 0) {
-      this.reachable = false;
-      return -1;
-    }
-    this.env = saved;
-    this.#applyParams(mergeSyms, mergeParams as Array<i32>);
-    this.b.switchTo(mergeB);
-    this.reachable = true;
-    return resultParam;
+    return this.#finishMerge(m, saved);
   }
 
   /**
@@ -4526,27 +4317,13 @@ final class FunctionLowerer {
     let catchB = this.b.newBlock();
     this.b.tryBr(tagRef, bodyB, this.#noArgs(), catchB, this.#noArgs());
 
-    var mergeB = -1;
-    var mergeParams: Array<i32> | null = null;
-    var resultParam = -1;
+    let m = new MergeState(mergeSyms, isVoid, resultVt);
 
     let saved = this.#copyEnv();
     this.b.switchTo(bodyB);
-    var bodyValue = this.#lowerValueNode(expr.body as Node, isVoid, resultVt);
+    let bodyValue = this.#lowerValueNode(expr.body as Node, isVoid, resultVt);
     if (this.reachable) {
-      if (!isVoid) {
-        bodyValue = this.#conformToSlot(bodyValue, resultVt as ValType, 'try arm type');
-      }
-      mergeB = this.b.newBlock();
-      mergeParams = this.#addParams(mergeB, mergeSyms);
-      if (!isVoid) {
-        resultParam = this.b.blockParam(mergeB, resultVt as ValType);
-      }
-      let args = this.#envValues(mergeSyms);
-      if (!isVoid) {
-        args.push(bodyValue);
-      }
-      this.b.br(mergeB, args);
+      this.#mergeArm(m, bodyValue, 'try arm type');
     }
 
     this.env = this.#copyOf(saved);
@@ -4561,43 +4338,19 @@ final class FunctionLowerer {
       let payloadG = this.wasm.exceptionPayload as WasmGlobal;
       let gRef = this.b.addRef(new IrRefGlobal(payloadG));
       var payload = this.b.emit(IrOp.global_get, payloadG.type, -1, gRef);
-      match (payloadG.type) {
-        case ValTypeRefNull as rn: {
-          payload = this.b.emit(IrOp.ref_as_non_null,
-              new ValTypeRef(rn.target) as ValType, payload, -1);
-        }
-        case _: {}
+      if (payloadG.type is ValTypeRefNull) {
+        let t = refTargetOf(payloadG.type) as WasmType;
+        payload = this.b.emit(IrOp.ref_as_non_null,
+            new ValTypeRef(t) as ValType, payload, -1);
       }
       this.#bindPatternSym(symOpt as Symbol, payload);
     }
-    var catchValue = this.#lowerValueNode(handler.body as Node, isVoid, resultVt);
+    let catchValue = this.#lowerValueNode(handler.body as Node, isVoid, resultVt);
     if (this.reachable) {
-      if (!isVoid) {
-        catchValue = this.#conformToSlot(catchValue, resultVt as ValType, 'try arm type');
-      }
-      if (mergeB < 0) {
-        mergeB = this.b.newBlock();
-        mergeParams = this.#addParams(mergeB, mergeSyms);
-        if (!isVoid) {
-          resultParam = this.b.blockParam(mergeB, resultVt as ValType);
-        }
-      }
-      let args = this.#envValues(mergeSyms);
-      if (!isVoid) {
-        args.push(catchValue);
-      }
-      this.b.br(mergeB, args);
+      this.#mergeArm(m, catchValue, 'try arm type');
     }
 
-    if (mergeB < 0) {
-      this.reachable = false;
-      return -1;
-    }
-    this.env = saved;
-    this.#applyParams(mergeSyms, mergeParams as Array<i32>);
-    this.b.switchTo(mergeB);
-    this.reachable = true;
-    return resultParam;
+    return this.#finishMerge(m, saved);
   }
 
   /**
@@ -4691,9 +4444,7 @@ final class FunctionLowerer {
       }
     }
 
-    var mergeB = -1;
-    var mergeParams: Array<i32> | null = null;
-    var resultParam = -1;
+    let m = new MergeState(mergeSyms, isVoid, resultVt);
     let saved = this.#copyEnv();
 
     var exhausted = false;
@@ -4716,23 +4467,9 @@ final class FunctionLowerer {
         let cond = this.#lowerExpression(mc.guard as Expression);
         this.#branchUnless(cond, failB);
       }
-      var value = this.#lowerValueNode(mc.body, isVoid, resultVt);
+      let value = this.#lowerValueNode(mc.body, isVoid, resultVt);
       if (this.reachable) {
-        if (!isVoid) {
-          value = this.#conformToSlot(value, resultVt as ValType, 'match arm type');
-        }
-        if (mergeB < 0) {
-          mergeB = this.b.newBlock();
-          mergeParams = this.#addParams(mergeB, mergeSyms);
-          if (!isVoid) {
-            resultParam = this.b.blockParam(mergeB, resultVt as ValType);
-          }
-        }
-        let args = this.#envValues(mergeSyms);
-        if (!isVoid) {
-          args.push(value);
-        }
-        this.b.br(mergeB, args);
+        this.#mergeArm(m, value, 'match arm type');
       }
       if (failB >= 0) {
         this.b.switchTo(failB);
@@ -4745,15 +4482,7 @@ final class FunctionLowerer {
       this.b.unreachable();
     }
 
-    if (mergeB < 0) {
-      this.reachable = false;
-      return -1;
-    }
-    this.env = saved;
-    this.#applyParams(mergeSyms, mergeParams as Array<i32>);
-    this.b.switchTo(mergeB);
-    this.reachable = true;
-    return resultParam;
+    return this.#finishMerge(m, saved);
   }
 
   /**
@@ -4956,16 +4685,7 @@ final class FunctionLowerer {
 
   /** The struct behind a (boxed) tuple or class value; bails otherwise. */
   #structOfValue(value: i32): WasmStruct {
-    var stOpt: WasmStruct | null = null;
-    match (this.#valueType(value)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) { stOpt = r.target as WasmStruct; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) { stOpt = rn.target as WasmStruct; }
-      }
-      case _: {}
-    }
+    let stOpt = asWasmStruct(this.#valueType(value));
     if (stOpt == null) {
       this.#bail('pattern operand kind');
     }
@@ -4974,16 +4694,7 @@ final class FunctionLowerer {
 
   /** The record dispatch whose fat-pointer struct backs `value`, if any. */
   #recordDispatchOfValue(value: i32): RecordDispatchInfo | null {
-    var stOpt: WasmStruct | null = null;
-    match (this.#valueType(value)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) { stOpt = r.target as WasmStruct; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) { stOpt = rn.target as WasmStruct; }
-      }
-      case _: {}
-    }
+    let stOpt = asWasmStruct(this.#valueType(value));
     if (stOpt == null) {
       return null;
     }
@@ -5285,18 +4996,9 @@ final class FunctionLowerer {
 
   /** The cell struct behind a celled environment entry. */
   #cellStructOf(cell: i32): WasmStruct {
-    match (this.#valueType(cell)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) {
-          return r.target as WasmStruct;
-        }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) {
-          return rn.target as WasmStruct;
-        }
-      }
-      case _: {}
+    let st = asWasmStruct(this.#valueType(cell));
+    if (st != null) {
+      return st as WasmStruct;
     }
     throw new ZirUnsupported('celled binding shape');
   }
@@ -6142,17 +5844,13 @@ final class FunctionLowerer {
     // streaming backend: numeric members inline their (implicit or
     // literal) value, string-enum members their string literal. The
     // enum "namespace" identifier itself is never lowered.
-    if (objectType != null) {
-      match (baseType(objectType as Type)) {
-        case RecordType as rt: {
-          if (rt.enumDeclaration != null) {
-            return this.#lowerEnumMember(
-                rt.enumDeclaration as EnumDeclaration, member);
-          }
-          return this.#lowerRecordRead(rt, member);
-        }
-        case _: {}
+    if (objectType != null && baseType(objectType as Type) is RecordType) {
+      let rt = baseType(objectType as Type) as RecordType;
+      if (rt.enumDeclaration != null) {
+        return this.#lowerEnumMember(
+            rt.enumDeclaration as EnumDeclaration, member);
       }
+      return this.#lowerRecordRead(rt, member);
     }
     if (objectType != null &&
         this.#resolveSelfType(objectType as Type) is InterfaceType) {
@@ -6574,16 +6272,7 @@ final class FunctionLowerer {
   #lowerMemberReadOn(member: MemberExpression, receiver: i32): i32 {
     // .length on wasm-array receivers: array.len (mirrors the
     // FixedArray length intrinsic in the streaming backend).
-    var recvArr: WasmArray | null = null;
-    match (this.#valueType(receiver)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmArray) { recvArr = r.target as WasmArray; }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmArray) { recvArr = rn.target as WasmArray; }
-      }
-      case _: {}
-    }
+    let recvArr = asWasmArray(this.#valueType(receiver));
     if (recvArr != null) {
       let arrProp = getMemberPropertyName(
           member.isSymbolAccess, member.property.name);
@@ -6920,13 +6609,8 @@ final class FunctionLowerer {
         // re-assert against; the projections carry their slot types.
         return result;
       }
-      let nodeType = this.func.model.getNodeType(call);
-      if (nodeType != null && !(baseType(nodeType as Type) is VoidType) &&
-          this.b.body.typeId[result] >= 0) {
-        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
-        return this.#reassertNonNull(result, want);
-      }
-      return result;
+      return this.#reassertCallResult(call, result,
+          this.b.body.resultType(result));
     }
     // Extension methods on arrays (map/fold/indexOf/...): resolved
     // by element-type specialization key against wasm.arrayMethods,
@@ -7218,13 +6902,7 @@ final class FunctionLowerer {
       if (elemIdx < 0) {
         this.#bail('tuple index literal');
       }
-      let stOpt = match (this.#valueType(receiver)) {
-        case ValTypeRef as r:
-            if (r.target is WasmStruct) r.target as WasmStruct else null
-        case ValTypeRefNull as rn:
-            if (rn.target is WasmStruct) rn.target as WasmStruct else null
-        case _: null
-      };
+      let stOpt = asWasmStruct(this.#valueType(receiver));
       if (stOpt == null) {
         this.#bail('tuple receiver kind');
       }
@@ -7395,15 +7073,7 @@ final class FunctionLowerer {
     // The vtable slot's declared type IS the signature (the RTA pass
     // types slots as exact (ref $sig)); using it keeps the callee value
     // consistent with what emission derives the call_ref type from.
-    var sigOpt: WasmSignature | null = null;
-    match (vst.fields[slot].type) {
-      case ValTypeRef as r: {
-        if (r.target is WasmSignature) {
-          sigOpt = r.target as WasmSignature;
-        }
-      }
-      case _: {}
-    }
+    let sigOpt = asWasmSignature(vst.fields[slot].type);
     if (sigOpt == null) {
       this.#bail('interface slot shape');
     }
@@ -7472,18 +7142,9 @@ final class FunctionLowerer {
    * the closure-identity fix).
    */
   #classTypeOfValue(value: i32): ClassType | null {
-    match (this.#valueType(value)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) {
-          return (r.target as WasmStruct).classType;
-        }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) {
-          return (rn.target as WasmStruct).classType;
-        }
-      }
-      case _: {}
+    let st = asWasmStruct(this.#valueType(value));
+    if (st != null) {
+      return (st as WasmStruct).classType;
     }
     return null;
   }
@@ -8546,14 +8207,7 @@ final class FunctionLowerer {
     }
     let funcRef = this.b.addRef(new IrRefFunc(target));
     let raw = this.b.callFunc(funcRef, args, resultType);
-    if (resultType != null) {
-      let nodeType = this.func.model.getNodeType(call);
-      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
-        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
-        return this.#reassertNonNull(raw, want);
-      }
-    }
-    return raw;
+    return this.#reassertCallResult(call, raw, resultType);
   }
 
   #threeValues(a: i32, b: i32, c: i32): Array<i32> {
@@ -8780,20 +8434,7 @@ final class FunctionLowerer {
       this.#bail('tagged template tag target');
     }
     let callee = this.env[resolved.id];
-    var structOpt: WasmStruct | null = null;
-    match (this.#valueType(callee)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) {
-          structOpt = r.target as WasmStruct;
-        }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) {
-          structOpt = rn.target as WasmStruct;
-        }
-      }
-      case _: {}
-    }
+    let structOpt = asWasmStruct(this.#valueType(callee));
     if (structOpt == null) {
       this.#bail('tagged template tag kind');
     }
@@ -8801,15 +8442,7 @@ final class FunctionLowerer {
     if (closureStruct.fields.length != 2) {
       this.#bail('tagged template tag kind');
     }
-    var sigOpt: WasmSignature | null = null;
-    match (closureStruct.fields[0].type) {
-      case ValTypeRef as r: {
-        if (r.target is WasmSignature) {
-          sigOpt = r.target as WasmSignature;
-        }
-      }
-      case _: {}
-    }
+    let sigOpt = asWasmSignature(closureStruct.fields[0].type);
     if (sigOpt == null) {
       this.#bail('tagged template tag kind');
     }
@@ -9283,15 +8916,7 @@ final class FunctionLowerer {
 
     // The func slot's declared signature must be the implementation's
     // own signature (both come from the interned signature table).
-    var slotSig: WasmSignature | null = null;
-    match (closureStruct.fields[0].type) {
-      case ValTypeRef as r: {
-        if (r.target is WasmSignature) {
-          slotSig = r.target as WasmSignature;
-        }
-      }
-      case _: {}
-    }
+    let slotSig = asWasmSignature(closureStruct.fields[0].type);
     if (slotSig == null || (slotSig as WasmSignature) != impl.signature) {
       this.#bail('closure signature adaptation');
     }
@@ -9356,15 +8981,7 @@ final class FunctionLowerer {
       this.b.switchTo(callB);
       let cv = this.b.emit(IrOp.ref_cast, csVt, callee,
           this.b.internType(csVt));
-      var sigOpt: WasmSignature | null = null;
-      match (cs.fields[0].type) {
-        case ValTypeRef as r: {
-          if (r.target is WasmSignature) {
-            sigOpt = r.target as WasmSignature;
-          }
-        }
-        case _: {}
-      }
+      let sigOpt = asWasmSignature(cs.fields[0].type);
       if (sigOpt == null) {
         this.#bail('union member shape');
       }
@@ -9426,20 +9043,7 @@ final class FunctionLowerer {
     // struct; recomputing it from the checked node type drifted
     // whenever substitution or nullability normalization disagreed
     // with the type the value actually flowed in with.
-    var structOpt: WasmStruct | null = null;
-    match (this.#valueType(callee)) {
-      case ValTypeRef as r: {
-        if (r.target is WasmStruct) {
-          structOpt = r.target as WasmStruct;
-        }
-      }
-      case ValTypeRefNull as rn: {
-        if (rn.target is WasmStruct) {
-          structOpt = rn.target as WasmStruct;
-        }
-      }
-      case _: {}
-    }
+    let structOpt = asWasmStruct(this.#valueType(callee));
     if (structOpt == null) {
       this.#bail('closure callee kind');
     }
@@ -9448,15 +9052,7 @@ final class FunctionLowerer {
       // Not a closure pair struct (e.g. a class instance): bail.
       this.#bail('closure callee shape');
     }
-    var sigOpt: WasmSignature | null = null;
-    match (closureStruct.fields[0].type) {
-      case ValTypeRef as r: {
-        if (r.target is WasmSignature) {
-          sigOpt = r.target as WasmSignature;
-        }
-      }
-      case _: {}
-    }
+    let sigOpt = asWasmSignature(closureStruct.fields[0].type);
     if (sigOpt == null) {
       this.#bail('closure callee shape');
     }
@@ -9490,14 +9086,7 @@ final class FunctionLowerer {
       resultType = sig.returns[0];
     }
     let result = this.b.callRef(funcVal, args, resultType);
-    if (resultType != null) {
-      let nodeType = this.func.model.getNodeType(call);
-      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
-        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
-        return this.#reassertNonNull(result, want);
-      }
-    }
-    return result;
+    return this.#reassertCallResult(call, result, resultType);
   }
 
   #lowerAssignment(assign: AssignmentExpression): i32 {
@@ -9695,6 +9284,25 @@ final class FunctionLowerer {
   }
 
   /**
+   * Re-asserts a call result against the CALL NODE's checked type:
+   * the checker often knows the result non-null even when the callee
+   * signature stores it nullable. Void-typed calls and valueless
+   * results pass through.
+   */
+  #reassertCallResult(call: Expression, result: i32,
+      resultType: ValType | null): i32 {
+    if (resultType == null || this.b.body.typeId[result] < 0) {
+      return result;
+    }
+    let nodeType = this.func.model.getNodeType(call);
+    if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
+      let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+      return this.#reassertNonNull(result, want);
+    }
+    return result;
+  }
+
+  /**
    * Re-asserts non-nullness when the checked type is non-null but the
    * value's storage type is nullable with the same heap target. Other
    * shape differences pass through unchanged — downstream subtype
@@ -9862,6 +9470,48 @@ final class FunctionLowerer {
   }
 
   /** Adds one block param per symbol, typed by the symbol's binding. */
+  /**
+   * Conforms an arm's result and brs to the merge, materializing it on
+   * first use. Callers guard on reachability; `value` is ignored for
+   * void merges.
+   */
+  #mergeArm(m: MergeState, value: i32, armKind: String = 'arm type'): void {
+    var v = value;
+    if (!m.isVoid) {
+      v = this.#conformToSlot(v, m.resultVt as ValType, armKind);
+    }
+    if (m.block < 0) {
+      m.block = this.b.newBlock();
+      m.params = this.#addParams(m.block, m.syms);
+      if (!m.isVoid) {
+        m.resultParam = this.b.blockParam(m.block, m.resultVt as ValType);
+      }
+    }
+    let args = this.#envValues(m.syms);
+    if (!m.isVoid) {
+      args.push(v);
+    }
+    this.b.br(m.block, args);
+  }
+
+  /**
+   * Lands at the merge: restores the saved env view, rebinds the
+   * tracked symbols to the merge params, and resumes there. Returns
+   * the result param, or -1 when no arm reached the merge (the
+   * expression is unreachable past this point).
+   */
+  #finishMerge(m: MergeState, saved: HashMap<SymbolId, i32>): i32 {
+    if (m.block < 0) {
+      this.reachable = false;
+      return -1;
+    }
+    this.env = saved;
+    this.#applyParams(m.syms, m.params as Array<i32>);
+    this.b.switchTo(m.block);
+    this.reachable = true;
+    return m.resultParam;
+  }
+
   #addParams(block: i32, syms: Array<SymbolId>): Array<i32> {
     let params = new Array<i32>();
     for (let symId in syms) {
