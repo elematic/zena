@@ -9,12 +9,28 @@
  */
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
+import { Error } from 'zena:error';
 import { Expression } from '../../ast.zena';
-import { Type } from '../../types.zena';
+import { Type, ClassType } from '../../types.zena';
 import { ValType } from '../wasm.zena';
-import { WasmModule, WasmFunction } from '../wasm-module.zena';
+import {
+  WasmModule, WasmFunction, WasmSignature, ClassCodegenInfo,
+} from '../wasm-module.zena';
 import { IrBuilder } from './builder.zena';
 import { SymbolId } from '../../scope/symbol.zena';
+
+/**
+ * Thrown for constructs lowering does not model YET: tryLowerFunction
+ * catches exactly this type and falls back to the streaming generator
+ * (fatal under zir-strict). States the checker guarantees impossible
+ * are NOT ZirUnsupported — throw a plain Error for those, which
+ * propagates and fails the compile: a silent fallback would hide a
+ * lowering bug. (Defined here rather than in lowering.zena so split
+ * modules can throw it without an import cycle.)
+ */
+export final class ZirUnsupported extends Error {
+  new(reason: String) : super('zir unsupported: ' + reason);
+}
 
 export final class LoweringContext {
   b: IrBuilder;
@@ -38,10 +54,26 @@ export final class LoweringContext {
   fail: (reason: String) => i32;
   /** The SSA value bound to a symbol, or -1 when not in the env. */
   envValueOf: (id: SymbolId) => i32;
+  /** Coerce a value to a target ValType (identity or as_non_null). */
+  coerceTo: (value: i32, target: ValType) => i32;
+  /** The receiver's ClassType when the value's type maps to one. */
+  classTypeOfValue: (value: i32) => ClassType | null;
+  /** Specialization-independent class key (generic source's key). */
+  canonicalKeyOf: (ct: ClassType) => String;
+  /** The method when no transitive subclass overrides it, else null. */
+  resolveDevirtualizedMethod: (ct: ClassType, methName: String) => WasmFunction | null;
+  /** The vtable field index of a slot, or -1 when absent. */
+  vtableSlotIndex: (classInfo: ClassCodegenInfo, slotName: String) => i32;
+  /** Virtual dispatch through the class vtable (streaming's shape). */
+  lowerVtableCall: (receiver: i32, classInfo: ClassCodegenInfo,
+      slotName: String, sig: WasmSignature, args: Array<i32>,
+      resultType: ValType | null) => i32;
   new(this.b, this.wasm, this.func, this.lowerExpr, this.valueTypeOf,
       this.exprVt, this.substitutedNodeType, this.reassertNonNull,
       this.stripNonNull, this.requireSupported, this.failConformance,
-      this.fail, this.envValueOf);
+      this.fail, this.envValueOf, this.coerceTo, this.classTypeOfValue,
+      this.canonicalKeyOf, this.resolveDevirtualizedMethod,
+      this.vtableSlotIndex, this.lowerVtableCall);
 }
 
 /** An empty argument list (branch with no args, nullary call). */
