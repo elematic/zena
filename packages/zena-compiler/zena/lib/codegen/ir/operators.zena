@@ -1,0 +1,536 @@
+/**
+ * Scalar and reference operator lowering, split out of lowering.zena:
+ * binary operators (with the ==-dispatch ladder: null compares,
+ * identity, class operator members, erased/identity/reference
+ * equality tiers, numeric promotion), unary operators, scalar `as`
+ * casts, and the operator->IrOp table. Env-coupled pieces stay
+ * behind LoweringContext closures: `??` (env merges), class operator
+ * member calls, and fat-pointer unwrapping. Bodies are streaming's
+ * shapes exactly.
+ */
+import { String } from 'zena:string';
+import { parseF64 } from 'zena:string-convert';
+import {
+  AsExpression, BinaryExpression, Expression, NullLiteral,
+  NumberLiteral, UnaryExpression,
+} from '../../ast.zena';
+import {
+  AnyRefType, BooleanType, ClassType, EqRefType, F32Type, F64Type,
+  I32Type, I64Type, InterfaceType, NullType, Type, TypeParameterType,
+  U32Type, U64Type, UnionType, baseType, typeToString,
+} from '../../types.zena';
+import {
+  ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeRef,
+  ValTypeRefNull, isRefValType, valTypeEquals,
+} from '../wasm.zena';
+import { isValSubtype } from '../wasm-module.zena';
+import { eraseTypeParameters, typeToValTypeWithSub } from '../type-mapping.zena';
+import { IrOp } from './ir.zena';
+import {
+  LoweringContext, ZirUnsupported, noValues, oneValue,
+} from './lowering-context.zena';
+import { lowerErasedEq } from './equality.zena';
+import { parseI64OrU64Literal } from '../expr/primitives.zena';
+
+/** Bail with the lowering-side message shape (reason @function). */
+let bail = (cx: LoweringContext, reason: String): never => {
+  throw new ZirUnsupported(reason + ' @' + (cx.func.name ?? '?'));
+};
+
+/** Base type of the substituted checked type (unions unwrapped). */
+let substitutedBaseType = (cx: LoweringContext, expr: Expression): Type | null => {
+  let t = cx.substitutedNodeType(expr);
+  if (t == null) {
+    return null;
+  }
+  return baseType(t as Type);
+};
+
+/** Whether the operand's checked type is u32/u64 (name-driven: only
+ * these pick the _u operator variants). */
+export let isUnsignedNode = (cx: LoweringContext, expr: Expression): boolean => {
+  let bt = substitutedBaseType(cx, expr);
+  return bt != null && ((bt as Type) is U32Type || (bt as Type) is U64Type);
+};
+
+export let mapBinaryOp = (cx: LoweringContext, operator: String, vt: ValType,
+    unsigned: boolean): IrOp => {
+  if (vt is ValTypeI32) {
+    if (operator == "+") { return IrOp.i32_add; }
+    if (operator == "-") { return IrOp.i32_sub; }
+    if (operator == "*") { return IrOp.i32_mul; }
+    // No "/" here: Zena division always yields a float (the checker
+    // promotes i32/i32 to f32), which lowering does not model yet.
+    if (operator == "%") { return if (unsigned) IrOp.i32_rem_u else IrOp.i32_rem_s; }
+    if (operator == "&") { return IrOp.i32_and; }
+    if (operator == "|") { return IrOp.i32_or; }
+    if (operator == "^") { return IrOp.i32_xor; }
+    if (operator == "<<") { return IrOp.i32_shl; }
+    if (operator == ">>") { return if (unsigned) IrOp.i32_shr_u else IrOp.i32_shr_s; }
+    if (operator == ">>>") { return IrOp.i32_shr_u; }
+    if (operator == "==") { return IrOp.i32_eq; }
+    if (operator == "!=") { return IrOp.i32_ne; }
+    if (operator == "<") { return if (unsigned) IrOp.i32_lt_u else IrOp.i32_lt_s; }
+    if (operator == "<=") { return if (unsigned) IrOp.i32_le_u else IrOp.i32_le_s; }
+    if (operator == ">") { return if (unsigned) IrOp.i32_gt_u else IrOp.i32_gt_s; }
+    if (operator == ">=") { return if (unsigned) IrOp.i32_ge_u else IrOp.i32_ge_s; }
+  } else if (vt is ValTypeI64) {
+    if (operator == "+") { return IrOp.i64_add; }
+    if (operator == "-") { return IrOp.i64_sub; }
+    if (operator == "*") { return IrOp.i64_mul; }
+    if (operator == "%") { return if (unsigned) IrOp.i64_rem_u else IrOp.i64_rem_s; }
+    if (operator == "&") { return IrOp.i64_and; }
+    if (operator == "|") { return IrOp.i64_or; }
+    if (operator == "^") { return IrOp.i64_xor; }
+    if (operator == "<<") { return IrOp.i64_shl; }
+    if (operator == ">>") { return if (unsigned) IrOp.i64_shr_u else IrOp.i64_shr_s; }
+    if (operator == ">>>") { return IrOp.i64_shr_u; }
+    if (operator == "==") { return IrOp.i64_eq; }
+    if (operator == "!=") { return IrOp.i64_ne; }
+    if (operator == "<") { return if (unsigned) IrOp.i64_lt_u else IrOp.i64_lt_s; }
+    if (operator == "<=") { return if (unsigned) IrOp.i64_le_u else IrOp.i64_le_s; }
+    if (operator == ">") { return if (unsigned) IrOp.i64_gt_u else IrOp.i64_gt_s; }
+    if (operator == ">=") { return if (unsigned) IrOp.i64_ge_u else IrOp.i64_ge_s; }
+  } else if (vt is ValTypeF64) {
+    if (operator == "+") { return IrOp.f64_add; }
+    if (operator == "-") { return IrOp.f64_sub; }
+    if (operator == "*") { return IrOp.f64_mul; }
+    if (operator == "/") { return IrOp.f64_div; }
+    if (operator == "==") { return IrOp.f64_eq; }
+    if (operator == "!=") { return IrOp.f64_ne; }
+    if (operator == "<") { return IrOp.f64_lt; }
+    if (operator == "<=") { return IrOp.f64_le; }
+    if (operator == ">") { return IrOp.f64_gt; }
+    if (operator == ">=") { return IrOp.f64_ge; }
+  } else if (vt is ValTypeF32) {
+    if (operator == "+") { return IrOp.f32_add; }
+    if (operator == "-") { return IrOp.f32_sub; }
+    if (operator == "*") { return IrOp.f32_mul; }
+    if (operator == "/") { return IrOp.f32_div; }
+    if (operator == "==") { return IrOp.f32_eq; }
+    if (operator == "!=") { return IrOp.f32_ne; }
+    if (operator == "<") { return IrOp.f32_lt; }
+    if (operator == "<=") { return IrOp.f32_le; }
+    if (operator == ">") { return IrOp.f32_gt; }
+    if (operator == ">=") { return IrOp.f32_ge; }
+  }
+  return cx.fail('operator ' + operator) as IrOp;
+};
+
+/** Requires a scalar (or scalar-represented, e.g. numeric enum) operand. */
+let requireScalarNode = (cx: LoweringContext, expr: Expression): void => {
+  let bt = substitutedBaseType(cx, expr);
+  if (bt == null) {
+    bail(cx, 'untyped operand');
+  }
+  let btVal = bt as Type;
+  let ok = btVal is I32Type || btVal is I64Type || btVal is U32Type ||
+      btVal is U64Type || btVal is F32Type || btVal is F64Type ||
+      btVal is BooleanType;
+  if (ok) {
+    return;
+  }
+  // Semantic types with scalar RUNTIME representations — numeric
+  // enums foremost — operate as their representation, exactly as
+  // streaming compiles them. Signedness stays name-driven: only
+  // u32/u64 (isUnsignedNode) pick the _u operator variants.
+  let vt = typeToValTypeWithSub(cx.wasm, btVal, cx.func);
+  let reprOk = vt is ValTypeI32 || vt is ValTypeI64 || vt is ValTypeF32 ||
+      vt is ValTypeF64;
+  if (!reprOk) {
+    bail(cx, 'operand type ' + typeToString(btVal));
+  }
+};
+
+/**
+ * Numeric conversions between scalar wasm types, shared by `as`
+ * casts and mixed-operand promotion. NOTE: unsigned sources use the
+ * SIGNED conversion ops, matching the self-hosted streaming backend
+ * exactly (it has no _u conversion path). The bootstrap DOES use _u
+ * opcodes here, so u32 values >= 2^31 cast to i64/f64 diverge
+ * between compilers — filed in BUGS.md; parity with streaming wins
+ * until that ruling.
+ */
+let scalarConvert = (cx: LoweringContext, value: i32, dstVt: ValType): i32 => {
+  let srcVt = cx.valueTypeOf(value);
+  if (valTypeEquals(srcVt, dstVt)) {
+    return value;
+  }
+  if (srcVt is ValTypeI32) {
+    if (dstVt is ValTypeI64) { return cx.b.emit(IrOp.i64_extend_i32_s, dstVt, value, -1); }
+    if (dstVt is ValTypeF64) { return cx.b.emit(IrOp.f64_convert_i32_s, dstVt, value, -1); }
+    if (dstVt is ValTypeF32) { return cx.b.emit(IrOp.f32_convert_i32_s, dstVt, value, -1); }
+  } else if (srcVt is ValTypeI64) {
+    if (dstVt is ValTypeI32) { return cx.b.emit(IrOp.i32_wrap_i64, dstVt, value, -1); }
+    if (dstVt is ValTypeF64) { return cx.b.emit(IrOp.f64_convert_i64_s, dstVt, value, -1); }
+    if (dstVt is ValTypeF32) { return cx.b.emit(IrOp.f32_convert_i64_s, dstVt, value, -1); }
+  } else if (srcVt is ValTypeF64) {
+    if (dstVt is ValTypeI32) { return cx.b.emit(IrOp.i32_trunc_sat_f64_s, dstVt, value, -1); }
+    if (dstVt is ValTypeI64) { return cx.b.emit(IrOp.i64_trunc_sat_f64_s, dstVt, value, -1); }
+    if (dstVt is ValTypeF32) { return cx.b.emit(IrOp.f32_demote_f64, dstVt, value, -1); }
+  } else if (srcVt is ValTypeF32) {
+    if (dstVt is ValTypeI32) { return cx.b.emit(IrOp.i32_trunc_sat_f32_s, dstVt, value, -1); }
+    if (dstVt is ValTypeI64) { return cx.b.emit(IrOp.i64_trunc_sat_f32_s, dstVt, value, -1); }
+    if (dstVt is ValTypeF64) { return cx.b.emit(IrOp.f64_promote_f32, dstVt, value, -1); }
+  }
+  return cx.fail('cast kind');
+};
+
+/** Whether the checked type's runtime representation is a wasm
+ * reference (class, record, tuple, distinct-over-ref, ref union). */
+let refReprType = (cx: LoweringContext, t: Type): boolean => {
+  let vt = typeToValTypeWithSub(cx.wasm, t, cx.func);
+  return isRefValType(vt);
+};
+
+/**
+ * True when `t` is a reference type with no operator== anywhere on
+ * it, so == means identity. Nullable unions strip their null;
+ * unions of multiple non-null members stay conservative (false).
+ */
+let refIdentityEqType = (tIn: Type): boolean => {
+  var t = tIn;
+  if (t is UnionType) {
+    let ut = t as UnionType;
+    var nonNull: Type | null = null;
+    var count = 0;
+    for (let m in ut.types) {
+      if (!(m is NullType)) {
+        nonNull = m;
+        count += 1;
+      }
+    }
+    if (count != 1 || nonNull == null) {
+      return false;
+    }
+    t = baseType(nonNull as Type);
+  }
+  if (t is ClassType) {
+    return !(t as ClassType).members.has('==');
+  }
+  if (t is InterfaceType) {
+    return !(t as InterfaceType).members.has('==');
+  }
+  return false;
+};
+
+/** Short-circuit && and || as a value-producing diamond. */
+let lowerLogical = (cx: LoweringContext, bin: BinaryExpression): i32 => {
+  let left = cx.lowerExpr(bin.left, null);
+  let evalRight = cx.b.newBlock();
+  let merge = cx.b.newBlock();
+  let result = cx.b.blockParam(merge, new ValTypeI32());
+  if (bin.operator == "&&") {
+    let zero = cx.b.constI32(0, new ValTypeI32());
+    cx.b.brIf(left, evalRight, noValues(), merge, oneValue(zero));
+  } else {
+    let one = cx.b.constI32(1, new ValTypeI32());
+    cx.b.brIf(left, merge, oneValue(one), evalRight, noValues());
+  }
+  cx.b.switchTo(evalRight);
+  let right = cx.lowerExpr(bin.right, null);
+  cx.b.br(merge, oneValue(right));
+  cx.b.switchTo(merge);
+  return result;
+};
+
+export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
+  if (bin.operator == "&&" || bin.operator == "||") {
+    return lowerLogical(cx, bin);
+  }
+  if (bin.operator == "??") {
+    return cx.nullishCoalesce(bin);
+  }
+  // Null comparisons: x == null / x != null (either side).
+  let leftIsNull = bin.left is NullLiteral;
+  let rightIsNull = bin.right is NullLiteral;
+  if ((leftIsNull || rightIsNull) &&
+      (bin.operator == "==" || bin.operator == "!=" ||
+       bin.operator == "===" || bin.operator == "!==")) {
+    if (leftIsNull && rightIsNull) {
+      // null == null needs no test at all.
+      let same = bin.operator == "==" || bin.operator == "===";
+      return cx.b.constI32(if (same) 1 else 0, new ValTypeI32());
+    }
+    let other = if (leftIsNull) bin.right else bin.left;
+    let value = cx.lowerExpr(other, null);
+    let vt = cx.valueTypeOf(value);
+    if (!isRefValType(vt)) {
+      // The checker rejects null comparisons against non-nullable
+      // scalars, so this only guards lowering bugs.
+      bail(cx, 'null compare on non-ref');
+    }
+    let isNull = cx.b.emit(IrOp.ref_is_null, new ValTypeI32(), value, -1);
+    if (bin.operator == "!=" || bin.operator == "!==") {
+      return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), isNull, -1);
+    }
+    return isNull;
+  }
+  // Reference identity: === / !== between eq-typed references.
+  if (bin.operator == "===" || bin.operator == "!==") {
+    var left = cx.lowerExpr(bin.left, null);
+    var right = cx.lowerExpr(bin.right, null);
+    // Fat-pointer identity is the INSTANCE's, not the pointer's: an
+    // adapted record view or a re-packed interface value IS the same
+    // object (the bootstrap compiler unwraps both the same way).
+    let lb = substitutedBaseType(cx, bin.left);
+    if (lb != null) {
+      left = cx.unwrapFatPointer(lb as Type, left);
+    }
+    let rb = substitutedBaseType(cx, bin.right);
+    if (rb != null) {
+      right = cx.unwrapFatPointer(rb as Type, right);
+    }
+    let lt = cx.valueTypeOf(left);
+    let rt = cx.valueTypeOf(right);
+    if (!isRefValType(lt) || !isRefValType(rt)) {
+      // Scalar identity is plain numeric equality (streaming emits
+      // the same eq instruction for == and ===).
+      if (isRefValType(lt) || isRefValType(rt) || !valTypeEquals(lt, rt)) {
+        bail(cx, 'identity compare on non-refs');
+      }
+      let eqOp = mapBinaryOp(cx, '==', lt, false);
+      let sameScalar = cx.b.binary(eqOp, new ValTypeI32(), left, right);
+      if (bin.operator == "!==") {
+        return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), sameScalar, -1);
+      }
+      return sameScalar;
+    }
+    let same = cx.b.binary(IrOp.ref_eq, new ValTypeI32(), left, right);
+    if (bin.operator == "!==") {
+      return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+    }
+    return same;
+  }
+  // Class operator members: `a + b` / `a == b` where the left
+  // operand's class declares the operator resolve to a method call
+  // (member-lookup.md §5.5 — operators fold into method
+  // resolution). Mirrors streaming: `!=` is `==` inverted; direct
+  // call when devirtualizable, else bail (streaming dispatches
+  // virtually there). String concat and String equality are the
+  // dominant users.
+  let leftBaseOpt = substitutedBaseType(cx, bin.left);
+  if (leftBaseOpt != null) {
+    let leftBase = leftBaseOpt as Type;
+    if (leftBase is ClassType) {
+      let opMember = if (bin.operator == "!=") "==" else bin.operator;
+      let leftCt = eraseTypeParameters(leftBase) as ClassType;
+      if (leftCt.members.has(opMember)) {
+        let left = cx.lowerExpr(bin.left, null);
+        let right = cx.lowerExpr(bin.right, null);
+        let raw = cx.operatorMemberOn(opMember, left, right, leftCt);
+        if (bin.operator == "!=") {
+          return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), raw, -1);
+        }
+        return raw;
+      }
+    }
+  }
+  // == / != on ERASED operands (an unbounded T, anyref, eqref):
+  // streaming's runtime type-dispatch diamond — identity, then
+  // null, then String content, then boxed-primitive unwraps.
+  if ((bin.operator == "==" || bin.operator == "!=") &&
+      leftBaseOpt != null) {
+    let lb = leftBaseOpt as Type;
+    if (lb is TypeParameterType || lb is AnyRefType ||
+        lb is EqRefType) {
+      let left = cx.lowerExpr(bin.left, null);
+      let right = cx.lowerExpr(bin.right, null);
+      if (!isRefValType(cx.valueTypeOf(left)) ||
+          !isRefValType(cx.valueTypeOf(right))) {
+        bail(cx, 'erased eq operands');
+      }
+      let same = lowerErasedEq(cx, left, right);
+      if (bin.operator == "!=") {
+        return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+      }
+      return same;
+    }
+  }
+  // == / != on references whose type declares NO operator== compare
+  // identity (streaming's ref.eq fallback). The member branch above
+  // already claimed types with a content-equality operator; nullable
+  // unions strip their null before the check, so `Node | null`
+  // compares by identity while `String | null` keeps bailing (its
+  // non-null member owns an ==).
+  if ((bin.operator == "==" || bin.operator == "!=") &&
+      leftBaseOpt != null &&
+      refIdentityEqType(leftBaseOpt as Type)) {
+    var left = cx.lowerExpr(bin.left, null);
+    var right = cx.lowerExpr(bin.right, null);
+    if (!isRefValType(cx.valueTypeOf(left)) ||
+        !isRefValType(cx.valueTypeOf(right))) {
+      bail(cx, 'identity compare on non-refs');
+    }
+    left = cx.unwrapFatPointer(leftBaseOpt as Type, left);
+    let rBase = substitutedBaseType(cx, bin.right);
+    if (rBase != null) {
+      right = cx.unwrapFatPointer(rBase as Type, right);
+    }
+    let same = cx.b.binary(IrOp.ref_eq, new ValTypeI32(), left, right);
+    if (bin.operator == "!=") {
+      return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+    }
+    return same;
+  }
+  // ==/!= on anything reference-shaped that earlier arms did not
+  // claim: streaming's fallback diamond (identity, then null, then
+  // String content, then boxed-primitive unwraps) — which is exactly
+  // lowerErasedEq. Covers nullable Strings, distinct types over
+  // String (their runtime values ARE Strings, so the diamond's
+  // ref.test finds them), records and tuples (identity; records
+  // through their instances), ByteArray, and ref-only unions.
+  if (bin.operator == "==" || bin.operator == "!=") {
+    let lb2 = substitutedBaseType(cx, bin.left);
+    let rb2 = substitutedBaseType(cx, bin.right);
+    if (lb2 != null && rb2 != null &&
+        refReprType(cx, lb2 as Type) && refReprType(cx, rb2 as Type)) {
+      var eqL = cx.lowerExpr(bin.left, null);
+      var eqR = cx.lowerExpr(bin.right, null);
+      eqL = cx.unwrapFatPointer(lb2 as Type, eqL);
+      eqR = cx.unwrapFatPointer(rb2 as Type, eqR);
+      if (isRefValType(cx.valueTypeOf(eqL)) &&
+          isRefValType(cx.valueTypeOf(eqR))) {
+        let same = lowerErasedEq(cx, eqL, eqR);
+        if (bin.operator == "!=") {
+          return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+        }
+        return same;
+      }
+      bail(cx, 'eq operand repr');
+    }
+  }
+  requireScalarNode(cx, bin.left);
+  requireScalarNode(cx, bin.right);
+  var left = cx.lowerExpr(bin.left, null);
+  var right = cx.lowerExpr(bin.right, null);
+  var leftType = cx.valueTypeOf(left);
+  let rightType = cx.valueTypeOf(right);
+  if (!valTypeEquals(leftType, rightType)) {
+    // Mixed numeric operands promote to the wider type, mirroring
+    // streaming's table: f64 wins; f32 wins unless the other side
+    // is i64 (then f64); i64 wins over i32.
+    var targetOpt: ValType | null = null;
+    if (leftType is ValTypeF64 || rightType is ValTypeF64) {
+      targetOpt = new ValTypeF64();
+    } else if (leftType is ValTypeF32 || rightType is ValTypeF32) {
+      targetOpt = if (leftType is ValTypeI64 || rightType is ValTypeI64) {
+        new ValTypeF64()
+      } else {
+        new ValTypeF32()
+      };
+    } else if (leftType is ValTypeI64 || rightType is ValTypeI64) {
+      targetOpt = new ValTypeI64();
+    }
+    if (targetOpt == null) {
+      bail(cx, 'mixed operand types');
+    }
+    let target = targetOpt as ValType;
+    left = scalarConvert(cx, left, target);
+    right = scalarConvert(cx, right, target);
+    leftType = target;
+  }
+  let unsigned = isUnsignedNode(cx, bin.left) || isUnsignedNode(cx, bin.right);
+  let op = mapBinaryOp(cx, bin.operator, leftType, unsigned);
+  let isComparison = bin.operator == "==" || bin.operator == "!=" ||
+      bin.operator == "<" || bin.operator == "<=" ||
+      bin.operator == ">" || bin.operator == ">=";
+  let resultType = if (isComparison) new ValTypeI32() as ValType else leftType;
+  return cx.b.binary(op, resultType, left, right);
+};
+
+export let lowerUnary = (cx: LoweringContext, un: UnaryExpression): i32 => {
+  let value = cx.lowerExpr(un.argument, null);
+  let vt = cx.valueTypeOf(value);
+  if (un.operator == "!") {
+    if (!(vt is ValTypeI32)) {
+      bail(cx, 'logical not on non-i32');
+    }
+    return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), value, -1);
+  }
+  if (un.operator == "-") {
+    if (vt is ValTypeI32) {
+      let zero = cx.b.constI32(0, vt);
+      return cx.b.binary(IrOp.i32_sub, vt, zero, value);
+    }
+    if (vt is ValTypeI64) {
+      let zero = cx.b.constI64(0 as i64, vt);
+      return cx.b.binary(IrOp.i64_sub, vt, zero, value);
+    }
+    if (vt is ValTypeF64) {
+      return cx.b.emit(IrOp.f64_neg, vt, value, -1);
+    }
+    if (vt is ValTypeF32) {
+      return cx.b.emit(IrOp.f32_neg, vt, value, -1);
+    }
+    bail(cx, 'negate type');
+  }
+  if (un.operator == "~") {
+    if (vt is ValTypeI32) {
+      let minusOne = cx.b.constI32(-1, vt);
+      return cx.b.binary(IrOp.i32_xor, vt, value, minusOne);
+    }
+    if (vt is ValTypeI64) {
+      let minusOne = cx.b.constI64(-1 as i64, vt);
+      return cx.b.binary(IrOp.i64_xor, vt, value, minusOne);
+    }
+    bail(cx, 'bitwise not type');
+  }
+  return cx.fail('unary operator');
+};
+
+/**
+ * Scalar `as` casts. Same-representation casts (i32 as u32, boolean as
+ * i32) are no-ops; cross-representation casts use signed conversions
+ * and saturating truncation, matching the streaming backend. Casts
+ * FROM unsigned types bail (no unsigned convert ops wired yet).
+ */
+export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
+  let dstVt = cx.exprVt(expr);
+  // Literal-through-cast (`9223372036854775807 as u64`,
+  // `1.5 as f32`): the bare literal checks as i32/f64 and cannot
+  // lower alone at that width — parse it directly at the cast's
+  // width, exactly like streaming's handledLiteral path.
+  if (dstVt is ValTypeI64) {
+    if (expr.expression is NumberLiteral) {
+      if (let (true, wide) = parseI64OrU64Literal(
+          (expr.expression as NumberLiteral).raw)) {
+        return cx.b.constI64(wide, dstVt);
+      }
+    }
+    if (expr.expression is UnaryExpression) {
+      let un = expr.expression as UnaryExpression;
+      if (un.operator == '-' && un.argument is NumberLiteral) {
+        if (let (true, wideNeg) = parseI64OrU64Literal(
+            '-' + (un.argument as NumberLiteral).raw)) {
+          return cx.b.constI64(wideNeg, dstVt);
+        }
+      }
+    }
+  }
+  if (dstVt is ValTypeF64 && expr.expression is NumberLiteral) {
+    return cx.b.constF64(
+        parseF64((expr.expression as NumberLiteral).raw), dstVt);
+  }
+  if (dstVt is ValTypeF32 && expr.expression is NumberLiteral) {
+    return cx.b.constF32(
+        parseF64((expr.expression as NumberLiteral).raw), dstVt);
+  }
+  let value = cx.lowerExpr(expr.expression, null);
+  let srcVt = cx.valueTypeOf(value);
+  if (valTypeEquals(srcVt, dstVt)) {
+    return value;
+  }
+  if (isRefValType(srcVt) && isRefValType(dstVt)) {
+    // Reference casts, mirroring streaming: subtype-compatible
+    // values pass through uncast; everything else is a ref.cast —
+    // null-preserving for nullable targets, trapping for non-null
+    // ones (emission picks the form from the interned target type).
+    if (isValSubtype(srcVt, dstVt)) {
+      return value;
+    }
+    return cx.b.emit(IrOp.ref_cast, dstVt, value,
+        cx.b.internType(dstVt));
+  }
+  return scalarConvert(cx, value, dstVt);
+};

@@ -10,7 +10,7 @@
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
-import { Expression } from '../../ast.zena';
+import { BinaryExpression, Expression } from '../../ast.zena';
 import { Type, ClassType } from '../../types.zena';
 import { ValType } from '../wasm.zena';
 import {
@@ -82,6 +82,13 @@ export final class LoweringContext {
   envValues: (syms: Array<SymbolId>) => Array<i32>;
   /** Rebinds each symbol to its block param after a merge. */
   applyParams: (syms: Array<SymbolId>, params: Array<i32>) => void;
+  /** The instance behind a fat-pointer value of checked type `t`. */
+  unwrapFatPointer: (t: Type, value: i32) => i32;
+  /** Direct call to a class operator member: a (+) b as a.+(b). */
+  operatorMemberOn: (opMember: String, left: i32, right: i32,
+      leftCt: ClassType) => i32;
+  /** `left ?? right` (env-merging short-circuit; stays lowerer-side). */
+  nullishCoalesce: (bin: BinaryExpression) => i32;
   new(this.b, this.wasm, this.func, this.lowerExpr, this.valueTypeOf,
       this.exprVt, this.substitutedNodeType, this.reassertNonNull,
       this.stripNonNull, this.requireSupported, this.failConformance,
@@ -89,7 +96,8 @@ export final class LoweringContext {
       this.canonicalKeyOf, this.resolveDevirtualizedMethod,
       this.vtableSlotIndex, this.lowerVtableCall, this.bindPatternSym,
       this.recordDispatchRead, this.objectPropertyRead, this.addParams,
-      this.envValues, this.applyParams);
+      this.envValues, this.applyParams, this.unwrapFatPointer,
+      this.operatorMemberOn, this.nullishCoalesce);
 }
 
 /** An empty argument list (branch with no args, nullary call). */
