@@ -260,6 +260,25 @@ fn load_or_compile_module(engine: &Engine, wasm_path: &Path, cwasm_path: &Path) 
     }
 }
 
+/// The repository root that compiler wasm, stdlib, and cache paths hang off.
+/// Defaults to the checkout this binary was built in (CARGO_MANIFEST_DIR is
+/// baked in at compile time), so a binary built in one checkout serves
+/// another — a git worktree, a second clone — only via the ZENA_REPO_ROOT
+/// environment variable.
+fn repo_root() -> Result<std::path::PathBuf> {
+    if let Ok(root) = std::env::var("ZENA_REPO_ROOT") {
+        return std::fs::canonicalize(&root)
+            .with_context(|| format!("ZENA_REPO_ROOT does not exist: {root}"));
+    }
+    Ok(std::fs::canonicalize(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(),
+    )?)
+}
+
 /// Compiles a `.zena` source file by invoking the pre-built self-hosted compiler (`cli.wasm`)
 /// inside a Wasmtime sandbox, returning the path to the cached WebAssembly file.
 fn compile_to_cache(
@@ -272,13 +291,7 @@ fn compile_to_cache(
     debug: bool,
     target: Option<&str>,
 ) -> Result<std::path::PathBuf> {
-    let repo_root = std::fs::canonicalize(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap(),
-    )?;
+    let repo_root = repo_root()?;
     let compiler_wasm = std::env::var("ZENA_COMPILER_WASM")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| repo_root.join("packages/zena-compiler/zena/out/cli.wasm"));
@@ -607,13 +620,7 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
     guest_args.extend_from_slice(args);
     wasi_builder.args(&guest_args);
 
-    let repo_root = std::fs::canonicalize(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap(),
-    )?;
+    let repo_root = repo_root()?;
 
     for dir in dirs {
         // Handle format `HOST_DIR::GUEST_DIR` standard in wasmtime CLI
@@ -892,13 +899,7 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: b
 
     // Sequential warm-up of compiler cwasm to avoid parallel write collisions
     {
-        let repo_root = std::fs::canonicalize(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap(),
-        )?;
+        let repo_root = repo_root()?;
         let compiler_wasm = std::env::var("ZENA_COMPILER_WASM")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| repo_root.join("packages/zena-compiler/zena/out/cli.wasm"));
@@ -1002,13 +1003,7 @@ fn run_single_test(
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
     add_stack_trace_helpers(&mut linker, engine, &module)?;
 
-    let repo_root = std::fs::canonicalize(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap(),
-    )?;
+    let repo_root = repo_root()?;
     let stdlib_dir = std::fs::canonicalize(repo_root.join("packages/stdlib/zena"))?;
 
     // Setup in-memory stdout and stderr capture

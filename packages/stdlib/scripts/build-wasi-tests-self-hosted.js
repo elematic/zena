@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 import {spawn} from 'node:child_process';
-import {writeFileSync, existsSync, mkdirSync, statSync} from 'node:fs';
+import {
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+} from 'node:fs';
 import {dirname, join, relative, basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
@@ -44,8 +50,13 @@ for (const testFile of allTestFiles) {
   const baseName = basename(testFile, '.zena');
   const runnerFile = join(dirname(testFile), `${baseName}.__runner__.zena`);
 
-  // Write wrapper runner file
-  const wrapperContent = `import {runAndReport} from 'zena:test';
+  // Write wrapper runner file. Propagate @requires: wasmtime so the
+  // node-based portable runner skips wrappers of wasmtime-only tests.
+  const sourceContent = readFileSync(testFile, 'utf-8');
+  const requiresWasmtime = sourceContent.includes('@requires: wasmtime')
+    ? '// @requires: wasmtime\n'
+    : '';
+  const wrapperContent = `${requiresWasmtime}import {runAndReport} from 'zena:test';
 import {console} from 'zena:console';
 import {tests} from './${baseName}.zena';
 

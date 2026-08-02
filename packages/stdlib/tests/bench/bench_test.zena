@@ -1,0 +1,159 @@
+// @requires: wasmtime
+// Runner tests for zena:bench. Timing-dependent assertions are kept loose
+// (10x+ workload gaps) so they hold on loaded machines.
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, throws} from 'zena:assert';
+import {parseJson, JsonObject} from 'zena:json';
+import {
+  BenchRunner,
+  BenchContext,
+  formatFixed,
+  nowMs,
+  reportToString,
+  reportToJson,
+  collectMachineInfo,
+} from 'zena:bench';
+
+// Deterministic busy work the optimizer can't delete: the result feeds an
+// (always-false) branch the caller asserts on.
+var sink = 0;
+let busy = (iterations: i32): void => {
+  var acc = 0;
+  var i = 0;
+  while (i < iterations) {
+    acc += i % 7;
+    i += 1;
+  }
+  sink = acc;
+};
+
+export let tests = suite('zena:bench runner', (): void => {
+  test('nowMs is monotonic and advancing', (ctx: TestContext): void => {
+    let t0 = nowMs();
+    busy(10000);
+    let t1 = nowMs();
+    isTrue(t1 >= t0, 'monotonic clock does not go backwards');
+    isTrue(t0 > 0.0, 'clock reads a real value');
+  });
+
+  test('round-robin run resolves a 10x difference', (ctx: TestContext): void => {
+    let runner = new BenchRunner('gap');
+    runner.options.minSamples = 20;
+    runner.options.warmupRuns = 2;
+    runner.options.timeBudgetMs = 10000.0;
+    runner.bench('slow', (bctx: BenchContext) => { busy(200000); });
+    runner.bench('fast', (bctx: BenchContext) => { busy(20000); });
+
+    let report = runner.run();
+    equal(report.results.length, 2);
+    isTrue(report.durationMs > 0.0, 'duration recorded');
+
+    var slowMean = 0.0;
+    var fastMean = 0.0;
+    for (let r in report.results) {
+      isTrue(r.stats.n >= 20, 'at least minSamples collected');
+      equal(r.samples.length, r.stats.n);
+      isTrue(r.stats.ciLow <= r.stats.mean && r.stats.mean <= r.stats.ciHigh,
+        'CI brackets the mean');
+      if (r.name == 'slow') { slowMean = r.stats.mean; }
+      if (r.name == 'fast') { fastMean = r.stats.mean; }
+    }
+    isTrue(slowMean > fastMean, 'the 10x workload measures slower');
+
+    // With a 10x gap the difference must resolve at the default 0% horizon.
+    isTrue(report.resolved, 'report resolved');
+    for (let r in report.results) {
+      equal(r.differences.length, 1);
+      isTrue(r.differences[0].resolved, 'pairwise difference resolved');
+      isTrue(r.differences[0].diff.excludesZero(), 'difference excludes zero');
+    }
+  });
+
+  test('manual start/stop excludes setup work', (ctx: TestContext): void => {
+    let runner = new BenchRunner('manual-timer');
+    runner.options.minSamples = 10;
+    runner.options.warmupRuns = 1;
+    runner.options.timeBudgetMs = 10000.0;
+    // Identical total work; 'timed-slice' measures only a tiny slice of it.
+    runner.bench('whole', (bctx: BenchContext) => {
+      busy(100000);
+    });
+    runner.bench('timed-slice', (bctx: BenchContext) => {
+      busy(100000); // untimed setup
+      bctx.start();
+      busy(1000);
+      bctx.stop();
+    });
+
+    let report = runner.run();
+    var wholeMean = 0.0;
+    var sliceMean = 0.0;
+    for (let r in report.results) {
+      if (r.name == 'whole') { wholeMean = r.stats.mean; }
+      if (r.name == 'timed-slice') { sliceMean = r.stats.mean; }
+    }
+    isTrue(sliceMean * 5.0 < wholeMean,
+      'manually timed slice is far below the whole invocation');
+  });
+
+  test('single benchmark needs no comparisons to resolve', (ctx: TestContext): void => {
+    let runner = new BenchRunner('solo');
+    runner.options.minSamples = 5;
+    runner.options.warmupRuns = 0;
+    runner.bench('only', (bctx: BenchContext) => { busy(1000); });
+    let report = runner.run();
+    isTrue(report.resolved, 'solo run resolves immediately');
+    equal(report.results.length, 1);
+    equal(report.results[0].differences.length, 0);
+  });
+
+  test('duplicate benchmark names are rejected', (ctx: TestContext): void => {
+    let runner = new BenchRunner('dup');
+    runner.bench('a', (bctx: BenchContext) => {});
+    throws(() => { runner.bench('a', (bctx: BenchContext) => {}); });
+  });
+
+  test('running with no benchmarks is rejected', (ctx: TestContext): void => {
+    let runner = new BenchRunner('empty');
+    throws(() => { runner.run(); });
+  });
+
+  test('report renders and JSON round-trips', (ctx: TestContext): void => {
+    let runner = new BenchRunner('json');
+    runner.options.minSamples = 5;
+    runner.options.warmupRuns = 0;
+    runner.options.timeBudgetMs = 5000.0;
+    runner.bench('a', (bctx: BenchContext) => { busy(20000); });
+    runner.bench('b', (bctx: BenchContext) => { busy(2000); });
+    let report = runner.run();
+
+    let text = reportToString(report);
+    isTrue(text.contains('zena:bench — json'), 'report names the suite');
+    isTrue(text.contains('95% CI'), 'report shows confidence intervals');
+
+    let parsed = parseJson(reportToJson(report));
+    isTrue(parsed is JsonObject, 'top level is an object');
+    let obj = parsed as JsonObject;
+    isTrue(obj.has('schemaVersion'), 'has schemaVersion');
+    isTrue(obj.has('results'), 'has results');
+    isTrue(obj.has('machine'), 'has machine');
+    isTrue(obj.has('options'), 'has options');
+    isTrue(obj.has('timestampMs'), 'has timestampMs');
+  });
+
+  test('machine info collection does not throw', (ctx: TestContext): void => {
+    // Content depends on preopens; only the contract "never throws, uses
+    // null/negative sentinels" is portable.
+    let info = collectMachineInfo();
+    isTrue(info.cpuCores == -1 || info.cpuCores > 0, 'cores sentinel or real');
+  });
+
+  test('formatFixed', (ctx: TestContext): void => {
+    equal(formatFixed(1.23456, 3), '1.235');
+    equal(formatFixed(1.0, 2), '1.00');
+    equal(formatFixed(0.05, 1), '0.1');
+    equal(formatFixed(0.0 - 1.5, 1), '-1.5');
+    equal(formatFixed(12.0, 0), '12');
+    equal(formatFixed(0.004, 2), '0.00');
+  });
+});

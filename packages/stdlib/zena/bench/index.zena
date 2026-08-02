@@ -1,0 +1,627 @@
+/**
+ * zena:bench — a Tachometer-style benchmark runner (CLI-only).
+ *
+ * Architecture copied from Google's Tachometer
+ * (https://github.com/google/tachometer), minus the browsers:
+ *
+ * - Variants are sampled in ROUND-ROBIN order, one sample per variant per
+ *   round, so drifting CPU load or thermal throttling biases every variant
+ *   equally instead of penalizing whichever ran last.
+ * - Each variant's samples form a distribution, summarized with a 95%
+ *   confidence interval of the mean (./stats.zena, re-exported here).
+ * - Variants are compared via the CI of the DIFFERENCE of means: if that
+ *   interval excludes zero the conclusion "A is faster than B" is robust;
+ *   if it straddles zero the honest answer is "unsure" — and the runner
+ *   keeps sampling until every comparison is resolved against the
+ *   configured horizons or the time budget is exhausted.
+ *
+ * This module measures in-process variants (closures in one binary).
+ * Cross-binary comparison — the same workload compiled by two compiler
+ * versions, or against a pinned .wat milestone — needs a host-side
+ * orchestrator; see docs/design/benchmarking.md.
+ *
+ * WASI-only, like zena:fs: it imports the WASI monotonic clock directly.
+ */
+
+import { Array } from 'zena:growable-array';
+import { Error } from 'zena:error';
+import { StringBuilder } from 'zena:string-builder';
+import { JsonBuilder } from 'zena:json';
+import { Memory, defaultAllocator } from 'zena:memory';
+import { readFile, isFile } from 'zena:fs';
+import { i32ToString, i64ToString, parseF64, parseI64 } from 'zena:string-convert';
+import { abs, floor, div } from 'zena:math';
+import {
+  SummaryStats,
+  Difference,
+  Horizons,
+  summarize,
+  differenceOfMeans,
+  parseHorizons,
+  isResolved,
+} from './stats.zena';
+
+export * from './stats.zena';
+
+// ============================================================================
+// Clocks
+// ============================================================================
+
+@external("wasi_snapshot_preview1", "clock_time_get")
+declare function __wasi_clock_time_get(
+  clockId: i32,
+  precision: i64,
+  timePtr: i32
+): i32;
+
+let readClockMs = (clockId: i32): f64 => {
+  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
+    let res = __wasi_clock_time_get(clockId, 1 as i64, addr);
+    if (res == 0) {
+      let ns = Memory.default.getI64(addr);
+      defaultAllocator.free(addr);
+      return (ns as f64) / 1000000.0;
+    }
+    defaultAllocator.free(addr);
+  }
+  return 0.0;
+};
+
+/** Monotonic time in milliseconds (nanosecond-resolution WASI clock). */
+export let nowMs = (): f64 => readClockMs(1);
+
+/** Wall-clock milliseconds since the Unix epoch, for stamping results. */
+export let realtimeMs = (): f64 => readClockMs(0);
+
+// ============================================================================
+// Benchmark registration and measurement
+// ============================================================================
+
+/**
+ * Passed to each benchmark function. By default the full invocation is
+ * timed; call start()/stop() (possibly repeatedly) to measure only the
+ * region of interest and exclude setup/teardown.
+ */
+export class BenchContext {
+  var #manual = false;
+  var #running = false;
+  var #startMs = 0.0;
+  var #accumMs = 0.0;
+
+  new();
+
+  start(): void {
+    this.#manual = true;
+    this.#running = true;
+    this.#startMs = nowMs();
+  }
+
+  stop(): void {
+    if (this.#running) {
+      this.#accumMs += nowMs() - this.#startMs;
+      this.#running = false;
+    }
+  }
+
+  /** Internal: the measured time for this invocation. */
+  sampleMs(wholeInvocationMs: f64): f64 {
+    if (this.#manual) {
+      this.stop();
+      return this.#accumMs;
+    }
+    return wholeInvocationMs;
+  }
+}
+
+class BenchCase {
+  name: String;
+  fn: (ctx: BenchContext) => void;
+  var samples = new Array<f64>();
+
+  new(this.name, this.fn);
+}
+
+class RoundResults {
+  results: Array<BenchResult>;
+  allResolved: boolean;
+
+  new(this.results, this.allResolved);
+}
+
+/** TODO: replace with a record type when records get optional fields. */
+export class BenchOptions {
+  /** Samples collected per variant before the first conclusiveness check. */
+  var minSamples: i32 = 50;
+  /** Additional samples per variant per auto-sample round. */
+  var extraSamples: i32 = 10;
+  /** Untimed invocations per variant before sampling begins. */
+  var warmupRuns: i32 = 5;
+  /** Give up on resolving comparisons after this long (sampling still
+   * stops only at a round boundary, so every variant has equal counts). */
+  var timeBudgetMs: f64 = 60000.0;
+  /** Resolution horizons; see ./stats.zena. Default: 0% only. */
+  var horizons: FixedArray<String> = ['0%'];
+
+  new();
+}
+
+// ============================================================================
+// Results
+// ============================================================================
+
+export class PairwiseDifference {
+  /** Name of the variant compared against. */
+  vs: String;
+  /** CI of (this variant's mean - other's mean); pct relative to other. */
+  diff: Difference;
+  resolved: boolean;
+
+  new(this.vs, this.diff, this.resolved);
+}
+
+export class BenchResult {
+  name: String;
+  samples: Array<f64>;
+  stats: SummaryStats;
+  differences = new Array<PairwiseDifference>();
+
+  new(this.name, this.samples, this.stats);
+}
+
+export class BenchReport {
+  suiteName: String;
+  results: Array<BenchResult>;
+  machine: MachineInfo;
+  /** Wall-clock timestamp (ms since epoch) when the run finished. */
+  timestampMs: f64;
+  /** Total sampling duration, monotonic ms. */
+  durationMs: f64;
+  /** True when every pairwise comparison resolved within budget. */
+  resolved: boolean;
+  options: BenchOptions;
+
+  new(
+    this.suiteName,
+    this.results,
+    this.machine,
+    this.timestampMs,
+    this.durationMs,
+    this.resolved,
+    this.options);
+}
+
+// ============================================================================
+// Runner
+// ============================================================================
+
+export class BenchRunner {
+  name: String;
+  var options = new BenchOptions();
+  #cases = new Array<BenchCase>();
+
+  new(this.name);
+
+  /** Registers a variant. Names must be unique within the runner. */
+  bench(name: String, fn: (ctx: BenchContext) => void): void {
+    for (let c in this.#cases) {
+      if (c.name == name) {
+        throw new Error(`duplicate benchmark name: ${name}`);
+      }
+    }
+    this.#cases.push(new BenchCase(name, fn));
+  }
+
+  #sampleOnce(c: BenchCase): void {
+    let ctx = new BenchContext();
+    let t0 = nowMs();
+    c.fn(ctx);
+    let total = nowMs() - t0;
+    c.samples.push(ctx.sampleMs(total));
+  }
+
+  /** One round-robin round: one sample from each variant. */
+  #round(): void {
+    for (let c in this.#cases) {
+      this.#sampleOnce(c);
+    }
+  }
+
+  #computeResults(horizons: Horizons): RoundResults {
+    let results = new Array<BenchResult>();
+    for (let c in this.#cases) {
+      results.push(new BenchResult(c.name, c.samples, summarize(c.samples)));
+    }
+    var allResolved = true;
+    var i = 0;
+    while (i < results.length) {
+      var j = 0;
+      while (j < results.length) {
+        if (i != j) {
+          let d = differenceOfMeans(results[i].stats, results[j].stats);
+          let resolved = isResolved(d, horizons);
+          results[i].differences.push(
+            new PairwiseDifference(results[j].name, d, resolved));
+          if (!resolved) {
+            allResolved = false;
+          }
+        }
+        j += 1;
+      }
+      i += 1;
+    }
+    return new RoundResults(results, allResolved);
+  }
+
+  /**
+   * Runs all variants: warmup, then minSamples round-robin rounds, then
+   * auto-sampling rounds until conclusive or over budget.
+   */
+  run(): BenchReport {
+    if (this.#cases.length == 0) {
+      throw new Error('BenchRunner has no benchmarks registered');
+    }
+    let horizons = parseHorizons(this.options.horizons);
+    let started = nowMs();
+
+    var w = 0;
+    while (w < this.options.warmupRuns) {
+      for (let c in this.#cases) {
+        let ctx = new BenchContext();
+        c.fn(ctx);
+      }
+      w += 1;
+    }
+    // Warmup invocations must not pollute the measured distribution.
+    for (let c in this.#cases) {
+      c.samples = new Array<f64>();
+    }
+
+    var s = 0;
+    while (s < this.options.minSamples) {
+      this.#round();
+      s += 1;
+    }
+
+    var round = this.#computeResults(horizons);
+    while (!round.allResolved && nowMs() - started < this.options.timeBudgetMs) {
+      var e = 0;
+      while (e < this.options.extraSamples) {
+        this.#round();
+        e += 1;
+      }
+      round = this.#computeResults(horizons);
+    }
+
+    return new BenchReport(
+      this.name,
+      round.results,
+      collectMachineInfo(),
+      realtimeMs(),
+      nowMs() - started,
+      round.allResolved,
+      this.options);
+  }
+}
+
+// ============================================================================
+// Machine info
+// ============================================================================
+
+/**
+ * Best-effort host description recorded with each run. Fields are null /
+ * negative when the source (/proc, /etc/hostname) is not readable — e.g.
+ * when the runner's preopens don't include the host root. Load averages
+ * matter most: a loaded machine widens CIs, and recording load explains
+ * why after the fact.
+ */
+export class MachineInfo {
+  var cpuModel: String | null = null;
+  var cpuCores: i32 = -1;
+  var memTotalKb: i64 = (0 as i64) - (1 as i64);
+  var memAvailableKb: i64 = (0 as i64) - (1 as i64);
+  var load1: f64 = -1.0;
+  var load5: f64 = -1.0;
+  var load15: f64 = -1.0;
+  var hostname: String | null = null;
+
+  new();
+}
+
+let tryReadFile = (path: String): String | null => {
+  return try {
+    if (isFile(path)) { readFile(path) } else { null }
+  } catch (e) {
+    null
+  };
+};
+
+let trim = (s: String): String => {
+  var start = 0;
+  var end = s.length;
+  while (start < end) {
+    let b = s.getByteAt(start);
+    if (b != 32 && b != 9 && b != 10 && b != 13) { break; }
+    start += 1;
+  }
+  while (end > start) {
+    let b = s.getByteAt(end - 1);
+    if (b != 32 && b != 9 && b != 10 && b != 13) { break; }
+    end -= 1;
+  }
+  return s.sliceBytes(start, end);
+};
+
+let lineValue = (line: String): String => {
+  let parts = line.split(':');
+  if (parts.length < 2) {
+    return '';
+  }
+  return trim(parts[1]);
+};
+
+export let collectMachineInfo = (): MachineInfo => {
+  let info = new MachineInfo();
+
+  let cpuinfo = tryReadFile('/proc/cpuinfo');
+  if (cpuinfo != null) {
+    var cores = 0;
+    for (let line in cpuinfo.split('\n')) {
+      if (line.startsWith('processor')) {
+        cores += 1;
+      } else if (line.startsWith('model name') && info.cpuModel == null) {
+        info.cpuModel = lineValue(line);
+      }
+    }
+    if (cores > 0) {
+      info.cpuCores = cores;
+    }
+  }
+
+  let meminfo = tryReadFile('/proc/meminfo');
+  if (meminfo != null) {
+    for (let line in meminfo.split('\n')) {
+      // Lines look like "MemTotal:       23990728 kB".
+      if (line.startsWith('MemTotal:')) {
+        if (let (true, kb) = parseI64(lineValue(line).split(' ')[0])) {
+          info.memTotalKb = kb;
+        }
+      } else if (line.startsWith('MemAvailable:')) {
+        if (let (true, kb) = parseI64(lineValue(line).split(' ')[0])) {
+          info.memAvailableKb = kb;
+        }
+      }
+    }
+  }
+
+  let loadavg = tryReadFile('/proc/loadavg');
+  if (loadavg != null) {
+    let parts = trim(loadavg).split(' ');
+    if (parts.length >= 3) {
+      info.load1 = parseF64(parts[0]);
+      info.load5 = parseF64(parts[1]);
+      info.load15 = parseF64(parts[2]);
+    }
+  }
+
+  let hostname = tryReadFile('/etc/hostname');
+  if (hostname != null) {
+    let trimmed = trim(hostname);
+    if (trimmed.length > 0) {
+      info.hostname = trimmed;
+    }
+  }
+
+  return info;
+};
+
+// ============================================================================
+// Formatting
+// ============================================================================
+
+/** Formats a non-huge f64 with a fixed number of decimals (no exponent). */
+export let formatFixed = (value: f64, decimals: i32): String => {
+  var scale = 1.0;
+  var d = 0;
+  while (d < decimals) {
+    scale *= 10.0;
+    d += 1;
+  }
+  let neg = value < 0.0;
+  let scaled = floor(abs(value) * scale + 0.5) as i64;
+  let scaleI = scale as i64;
+  let whole = div(scaled, scaleI);
+  let frac = scaled % scaleI;
+  let sb = new StringBuilder();
+  if (neg && scaled != (0 as i64)) {
+    sb.append('-');
+  }
+  sb.append(i64ToString(whole));
+  if (decimals > 0) {
+    sb.append('.');
+    let fracStr = i64ToString(frac);
+    var pad = decimals - fracStr.length;
+    while (pad > 0) {
+      sb.append('0');
+      pad -= 1;
+    }
+    sb.append(fracStr);
+  }
+  return sb.toString();
+};
+
+let padRight = (s: String, width: i32): String => {
+  if (s.length >= width) {
+    return s;
+  }
+  let sb = new StringBuilder();
+  sb.append(s);
+  var i = s.length;
+  while (i < width) {
+    sb.append(' ');
+    i += 1;
+  }
+  return sb.toString();
+};
+
+let signedPct = (v: f64): String => {
+  return if (v >= 0.0) { '+' + formatFixed(v, 1) + '%' } else { formatFixed(v, 1) + '%' };
+};
+
+let describeDifference = (p: PairwiseDifference): String => {
+  let d = p.diff;
+  if (d.absHigh < 0.0) {
+    // This variant's mean CI is entirely below the other's: faster.
+    return `faster than ${p.vs} by ${formatFixed(0.0 - d.pctHigh, 1)}% – ${formatFixed(0.0 - d.pctLow, 1)}% (${formatFixed(0.0 - d.absHigh, 3)}ms – ${formatFixed(0.0 - d.absLow, 3)}ms)`;
+  }
+  if (d.absLow > 0.0) {
+    return `slower than ${p.vs} by ${formatFixed(d.pctLow, 1)}% – ${formatFixed(d.pctHigh, 1)}% (${formatFixed(d.absLow, 3)}ms – ${formatFixed(d.absHigh, 3)}ms)`;
+  }
+  let qualifier = if (p.resolved) { 'indistinguishable from' } else { 'unsure vs' };
+  return `${qualifier} ${p.vs}: ${signedPct(d.pctLow)} – ${signedPct(d.pctHigh)}`;
+};
+
+/** Renders the Tachometer-style terminal report. */
+export let reportToString = (report: BenchReport): String => {
+  let sb = new StringBuilder();
+  sb.append(`zena:bench — ${report.suiteName}\n`);
+
+  let m = report.machine;
+  let machineSb = new StringBuilder();
+  if (m.cpuModel != null) {
+    machineSb.append(m.cpuModel as String);
+    if (m.cpuCores > 0) {
+      machineSb.append(` × ${i32ToString(m.cpuCores)}`);
+    }
+  } else if (m.cpuCores > 0) {
+    machineSb.append(`${i32ToString(m.cpuCores)} cores`);
+  }
+  if (m.load1 >= 0.0) {
+    if (machineSb.length > 0) { machineSb.append(', '); }
+    machineSb.append(`load ${formatFixed(m.load1, 2)} ${formatFixed(m.load5, 2)} ${formatFixed(m.load15, 2)}`);
+  }
+  if (m.memAvailableKb >= (0 as i64)) {
+    if (machineSb.length > 0) { machineSb.append(', '); }
+    machineSb.append(`${i64ToString(div(m.memAvailableKb, 1024 as i64))}MiB free`);
+  }
+  if (machineSb.length > 0) {
+    sb.append(`machine: ${machineSb.toString()}\n`);
+  }
+
+  var n = 0;
+  if (report.results.length > 0) {
+    n = report.results[0].stats.n;
+  }
+  let status = if (report.resolved) { 'resolved' } else { 'UNRESOLVED (time budget exhausted)' };
+  sb.append(`status: ${status} after ${i32ToString(n)} samples/variant in ${formatFixed(report.durationMs, 0)}ms\n\n`);
+
+  var nameWidth = 0;
+  for (let r in report.results) {
+    if (r.name.length > nameWidth) {
+      nameWidth = r.name.length;
+    }
+  }
+
+  for (let r in report.results) {
+    let s = r.stats;
+    sb.append(`  ${padRight(r.name, nameWidth)}  mean ${formatFixed(s.mean, 3)}ms  95% CI [${formatFixed(s.ciLow, 3)}ms, ${formatFixed(s.ciHigh, 3)}ms]  sd ${formatFixed(s.stdDev, 3)}ms  n=${i32ToString(s.n)}\n`);
+  }
+  if (report.results.length > 1) {
+    sb.append('\n');
+    for (let r in report.results) {
+      for (let p in r.differences) {
+        sb.append(`  ${padRight(r.name, nameWidth)}  ${describeDifference(p)}\n`);
+      }
+    }
+  }
+  return sb.toString();
+};
+
+// ============================================================================
+// JSON results
+// ============================================================================
+
+/**
+ * Serializes a report for recording and later cross-run comparison. The
+ * schema is versioned; consumers must reject versions they don't know.
+ */
+export let reportToJson = (report: BenchReport): String => {
+  let b = new JsonBuilder();
+  b.beginObject();
+  b.key('schemaVersion').i32(1);
+  b.key('suite').string(report.suiteName);
+  b.key('timestampMs').f64(report.timestampMs);
+  b.key('durationMs').f64(report.durationMs);
+  b.key('resolved').bool(report.resolved);
+
+  b.key('options').beginObject();
+  b.key('minSamples').i32(report.options.minSamples);
+  b.key('extraSamples').i32(report.options.extraSamples);
+  b.key('warmupRuns').i32(report.options.warmupRuns);
+  b.key('timeBudgetMs').f64(report.options.timeBudgetMs);
+  b.key('horizons').beginArray();
+  for (let h in report.options.horizons) {
+    b.string(h);
+  }
+  b.endArray();
+  b.endObject();
+
+  let m = report.machine;
+  b.key('machine').beginObject();
+  b.key('cpuModel');
+  if (m.cpuModel != null) { b.string(m.cpuModel as String); } else { b.nullValue(); }
+  b.key('cpuCores');
+  if (m.cpuCores >= 0) { b.i32(m.cpuCores); } else { b.nullValue(); }
+  b.key('memTotalKb');
+  if (m.memTotalKb >= (0 as i64)) { b.i64(m.memTotalKb); } else { b.nullValue(); }
+  b.key('memAvailableKb');
+  if (m.memAvailableKb >= (0 as i64)) { b.i64(m.memAvailableKb); } else { b.nullValue(); }
+  b.key('load1');
+  if (m.load1 >= 0.0) { b.f64(m.load1); } else { b.nullValue(); }
+  b.key('load5');
+  if (m.load5 >= 0.0) { b.f64(m.load5); } else { b.nullValue(); }
+  b.key('load15');
+  if (m.load15 >= 0.0) { b.f64(m.load15); } else { b.nullValue(); }
+  b.key('hostname');
+  if (m.hostname != null) { b.string(m.hostname as String); } else { b.nullValue(); }
+  b.endObject();
+
+  b.key('results').beginArray();
+  for (let r in report.results) {
+    b.beginObject();
+    b.key('name').string(r.name);
+    let s = r.stats;
+    b.key('stats').beginObject();
+    b.key('n').i32(s.n);
+    b.key('mean').f64(s.mean);
+    b.key('stdDev').f64(s.stdDev);
+    b.key('variance').f64(s.variance);
+    b.key('min').f64(s.min);
+    b.key('max').f64(s.max);
+    b.key('median').f64(s.median);
+    b.key('ciLow').f64(s.ciLow);
+    b.key('ciHigh').f64(s.ciHigh);
+    b.endObject();
+    b.key('differences').beginArray();
+    for (let p in r.differences) {
+      b.beginObject();
+      b.key('vs').string(p.vs);
+      b.key('absLow').f64(p.diff.absLow);
+      b.key('absHigh').f64(p.diff.absHigh);
+      b.key('pctLow').f64(p.diff.pctLow);
+      b.key('pctHigh').f64(p.diff.pctHigh);
+      b.key('resolved').bool(p.resolved);
+      b.endObject();
+    }
+    b.endArray();
+    b.key('samples').beginArray();
+    for (let sample in r.samples) {
+      b.f64(sample);
+    }
+    b.endArray();
+    b.endObject();
+  }
+  b.endArray();
+
+  b.endObject();
+  return b.toString();
+};

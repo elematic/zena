@@ -1,0 +1,248 @@
+/**
+ * Statistics for the zena:bench benchmark runner.
+ *
+ * The design follows Google's Tachometer (https://github.com/google/tachometer):
+ * each benchmark variant yields a distribution of samples; we summarize each
+ * distribution with a 95% confidence interval of its mean, and compare
+ * variants with a confidence interval of the *difference* of their means
+ * (Welch's unequal-variances construction). Two variants are only called
+ * faster/slower than each other when the difference CI excludes zero — and
+ * auto-sampling keeps collecting until every pairwise comparison is resolved
+ * against the configured horizons or the time budget runs out.
+ */
+
+import { Array } from 'zena:growable-array';
+import { sqrt, abs, floor, div } from 'zena:math';
+import { parseF64 } from 'zena:string-convert';
+
+/**
+ * Summary of one benchmark variant's sample distribution. Times are in
+ * milliseconds. The confidence interval is a 95% t-interval of the mean.
+ */
+export class SummaryStats {
+  n: i32;
+  mean: f64;
+  variance: f64; // sample variance (n - 1 denominator)
+  stdDev: f64;
+  min: f64;
+  max: f64;
+  median: f64;
+  ciLow: f64;
+  ciHigh: f64;
+
+  new(
+    this.n,
+    this.mean,
+    this.variance,
+    this.stdDev,
+    this.min,
+    this.max,
+    this.median,
+    this.ciLow,
+    this.ciHigh);
+}
+
+/**
+ * Returns a sorted copy of the samples. Insertion sort: sample arrays are at
+ * most a few thousand entries and typically nearly sorted regions dominate.
+ */
+export let sortedCopy = (samples: Array<f64>): Array<f64> => {
+  let out = new Array<f64>();
+  for (let s in samples) {
+    out.push(s);
+  }
+  var i = 1;
+  while (i < out.length) {
+    let value = out[i];
+    var j = i - 1;
+    while (j >= 0 && out[j] > value) {
+      out[j + 1] = out[j];
+      j -= 1;
+    }
+    out[j + 1] = value;
+    i += 1;
+  }
+  return out;
+};
+
+// Two-sided 95% critical values of Student's t distribution for degrees of
+// freedom 1..30. Beyond 30 we interpolate in 1/df toward the normal 1.960.
+// This is the only confidence level zena:bench supports; a full inverse CDF
+// (incomplete beta) is not worth carrying for a benchmark reporter.
+let T95 = [
+  12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
+  2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
+  2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042,
+];
+
+/**
+ * Two-sided 95% critical value of Student's t distribution for the given
+ * (possibly fractional, from Welch–Satterthwaite) degrees of freedom.
+ */
+export let tCritical95 = (df: f64): f64 => {
+  if (df <= 1.0) {
+    return T95[0];
+  }
+  if (df < 30.0) {
+    let lo = floor(df);
+    let index = (lo as i32) - 1;
+    let frac = df - lo;
+    let a = T95[index];
+    let b = if (index + 1 < T95.length) { T95[index + 1] } else { T95[T95.length - 1] };
+    return a + (b - a) * frac;
+  }
+  let t30 = T95[T95.length - 1];
+  let z = 1.960;
+  let w = (1.0 / df) * 30.0;
+  return z + (t30 - z) * w;
+};
+
+/**
+ * Summarizes a sample distribution. With fewer than two samples the spread
+ * statistics are zero and the CI collapses to the mean.
+ */
+export let summarize = (samples: Array<f64>): SummaryStats => {
+  let n = samples.length;
+  if (n == 0) {
+    return new SummaryStats(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  }
+  var sum = 0.0;
+  var minV = samples[0];
+  var maxV = samples[0];
+  for (let s in samples) {
+    sum += s;
+    if (s < minV) { minV = s; }
+    if (s > maxV) { maxV = s; }
+  }
+  let mean = sum / (n as f64);
+
+  var variance = 0.0;
+  if (n > 1) {
+    var sumSq = 0.0;
+    for (let s in samples) {
+      let d = s - mean;
+      sumSq += d * d;
+    }
+    variance = sumSq / ((n - 1) as f64);
+  }
+  let stdDev = sqrt(variance);
+
+  let sorted = sortedCopy(samples);
+  let half = div(n, 2);
+  let median = if (n % 2 == 1) {
+    sorted[half]
+  } else {
+    (sorted[half - 1] + sorted[half]) / 2.0
+  };
+
+  var ciLow = mean;
+  var ciHigh = mean;
+  if (n > 1) {
+    let se = stdDev / sqrt(n as f64);
+    let t = tCritical95((n - 1) as f64);
+    ciLow = mean - t * se;
+    ciHigh = mean + t * se;
+  }
+  return new SummaryStats(n, mean, variance, stdDev, minV, maxV, median, ciLow, ciHigh);
+};
+
+/**
+ * 95% confidence interval of (a.mean - b.mean), Welch's construction.
+ * Positive values mean a is slower than b. The pct bounds are the same
+ * interval expressed as a percentage of b's mean, so "a vs b" conclusions
+ * read as "a is faster/slower than b by X%–Y%".
+ */
+export class Difference {
+  absLow: f64;
+  absHigh: f64;
+  pctLow: f64;
+  pctHigh: f64;
+
+  new(this.absLow, this.absHigh, this.pctLow, this.pctHigh);
+
+  /** True when the CI excludes zero, i.e. a and b measurably differ. */
+  excludesZero(): boolean {
+    return this.absHigh < 0.0 || this.absLow > 0.0;
+  }
+}
+
+export let differenceOfMeans = (a: SummaryStats, b: SummaryStats): Difference => {
+  let meanDiff = a.mean - b.mean;
+  var se = 0.0;
+  var df = 1.0;
+  if (a.n > 1 && b.n > 1) {
+    let seA2 = a.variance / (a.n as f64);
+    let seB2 = b.variance / (b.n as f64);
+    se = sqrt(seA2 + seB2);
+    let den =
+      seA2 * seA2 / ((a.n - 1) as f64) + seB2 * seB2 / ((b.n - 1) as f64);
+    if (den > 0.0) {
+      df = (seA2 + seB2) * (seA2 + seB2) / den;
+    }
+  }
+  let t = tCritical95(df);
+  let absLow = meanDiff - t * se;
+  let absHigh = meanDiff + t * se;
+  var pctLow = 0.0;
+  var pctHigh = 0.0;
+  if (b.mean != 0.0) {
+    pctLow = absLow / b.mean * 100.0;
+    pctHigh = absHigh / b.mean * 100.0;
+  }
+  return new Difference(absLow, absHigh, pctLow, pctHigh);
+};
+
+/**
+ * Resolution thresholds, as in Tachometer: a pairwise difference is resolved
+ * once its CI straddles no horizon boundary. The default single horizon of
+ * 0% resolves when the CI excludes zero (a definite faster/slower) — but a
+ * CI lying entirely inside [-1%, +1%] is also a conclusion ("differs by less
+ * than 1%") if you configure a 1% horizon.
+ */
+export class Horizons {
+  percents = new Array<f64>();
+  absolutes = new Array<f64>(); // milliseconds
+
+  new();
+}
+
+/**
+ * Parses horizon specs: "0%", "1.5%" (relative to the compared-to mean) or
+ * "0.5ms" / "2" (absolute milliseconds). Values are symmetric: "1%" tests
+ * both +1% and -1%.
+ */
+export let parseHorizons = (specs: FixedArray<String>): Horizons => {
+  let h = new Horizons();
+  for (let spec in specs) {
+    if (spec.endsWith('%')) {
+      h.percents.push(abs(parseF64(spec.sliceBytes(0, spec.length - 1))));
+    } else if (spec.endsWith('ms')) {
+      h.absolutes.push(abs(parseF64(spec.sliceBytes(0, spec.length - 2))));
+    } else {
+      h.absolutes.push(abs(parseF64(spec)));
+    }
+  }
+  return h;
+};
+
+let straddles = (low: f64, high: f64, x: f64): boolean => {
+  return low < x && x < high;
+};
+
+/**
+ * True when the difference CI straddles no horizon boundary, i.e. more
+ * sampling is not expected to change the conclusion.
+ */
+export let isResolved = (d: Difference, horizons: Horizons): boolean => {
+  for (let p in horizons.percents) {
+    if (straddles(d.pctLow, d.pctHigh, p) || straddles(d.pctLow, d.pctHigh, 0.0 - p)) {
+      return false;
+    }
+  }
+  for (let a in horizons.absolutes) {
+    if (straddles(d.absLow, d.absHigh, a) || straddles(d.absLow, d.absHigh, 0.0 - a)) {
+      return false;
+    }
+  }
+  return true;
+};

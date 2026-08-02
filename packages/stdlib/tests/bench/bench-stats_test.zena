@@ -1,0 +1,149 @@
+// @requires: wasmtime
+// Statistics tests for zena:bench (which re-exports its private stats.zena).
+// Reference values computed independently (t-tables and hand-worked CIs).
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {abs} from 'zena:math';
+import {Array} from 'zena:growable-array';
+import {
+  summarize,
+  sortedCopy,
+  tCritical95,
+  differenceOfMeans,
+  parseHorizons,
+  isResolved,
+  SummaryStats,
+} from 'zena:bench';
+
+let approx = (actual: f64, expected: f64, tolerance: f64, label: String): void => {
+  isTrue(
+    abs(actual - expected) <= tolerance,
+    `${label}: expected ${expected}, got ${actual}`);
+};
+
+let arrayOf = (values: FixedArray<f64>): Array<f64> => {
+  let out = new Array<f64>();
+  for (let v in values) {
+    out.push(v);
+  }
+  return out;
+};
+
+export let tests = suite('zena:bench statistics', (): void => {
+  test('sortedCopy sorts and preserves the input', (ctx: TestContext): void => {
+    let input = arrayOf([3.0, 1.0, 2.0, 5.0, 4.0]);
+    let sorted = sortedCopy(input);
+    equal(sorted.length, 5);
+    equal(sorted[0], 1.0);
+    equal(sorted[1], 2.0);
+    equal(sorted[2], 3.0);
+    equal(sorted[3], 4.0);
+    equal(sorted[4], 5.0);
+    // Input untouched.
+    equal(input[0], 3.0);
+  });
+
+  test('summarize on a known distribution', (ctx: TestContext): void => {
+    // Classic example: mean 5, sample sd sqrt(32/7) ≈ 2.13809.
+    let stats = summarize(arrayOf([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]));
+    equal(stats.n, 8);
+    approx(stats.mean, 5.0, 0.000001, 'mean');
+    approx(stats.stdDev, 2.13809, 0.0001, 'stdDev');
+    approx(stats.median, 4.5, 0.000001, 'median');
+    equal(stats.min, 2.0);
+    equal(stats.max, 9.0);
+    // 95% CI: mean ± t(7) * sd / sqrt(8) = 5 ± 2.365 * 0.755929 = 5 ± 1.78777
+    approx(stats.ciLow, 3.21223, 0.001, 'ciLow');
+    approx(stats.ciHigh, 6.78777, 0.001, 'ciHigh');
+  });
+
+  test('summarize median of odd-length samples', (ctx: TestContext): void => {
+    let stats = summarize(arrayOf([9.0, 1.0, 5.0]));
+    approx(stats.median, 5.0, 0.000001, 'median');
+  });
+
+  test('summarize degenerate cases', (ctx: TestContext): void => {
+    let empty = summarize(new Array<f64>());
+    equal(empty.n, 0);
+
+    let one = summarize(arrayOf([3.5]));
+    equal(one.n, 1);
+    approx(one.mean, 3.5, 0.000001, 'mean');
+    approx(one.stdDev, 0.0, 0.000001, 'stdDev');
+    // CI collapses to the mean.
+    approx(one.ciLow, 3.5, 0.000001, 'ciLow');
+    approx(one.ciHigh, 3.5, 0.000001, 'ciHigh');
+  });
+
+  test('t critical values match the standard table', (ctx: TestContext): void => {
+    approx(tCritical95(1.0), 12.706, 0.0001, 't(1)');
+    approx(tCritical95(7.0), 2.365, 0.0001, 't(7)');
+    approx(tCritical95(30.0), 2.042, 0.001, 't(30)');
+    // Fractional df interpolates between neighbors.
+    let t7 = tCritical95(7.0);
+    let t8 = tCritical95(8.0);
+    let t75 = tCritical95(7.5);
+    isTrue(t75 < t7 && t75 > t8, 'interpolation is monotonic');
+    // Large df approaches the normal critical value.
+    approx(tCritical95(1000000.0), 1.960, 0.001, 't(large)');
+    // 60 degrees of freedom is 2.000 in standard tables; the 1/df
+    // interpolation should land close.
+    approx(tCritical95(60.0), 2.000, 0.01, 't(60)');
+  });
+
+  test('difference of clearly separated distributions excludes zero', (ctx: TestContext): void => {
+    let a = summarize(arrayOf([10.0, 10.1, 9.9, 10.05, 9.95, 10.02, 9.98, 10.0]));
+    let b = summarize(arrayOf([5.0, 5.1, 4.9, 5.05, 4.95, 5.02, 4.98, 5.0]));
+    let d = differenceOfMeans(a, b);
+    isTrue(d.absLow > 4.5 && d.absHigh < 5.5, 'difference CI brackets +5ms');
+    isTrue(d.excludesZero(), 'CI excludes zero');
+    // Percent is relative to b's mean (~5.0), so ~100% slower.
+    isTrue(d.pctLow > 90.0 && d.pctHigh < 110.0, 'pct CI brackets +100%');
+
+    // And the reverse comparison is symmetric with a negative sign.
+    let rev = differenceOfMeans(b, a);
+    approx(rev.absLow, 0.0 - d.absHigh, 0.000001, 'reverse absLow');
+    approx(rev.absHigh, 0.0 - d.absLow, 0.000001, 'reverse absHigh');
+  });
+
+  test('difference of overlapping distributions straddles zero', (ctx: TestContext): void => {
+    let a = summarize(arrayOf([10.0, 11.0, 9.0, 10.5, 9.5, 10.2, 9.8, 10.1]));
+    let b = summarize(arrayOf([10.1, 10.9, 9.1, 10.4, 9.6, 10.3, 9.7, 10.0]));
+    let d = differenceOfMeans(a, b);
+    isFalse(d.excludesZero(), 'CI straddles zero');
+  });
+
+  test('horizon parsing', (ctx: TestContext): void => {
+    let h = parseHorizons(['0%', '2.5%', '0.5ms', '3']);
+    equal(h.percents.length, 2);
+    approx(h.percents[0], 0.0, 0.000001, 'percent 0');
+    approx(h.percents[1], 2.5, 0.000001, 'percent 2.5');
+    equal(h.absolutes.length, 2);
+    approx(h.absolutes[0], 0.5, 0.000001, 'absolute 0.5');
+    approx(h.absolutes[1], 3.0, 0.000001, 'absolute 3');
+  });
+
+  test('resolution against horizons', (ctx: TestContext): void => {
+    let separated = differenceOfMeans(
+      summarize(arrayOf([10.0, 10.1, 9.9, 10.05, 9.95])),
+      summarize(arrayOf([5.0, 5.1, 4.9, 5.05, 4.95])));
+    let overlapping = differenceOfMeans(
+      summarize(arrayOf([10.0, 11.0, 9.0, 10.5, 9.5])),
+      summarize(arrayOf([10.1, 10.9, 9.1, 10.4, 9.6])));
+
+    let zero = parseHorizons(['0%']);
+    isTrue(isResolved(separated, zero), 'separated resolves at 0%');
+    isFalse(isResolved(overlapping, zero), 'overlapping does not resolve at 0%');
+
+    // A horizon boundary falling inside the CI (≈ [+4.9ms, +5.1ms]) means
+    // more samples could still change the conclusion: unresolved.
+    let inside = parseHorizons(['5ms']);
+    isFalse(isResolved(separated, inside), 'horizon inside the CI is unresolved');
+
+    // A generous horizon far outside the CI resolves: the conclusion
+    // "differs by less than 100ms" is available even though "faster" is too.
+    let outside = parseHorizons(['100ms']);
+    isTrue(isResolved(separated, outside), 'horizon outside the CI resolves');
+    isTrue(isResolved(overlapping, outside), 'overlap within 100ms resolves');
+  });
+});

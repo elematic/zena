@@ -7,7 +7,13 @@
  */
 
 import {execSync} from 'node:child_process';
-import {existsSync, mkdirSync, statSync, writeFileSync} from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import {dirname, join, relative, basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
@@ -24,6 +30,7 @@ const wasiPatterns = [
   'memory_test.zena',
   'fixed_array/*_test.zena',
   'array/*_test.zena',
+  'bench/*_test.zena',
 ];
 
 console.log('Building WASI tests...');
@@ -42,7 +49,14 @@ for (const pattern of wasiPatterns) {
     const runnerFile = join(dirname(zenaFile), `${baseName}.__runner__.zena`);
 
     // Write wrapper runner file
-    const wrapperContent = `import {runAndReport} from 'zena:test';
+    // Propagate @requires: wasmtime into the generated wrapper so the
+    // node-based portable runner skips it too (the wrapper sits in the
+    // source tree, so other test discoverers will see it).
+    const sourceContent = readFileSync(zenaFile, 'utf-8');
+    const requiresWasmtime = sourceContent.includes('@requires: wasmtime')
+      ? '// @requires: wasmtime\n'
+      : '';
+    const wrapperContent = `${requiresWasmtime}import {runAndReport} from 'zena:test';
 import {console} from 'zena:console';
 import {tests} from './${baseName}.zena';
 
