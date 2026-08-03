@@ -12,7 +12,10 @@ import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
-import { BinaryExpression, Expression } from '../../ast.zena';
+import {
+  AssignmentExpression, BinaryExpression, Expression, Identifier,
+  Node, Statement, ThrowExpression, VariableDeclaration,
+} from '../../ast.zena';
 import { Type, ClassType } from '../../types.zena';
 import {
   ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64,
@@ -32,6 +35,7 @@ import { getCellStruct } from '../type-mapping.zena';
 import { IrRefField, IrRefType } from './ir.zena';
 import { IrBuilder } from './builder.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
+import { walkEnter } from '../../visitor.zena';
 
 /**
  * Thrown for constructs lowering does not model YET: tryLowerFunction
@@ -69,6 +73,21 @@ export final class MergeState {
   var params: Array<i32> | null = null;
   var resultParam = -1;
   new(this.syms, this.isVoid, this.resultVt);
+}
+
+/** A lowered let-condition: the flag plus bindings to apply in the
+ * SUCCESS block only — coercing an exhausted iterator's null payload
+ * would trap if emitted before the flag branch. */
+export final class LetCondBinds {
+  cond: i32;
+  syms: Array<Symbol>;
+  values: Array<i32>;
+  vts: Array<ValType>;
+  /** Nested destructuring elements, tested/bound in the taken block. */
+  patterns: Array<Node>;
+  patternValues: Array<i32>;
+  new(this.cond, this.syms, this.values, this.vts, this.patterns,
+      this.patternValues);
 }
 
 export final class LoweringContext {
@@ -133,6 +152,26 @@ export final class LoweringContext {
       leftCt: ClassType) => i32;
   /** `left ?? right` (env-merging short-circuit; stays lowerer-side). */
   nullishCoalesce: (bin: BinaryExpression) => i32;
+  /** Statement seam (see lowerExpr): bound by the coordinator. */
+  var lowerStmt: (st: Statement) => void =
+      (st: Statement): void => {
+        throw new Error('LoweringContext.lowerStmt not yet bound');
+      };
+  /** Variable-declaration seam: bound by the coordinator. */
+  var varDecl: (vd: VariableDeclaration) => void =
+      (vd: VariableDeclaration): void => {
+        throw new Error('LoweringContext.varDecl not yet bound');
+      };
+  /** Throw-statement seam: bound by the coordinator. */
+  var throwStmt: (thr: ThrowExpression) => void =
+      (thr: ThrowExpression): void => {
+        throw new Error('LoweringContext.throwStmt not yet bound');
+      };
+  /** Let-condition multi-value source seam: bound by the coordinator. */
+  var multiSource: (init: Expression) => Array<i32> =
+      (init: Expression): Array<i32> => {
+        throw new Error('LoweringContext.multiSource not yet bound');
+      };
   new(this.b, this.wasm, this.func,
       this.classTypeOfValue,
       this.canonicalKeyOf, this.resolveDevirtualizedMethod,
@@ -221,6 +260,39 @@ export final class LoweringContext {
       this.fail('auto-box to any');
     }
     this.fail(reason);
+  }
+
+  /** Symbols assigned anywhere inside `node` that are locals in scope. */
+  assignedEnvSyms(node: Node): Array<SymbolId> {
+    let result = new Array<SymbolId>();
+    this.appendAssignedEnvSyms(node, result);
+    return result;
+  }
+
+  appendAssignedEnvSyms(node: Node, out: Array<SymbolId>): void {
+    let seen = new HashSet<SymbolId>();
+    for (let existing in out) {
+      seen.add(existing);
+    }
+    walkEnter(node, (n: Node): void => {
+      if (n is AssignmentExpression) {
+        let ae = n as AssignmentExpression;
+        if (ae.left is Identifier) {
+          let sym = this.func.model.resolve(ae.left);
+          if (sym != null) {
+            let resolved = (sym as Symbol).resolveTarget();
+            // Celled bindings mutate their heap cell, not the env
+            // entry, so they never need merge parameters.
+            if (this.env.has(resolved.id) && !seen.has(resolved.id) &&
+                !this.isCelled(resolved.id)) {
+              seen.add(resolved.id);
+              out.push(resolved.id);
+              this.symbols[resolved.id] = resolved;
+            }
+          }
+        }
+      }
+    });
   }
 
   coerceTo(value: i32, target: ValType): i32 {

@@ -1,0 +1,647 @@
+/**
+ * Merge-shaped control flow, split out of lowering.zena: match, if
+ * (statement and expression), try, while, C-style for, let-condition
+ * binds, and the value-node arm helper. These own env save/restore,
+ * reachability, and MergeState — possible as a module since #121-#123
+ * moved that state and machinery onto the shared core. ForIn and
+ * nullish-coalesce stay coordinator-side until the interface-call and
+ * optional-chain machinery moves. Bodies are streaming's shapes.
+ */
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { String } from 'zena:string';
+import {
+  BindingPattern, BlockStatement, BooleanLiteral, CatchClause,
+  Expression, ForStatement, Identifier, IfExpression, IfStatement,
+  LetPatternCondition, LiteralPattern, MatchExpression, Node,
+  Statement, ThrowExpression, TryExpression, TupleLiteral,
+  TuplePattern, VariableDeclaration, WhileStatement,
+  ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral,
+} from '../../ast.zena';
+import {
+  Type, VoidType, baseType, isVoidOrNeverType,
+} from '../../types.zena';
+import { Symbol, SymbolId } from '../../scope/symbol.zena';
+import {
+  ValType, ValTypeI32, ValTypeRef, ValTypeRefNull, WasmType,
+  isRefValType, refTargetOf,
+} from '../wasm.zena';
+import { WasmGlobal, WasmTag, isValSubtype } from '../wasm-module.zena';
+import { typeToValTypeWithSub } from '../type-mapping.zena';
+import { IrOp, IrRefGlobal, IrRefTag } from './ir.zena';
+import {
+  LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported,
+  noValues, oneValue, twoValues,
+} from './lowering-context.zena';
+import {
+  branchUnless, lowerPatternBindings, lowerPatternTest, patternBinds,
+  patternRefutable,
+} from './patterns.zena';
+
+/** Bail with the lowering-side message shape (reason @function). */
+let bail = (cx: LoweringContext, reason: String): never => {
+  throw new ZirUnsupported(reason + ' @' + (cx.func.name ?? '?'));
+};
+
+/**
+ * `let PATTERN = init` conditions (if-let / while-let): evaluates
+ * init as a multi-value source, binds the pattern's non-literal
+ * elements, and returns the CONDITION value. Streaming's contract,
+ * mirrored exactly: the FIRST tuple element IS the boolean — a
+ * literal `true` in the pattern is not re-checked, and the trailing
+ * bindings are unconditionally bound (they only flow into the arm
+ * the checker allows them in).
+ */
+export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): LetCondBinds => {
+  var pat = lpc.pattern;
+  if (pat is BindingPattern) {
+    pat = (pat as BindingPattern).pattern;
+  }
+  if (!(pat is TuplePattern)) {
+    bail(cx, 'let-condition pattern');
+  }
+  let tp = pat as TuplePattern;
+  let values = cx.multiSource(lpc.init);
+  if (values.length != tp.elements.length) {
+    bail(cx, 'let-condition arity');
+  }
+  var cond = values[0];
+  if (!(cx.valueTypeOf(cond) is ValTypeI32)) {
+    bail(cx, 'let-condition flag type');
+  }
+  // A literal `false` first element matches when the flag is 0:
+  // invert. Literal `true` and plain bindings take the flag as-is.
+  let first = tp.elements[0];
+  if (first != null && first is BooleanLiteral) {
+    if (!(first as BooleanLiteral).value) {
+      cond = cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);
+    }
+  }
+  let syms = new Array<Symbol>();
+  let bindValues = new Array<i32>();
+  let vts = new Array<ValType>();
+  let patterns = new Array<Node>();
+  let patternValues = new Array<i32>();
+  for (var i = 0; i < tp.elements.length; i += 1) {
+    let el = tp.elements[i];
+    if (el == null || el is LiteralPattern || el is BooleanLiteral ||
+        el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
+      continue;
+    }
+    let symOpt = cx.func.model.resolveDeclaration(el as Node);
+    if (symOpt == null) {
+      // Nested destructuring elements defer to the taken block,
+      // where their tests can branch to the not-taken side.
+      if (patternBinds(cx, el as Node) ||
+          patternRefutable(cx, el as Node)) {
+        patterns.push(el as Node);
+        patternValues.push(values[i]);
+      }
+      continue;
+    }
+    let sym = symOpt as Symbol;
+    let bindingType = cx.func.model.getBindingType(sym);
+    if (bindingType == null) {
+      bail(cx, 'untyped binding');
+    }
+    let bindVt = typeToValTypeWithSub(
+        cx.wasm, bindingType as Type, cx.func);
+    cx.requireSupported(bindVt, 'let-condition element type');
+    if (!isValSubtype(cx.valueTypeOf(values[i]), bindVt) &&
+        !isRefValType(bindVt)) {
+      bail(cx, 'let-condition element type');
+    }
+    syms.push(sym);
+    bindValues.push(values[i]);
+    vts.push(bindVt);
+  }
+  return new LetCondBinds(cond, syms, bindValues, vts, patterns, patternValues);
+};
+
+/** Whether any deferred let-condition pattern is refutable. */
+export let letBindsNeedFail = (cx: LoweringContext, binds: LetCondBinds): boolean => {
+  for (let pat in binds.patterns) {
+    if (patternRefutable(cx, pat)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Applies a let-condition's bindings in the CURRENT (taken) block.
+ * Nested destructuring elements run their tests here, branching to
+ * `failB` (the not-taken side) on mismatch, then bind.
+ */
+export let applyLetBinds = (cx: LoweringContext, binds: LetCondBinds, failB: i32): void => {
+  for (var i = 0; i < binds.syms.length; i += 1) {
+    var bound = binds.values[i];
+    let bindVt = binds.vts[i];
+    if (!isValSubtype(cx.valueTypeOf(bound), bindVt)) {
+      // Erased/nullable slot element vs the concrete binding:
+      // runtime downcast — in the taken block, so an exhausted
+      // source's null payload is never coerced.
+      bound = cx.b.emit(IrOp.ref_cast, bindVt, bound,
+          cx.b.internType(bindVt));
+    }
+    cx.bindPatternSym(binds.syms[i], bound);
+  }
+  for (var i = 0; i < binds.patterns.length; i += 1) {
+    let value = cx.stripNonNull(binds.patternValues[i]);
+    if (patternRefutable(cx, binds.patterns[i])) {
+      lowerPatternTest(cx, binds.patterns[i], value, failB);
+    }
+    lowerPatternBindings(cx, binds.patterns[i], value);
+  }
+};
+
+/**
+ * Lowers an if-expression or match-case arm: a plain expression, or a
+ * value-block whose trailing expression statement supplies the value.
+ * `ctxVt` is the arm's contextual result type (for null literals);
+ * null when the context is void. Returns -1 when the arm ends
+ * unreachable (or the context is void).
+ */
+export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, ctxVt: ValType | null): i32 => {
+  if (node is Expression) {
+    if (node is ThrowExpression) {
+      // A bare throw as an arm: the arm ends unreachable and
+      // produces no value; callers skip their merge branch.
+      cx.throwStmt(node as ThrowExpression);
+      return -1;
+    }
+    let value = cx.lowerExpr(node as Expression, ctxVt);
+    return if (isVoid) -1 else value;
+  }
+  if (node is BlockStatement) {
+    let body = (node as BlockStatement).body;
+    if (body.length == 0) {
+      if (isVoid) {
+        return -1;
+      }
+      bail(cx, 'empty value block');
+    }
+    for (var i = 0; i < body.length - 1; i += 1) {
+      cx.lowerStmt(body[i]);
+      if (!cx.reachable) {
+        return -1;
+      }
+    }
+    let last = body[body.length - 1];
+    if (last is ExpressionStatement) {
+      let lastExpr = (last as ExpressionStatement).expression;
+      if (lastExpr is ThrowExpression) {
+        // A throw in arm-tail position: the arm ends unreachable and
+        // produces no value; callers skip their merge branch.
+        cx.throwStmt(lastExpr as ThrowExpression);
+        return -1;
+      }
+      let value = cx.lowerExpr(lastExpr, ctxVt);
+      return if (isVoid) -1 else value;
+    }
+    if (isVoid) {
+      cx.lowerStmt(last);
+      return -1;
+    }
+    bail(cx, 'value block tail');
+  }
+  return cx.fail('value arm kind');
+};
+
+/**
+ * Match lowering. Each case chains its tests so the first failure
+ * branches to the next case's entry block — which also keeps nested
+ * property tests guarded behind their enclosing ref.test (the
+ * streaming backend gets the same guarantee from if/else
+ * accumulators) — then binds pattern variables into the SSA
+ * environment, tests the guard, and lowers the body. Completed arms
+ * branch to a lazily created merge block carrying a result parameter
+ * when the match produces a value. The final fail block only traps:
+ * the checker proves exhaustiveness, mirroring streaming's trailing
+ * unreachable.
+ */
+export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
+  let nodeType = cx.func.model.getNodeType(expr);
+  if (nodeType == null) {
+    bail(cx, 'untyped match');
+  }
+  let isVoid = isVoidOrNeverType(nodeType as Type);
+  let resultVt = if (!isVoid) {
+    let vt = typeToValTypeWithSub(cx.wasm, nodeType as Type, cx.func);
+    cx.requireSupported(vt, 'match result type');
+    vt
+  } else {
+    null
+  };
+
+  let disc = cx.lowerExpr(expr.discriminant, null);
+
+  let mergeSyms = new Array<SymbolId>();
+  for (let mc in expr.cases) {
+    cx.appendAssignedEnvSyms(mc.body, mergeSyms);
+    if (mc.guard != null) {
+      cx.appendAssignedEnvSyms(mc.guard as Node, mergeSyms);
+    }
+  }
+
+  let m = new MergeState(mergeSyms, isVoid, resultVt);
+  let saved = cx.copyEnv();
+
+  var exhausted = false;
+  var i = 0;
+  while (i < expr.cases.length && !exhausted) {
+    let mc = expr.cases[i];
+    cx.env = cx.copyOf(saved);
+    // An irrefutable, guardless case consumes everything; later cases
+    // are statically dead (and their blocks, having no predecessors,
+    // would fail verification).
+    var failB = -1;
+    if (mc.guard != null || patternRefutable(cx, mc.pattern)) {
+      failB = cx.b.newBlock();
+    } else {
+      exhausted = true;
+    }
+    lowerPatternTest(cx, mc.pattern, disc, failB);
+    lowerPatternBindings(cx, mc.pattern, disc);
+    if (mc.guard != null) {
+      let cond = cx.lowerExpr(mc.guard as Expression, null);
+      branchUnless(cx, cond, failB);
+    }
+    let value = lowerValueNode(cx, mc.body, isVoid, resultVt);
+    if (cx.reachable) {
+      cx.mergeArm(m, value, 'match arm type');
+    }
+    if (failB >= 0) {
+      cx.b.switchTo(failB);
+      cx.reachable = true;
+    }
+    i += 1;
+  }
+
+  if (!exhausted) {
+    cx.b.unreachable();
+  }
+
+  return cx.finishMerge(m, saved);
+};
+
+export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
+  var cond = -1;
+  var letBinds: LetCondBinds | null = null;
+  if (stmt.test is Expression) {
+    cond = cx.lowerExpr(stmt.test as Expression, null);
+  } else if (stmt.test is LetPatternCondition) {
+    let binds = lowerLetCondition(cx, stmt.test as LetPatternCondition);
+    letBinds = binds;
+    cond = binds.cond;
+  } else {
+    bail(cx, 'if-let');
+  }
+
+  if (stmt.alternate == null) {
+    let mergeSyms = cx.assignedEnvSyms(stmt.consequent);
+    let thenB = cx.b.newBlock();
+    let mergeB = cx.b.newBlock();
+    let mergeParams = cx.addParams(mergeB, mergeSyms);
+    cx.b.brIf(cond, thenB, noValues(), mergeB, cx.envValues(mergeSyms));
+
+    let saved = cx.copyEnv();
+    cx.b.switchTo(thenB);
+    if (letBinds != null) {
+      let binds = letBinds as LetCondBinds;
+      let needsFail = letBindsNeedFail(cx, binds);
+      var failB = mergeB;
+      if (needsFail) {
+        // The merge takes args; pattern tests branch argless, so a
+        // trampoline forwards the (unmodified) env.
+        failB = cx.b.newBlock();
+      }
+      applyLetBinds(cx, binds, failB);
+      if (needsFail) {
+        let resumeB = cx.b.newBlock();
+        cx.b.br(resumeB, noValues());
+        cx.b.switchTo(failB);
+        cx.b.br(mergeB, cx.envValues(mergeSyms));
+        cx.b.switchTo(resumeB);
+      }
+    }
+    cx.lowerStmt(stmt.consequent);
+    if (cx.reachable) {
+      cx.b.br(mergeB, cx.envValues(mergeSyms));
+    }
+    cx.env = saved;
+    cx.applyParams(mergeSyms, mergeParams);
+    cx.b.switchTo(mergeB);
+    cx.reachable = true;
+    return;
+  }
+
+  let alternate = stmt.alternate as Statement;
+  let mergeSyms = cx.assignedEnvSyms(stmt.consequent);
+  cx.appendAssignedEnvSyms(alternate, mergeSyms);
+  let thenB = cx.b.newBlock();
+  let elseB = cx.b.newBlock();
+  cx.b.brIf(cond, thenB, noValues(), elseB, noValues());
+
+  // The merge block is created lazily: if both branches terminate, no
+  // merge exists (and an unreachable block would fail verification).
+  let m = new MergeState(mergeSyms, true, null);
+
+  let saved = cx.copyEnv();
+  cx.b.switchTo(thenB);
+  if (letBinds != null) {
+    applyLetBinds(cx, letBinds as LetCondBinds, elseB);
+  }
+  cx.lowerStmt(stmt.consequent);
+  if (cx.reachable) {
+    cx.mergeArm(m, -1);
+  }
+
+  cx.env = cx.copyOf(saved);
+  cx.reachable = true;
+  cx.b.switchTo(elseB);
+  cx.lowerStmt(alternate);
+  if (cx.reachable) {
+    cx.mergeArm(m, -1);
+  }
+
+  cx.finishMerge(m, saved);
+};
+
+/**
+ * If-expressions: like #lowerIf, plus one extra merge parameter carrying
+ * the arm value. Arms may be plain expressions or value-blocks (a block
+ * whose trailing expression statement is the value). Void-typed
+ * if-expressions lower like statements and yield no value.
+ */
+export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 => {
+  let nodeType = cx.func.model.getNodeType(expr);
+  if (nodeType == null) {
+    bail(cx, 'untyped if expression');
+  }
+  let isVoid = baseType(nodeType as Type) is VoidType;
+  let resultVt = if (!isVoid) cx.exprVt(expr) else null;
+  if (expr.alternate == null && !isVoid) {
+    bail(cx, 'value if without else');
+  }
+
+  var cond = -1;
+  var letBinds: LetCondBinds | null = null;
+  if (expr.test is Expression) {
+    cond = cx.lowerExpr(expr.test as Expression, null);
+  } else if (expr.test is LetPatternCondition) {
+    // Pattern-test fail edges target the else arm — which exists
+    // even for the void no-else form (it restores the saved env and
+    // branches to the merge).
+    let binds = lowerLetCondition(cx, expr.test as LetPatternCondition);
+    letBinds = binds;
+    cond = binds.cond;
+  } else {
+    bail(cx, 'if-let expression');
+  }
+  let mergeSyms = cx.assignedEnvSyms(expr.consequent);
+  if (expr.alternate != null) {
+    cx.appendAssignedEnvSyms(expr.alternate as Node, mergeSyms);
+  }
+
+  let thenB = cx.b.newBlock();
+  let elseB = cx.b.newBlock();
+  cx.b.brIf(cond, thenB, noValues(), elseB, noValues());
+
+  let m = new MergeState(mergeSyms, isVoid, resultVt);
+
+  let saved = cx.copyEnv();
+  cx.b.switchTo(thenB);
+  if (letBinds != null) {
+    applyLetBinds(cx, letBinds as LetCondBinds, elseB);
+  }
+  let thenValue = lowerValueNode(cx, expr.consequent, isVoid, resultVt);
+  if (cx.reachable) {
+    cx.mergeArm(m, thenValue, 'if arm type');
+  }
+
+  cx.env = cx.copyOf(saved);
+  cx.reachable = true;
+  cx.b.switchTo(elseB);
+  if (expr.alternate != null) {
+    let elseValue = lowerValueNode(cx, expr.alternate as Node, isVoid, resultVt);
+    if (cx.reachable) {
+      cx.mergeArm(m, elseValue, 'if arm type');
+    }
+  } else {
+    // Void if-expression without else: fall through to the merge.
+    cx.mergeArm(m, -1);
+  }
+
+  return cx.finishMerge(m, saved);
+};
+
+/**
+ * try/catch, in value or statement position. The protector block
+ * ends with try_br: normal flow enters the body; an exception thrown
+ * anywhere in the body's dynamic extent lands at the catch block
+ * with the payload in the exception global (streaming-compatible).
+ * Both arms join like an if-expression. Finalizers bail. A body
+ * that assigns enclosing locals also bails: the catch edge carries
+ * the state at entry, so assignments made before the throw would
+ * not be visible in the handler — streaming's locals keep them
+ * visible, and the two backends must agree.
+ */
+export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 => {
+  if (expr.finalizer != null) {
+    bail(cx, 'try finalizer');
+  }
+  if (expr.handler == null) {
+    bail(cx, 'try without handler');
+  }
+  if (cx.wasm.exceptionTag == null || cx.wasm.exceptionPayload == null) {
+    bail(cx, 'exception infra missing');
+  }
+  let bodyAssigned = cx.assignedEnvSyms(expr.body as Node);
+  if (bodyAssigned.length > 0) {
+    bail(cx, 'assignment to enclosing local in try body');
+  }
+  let nodeType = cx.func.model.getNodeType(expr);
+  if (nodeType == null) {
+    bail(cx, 'untyped try expression');
+  }
+  let isVoid = isVoidOrNeverType(nodeType as Type);
+  let resultVt = if (!isVoid) {
+    let vt = typeToValTypeWithSub(cx.wasm, nodeType as Type, cx.func);
+    cx.requireSupported(vt, 'try result type');
+    vt
+  } else {
+    null
+  };
+
+  let handler = expr.handler as CatchClause;
+  let mergeSyms = cx.assignedEnvSyms(handler.body as Node);
+
+  let tagRef = cx.b.addRef(new IrRefTag(cx.wasm.exceptionTag as WasmTag));
+  let bodyB = cx.b.newBlock();
+  let catchB = cx.b.newBlock();
+  cx.b.tryBr(tagRef, bodyB, noValues(), catchB, noValues());
+
+  let m = new MergeState(mergeSyms, isVoid, resultVt);
+
+  let saved = cx.copyEnv();
+  cx.b.switchTo(bodyB);
+  let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
+  if (cx.reachable) {
+    cx.mergeArm(m, bodyValue, 'try arm type');
+  }
+
+  cx.env = cx.copyOf(saved);
+  cx.reachable = true;
+  cx.b.switchTo(catchB);
+  if (handler.param != null) {
+    let paramIdent = handler.param as Identifier;
+    let symOpt = cx.func.model.resolveDeclaration(paramIdent);
+    if (symOpt == null) {
+      bail(cx, 'catch parameter symbol');
+    }
+    let payloadG = cx.wasm.exceptionPayload as WasmGlobal;
+    let gRef = cx.b.addRef(new IrRefGlobal(payloadG));
+    var payload = cx.b.emit(IrOp.global_get, payloadG.type, -1, gRef);
+    if (payloadG.type is ValTypeRefNull) {
+      let t = refTargetOf(payloadG.type) as WasmType;
+      payload = cx.b.emit(IrOp.ref_as_non_null,
+          new ValTypeRef(t) as ValType, payload, -1);
+    }
+    cx.bindPatternSym(symOpt as Symbol, payload);
+  }
+  let catchValue = lowerValueNode(cx, handler.body as Node, isVoid, resultVt);
+  if (cx.reachable) {
+    cx.mergeArm(m, catchValue, 'try arm type');
+  }
+
+  return cx.finishMerge(m, saved);
+};
+
+export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {
+  if (!(stmt.test is Expression) && !(stmt.test is LetPatternCondition)) {
+    bail(cx, 'while-let');
+  }
+  let carried = cx.assignedEnvSyms(stmt.body);
+  cx.appendAssignedEnvSyms(stmt.test, carried);
+
+  let header = cx.b.newBlock();
+  let headerParams = cx.addParams(header, carried);
+  cx.b.br(header, cx.envValues(carried));
+
+  cx.b.switchTo(header);
+  cx.applyParams(carried, headerParams);
+  // while-let re-evaluates the pattern source and rebinds its
+  // elements every iteration, exactly like the expression form
+  // re-evaluates the condition.
+  var cond = -1;
+  var letBinds: LetCondBinds | null = null;
+  if (stmt.test is LetPatternCondition) {
+    let binds = lowerLetCondition(cx, stmt.test as LetPatternCondition);
+    letBinds = binds;
+    cond = binds.cond;
+  } else {
+    cond = cx.lowerExpr(stmt.test as Expression, null);
+  }
+
+  let bodyB = cx.b.newBlock();
+  let exitB = cx.b.newBlock();
+  let exitParams = cx.addParams(exitB, carried);
+  cx.b.brIf(cond, bodyB, noValues(), exitB, cx.envValues(carried));
+
+  cx.loops.push(new LoopCtx(header, exitB, carried));
+  cx.b.switchTo(bodyB);
+  if (letBinds != null) {
+    let binds = letBinds as LetCondBinds;
+    let needsFail = letBindsNeedFail(cx, binds);
+    var failB = exitB;
+    if (needsFail) {
+      // The exit takes carried args; tests branch argless — forward
+      // through a trampoline.
+      failB = cx.b.newBlock();
+    }
+    applyLetBinds(cx, binds, failB);
+    if (needsFail) {
+      let resumeB = cx.b.newBlock();
+      cx.b.br(resumeB, noValues());
+      cx.b.switchTo(failB);
+      cx.b.br(exitB, cx.envValues(carried));
+      cx.b.switchTo(resumeB);
+    }
+  }
+  cx.lowerStmt(stmt.body);
+  if (cx.reachable) {
+    cx.b.br(header, cx.envValues(carried));
+  }
+  cx.loops.pop();
+
+  cx.applyParams(carried, exitParams);
+  cx.b.switchTo(exitB);
+  cx.reachable = true;
+};
+
+export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
+  // C-style for. The init runs in the current block; the update gets its
+  // own block so `continue` can route through it.
+  if (stmt.init != null) {
+    let init = stmt.init as Node;
+    if (init is VariableDeclaration) {
+      cx.varDecl(init as VariableDeclaration);
+    } else if (init is ExpressionStatement) {
+      cx.lowerExpr((init as ExpressionStatement).expression, null);
+    } else if (init is Expression) {
+      cx.lowerExpr(init as Expression, null);
+    } else {
+      bail(cx, 'for-init kind');
+    }
+  }
+
+  let carried = new Array<SymbolId>();
+  if (stmt.test != null) {
+    cx.appendAssignedEnvSyms(stmt.test as Node, carried);
+  }
+  if (stmt.update != null) {
+    cx.appendAssignedEnvSyms(stmt.update as Node, carried);
+  }
+  cx.appendAssignedEnvSyms(stmt.body, carried);
+
+  let header = cx.b.newBlock();
+  let headerParams = cx.addParams(header, carried);
+  cx.b.br(header, cx.envValues(carried));
+
+  cx.b.switchTo(header);
+  cx.applyParams(carried, headerParams);
+  var cond = -1;
+  if (stmt.test != null) {
+    cond = cx.lowerExpr(stmt.test as Expression, null);
+  } else {
+    cond = cx.b.constI32(1, new ValTypeI32());
+  }
+
+  let bodyB = cx.b.newBlock();
+  let updateB = cx.b.newBlock();
+  let updateParams = cx.addParams(updateB, carried);
+  let exitB = cx.b.newBlock();
+  let exitParams = cx.addParams(exitB, carried);
+  cx.b.brIf(cond, bodyB, noValues(), exitB, cx.envValues(carried));
+
+  cx.loops.push(new LoopCtx(updateB, exitB, carried));
+  cx.b.switchTo(bodyB);
+  cx.lowerStmt(stmt.body);
+  if (cx.reachable) {
+    cx.b.br(updateB, cx.envValues(carried));
+  }
+  cx.loops.pop();
+
+  cx.b.switchTo(updateB);
+  cx.reachable = true;
+  cx.applyParams(carried, updateParams);
+  if (stmt.update != null) {
+    cx.lowerExpr(stmt.update as Expression, null);
+  }
+  cx.b.br(header, cx.envValues(carried));
+
+  cx.applyParams(carried, exitParams);
+  cx.b.switchTo(exitB);
+  cx.reachable = true;
+};
