@@ -330,9 +330,48 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * annotations (constructor queued as merely checkable) and its
    * constructor was never registered.
    */
-  registerInstantiations(root: Node, model: SemanticModel, resolveType: (t: Type) => Type): void {
+  registerInstantiations(root: Node, model: SemanticModel, resolveType: (t: Type) => Type,
+      classType: ClassType | null): void {
     let specializer = this.pass.specializer;
     walkEnter(root, (n: Node) => {
+      // Private-method calls are lexically bound and never virtual, so
+      // the dependency records are their ONLY discovery edge when the
+      // body walk is skipped — and the records miss them for
+      // specialized generics (the third organ of this disease, after
+      // string literals and generic instantiations). Queue the
+      // declaration node against the walking specialization, exactly
+      // like the explicit-constructor promotion.
+      if (n is TaggedTemplateExpression) {
+        this.registerTaggedTemplate(n as TaggedTemplateExpression, model);
+      }
+      if (n is CallExpression) {
+        // Plain identifier calls (module-level `let` functions,
+        // including non-exported ones) are also absent from the
+        // dependency records when the callee is private to its
+        // module — organ five. Symbol referrers dedup, so
+        // re-queueing exported ones is free.
+        let calleeExpr = (n as CallExpression).callee;
+        if (calleeExpr is Identifier) {
+          let calleeSym = model.resolve(calleeExpr as Identifier);
+          if (calleeSym != null) {
+            let calleeTarget = calleeSym.resolveTarget();
+            if (model.globalDeclarations.has(calleeTarget.id)) {
+              this.pass.queueReferrer(new Referrer(true,
+                  calleeTarget.id, -1, model, null, true));
+            }
+          }
+        }
+      }
+      if (classType != null && n is CallExpression) {
+        let callee = (n as CallExpression).callee;
+        if (callee is MemberExpression) {
+          let me = callee as MemberExpression;
+          let pName = me.property.name;
+          if (pName.length > 0 && pName.sliceBytes(0, 1) == "#") {
+            this.queuePrivateMethod(classType as ClassType, pName);
+          }
+        }
+      }
       if (n is NewExpression) {
         let ne = n as NewExpression;
         let neType = model.getNodeType(ne);
@@ -340,6 +379,27 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let resolved = resolveType(neType as ClassType) as ClassType;
           specializer.instantiateClassType(resolved, model);
           this.queueExplicitCtor(resolved);
+        }
+      }
+      if (n is CallExpression) {
+        // Plain identifier calls: the dependency records omit
+        // module-private symbols, so the call edge here is the only
+        // discovery for non-exported top-level functions. Symbol
+        // referrers dedup, so re-queueing exported callees is free.
+        let calleeExpr = (n as CallExpression).callee;
+        if (calleeExpr is Identifier) {
+          let calleeSym = model.resolve(calleeExpr as Identifier);
+          if (calleeSym != null) {
+            let calleeTarget = calleeSym.resolveTarget();
+            // Module-level declarations only: queueing LOCAL closure
+            // variables preempts their proper function-expression
+            // discovery (the reached-key blocks the real referrer).
+            if (model.globalDeclarations.has(calleeTarget.id)) {
+              this.pass.queueReferrer(new Referrer(true,
+                  calleeTarget.id, -1, model, null,
+                  this.pass.currentReachable));
+            }
+          }
         }
       }
       if (n is ArrayLiteral) {
@@ -398,6 +458,72 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
   }
 
+  /** Queues a specialization's private method (by name) as reachable. */
+  queuePrivateMethod(classType: ClassType, methName: String): void {
+    let declId = ((classType.genericSource ?? classType)).symbolId;
+    if (!this.pass.classDecls.has(declId)) {
+      return;
+    }
+    let cdNode = this.pass.classDecls[declId];
+    if (!(cdNode is ClassDeclaration)) {
+      return;
+    }
+    let cdModel = this.pass.classModels[declId];
+    for (let member in (cdNode as ClassDeclaration).body) {
+      if (member is MethodDefinition) {
+        let md = member as MethodDefinition;
+        if (ctorMethodName(md) == methName) {
+          this.pass.queueReferrer(new Referrer(false, -1 as SymbolId,
+              (md as Node).id as i32, cdModel, classType, true));
+        }
+      }
+    }
+  }
+
+  /**
+   * TSA-cache global + tag reachability for one tagged template.
+   * Shared by the full walk and the dependency-record skip path (the
+   * records carry neither the cache global nor the tag reference —
+   * organ four of the skipped-walk blindness).
+   */
+  registerTaggedTemplate(expr: TaggedTemplateExpression, model: SemanticModel): void {
+        
+        if (!this.pass.wasm.templateLiteralGlobals.has(expr)) {
+          var tsaStruct: WasmStruct | null = null;
+          let tsaClass = this.pass.wasm.templateStringsArrayClass;
+          if (tsaClass != null) {
+            let key = getClassKey(tsaClass as ClassType);
+            if (let (true, tsaInfo) = this.pass.wasm.classInfos.get(key)) {
+              tsaStruct = tsaInfo.structType;
+            }
+          }
+          if (tsaStruct == null) {
+            throw new Error("TemplateStringsArray class struct not found during tagged template literal discovery!");
+          }
+          
+          let globalName = "tsa_cache_" + i32ToString(expr.id as i32);
+          let globalType = new ValTypeRefNull(tsaStruct);
+          let g = new WasmGlobal(
+            globalName,
+            globalName,
+            globalType,
+            true, // isMutable
+            null, // initExpr
+            null, // initVTable
+            model
+          );
+          this.pass.wasm.globals.push(g);
+          this.pass.wasm.templateLiteralGlobals[expr] = g;
+        }
+    if (expr.tag is Identifier) {
+      let tagSym = model.resolve(expr.tag as Identifier);
+      if (tagSym != null) {
+        this.pass.queueReferrer(new Referrer(true, tagSym.id,
+            -1, model, null, true));
+      }
+    }
+  }
+
   discoverNodeTypes(root: Node, model: SemanticModel, resolveType: (t: Type) => Type): void {
 
     walkEnter(root, (n: Node) => {
@@ -422,6 +548,27 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let resolved = resolveType(neType as ClassType) as ClassType;
           specializer.instantiateClassType(resolved, model);
           this.queueExplicitCtor(resolved);
+        }
+      }
+      if (n is CallExpression) {
+        // Plain identifier calls: the dependency records omit
+        // module-private symbols, so the call edge here is the only
+        // discovery for non-exported top-level functions. Symbol
+        // referrers dedup, so re-queueing exported callees is free.
+        let calleeExpr = (n as CallExpression).callee;
+        if (calleeExpr is Identifier) {
+          let calleeSym = model.resolve(calleeExpr as Identifier);
+          if (calleeSym != null) {
+            let calleeTarget = calleeSym.resolveTarget();
+            // Module-level declarations only: queueing LOCAL closure
+            // variables preempts their proper function-expression
+            // discovery (the reached-key blocks the real referrer).
+            if (model.globalDeclarations.has(calleeTarget.id)) {
+              this.pass.queueReferrer(new Referrer(true,
+                  calleeTarget.id, -1, model, null,
+                  this.pass.currentReachable));
+            }
+          }
         }
       }
       if (n is ArrayLiteral) {
@@ -484,34 +631,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         this.pass.wasm.registerStringLiteral(tmplEl.cooked);
       }
       if (n is TaggedTemplateExpression) {
-        let expr = n as TaggedTemplateExpression;
-        if (!this.pass.wasm.templateLiteralGlobals.has(expr)) {
-          var tsaStruct: WasmStruct | null = null;
-          let tsaClass = this.pass.wasm.templateStringsArrayClass;
-          if (tsaClass != null) {
-            let key = getClassKey(tsaClass as ClassType);
-            if (let (true, tsaInfo) = this.pass.wasm.classInfos.get(key)) {
-              tsaStruct = tsaInfo.structType;
-            }
-          }
-          if (tsaStruct == null) {
-            throw new Error("TemplateStringsArray class struct not found during tagged template literal discovery!");
-          }
-          
-          let globalName = "tsa_cache_" + i32ToString(expr.id as i32);
-          let globalType = new ValTypeRefNull(tsaStruct);
-          let g = new WasmGlobal(
-            globalName,
-            globalName,
-            globalType,
-            true, // isMutable
-            null, // initExpr
-            null, // initVTable
-            model
-          );
-          this.pass.wasm.globals.push(g);
-          this.pass.wasm.templateLiteralGlobals[expr] = g;
-        }
+        this.registerTaggedTemplate(n as TaggedTemplateExpression, model);
       }
       if (n is ForInStatement) {
         let forIn = n as ForInStatement;

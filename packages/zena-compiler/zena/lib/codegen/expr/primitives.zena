@@ -568,8 +568,12 @@ export let generateTaggedTemplateExpression = (
         throw new Error("Unresolved identifier in tagged template tag: " + ident.name);
       }
 
-      if (ctx.wasm.functionMap.has((sym as Symbol).id)) {
-        ctx.emitter.emitCall(ctx.wasm.functionMap[(sym as Symbol).id]);
+      // Imported tags resolve through the import to the declaring
+      // module's symbol — functionMap is keyed by declaration ids
+      // (matching every other identifier-call path).
+      let tagTarget = (sym as Symbol).resolveTarget();
+      if (ctx.wasm.functionMap.has(tagTarget.id)) {
+        ctx.emitter.emitCall(ctx.wasm.functionMap[tagTarget.id]);
       } else if ((sym as Symbol).declaration is ImportSpecifier) {
         let spec = (sym as Symbol).declaration as ImportSpecifier;
         let importedName = spec.imported.name;
