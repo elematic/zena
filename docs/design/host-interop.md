@@ -69,7 +69,7 @@ Zena strings are implemented as a GC struct wrapping a `ByteArray` (WASM GC `(ar
 
 **Problem**: Since WASM GC arrays are opaque, we cannot simply pass a `ByteArray` to JavaScript and have JS iterate over it.
 
-**Solution - V8-Recommended Pattern**: The V8 team recommends (https://github.com/nicolo-ribaudo/nicolo-nicolo-nicolo/issues/1) passing the string reference as `externref` to the host, then having JavaScript iterate by calling an exported getter function.
+**Solution - V8-Optimized Pattern**: Recommended by the dart2wasm team in https://github.com/WebAssembly/gc/issues/568: pass the string reference as `externref` to the host, then have JavaScript iterate by calling an exported getter function. In the same thread, Jakob Kummerow (V8) notes that V8's Wasm-into-JS inlining only triggers for nullable `externref` in the Wasm signature — not `anyref`, and not typed references — and that an explicit `ref.cast` on the Wasm side is faster than an implicit type check at the boundary. That is why the getter takes `externref` and casts internally.
 
 Zena automatically exports a `$stringGetByte(externref, i32) -> i32` function that allows JavaScript to read individual bytes from a Zena string:
 
