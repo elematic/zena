@@ -763,11 +763,14 @@ export final class LoweringContext {
   cellAlloc(bindingVt: ValType, value: i32): i32 {
     // ZIR synthesis runs after layout: a getCellStruct MISS here would
     // mint a Cell struct that can never receive a type index (its
-    // casts emit heap type -1 — invalid wasm). Bail to streaming,
-    // which allocated its cells before layout.
+    // casts emit heap type -1 — invalid wasm). A miss means discovery
+    // failed to intern this cell shape pre-layout — an invariant
+    // violation, not a coverage gap — so fail the compile loudly
+    // rather than masking it behind a streaming fallback.
     if (this.wasm.isLayoutLocked &&
         !this.wasm.cellStructs.has(getCellKey(bindingVt))) {
-      this.fail('cell struct not laid out');
+      throw new Error('cell struct not laid out (discovery bug): ' +
+          (this.func.name ?? '<unnamed>'));
     }
     if (!isValSubtype(this.valueTypeOf(value), bindingVt)) {
       this.failConformance(value, bindingVt, 'cell init type');
