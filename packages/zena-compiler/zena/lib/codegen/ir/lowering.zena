@@ -54,7 +54,7 @@ import { parseI32WithHex } from '../expr/member.zena';
 import { findDeclaration } from '../expr/calls.zena';
 import { isArrayIntrinsic } from '../expr/intrinsics.zena';
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
-import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray } from '../wasm-module.zena';
+import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical } from '../wasm-module.zena';
 import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 import { parseI64OrU64Literal } from '../expr/primitives.zena';
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -437,7 +437,7 @@ let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
   // when the field's storage type differs (mirrors streaming).
   let expected = func.signature.returns[0];
   if (refTargetOf(expected) != null) {
-    if (!valTypeEquals(actual, expected)) {
+    if (!valTypeIdentical(actual, expected)) {
       read = b.emit(IrOp.ref_cast, expected, read, b.internType(expected));
     }
   } else if (expected is ValTypeEqRef && !(actual is ValTypeEqRef)) {
@@ -2993,7 +2993,7 @@ final class FunctionLowerer {
     }
     let wantVt = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
     let haveVt = this.#valueType(value);
-    if (valTypeEquals(haveVt, wantVt)) {
+    if (valTypeIdentical(haveVt, wantVt)) {
       return value;
     }
     if (wantVt is ValTypeRef && haveVt is ValTypeRefNull) {
@@ -6195,10 +6195,8 @@ final class FunctionLowerer {
     for (var i = 0; i < call.args.length; i += 1) {
       let paramVt = sig.params[i + 1];
       this.#requireSupported(paramVt, 'closure param type');
-      let value = this.#lowerExpressionCtx(call.args[i], paramVt);
-      if (!isValSubtype(this.#valueType(value), paramVt)) {
-        this.#failConformance(value, paramVt, 'closure argument type');
-      }
+      var value = this.#lowerExpressionCtx(call.args[i], paramVt);
+      value = this.#conformToSlot(value, paramVt, 'closure argument type');
       args.push(value);
     }
     let funcRef = this.b.addRef(new IrRefField(closureStruct, 'func'));

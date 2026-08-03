@@ -385,6 +385,24 @@ export let asWasmArray = (vt: ValType): WasmArray | null => {
  * struct supertype chains, and widening struct or array targets to
  * eqref/anyref (all Zena heap values are eq).
  */
+/** Nullability-SENSITIVE structural equality. valTypeEquals treats
+ * (ref T) and (ref null T) as equal (streaming's locals are declared
+ * nullable and it re-casts at uses), but subtyping must not: a
+ * nullable value never conforms to a non-null slot. */
+export let valTypeIdentical = (a: ValType, b: ValType): boolean => {
+  return match (a) {
+    case ValTypeRef as ta: match (b) {
+      case ValTypeRef as tb: ta.target.index == tb.target.index
+      case _: false
+    }
+    case ValTypeRefNull as ta: match (b) {
+      case ValTypeRefNull as tb: ta.target.index == tb.target.index
+      case _: false
+    }
+    case _: valTypeEquals(a, b)
+  };
+};
+
 export let isValSubtype = (a: ValType, b: ValType): boolean => {
   if (valTypeEquals(a, b)) {
     return true;

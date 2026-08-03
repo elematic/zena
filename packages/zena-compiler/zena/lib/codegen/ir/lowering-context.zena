@@ -32,6 +32,7 @@ import { IrOp } from './ir.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, ClassCodegenInfo,
   RecordDispatchInfo, WasmField, WasmStruct, asWasmStruct, isValSubtype,
+  valTypeIdentical,
   sortWasmFields,
 } from '../wasm-module.zena';
 import { valTypeEquals } from '../wasm.zena';
@@ -161,6 +162,20 @@ export final class LoweringContext {
         throw new Error('LoweringContext.multiSource not yet bound');
       };
   new(this.b, this.wasm, this.func);
+
+  /**
+   * ZIR's conformance gate: isValSubtype, EXCEPT nullable never
+   * conforms to non-null. The shared isValSubtype inherits streaming's
+   * nullability-loose valTypeEquals shortcut (streaming declares ref
+   * locals nullable and re-casts at uses); ZIR types values exactly,
+   * so the loose shortcut would silently skip required narrowing.
+   */
+  refConforms(have: ValType, want: ValType): boolean {
+    if (have is ValTypeRefNull && want is ValTypeRef) {
+      return false;
+    }
+    return isValSubtype(have, want);
+  }
 
   /** Throws ZirUnsupported; the i32 never arrives (value positions). */
   fail(reason: String): i32 {
@@ -644,7 +659,7 @@ export final class LoweringContext {
 
   coerceTo(value: i32, target: ValType): i32 {
     let vt = this.valueTypeOf(value);
-    if (isValSubtype(vt, target)) {
+    if (this.refConforms(vt, target)) {
       return value;
     }
     let nonNull = this.b.emit(IrOp.ref_as_non_null, this.nonNullOf(vt), value, -1);
@@ -669,7 +684,7 @@ export final class LoweringContext {
    */
   conformToSlot(value: i32, want: ValType, reason: String): i32 {
     let have = this.valueTypeOf(value);
-    if (isValSubtype(have, want)) {
+    if (this.refConforms(have, want)) {
       return value;
     }
     // A nullable value whose non-null form already conforms: the
@@ -689,7 +704,7 @@ export final class LoweringContext {
 
   conformToBinding(value: i32, bindingVt: ValType): i32 {
     let have = this.valueTypeOf(value);
-    if (isValSubtype(have, bindingVt)) {
+    if (this.refConforms(have, bindingVt)) {
       return value;
     }
     if (isRefValType(have) && isValSubtype(bindingVt, have)) {
@@ -708,7 +723,7 @@ export final class LoweringContext {
     this.requireSupported(bindingVt, 'match binding type');
     var bound = value;
     let have = this.valueTypeOf(value);
-    if (!valTypeEquals(have, bindingVt) && !isValSubtype(have, bindingVt)) {
+    if (!valTypeIdentical(have, bindingVt) && !this.refConforms(have, bindingVt)) {
       let wantRef = bindingVt is ValTypeRef || bindingVt is ValTypeRefNull;
       if (!isRefValType(have) || !wantRef) {
         this.fail('match binding coercion');
