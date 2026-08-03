@@ -1261,6 +1261,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (this.wasm.stringGetByteFunc != null) { this.markTypeReached((this.wasm.stringGetByteFunc as WasmFunction).signature); }
     if (this.wasm.stringGetLengthFunc != null) { this.markTypeReached((this.wasm.stringGetLengthFunc as WasmFunction).signature); }
     
+    // Record-dispatch types are referenced from getter BODIES, which
+    // are synthesized after this pruning and therefore invisible to
+    // signature-driven reachability: the getters' signatures only
+    // mention structref. Pruning them leaves index -1 references in
+    // the synthesized code (invalid wasm). Keep every dispatch's
+    // types; dispatches are few and their getters are in the
+    // functions list whenever the dispatch is usable at all.
+    for (let rd in this.wasm.recordDispatchInfos) {
+      this.markTypeReached(rd.concreteType);
+      this.markTypeReached(rd.fatPtrType);
+      this.markTypeReached(rd.vtableType);
+    }
     this.closeReachedTypes();
     this.wasm.types = this.emittedTypes;
     performance.end(tLayout3);
@@ -2042,6 +2054,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 visitor.discoverNodeTypes(node, model, resolver);
               } else {
                 visitor.registerLiterals(node);
+                visitor.registerInstantiations(node, model, resolver);
               }
               if (node is MethodDefinition && ref.classType != null) {
                 let mDef = node as MethodDefinition;

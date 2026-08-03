@@ -526,7 +526,9 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     // values pass through uncast; everything else is a ref.cast —
     // null-preserving for nullable targets, trapping for non-null
     // ones (emission picks the form from the interned target type).
-    if (isValSubtype(srcVt, dstVt)) {
+    // Conformance is nullability-STRICT: a nullable source `as` a
+    // non-null target must emit the trapping cast, not pass through.
+    if (cx.refConforms(srcVt, dstVt)) {
       return value;
     }
     return cx.b.emit(IrOp.ref_cast, dstVt, value,

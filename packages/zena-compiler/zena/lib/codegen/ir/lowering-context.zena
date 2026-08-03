@@ -36,7 +36,7 @@ import {
   sortWasmFields,
 } from '../wasm-module.zena';
 import { valTypeEquals } from '../wasm.zena';
-import { getCellStruct } from '../type-mapping.zena';
+import { getCellKey, getCellStruct } from '../type-mapping.zena';
 import {
   getClassKey, getClassMethodKey, getInterfaceKey,
 } from '../codegen-utils.zena';
@@ -707,6 +707,14 @@ export final class LoweringContext {
     if (this.refConforms(have, bindingVt)) {
       return value;
     }
+    if (have is ValTypeRefNull && bindingVt is ValTypeRef) {
+      // Nullable value into a non-null binding: the checker proved
+      // this init non-null; re-assert (same-target) or cast down.
+      let nn = new ValTypeRef((have as ValTypeRefNull).target) as ValType;
+      if (isValSubtype(nn, bindingVt)) {
+        return this.reassertNonNull(value, nn);
+      }
+    }
     if (isRefValType(have) && isValSubtype(bindingVt, have)) {
       return this.b.emit(IrOp.ref_cast, bindingVt, value,
           this.b.internType(bindingVt));
@@ -753,6 +761,14 @@ export final class LoweringContext {
 
   /** Allocates a fresh cell holding `value` for a celled binding. */
   cellAlloc(bindingVt: ValType, value: i32): i32 {
+    // ZIR synthesis runs after layout: a getCellStruct MISS here would
+    // mint a Cell struct that can never receive a type index (its
+    // casts emit heap type -1 — invalid wasm). Bail to streaming,
+    // which allocated its cells before layout.
+    if (this.wasm.isLayoutLocked &&
+        !this.wasm.cellStructs.has(getCellKey(bindingVt))) {
+      this.fail('cell struct not laid out');
+    }
     if (!isValSubtype(this.valueTypeOf(value), bindingVt)) {
       this.failConformance(value, bindingVt, 'cell init type');
     }
@@ -863,7 +879,14 @@ export final class LoweringContext {
   envValues(syms: Array<SymbolId>): Array<i32> {
     let values = new Array<i32>();
     for (let symId in syms) {
-      values.push(this.env[symId]);
+      // Branch arguments must conform to the params addParams typed
+      // from the DECLARED binding: env narrowing (a nullable value
+      // proven non-null and re-widened by a merge, or vice versa)
+      // can leave the current value at a different nullability than
+      // the binding. conformToBinding re-asserts or downcasts; exact
+      // matches pass through untouched.
+      values.push(this.conformToBinding(this.env[symId],
+          this.bindingValType(symId)));
     }
     return values;
   }

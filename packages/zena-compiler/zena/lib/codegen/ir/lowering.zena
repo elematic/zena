@@ -163,6 +163,21 @@ let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => 
   let actualFt = func.functionAdaptationSource as FunctionType;
   let actualStruct = func.functionAdaptationResolvedSourceStruct ??
       getClosureStruct(wasm, actualFt);
+  // ZIR synthesis runs AFTER layout: a getClosureStruct MISS here
+  // mints a fresh struct that can never receive a type index (its
+  // casts emit heap type -1 — invalid wasm). The miss happens when
+  // the adaptation's source FunctionType keys differently from the
+  // pre-layout interning (nullability normalization). Streaming
+  // resolves the pair through its own adaptation records, so bail.
+  var inTypes = false;
+  for (let t in wasm.types) {
+    if (t == (actualStruct as WasmType)) {
+      inTypes = true;
+    }
+  }
+  if (!inTypes) {
+    throw new ZirUnsupported('adaptation source struct not laid out');
+  }
   let actualSig = asWasmSignature(actualStruct.fields[0].type);
   if (actualSig == null) {
     throw new ZirUnsupported('adaptation source shape');
@@ -999,10 +1014,8 @@ final class FunctionLowerer {
       this.#bail('extension super arity');
     }
     this.#requireSupported(sig.returns[0], 'extension constructor type');
-    let value = this.#lowerExpressionCtx(si.args[0], sig.returns[0]);
-    if (!isValSubtype(this.#valueType(value), sig.returns[0])) {
-      this.#failConformance(value, sig.returns[0], 'extension constructor value type');
-    }
+    var value = this.#lowerExpressionCtx(si.args[0], sig.returns[0]);
+    value = this.#conformToSlot(value, sig.returns[0], 'extension constructor value type');
     this.#cx().thisValue = value;
     if (md.body != null) {
       this.#lowerStatement(md.body as Statement);
@@ -1506,10 +1519,8 @@ final class FunctionLowerer {
       for (var i = 0; i < si.args.length; i += 1) {
         let paramVt = superSig.params[i + 1];
         this.#requireSupported(paramVt, 'super arg type');
-        let value = this.#lowerExpressionCtx(si.args[i], paramVt);
-        if (!isValSubtype(this.#valueType(value), paramVt)) {
-          this.#failConformance(value, paramVt, 'super argument type');
-        }
+        var value = this.#lowerExpressionCtx(si.args[i], paramVt);
+        value = this.#conformToSlot(value, paramVt, 'super argument type');
         args.push(value);
       }
       let superRef = this.b.addRef(new IrRefFunc(superCtor));
@@ -1649,11 +1660,17 @@ final class FunctionLowerer {
     var v = value;
     let have = this.#valueType(v);
     let want = sig.returns[0];
-    if (!isValSubtype(have, want)) {
+    if (!this.#cx().refConforms(have, want)) {
       // Returns conform like stores (the signature is the binding):
-      // a wider ref value (an erased eqref out of a merge-typed
-      // expression) casts down at the boundary; anything else bails.
-      if (isRefValType(have) && isValSubtype(want, have)) {
+      // a nullable value whose non-null form conforms re-asserts (the
+      // checker proved the return non-null); a wider ref value (an
+      // erased eqref out of a merge-typed expression) casts down at
+      // the boundary; anything else bails.
+      if (have is ValTypeRefNull && want is ValTypeRef &&
+          isValSubtype(new ValTypeRef((have as ValTypeRefNull).target) as ValType, want)) {
+        v = this.b.emit(IrOp.ref_as_non_null,
+            new ValTypeRef((have as ValTypeRefNull).target) as ValType, v, -1);
+      } else if (isRefValType(have) && isValSubtype(want, have)) {
         v = this.b.emit(IrOp.ref_cast, want, v, this.b.internType(want));
       } else {
         this.#failConformance(v, want, 'return requires conversion');
@@ -2670,10 +2687,8 @@ final class FunctionLowerer {
     let args = new Array<i32>();
     for (var i = 0; i < tl.elements.length; i += 1) {
       let fieldVt = fields[i].type;
-      let v = this.#lowerExpressionCtx(tl.elements[i], fieldVt);
-      if (!isValSubtype(this.#valueType(v), fieldVt)) {
-        this.#failConformance(v, fieldVt, 'tuple literal element type');
-      }
+      var v = this.#lowerExpressionCtx(tl.elements[i], fieldVt);
+      v = this.#conformToSlot(v, fieldVt, 'tuple literal element type');
       args.push(v);
     }
     return this.b.emit(IrOp.struct_new, new ValTypeRef(st) as ValType,
@@ -2882,10 +2897,8 @@ final class FunctionLowerer {
       this.#bail('exception infra missing');
     }
     let payload = payloadOpt as WasmGlobal;
-    let value = this.#lowerExpressionCtx(thr.argument, payload.type);
-    if (!isValSubtype(this.#valueType(value), payload.type)) {
-      this.#failConformance(value, payload.type, 'throw payload type');
-    }
+    var value = this.#lowerExpressionCtx(thr.argument, payload.type);
+    value = this.#conformToSlot(value, payload.type, 'throw payload type');
     this.b.emitVoid(IrOp.global_set, value,
         this.b.addRef(new IrRefGlobal(payload)));
     this.b.throwWithTag(this.#noArgs(),
@@ -3364,14 +3377,10 @@ final class FunctionLowerer {
     for (let entry in lit.entries) {
       this.#requireSupported(setSig.params[1], 'map key type');
       this.#requireSupported(setSig.params[2], 'map value type');
-      let key = this.#lowerExpressionCtx(entry.key, setSig.params[1]);
-      if (!isValSubtype(this.#valueType(key), setSig.params[1])) {
-        this.#failConformance(key, setSig.params[1], 'map key type');
-      }
-      let value = this.#lowerExpressionCtx(entry.value, setSig.params[2]);
-      if (!isValSubtype(this.#valueType(value), setSig.params[2])) {
-        this.#failConformance(value, setSig.params[2], 'map value type');
-      }
+      var key = this.#lowerExpressionCtx(entry.key, setSig.params[1]);
+      key = this.#conformToSlot(key, setSig.params[1], 'map key type');
+      var value = this.#lowerExpressionCtx(entry.value, setSig.params[2]);
+      value = this.#conformToSlot(value, setSig.params[2], 'map value type');
       let args = new Array<i32>();
       args.push(inst);
       args.push(key);
@@ -4024,10 +4033,8 @@ final class FunctionLowerer {
     for (var i = 0; i < call.args.length; i += 1) {
       let paramVt = sig.params[i + 1];
       this.#requireSupported(paramVt, 'super param type');
-      let value = this.#lowerExpressionCtx(call.args[i], paramVt);
-      if (!isValSubtype(this.#valueType(value), paramVt)) {
-        this.#failConformance(value, paramVt, 'super argument type');
-      }
+      var value = this.#lowerExpressionCtx(call.args[i], paramVt);
+      value = this.#conformToSlot(value, paramVt, 'super argument type');
       args.push(value);
     }
     let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
@@ -4879,10 +4886,8 @@ final class FunctionLowerer {
       this.#failConformance(receiver, sig.params[0], 'index receiver type');
     }
     this.#requireSupported(sig.params[1], 'index param type');
-    let indexValue = this.#lowerExpressionCtx(idx.index, sig.params[1]);
-    if (!isValSubtype(this.#valueType(indexValue), sig.params[1])) {
-      this.#failConformance(indexValue, sig.params[1], 'index operand type');
-    }
+    var indexValue = this.#lowerExpressionCtx(idx.index, sig.params[1]);
+    indexValue = this.#conformToSlot(indexValue, sig.params[1], 'index operand type');
     let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
     if (resultType != null) {
       this.#requireSupported(resultType, 'index result type');
@@ -4987,10 +4992,8 @@ final class FunctionLowerer {
       for (var i = 0; i < list.length; i += 1) {
         let paramVt = sig.params[i + 1];
         this.#requireSupported(paramVt, 'interface param type');
-        let value = this.#lowerExpressionCtx(list[i], paramVt);
-        if (!isValSubtype(this.#valueType(value), paramVt)) {
-          this.#failConformance(value, paramVt, 'interface argument type');
-        }
+        var value = this.#lowerExpressionCtx(list[i], paramVt);
+        value = this.#conformToSlot(value, paramVt, 'interface argument type');
         args.push(value);
       }
     }
@@ -5403,14 +5406,10 @@ final class FunctionLowerer {
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
       this.#failConformance(receiver, sig.params[0], 'index receiver type');
     }
-    let index = this.#lowerExpressionCtx(idx.index, sig.params[1]);
-    if (!isValSubtype(this.#valueType(index), sig.params[1])) {
-      this.#failConformance(index, sig.params[1], 'index operand type');
-    }
-    let value = this.#lowerExpressionCtx(assign.value, sig.params[2]);
-    if (!isValSubtype(this.#valueType(value), sig.params[2])) {
-      this.#failConformance(value, sig.params[2], 'index write type');
-    }
+    var index = this.#lowerExpressionCtx(idx.index, sig.params[1]);
+    index = this.#conformToSlot(index, sig.params[1], 'index operand type');
+    var value = this.#lowerExpressionCtx(assign.value, sig.params[2]);
+    value = this.#conformToSlot(value, sig.params[2], 'index write type');
     let funcRef = this.b.addRef(new IrRefFunc(method));
     let args = new Array<i32>();
     args.push(receiver);
@@ -5618,17 +5617,13 @@ final class FunctionLowerer {
       this.#requireSupported(sig.returns[0], 'array extension result');
       resultType = sig.returns[0];
     }
-    let receiver = this.#lowerExpressionCtx(member.object, sig.params[0]);
-    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#failConformance(receiver, sig.params[0], 'array extension receiver');
-    }
+    var receiver = this.#lowerExpressionCtx(member.object, sig.params[0]);
+    receiver = this.#conformToSlot(receiver, sig.params[0], 'array extension receiver');
     let args = new Array<i32>();
     args.push(receiver);
     for (var i = 0; i < call.args.length; i += 1) {
-      let value = this.#lowerExpressionCtx(call.args[i], sig.params[i + 1]);
-      if (!isValSubtype(this.#valueType(value), sig.params[i + 1])) {
-        this.#failConformance(value, sig.params[i + 1], 'array extension argument');
-      }
+      var value = this.#lowerExpressionCtx(call.args[i], sig.params[i + 1]);
+      value = this.#conformToSlot(value, sig.params[i + 1], 'array extension argument');
       args.push(value);
     }
     let funcRef = this.b.addRef(new IrRefFunc(target));

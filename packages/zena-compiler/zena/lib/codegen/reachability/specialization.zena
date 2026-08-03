@@ -39,6 +39,25 @@ export final class Specializer implements SpecializerInterface {
     this.pass.instantiatedSpecializedClasses.add(cKey);
     cha.registerInstantiatedClass(classType);
 
+    // Constructors registered BEFORE the class was known instantiated
+    // (dependency-record processing is order-independent) were created
+    // into classMethodMap but never added as reachable functions —
+    // registerClassMethod gates addFunction on hasInst. Instantiation
+    // is what proves a constructor callable: promote any
+    // pre-registered constructor now. (The commented-out block below
+    // once did this for ALL methods; constructors are the ones whose
+    // loss breaks codegen with 'constructor not registered'.)
+    if (let (true, funcs) = this.pass.wasm.classMethods.get(cKey)) {
+      for (let func in funcs) {
+        if (func.methodName != null &&
+            (func.methodName as String) == "<constructor>" &&
+            !this.pass.reachedFunctionsSet.has(func)) {
+          this.pass.wasm.addFunction(func);
+          this.pass.markFunctionReached(func);
+        }
+      }
+    }
+
     /*
     if (let (true, funcs) = this.pass.wasm.classMethods.get(cKey)) {
       for (let func in funcs) {

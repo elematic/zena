@@ -2,7 +2,7 @@ import { Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisito
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { SemanticModel, InterfaceAdaptation } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, ByteArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType } from '../../types.zena';
-import { Node, NewExpression, RangeExpression, ArrayLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral } from '../../ast.zena';
+import { Node, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction } from '../wasm-module.zena';
 import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeExternRef } from '../wasm.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
@@ -317,6 +317,87 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     });
   }
 
+  /**
+   * Discovers the generic INSTANTIATIONS under `root` — new
+   * expressions (plus their explicit constructors), array literals,
+   * and range expressions — without the full node-type walk. The
+   * checker's dependency records let node-referrer processing skip
+   * discoverNodeTypes, but those records are symbol-level: they carry
+   * no monomorphic instantiations, exactly as they carry no string
+   * literals (see registerLiterals above). Skipping the walk used to
+   * silently lose `new Box<boolean>(...)` inside dependency-carrying
+   * method bodies: the specialization surfaced only through type
+   * annotations (constructor queued as merely checkable) and its
+   * constructor was never registered.
+   */
+  registerInstantiations(root: Node, model: SemanticModel, resolveType: (t: Type) => Type): void {
+    let specializer = this.pass.specializer;
+    walkEnter(root, (n: Node) => {
+      if (n is NewExpression) {
+        let ne = n as NewExpression;
+        let neType = model.getNodeType(ne);
+        if (neType != null && neType is ClassType) {
+          let resolved = resolveType(neType as ClassType) as ClassType;
+          specializer.instantiateClassType(resolved, model);
+          this.queueExplicitCtor(resolved);
+        }
+      }
+      if (n is ArrayLiteral) {
+        let al = n as ArrayLiteral;
+        let alType = model.getNodeType(al);
+        if (alType != null) {
+          let resolved = resolveType(alType as Type);
+          if (resolved is ArrayType) {
+            let iaClass = this.pass.findPreludeClass("ImmutableArray");
+            if (iaClass != null) {
+              let typeArgs = new Array<Type>();
+              typeArgs.push((resolved as ArrayType).elementType);
+              let instantiated = instantiateClassType(iaClass as ClassType, typeArgs);
+              specializer.instantiateClassType(instantiated, model);
+            }
+          }
+        }
+      }
+      if (n is RangeExpression) {
+        let re = n as RangeExpression;
+        let reType = model.getNodeType(re);
+        if (reType != null && reType is ClassType) {
+          specializer.instantiateClassType(resolveType(reType as ClassType) as ClassType, model);
+        }
+      }
+    });
+  }
+
+  /**
+   * Queues a specialization's explicit constructor as REACHABLE. The
+   * instantiation may be cached from a type-only context (a union
+   * annotation), where the constructor was queued as merely checkable
+   * and instantiateClassType's dedup then skips re-queueing forever;
+   * a `new` expression proves it reachable (queueReferrer dedupes by
+   * node+class key, and its reachable branch promotes prior
+   * checkable state).
+   */
+  queueExplicitCtor(resolved: ClassType): void {
+    let ctorDeclId = ((resolved.genericSource ?? resolved)).symbolId;
+    if (!this.pass.classDecls.has(ctorDeclId)) {
+      return;
+    }
+    let cdNode = this.pass.classDecls[ctorDeclId];
+    if (!(cdNode is ClassDeclaration)) {
+      return;
+    }
+    let cdModel = this.pass.classModels[ctorDeclId];
+    for (let member in (cdNode as ClassDeclaration).body) {
+      if (member is MethodDefinition) {
+        let md = member as MethodDefinition;
+        if (ctorMethodName(md) == "<constructor>") {
+          this.pass.queueReferrer(new Referrer(false, -1 as SymbolId,
+              (md as Node).id as i32, cdModel, resolved, true));
+        }
+      }
+    }
+  }
+
   discoverNodeTypes(root: Node, model: SemanticModel, resolveType: (t: Type) => Type): void {
 
     walkEnter(root, (n: Node) => {
@@ -340,6 +421,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         if (neType != null && neType is ClassType) {
           let resolved = resolveType(neType as ClassType) as ClassType;
           specializer.instantiateClassType(resolved, model);
+          this.queueExplicitCtor(resolved);
         }
       }
       if (n is ArrayLiteral) {
@@ -1460,3 +1542,15 @@ let matchOverloadForImport = (t1: Type, t2: Type): boolean => {
   return false;
 };
 
+
+let ctorMethodName = (md: MethodDefinition): String => {
+  return match (md.name) {
+    case Identifier {name}: name
+    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+      case Identifier {name}: name
+      case MemberExpression {property}: property.name
+      case _: "<symbol>"
+    }
+    case _: ""
+  };
+};
