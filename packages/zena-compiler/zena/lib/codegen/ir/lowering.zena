@@ -76,8 +76,9 @@ import {
   isUnsignedNode, lowerAs, lowerBinary, lowerUnary, mapBinaryOp,
 } from './operators.zena';
 import {
-  lowerFor, lowerIf, lowerIfExpression, lowerLetCondition, lowerMatch,
-  lowerTryExpression, lowerValueNode, lowerWhile,
+  lowerFor, lowerForIn, lowerIf, lowerIfExpression,
+  lowerLetCondition, lowerMatch, lowerTryExpression, lowerValueNode,
+  lowerWhile,
 } from './control-flow.zena';
 
 // ZirUnsupported now lives in lowering-context.zena (imported above):
@@ -1818,7 +1819,7 @@ final class FunctionLowerer {
       if (objT != null && call.args.length == 0 &&
           this.#resolveSelfType(objT as Type) is InterfaceType) {
         let recv = this.#lowerExpression(member.object);
-        return this.#slotCallOnValue(recv, getMemberPropertyName(
+        return this.#cx().slotCallOnValue(recv, getMemberPropertyName(
             member.isSymbolAccess, member.property.name));
       }
       let rep = this.#lowerMethodCall(call, member, out);
@@ -1965,299 +1966,16 @@ final class FunctionLowerer {
     lowerFor(this.#cx(), stmt);
   }
 
-  /**
-   * for-in over FixedArray/ImmutableArray values (a wasm array) and
-   * Array instances (#buffer + #length struct): an index loop mirroring
-   * the streaming fast paths, with the element re-bound each iteration.
-   * The general iterator protocol needs multi-value next() calls, which
-   * ZIR does not carry yet, so everything else bails.
-   *
-   * TODO(coverage): a Sequence whose `:iterator` is NOT overridden away
-   * from the default (CHA query, same machinery as devirt) can compile
-   * to a `.length` + `[]` indexed loop against the interface — no
-   * multi-value needed — and M3 inlining then collapses those calls to
-   * the #buffer/#length fast path. That splits the remaining bails into
-   * genuinely-custom iterators (which do need multi-value) and
-   * default-iterator sequences (which don't).
-   */
   #lowerForIn(stmt: ForInStatement): void {
-    let iterableType = this.#substitutedNodeType(stmt.iterable);
-    if (iterableType == null) {
-      this.#bail('untyped for-in iterable');
-    }
-
-    // FIXED = a bare wasm array value; ARRAY = the Array class struct.
-    var isFixed = false;
-    var isArray = false;
-    var elemType: Type | null = null;
-    var arrayCt: ClassType | null = null;
-    if (iterableType is ArrayType) {
-      isFixed = true;
-      elemType = (iterableType as ArrayType).elementType;
-    } else {
-      let resolved = this.#resolveSelfType(iterableType as Type);
-      if (resolved is ClassType) {
-        let ct = resolved as ClassType;
-        var canonical = ct;
-        while (canonical.genericSource != null) {
-          canonical = canonical.genericSource as ClassType;
-        }
-        if (canonical.name == 'FixedArray' ||
-            canonical.name == 'ImmutableArray') {
-          isFixed = true;
-        } else if (canonical.name == 'Array') {
-          isArray = true;
-          arrayCt = ct;
-        }
-        if ((isFixed || isArray) && ct.typeArguments != null &&
-            (ct.typeArguments as Array<Type>).length > 0) {
-          elemType = (ct.typeArguments as Array<Type>)[0];
-        }
-      }
-    }
-    if ((!isFixed && !isArray) || elemType == null) {
-      this.#lowerForInIterator(stmt, iterableType as Type);
-      return;
-    }
-
-    // The fast paths consume the raw value; skip the top-level Iterable
-    // adaptation the checker may have recorded on the iterable (the
-    // streaming generator's ignoreAdaptations flag).
-    let iterable = this.#lowerExpressionDispatch(stmt.iterable);
-
-    var buf = -1;
-    var len = -1;
-    if (isFixed) {
-      buf = iterable;
-      len = this.b.emit(IrOp.array_len, new ValTypeI32(), buf, -1);
-    } else {
-      let ct = arrayCt as ClassType;
-      let cKey = getClassKey(ct);
-      var infoOpt: ClassCodegenInfo | null = null;
-      if (let (true, info) = this.wasm.classInfos.get(cKey)) {
-        infoOpt = info;
-      }
-      if (infoOpt == null) {
-        this.#bail('for-in Array not discovered');
-      }
-      let structType = (infoOpt as ClassCodegenInfo).structType;
-      if (!isValSubtype(this.#valueType(iterable),
-          new ValTypeRefNull(structType) as ValType)) {
-        this.#bail('for-in receiver struct mismatch');
-      }
-      let bufferName = getClassPrivateFieldKey(cKey, '#buffer');
-      let lengthName = getClassPrivateFieldKey(cKey, '#length');
-      let lenRef = this.b.addRef(new IrRefField(structType, lengthName));
-      len = this.b.emit(IrOp.struct_get,
-          this.#fieldValType(structType, lengthName), iterable, lenRef);
-      let bufRef = this.b.addRef(new IrRefField(structType, bufferName));
-      buf = this.b.emit(IrOp.struct_get,
-          this.#fieldValType(structType, bufferName), iterable, bufRef);
-    }
-    let bufTarget = asWasmArray(this.#valueType(buf));
-    if (bufTarget == null) {
-      this.#bail('for-in buffer kind');
-    }
-    let elemVt = (bufTarget as WasmArray).elementType;
-    this.#requireSupported(elemVt, 'for-in element type');
-
-    var pat = stmt.pattern;
-    if (pat is BindingPattern) {
-      pat = (pat as BindingPattern).pattern;
-    }
-    var symOpt: Symbol | null = null;
-    if (pat is IdentifierPattern || pat is Identifier) {
-      symOpt = this.func.model.resolveDeclaration(pat);
-      if (symOpt == null) {
-        this.#bail('for-in pattern');
-      }
-    } else if (!this.#patternBinds(pat)) {
-      this.#bail('for-in pattern');
-    }
-
-    // Index loop. The index rides as an extra header/update block param
-    // (it is not an env symbol); loop-carried env symbols work as in
-    // #lowerFor.
-    let carried = this.#assignedEnvSyms(stmt.body);
-    let header = this.b.newBlock();
-    let headerParams = this.#addParams(header, carried);
-    let idxParam = this.b.blockParam(header, new ValTypeI32());
-    var initArgs = this.#envValues(carried);
-    initArgs.push(this.b.constI32(0, new ValTypeI32()));
-    this.b.br(header, initArgs);
-
-    this.b.switchTo(header);
-    this.#applyParams(carried, headerParams);
-    let done = this.b.binary(IrOp.i32_ge_s, new ValTypeI32(), idxParam, len);
-
-    let bodyB = this.b.newBlock();
-    let exitB = this.b.newBlock();
-    let exitParams = this.#addParams(exitB, carried);
-    this.b.brIf(done, exitB, this.#envValues(carried), bodyB, this.#noArgs());
-
-    this.b.switchTo(bodyB);
-    let elem = this.b.emit(IrOp.array_get, elemVt, buf, idxParam);
-    if (symOpt != null) {
-      this.#bindPatternSym(symOpt as Symbol, elem);
-    } else {
-      this.#lowerPatternBindings(pat, elem);
-    }
-
-    let updateB = this.b.newBlock();
-    let updateParams = this.#addParams(updateB, carried);
-    this.#cx().loops.push(new LoopCtx(updateB, exitB, carried));
-    this.#lowerStatement(stmt.body);
-    if (this.#cx().reachable) {
-      this.b.br(updateB, this.#envValues(carried));
-    }
-    this.#cx().loops.pop();
-
-    this.b.switchTo(updateB);
-    this.#cx().reachable = true;
-    this.#applyParams(carried, updateParams);
-    let one = this.b.constI32(1, new ValTypeI32());
-    let next = this.b.binary(IrOp.i32_add, new ValTypeI32(), idxParam, one);
-    var backArgs = this.#envValues(carried);
-    backArgs.push(next);
-    this.b.br(header, backArgs);
-
-    this.#applyParams(carried, exitParams);
-    this.b.switchTo(exitB);
-    this.#cx().reachable = true;
+    lowerForIn(this.#cx(), stmt);
   }
 
-  /**
-   * for-in via the iterator protocol, mirroring streaming: class
-   * iterables pack into their Iterable (or Iterator) fat pointer here
-   * — skipping any checker-recorded top-level adaptation, like the
-   * array fast paths — and `:iterator` is dispatched through the
-   * vtable slot. The loop header calls next(), a multi-value
-   * (i32 ok, element) return, through the ITERATOR value's own
-   * fat-pointer type; the element downcasts to the binding's type
-   * exactly where streaming ref.casts its element temp.
-   */
-  #lowerForInIterator(stmt: ForInStatement, iterableType: Type): void {
-    let resolved = this.#resolveSelfType(iterableType);
-    var iter = -1;
-    if (resolved is ClassType) {
-      let ct = eraseTypeParameters(resolved) as ClassType;
-      let recv = this.#lowerExpressionDispatch(stmt.iterable);
-      let iteratorIface = findImplementedInterfaceTransitive(ct, 'Iterator');
-      if (iteratorIface != null) {
-        // The iterable IS an iterator: no :iterator call.
-        iter = this.#packInterface(recv, ct, iteratorIface as InterfaceType);
-      } else {
-        let iterableIface = findImplementedInterfaceTransitive(ct, 'Iterable');
-        if (iterableIface == null) {
-          this.#bail('for-in iterable kind');
-        }
-        let packed = this.#packInterface(recv, ct,
-            iterableIface as InterfaceType);
-        iter = this.#slotCallSingle(packed, ':iterator');
-      }
-    } else if (resolved is InterfaceType) {
-      let it = resolved as InterfaceType;
-      let recv = this.#lowerExpression(stmt.iterable);
-      if (it.name == 'Iterator') {
-        iter = recv;
-      } else {
-        iter = this.#slotCallSingle(recv, ':iterator');
-      }
-    } else {
-      this.#bail('for-in iterable kind');
-    }
-
-    var pat = stmt.pattern;
-    if (pat is BindingPattern) {
-      pat = (pat as BindingPattern).pattern;
-    }
-    var symOpt: Symbol | null = null;
-    if (pat is IdentifierPattern || pat is Identifier) {
-      symOpt = this.func.model.resolveDeclaration(pat);
-      if (symOpt == null) {
-        this.#bail('for-in pattern');
-      }
-    } else if (!this.#patternBinds(pat)) {
-      this.#bail('for-in pattern');
-    }
-    var bindVtOpt: ValType | null = null;
-    if (symOpt != null) {
-      let bindingType = this.func.model.getBindingType(symOpt as Symbol);
-      if (bindingType == null) {
-        this.#bail('untyped binding');
-      }
-      let vt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
-      this.#requireSupported(vt, 'for-in element type');
-      bindVtOpt = vt;
-    }
-
-    let carried = this.#assignedEnvSyms(stmt.body);
-    let header = this.b.newBlock();
-    let headerParams = this.#addParams(header, carried);
-    this.b.br(header, this.#envValues(carried));
-
-    this.b.switchTo(header);
-    this.#applyParams(carried, headerParams);
-    let results = this.#slotCallMulti(iter, 'next');
-    if (results.length != 2 || !(this.#valueType(results[0]) is ValTypeI32)) {
-      this.#bail('iterator next shape');
-    }
-    let ok = results[0];
-    var elem = results[1];
-
-    let bodyB = this.b.newBlock();
-    let exitB = this.b.newBlock();
-    let exitParams = this.#addParams(exitB, carried);
-    this.b.brIf(ok, bodyB, this.#noArgs(), exitB, this.#envValues(carried));
-
-    this.b.switchTo(bodyB);
-    if (symOpt != null) {
-      let bindVt = bindVtOpt as ValType;
-      if (!isValSubtype(this.#valueType(elem), bindVt)) {
-        // The slot's element type is erased/nullable relative to the
-        // binding: runtime downcast, streaming's ref.cast on elemTemp.
-        if (!isRefValType(bindVt)) {
-          this.#bail('for-in element type');
-        }
-        elem = this.b.emit(IrOp.ref_cast, bindVt, elem, this.b.internType(bindVt));
-      }
-      this.#bindPatternSym(symOpt as Symbol, elem);
-    } else {
-      // Destructuring patterns split the (boxed tuple) element.
-      this.#lowerPatternBindings(pat, this.#strippedNonNull(elem));
-    }
-
-    let updateB = this.b.newBlock();
-    let updateParams = this.#addParams(updateB, carried);
-    this.#cx().loops.push(new LoopCtx(updateB, exitB, carried));
-    this.#lowerStatement(stmt.body);
-    if (this.#cx().reachable) {
-      this.b.br(updateB, this.#envValues(carried));
-    }
-    this.#cx().loops.pop();
-
-    this.b.switchTo(updateB);
-    this.#cx().reachable = true;
-    this.#applyParams(carried, updateParams);
-    this.b.br(header, this.#envValues(carried));
-
-    this.#applyParams(carried, exitParams);
-    this.b.switchTo(exitB);
-    this.#cx().reachable = true;
-  }
-
-  /** #slotCallOnValue for members returning exactly one value. */
   #slotCallSingle(recv: i32, memberName: String): i32 {
-    let results = this.#slotCallOnValue(recv, memberName);
-    if (results.length != 1) {
-      this.#bail('interface slot shape');
-    }
-    return results[0];
+    return this.#cx().slotCallSingle(recv, memberName);
   }
 
-  /** #slotCallOnValue for members with multi-value returns. */
   #slotCallMulti(recv: i32, memberName: String): Array<i32> {
-    return this.#slotCallOnValue(recv, memberName);
+    return this.#cx().slotCallMulti(recv, memberName);
   }
 
   /**
@@ -2410,62 +2128,6 @@ final class FunctionLowerer {
     return this.#reassertCallResult(call, result, resultType);
   }
 
-  /**
-   * Dispatches a receiver-only interface method through the vtable of
-   * an already-lowered fat-pointer VALUE. The fat pointer's own struct
-   * type names the vtable struct, so no InterfaceType resolution is
-   * needed past whatever produced the value — the :iterator slot's
-   * signature hands the loop the Iterator fat-pointer type for free.
-   * Returns the call's result values (empty for void).
-   */
-  #slotCallOnValue(recv: i32, memberName: String): Array<i32> {
-    let fatOpt = asWasmStruct(this.#valueType(recv));
-    if (fatOpt == null || (fatOpt as WasmStruct).fields.length != 2) {
-      this.#bail('interface receiver type');
-    }
-    let fatPtr = fatOpt as WasmStruct;
-    let vstOpt = asWasmStruct(fatPtr.fields[1].type);
-    if (vstOpt == null) {
-      this.#bail('interface receiver type');
-    }
-    let vst = vstOpt as WasmStruct;
-    let slot = vst.fieldIndexByName(memberName);
-    if (slot < 0) {
-      this.#bail('interface member not in vtable');
-    }
-    let sigOpt = asWasmSignature(vst.fields[slot].type);
-    if (sigOpt == null) {
-      this.#bail('interface slot shape');
-    }
-    let sig = sigOpt as WasmSignature;
-    if (sig.params.length != 1) {
-      this.#bail('interface call arity adaptation');
-    }
-    let inst = this.b.emit(
-        IrOp.iface_instance, fatPtr.fields[0].type, recv, -1);
-    if (!isValSubtype(this.#valueType(inst), sig.params[0])) {
-      this.#failConformance(inst, sig.params[0], 'interface receiver adaptation');
-    }
-    let vt = this.b.emit(IrOp.iface_vtable, fatPtr.fields[1].type, recv, -1);
-    let fieldRef = this.b.addRef(new IrRefField(vst, memberName));
-    let callee = this.b.emit(
-        IrOp.struct_get, vst.fields[slot].type, vt, fieldRef);
-    for (let r in sig.returns) {
-      this.#requireSupported(r, 'interface result type');
-    }
-    let args = this.#oneArg(inst);
-    if (sig.returns.length > 1) {
-      return this.b.callRefMulti(callee, args, sig.returns);
-    }
-    let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
-    let result = this.b.callRef(callee, args, resultType);
-    let out = new Array<i32>();
-    if (resultType != null) {
-      out.push(result);
-    }
-    return out;
-  }
-
   // -- Expressions -----------------------------------------------------
 
   #lowerExpression(expr: Expression): i32 {
@@ -2605,22 +2267,8 @@ final class FunctionLowerer {
         tgtType as InterfaceType);
   }
 
-  /** Packs a class instance value into `it`'s fat pointer. */
   #packInterface(value: i32, ct: ClassType, it: InterfaceType): i32 {
-    let iName = getInterfaceKey(it);
-    let key = getClassInterfaceKey(getClassKey(ct), iName);
-    let vtOpt = this.wasm.getClassInterfaceVTable(key);
-    if (vtOpt == null) {
-      this.#bail('interface vtable global not found');
-    }
-    let fatPtrOpt = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
-    if (fatPtrOpt == null) {
-      this.#bail('interface struct not found');
-    }
-    let fatPtr = fatPtrOpt as WasmStruct;
-    let globalRef = this.b.addRef(new IrRefGlobal(vtOpt as WasmGlobal));
-    return this.b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr) as ValType,
-        value, globalRef);
+    return this.#cx().packInterface(value, ct, it);
   }
 
   #lowerExpressionDispatch(expr: Expression): i32 {
@@ -3189,27 +2837,8 @@ final class FunctionLowerer {
     return this.#cx().thisValue;
   }
 
-  /**
-   * Maps ThisType (and the checker's `<Name>_This` marker classes) to
-   * the enclosing method's concrete class.
-   */
   #resolveSelfType(t: Type): Type {
-    let bt = baseType(t);
-    var isSelf = bt is ThisType;
-    if (!isSelf && bt is ClassType) {
-      let ct = bt as ClassType;
-      if (ct.name.length >= 5 &&
-          ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
-        isSelf = true;
-      }
-    }
-    if (isSelf) {
-      if (this.func.classType == null) {
-        this.#bail('self type outside method');
-      }
-      return this.func.classType as Type;
-    }
-    return bt;
+    return this.#cx().resolveSelfType(t);
   }
 
   /**
@@ -4267,45 +3896,8 @@ final class FunctionLowerer {
     return this.#cx().stripNonNull(value);
   }
 
-  /**
-   * The receiver of an optional chain, WITHOUT the checked-type
-   * re-assert: the checker narrows the receiver non-null at the
-   * access node (it must be accessible to type the chain), but the
-   * whole point of `?.` is that the runtime value may be null — the
-   * re-assert would trap before the null test. Identifier and
-   * global receivers read raw; other expressions produce their own
-   * (nullable) values.
-   */
   #lowerChainReceiver(obj: Expression): i32 {
-    if (obj is Identifier) {
-      let sym = this.func.model.resolve(obj as Identifier);
-      if (sym != null) {
-        let resolved = (sym as Symbol).resolveTarget();
-        if (this.#cx().env.has(resolved.id)) {
-          var value = this.#cx().env[resolved.id];
-          if (this.#isCelled(resolved.id)) {
-            value = this.#cellRead(value);
-          }
-          return value;
-        }
-        if (let (true, g) = this.wasm.globalMap.get(resolved.id)) {
-          let globalRef = this.b.addRef(new IrRefGlobal(g));
-          return this.b.emit(IrOp.global_get, g.type, -1, globalRef);
-        }
-      }
-    }
-    return this.#lowerExpression(obj);
-  }
-
-  /** The receiver/callee expression of an optional-chain access. */
-  #optionalChainObject(expr: Expression): Expression {
-    if (expr is MemberExpression) {
-      return (expr as MemberExpression).object;
-    }
-    if (expr is IndexExpression) {
-      return (expr as IndexExpression).object;
-    }
-    return (expr as CallExpression).callee;
+    return this.#cx().chainReceiver(obj);
   }
 
   /**
@@ -4350,7 +3942,7 @@ final class FunctionLowerer {
     if (!isRefValType(exprVt)) {
       this.#bail('optional primitive result');
     }
-    let receiver0 = this.#lowerChainReceiver(this.#optionalChainObject(expr));
+    let receiver0 = this.#lowerChainReceiver(this.#cx().optionalChainObject(expr));
     if (!isRefValType(this.#valueType(receiver0))) {
       this.#bail('optional receiver kind');
     }
@@ -4382,78 +3974,6 @@ final class FunctionLowerer {
   /** A null constant conforming to a (nullable) reference valtype. */
   #nullDefault(vt: ValType): i32 {
     return this.b.emit(IrOp.ref_null, vt, -1, -1);
-  }
-
-  /**
-   * `left ?? right`: the left evaluates once; null short-circuits to
-   * the right operand. When the left is an optional member access,
-   * the chain fuses: a null object jumps straight to the right
-   * operand — the SSA form of the streaming backend's short-circuit
-   * flag — which also covers primitive members (the miss produces no
-   * value that needs representing).
-   */
-  #lowerNullishCoalesce(bin: BinaryExpression): i32 {
-    let overallVt = this.#exprValType(bin);
-    let mergeSyms = this.#assignedEnvSyms(bin.right);
-
-    let leftIsOptionalChain =
-        (bin.left is MemberExpression && (bin.left as MemberExpression).optional) ||
-        (bin.left is IndexExpression && (bin.left as IndexExpression).optional) ||
-        (bin.left is CallExpression && (bin.left as CallExpression).optional);
-    var testValue = -1;
-    if (leftIsOptionalChain) {
-      testValue = this.#lowerChainReceiver(this.#optionalChainObject(bin.left));
-      if (!isRefValType(this.#valueType(testValue))) {
-        this.#bail('optional receiver kind');
-      }
-    } else {
-      testValue = this.#lowerExpression(bin.left);
-      if (!isRefValType(this.#valueType(testValue))) {
-        this.#bail('nullish on non-reference');
-      }
-    }
-
-    let isNull = this.b.emit(
-        IrOp.ref_is_null, new ValTypeI32() as ValType, testValue, -1);
-    let rightB = this.b.newBlock();
-    let okB = this.b.newBlock();
-    this.b.brIf(isNull, rightB, this.#noArgs(), okB, this.#noArgs());
-
-    let saved = this.#copyEnv();
-    this.b.switchTo(okB);
-    let okValue = if (leftIsOptionalChain) {
-      this.#lowerOptionalHit(bin.left, this.#strippedNonNull(testValue))
-    } else {
-      this.#strippedNonNull(testValue)
-    };
-    if (!isValSubtype(this.#valueType(okValue), overallVt)) {
-      this.#bail('nullish arm type');
-    }
-    let mergeB = this.b.newBlock();
-    let mergeParams = this.#addParams(mergeB, mergeSyms);
-    let resultParam = this.b.blockParam(mergeB, overallVt);
-    let okArgs = this.#envValues(mergeSyms);
-    okArgs.push(okValue);
-    this.b.br(mergeB, okArgs);
-
-    this.#cx().env = this.#copyOf(saved);
-    this.#cx().reachable = true;
-    this.b.switchTo(rightB);
-    let rightValue = this.#lowerExpressionCtx(bin.right, overallVt);
-    if (this.#cx().reachable) {
-      if (!isValSubtype(this.#valueType(rightValue), overallVt)) {
-        this.#bail('nullish arm type');
-      }
-      let rightArgs = this.#envValues(mergeSyms);
-      rightArgs.push(rightValue);
-      this.b.br(mergeB, rightArgs);
-    }
-
-    this.#cx().env = saved;
-    this.#applyParams(mergeSyms, mergeParams);
-    this.b.switchTo(mergeB);
-    this.#cx().reachable = true;
-    return resultParam;
   }
 
   /**
@@ -5663,8 +5183,10 @@ final class FunctionLowerer {
         this.wasm,
         this.func,
 );
-    cx.nullishCoalesce = (bin: BinaryExpression): i32 =>
-        this.#lowerNullishCoalesce(bin);
+    cx.optionalHit = (expr: Expression, recv: i32): i32 =>
+        this.#lowerOptionalHit(expr, recv);
+    cx.lowerExprRaw = (e: Expression): i32 =>
+        this.#lowerExpressionDispatch(e);
     cx.lowerExpr = (e: Expression, want: ValType | null): i32 =>
         if (want == null) this.#lowerExpression(e)
         else this.#lowerExpressionCtx(e, want as ValType);

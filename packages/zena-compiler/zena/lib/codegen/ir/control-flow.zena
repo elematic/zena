@@ -3,11 +3,15 @@
  * (statement and expression), try, while, C-style for, let-condition
  * binds, and the value-node arm helper. These own env save/restore,
  * reachability, and MergeState — possible as a module since #121-#123
- * moved that state and machinery onto the shared core. ForIn and
- * nullish-coalesce stay coordinator-side until the interface-call and
- * optional-chain machinery moves. Bodies are streaming's shapes.
+ * moved that state and machinery onto the shared core; ForIn (index
+ * and iterator forms) and nullish-coalesce joined once the
+ * interface-call and optional-chain machinery became core methods
+ * and seams. Bodies are streaming's shapes.
  */
 import { Array } from 'zena:array';
+import {
+  getClassKey, getClassPrivateFieldKey,
+} from '../codegen-utils.zena';
 import { HashMap } from 'zena:map';
 import { String } from 'zena:string';
 import {
@@ -17,18 +21,27 @@ import {
   Statement, ThrowExpression, TryExpression, TupleLiteral,
   TuplePattern, VariableDeclaration, WhileStatement,
   ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral,
+  BinaryExpression, CallExpression, ForInStatement, IdentifierPattern,
+  IndexExpression, MemberExpression,
 } from '../../ast.zena';
 import {
-  Type, VoidType, baseType, isVoidOrNeverType,
+  ArrayType, ClassType, InterfaceType, Type, VoidType, baseType,
+  isVoidOrNeverType,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
   ValType, ValTypeI32, ValTypeRef, ValTypeRefNull, WasmType,
   isRefValType, refTargetOf,
 } from '../wasm.zena';
-import { WasmGlobal, WasmTag, isValSubtype } from '../wasm-module.zena';
-import { typeToValTypeWithSub } from '../type-mapping.zena';
-import { IrOp, IrRefGlobal, IrRefTag } from './ir.zena';
+import {
+  ClassCodegenInfo, WasmArray, WasmGlobal, WasmTag, asWasmArray,
+  asWasmStruct, isValSubtype,
+} from '../wasm-module.zena';
+import {
+  eraseTypeParameters, findImplementedInterfaceTransitive,
+  typeToValTypeWithSub,
+} from '../type-mapping.zena';
+import { IrOp, IrRefField, IrRefGlobal, IrRefTag } from './ir.zena';
 import {
   LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported,
   noValues, oneValue, twoValues,
@@ -640,6 +653,359 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
     cx.lowerExpr(stmt.update as Expression, null);
   }
   cx.b.br(header, cx.envValues(carried));
+
+  cx.applyParams(carried, exitParams);
+  cx.b.switchTo(exitB);
+  cx.reachable = true;
+};
+
+/**
+ * `left ?? right`: the left evaluates once; null short-circuits to
+ * the right operand. When the left is an optional member access,
+ * the chain fuses: a null object jumps straight to the right
+ * operand — the SSA form of the streaming backend's short-circuit
+ * flag — which also covers primitive members (the miss produces no
+ * value that needs representing).
+ */
+export let lowerNullishCoalesce = (cx: LoweringContext, bin: BinaryExpression): i32 => {
+  let overallVt = cx.exprVt(bin);
+  let mergeSyms = cx.assignedEnvSyms(bin.right);
+
+  let leftIsOptionalChain =
+      (bin.left is MemberExpression && (bin.left as MemberExpression).optional) ||
+      (bin.left is IndexExpression && (bin.left as IndexExpression).optional) ||
+      (bin.left is CallExpression && (bin.left as CallExpression).optional);
+  var testValue = -1;
+  if (leftIsOptionalChain) {
+    testValue = cx.chainReceiver(cx.optionalChainObject(bin.left));
+    if (!isRefValType(cx.valueTypeOf(testValue))) {
+      bail(cx, 'optional receiver kind');
+    }
+  } else {
+    testValue = cx.lowerExpr(bin.left, null);
+    if (!isRefValType(cx.valueTypeOf(testValue))) {
+      bail(cx, 'nullish on non-reference');
+    }
+  }
+
+  let isNull = cx.b.emit(
+      IrOp.ref_is_null, new ValTypeI32() as ValType, testValue, -1);
+  let rightB = cx.b.newBlock();
+  let okB = cx.b.newBlock();
+  cx.b.brIf(isNull, rightB, noValues(), okB, noValues());
+
+  let saved = cx.copyEnv();
+  cx.b.switchTo(okB);
+  let okValue = if (leftIsOptionalChain) {
+    cx.optionalHit(bin.left, cx.stripNonNull(testValue))
+  } else {
+    cx.stripNonNull(testValue)
+  };
+  if (!isValSubtype(cx.valueTypeOf(okValue), overallVt)) {
+    bail(cx, 'nullish arm type');
+  }
+  let mergeB = cx.b.newBlock();
+  let mergeParams = cx.addParams(mergeB, mergeSyms);
+  let resultParam = cx.b.blockParam(mergeB, overallVt);
+  let okArgs = cx.envValues(mergeSyms);
+  okArgs.push(okValue);
+  cx.b.br(mergeB, okArgs);
+
+  cx.env = cx.copyOf(saved);
+  cx.reachable = true;
+  cx.b.switchTo(rightB);
+  let rightValue = cx.lowerExpr(bin.right, overallVt);
+  if (cx.reachable) {
+    if (!isValSubtype(cx.valueTypeOf(rightValue), overallVt)) {
+      bail(cx, 'nullish arm type');
+    }
+    let rightArgs = cx.envValues(mergeSyms);
+    rightArgs.push(rightValue);
+    cx.b.br(mergeB, rightArgs);
+  }
+
+  cx.env = saved;
+  cx.applyParams(mergeSyms, mergeParams);
+  cx.b.switchTo(mergeB);
+  cx.reachable = true;
+  return resultParam;
+};
+
+/**
+ * for-in via the iterator protocol, mirroring streaming: class
+ * iterables pack into their Iterable (or Iterator) fat pointer here
+ * — skipping any checker-recorded top-level adaptation, like the
+ * array fast paths — and `:iterator` is dispatched through the
+ * vtable slot. The loop header calls next(), a multi-value
+ * (i32 ok, element) return, through the ITERATOR value's own
+ * fat-pointer type; the element downcasts to the binding's type
+ * exactly where streaming ref.casts its element temp.
+ */
+export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iterableType: Type): void => {
+  let resolved = cx.resolveSelfType(iterableType);
+  var iter = -1;
+  if (resolved is ClassType) {
+    let ct = eraseTypeParameters(resolved) as ClassType;
+    let recv = cx.lowerExprRaw(stmt.iterable);
+    let iteratorIface = findImplementedInterfaceTransitive(ct, 'Iterator');
+    if (iteratorIface != null) {
+      // The iterable IS an iterator: no :iterator call.
+      iter = cx.packInterface(recv, ct, iteratorIface as InterfaceType);
+    } else {
+      let iterableIface = findImplementedInterfaceTransitive(ct, 'Iterable');
+      if (iterableIface == null) {
+        bail(cx, 'for-in iterable kind');
+      }
+      let packed = cx.packInterface(recv, ct,
+          iterableIface as InterfaceType);
+      iter = cx.slotCallSingle(packed, ':iterator');
+    }
+  } else if (resolved is InterfaceType) {
+    let it = resolved as InterfaceType;
+    let recv = cx.lowerExpr(stmt.iterable, null);
+    if (it.name == 'Iterator') {
+      iter = recv;
+    } else {
+      iter = cx.slotCallSingle(recv, ':iterator');
+    }
+  } else {
+    bail(cx, 'for-in iterable kind');
+  }
+
+  var pat = stmt.pattern;
+  if (pat is BindingPattern) {
+    pat = (pat as BindingPattern).pattern;
+  }
+  var symOpt: Symbol | null = null;
+  if (pat is IdentifierPattern || pat is Identifier) {
+    symOpt = cx.func.model.resolveDeclaration(pat);
+    if (symOpt == null) {
+      bail(cx, 'for-in pattern');
+    }
+  } else if (!patternBinds(cx, pat)) {
+    bail(cx, 'for-in pattern');
+  }
+  var bindVtOpt: ValType | null = null;
+  if (symOpt != null) {
+    let bindingType = cx.func.model.getBindingType(symOpt as Symbol);
+    if (bindingType == null) {
+      bail(cx, 'untyped binding');
+    }
+    let vt = typeToValTypeWithSub(cx.wasm, bindingType as Type, cx.func);
+    cx.requireSupported(vt, 'for-in element type');
+    bindVtOpt = vt;
+  }
+
+  let carried = cx.assignedEnvSyms(stmt.body);
+  let header = cx.b.newBlock();
+  let headerParams = cx.addParams(header, carried);
+  cx.b.br(header, cx.envValues(carried));
+
+  cx.b.switchTo(header);
+  cx.applyParams(carried, headerParams);
+  let results = cx.slotCallMulti(iter, 'next');
+  if (results.length != 2 || !(cx.valueTypeOf(results[0]) is ValTypeI32)) {
+    bail(cx, 'iterator next shape');
+  }
+  let ok = results[0];
+  var elem = results[1];
+
+  let bodyB = cx.b.newBlock();
+  let exitB = cx.b.newBlock();
+  let exitParams = cx.addParams(exitB, carried);
+  cx.b.brIf(ok, bodyB, noValues(), exitB, cx.envValues(carried));
+
+  cx.b.switchTo(bodyB);
+  if (symOpt != null) {
+    let bindVt = bindVtOpt as ValType;
+    if (!isValSubtype(cx.valueTypeOf(elem), bindVt)) {
+      // The slot's element type is erased/nullable relative to the
+      // binding: runtime downcast, streaming's ref.cast on elemTemp.
+      if (!isRefValType(bindVt)) {
+        bail(cx, 'for-in element type');
+      }
+      elem = cx.b.emit(IrOp.ref_cast, bindVt, elem, cx.b.internType(bindVt));
+    }
+    cx.bindPatternSym(symOpt as Symbol, elem);
+  } else {
+    // Destructuring patterns split the (boxed tuple) element.
+    lowerPatternBindings(cx, pat, cx.stripNonNull(elem));
+  }
+
+  let updateB = cx.b.newBlock();
+  let updateParams = cx.addParams(updateB, carried);
+  cx.loops.push(new LoopCtx(updateB, exitB, carried));
+  cx.lowerStmt(stmt.body);
+  if (cx.reachable) {
+    cx.b.br(updateB, cx.envValues(carried));
+  }
+  cx.loops.pop();
+
+  cx.b.switchTo(updateB);
+  cx.reachable = true;
+  cx.applyParams(carried, updateParams);
+  cx.b.br(header, cx.envValues(carried));
+
+  cx.applyParams(carried, exitParams);
+  cx.b.switchTo(exitB);
+  cx.reachable = true;
+};
+
+/**
+ * for-in over FixedArray/ImmutableArray values (a wasm array) and
+ * Array instances (#buffer + #length struct): an index loop mirroring
+ * the streaming fast paths, with the element re-bound each iteration.
+ * The general iterator protocol needs multi-value next() calls, which
+ * ZIR does not carry yet, so everything else bails.
+ *
+ * TODO(coverage): a Sequence whose `:iterator` is NOT overridden away
+ * from the default (CHA query, same machinery as devirt) can compile
+ * to a `.length` + `[]` indexed loop against the interface — no
+ * multi-value needed — and M3 inlining then collapses those calls to
+ * the #buffer/#length fast path. That splits the remaining bails into
+ * genuinely-custom iterators (which do need multi-value) and
+ * default-iterator sequences (which don't).
+ */
+export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
+  let iterableType = cx.substitutedNodeType(stmt.iterable);
+  if (iterableType == null) {
+    bail(cx, 'untyped for-in iterable');
+  }
+
+  // FIXED = a bare wasm array value; ARRAY = the Array class struct.
+  var isFixed = false;
+  var isArray = false;
+  var elemType: Type | null = null;
+  var arrayCt: ClassType | null = null;
+  if (iterableType is ArrayType) {
+    isFixed = true;
+    elemType = (iterableType as ArrayType).elementType;
+  } else {
+    let resolved = cx.resolveSelfType(iterableType as Type);
+    if (resolved is ClassType) {
+      let ct = resolved as ClassType;
+      var canonical = ct;
+      while (canonical.genericSource != null) {
+        canonical = canonical.genericSource as ClassType;
+      }
+      if (canonical.name == 'FixedArray' ||
+          canonical.name == 'ImmutableArray') {
+        isFixed = true;
+      } else if (canonical.name == 'Array') {
+        isArray = true;
+        arrayCt = ct;
+      }
+      if ((isFixed || isArray) && ct.typeArguments != null &&
+          (ct.typeArguments as Array<Type>).length > 0) {
+        elemType = (ct.typeArguments as Array<Type>)[0];
+      }
+    }
+  }
+  if ((!isFixed && !isArray) || elemType == null) {
+    lowerForInIterator(cx, stmt, iterableType as Type);
+    return;
+  }
+
+  // The fast paths consume the raw value; skip the top-level Iterable
+  // adaptation the checker may have recorded on the iterable (the
+  // streaming generator's ignoreAdaptations flag).
+  let iterable = cx.lowerExprRaw(stmt.iterable);
+
+  var buf = -1;
+  var len = -1;
+  if (isFixed) {
+    buf = iterable;
+    len = cx.b.emit(IrOp.array_len, new ValTypeI32(), buf, -1);
+  } else {
+    let ct = arrayCt as ClassType;
+    let cKey = getClassKey(ct);
+    var infoOpt: ClassCodegenInfo | null = null;
+    if (let (true, info) = cx.wasm.classInfos.get(cKey)) {
+      infoOpt = info;
+    }
+    if (infoOpt == null) {
+      bail(cx, 'for-in Array not discovered');
+    }
+    let structType = (infoOpt as ClassCodegenInfo).structType;
+    if (!isValSubtype(cx.valueTypeOf(iterable),
+        new ValTypeRefNull(structType) as ValType)) {
+      bail(cx, 'for-in receiver struct mismatch');
+    }
+    let bufferName = getClassPrivateFieldKey(cKey, '#buffer');
+    let lengthName = getClassPrivateFieldKey(cKey, '#length');
+    let lenRef = cx.b.addRef(new IrRefField(structType, lengthName));
+    len = cx.b.emit(IrOp.struct_get,
+        cx.fieldValType(structType, lengthName), iterable, lenRef);
+    let bufRef = cx.b.addRef(new IrRefField(structType, bufferName));
+    buf = cx.b.emit(IrOp.struct_get,
+        cx.fieldValType(structType, bufferName), iterable, bufRef);
+  }
+  let bufTarget = asWasmArray(cx.valueTypeOf(buf));
+  if (bufTarget == null) {
+    bail(cx, 'for-in buffer kind');
+  }
+  let elemVt = (bufTarget as WasmArray).elementType;
+  cx.requireSupported(elemVt, 'for-in element type');
+
+  var pat = stmt.pattern;
+  if (pat is BindingPattern) {
+    pat = (pat as BindingPattern).pattern;
+  }
+  var symOpt: Symbol | null = null;
+  if (pat is IdentifierPattern || pat is Identifier) {
+    symOpt = cx.func.model.resolveDeclaration(pat);
+    if (symOpt == null) {
+      bail(cx, 'for-in pattern');
+    }
+  } else if (!patternBinds(cx, pat)) {
+    bail(cx, 'for-in pattern');
+  }
+
+  // Index loop. The index rides as an extra header/update block param
+  // (it is not an env symbol); loop-carried env symbols work as in
+  // #lowerFor.
+  let carried = cx.assignedEnvSyms(stmt.body);
+  let header = cx.b.newBlock();
+  let headerParams = cx.addParams(header, carried);
+  let idxParam = cx.b.blockParam(header, new ValTypeI32());
+  var initArgs = cx.envValues(carried);
+  initArgs.push(cx.b.constI32(0, new ValTypeI32()));
+  cx.b.br(header, initArgs);
+
+  cx.b.switchTo(header);
+  cx.applyParams(carried, headerParams);
+  let done = cx.b.binary(IrOp.i32_ge_s, new ValTypeI32(), idxParam, len);
+
+  let bodyB = cx.b.newBlock();
+  let exitB = cx.b.newBlock();
+  let exitParams = cx.addParams(exitB, carried);
+  cx.b.brIf(done, exitB, cx.envValues(carried), bodyB, noValues());
+
+  cx.b.switchTo(bodyB);
+  let elem = cx.b.emit(IrOp.array_get, elemVt, buf, idxParam);
+  if (symOpt != null) {
+    cx.bindPatternSym(symOpt as Symbol, elem);
+  } else {
+    lowerPatternBindings(cx, pat, elem);
+  }
+
+  let updateB = cx.b.newBlock();
+  let updateParams = cx.addParams(updateB, carried);
+  cx.loops.push(new LoopCtx(updateB, exitB, carried));
+  cx.lowerStmt(stmt.body);
+  if (cx.reachable) {
+    cx.b.br(updateB, cx.envValues(carried));
+  }
+  cx.loops.pop();
+
+  cx.b.switchTo(updateB);
+  cx.reachable = true;
+  cx.applyParams(carried, updateParams);
+  let one = cx.b.constI32(1, new ValTypeI32());
+  let next = cx.b.binary(IrOp.i32_add, new ValTypeI32(), idxParam, one);
+  var backArgs = cx.envValues(carried);
+  backArgs.push(next);
+  cx.b.br(header, backArgs);
 
   cx.applyParams(carried, exitParams);
   cx.b.switchTo(exitB);
