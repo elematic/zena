@@ -61,7 +61,7 @@ import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag }
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
-import { IntrinsicCx, lowerIntrinsic } from './intrinsics.zena';
+import { lowerIntrinsic } from './intrinsics.zena';
 import { LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported } from './lowering-context.zena';
 import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
@@ -4191,7 +4191,7 @@ final class FunctionLowerer {
     // call-position forms — streaming routes them through the same
     // per-name generators (the marker receiver carries no value).
     if (method.intrinsic != null) {
-      return lowerIntrinsic(this.#intrinsicCx(),
+      return lowerIntrinsic(this.#cx(),
           method.intrinsic as String, call);
     }
     if (method.isStatic ||
@@ -5348,7 +5348,7 @@ final class FunctionLowerer {
     // before the generic-call gate.
     let calleeName = (call.callee as Identifier).name;
     if (isArrayIntrinsic(calleeName)) {
-      return lowerIntrinsic(this.#intrinsicCx(), calleeName, call);
+      return lowerIntrinsic(this.#cx(), calleeName, call);
     }
     if (this.func.model.getUnionCallCalleeType(call.callee) != null) {
       return this.#lowerUnionCall(call);
@@ -5375,7 +5375,7 @@ final class FunctionLowerer {
     let intrDecl = findDeclaration(this.wasm, resolved, calleeFt);
     if (intrDecl != null) {
       if (let (true, intrName) = this.wasm.intrinsics.get((intrDecl as DeclareFunction).id)) {
-        return lowerIntrinsic(this.#intrinsicCx(), intrName, call);
+        return lowerIntrinsic(this.#cx(), intrName, call);
       }
     }
     // A generic call: the solved type arguments name a monomorphized
@@ -5463,22 +5463,6 @@ final class FunctionLowerer {
    * on the lowerer because they share the primitive cluster with the
    * case-class ==/hashCode synthesizers.
    */
-  #intrinsicCx(): IntrinsicCx {
-    return new IntrinsicCx(
-        this.b,
-        this.wasm,
-        (e: Expression, want: ValType | null): i32 =>
-            if (want == null) this.#lowerExpression(e)
-            else this.#lowerExpressionCtx(e, want as ValType),
-        (value: i32): ValType => this.#valueType(value),
-        (e: Expression): ValType => this.#exprValType(e),
-        (value: i32, want: ValType): i32 => this.#reassertNonNull(value, want),
-        (vt: ValType, what: String): void => this.#requireSupported(vt, what),
-        (reason: String): i32 => this.#bailValue(reason),
-        (call: CallExpression): i32 => this.#lowerEqIntrinsic(call),
-        (call: CallExpression): i32 => this.#lowerHashIntrinsic(call));
-  }
-
   /**
    * Closure creation: ref.func of the (separately compiled, streaming
    * or ZIR) implementation, a context struct holding the captured
