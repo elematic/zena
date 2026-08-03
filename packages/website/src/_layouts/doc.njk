@@ -1,0 +1,112 @@
+---
+layout: base.njk
+---
+
+{% from "outline-items.njk" import outlineList %}
+{% set headings = content | outline %}
+{% set hasOutline = headings.length > 0 %}
+
+{#
+  The aside column is reserved on every doc page, whether or not the page has
+  headings to put in it. Tying it to `hasOutline` would let heading-less pages
+  reflow to full width, so they'd sit at a different measure than their
+  neighbours. Opt out per page with `aside: false`.
+#}
+{% set hasAside = aside !== false %}
+
+{# The local nav is the mobile-only sticky bar above the content. #}
+<div
+  class="local-nav{% if hasSidebar %} has-sidebar{% endif %}{% if not hasOutline %} empty{% endif %}"
+>
+  <div class="container">
+    {% if hasSidebar %}
+      <button
+        class="menu"
+        type="button"
+        aria-expanded="false"
+        aria-controls="sidebar-nav"
+        data-toggle-sidebar
+      >
+        <span class="icon-align-left menu-icon"></span>
+        <span class="menu-text">Menu</span>
+      </button>
+    {% endif %}
+
+    <zena-local-outline class="local-nav-outline">
+      {% if hasOutline %}
+        <button type="button" aria-expanded="false">
+          <span class="menu-text">On this page</span>
+          <span class="icon-chevron-right icon"></span>
+        </button>
+        <div class="items" hidden>
+          <div class="header">
+            <a class="top-link" href="#">Return to top</a>
+          </div>
+          <div class="outline">{{ outlineList(headings, false) }}</div>
+        </div>
+      {% else %}
+        <button type="button">Return to top</button>
+      {% endif %}
+    </zena-local-outline>
+  </div>
+</div>
+
+{% if hasSidebar %}{% include "sidebar.njk" %}{% endif %}
+
+<zena-code-copy
+  class="site-content{% if hasSidebar %} has-sidebar{% endif %}"
+  id="site-content"
+>
+  <div
+    class="doc{% if hasSidebar %} has-sidebar{% endif %}{% if hasAside %} has-aside{% endif %}"
+  >
+    <div class="container">
+      {% if hasAside %}
+        <div class="aside">
+          <div class="aside-curtain"></div>
+          <div class="aside-container">
+            <div class="aside-content">
+              <div class="doc-aside">
+                {# `has-outline` is what makes the rail visible; without it the
+                   column stays reserved but empty. #}
+                <zena-outline
+                  class="doc-outline{% if hasOutline %} has-outline{% endif %}"
+                >
+                  <div class="content">
+                    <div class="outline-marker"></div>
+                    <div class="outline-title" role="heading" aria-level="2">
+                      On this page
+                    </div>
+                    {{ outlineList(headings, true) }}
+                  </div>
+                </zena-outline>
+                <div class="spacer"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      <div class="content">
+        <div class="content-container">
+          <main class="main">
+            <div class="prose">
+              <h1>
+                {{ title }}
+                {%- if status %}
+                  <span class="badge {{ statusType or 'warning' }}">
+                    {{- status -}}
+                  </span>
+                {% endif %}
+              </h1>
+              {% if lead %}<p class="lead">{{ lead }}</p>{% endif %}
+              {{ content | safe }}
+            </div>
+          </main>
+
+          {% include "doc-footer.njk" %}
+        </div>
+      </div>
+    </div>
+  </div>
+</zena-code-copy>

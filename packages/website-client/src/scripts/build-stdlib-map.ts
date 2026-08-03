@@ -1,5 +1,11 @@
-import {readdirSync, readFileSync, writeFileSync, mkdirSync} from 'node:fs';
-import {join, dirname} from 'node:path';
+import {
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  statSync,
+} from 'node:fs';
+import {join, dirname, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -10,21 +16,33 @@ const outDir = join(pkgDir, 'src', 'lib');
 
 mkdirSync(outDir, {recursive: true});
 
-const files = readdirSync(stdlibDir).filter((f) => f.endsWith('.zena'));
-
 const stdlibFiles: Record<string, string> = {};
 
-for (const file of files) {
-  const content = readFileSync(join(stdlibDir, file), 'utf8');
-  const moduleName = file.replace(/\.zena$/, '');
+function scanDir(dir: string) {
+  const entries = readdirSync(dir);
+  for (const entry of entries) {
+    const fullPath = join(dir, entry);
+    const stat = statSync(fullPath);
+    if (stat.isDirectory()) {
+      scanDir(fullPath);
+    } else if (entry.endsWith('.zena')) {
+      const content = readFileSync(fullPath, 'utf8');
+      const relPath = relative(stdlibDir, fullPath);
+      stdlibFiles[`/stdlib/${relPath}`] = content;
+      stdlibFiles[`zena:${relPath}`] = content;
 
-  // Provide lookups for both filesystem paths and zena: package specifiers
-  stdlibFiles[`/stdlib/${file}`] = content;
-  stdlibFiles[`zena:${moduleName}`] = content;
+      if (!relPath.includes('/')) {
+        const moduleName = relPath.replace(/\.zena$/, '');
+        stdlibFiles[`zena:${moduleName}`] = content;
+      }
+    }
+  }
 }
+
+scanDir(stdlibDir);
 
 const outFile = join(outDir, 'stdlib-data.json');
 writeFileSync(outFile, JSON.stringify(stdlibFiles, null, 2), 'utf8');
 console.log(
-  `Generated ${outFile} with ${files.length} stdlib files (${Object.keys(stdlibFiles).length} keys).`,
+  `Generated ${outFile} with ${Object.keys(stdlibFiles).length} stdlib keys.`,
 );

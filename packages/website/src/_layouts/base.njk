@@ -1,34 +1,58 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{ title }} | Zena</title>
-  <meta name="description" content="{{ description or 'Zena is a programming language targeting WebAssembly with TypeScript-like syntax and high performance.' }}">
-  <link rel="stylesheet" href="/css/style.css">
-  <script type="module" src="/js/zena-playground.js"></script>
-</head>
-<body>
-  <header class="site-header">
-    <nav class="nav-container">
-      <a href="/" class="logo">
-        <span class="logo-text">Zena</span>
-      </a>
-      <ul class="nav-links">
-        <li><a href="https://github.com/justinfagnani/zena" target="_blank" rel="noopener">GitHub</a></li>
-        <li><a href="/docs/quick-reference/">Docs</a></li>
-      </ul>
-    </nav>
-  </header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>
+      {%- if page.url == "/" %}{{ site.title }} | {{ site.tagline }}
+      {%- else %}{{ title }} | {{ site.title }}{% endif -%}
+    </title>
+    <meta name="description" content="{{ description or site.description }}" />
+    <link rel="canonical" href="{{ site.url }}{{ page.url }}" />
 
-  <main>
-    {{ content | safe }}
-  </main>
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="{{ title or site.title }}" />
+    <meta
+      property="og:description"
+      content="{{ description or site.description }}"
+    />
+    <meta name="twitter:card" content="summary" />
 
-  <footer class="site-footer">
-    <div class="footer-container">
-      <p>&copy; 2025 Zena. Licensed under MIT.</p>
-    </div>
-  </footer>
-</body>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/css/style.css" />
+
+    {#
+      Applies the stored theme before first paint. Without this the page would
+      render light and then flip, which is far more jarring than a plain
+      render-blocking inline script.
+    #}
+    <script>
+      (() => {
+        const stored = localStorage.getItem('zena-appearance');
+        const dark =
+          stored === 'dark' ||
+          (stored !== 'light' &&
+            matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('dark', dark);
+      })();
+    </script>
+
+    <script type="module" src="/js/zena.js"></script>
+  </head>
+
+  <body>
+    <zena-layout class="layout">
+      <a href="#site-content" class="skip-link visually-hidden">Skip to content</a>
+      <div class="backdrop"></div>
+
+      {% include "nav-bar.njk" %} {{ content | safe }}
+
+      <footer class="footer{% if hasSidebar %} has-sidebar{% endif %}">
+        <div class="container">
+          <p class="message">{{ site.footer.message }}</p>
+          <p class="copyright">{{ site.footer.copyright }}</p>
+        </div>
+      </footer>
+    </zena-layout>
+  </body>
 </html>

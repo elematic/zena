@@ -1,0 +1,87 @@
+{#
+  Left navigation, rendered from `_data/sidebar.js`.
+
+  A group is expanded when it contains the current page, so the initial HTML is
+  already scrolled to the right place with no JS; `zena-sidebar` only handles
+  clicks after that.
+#}
+{% macro sidebarItem(item, depth, url) %}
+  {% set hasChildren = item.items and item.items.length %}
+  {% set active = item.link and item.link == url %}
+  {% set hasActive = item | containsActive(url) %}
+  {% set collapsible = hasChildren and item.collapsed !== false %}
+  {% set collapsed = collapsible and not hasActive %}
+
+  <{{ "section" if hasChildren else "div" }}
+    class="sidebar-item level-{{ depth }}
+      {%- if collapsible %} collapsible{% endif %}
+      {%- if collapsed %} collapsed{% endif %}
+      {%- if item.link %} is-link{% endif %}
+      {%- if active %} is-active{% endif %}
+      {%- if hasActive %} has-active{% endif %}"
+  >
+    <div
+      class="item"
+      {% if collapsible and not item.link %}
+        role="button" tabindex="0" aria-expanded="{{ "false" if collapsed else "true" }}"
+      {% endif %}
+      {#
+        Unlike VitePress, every collapsible group gets a caret. Zena's reference
+        is long enough that groups default to collapsed, and a group that can
+        collapse with no visible affordance reads as a dead heading.
+      #}>
+      <div class="indicator"></div>
+
+      {% if item.link %}
+        <a class="link" href="{{ item.link }}">
+          {% if hasChildren %}
+            <h{{ depth + 2 }} class="text">{{ item.text }}</h{{ depth + 2 }}>
+          {% else %}
+            <p class="text">{{ item.text }}</p>
+          {% endif %}
+        </a>
+      {% elif hasChildren %}
+        <h{{ depth + 2 }} class="text">{{ item.text }}</h{{ depth + 2 }}>
+      {% else %}
+        <p class="text">{{ item.text }}</p>
+      {% endif %}
+
+      {% if collapsible %}
+        <div
+          class="caret"
+          role="button"
+          aria-label="Toggle section"
+          aria-expanded="{{ "false" if collapsed else "true" }}"
+          tabindex="0"
+        >
+          <span class="icon-chevron-right caret-icon"></span>
+        </div>
+      {% endif %}
+    </div>
+
+    {% if hasChildren %}
+      <div class="items">
+        {% for child in item.items %}
+          {{ sidebarItem(child, depth + 1, url) }}
+        {% endfor %}
+      </div>
+    {% endif %}
+  </{{ "section" if hasChildren else "div" }}>
+{% endmacro %}
+
+<zena-sidebar class="sidebar" tabindex="-1">
+  <div class="curtain"></div>
+  <nav
+    class="nav"
+    id="sidebar-nav"
+    aria-labelledby="sidebar-aria-label"
+    tabindex="-1"
+  >
+    <span class="visually-hidden" id="sidebar-aria-label">
+      Sidebar Navigation
+    </span>
+    {% for item in sidebarItems %}
+      {{ sidebarItem(item, 0, page.url) }}
+    {% endfor %}
+  </nav>
+</zena-sidebar>

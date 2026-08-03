@@ -208,28 +208,51 @@ export class ZenaPlayground extends LitElement {
 
     .main-pane {
       display: flex;
-      flex: 1;
+      flex-direction: row;
+      flex: 1 1 0%;
       min-height: 0;
       width: 100%;
+      height: 100%;
     }
 
     .editor-pane {
-      flex: 1;
+      flex: 1 1 0%;
       min-width: 0;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       background: #1e293b;
       border-right: 1px solid rgba(255, 255, 255, 0.08);
+      height: 100%;
     }
 
     cm-editor {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 0%;
       width: 100%;
       height: 100%;
+      min-height: 0;
       border: none !important;
       outline: none !important;
       font-family: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, monospace;
       font-size: 14px;
       line-height: 1.5;
+    }
+
+    cm-editor .cm-editor,
+    .cm-editor {
+      height: 100% !important;
+      display: flex !important;
+      flex-direction: column !important;
+      flex: 1 1 0% !important;
+      min-height: 0 !important;
+    }
+
+    .cm-scroller {
+      flex: 1 1 0% !important;
+      min-height: 0 !important;
+      overflow: auto !important;
     }
 
     /* CodeMirror Dark Tooltip Overrides */
@@ -266,11 +289,14 @@ export class ZenaPlayground extends LitElement {
     .console-pane {
       width: 380px;
       min-width: 280px;
+      flex: 0 0 380px;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       background: #090d16;
       font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
       font-size: 0.85rem;
+      height: 100%;
     }
 
     .console-header {

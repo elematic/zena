@@ -1,0 +1,418 @@
+/**
+ * Layout — ported from VitePress 1.6.4 (Layout, site-content, doc, doc-aside,
+ * doc-outline, doc-outline-item, doc-footer, footer).
+ * -------------------------------------------------------------------------- */
+
+.layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* site-content --------------------------------------------------------------- */
+
+.site-content {
+  flex-grow: 1;
+  flex-shrink: 0;
+  margin: var(--vp-layout-top-height, 0px) auto 0;
+  width: 100%;
+}
+
+.site-content.is-home {
+  width: 100%;
+  max-width: 100%;
+}
+
+.site-content.has-sidebar {
+  margin: 0;
+}
+
+@media (min-width: 960px) {
+  .site-content {
+    padding-top: var(--vp-nav-height);
+  }
+
+  .site-content.has-sidebar {
+    margin: var(--vp-layout-top-height, 0px) 0 0;
+    padding-left: var(--vp-sidebar-width);
+  }
+}
+
+@media (min-width: 1440px) {
+  .site-content.has-sidebar {
+    padding-right: calc((100vw - var(--vp-layout-max-width)) / 2);
+    padding-left: calc(
+      (100vw - var(--vp-layout-max-width)) / 2 + var(--vp-sidebar-width)
+    );
+  }
+}
+
+/* doc ------------------------------------------------------------------- */
+
+/*
+ * Note on ordering: upstream relies on `.doc .aside` (specificity 0,2,0)
+ * inside a media query beating a bare `.aside` (0,1,0) declared later. Once the
+ * scoped selectors are flattened both sides have the same specificity, so the
+ * base rules have to come first and the media queries after.
+ */
+
+.doc {
+  padding: 32px 24px 96px;
+  width: 100%;
+}
+
+.doc > .container {
+  margin: 0 auto;
+  width: 100%;
+}
+
+.doc > .container > .aside {
+  position: relative;
+  display: none;
+  order: 2;
+  flex-grow: 1;
+  padding-left: 32px;
+  width: 100%;
+  max-width: 256px;
+}
+
+.doc > .container > .aside .aside-container {
+  position: fixed;
+  top: 0;
+  padding-top: calc(
+    var(--vp-nav-height) + var(--vp-layout-top-height, 0px) +
+      var(--vp-doc-top-height, 0px) + 48px
+  );
+  width: 224px;
+  height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.doc > .container > .aside .aside-container::-webkit-scrollbar {
+  display: none;
+}
+
+.doc > .container > .aside .aside-curtain {
+  position: fixed;
+  bottom: 0;
+  z-index: 10;
+  width: 224px;
+  height: 32px;
+  background: linear-gradient(transparent, var(--vp-c-bg) 70%);
+}
+
+.doc > .container > .aside .aside-content {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(
+    100vh - (var(--vp-nav-height) + var(--vp-layout-top-height, 0px) + 48px)
+  );
+  padding-bottom: 32px;
+}
+
+.doc > .container > .content {
+  position: relative;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.doc > .container > .content > .content-container {
+  margin: 0 auto;
+}
+
+.doc.has-aside > .container > .content > .content-container {
+  max-width: 688px;
+}
+
+@media (min-width: 768px) {
+  .doc {
+    padding: 48px 32px 128px;
+  }
+}
+
+@media (min-width: 960px) {
+  .doc {
+    padding: 48px 32px 0;
+  }
+
+  .doc:not(.has-sidebar) > .container {
+    display: flex;
+    justify-content: center;
+    max-width: 992px;
+  }
+
+  .doc:not(.has-sidebar) > .container > .content {
+    max-width: 752px;
+  }
+
+  .doc > .container > .content {
+    padding: 0 32px 128px;
+  }
+}
+
+@media (min-width: 1280px) {
+  .doc > .container {
+    display: flex;
+    justify-content: center;
+  }
+
+  .doc > .container > .aside {
+    display: block;
+  }
+
+  .doc > .container > .content {
+    order: 1;
+    margin: 0;
+    min-width: 640px;
+  }
+}
+
+@media (min-width: 1440px) {
+  .doc:not(.has-sidebar) > .container {
+    max-width: 1104px;
+  }
+
+  .doc:not(.has-sidebar) > .container > .content {
+    max-width: 784px;
+  }
+}
+
+/* doc-aside -------------------------------------------------------------- */
+
+.doc-aside {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+}
+
+.doc-aside > .spacer {
+  flex-grow: 1;
+}
+
+.doc-outline {
+  display: none;
+}
+
+.doc-outline.has-outline {
+  display: block;
+}
+
+.doc-outline .content {
+  position: relative;
+  border-left: 1px solid var(--vp-c-divider);
+  padding-left: 16px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.doc-outline .outline-marker {
+  position: absolute;
+  top: 32px;
+  left: -1px;
+  z-index: 0;
+  opacity: 0;
+  width: 2px;
+  border-radius: 2px;
+  height: 18px;
+  background-color: var(--vp-c-brand-1);
+  transition:
+    top 0.25s cubic-bezier(0, 1, 0.5, 1),
+    background-color 0.5s,
+    opacity 0.25s;
+}
+
+.doc-outline .outline-title {
+  line-height: 32px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.doc-outline-item.root {
+  position: relative;
+  z-index: 1;
+}
+
+.doc-outline-item.nested {
+  padding-right: 16px;
+  padding-left: 16px;
+}
+
+.doc-outline-item .outline-link {
+  display: block;
+  line-height: 32px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--vp-c-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.5s;
+}
+
+.doc-outline-item .outline-link:hover,
+.doc-outline-item .outline-link.active {
+  color: var(--vp-c-text-1);
+  transition: color 0.25s;
+}
+
+/* doc-footer ------------------------------------------------------------- */
+
+.doc-footer {
+  margin-top: 64px;
+}
+
+.doc-footer .edit-info {
+  padding-bottom: 18px;
+}
+
+@media (min-width: 640px) {
+  .doc-footer .edit-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 14px;
+  }
+}
+
+.doc-footer .edit-link-button {
+  display: flex;
+  align-items: center;
+  border: 0;
+  line-height: 32px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-c-brand-1);
+  transition: color 0.25s;
+}
+
+.doc-footer .edit-link-button:hover {
+  color: var(--vp-c-brand-2);
+}
+
+.doc-footer .edit-link-icon {
+  margin-right: 8px;
+}
+
+.doc-footer .last-updated {
+  line-height: 32px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-c-text-2);
+}
+
+.doc-footer .prev-next {
+  border-top: 1px solid var(--vp-c-divider);
+  padding-top: 24px;
+  display: grid;
+  grid-row-gap: 8px;
+}
+
+@media (min-width: 640px) {
+  .doc-footer .prev-next {
+    grid-template-columns: repeat(2, 1fr);
+    grid-column-gap: 16px;
+  }
+}
+
+.doc-footer .pager-link {
+  display: block;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  padding: 11px 16px 13px;
+  width: 100%;
+  height: 100%;
+  transition: border-color 0.25s;
+}
+
+.doc-footer .pager-link:hover {
+  border-color: var(--vp-c-brand-1);
+}
+
+.doc-footer .pager-link.next {
+  margin-left: auto;
+  text-align: right;
+}
+
+.doc-footer .desc {
+  display: block;
+  line-height: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--vp-c-text-2);
+}
+
+.doc-footer .title {
+  display: block;
+  line-height: 20px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-c-brand-1);
+  transition: color 0.25s;
+}
+
+/* footer ---------------------------------------------------------------- */
+
+.footer {
+  position: relative;
+  z-index: var(--vp-z-index-footer);
+  border-top: 1px solid var(--vp-c-gutter);
+  padding: 32px 24px;
+  background-color: var(--vp-c-bg);
+}
+
+.footer.has-sidebar {
+  display: none;
+}
+
+.footer a {
+  text-decoration-line: underline;
+  text-underline-offset: 2px;
+  transition: color 0.25s;
+}
+
+.footer a:hover {
+  color: var(--vp-c-text-1);
+}
+
+@media (min-width: 768px) {
+  .footer {
+    padding: 32px;
+  }
+}
+
+.footer > .container {
+  margin: 0 auto;
+  max-width: var(--vp-layout-max-width);
+  text-align: center;
+}
+
+.footer .message,
+.footer .copyright {
+  line-height: 24px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-c-text-2);
+}
+
+/* page ------------------------------------------------------------------ */
+
+.page {
+  padding: 32px 24px 96px;
+  width: 100%;
+  max-width: 1152px;
+  margin: 0 auto;
+}
+
+@media (min-width: 768px) {
+  .page {
+    padding: 48px 48px 128px;
+  }
+}
+
+@media (min-width: 960px) {
+  .page {
+    padding: 48px 64px 128px;
+  }
+}

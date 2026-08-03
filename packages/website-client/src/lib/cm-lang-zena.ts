@@ -1,5 +1,5 @@
 import {StreamLanguage, LanguageSupport} from '@codemirror/language';
-import {hoverTooltip} from '@codemirror/view';
+import {hoverTooltip, EditorView} from '@codemirror/view';
 import {customElement} from 'lit/decorators.js';
 import {CodeMirrorExtensionElement} from 'codemirror-elements/lib/cm-extension-element.js';
 
@@ -225,7 +225,24 @@ export function zena() {
 export class CodeMirrorLangZena extends CodeMirrorExtensionElement {
   constructor() {
     super();
-    this.setExtensions([zena()]);
+    this.setExtensions([
+      zena(),
+      EditorView.theme({
+        '&': {
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          flex: '1 1 0%',
+          minHeight: '0',
+        },
+        '.cm-scroller': {
+          height: '100%',
+          flex: '1 1 0%',
+          minHeight: '0',
+          overflow: 'auto',
+        },
+      }),
+    ]);
   }
 }
 

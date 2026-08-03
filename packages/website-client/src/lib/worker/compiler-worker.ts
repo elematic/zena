@@ -52,7 +52,6 @@ function sendLog(level: 'log' | 'warn' | 'error' | 'info', message: string) {
 function handleReadFile(pathRef: unknown, pathLen: number): unknown {
   if (!readString || !writeString) return null;
   const rawPath = readString(pathRef, pathLen);
-  console.log('[Zena Compiler Worker] Host read_file request for:', rawPath);
 
   if (openDocuments.has(rawPath)) {
     return writeString(openDocuments.get(rawPath)!);
@@ -67,26 +66,33 @@ function handleReadFile(pathRef: unknown, pathLen: number): unknown {
     return writeString(openDocuments.get(normalizedPath)!);
   }
 
-  if (STDLIB_FILES[rawPath]) {
-    return writeString(STDLIB_FILES[rawPath]);
-  }
+  const candidates = [
+    rawPath,
+    normalizedPath,
+    rawPath + '.zena',
+    normalizedPath + '.zena',
+  ];
 
-  if (STDLIB_FILES[normalizedPath]) {
-    return writeString(STDLIB_FILES[normalizedPath]);
-  }
-
-  // Check stdlib fallback with prefix
   if (rawPath.startsWith('zena:')) {
-    const canonical = `/stdlib/${rawPath.slice(5)}.zena`;
-    if (STDLIB_FILES[canonical]) {
-      return writeString(STDLIB_FILES[canonical]);
+    const sub = rawPath.slice(5);
+    candidates.push(`/stdlib/${sub}`);
+    candidates.push(`/stdlib/${sub}.zena`);
+    if (!sub.endsWith('.zena')) {
+      candidates.push(`/stdlib/${sub}/index.zena`);
+      candidates.push(`/stdlib/${sub}/host.zena`);
+    }
+  }
+
+  for (const key of candidates) {
+    if (STDLIB_FILES[key]) {
+      return writeString(STDLIB_FILES[key]);
     }
   }
 
   // Search by basename fallback (e.g., string.zena)
   const filename = normalizedPath.split('/').pop();
   if (filename) {
-    const stdlibKey = `/stdlib/${filename}`;
+    const stdlibKey = `/stdlib/${filename.endsWith('.zena') ? filename : filename + '.zena'}`;
     if (STDLIB_FILES[stdlibKey]) {
       return writeString(STDLIB_FILES[stdlibKey]);
     }
