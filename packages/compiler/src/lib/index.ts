@@ -46,7 +46,10 @@ class InMemoryHost implements CompilerHost {
       return resolved;
     }
     if (specifier.startsWith('zena:')) {
-      const resolved = resolveStdlibImport(specifier.substring(5), this.#target);
+      const resolved = resolveStdlibImport(
+        specifier.substring(5),
+        this.#target,
+      );
       if (!resolved) {
         throw new Error(`Unknown stdlib module: ${specifier}`);
       }

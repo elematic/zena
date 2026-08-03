@@ -18,10 +18,7 @@ import type {Diagnostic} from '../lib/diagnostics.js';
 import {DiagnosticSeverity, formatDiagnostic} from '../lib/diagnostics.js';
 
 // Import stdlib module loader
-import {
-  resolveStdlibSpecifier,
-  loadStdlibModule,
-} from '@zena-lang/stdlib';
+import {resolveStdlibSpecifier, loadStdlibModule} from '@zena-lang/stdlib';
 
 import {createStringReader, createStringWriter} from './string-reader.js';
 import {runZenaTestFile, flattenTests} from './codegen/utils.js';
@@ -455,7 +452,11 @@ async function runExecutionTest(
       throw new Error(`File not found: ${path}`);
     },
     resolve: (specifier: string, referrer: string) => {
-      const stdlibResolved = resolveStdlibSpecifier(specifier, referrer, 'host');
+      const stdlibResolved = resolveStdlibSpecifier(
+        specifier,
+        referrer,
+        'host',
+      );
       if (stdlibResolved) {
         return stdlibResolved;
       }

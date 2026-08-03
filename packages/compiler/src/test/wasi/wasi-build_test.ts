@@ -26,7 +26,9 @@ class WasiTestHost implements CompilerHost {
     // Handles zena:<name> imports (including the virtual zena:console, which
     // maps to zena:console/host.zena or zena:console/wasi.zena based on
     // target) and relative imports between stdlib modules.
-    return resolveStdlibSpecifier(specifier, referrer, this.#target) ?? specifier;
+    return (
+      resolveStdlibSpecifier(specifier, referrer, this.#target) ?? specifier
+    );
   }
 
   load(filePath: string): string {

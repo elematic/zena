@@ -1412,8 +1412,7 @@ export function generateLocalVariableDeclaration(
         // pack exactly like the non-union declaration would emit — the
         // union changes nothing but nullability.
         const memberNeedsFatAdapt =
-          (member.kind === TypeKind.Interface &&
-            initKind === TypeKind.Class) ||
+          (member.kind === TypeKind.Interface && initKind === TypeKind.Class) ||
           (member.kind === TypeKind.Record && initKind === TypeKind.Record);
         if (
           memberNeedsFatAdapt ||

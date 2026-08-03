@@ -237,7 +237,10 @@ const bodyAssignsToVariable = (
     }
     return state === NullGuardAssignKind.AssignsNonNull;
   }
-  return classifyNullGuardAssignment(ctx, stmt, varName) === NullGuardAssignKind.AssignsNonNull;
+  return (
+    classifyNullGuardAssignment(ctx, stmt, varName) ===
+    NullGuardAssignKind.AssignsNonNull
+  );
 };
 
 /**

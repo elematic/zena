@@ -1896,7 +1896,6 @@ export function isAssignableTo(
     return true;
   }
 
-
   // Literal type assignability
   if (source.kind === TypeKind.Literal && target.kind === TypeKind.Literal) {
     const srcLit = source as LiteralType;

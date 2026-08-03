@@ -20,12 +20,12 @@ Everything is one library — `import {...} from 'zena:url'` — implemented as
 multiple files in this directory, with dead-code elimination keeping unused
 pieces out of compiled binaries:
 
-| Export                  | Description                             | Status  |
-| ----------------------- | --------------------------------------- | ------- |
-| `URL`, `URLSearchParams`| WHATWG URL parsing and serialization    | Design  |
-| `url` tag, `UrlString`  | Safe URL building, typed URL strings    | Design  |
-| `URLPattern`            | Route/pattern matching                  | Planned |
-| `URLPatternList`        | Fast multi-pattern matching (prefix trie) | Planned |
+| Export                   | Description                               | Status  |
+| ------------------------ | ----------------------------------------- | ------- |
+| `URL`, `URLSearchParams` | WHATWG URL parsing and serialization      | Design  |
+| `url` tag, `UrlString`   | Safe URL building, typed URL strings      | Design  |
+| `URLPattern`             | Route/pattern matching                    | Planned |
+| `URLPatternList`         | Fast multi-pattern matching (prefix trie) | Planned |
 
 ## Planned API at a glance
 

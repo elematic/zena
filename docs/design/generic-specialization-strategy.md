@@ -328,8 +328,8 @@ This tiered approach means most `is` checks remain fast, and only fully-specifie
 
 - **Classes & Structs**: Both compilers currently use **Full Specialization (Monomorphization)** for class struct layouts and fields. For every concrete class type argument combination (e.g., `Box<i32>`, `Box<String>`), a unique WASM struct layout is generated. There is no shared code layout for reference types yet.
 - **Generic Methods on VTables (Type Erasure)**: For generic methods on classes and interfaces (e.g. `map<U>`), the current compilers simplify vtable generation by erasing the method's generic type parameters to `anyref` inside the vtable slot.
-  - **Static Dispatch**: Direct calls are monomorphized (e.g., `map_spec_i32`), avoiding boxing. This includes *inferred* type arguments — the checker records the solved type args on the call's FunctionType and reachability instantiates the `_spec_` copy. Pinned by `tests/language/execution/arrays/generic-method-primitive-mono.zena` with erasure-hostile values (i32 near ±2³¹, f64, U≠T).
-  - **Virtual/Interface Dispatch**: NOT IMPLEMENTED (status corrected 2026-07-26). The erased copies (`Array_i32.map` over `anyref`) exist and occupy *class*-vtable slots, but no boxing or unboxing adapters were ever generated, generic methods get no *interface* vtable slot at all, and both compilers crashed with internal errors on a dispatch site like `(s: Sequence<i32>).map(f)`. Both checkers now reject it with a NotCallable diagnostic instead (see BUGS.md "Generic interface methods are not virtually dispatchable"; semantics test `interfaces/generic-method-virtual-dispatch.zena`). The diagnostic is a stopgap until §"Generic interface dispatch" below is implemented.
+  - **Static Dispatch**: Direct calls are monomorphized (e.g., `map_spec_i32`), avoiding boxing. This includes _inferred_ type arguments — the checker records the solved type args on the call's FunctionType and reachability instantiates the `_spec_` copy. Pinned by `tests/language/execution/arrays/generic-method-primitive-mono.zena` with erasure-hostile values (i32 near ±2³¹, f64, U≠T).
+  - **Virtual/Interface Dispatch**: NOT IMPLEMENTED (status corrected 2026-07-26). The erased copies (`Array_i32.map` over `anyref`) exist and occupy _class_-vtable slots, but no boxing or unboxing adapters were ever generated, generic methods get no _interface_ vtable slot at all, and both compilers crashed with internal errors on a dispatch site like `(s: Sequence<i32>).map(f)`. Both checkers now reject it with a NotCallable diagnostic instead (see BUGS.md "Generic interface methods are not virtually dispatchable"; semantics test `interfaces/generic-method-virtual-dispatch.zena`). The diagnostic is a stopgap until §"Generic interface dispatch" below is implemented.
 
 ### Future Path (Eliminating Auto-Boxing)
 
@@ -387,7 +387,7 @@ member, type-argument tuple) pair that is ever dispatched:
 - **VTable/interface struct layout**: the interface struct gains one
   exactly-typed funcref field per reached (member, targsKey). Typed
   slots stay exact — no casts before call_ref, preserving the
-  existing dispatch pillar. Slot count is bounded by *reached*
+  existing dispatch pillar. Slot count is bounded by _reached_
   combinations; a program that maps to three result types through an
   interface pays three slots, not a combinatorial table.
 - **Call sites (both backends)**: interface dispatch resolves the

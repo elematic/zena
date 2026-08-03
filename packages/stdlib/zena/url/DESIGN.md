@@ -23,17 +23,17 @@ standard library. This document covers the design of the initial `URL` /
 
 ## Specs and references
 
-| Reference | Use |
-| --- | --- |
-| [WHATWG URL Standard](https://url.spec.whatwg.org/) | The spec we implement: URL record, basic URL parser state machine, percent-encode sets, host parsing, `application/x-www-form-urlencoded`, API section (getter/setter algorithms). |
-| [URLPattern Standard](https://urlpattern.spec.whatwg.org/) | WHATWG living standard (graduated from WICG). Shipped in Chrome 95+, Deno, Node 23.8+ (via Ada), Cloudflare Workers, Firefox 142+, Safari 26+. |
-| [WPT url/resources](https://github.com/web-platform-tests/wpt/tree/master/url/resources) | Machine-readable conformance data: `urltestdata.json`, `setters_tests.json`, `toascii.json`, `percent-encoding.json`, `IdnaTestV2.json`. Format documented in [url/README.md](https://github.com/web-platform-tests/wpt/blob/master/url/README.md). |
-| [WPT urlpattern/resources](https://github.com/web-platform-tests/wpt/tree/master/urlpattern/resources) | `urlpatterntestdata.json` for the `URLPattern` phase. |
-| [jsdom/whatwg-url](https://github.com/jsdom/whatwg-url) | Reference-quality JS implementation; the cleanest mapping from spec prose to code (`basicURLParse`, state-override parsing for setters). |
-| [Ada](https://github.com/ada-url/ada) | C++ parser used by Node. Study for performance: `url_aggregator` stores one normalized buffer + component offsets. Also ships the URLPattern implementation Node uses. |
-| [servo/rust-url](https://github.com/servo/rust-url) | Rust implementation. Study for project structure: separate `percent-encoding`, `form_urlencoded`, `idna` layers; vendors WPT JSON and keeps an `expected_failures.txt` while incomplete. |
-| [Node `node:url`](https://nodejs.org/api/url.html) | WHATWG `URL` + legacy `url.parse()`. We implement only the WHATWG part; the legacy API is a non-goal. |
-| [url-pattern-list](https://github.com/justinfagnani/url-pattern-list) | Prefix-trie multi-pattern matcher to port in the final phase. |
+| Reference                                                                                              | Use                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [WHATWG URL Standard](https://url.spec.whatwg.org/)                                                    | The spec we implement: URL record, basic URL parser state machine, percent-encode sets, host parsing, `application/x-www-form-urlencoded`, API section (getter/setter algorithms).                                                                  |
+| [URLPattern Standard](https://urlpattern.spec.whatwg.org/)                                             | WHATWG living standard (graduated from WICG). Shipped in Chrome 95+, Deno, Node 23.8+ (via Ada), Cloudflare Workers, Firefox 142+, Safari 26+.                                                                                                      |
+| [WPT url/resources](https://github.com/web-platform-tests/wpt/tree/master/url/resources)               | Machine-readable conformance data: `urltestdata.json`, `setters_tests.json`, `toascii.json`, `percent-encoding.json`, `IdnaTestV2.json`. Format documented in [url/README.md](https://github.com/web-platform-tests/wpt/blob/master/url/README.md). |
+| [WPT urlpattern/resources](https://github.com/web-platform-tests/wpt/tree/master/urlpattern/resources) | `urlpatterntestdata.json` for the `URLPattern` phase.                                                                                                                                                                                               |
+| [jsdom/whatwg-url](https://github.com/jsdom/whatwg-url)                                                | Reference-quality JS implementation; the cleanest mapping from spec prose to code (`basicURLParse`, state-override parsing for setters).                                                                                                            |
+| [Ada](https://github.com/ada-url/ada)                                                                  | C++ parser used by Node. Study for performance: `url_aggregator` stores one normalized buffer + component offsets. Also ships the URLPattern implementation Node uses.                                                                              |
+| [servo/rust-url](https://github.com/servo/rust-url)                                                    | Rust implementation. Study for project structure: separate `percent-encoding`, `form_urlencoded`, `idna` layers; vendors WPT JSON and keeps an `expected_failures.txt` while incomplete.                                                            |
+| [Node `node:url`](https://nodejs.org/api/url.html)                                                     | WHATWG `URL` + legacy `url.parse()`. We implement only the WHATWG part; the legacy API is a non-goal.                                                                                                                                               |
+| [url-pattern-list](https://github.com/justinfagnani/url-pattern-list)                                  | Prefix-trie multi-pattern matcher to port in the final phase.                                                                                                                                                                                       |
 
 ## Scope
 
@@ -103,6 +103,7 @@ URL implementation work**, since they also pay off immediately for `console`.
      specifiers.
    - Self-hosted: `packages/zena-compiler/zena/lib/module-resolver.zena`
      (`resolvePackage` / the stdlib file-path branch).
+
 2. **Virtual modules map to files, not module names** (the `console` fix):
 
    ```json
@@ -113,6 +114,7 @@ URL implementation work**, since they also pay off immediately for `console`.
    `zena/console/`, stop being nameable modules entirely, and the `internal`
    list — plus the "is the referrer a stdlib file?" checks in both resolvers —
    is deleted. "Not in the manifest" becomes the only privacy mechanism.
+
 3. **Relative imports between stdlib files** work in both compilers, resolved
    in the space of stdlib-root-relative file paths. Canonical ids come in two
    shapes: name ids (`zena:string`) for manifest modules whose entry file is
@@ -148,7 +150,7 @@ pairs (`url.pathname = '/x'` re-parses and renormalizes). Zena has:
 So Zena's `URL` is **immutable**: components are plain public fields (parsed
 and normalized once, at construction), and mutation is expressed as `with*`
 methods that return new `URL`s. Each `with*` method runs the spec's setter
-algorithm (the basic URL parser with a *state override*), so behavior — and the
+algorithm (the basic URL parser with a _state override_), so behavior — and the
 WPT setter tests — map 1:1: `url.protocol = v` in JS ⇒ `url.withProtocol(v)`
 in Zena. Like the spec's setters, `with*` methods do not throw; invalid input
 leaves the component unchanged (returning an equal `URL`).
@@ -212,7 +214,7 @@ export final class URL {
 
 Notes:
 
-- **Internals**: parsing produces the spec's *URL record* (scheme, host as a
+- **Internals**: parsing produces the spec's _URL record_ (scheme, host as a
   variant domain/IPv4/IPv6/opaque/null, port as `i32 | null`, path as segment
   list or opaque string). The public fields are serialized from the record at
   construction. Whether the record itself is retained on the instance (making
@@ -225,7 +227,7 @@ Notes:
 - **Equality/hash on `href`** makes `URL` a well-behaved value type; two URLs
   are equal iff they serialize identically (which the parser canonicalizes).
 - `IsWellKnownSymbol`-style live coupling does not exist: JS's `url.searchParams`
-  is a *live* object bound to the URL; since our `URL` is immutable,
+  is a _live_ object bound to the URL; since our `URL` is immutable,
   `searchParams()` returns a snapshot and `withSearchParams`/`withSearch`
   write changes back. This is the one deliberate behavioral divergence from
   the web API.
@@ -260,7 +262,7 @@ export final class URLSearchParams {
 Justin asked whether existing JS/TS projects use template tags or branded
 string types for URLs. They do, in two distinct niches:
 
-1. **Security sink typing** (branded *values* minted by tags):
+1. **Security sink typing** (branded _values_ minted by tags):
    [Google safevalues](https://github.com/google/safevalues) has a
    ``trustedResourceUrl`...` `` tag returning a branded `TrustedResourceUrl`;
    the tag trusts the literal parts (developer-authored) and restricts/encodes
@@ -270,11 +272,11 @@ string types for URLs. They do, in two distinct niches:
    exists specifically to let such tags verify literal provenance, and the
    [`String.cooked`](https://github.com/tc39/proposal-string-cooked) proposal
    uses a percent-encoding URL tag as its motivating example.
-2. **Route/DX typing** (branded string *types*): Next.js typed routes'
+2. **Route/DX typing** (branded string _types_): Next.js typed routes'
    `Route<T>` brand validates literal `href`s against the route table; Hono and
    tRPC parse path params out of route strings with template literal types.
 
-   (Encode-safe URL *builders* without branding also exist: `urlcat`, RFC 6570
+   (Encode-safe URL _builders_ without branding also exist: `urlcat`, RFC 6570
    `url-template` — evidence that safe interpolation is the recurring need.)
 
 No mainstream library brands general-purpose URL strings outside those niches,
@@ -298,11 +300,11 @@ let link = url`https://example.com/teams/${team}?from=${ref}`;
 ```
 
 - `href` is typed `UrlString` (zero-cost — distinct types are erased), so any
-  future sink API (`fetch(input: UrlString | URL)`) can require *parsed or
-  provably-well-formed* input while accepting plain field access. Casting
+  future sink API (`fetch(input: UrlString | URL)`) can require _parsed or
+  provably-well-formed_ input while accepting plain field access. Casting
   `as UrlString` remains the explicit escape hatch, exactly like `as Route` in
   Next.js.
-- The tag gives safe *construction* (the `String.cooked` example done
+- The tag gives safe _construction_ (the `String.cooked` example done
   properly): literals are trusted, interpolations are contextually encoded.
   A future compiler optimization can constant-fold fully-static tagged URLs
   (same idea as the static-pattern optimization in the regex design doc).
@@ -324,11 +326,11 @@ failure mode is the bare word "failure", with no code, position, or reason to
 report. An earlier draft had a `URLParseError` carrying `input` and a fixed
 message — i.e. the argument the caller had just passed, and no information.
 
-The spec's non-fatal *validation errors* (warnings that don't fail parsing) are
+The spec's non-fatal _validation errors_ (warnings that don't fail parsing) are
 ignored in v1; if wanted later they can surface as an optional callback, not as
 state on `URL`.
 
-If a future component does need to explain *why* it failed, that is the point
+If a future component does need to explain _why_ it failed, that is the point
 to revisit a shared `Result`-style return — see BUGS.md for the two compiler
 issues that currently block a zero-allocation `Result<V, E>`.
 
@@ -355,7 +357,7 @@ The data files and their schemas:
 - **`setters_tests.json`**: keyed by property name; each entry
   `{href, new_value, expected: {href, ...components}}`. Maps to:
   `let u2 = (URL.parse(href) as URL).withProtocol(new_value);
-  equal(u2.href, expected.href); ...`.
+equal(u2.href, expected.href); ...`.
 - **`percent-encoding.json`**: encode-set cases for `encoding.zena`.
 - **`toascii.json`**: `{input, output: String | null}` host/IDNA cases — for
   the IDNA phase.
@@ -405,7 +407,7 @@ Each phase lands with its tests green and the expected-failures list updated.
    from the spec (C0/fragment/query/special-query/path/userinfo/component/
    form-urlencoded), percent encode/decode over UTF-8 bytes (natural fit for
    Zena's UTF-8 strings), form-urlencoded parse/serialize.
-   *Tests*: hand-written unit tests (`tests/url/encoding_test.zena`). The
+   _Tests_: hand-written unit tests (`tests/url/encoding_test.zena`). The
    generated `percent-encoding.json` cases are still TODO — note that the
    hand-written set assertions initially missed U+005E (^) in the path set,
    which only the phase-2 WPT suite caught.
@@ -416,7 +418,7 @@ Each phase lands with its tests green and the expected-failures list updated.
    (`.`/`..`), serializer, `URL` constructor/`parse`/`canParse`/component
    fields/`href`/`toString`/`host()`/`origin()` (including `blob:`).
    Adds the `url` manifest entry.
-   *Tests*: generated `urltestdata.json` suite — **871/871 passing, 12
+   _Tests_: generated `urltestdata.json` suite — **871/871 passing, 12
    skipped**, every skip an IDNA case listed in
    `tests/url/wpt/expected-failures.txt`; plus hand-written
    `tests/url/url_test.zena` for the Zena-specific API surface.
@@ -425,29 +427,31 @@ Each phase lands with its tests green and the expected-failures list updated.
    a retained `UrlRecord` (the "retain it" option below); the parser walks
    BYTES rather than code points, which is safe because every state-machine
    decision is on an ASCII character and UTF-8 continuation bytes are all
-   >= 0x80; and a non-ASCII domain is a hard parse failure rather than a
-   guess, so phase 6 is a strict improvement rather than a behavior change.
+
+   > = 0x80; and a non-ASCII domain is a hard parse failure rather than a
+   > guess, so phase 6 is a strict improvement rather than a behavior change.
+
 3. **Copy-with setters**: state-override parsing; all `with*` methods.
-   *Tests*: generated `setters_tests.json` suite + hand-written immutability
+   _Tests_: generated `setters_tests.json` suite + hand-written immutability
    tests.
 4. **`URLSearchParams`**: the class, `searchParams()`, `withSearchParams`.
-   *Tests*: hand-written (WPT's URLSearchParams tests are JS files, not JSON,
+   _Tests_: hand-written (WPT's URLSearchParams tests are JS files, not JSON,
    so we port the interesting cases manually).
 5. **Value-type & builder ergonomics**: `==`/`hashCode`, `UrlString`,
    the `url` template tag with contextual encoding.
 6. **IDNA / UTS 46** (`idna.zena`): punycode encode/decode first,
    then the UTS 46 mapping tables (size-conscious; see Open Questions).
-   *Tests*: generated `toascii.json` (+ `IdnaTestV2.json` if we go for full
+   _Tests_: generated `toascii.json` (+ `IdnaTestV2.json` if we go for full
    compliance); burn down the phase-2 skip list.
 7. **`URLPattern`** (`pattern.zena`): constructor-string and init-record forms,
    path-to-regexp pattern compilation, `test`/`exec`. Depends on `zena:regex`
    maturity (needs capture groups — present — and named-group bookkeeping we
    can layer on top).
-   *Tests*: generated `urlpatterntestdata.json` suite.
+   _Tests_: generated `urlpatterntestdata.json` suite.
 8. **`URLPatternList`** (`pattern-list.zena`): port of
    [url-pattern-list](https://github.com/justinfagnani/url-pattern-list)'s
    prefix trie (`addPattern(pattern, value)` / `match(url)`, first-match-wins).
-   *Tests*: ported upstream tests + oracle comparison against linear scan.
+   _Tests_: ported upstream tests + oracle comparison against linear scan.
 
 Phases 1–4 are the meat of "a URL object in `zena:url`"; 5 is cheap polish;
 6–8 are each independently schedulable.

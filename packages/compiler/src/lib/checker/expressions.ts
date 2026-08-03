@@ -249,8 +249,7 @@ function requiresCoalescence(
   if (t.kind === TypeKind.TypeAlias) {
     t = (t as TypeAliasType).target;
   }
-  const primitive =
-    t.kind === TypeKind.Number || t.kind === TypeKind.Boolean;
+  const primitive = t.kind === TypeKind.Number || t.kind === TypeKind.Boolean;
   if (!primitive || ctx.nullishSanctionedNodes.has(expr)) {
     return false;
   }

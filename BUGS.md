@@ -66,6 +66,7 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Active Bugs
 
 ### Object-pattern destructuring rejects accessor properties
+
 - **Found**: 2026-07-31 (writing portable coverage for tuple/object destructuring)
 - **Severity**: low (explicit member reads work; the restriction is
   just surprising)
@@ -91,7 +92,8 @@ immediately trying to fix it (which can pollute the current task's context).
   back to the get# walk), so lifting the checker restriction should
   need no ZIR backend work.
 
-### Unsigned widening casts: bootstrap uses _u opcodes, self-hosted signs-extends
+### Unsigned widening casts: bootstrap uses \_u opcodes, self-hosted signs-extends
+
 - **Found**: 2026-07-27 (lowering `as` casts from unsigned in ZIR)
 - **Severity**: medium (silent wrong values for u32 >= 2^31 / u64 >=
   2^63 in widening/float casts, self-hosted only)
@@ -102,23 +104,27 @@ immediately trying to fix it (which can pollute the current task's context).
   emits the signed variants (e.g. `(3000000000 as u32) as u64`
   sign-extends) — the `_u` IrOps and emitter methods do not exist in
   ZIR. Verified still present 2026-08-05.
+
 ### Inline-tuple union miscompiles when both arms hole out a reference slot
+
 - **Found**: 2026-07-28 (evaluating a `Result<V, E>` shape for zena:url)
 - **Severity**: medium (invalid wasm from code both checkers accept; blocks
   the natural encoding of a two-payload Result)
 - **Workaround**: keep holes in only one arm, or make at most one of the
   hole-opposed slots a reference type.
-- **Details**: A union of inline tuples where *each* arm holes out a slot that
+- **Details**: A union of inline tuples where _each_ arm holes out a slot that
   the other arm fills with a REFERENCE type produces a module that fails wasm
   validation. Both compilers accept the source and emit bad code (bootstrap:
   "expected (ref null $type), found i32"; self-hosted reports the same
   mismatch inverted).
+
   ```zena
   let f = (b: boolean): inline (true, String, _) | inline (false, _, String) => {
     if (b) { return (true, 'v', _); }
     return (false, _, 'e');
   };
   ```
+
   It is a narrow gap, not a general limitation — all of these DO work:
   - `inline (true, i32, _) | inline (false, _, i32)` (crossed holes, all i32)
   - `inline (true, i32, String) | inline (false, i32, _)` (holes in one arm)
@@ -137,12 +143,13 @@ immediately trying to fix it (which can pollute the current task's context).
   Why it matters: `inline (true, V, _) | inline (false, _, E)` is the shape a
   zero-allocation `Result<V, E>` wants — one slot each so V and E never have
   to share a representation. NOTE that fixing this is necessary but not
-  sufficient for a *named* Result: inline tuple types are also barred from
+  sufficient for a _named_ Result: inline tuple types are also barred from
   type aliases ("Inline tuple types can only appear in function return types",
   pinned by tests/language/semantics/type-system/inline_tuple_restrictions.zena),
   so `type Result<V, E> = ...` needs a separate, deliberate language change.
 
 ### Inline-tuple union with mismatched slot representations is accepted, then miscompiles
+
 - **Found**: 2026-07-28 (same investigation)
 - **Severity**: medium (silent acceptance of unrepresentable types; the
   failure surfaces only as invalid wasm at load time)
@@ -167,6 +174,7 @@ immediately trying to fix it (which can pollute the current task's context).
   signature.
 
 ### Bootstrap parser's generic-call lookahead scans across statement boundaries
+
 - **Found**: 2026-07-28 (writing the zena:url parser)
 - **Severity**: medium (rejects valid code; bootstrap-only, so it is also a
   compiler divergence)
@@ -188,6 +196,7 @@ immediately trying to fix it (which can pollute the current task's context).
   generic call.
 
 ### Bootstrap parser rejects a method call on a new-expression
+
 - **Found**: 2026-07-28 (writing the zena:url tests)
 - **Severity**: low-medium (rejects valid code; bootstrap-only divergence)
 - **Workaround**: bind the instance to a local first.
@@ -203,6 +212,7 @@ immediately trying to fix it (which can pollute the current task's context).
   member access is. Pin with a syntax test once fixed.
 
 ### Generic interface methods are not virtually dispatchable (diagnostic in place)
+
 - **Found**: 2026-07-26 (probing primitive type-argument coverage)
 - **Severity**: medium (was: high internal crash — both checkers now
   reject the call site with a proper diagnostic; the language-design
@@ -224,6 +234,7 @@ immediately trying to fix it (which can pollute the current task's context).
   something uncallable.
 
 ### Exhaustiveness false-positive (Z2022) on large sealed matches
+
 - **Found**: 2026-07-25 (adding dispatch arms in ir/lowering.zena)
 - **Severity**: medium (rejects valid code; forced an is-chain workaround)
 - **Workaround**: keep the match small (one added arm was fine) or use
@@ -240,6 +251,7 @@ immediately trying to fix it (which can pollute the current task's context).
   Bootstrap behavior not compared. Reproduce by re-adding those arms.
 
 ### Integer literals in u32/u64 context: bootstrap accepts, self-hosted throws
+
 - **Found**: 2026-07-25 (writing a u32 generic-specialization test)
 - **Severity**: medium (u32/u64 literals unusable with the self-hosted
   compiler; compiler divergence)
@@ -253,6 +265,7 @@ immediately trying to fix it (which can pollute the current task's context).
   Large literals beyond i32 range (4000000000) are rejected by both.
 
 ### Prelude array builtins are user-visible in self-hosted only
+
 - **Found**: 2026-07-25 (writing a ZIR execution test that called
   `__array_new_empty` directly)
 - **Severity**: low (divergence; no stdlib impact)
@@ -262,12 +275,13 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Details**: The self-hosted checker registers `__array_len`,
   `__array_new_empty`, `__byte_array_copy`, etc. as prelude values
   visible to every module, so user code can call them. The bootstrap
-  checker rejects the same calls with "Variable '__array_new_empty'
+  checker rejects the same calls with "Variable '**array_new_empty'
   not found" outside the stdlib. One of the two behaviors should win;
-  hiding compiler-internal `__`-prefixed names from user modules
+  hiding compiler-internal `**`-prefixed names from user modules
   (bootstrap behavior) seems like the right one.
 
 ### String-enum values are not usable as Strings
+
 - **Found**: 2026-07-24 (while writing a ZIR enum test)
 - **Severity**: low (string enums barely usable beyond same-enum
   comparison)
@@ -282,6 +296,7 @@ immediately trying to fix it (which can pollute the current task's context).
   the cast should be rejected consistently.
 
 ### Index assignment typing is driven by the [] READ selection
+
 - **Found**: 2026-07-23 (while adding []= overload selection)
 - **Severity**: low-medium (limits []= overloads; compiler divergence)
 - **Workaround**: give [] a read overload accepting every index type
@@ -301,6 +316,7 @@ immediately trying to fix it (which can pollute the current task's context).
   need both [] and []=.
 
 ### Parsers diverge on super() position in constructor init lists
+
 - **Found**: 2026-07-22 (bootstrap side surfaced by CI run #32)
 - **Severity**: low (divergence; each compiler is self-consistent)
 - **Workaround**: write super() last — both compilers accept that.
@@ -314,6 +330,7 @@ immediately trying to fix it (which can pollute the current task's context).
   super-last. Decide, then pin with a semantics test.
 
 ### Mixin method bodies are re-typed per application on shared AST nodes
+
 - **Found**: 2026-07-22 (while fixing the mixin private field collision)
 - **Severity**: medium (latent miscompile risk; blocks node-type reasoning)
 - **Workaround**: none needed for privates (WasmFunction.privateScopeKey
@@ -333,6 +350,7 @@ immediately trying to fix it (which can pollute the current task's context).
   bodies once against This like classes.
 
 ### No narrowing from destructured tuple elements
+
 - **Found**: 2026-07-21 (repeatedly, writing compiler code)
 - **Severity**: low (ergonomics; forces if-let or casts)
 - **Workaround**: destructure inside the condition:
@@ -344,12 +362,13 @@ immediately trying to fix it (which can pollute the current task's context).
   common two-step pattern usable.
 
 ### Compilation cache is not invalidated when the compiler changes
+
 - **Found**: 2026-07-21 (stale-cache runs masked real regressions)
 - **Severity**: medium (green test runs against a stale compiler)
 - **Workaround**: `rm -rf .zena/cache` before any suite run that
   follows a compiler rebuild (all our gates do this manually).
 - **Details**: .zena/cache keys entries by source content (e.g.
-  private-fields-generic_<hash>.wasm) but not by the compiler binary
+  private-fields-generic\_<hash>.wasm) but not by the compiler binary
   that produced them, so after rebuilding the compiler, cached
   modules from the previous compiler are served as hits. This masked
   a super-fields miscompile during the ZIR work (suite stayed green
@@ -359,6 +378,7 @@ immediately trying to fix it (which can pollute the current task's context).
   zena-cli).
 
 ### Cross-arm member access on non-null unions is unimplemented
+
 - **Found**: 2026-07-22 (ruled desired behavior)
 - **Severity**: low (ergonomics; forces narrowing)
 - **Workaround**: narrow to an arm before accessing.
@@ -370,6 +390,7 @@ immediately trying to fix it (which can pollute the current task's context).
   and rejects member access on multi-arm unions entirely.
 
 ### Static and instance members share one namespace in the implementation
+
 - **Found**: 2026-07-22
 - **Severity**: low
 - **Workaround**: avoid same-named static and instance members.
@@ -379,6 +400,7 @@ immediately trying to fix it (which can pollute the current task's context).
   in one members map with an isStatic flag, so they collide.
 
 ### Cross-kind member collisions are not uniformly diagnosed
+
 - **Found**: 2026-07-22
 - **Severity**: low
 - **Workaround**: none needed; avoid same-named members of different
@@ -390,6 +412,7 @@ immediately trying to fix it (which can pollute the current task's context).
   precedence instead of an error.
 
 ### Interface methods with the same name silently overwrite each other
+
 - **Found**: 2026-07-22
 - **Severity**: medium (silent wrong types; no diagnostic)
 - **Workaround**: don't declare same-named methods in an interface.
@@ -401,6 +424,7 @@ immediately trying to fix it (which can pollute the current task's context).
   they are designed, a duplicate name should be a checker error.
 
 ### Bodyless method in a regular class becomes a silent empty body
+
 - **Found**: 2026-07-22
 - **Severity**: medium (silent wrong behavior for a natural mistake)
 - **Workaround**: always write method bodies in non-declare classes.
@@ -413,6 +437,7 @@ immediately trying to fix it (which can pollute the current task's context).
   parse or check error.
 
 ### Tear-off of an overloaded method silently picks the first signature
+
 - **Found**: 2026-07-22
 - **Severity**: low (overloaded tear-offs are rare so far)
 - **Workaround**: wrap in a lambda: `let f = (x: i32) => p.print(x);`.
@@ -424,6 +449,7 @@ immediately trying to fix it (which can pollute the current task's context).
   ambiguity error when no context exists (member-lookup.md §7/§9.3).
 
 ### Self-hosted checker does not narrow a loop var through a compound while condition
+
 - **Found**: 2026-07-22
 - **Severity**: low (forces redundant casts; bootstrap accepts the code)
 - **Workaround**: cast inside the loop body (`(r as ClassType).x`).
@@ -548,9 +574,10 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Details**: When you declare `class Symbol` in a module, it should shadow the built-in `Symbol` type within that module's scope. Instead, references to `Symbol` still resolve to the built-in type, causing errors like "Property 'name' does not exist on type 'Symbol'". This affects any class name that collides with built-in types.
 
 ### zena-cli writes a full WAT dump next to every cache entry
+
 - **Found**: 2026-07-26 (a 135 MB "output" turned out to be the .wat)
 - **Severity**: low-medium (doubles codegen work per build; the
-  __all_tests__ WAT is ~135 MB of text for a 4.5 MB module)
+  **all_tests** WAT is ~135 MB of text for a 4.5 MB module)
 - **Workaround**: none needed; the dump is unconditional in
   zena/cli/main.zena (BinaryGenerator output, then a second full
   WatGenerator pass whose text is written to <out>.wat).
@@ -561,9 +588,10 @@ immediately trying to fix it (which can pollute the current task's context).
   the binary is ~4.5 MB.)
 
 ### fs.zena errno messages lack the numeric code
+
 - **Found**: 2026-07-26 (debugging a WASI errno 48 as "UNKNOWN")
 - **Severity**: low
 - **Workaround**: none.
-- **Details**: __errnoToString maps a subset of WASI errnos and prints
+- **Details**: \_\_errnoToString maps a subset of WASI errnos and prints
   bare "UNKNOWN" otherwise; unmapped codes (48 = ENOMEM among them)
   should at least print their number.

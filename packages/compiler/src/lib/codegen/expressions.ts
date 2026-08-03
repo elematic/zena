@@ -136,10 +136,7 @@ function substitutedInferredType(
 ): Type | undefined {
   const t = e.inferredType;
   if (t && ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
-    return ctx.checkerContext.substituteTypeParams(
-      t,
-      ctx.currentTypeArguments,
-    );
+    return ctx.checkerContext.substituteTypeParams(t, ctx.currentTypeArguments);
   }
   return t;
 }
@@ -2254,9 +2251,7 @@ function generateIndexExpression(
       if (objCheckerType && objCheckerType.kind === TypeKind.Array) {
         const arrayType = objCheckerType as ArrayType;
         // If element type is 'any' or 'anyref', we may need to cast
-        if (
-          arrayType.elementType.kind === TypeKind.AnyRef
-        ) {
+        if (arrayType.elementType.kind === TypeKind.AnyRef) {
           const expectedType = inferType(ctx, expr);
           if (
             expectedType.length > 1 &&
@@ -6669,10 +6664,7 @@ function generateBinaryExpression(
         // Stack: [value]. Yields the instance as nullable eqref.
         if (fat.nullable) {
           const guard = ctx.declareLocal('$$eq_fatptr_guard', eqRefNull);
-          body.push(
-            Opcode.local_tee,
-            ...WasmModule.encodeSignedLEB128(guard),
-          );
+          body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(guard));
           body.push(Opcode.ref_is_null);
           body.push(Opcode.if, ValType.ref_null, 0x6d); // if (result eqref)
           body.push(Opcode.ref_null, 0x6d); // null stays null

@@ -32,8 +32,7 @@ const commit = readFileSync(join(wptDir, 'COMMIT'), 'utf-8').trim();
 
 const needsDecoder = (bytes) =>
   bytes.some(
-    (b) =>
-      (b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d) || b === 0x7f,
+    (b) => (b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d) || b === 0x7f,
   );
 
 const hex2 = (b) => b.toString(16).toUpperCase().padStart(2, '0');
@@ -49,7 +48,7 @@ function zenaString(str) {
       out += "\\'"; // single quote
     } else if (useDec && b === 0x25) {
       out += '%25'; // literal percent, so dec() round-trips
-    } else if (useDec && ((b < 0x20) || b === 0x7f)) {
+    } else if (useDec && (b < 0x20 || b === 0x7f)) {
       out += '%' + hex2(b);
     } else if (b === 0x09) {
       out += '\\t';
@@ -66,7 +65,8 @@ function zenaString(str) {
   return useDec ? `dec(${literal})` : literal;
 }
 
-const zenaStringOrNull = (v) => (v === null || v === undefined ? 'null' : zenaString(v));
+const zenaStringOrNull = (v) =>
+  v === null || v === undefined ? 'null' : zenaString(v);
 
 // A short, readable, single-line label for a test case.
 function label(index, input, base) {
@@ -104,7 +104,9 @@ const caseKey = (c) => JSON.stringify([c.input, c.base ?? null]);
 // urltestdata.json
 // ---------------------------------------------------------------------------
 
-const data = JSON.parse(readFileSync(join(wptDir, 'urltestdata.json'), 'utf-8'));
+const data = JSON.parse(
+  readFileSync(join(wptDir, 'urltestdata.json'), 'utf-8'),
+);
 
 const lines = [];
 const emit = (s) => lines.push(s);
@@ -135,7 +137,9 @@ emit(`  let sb = new StringBuilder(s.length);`);
 emit(`  var i = 0;`);
 emit(`  while (i < s.length) {`);
 emit(`    if (s.getByteAt(i) == 0x25 && i + 2 < s.length) {`);
-emit(`      sb.appendByte((hexVal(s.getByteAt(i + 1)) << 4) | hexVal(s.getByteAt(i + 2)));`);
+emit(
+  `      sb.appendByte((hexVal(s.getByteAt(i + 1)) << 4) | hexVal(s.getByteAt(i + 2)));`,
+);
 emit(`      i += 3;`);
 emit(`    } else {`);
 emit(`      sb.appendByte(s.getByteAt(i));`);

@@ -92,8 +92,8 @@ A virtual module resolves to different entry files depending on the
 compilation target (e.g., `host` for browser/Node.js, `wasi` for standalone
 WASM).
 
-| Field     | Type                     | Required | Description                                                 |
-| --------- | ------------------------ | -------- | ----------------------------------------------------------- |
+| Field     | Type                     | Required | Description                                                  |
+| --------- | ------------------------ | -------- | ------------------------------------------------------------ |
 | `virtual` | `Record<string, string>` | yes      | Map of target name → entry file path (package-root-relative) |
 
 ```json

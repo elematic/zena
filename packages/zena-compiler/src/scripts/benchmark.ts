@@ -1029,9 +1029,21 @@ if (runMaps) {
   }
   console.log('==================================================\n');
 
-  const mapBenchSrc = join(repoRoot, 'packages', 'stdlib', 'benchmarks', 'map_bench.zena');
+  const mapBenchSrc = join(
+    repoRoot,
+    'packages',
+    'stdlib',
+    'benchmarks',
+    'map_bench.zena',
+  );
   const mapBenchWasm = join(outDir, 'map_bench.wasm');
-  const mapBenchNode = join(repoRoot, 'packages', 'stdlib', 'benchmarks', 'map-bench-node.js');
+  const mapBenchNode = join(
+    repoRoot,
+    'packages',
+    'stdlib',
+    'benchmarks',
+    'map-bench-node.js',
+  );
 
   console.log('Compiling map_bench.zena...');
   try {
@@ -1049,10 +1061,11 @@ if (runMaps) {
   let zenaOut = '';
   try {
     const wasmFilterArg = filter ? ` -- "${filter}"` : '';
-    zenaOut = execSync(
-      `"${zenaCli}" run "${mapBenchWasm}"${wasmFilterArg}`,
-      {cwd: repoRoot, encoding: 'utf-8', stdio: 'pipe'},
-    );
+    zenaOut = execSync(`"${zenaCli}" run "${mapBenchWasm}"${wasmFilterArg}`, {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
   } catch (e) {
     console.error('Failed to run Zena benchmark:', e);
   }
