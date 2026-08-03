@@ -472,7 +472,7 @@ we are trying to answer with Zena include:
 Zena is not yet released. To build from source:
 
 ```bash
-git clone https://github.com/nicolo-ribaudo/zena.git
+git clone https://github.com/elematic/zena.git
 cd zena
 npm install
 npm run build
