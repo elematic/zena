@@ -65,6 +65,54 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Self-hosted compiler: constructor not registered for a specialized OrderedMap
+
+- **Found**: 2026-08-02 (first clean build after the compiler `outDir` fix)
+- **Confirmed**: 2026-08-03 — still fails on `0d5a0efc`, which is upstream's
+  own fix for the clean-checkout build, so this is independent of that work.
+- **Severity**: high (`npm test` fails; blocks
+  `packages/stdlib:build:wasi-tests:self-hosted`)
+- **Workaround**: none known.
+- **Details**: compiling `packages/stdlib/tests/string/string_test.zena` with
+  the self-hosted compiler throws from
+  `packages/zena-compiler/zena/lib/codegen/expr/classes.zena:117`:
+
+  ```
+  internal: constructor not registered for
+  OrderedMap_s1029_String_s211_union_JsonObject_s1138_JsonArray_s1140_
+  String_s211_Box_s677_f64_Box_s677_bool_null
+  ```
+
+  The type argument is the JSON value union, so this is the
+  `OrderedMap<String, JsonValue>` specialization. `generateNewExpression`
+  looks up a constructor for the monomorphized class and finds none, which
+  suggests the specialization is reached during codegen without having been
+  registered by the earlier pass that instantiates generic constructors.
+
+  Not a regression from any recent commit's source: nothing in
+  `dbad428e..0fa95166` touches either codegen tree, and
+  `classes.zena` was last changed in `9bb52de7`. It was invisible until now
+  because `@zena-lang/compiler` was resolving to stale build output — see
+  below.
+
+### `outDir` regression left the whole repo building against stale compiler output
+
+- **Found**: 2026-08-02 — **already fixed**, recorded so the failure mode is known
+- **Severity**: high while it lasted (silent: every package importing the
+  compiler ran old code)
+- **Details**: `294afa17` changed `packages/compiler/tsconfig.json` `outDir`
+  from `"./"` (its value since the initial commit) to `"lib"`. With
+  `rootDir: "./src"` and sources under `src/lib/`, output moved to
+  `lib/lib/index.js`, while `package.json` still declares
+  `main: "lib/index.js"` — the path that every sibling package and wireit's
+  own `output: ["lib", "test", ...]` expect. Nothing failed at the time
+  because `lib/index.js` still existed from an earlier build, so the six
+  packages that import `@zena-lang/compiler` silently kept running it.
+  Wireit's `clean: "if-file-deleted"` eventually wiped that artifact and the
+  breakage surfaced as `TS2307: Cannot find module '@zena-lang/compiler'`.
+  Fixed by restoring `"outDir": "./"`. Worth a guard: a check that
+  `main` resolves after a clean build would have caught it immediately.
+
 ### Object-pattern destructuring rejects accessor properties
 
 - **Found**: 2026-07-31 (writing portable coverage for tuple/object destructuring)
@@ -210,6 +258,41 @@ immediately trying to fix it (which can pollute the current task's context).
   ```
   Postfix call chaining is evidently not applied to a NewExpression the way
   member access is. Pin with a syntax test once fixed.
+
+### `--dce` crashes codegen on `Regex.replaceAll`
+
+- **Found**: 2026-07-30 (measuring regex engine size for the website)
+- **Severity**: medium (a valid program fails to build with DCE on)
+- **Workaround**: build without `--dce`.
+- **Details**: `Compilation failed: Imported function -1 not found`,
+  thrown from `CodeGenerator.generate`
+  (packages/compiler/lib/codegen/index.js:499). The same source builds
+  and runs without `--dce`. Reproduce:
+  ```zena
+  import {Regex} from 'zena:regex';
+  export let main = (): i32 => {
+    let re = new Regex('a');
+    let s = re.replaceAll('abc', 'z');
+    return if (re.test(s)) 1 else 0;
+  };
+  ```
+  `test` alone is fine (~28 KB with `--dce`); adding `replaceAll` is
+  what triggers it. The debug trace before the failure is full of
+  `isMethodUsedInternal checking: Object_IterableUtils.contains / Not
+found, returning false`, so the reachability pass is probably
+  dropping a function that a `replaceAll` path still references, and
+  the import index is left dangling.
+
+### DCE is off by default and the size difference is ~340x
+
+- **Found**: 2026-07-30 (same measurement)
+- **Severity**: low (defaults question, not a defect)
+- **Workaround**: pass `--dce`.
+- **Details**: `export let main = (): i32 => 1;` builds to 12,636 bytes
+  by default and 37 bytes with `--dce`. Any binary size quoted without
+  the flag is misleading, and the 37-byte figure in README.md assumes
+  it. Worth deciding whether `--dce` should be the default for
+  `zena build`, or at least for release builds.
 
 ### Generic interface methods are not virtually dispatchable (diagnostic in place)
 
@@ -572,6 +655,13 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Severity**: medium
 - **Workaround**: Rename the class to avoid collision (e.g., `SymbolEntry` instead of `Symbol`)
 - **Details**: When you declare `class Symbol` in a module, it should shadow the built-in `Symbol` type within that module's scope. Instead, references to `Symbol` still resolve to the built-in type, causing errors like "Property 'name' does not exist on type 'Symbol'". This affects any class name that collides with built-in types.
+
+### Wasm compiler fails to emit `ref.cast` when reading a local that was narrowed by an `is` check
+
+- **Found**: 2026-05-31
+- **Severity**: high
+- **Workaround**: Explicitly assign to a new local instead of overriding: `let classType = unnarrowedType as ClassType;`
+- **Details**: When a variable is narrowed by `if (x is ClassType)`, the Zena type system treats it as narrowed logic-wise, but the underlying Wasm local remains its original generic uncasted type (e.g. `(ref null $Type)`). The bootstrap compiler does not inject dynamic `ref.cast` when later reading this variable to evaluate a property access. Wasm compilation fails with: `type mismatch: expected (ref null $ClassType), found (ref null $Type)`. Assigning it explicitly circumvents the flaw.
 
 ### zena-cli writes a full WAT dump next to every cache entry
 
