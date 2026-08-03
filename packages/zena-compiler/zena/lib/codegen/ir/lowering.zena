@@ -1913,7 +1913,7 @@ final class FunctionLowerer {
   /** A record property read on an already-lowered receiver value. */
   #lowerRecordPropertyRead(rt: RecordType, propName: String,
       receiver: i32): i32 {
-    let dispatch = this.#recordDispatchOf(rt);
+    let dispatch = this.#cx().recordDispatchOf(rt);
     let recv = this.#conformRecordReceiver(dispatch, receiver);
     return this.#recordDispatchRead(dispatch, propName, recv);
   }
@@ -1932,46 +1932,8 @@ final class FunctionLowerer {
         this.b.internType(castVt));
   }
 
-  /**
-   * A class field/getter read by name on an already-lowered receiver
-   * value: physical field first, else a registered non-static getter
-   * up the super chain.
-   */
   #lowerObjectPropertyRead(propName: String, receiver: i32): i32 {
-    let stOpt = asWasmStruct(this.#valueType(receiver));
-    if (stOpt == null) {
-      this.#bail('destructuring source kind');
-    }
-    let st = stOpt as WasmStruct;
-    if (st.fieldIndexByName(propName) >= 0) {
-      let fieldRef = this.b.addRef(new IrRefField(st, propName));
-      return this.b.emit(IrOp.struct_get,
-          this.#fieldValType(st, propName), receiver, fieldRef);
-    }
-    let ctOpt = this.#classTypeOfValue(receiver);
-    if (ctOpt == null) {
-      this.#bail('destructuring source kind');
-    }
-    var getterOpt: WasmFunction | null = null;
-    var currClass: ClassType | null = ctOpt as ClassType;
-    while (currClass != null && getterOpt == null) {
-      let key = getClassMethodKey(
-          getClassKey(currClass as ClassType), 'get#' + propName);
-      if (let (true, g) = this.wasm.classMethodMap.get(key)) {
-        getterOpt = g;
-      }
-      currClass = (currClass as ClassType).superType;
-    }
-    if (getterOpt == null || (getterOpt as WasmFunction).isStatic) {
-      this.#bail('member not found');
-    }
-    let getter = getterOpt as WasmFunction;
-    let sig = getter.signature;
-    if (sig.returns.length != 1) {
-      this.#bail('getter shape');
-    }
-    return this.b.callFunc(this.b.addRef(new IrRefFunc(getter)),
-        this.#oneArg(receiver), sig.returns[0]);
+    return this.#cx().objectPropertyRead(propName, receiver);
   }
 
   #lowerIf(stmt: IfStatement): void {
@@ -2719,25 +2681,6 @@ final class FunctionLowerer {
   }
 
   /**
-   * The record dispatch registered for a record type's (sorted) field
-   * shape. Discovery registers every checked record shape, so a miss
-   * means the type never reached discovery — bail.
-   */
-  #recordDispatchOf(rt: RecordType): RecordDispatchInfo {
-    let fields = new Array<WasmField>();
-    for (let pair in rt.properties) {
-      fields.push(new WasmField(pair.key,
-          typeToValTypeWithSub(this.wasm, pair.value, this.func), false));
-    }
-    sortWasmFields(fields);
-    let infoOpt = this.wasm.findRecordDispatch(fields);
-    if (infoOpt == null) {
-      this.#bail('record shape not discovered');
-    }
-    return infoOpt as RecordDispatchInfo;
-  }
-
-  /**
    * `{ x: 1, y: 2 }`: field values in sorted-field order into one
    * struct.new, then the shape's vtable global packs the fat pointer
    * — streaming's shape. Spread properties bail. The last assignment
@@ -2752,7 +2695,7 @@ final class FunctionLowerer {
     if (!(bt is RecordType)) {
       this.#bail('record literal type');
     }
-    let dispatch = this.#recordDispatchOf(bt as RecordType);
+    let dispatch = this.#cx().recordDispatchOf(bt as RecordType);
     // Spread sources evaluate first, once each (streaming's order);
     // their values are looked up per field below.
     let spreadIds = new Array<i32>();
@@ -2792,7 +2735,7 @@ final class FunctionLowerer {
             }
             let nn = baseType(getNonNullableType(spT as Type));
             if (nn is RecordType && (nn as RecordType).properties.has(key)) {
-              let srcDispatch = this.#recordDispatchOf(nn as RecordType);
+              let srcDispatch = this.#cx().recordDispatchOf(nn as RecordType);
               v = this.#recordDispatchRead(srcDispatch, key, sv);
               found = true;
             } else if (nn is ClassType) {
@@ -2850,7 +2793,7 @@ final class FunctionLowerer {
   /** The receiver-value core of a record member read. */
   #lowerRecordReadOn(rt: RecordType, member: MemberExpression,
       recvIn: i32): i32 {
-    let dispatch = this.#recordDispatchOf(rt);
+    let dispatch = this.#cx().recordDispatchOf(rt);
     let propName = getMemberPropertyName(
         member.isSymbolAccess, member.property.name);
     let recv = this.#conformRecordReceiver(dispatch, recvIn);
@@ -3092,85 +3035,8 @@ final class FunctionLowerer {
    * compares at its width; anything else -> false. Operands coerce
    * anyref -> eqref first, since ref.eq requires eqref.
    */
-  /**
-   * Identity compares see through fat pointers: a record or interface
-   * value becomes its eq-typed instance (field 0); everything else
-   * passes through unchanged.
-   */
-  #unwrapFatPointer(base: Type, value: i32): i32 {
-    if (base is RecordType) {
-      let dispatch = this.#recordDispatchOf(base as RecordType);
-      return this.#fatPointerInstance(dispatch.fatPtrType, value);
-    }
-    if (base is InterfaceType) {
-      let iName = getInterfaceKey(base as InterfaceType);
-      let fatOpt = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
-      if (fatOpt == null) {
-        this.#bail('interface struct not found');
-      }
-      return this.#fatPointerInstance(fatOpt as WasmStruct, value);
-    }
-    if (base is UnionType) {
-      // A nullable fat pointer (`Shape | null`) unwraps behind a null
-      // guard: null stays null and compares like any null reference.
-      let ut = base as UnionType;
-      var nonNull: Type | null = null;
-      var nonNullCount = 0;
-      var nullCount = 0;
-      for (let m in ut.types) {
-        if (m is NullType) {
-          nullCount += 1;
-        } else {
-          nonNull = m;
-          nonNullCount += 1;
-        }
-      }
-      if (nonNullCount != 1 || nullCount == 0) {
-        return value;
-      }
-      let inner = baseType(nonNull as Type);
-      var fatOpt: WasmStruct | null = null;
-      if (inner is RecordType) {
-        fatOpt = this.#recordDispatchOf(inner as RecordType).fatPtrType;
-      } else if (inner is InterfaceType) {
-        let iName = getInterfaceKey(inner as InterfaceType);
-        if (let (true, st) = this.wasm.interfaceStructs.get(iName)) {
-          fatOpt = st;
-        }
-      }
-      if (fatOpt == null) {
-        return value;
-      }
-      let eqVt = new ValTypeEqRef() as ValType;
-      let isNull = this.b.emit(IrOp.ref_is_null, new ValTypeI32(), value, -1);
-      let extractB = this.b.newBlock();
-      let merge = this.b.newBlock();
-      let result = this.b.blockParam(merge, eqVt);
-      let nullEq = this.b.emit(IrOp.ref_null, eqVt, -1, -1);
-      this.b.brIf(isNull, merge, this.#oneArg(nullEq),
-          extractB, this.#noArgs());
-      this.b.switchTo(extractB);
-      let inst = this.#fatPointerInstance(fatOpt as WasmStruct, value);
-      this.b.br(merge, this.#oneArg(inst));
-      this.b.switchTo(merge);
-      return result;
-    }
-    return value;
-  }
-
-  #fatPointerInstance(fatPtr: WasmStruct, value: i32): i32 {
-    let fatVt = new ValTypeRef(fatPtr) as ValType;
-    var v = value;
-    if (!isValSubtype(this.#valueType(v), fatVt)) {
-      v = this.b.emit(IrOp.ref_cast, fatVt, v, this.b.internType(fatVt));
-    }
-    let inst = this.b.emit(IrOp.iface_instance,
-        fatPtr.fields[0].type, v, -1);
-    let eqVt = new ValTypeEqRef() as ValType;
-    if (this.#valueType(inst) is ValTypeAnyRef) {
-      return this.b.emit(IrOp.ref_cast, eqVt, inst, this.b.internType(eqVt));
-    }
-    return inst;
+  #unwrapFatPointer(t: Type, value: i32): i32 {
+    return this.#cx().unwrapFatPointer(t, value);
   }
 
   /** Erased (eqref-tiered) equality (see ir/equality.zena). */
@@ -3207,32 +3073,9 @@ final class FunctionLowerer {
   }
 
 
-  /** A record property read through an already-known dispatch. */
   #recordDispatchRead(dispatch: RecordDispatchInfo, propName: String,
       receiver: i32): i32 {
-    var fieldIdx = -1;
-    for (var i = 0; i < dispatch.fields.length; i += 1) {
-      let f = dispatch.fields[i];
-      if (f.name != null && (f.name as String) == propName) {
-        fieldIdx = i;
-      }
-    }
-    if (fieldIdx < 0) {
-      this.#bail('record member not found');
-    }
-    let recv = this.#strippedNonNull(receiver);
-    let instance = this.b.emit(IrOp.iface_instance,
-        new ValTypeStructRef() as ValType, recv, -1);
-    let vtable = this.b.emit(IrOp.iface_vtable,
-        new ValTypeRef(dispatch.vtableType) as ValType, recv, -1);
-    let getterSig = dispatch.getterTypes[fieldIdx];
-    if (getterSig.returns.length != 1) {
-      this.#bail('record getter shape');
-    }
-    let getter = this.b.emit(IrOp.struct_get,
-        new ValTypeRef(getterSig) as ValType, vtable,
-        this.b.addRef(new IrRefField(dispatch.vtableType, propName)));
-    return this.b.callRef(getter, this.#oneArg(instance), getterSig.returns[0]);
+    return this.#cx().recordDispatchRead(dispatch, propName, receiver);
   }
 
   /** All symbols a pattern binds (see ir/patterns.zena). */
@@ -3655,7 +3498,7 @@ final class FunctionLowerer {
     }
     if (!isPrivateWrite &&
         (this.#accessorRedefined(receiverCt, propName, 'set#' + propName) ||
-         (infoOpt != null && this.#memberProvidedBySubclass(
+         (infoOpt != null && this.#cx().memberProvidedBySubclass(
              infoOpt as ClassCodegenInfo, 'set#' + propName)))) {
       // An accessor shadows the physical field somewhere between the
       // receiver and a subclass: the write must dispatch.
@@ -3687,11 +3530,7 @@ final class FunctionLowerer {
   }
 
   #fieldValType(owner: WasmStruct, name: String): ValType {
-    let idx = owner.fieldIndexByName(name);
-    if (idx < 0) {
-      this.#bail('field not found on struct');
-    }
-    return owner.fields[idx].type;
+    return this.#cx().fieldValType(owner, name);
   }
 
   /**
@@ -3735,7 +3574,7 @@ final class FunctionLowerer {
       }
       if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
         vtInfoOpt = info;
-        if (this.#memberProvidedBySubclass(info, 'set#' + propName)) {
+        if (this.#cx().memberProvidedBySubclass(info, 'set#' + propName)) {
           // A subclass overrides the setter: the write must dispatch.
           if (this.#vtableSlotIndex(info, 'set#' + propName) < 0) {
             this.#bail('overridden setter without vtable slot');
@@ -4837,7 +4676,7 @@ final class FunctionLowerer {
     // SLOT name. An overridden slot dispatches through the vtable.
     var isVirtual = false;
     if (!isPrivate && !this.#cx().exactValues.has(receiver) &&
-        this.#memberProvidedBySubclass(classInfo, slotName)) {
+        this.#cx().memberProvidedBySubclass(classInfo, slotName)) {
       if (this.#vtableSlotIndex(classInfo, slotName) < 0) {
         this.#bail('overridden method without vtable slot');
       }
@@ -5178,19 +5017,8 @@ final class FunctionLowerer {
     return this.b.callRef(callee, args, resultType);
   }
 
-  /**
-   * The ClassType a lowered receiver value actually carries: struct
-   * types remember their class. This beats re-deriving the class from
-   * checked node types, which name the GENERIC class inside
-   * specialized-method bodies (same authoritative-source principle as
-   * the closure-identity fix).
-   */
   #classTypeOfValue(value: i32): ClassType | null {
-    let st = asWasmStruct(this.#valueType(value));
-    if (st != null) {
-      return (st as WasmStruct).classType;
-    }
-    return null;
+    return this.#cx().classTypeOfValue(value);
   }
 
   /**
@@ -5270,14 +5098,8 @@ final class FunctionLowerer {
     return null;
   }
 
-  /** The generic-source root's key: specializations compare equal to
-   * their template through this. */
   #canonicalKeyOf(ct: ClassType): String {
-    var c = ct;
-    while (c.genericSource != null) {
-      c = c.genericSource as ClassType;
-    }
-    return getClassKey(c) as String;
+    return this.#cx().canonicalKeyOf(ct);
   }
 
   /** Receiver class for member/method resolution: the value's own
@@ -5307,49 +5129,15 @@ final class FunctionLowerer {
     return eraseTypeParameters(selfResolved) as ClassType;
   }
 
-  /**
-   * Whether the receiver class's vtable struct carries `slotName` —
-   * the precondition for virtual dispatch through it.
-   */
   #vtableSlotIndex(classInfo: ClassCodegenInfo, slotName: String): i32 {
-    let vtOpt = classInfo.vtableStructType;
-    if (vtOpt == null) {
-      return -1;
-    }
-    return (vtOpt as WasmStruct).fieldIndexByName(slotName);
+    return this.#cx().vtableSlotIndex(classInfo, slotName);
   }
 
-  /**
-   * Virtual dispatch through the class vtable: load the receiver's
-   * `<vtable>` field, cast to the class's vtable struct, load the
-   * named slot, cast to the resolved method's exact signature, and
-   * call_ref — streaming's shape. The slot signature is the STATIC
-   * class's resolved method signature; overrides conform to it via
-   * the vtable-init adapters.
-   */
   #lowerVtableCall(receiver: i32, classInfo: ClassCodegenInfo,
       slotName: String, sig: WasmSignature, args: Array<i32>,
       resultType: ValType | null): i32 {
-    let structType = classInfo.structType;
-    let vtStruct = classInfo.vtableStructType as WasmStruct;
-    let vtFieldVt = this.#fieldValType(structType, '<vtable>');
-    let vtRaw = this.b.emit(IrOp.struct_get, vtFieldVt, receiver,
-        this.b.addRef(new IrRefField(structType, '<vtable>')));
-    var vt = vtRaw;
-    let wantVtVt: ValType = new ValTypeRef(vtStruct);
-    if (!isValSubtype(this.#valueType(vtRaw), new ValTypeRefNull(vtStruct) as ValType)) {
-      vt = this.b.emit(IrOp.ref_cast, wantVtVt, vtRaw,
-          this.b.internType(wantVtVt));
-    } else {
-      vt = this.#reassertNonNull(vtRaw, wantVtVt);
-    }
-    let slotVt = this.#fieldValType(vtStruct, slotName);
-    let slotRaw = this.b.emit(IrOp.struct_get, slotVt, vt,
-        this.b.addRef(new IrRefField(vtStruct, slotName)));
-    let sigVt: ValType = new ValTypeRef(sig);
-    let slot = this.b.emit(IrOp.ref_cast, sigVt, slotRaw,
-        this.b.internType(sigVt));
-    return this.b.callRef(slot, args, resultType);
+    return this.#cx().lowerVtableCall(receiver, classInfo, slotName, sig,
+        args, resultType);
   }
 
   /**
@@ -5404,7 +5192,7 @@ final class FunctionLowerer {
       return new MemberTarget(structType, lookupName, null);
     }
     if (hasField && !this.#accessorRedefined(ct, propName, 'get#' + propName)) {
-      if (this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
+      if (this.#cx().memberProvidedBySubclass(classInfo, 'get#' + propName)) {
         // A subclass overrides the accessor: the read must dispatch.
         // The slot signature is the DEFAULT getter registered by the
         // declaring class (present whenever the slot is).
@@ -5431,7 +5219,7 @@ final class FunctionLowerer {
     if ((getter as WasmFunction).isStatic) {
       this.#bail('static member');
     }
-    if (!isPrivate && this.#memberProvidedBySubclass(classInfo, 'get#' + propName)) {
+    if (!isPrivate && this.#cx().memberProvidedBySubclass(classInfo, 'get#' + propName)) {
       let target = new MemberTarget(structType, null, getter);
       if (this.#vtableSlotIndex(classInfo, 'get#' + propName) < 0) {
         this.#bail('overridden getter without vtable slot');
@@ -5503,22 +5291,6 @@ final class FunctionLowerer {
     }
     return resolved != null && defaultAccessor != null &&
         resolved != defaultAccessor;
-  }
-
-  /** True if any transitive subclass provides its own `methodName`. */
-  #memberProvidedBySubclass(classInfo: ClassCodegenInfo, methodName: String): boolean {
-    let subclasses = new Array<ClassCodegenInfo>();
-    classInfo.getTransitiveSubclasses(subclasses);
-    for (let sub in subclasses) {
-      let subClassType = sub.structType.classType;
-      if (subClassType != null) {
-        let key = getClassMethodKey(getClassKey(subClassType as ClassType), methodName);
-        if (this.wasm.classMethodMap.has(key)) {
-          return true;
-        }
-      }
-    }
-    return false;
   }
 
   /**
@@ -5681,70 +5453,9 @@ final class FunctionLowerer {
   /** A value coerced to the target ValType, or a bail: identity when
    * already a subtype, ref.as_non_null for nullable-to-non-null of
    * the same target. */
-  /**
-   * Direct call to a class operator member: a (+) b as a.+(b).
-   * Resolves against the left VALUE's class when known (mirrors
-   * method calls); the given checked class is the fallback.
-   */
   #lowerOperatorMemberOn(opMember: String, left: i32, right: i32,
       leftCt: ClassType): i32 {
-    let fromValue = this.#classTypeOfValue(left);
-    let recvCt = if (fromValue != null) fromValue as ClassType else leftCt;
-    let methodOpt = this.#resolveDevirtualizedMethod(recvCt, opMember);
-    if (methodOpt != null) {
-      let method = methodOpt as WasmFunction;
-      let sig = method.signature;
-      if (sig.params.length != 2 || sig.returns.length != 1) {
-        this.#bail('operator method shape');
-      }
-      let recv = this.#coerceTo(left, sig.params[0]);
-      let arg = this.#coerceTo(right, sig.params[1]);
-      let funcRef = this.b.addRef(new IrRefFunc(method));
-      let args = new Array<i32>();
-      args.push(recv);
-      args.push(arg);
-      return this.b.callFunc(funcRef, args, sig.returns[0]);
-    }
-    // Overridden operators dispatch through the class vtable like any
-    // other overridden method (member-lookup.md §5.5 — operators fold
-    // into method resolution). The slot signature is the statically
-    // resolved member's.
-    var resolvedOpt: WasmFunction | null = null;
-    var currClass: ClassType | null = recvCt;
-    while (currClass != null && resolvedOpt == null) {
-      var g: ClassType | null = currClass;
-      while (g != null && resolvedOpt == null) {
-        let key = getClassMethodKey(getClassKey(g as ClassType), opMember);
-        if (let (true, m) = this.wasm.classMethodMap.get(key)) {
-          resolvedOpt = m;
-        }
-        g = (g as ClassType).genericSource;
-      }
-      currClass = (currClass as ClassType).superType;
-    }
-    if (resolvedOpt == null) {
-      this.#bail('operator dispatch');
-    }
-    let resolvedM = resolvedOpt as WasmFunction;
-    let vsig = resolvedM.signature;
-    if (vsig.params.length != 2 || vsig.returns.length != 1) {
-      this.#bail('operator method shape');
-    }
-    let infoOpt = if (let (true, info) = this.wasm.classInfos.get(getClassKey(recvCt))) info else null;
-    if (infoOpt == null) {
-      this.#bail('operator dispatch');
-    }
-    let classInfo = infoOpt as ClassCodegenInfo;
-    if (this.#vtableSlotIndex(classInfo, opMember) < 0) {
-      this.#bail('operator dispatch');
-    }
-    let vrecv = this.#coerceTo(left, vsig.params[0]);
-    let varg = this.#coerceTo(right, vsig.params[1]);
-    let vargs = new Array<i32>();
-    vargs.push(vrecv);
-    vargs.push(varg);
-    return this.#lowerVtableCall(vrecv, classInfo, opMember, vsig,
-        vargs, vsig.returns[0]);
+    return this.#cx().operatorMemberOn(opMember, left, right, leftCt);
   }
 
   /**
@@ -5783,39 +5494,8 @@ final class FunctionLowerer {
     return this.#cx().coerceTo(value, target);
   }
 
-  /** Resolves a method on ct (walking supers/generic sources) only
-   * when no transitive subclass overrides it: a direct call stands
-   * in for virtual dispatch. */
   #resolveDevirtualizedMethod(ct: ClassType, methName: String): WasmFunction | null {
-    var found: WasmFunction | null = null;
-    var c: ClassType | null = ct;
-    while (c != null) {
-      var g: ClassType | null = c;
-      while (g != null) {
-        let key = getClassMethodKey(getClassKey(g), methName);
-        if (let (true, m) = this.wasm.classMethodMap.get(key)) {
-          found = m;
-          break;
-        }
-        g = g.genericSource;
-      }
-      if (found != null) {
-        break;
-      }
-      c = c.superType;
-    }
-    if (found == null) {
-      return null;
-    }
-    var infoOpt: ClassCodegenInfo | null = null;
-    if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) {
-      infoOpt = info;
-    }
-    if (infoOpt != null &&
-        this.#memberProvidedBySubclass(infoOpt as ClassCodegenInfo, methName)) {
-      return null;
-    }
-    return found;
+    return this.#cx().resolveDevirtualizedMethod(ct, methName);
   }
 
   /** Enum member constants (see the streaming generator's enum
@@ -5987,25 +5667,9 @@ final class FunctionLowerer {
         this.b,
         this.wasm,
         this.func,
-        (value: i32): ClassType | null => this.#classTypeOfValue(value),
-        (ct: ClassType): String => this.#canonicalKeyOf(ct),
-        (ct: ClassType, methName: String): WasmFunction | null =>
-            this.#resolveDevirtualizedMethod(ct, methName),
-        (classInfo: ClassCodegenInfo, slotName: String): i32 =>
-            this.#vtableSlotIndex(classInfo, slotName),
-        (receiver: i32, classInfo: ClassCodegenInfo, slotName: String,
-            sig: WasmSignature, args: Array<i32>,
-            resultType: ValType | null): i32 =>
-            this.#lowerVtableCall(receiver, classInfo, slotName, sig, args,
-                resultType),
-        (dispatch: RecordDispatchInfo, propName: String, receiver: i32): i32 =>
-            this.#recordDispatchRead(dispatch, propName, receiver),
-        (propName: String, receiver: i32): i32 =>
-            this.#lowerObjectPropertyRead(propName, receiver),
-        (t: Type, value: i32): i32 => this.#unwrapFatPointer(t, value),
-        (opMember: String, left: i32, right: i32, leftCt: ClassType): i32 =>
-            this.#lowerOperatorMemberOn(opMember, left, right, leftCt),
-        (bin: BinaryExpression): i32 => this.#lowerNullishCoalesce(bin));
+);
+    cx.nullishCoalesce = (bin: BinaryExpression): i32 =>
+        this.#lowerNullishCoalesce(bin);
     cx.lowerExpr = (e: Expression, want: ValType | null): i32 =>
         if (want == null) this.#lowerExpression(e)
         else this.#lowerExpressionCtx(e, want as ValType);
