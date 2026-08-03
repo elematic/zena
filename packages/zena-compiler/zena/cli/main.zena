@@ -131,8 +131,14 @@ export let main = (): i32 => {
     
     // Experimental ZIR backend (docs/design/ir.md): supported function
     // bodies go AST -> ZIR -> wasm; the rest use the streaming generator.
+    // ZIR is the default (and soon only) backend; fallbacks to the
+    // streaming generator are FATAL by default — a bail is a compiler
+    // bug, not a coverage gap, now that strict coverage is total.
+    // ZENA_BACKEND=streaming keeps the old generator reachable as a
+    // release valve until it is deleted; ZENA_BACKEND=zir allows
+    // silent fallback (measurement only).
     let backendEnv = getEnv("ZENA_BACKEND");
-    let backendName = if (backendEnv != null) backendEnv as String else "";
+    let backendName = if (backendEnv != null) backendEnv as String else "zir-strict";
     let zirStrict = backendName == "zir-strict";
     let useZir = backendName == "zir" || zirStrict;
     let zirStats = getEnv("ZENA_ZIR_STATS") != null;
