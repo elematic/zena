@@ -17,15 +17,17 @@ import {
 import {
   AnyRefType, BooleanType, ClassType, EqRefType, F32Type, F64Type,
   I32Type, I64Type, InterfaceType, NullType, Type, TypeParameterType,
-  U32Type, U64Type, UnionType, baseType, typeToString,
+  U32Type, U64Type, UnionType, baseType, instantiateClassType,
+  typeToString,
 } from '../../types.zena';
 import {
   ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeRef,
   ValTypeRefNull, isRefValType, valTypeEquals,
 } from '../wasm.zena';
-import { isValSubtype } from '../wasm-module.zena';
+import { ClassCodegenInfo, isValSubtype } from '../wasm-module.zena';
 import { eraseTypeParameters, typeToValTypeWithSub } from '../type-mapping.zena';
-import { IrOp } from './ir.zena';
+import { getClassKey } from '../codegen-utils.zena';
+import { IrOp, IrRefField } from './ir.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue,
 } from './lowering-context.zena';
@@ -431,6 +433,21 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     right = scalarConvert(cx, right, target);
     leftType = target;
   }
+  // Integer division: the checker promotes the RESULT to a float
+  // (i32/i32 checks as f32), so `/` never appears in the integer op
+  // tables — convert both operands to the checked result type and
+  // divide there, exactly as streaming does.
+  if (bin.operator == "/" &&
+      (leftType is ValTypeI32 || leftType is ValTypeI64)) {
+    let resVt = cx.exprVt(bin);
+    if (!(resVt is ValTypeF32 || resVt is ValTypeF64)) {
+      bail(cx, 'integer division result type');
+    }
+    let lConv = scalarConvert(cx, left, resVt);
+    let rConv = scalarConvert(cx, right, resVt);
+    let divOp = if (resVt is ValTypeF32) IrOp.f32_div else IrOp.f64_div;
+    return cx.b.binary(divOp, resVt, lConv, rConv);
+  }
   let unsigned = isUnsignedNode(cx, bin.left) || isUnsignedNode(cx, bin.right);
   let op = mapBinaryOp(cx, bin.operator, leftType, unsigned);
   let isComparison = bin.operator == "==" || bin.operator == "!=" ||
@@ -534,6 +551,34 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     }
     return cx.b.emit(IrOp.ref_cast, dstVt, value,
         cx.b.internType(dstVt));
+  }
+  if (isRefValType(srcVt) &&
+      (dstVt is ValTypeI32 || dstVt is ValTypeI64 ||
+       dstVt is ValTypeF32 || dstVt is ValTypeF64)) {
+    // Unboxing cast: `(erased as f64)` unwraps the Box<T> — the wasm
+    // scalar type is ambiguous (boolean and i32 share i32), so the
+    // Box specialization comes from the CHECKED target type.
+    let semOpt = cx.substitutedNodeType(expr);
+    if (semOpt == null || cx.wasm.boxClass == null) {
+      bail(cx, 'unbox cast type');
+    }
+    let semT = baseType(semOpt as Type);
+    let typeArgs = new Array<Type>();
+    typeArgs.push(semT);
+    let boxCt = instantiateClassType(cx.wasm.boxClass as ClassType, typeArgs);
+    let infoOpt = if (let (true, info) = cx.wasm.classInfos.get(getClassKey(boxCt))) info else null;
+    if (infoOpt == null) {
+      bail(cx, 'unbox cast box class');
+    }
+    let boxStruct = (infoOpt as ClassCodegenInfo).structType;
+    if (boxStruct.fields.length < 2 || boxStruct.fields[1].name == null) {
+      bail(cx, 'unbox cast box shape');
+    }
+    let boxVt = new ValTypeRef(boxStruct) as ValType;
+    let boxed = cx.b.emit(IrOp.ref_cast, boxVt, value, cx.b.internType(boxVt));
+    let fieldRef = cx.b.addRef(new IrRefField(boxStruct, boxStruct.fields[1].name as String));
+    let raw = cx.b.emit(IrOp.struct_get, boxStruct.fields[1].type, boxed, fieldRef);
+    return scalarConvert(cx, raw, dstVt);
   }
   return scalarConvert(cx, value, dstVt);
 };
