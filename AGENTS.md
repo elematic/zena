@@ -119,7 +119,7 @@ TypeScript-only tests in `packages/compiler/src/test/`.
 This project is an **npm monorepo** managed with **Wireit**.
 
 - **`packages/compiler`**: Bootstrap compiler (`@zena-lang/compiler`).
-- **`packages/zena-compiler`**: Self-hosted compiler (`@zena-lang/zena-compiler`). (See [CONTEXT.md](packages/zena-compiler/CONTEXT.md))
+- **`packages/zena-compiler`**: Self-hosted compiler (`@zena-lang/zena-compiler`). (See [CONTEXT.md](packages/zena-compiler/CONTEXT.md); the ZIR backend and the reachability pass each have their own CONTEXT.md under `zena/lib/codegen/`.)
 - **`packages/stdlib`**: Standard library (`@zena-lang/stdlib`).
 - **`packages/cli`**: Node-based CLI tool (`@zena-lang/cli`).
 - **`packages/zena-cli`**: Native Rust CLI for executing Zena via Wasmtime. (See [CONTEXT.md](packages/zena-cli/CONTEXT.md)).

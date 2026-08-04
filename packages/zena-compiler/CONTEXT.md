@@ -14,11 +14,15 @@ Code generation separates semantic discovery from lowering and emission
 - **`module-generator.zena`**: `ModuleGenerator`. Drives the module pass —
   per reached function: AST → ZIR → GVN → verify → emit — and iterates
   `WasmModule` fields calling section hooks on `WasmEmitter`.
-- **`ir/`**: the ZIR backend (see `docs/design/ir.md`): `lowering.zena`
-  plus `lowering-context.zena` and the per-construct modules (templates,
-  equality, patterns, operators, control-flow, intrinsics, scaffold);
-  `gvn.zena`; `verifier.zena`; `emit.zena` (SSA destruction, stack
-  scheduling, local coalescing); `printer.zena` for WAT-comment dumps.
+- **`ir/`**: the ZIR backend — the compiler's only backend; see
+  [ir/CONTEXT.md](zena/lib/codegen/ir/CONTEXT.md) for the file map,
+  invariants, and verification workflow, and `docs/design/ir.md` for
+  the design. `ir.zena` (instruction set + flat encoding),
+  `builder.zena`, `cfg.zena`, `lowering.zena` + `lowering-context.zena`
+  + per-construct modules (control-flow, patterns, operators, equality,
+  templates, intrinsics, scaffold), `gvn.zena`, `verifier.zena`,
+  `emit.zena` (SSA destruction, stack scheduling, local coalescing),
+  `printer.zena` for WAT-comment dumps.
 - **`wasm-emitter.zena`**: `WasmEmitter` interface. The required hooks for
   generating Wasm modules and instructions.
 - **`binary-emitter.zena`**: `BinaryEmitter`. Implements `WasmEmitter` to output
@@ -75,13 +79,11 @@ Code generation separates semantic discovery from lowering and emission
 - **Portable tests** are shared language tests located in `tests/language/`.
   Both the bootstrap compiler and the self-hosted compiler run against these
   same test files to ensure identical behavior.
-- **Selective Execution (`runList`)**: Because the self-hosted compiler's
-  WebAssembly code generator is still being incrementally implemented, it cannot
-  yet compile the entire portable test suite. In
-  `src/scripts/run-execution-tests.ts`, there is an explicit `runList` array
-  (e.g., `['return_42.zena', ...]`) and only tests in the list are run. If you
-  add a new end-to-end Wasmtime test and want the self-hosted compiler to run
-  it, you _must_ add it to the `runList` array!
+- **Category gating (`runList`)**: `src/scripts/run-execution-tests.ts`
+  filters execution tests by top-level category directory via its
+  `runList` array, which currently names every category. A new test in
+  an existing category runs automatically; a new category *directory*
+  must be added to `runList` or its tests are silently skipped.
 - Run execution tests locally via: `npm run test:execution  -w @zena-lang/zena-compiler -- [filter]` explicitly to isolate generated Wasm regressions
   natively using the `wasmtime --invoke main` interface wrapped by Node.js.
   For example, to run just the variable tests, use `npm run test:execution -w @zena-lang/zena-compiler -- variables`.
