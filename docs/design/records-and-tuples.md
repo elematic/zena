@@ -2,6 +2,15 @@
 
 **Status: Proposed**
 
+> **Revision note:** [row-types.md](row-types.md) proposes row polymorphism
+> for records and tuples. It revises the width-subtyping default (§5.1 —
+> closed types by default, explicit `...` existentials for dispatch-based
+> width), **subsumes exact record types** (§5.3 / Phase 6 — never built as
+> a separate feature), defines spread semantics (open question 3 —
+> disjoint extension plus a `with` update form), and re-scopes the fat
+> pointer of Phase 4 to explicit existentials only. Sections below are
+> annotated where affected.
+
 This document outlines the design for immutable Records and Tuples in Zena.
 
 ## 1. Overview
@@ -179,6 +188,13 @@ let point2d: {x: i32, y: i32} = point3d;  // ✅ OK - z is ignored
 
 **Implementation**: Record field access uses dynamic dispatch (like interfaces). The compiler aggressively optimizes this away when types are statically known. See Section 5.4.
 
+> **Revision note:** [row-types.md](row-types.md) §3.2/§9 proposes retiring
+> width subtyping as the _default_: un-spread record types become closed
+> (direct access, no dispatch), "accepts wider shapes" moves to
+> row-bounded generics (specialized, still direct) or an explicit
+> existential `{x: i32, ...}` (the only remaining dispatch form). The flip
+> is scheduled for bootstrap retirement (row-types.md §9, ordering A).
+
 ### 5.2 Optional Fields
 
 Optional fields allow callers to omit fields entirely. This is the "option bag" pattern.
@@ -222,6 +238,11 @@ let process = (opts: {timeout?: i32}) => {
 ```
 
 ### 5.3 Exact Record Types
+
+> **Revision note:** subsumed by [row-types.md](row-types.md) §6 — under
+> the row proposal, closed (exact) is the default meaning of an un-spread
+> record type, and no `exact` keyword ships. Phase 6 below is not to be
+> built. Kept for the record of the design space.
 
 For performance-critical code where you need guaranteed direct field access (no dispatch), use **exact record types**:
 
@@ -330,7 +351,7 @@ This ensures that the internal optimization does not break external compatibilit
 
 1.  **Recursive Types**: Can records be recursive? `{ next: Self }`? (Probably yes, via `type` alias).
 2.  **Methods**: Do records have methods? (No, they are data. Use functions).
-3.  **Spread**: `let p2 = { ...p1, z: 3 };` (Essential for immutable updates).
+3.  **Spread**: `let p2 = { ...p1, z: 3 };` (Essential for immutable updates). _Resolved in [row-types.md](row-types.md) §4: extension spread requires disjoint fields; overriding an existing field uses the `with` update form; spreading existential records is rejected._
 4.  ~~**Optional Fields**~~: Resolved. See Section 5.2. Optional fields use `?` syntax and require narrowing before access.
 5.  **Exact Type Syntax**: What syntax for exact record types? Options: `exact {...}`, `{...}!`, `#[exact]`.
 6.  **`in` Operator**: Implement `"field" in record` for narrowing optional fields.

@@ -36,6 +36,13 @@ let (x, , z) = (1, 2, 3); // Skip the second element
 let (head, ...tail) = (1, 2, 3, 4); // tail is (2, 3, 4)
 ```
 
+> **Revision note:** [row-types.md](row-types.md) §5 gives rest patterns
+> their types (the residual row/tuple) and proposes **exhaustive
+> destructuring** for closed records: a record pattern must name every
+> field or end with `...rest` / `..._`, so adding a field to a record type
+> surfaces every destructuring site that hasn't decided what to do with
+> it.
+
 ### 2. Record Destructuring
 
 Records are destructured by name using curly braces `{...}`.

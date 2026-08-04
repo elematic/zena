@@ -190,6 +190,12 @@ printItems(strings); // ✅ Allowed! ArrayList<String> -> List<String> -> List<O
 We may need to constrain generic types (e.g., `T extends SomeClass`).
 
 - _Initial Scope_: Unconstrained generics.
+- **Row bounds** (proposed): [row-types.md](row-types.md) adds
+  `R extends record` and `R extends tuple`, letting a type parameter range
+  over record/tuple shapes and appear in type-level spreads
+  (`{ id: string, ...R }`). Row-generic functions monomorphize per
+  instantiated row, exactly like ordinary type arguments — the same
+  compilation strategy this document specifies, applied to shapes.
 
 ## Impact on Standard Library
 

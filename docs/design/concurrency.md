@@ -147,6 +147,13 @@ The CPS transform handles all control flow constructs:
 1. **Fire-and-forget**: Should `async fn()` from sync context require explicit handling?
 2. **Implicit await**: Should function call to async fn from async fn auto-await?
 3. **Future combinators**: `Future.all()`, `Future.race()`?
+4. **Effect-row generalization**: `async`/`gen` could later be two built-in
+   labels of a general effect-row system (one suspension transform, user- or
+   stdlib-defined effects, effect-polymorphic higher-order functions —
+   see [generators.md](generators.md) §8). Decision deliberately deferred;
+   the type-system half (row unification, lacks constraints,
+   monomorphized row instantiation) is being proven first on records in
+   [row-types.md](row-types.md) §8.
 
 ---
 
