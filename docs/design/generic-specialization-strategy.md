@@ -476,8 +476,8 @@ common case). Trampolines should be marked always-inline-on-devirt.
    result class × result interface pair.
 3. Layout: per-(member, targsKey) interface-struct fields, named by
    the same mangling as `_spec_` functions.
-4. Backends: slot resolution by member+targsKey (streaming and ZIR —
-   ZIR's #lowerInterfaceDispatch takes the same key).
+4. Backend: slot resolution by member+targsKey (ZIR's
+   #lowerInterfaceDispatch takes the same key).
 5. Lift the diagnostic; move the semantics test to execution tests
    exercising primitive U through the interface (the erasure-hostile
    value set from generic-method-primitive-mono).

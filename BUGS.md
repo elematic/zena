@@ -12,20 +12,18 @@ immediately trying to fix it (which can pollute the current task's context).
   with any refutable pattern — do we need more coverage?")
 - **Severity**: medium (checker-accepted syntax crashes codegen)
 - **Deferred**: per review (2026-07-31) — implement once the bootstrap
-  compiler and streaming backend are retired; one implementation
-  instead of three.
+  compiler is retired; one implementation instead of two.
 - **Workaround**: destructure through an inline-tuple shape, or use a
   match expression.
 - **Details**: Both checkers accept non-tuple refutable patterns in
   let-conditions — `if (let Just {v} = maybe)` (class pattern on a
   sealed variant), `if (let {x} = unionOfRecords)` (record pattern) —
-  but no backend implements them: streaming traps inside
-  generateIfStatement (no diagnostic), the bootstrap fails the same
+  but neither compiler implements them: the bootstrap fails these
   shapes, and ZIR's let-condition machinery expects an inline-tuple
-  scrutinee. Every existing if-let/while-let test starts with an
+  scrutinee (bails, which is a hard compile error). Every existing if-let/while-let test starts with an
   inline tuple; nested class/record patterns are covered only INSIDE
   tuples (`(true, Point {x, y})`). Either implement top-level
-  refutable patterns in all three compilers (ZIR's #83 pattern
+  refutable patterns in both compilers (ZIR's #83 pattern
   machinery — #lowerPatternTest/#lowerPatternBindings — has the
   pieces) or reject them in the checkers; then port the match-pattern
   test matrix to if-let/while-let either way.
@@ -34,10 +32,10 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Found**: 2026-07-31 (review discussion on #87's field-closure calls)
 - **Severity**: medium (silent acceptance with resolution divergence)
 - **Deferred**: per review (2026-07-31) — fix once the bootstrap
-  compiler and streaming backend are retired; one implementation to
-  change instead of three. ZIR's loud bail keeps the backends agreeing
-  until then.
-- **Workaround**: none needed yet; ZIR refuses the ambiguous case.
+  compiler is retired; one implementation to change instead of two.
+- **Workaround**: none needed yet; ZIR refuses the ambiguous case
+  (the bail is a hard compile error, so the shadowing declaration
+  effectively cannot compile).
 - **Details**: Members share one string-keyed namespace, but the
   interactions between function-typed FIELDS and METHODS are only
   half-settled:
@@ -46,12 +44,11 @@ immediately trying to fix it (which can pollute the current task's context).
     tests/language/semantics/interfaces/
     field-does-not-implement-method.zena.
   - A field whose name shadows an inherited METHOD is accepted
-    silently, and resolution diverged by backend: streaming resolves
-    d.f() to the BASE METHOD (even through a Derived-typed receiver);
-    the checker's member map for Derived says the FIELD. ZIR now
-    bails loudly ('field shadows inherited method') rather than pick
-    a side, so both backends agree (streaming's method-wins result)
-    while the construct stays compilable.
+    silently by the checkers, but no ruling defines what it means
+    (the checker's member map for Derived says the FIELD; historical
+    implementations disagreed). ZIR bails loudly ('field shadows
+    inherited method') rather than pick a side, which is a hard
+    compile error.
   - Needs a language ruling: reject the shadowing declaration
     outright (probably right — one namespace should mean one owner
     per name in a hierarchy), or define override semantics for
@@ -92,28 +89,7 @@ immediately trying to fix it (which can pollute the current task's context).
   Codegen note: the ZIR object-pattern binder already reads through
   getters when given the chance (`#lowerObjectPropertyRead` falls
   back to the get# walk), so lifting the checker restriction should
-  need no backend work in ZIR; the streaming backends' destructuring
-  paths would need the getter fallback checked.
-
-### Self-hosted streaming: primitive-to-any auto-boxing is not implemented (invalid wasm)
-- **Found**: 2026-07-29 (probing `any` support while tagging ZIR's auto-box bail)
-- **Severity**: medium (any program assigning or passing a primitive as `any`
-  fails to instantiate under the self-hosted compiler; silent at compile time)
-- **Workaround**: box explicitly (`new Box<i32>(n)`), or avoid `any` with
-  primitives (the suite and compiler already do — the only `any` execution
-  test assigns Box objects, never raw primitives, which is why this was
-  never noticed).
-- **Details**: The bootstrap boxes primitives flowing into `any` contexts
-  (needsBoxing sites in codegen/expressions.ts); the self-hosted streaming
-  backend emits the raw scalar where anyref is expected — e.g.
-  `let x: any = 7` becomes `i32.const 7; local.set <anyref local>` and
-  `show(42)` with `show: (v: any) => ...` passes the bare i32 — producing
-  wasm that fails validation ("expected anyref, found i32"). Reproduced on
-  main's compiler, so it predates the ZIR stack. ZIR deliberately bails on
-  these sites under the permanent reason 'auto-box to any' rather than
-  implementing boxing: `any` is slated for removal (see
-  docs/design/primitive-boxing-semantic-types.md); this bug is expected to
-  become moot with that removal rather than being fixed.
+  need no ZIR backend work.
 
 ### Unsigned widening casts: bootstrap uses _u opcodes, self-hosted signs-extends
 - **Found**: 2026-07-27 (lowering `as` casts from unsigned in ZIR)
@@ -122,11 +98,10 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Workaround**: mask explicitly before widening.
 - **Details**: The bootstrap's AsExpression codegen picks
   i64.extend_i32_u / f64.convert_i{32,64}_u for unsigned sources; the
-  self-hosted streaming backend has no unsigned conversion path at
-  all and emits the signed variants (e.g. `(3000000000 as u32) as
-  u64` sign-extends). ZIR deliberately mirrors streaming until this
-  is fixed in both self-hosted backends together (the _u IrOps and
-  emitter methods do not exist yet either).
+  self-hosted compiler has no unsigned conversion path at all and
+  emits the signed variants (e.g. `(3000000000 as u32) as u64`
+  sign-extends) — the `_u` IrOps and emitter methods do not exist in
+  ZIR. Verified still present 2026-08-05.
 ### Inline-tuple union miscompiles when both arms hole out a reference slot
 - **Found**: 2026-07-28 (evaluating a `Result<V, E>` shape for zena:url)
 - **Severity**: medium (invalid wasm from code both checkers accept; blocks
@@ -448,7 +423,6 @@ immediately trying to fix it (which can pollute the current task's context).
   index resolution). Spec is context-sensitive resolution with an
   ambiguity error when no context exists (member-lookup.md §7/§9.3).
 
-
 ### Self-hosted checker does not narrow a loop var through a compound while condition
 - **Found**: 2026-07-22
 - **Severity**: low (forces redundant casts; bootstrap accepts the code)
@@ -509,8 +483,8 @@ immediately trying to fix it (which can pollute the current task's context).
   };
   ```
 
-  Both compilers agree (bootstrap and self-hosted, streaming and ZIR
-  backends — all consume the same capture analysis), so this is a
+  Both compilers agree (bootstrap and self-hosted — they consume the
+  same capture analysis), so this is a
   checker/semantic-model bug, not a codegen one: the celling predicate
   should be "captured AND mutated anywhere", not "mutated by the
   closure". Fixing it in the capture analysis fixes every backend at
@@ -518,23 +492,6 @@ immediately trying to fix it (which can pollute the current task's context).
   JS-style closure capture), so it deserves its own change with tests.
   Pinned (at the current shared behavior, with a comment) in
   tests/language/execution/closures/celled_captures.zena.
-
-### Self-hosted codegen fails member access on &&-narrowed values
-
-- **Found**: 2026-07-21
-- **Severity**: medium
-- **Workaround**: hoist the narrowing to a statement (`if (x is T) {
-... x.member ... }`) or use an explicit cast after the `is` test.
-- **Details**: `x is T && x.member ...` — the checker narrows `x` in the
-  right-hand side of `&&`, and the BOOTSTRAP codegen compiles it, but the
-  SELF-HOSTED streaming codegen resolves `x.member` against the
-  unnarrowed declared type and throws at compile time ("Could not find
-  property `member` or virtual getter get#`member` on class ...").
-  Found in build:self-hosted when compiler source used
-  `vt is ValTypeRef && vt.target is WasmStruct`; the generateMemberExpression
-  path in zena/lib/codegen/expr/member.zena uses the node's declared type
-  where the bootstrap consults the narrowed type. Statement-level `is`
-  narrowing (including member access in the if-body) works in both.
 
 ### Self-hosted checker does not surface inherited members on sealed variant types
 
@@ -589,125 +546,6 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Severity**: medium
 - **Workaround**: Rename the class to avoid collision (e.g., `SymbolEntry` instead of `Symbol`)
 - **Details**: When you declare `class Symbol` in a module, it should shadow the built-in `Symbol` type within that module's scope. Instead, references to `Symbol` still resolve to the built-in type, causing errors like "Property 'name' does not exist on type 'Symbol'". This affects any class name that collides with built-in types.
-
-## Fixed Bugs
-
-### Overload selection migrated to most-specific (was declaration-order first-match)
-- **Found**: 2026-07-22 (ruling); **Fixed**: 2026-07-23 (both compilers)
-- **Details**: Implemented member-lookup.md §5.1 in the self-hosted
-  and bootstrap checkers: the unique most-specific applicable
-  candidate wins (pointwise parameter assignability), declaration
-  order carries no meaning, an applicable set with no unique maximum
-  is an ambiguity error, and a subclass may no longer ADD an overload
-  overlapping an inherited signature (declaration-site error;
-  class-class overlap exact under single inheritance,
-  interface/type-parameter positions conservatively assumed).
-  Parameter-equivalent ties break toward the exact-arity candidate.
-  The pinned tests flipped as primed: overload-declaration-order.zena
-  1130 -> 2130, overload-override-reorder.zena 120 -> 2020 (selection
-  now coherent across reference types); new pins
-  overload-nullability.zena (T beats T | null) and
-  semantics/classes/overload-most-specific.zena (ambiguity + overlap
-  errors, same messages in both compilers). Zero fallout in the
-  compiler, stdlib, or test corpus.
-
-### Private grouped accessors broken in every compiler
-- **Found**: 2026-07-23; **Fixed**: 2026-07-23
-- **Details**: `#name: T { get {...} set(v) {...} }` was broken
-  differently everywhere: the self-hosted parser rejected the
-  accessor block after a private field name; the bootstrap parsed it
-  but its checker's private gate (fields/methods maps only) rejected
-  every access, its assignment codegen had no private-setter path,
-  and both mixin checkers never type-checked mixin accessor bodies
-  (self-hosted) or misregistered them as bare fields (both). Where
-  they DID compile, private accessors dispatched virtually through
-  vtable slots. Now: private accessors parse, register as get#/set#
-  methods only (no phantom bare-name field), never get vtable slots,
-  and dispatch directly and lexically — subclass shadowing and
-  host/mixin same-name coexistence work, with mixin private
-  accessors under the mixin scope key. Pinned by
-  classes/private-accessors.zena (10102),
-  classes/private-accessors-lexical.zena (12), and
-  mixins/private_accessors.zena (100900) on all compiler/backend
-  combos.
-
-### Mixin private methods collide with host-class private methods; streaming dispatched privates virtually
-- **Found**: 2026-07-23; **Fixed**: 2026-07-23 (all compilers)
-- **Details**: Two related bugs. (1) A mixin's private method and a
-  host class's same-named private method collapsed into one dispatch
-  slot in ALL THREE compilers (self-hosted streaming/ZIR and the
-  bootstrap), so mixin code calling this.#word() ran the host's
-  method. Fixed by extending the mixin private scope key to methods:
-  the checker stores mixin private MethodInfo under
-  "<scope>::#name", registration registers them per host under the
-  scoped name, and the private-call paths probe the calling
-  function's privateScopeKey first. (2) The self-hosted streaming
-  backend gave private methods vtable slots and dispatched them
-  virtually — a subclass's shadowing #m hijacked the parent's
-  this.#m() (ZIR and the bootstrap were already lexical). Privates
-  now get no vtable slot anywhere and are always direct-called
-  lexically; the bootstrap's mixin-intermediate vtable gets the same
-  "#" exclusion its plain classes already had. Pinned by
-  mixins/private_methods.zena (11111400),
-  classes/private-methods-lexical.zena (12), and
-  classes/private-methods-generic.zena (41) on all compiler/backend
-  combos.
-
-### Mixin private fields collide with host-class privates
-- **Found**: 2026-07-22; **Fixed**: 2026-07-22 (self-hosted; the
-  bootstrap never collided)
-- **Details**: A mixin's private field and a host class's same-named
-  private collapsed into one members-map entry and one struct field
-  in the self-hosted compiler, so mixin and host code silently
-  mutated each other's state. Fixed with a private scope key: the
-  checker stores mixin private fields in host members maps under
-  "<scopeKey>::#name" where the scope key is the mixin's name plus
-  its source path (the MixinKey identity — names alone are not
-  unique; composed mixins keep the inner mixin's scope), codegen
-  names struct fields identically, functions compiled
-  from mixin bodies carry WasmFunction.privateScopeKey and resolve
-  "#" fields under it in both backends. Mixin privates are lexical to
-  the mixin declaration and shared across applications
-  (member-lookup.md §6); same-named host/mixin privates coexist even
-  with different types. Pinned by
-  tests/language/execution/mixins/private_names.zena (3120, all
-  compiler/backend combos).
-
-### Stack overflow in emitter for large WASM output
-
-- **Found**: 2026-02-15
-- **Fixed**: 2026-02-16
-- **Severity**: high
-- **Fix**: Changed `buffer.push(...content)` to a for loop in `#writeSection` to avoid spread operator stack overflow.
-- **Details**: The `#writeSection` method in emitter.ts used `buffer.push(...content)` which expands large arrays into individual function arguments. For ~140KB WASM files, this meant ~140,000 arguments on the call stack, causing stack overflow. The fix uses a for loop instead.
-
-### WASM validation error: eqref vs specific ref type in closure wrappers
-
-- **Found**: 2026-02-12
-- **Fixed**: 2026-02-13
-- **Severity**: high
-- **Details**: Closure wrappers taking `eqref` weren't casting to specific ref types before calling the wrapped function.
-
-### Nested generic type parameter resolution in codegen
-
-- **Found**: 2025-01-XX
-- **Fixed**: 2026-02-12
-- **Severity**: medium
-- **Fix**: Resolve type arguments through the enclosing context's type arguments before instantiating a generic function. This handles the case where a generic function is called from within a generic class method.
-- **Details**: When a generic class method calls a generic function (like `some<T>(value)`) where `T` is resolved to the outer class's type parameter `V`, the codegen failed with "Unresolved type parameter: V, currentTypeArguments keys: [T]". This happened because the inner function's type context didn't have visibility into the outer class's type arguments.
-
-### Nullable type in exported type alias causes WASM validation error
-
-- **Found**: 2026-02-11
-- **Fixed**: 2026-02-11
-- **Fix**: Widen record/tuple literals to match function return types, not just variable declarations
-
-### Wasm compiler fails to emit `ref.cast` when reading a local that was narrowed by an `is` check
-
-- **Found**: 2026-05-31
-- **Severity**: high
-- **Workaround**: Explicitly assign to a new local instead of overriding: `let classType = unnarrowedType as ClassType;`
-- **Details**: When a variable is narrowed by `if (x is ClassType)`, the Zena type system treats it as narrowed logic-wise, but the underlying Wasm local remains its original generic uncasted type (e.g. `(ref null $Type)`). The bootstrap compiler does not inject dynamic `ref.cast` when later reading this variable to evaluate a property access. Wasm compilation fails with: `type mismatch: expected (ref null $ClassType), found (ref null $Type)`. Assigning it explicitly circumvents the flaw.
 
 ### zena-cli writes a full WAT dump next to every cache entry
 - **Found**: 2026-07-26 (a 135 MB "output" turned out to be the .wat)

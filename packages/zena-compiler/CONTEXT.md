@@ -5,15 +5,20 @@ For the current progress and roadmap of codegen, see the new [IR design doc](../
 
 ## WebAssembly Code Generation
 
-Code generation separates logical AST traversal from target text/binary
-emission:
+Code generation separates semantic discovery from lowering and emission
+(all paths under `zena/lib/codegen/`):
 
-- **`discovery.zena`**: `Discovery` pass. Resolves and stores
-  target Wasm indices for AST elements.
-- **`module-generator.zena`**: `ModuleGenerator`. Iterates over `WasmModule`
-  fields and calls section hooks on `WasmEmitter`.
-- **`function-generator.zena`**: `FunctionGenerator`. Walks function ASTs and
-  translates statements/expressions into `WasmEmitter` calls.
+- **`reachability/`**: `ReachabilityAnalysis` (RTA). Decides what exists —
+  reached functions, generic instantiations, vtable membership — and
+  populates the `WasmModule` structural model (`wasm-module.zena`).
+- **`module-generator.zena`**: `ModuleGenerator`. Drives the module pass —
+  per reached function: AST → ZIR → GVN → verify → emit — and iterates
+  `WasmModule` fields calling section hooks on `WasmEmitter`.
+- **`ir/`**: the ZIR backend (see `docs/design/ir.md`): `lowering.zena`
+  plus `lowering-context.zena` and the per-construct modules (templates,
+  equality, patterns, operators, control-flow, intrinsics, scaffold);
+  `gvn.zena`; `verifier.zena`; `emit.zena` (SSA destruction, stack
+  scheduling, local coalescing); `printer.zena` for WAT-comment dumps.
 - **`wasm-emitter.zena`**: `WasmEmitter` interface. The required hooks for
   generating Wasm modules and instructions.
 - **`binary-emitter.zena`**: `BinaryEmitter`. Implements `WasmEmitter` to output
@@ -27,10 +32,9 @@ emission:
   modules must adhere to strict orderings. For instance, the **Type Section
   (1)** must be serialized _before_ the **Function Section (3)** and **Code
   Section (10)**.
-- To resolve this, `wasm-generator.zena` typically utilizes a multi-pass
-  approach over the AST, allocating indices for all `FunctionSignature`s,
-  `struct` layouts, and Recursion (`rec`) groups prior to constructing the
-  actual instruction bytecodes.
+- To resolve this, codegen is multi-pass: `WasmModule.layout()` assigns
+  indices for all signatures, `struct` layouts, and recursion (`rec`)
+  groups before instruction bytecodes are constructed.
 - `ByteBuffer` abstractions generate isolated payloads per section, then combine
   them efficiently into a parent buffer prefixed by `length`.
 

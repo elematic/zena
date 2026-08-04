@@ -74,21 +74,12 @@ node IDs, `self-hosted-compiler.md` §3).
 
 ## 2. Position in the pipeline
 
-Today (`ModuleGenerator.compile()`, `codegen/module-generator.zena:65`):
-
-```
-Program (units + SemanticModels)
-  → ReachabilityAnalysis.run()        RTA + monomorphization + vtable build
-  → string/data layout, __start synthesis
-  → wasm.layout()                     index assignment
-  → section emission
-  → FunctionGenerator per function    AST walk → bytes, single pass
-```
-
-With ZIR, only the _function-body_ path changes. The structural model
+Before ZIR, `ModuleGenerator.compile()` walked each function's AST and
+emitted bytes in a single streaming pass (`FunctionGenerator`, deleted at
+M4). ZIR changed only the _function-body_ path. The structural model
 (`WasmModule`, `WasmStruct`, `WasmGlobal`, vtable globals) survives as-is;
-the `FunctionGenerator` AST walk is split into lowering and emission with the
-optimization loop between them:
+the AST walk is split into lowering and emission with the optimization
+loop between them:
 
 ```
 Program
@@ -551,8 +542,7 @@ costs nothing.
 `br_on_cast_fail T` as terminators with two successors, the cast-success
 edge carrying the narrowed value as a block argument. The checker's
 narrowing decisions arrive from lowering as explicit casts (each narrowed
-use site reads `model.getNodeType`, exactly as `FunctionGenerator` does
-today at `function-generator.zena:1067–1355`); after that, narrowing is
+use site reads `model.getNodeType`); after that, narrowing is
 invisible to ZIR — it's just types. Redundant-cast elimination is then a
 dominance query: a `ref.cast T` dominated by a successful `ref.cast T`/
 `br_on_cast T` edge on the same value folds away. The runtime-type-tag rules
@@ -603,12 +593,13 @@ loosen this for size if we ever want it.
 
 ## 6. Lowering (AST → ZIR)
 
-A new `codegen/ir/lowering.zena` replaces the emission half of
+`codegen/ir/lowering.zena` (with `LoweringContext` and the per-construct
+modules around it) replaced the emission half of the streaming
 `FunctionGenerator` while keeping its _semantic_ half — all the knowledge
-currently in `codegen/expr/*` and `codegen/stmt/*` about how constructs
-translate (constructor prologues, cell-boxing for captured mutables,
-argument adaptation, match compilation) transfers over; the difference is
-the output is ZIR instructions instead of emitter calls.
+about how constructs translate (constructor prologues, cell-boxing for
+captured mutables, argument adaptation, match compilation) transferred
+over; the difference is the output is ZIR instructions instead of emitter
+calls.
 
 SSA construction uses the standard technique for structured input (Braun et
 al. 2013, "Simple and Efficient Construction of SSA Form"): per-block
@@ -624,9 +615,9 @@ Lowering is **per-function and embarrassingly parallel** — it reads the
 writes a fresh `IrBody`. Even before any threading exists, this discipline
 keeps the door open (`self-hosted-compiler.md` "prepare for parallelism").
 
-The existing streaming path (`FunctionGenerator` → bytes) **remains in the
-tree during migration** behind the backend flag (§14) and is deleted only
-when ZIR reaches parity.
+The streaming path (`FunctionGenerator` → bytes) remained in the tree
+during the migration behind a backend flag and was deleted at M4 (§14)
+once ZIR reached parity.
 
 ## 7. What ZIR deliberately does NOT contain
 
@@ -648,7 +639,7 @@ when ZIR reaches parity.
 
 The monomorphization explosion is the top compile-time bottleneck, and its
 cost is not the _number_ of instantiations so much as **re-walking the AST
-through `Specializer`/`FunctionGenerator` for every one of them**.
+through `Specializer`/lowering for every one of them**.
 
 ZIR's `typeTable` indirection is designed as the fix:
 
@@ -939,8 +930,8 @@ The reason full accuracy is reachable at all is a source-language
 theorem: Zena scoping puts every source local's single initialization
 point lexically before all reads, in the same or an enclosing scope —
 so a wasm structure mirroring the source always has the set in a
-block enclosing every get, which the persistence rule accepts (this
-is why the streaming backend's non-null locals work). ZIR's CFGs only
+block enclosing every get, which the persistence rule accepts. ZIR's
+CFGs only
 ever come from lowering structured source, so that structure is
 always recoverable. Emission owes every local an accurate type,
 through five mechanisms:
@@ -981,8 +972,8 @@ through five mechanisms:
 5. **Init-discipline typing** as the backstop: type every local
    `(ref $T)` and demote to nullable only what a one-pass simulation
    of the validator's scoped init tracking rejects. Demotions are
-   counted and reported under `ZENA_ZIR_STATS` — the same ratchet
-   philosophy as `zir-strict`. For source-derived CFGs the expected
+   counted and reported under `ZENA_ZIR_STATS`. For source-derived
+   CFGs the expected
    steady state is exactly zero; the counter exists for shapes the
    OPTIMIZER invents later (post-M3 code motion and CSE can hand a
    temporary a live range no lexical scope ever had), so a pass that
@@ -1007,12 +998,11 @@ to move construction to **single-shot `struct.new`** — constructors
 evaluate field defaults, the initializer list, and the super chain's
 contributions into values, then allocate fully initialized — at which
 point field types flip to `(ref $T)` and `struct.get` on a non-null
-field returns non-null with no re-assert. This is deliberately
+field returns non-null with no re-assert. This was deliberately
 scheduled **after M4** (§14): struct types are module-global and the
-construction protocol is a cross-backend ABI under per-function
-fallback, so the flip cannot be made for one backend at a time; doing
-it while streaming exists would mean building the value-collection
-protocol twice, once in a backend scheduled for deletion.
+construction protocol was a cross-backend ABI under per-function
+fallback, so the flip could not be made for one backend at a time.
+With M4 complete, this arc is unblocked.
 
 ## 13. ZIR as a disk format for incremental compilation
 
@@ -1079,6 +1069,7 @@ until M4.
   straight-line + control-flow subset; `--backend=zir -O0` runs a growing
   slice of the portable execution suite. Emission via stackifier + trivial
   locals (every value a local — correctness first).
+  *Status: complete.*
 - **M2 — parity.** Full construct coverage (classes, interfaces, closures,
   match, exceptions, generics-as-v1). Stack scheduling + local coalescing.
   Entire portable suite + self-compile parity green under `--backend=zir`.
@@ -1093,24 +1084,18 @@ until M4.
   self-compile passing under strict mode (zero fallbacks); until then,
   strict mode is the everyday tool for finding the next construct to
   lower.
-  *Status (2026-07-26): the benchmark gate holds (0.97×–1.12× across
-  targets; the full self-compile is 0.97× — faster than streaming).
-  Strict mode is NOT yet meaningful as a suite gate: `__start` and
-  the named string helpers are node-null functions ZIR never
-  synthesizes, so every module fails strict on those before any real
-  construct is measured — lowering them is a prerequisite for the
-  ratchet. Per-function coverage: ~1,161 of 19,646 self-compile
-  functions still fall back (signature/param mismatches,
-  `_spec_`/erased generic bodies, written-constructor shapes, a long
-  tail), and several of those pools have NO representation in the
-  execution suite (identifier type shift, template literals,
-  multi-value returns, narrowing casts among them) — expanding suite
-  coverage to exercise every remaining pool is part of closing M2.*
+  *Status: complete (2026-07-31) — the portable suite and the full
+  self-compile pass strict mode with zero fallbacks; the benchmark
+  gate held (self-compile 0.97× vs streaming at the flip).*
 - **M3 — the loop.** simplify/DCE/blockmerge, then inline, devirt, SRoA,
   SCCP; golden WAT tests per pass; `-O2`/`-Os` wired. §10 harvest pass.
   Success metric: measurable size _and_ speed wins on the benchmark suite
   and on the compiler compiling itself (the compiler is our biggest, most
   interface-heavy program — it is the benchmark).
+  *Status: in progress — GVN, stack scheduling, local coalescing, and
+  loop-shape emission landed (geomean 0.58× vs streaming at deletion
+  time; binary −21%); the inline/devirt/SRoA/SCCP fixpoint loop and
+  the §10 harvest pass remain open.*
 - **M4 — flip the default.** Delete the direct `FunctionGenerator` emission
   path; ZIR backend becomes the only backend, and with it the fallback
   (and strict mode) cease to exist — any lowering gap is a hard compile
@@ -1125,6 +1110,10 @@ until M4.
   initializer list, and the super chain's contributions into values and
   allocate with one `struct.new` — `struct.new_default` retires along
   with the nullable field types it required.
+  *Status: complete (2026-08-05, PR #132) — the streaming backend is
+  deleted and ZIR is the only backend; lowering gaps are hard compile
+  errors by construction. The non-null-fields / single-shot
+  `struct.new` flip (§12.1) is now unblocked.*
 - **M5 — template ZIR (v2 generics).** Per-source-function lowering +
   table-substitution specialization. Success metric: cold-compile of
   `assert_test.zena` and `zena:test`-heavy files (the 47s case) drops by
@@ -1148,9 +1137,9 @@ until M4.
   worklists, no hash-iteration-order effects). HashMap iteration order in
   the stdlib must either be insertion-ordered or banned in passes.
 - **v2 template soundness**: the claim "instruction selection is
-  type-argument-independent modulo `generic.op`" needs an audit of lowering
-  once M2 exists; the audit list is the set of places `FunctionGenerator`
-  currently branches on a substituted type.
+  type-argument-independent modulo `generic.op`" needs an audit of lowering;
+  the audit list is the set of places lowering branches on a
+  substituted type.
 - **Open**: do `vt.load`/`vt.slot` metadata keys reference RTA-era tables
   by classKey strings (as `wasm.vtables` does today) or by interned ids?
   (Strings are the current convention; ids are cheaper — decide at M1 with

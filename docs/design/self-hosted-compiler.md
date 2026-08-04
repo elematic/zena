@@ -1,6 +1,8 @@
 # Self-Hosted Compiler Design
 
-_We completed the first codegen implementation and we're moving on to a new IR-based backend. See [ir.md](./ir.md)._
+_The compiler is fully self-hosting: stage-2 rebuilds are byte-identical,
+and code generation goes through the ZIR backend — see [ir.md](./ir.md).
+The milestone statuses below record where each area stands._
 
 ## Strategy: Informed Port
 
@@ -68,12 +70,12 @@ Source File (.zena)
 │  ├─ DCE             │  Reachability from entry point
 │  ├─ Devirtualization│  Effectively-final, static dispatch
 │  ├─ Capture analysis│  Closure variables, mutability
-│  └─ Boxing analysis │  Interface dispatch preparation
+│  └─ Adaptations     │  Fat-pointer packing for dispatch
 └────┬────────────────┘
      ▼
 ┌─────────────────────┐
-│  Codegen            │  AST + SemanticModel → WASM binary
-└─────────────────────┘
+│  Codegen            │  AST + SemanticModel → ZIR → WASM binary
+└─────────────────────┘  (lowering, GVN, emission — see ir.md)
 ```
 
 ---
@@ -604,7 +606,7 @@ Some are whole-program (need all modules), some are per-function:
 
 - **Capture analysis** — Which variables each closure captures
 - **Mutability analysis** — Which captured variables need cells (mutable boxes)
-- **Boxing analysis** — Which values need boxing for interface dispatch
+- **Adaptation analysis** — Which values need fat-pointer packing for interface/function dispatch
 - **Escape analysis** (future) — Which allocations can be stack-allocated
 
 The key design point: these passes don't produce type errors. The
@@ -1084,7 +1086,13 @@ self-hosted (Zena) parsers.
 
 **Deliverable:** `parse(source: String, path: String): Module` ✅
 
-### Milestone 1: Formatter (Not Started)
+### Milestone 1: Formatter ← In Progress
+
+**Status:** Implemented (`packages/zena-formatter`: Wadler-style doc/
+doc-printer/printer over the shared parser) but not yet battle-tested —
+it has not been run across the compiler's own source, and test coverage
+is thin. Hardening it and self-formatting the codebase are the open
+work.
 
 **Depends on:** Milestone 0 (parser) ✅
 
@@ -1147,7 +1155,11 @@ class LibraryLoader { load(path), computeGraph(entry): SourceFileGraph }
 **Deliverable:** `compiler.compile(entryPoint): CompilationResult` with all
 modules in dependency order, scopes built, imports validated ✅
 
-### Milestone 3: Type Checker (Core) ← In Progress
+### Milestone 3: Type Checker (Core) ✅ Complete
+
+**Status:** Complete. The self-hosted checker checks the whole compiler
+and the portable semantics suite; remaining bootstrap/self-hosted
+divergences are tracked in BUGS.md.
 
 **Depends on:** Milestone 2 ✅
 
@@ -1326,7 +1338,12 @@ details.
 formatting, and hover — backed by the `Program` abstraction for efficient
 incremental recompilation.
 
-### Milestone 5: Analysis Passes
+### Milestone 5: Analysis Passes ✅ Complete
+
+**Status:** Complete. The passes live in `codegen/reachability/`
+(ReachabilityAnalysis: RTA liveness, generic instantiation, vtable
+membership, devirtualization inputs) rather than as a separate
+AnalysisResults stage; capture analysis lives with the checker.
 
 **Depends on:** Milestone 3
 
@@ -1345,7 +1362,7 @@ codegen. These operate on the completed `SemanticModel` and produce
 
 - **Capture analysis** — Determine which variables each closure captures
 - **Mutability analysis** — Which captured variables need cells (mutable boxes)
-- **Boxing analysis** — Which values need boxing for interface dispatch
+- **Adaptation analysis** — Which values need fat-pointer packing for interface/function dispatch
 - **Escape analysis** (future) — Which allocations can be stack-allocated
 
 Each pass is a visitor that reads the AST + SemanticModel. None produce type
@@ -1353,7 +1370,11 @@ errors — the SemanticModel is already complete.
 
 **Deliverable:** `analyze(modules, semanticModel): AnalysisResults`
 
-### Milestone 6: Code Generation
+### Milestone 6: Code Generation ✅ Complete
+
+**Status:** Complete — twice. The direct AST→wasm port shipped first
+and was later replaced wholesale by the ZIR backend (lowering →
+optimize → emit; [ir.md](./ir.md)), which is now the only backend.
 
 **Depends on:** Milestone 3, Milestone 5
 
@@ -1399,7 +1420,11 @@ milestone.
 **Deliverable:** `compile(modules, semanticModel, analysisResults): Uint8Array`
 producing valid WASM-GC binaries.
 
-### Milestone 7: Self-Hosting
+### Milestone 7: Self-Hosting ✅ Complete
+
+**Status:** Complete. The compiler compiles itself, and the fixpoint is
+exact: stage-2 output is byte-identical to stage-1 (verified in CI-adjacent
+gates on every codegen change).
 
 **Depends on:** Milestone 6
 
@@ -1926,13 +1951,14 @@ Test hosts (like the current `InMemoryHost`) work as-is. Provide a
 
 ## Next Steps
 
-1. ~~Finish the parser (Milestone 0).~~ ✅ Complete — 389 portable tests pass.
-2. Start the formatter (Milestone 1) as soon as the parser is complete enough
-   to parse real Zena files. This validates the AST design. **Ready to start.**
-3. ~~Port name resolution (Milestone 2).~~ ✅ Complete — module resolution,
-   scope building, cross-module import wiring all done.
-4. Design the `SemanticModel` and `TypeContext` data structures in detail.
-   Write them up with concrete Zena type definitions before implementing.
-   **This is the next architectural design step.**
-5. Begin type checker porting (Milestone 3a) with primitive types and
-   expressions. Use the existing test suite to validate.
+1. Harden the formatter (Milestone 1) — `packages/zena-formatter`
+   exists but is lightly tested; run it over the compiler's own source
+   and expand its test coverage.
+2. LSP maturation (Milestone 4) — `packages/language-service` runs the
+   self-hosted compiler; feature coverage is the open end.
+3. Retire the bootstrap compiler: with self-hosting exact, the TS
+   compiler's remaining duty is stage-0 builds. Several language
+   rulings in BUGS.md are deferred to this retirement so they are
+   implemented once, not twice.
+4. ZIR optimization loop (ir.md §9/§14 M3) — inline, devirtualize,
+   SRoA, SCCP.

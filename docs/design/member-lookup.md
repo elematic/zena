@@ -404,9 +404,7 @@ genuine future optimization no backend attempts today.)
 
 Status: the checker shares the selection tail across all sites; the
 ZIR backend shares slot-name reproduction but still has dedicated
-index/eq-hash lowering branches; the streaming backend's per-form
-paths retire with streaming at M4 and should not be unified
-retroactively.
+index/eq-hash lowering branches.
 
 ## 6. Private names
 
@@ -485,8 +483,7 @@ usage. See §10.2.
 
 ## 8. What codegen may assume
 
-Summarizing the contract this spec creates (the ZIR backend already
-follows it; streaming conforms where noted):
+Summarizing the contract this spec creates:
 
 1. Every call/index node whose callee had an overload set carries a
    recorded declared signature; the slot name is
@@ -494,9 +491,7 @@ follows it; streaming conforms where noted):
 2. Member identity for dispatch comes from the receiver *value's*
    struct/class info; privacy and private field naming come from the
    *lexical* class via `resolvePrivateFieldName` (§6).
-2. No signature reconstruction from argument node types anywhere.
-   (The streaming backend still reconstructs; it is scheduled to die
-   with streaming at M4 and must not grow new callers.)
+3. No signature reconstruction from argument node types anywhere.
 
 ## 9. Implementation-gap index
 
