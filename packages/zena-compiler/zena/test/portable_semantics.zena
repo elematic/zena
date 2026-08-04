@@ -315,6 +315,31 @@ let isSkipped = (relPath: String): String | null => {
   return null;
 };
 
+let lexLess = (a: String, b: String): boolean => {
+  let n = if (a.length < b.length) { a.length } else { b.length };
+  for (var i = 0; i < n; i += 1) {
+    let ca = a.getByteAt(i);
+    let cb = b.getByteAt(i);
+    if (ca != cb) {
+      return ca < cb;
+    }
+  }
+  return a.length < b.length;
+};
+
+/** Insertion sort by entry name (byte-wise ascending). */
+let sortByName = (entries: Array<DirEntry>): void => {
+  for (var i = 1; i < entries.length; i += 1) {
+    let e = entries[i];
+    var j = i - 1;
+    while (j >= 0 && lexLess(e.name, entries[j].name)) {
+      entries[j + 1] = entries[j];
+      j -= 1;
+    }
+    entries[j + 1] = e;
+  }
+};
+
 // Discovers and registers tests for all .zena files in a directory (recursively).
 let runTests = (dirPath: String, relPrefix: String): void => {
   let entries = listDir(dirPath);
@@ -333,7 +358,13 @@ let runTests = (dirPath: String, relPrefix: String): void => {
       }
     }
   }
-  
+
+  // Deterministic discovery order: readdir order varies by platform and
+  // filesystem, and tests share one compiler, so the cache state a test
+  // sees must not depend on where the suite runs.
+  sortByName(subdirs);
+  sortByName(files);
+
   for (let file in files) {
     let fileName = file.name;
     let filePath = dirPath + "/" + fileName;
