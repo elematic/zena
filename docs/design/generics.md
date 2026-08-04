@@ -196,6 +196,12 @@ We may need to constrain generic types (e.g., `T extends SomeClass`).
   (`{ id: string, ...R }`). Row-generic functions monomorphize per
   instantiated row, exactly like ordinary type arguments — the same
   compilation strategy this document specifies, applied to shapes.
+- **Member-level `where` bounds** (proposed): a method may constrain the
+  _class's_ type parameter — `contains(value: T): boolean where T extends
+Equatable` — making the member exist only for conforming
+  instantiations, with the error at the call site. Zena's replacement
+  for Rust-style conditional `impl`s, since extensions are non-ambient.
+  Design and rationale: [equality.md](equality.md) D4.
 
 ## Impact on Standard Library
 

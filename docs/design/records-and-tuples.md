@@ -158,11 +158,18 @@ permanently unobservable:
   have been a footgun regardless.)
 
 **Migration**: the checker change is small (reject `===`/`!==` on
-record/tuple operands), and the two identity tests above convert to
-expected-error tests. Ship it as part of the row-types R3 migration
-event (bootstrap retirement — see row-types.md §9) so record semantics
-changes land once, together. Until then the current identity semantics
-hold and the §4.2 optimizations stay observability-guarded.
+record/tuple operands) and lands early, in both compilers, as step V0
+of [implementation-plan.md](implementation-plan.md); the two identity
+tests above convert to expected-error tests. Until then the current
+identity semantics hold and the §4.2 optimizations stay
+observability-guarded.
+
+**Companion decisions**: the full equality design — no-fallback `==`,
+the `Equatable`/`Hashable` interfaces, `contains`/`includes` — is in
+[equality.md](equality.md). And the constructive counterpart of point 2
+above: classes _can_ be identity-keyed, cheaply, via compiler-injected
+identity-hash fields — `IdentityMap` and the inverted `WeakMap` in
+[weak-references.md](weak-references.md).
 
 ## 4. Implementation Strategy
 

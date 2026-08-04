@@ -584,6 +584,13 @@ outcome pays.
 
 ## 9. Sequencing and migration
 
+> The cross-track plan of record — generators/async first, the
+> equality/identity contractions (V0/V1/V2), this document's additive
+> track, and the flip — is
+> [implementation-plan.md](implementation-plan.md). The R1/R2/R3
+> structure below is the rows-specific detail it references (its
+> tracks A and R3).
+
 The breaking piece is the **closed-by-default flip** (§3.2): today's
 records are width-subtyped, and the shared portable test suite runs
 against both compilers. Changing record defaults self-hosted-only would

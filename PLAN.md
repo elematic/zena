@@ -25,6 +25,11 @@ This document tracks completed work and planned features. For project instructio
 
 ## Planned / Next Milestones
 
+> Detailed cross-track sequencing for the 2026-08 language arc —
+> generators → async, value-semantics/equality contractions, row types,
+> and the record-semantics flip at bootstrap retirement — is in
+> [docs/design/implementation-plan.md](docs/design/implementation-plan.md).
+
 ### Phase 1: Self-Hosted Compiler (Current Focus)
 
 - **Goal**: Retire the TypeScript bootstrap compiler and move entirely to the self-hosted compiler (`packages/zena-compiler`).
