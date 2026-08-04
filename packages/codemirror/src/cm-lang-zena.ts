@@ -42,6 +42,10 @@ const keywords = new Set([
   'super',
 ]);
 
+/**
+ * The lowercase built-in types. Everything else that names a type — stdlib
+ * classes and yours alike — is caught by the leading-capital rule in `token`.
+ */
 const primitiveTypes = new Set([
   'i32',
   'i64',
@@ -49,28 +53,10 @@ const primitiveTypes = new Set([
   'f32',
   'f64',
   'boolean',
-  'string',
   'void',
   'never',
   'any',
   'anyref',
-  'ByteArray',
-]);
-
-const builtinTypes = new Set([
-  'Array',
-  'Map',
-  'Box',
-  'Error',
-  'String',
-  'FixedArray',
-  'GrowableArray',
-  'ImmutableArray',
-  'Sequence',
-  'Iterator',
-  'HashSet',
-  'HashMap',
-  'Console',
 ]);
 
 export interface ZenaState {
@@ -192,13 +178,7 @@ export const zenaLanguage = StreamLanguage.define<ZenaState>({
         if (word === 'this' || word === 'super') return 'keyword';
         return 'keyword';
       }
-      if (primitiveTypes.has(word)) {
-        return 'typeName';
-      }
-      if (builtinTypes.has(word)) {
-        return 'className';
-      }
-      if (/^[A-Z]/.test(word)) {
+      if (primitiveTypes.has(word) || /^[A-Z]/.test(word)) {
         return 'typeName';
       }
       return 'variableName';
