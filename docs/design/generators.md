@@ -594,6 +594,11 @@ the async doc, _not_ this one — but this design keeps the door open by
 ensuring both instantiations come out of the same split machinery, and
 nothing in the generator surface (no send channel, no driver protocol)
 becomes a load-bearing polyfill idiom that we'd have to support forever.
+The type-system half of any such generalization — row unification, lacks
+constraints, canonical row identity, monomorphized row instantiation —
+is being proven first on records in [row-types.md](row-types.md) §8,
+which inventories exactly which machinery a future effect-row system
+would inherit.
 
 Meanwhile, the interim expressible version of the SSR pattern — a `gen`
 yielding `Thunk | Future<T>` union values with a small driver — still
