@@ -247,25 +247,54 @@ export class CodeMirrorLangZena extends CodeMirrorExtensionElement {
   }
 }
 
+/** Type information for a source offset, as the language service reports it. */
+export interface ZenaHoverInfo {
+  /** Rendered declaration, e.g. `let greet: (name: String) => String`. */
+  label: string;
+  /** The type alone, shown when there is no label. */
+  type: string;
+  /** Doc comment attached to the declaration, if any. */
+  doc: string;
+}
+
+/**
+ * Answers "what is at this offset?" for `<cm-hover-zena>`.
+ *
+ * Structurally what `ZenaLanguageService.hover()` returns, but the editor
+ * never talks to the compiler directly — in a browser it lives in a worker,
+ * which is why this is async and injected.
+ */
+export type ZenaHoverProvider = (
+  offset: number,
+) => Promise<ZenaHoverInfo | null> | ZenaHoverInfo | null;
+
 /**
  * `<cm-hover-zena>` custom element for CodeMirror.
- * When placed inside `<cm-editor>`, it provides hover-over type signatures & JSDoc tooltips.
+ *
+ * When placed inside `<cm-editor>`, it shows type signatures and doc comments
+ * on hover. Inert until given a `hoverProvider`:
+ *
+ * ```js
+ * editor.querySelector('cm-hover-zena').hoverProvider =
+ *   (offset) => service.hover('main.zena', offset);
+ * ```
  */
 @customElement('cm-hover-zena')
 export class CodeMirrorHoverZena extends CodeMirrorExtensionElement {
-  private _playground?: any;
+  #hoverProvider?: ZenaHoverProvider;
 
-  public set playground(pg: any) {
-    this._playground = pg;
+  set hoverProvider(provider: ZenaHoverProvider | undefined) {
+    this.#hoverProvider = provider;
     this.updateHoverExtension();
   }
 
-  public get playground(): any {
-    return this._playground;
+  get hoverProvider(): ZenaHoverProvider | undefined {
+    return this.#hoverProvider;
   }
 
-  public updateHoverExtension() {
-    if (!this._playground) return;
+  updateHoverExtension() {
+    const provider = this.#hoverProvider;
+    if (!provider) return;
 
     const hoverExtension = hoverTooltip(async (view, pos) => {
       const line = view.state.doc.lineAt(pos);
@@ -289,8 +318,8 @@ export class CodeMirrorHoverZena extends CodeMirrorExtensionElement {
       const tokenFrom = line.from + start;
       const tokenTo = line.from + end;
 
-      const hoverData = await this._playground.queryHover('main.zena', pos);
-      if (!hoverData || (!hoverData.label && !hoverData.typeStr)) {
+      const hoverData = await provider(pos);
+      if (!hoverData || (!hoverData.label && !hoverData.type)) {
         return null;
       }
       return {
@@ -310,7 +339,7 @@ export class CodeMirrorHoverZena extends CodeMirrorExtensionElement {
 
           const labelEl = document.createElement('div');
           labelEl.className = 'cm-zena-hover-label';
-          labelEl.textContent = hoverData.label || hoverData.typeStr;
+          labelEl.textContent = hoverData.label || hoverData.type;
           dom.appendChild(labelEl);
 
           return {dom};
@@ -319,5 +348,12 @@ export class CodeMirrorHoverZena extends CodeMirrorExtensionElement {
     });
 
     this.setExtensions([hoverExtension]);
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'cm-lang-zena': CodeMirrorLangZena;
+    'cm-hover-zena': CodeMirrorHoverZena;
   }
 }

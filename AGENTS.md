@@ -146,6 +146,9 @@ This project is an **npm monorepo** managed with **Wireit**.
 - **`packages/stdlib`**: Standard library (`@zena-lang/stdlib`).
 - **`packages/zena-cli`**: Native Rust CLI for executing Zena via Wasmtime. (See [CONTEXT.md](packages/zena-cli/CONTEXT.md)).
 - **`packages/runtime`**: JS runtime helpers.
+- **`packages/language-service`**: `lsp.zena` and the `lsp.wasm` it builds, plus the JS API around it (`@zena-lang/language-service`). Published.
+- **`packages/codemirror`**: Zena support for CodeMirror 6 (`@zena-lang/codemirror`). Published.
+- **`packages/playground`**: the `<zena-playground>` element (`@zena-lang/playground`). Published.
 - **`tests/language/`**: Portable language tests.
 - **`docs/language-reference.md`**: Official language reference.
 - **`docs/design/`**: Design documents for complex features.

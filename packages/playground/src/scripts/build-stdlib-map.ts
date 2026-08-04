@@ -1,3 +1,11 @@
+/**
+ * Bundles the Zena stdlib sources into `src/stdlib-data.json`.
+ *
+ * The playground's compiler has no filesystem, so the stdlib ships with it as
+ * a map the worker resolves imports against. Keyed both by stdlib path and by
+ * `zena:` module specifier — see `createVirtualFileReader`.
+ */
+
 import {
   readdirSync,
   readFileSync,
@@ -12,7 +20,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..', '..');
 const repoRoot = join(pkgDir, '..', '..');
 const stdlibDir = join(repoRoot, 'packages', 'stdlib', 'zena');
-const outDir = join(pkgDir, 'src', 'lib');
+const outDir = join(pkgDir, 'src');
 
 mkdirSync(outDir, {recursive: true});
 

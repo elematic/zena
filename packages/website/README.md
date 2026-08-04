@@ -198,3 +198,9 @@ Eleventy `before` hook so the dev server rebuilds it on change.
 All of them render into **light DOM**, so the global stylesheet applies to them
 exactly as it does to server-rendered markup. Most only enhance HTML Eleventy
 already produced — the sidebar, outline, and nav all work without JavaScript.
+
+The playground is the exception: it is a published package,
+[`@zena-lang/playground`](../playground), with its own shadow DOM, imported by
+the client bundle. It loads `lsp.wasm` relative to its own module URL, so the
+Eleventy passthrough copies that binary to `js/lsp.wasm`, next to the bundle,
+and its worker gets a second esbuild entry point at `js/worker/`.

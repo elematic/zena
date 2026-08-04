@@ -34,8 +34,10 @@ WORKDIR /app
 # would flatten them into one directory.
 COPY package.json package-lock.json ./
 COPY packages/cli/package.json packages/cli/
+COPY packages/codemirror/package.json packages/codemirror/
 COPY packages/compiler/package.json packages/compiler/
 COPY packages/language-service/package.json packages/language-service/
+COPY packages/playground/package.json packages/playground/
 COPY packages/runtime/package.json packages/runtime/
 COPY packages/stdlib/package.json packages/stdlib/
 COPY packages/vscode-zena/package.json packages/vscode-zena/

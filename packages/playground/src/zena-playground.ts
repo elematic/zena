@@ -12,23 +12,38 @@ import {
   lintGutter,
   type Diagnostic as CMLintDiagnostic,
 } from '@codemirror/lint';
-import {keymap, hoverTooltip} from '@codemirror/view';
+import {keymap} from '@codemirror/view';
 import {Prec} from '@codemirror/state';
+import {lspWasmUrl} from '@zena-lang/language-service';
 import 'codemirror-elements';
-import './cm-lang-zena.js';
-import './cm-themes.js';
+import '@zena-lang/codemirror';
+import type {ZenaHoverProvider} from '@zena-lang/codemirror';
 import type {
-  PlaygroundDiagnostic,
+  CompletionItem,
+  ConsoleEntry,
+  ConsoleLevel,
+  Diagnostic,
+  HoverInfo,
   WorkerResponse,
   WorkerRequest,
-  ConsoleEntry,
 } from './types.js';
 
+/** The single document the playground edits. */
+const DOCUMENT_PATH = 'main.zena';
+
+/** How long to wait after a keystroke before re-checking. */
+const CHECK_DEBOUNCE_MS = 250;
+
 /**
- * Zena Playground Lit Web Component.
+ * An embeddable Zena playground.
  *
- * Embeds CodeMirror editor alongside a live diagnostic & output console pane,
- * powered by the self-hosted Zena compiler running in a Web Worker.
+ * A CodeMirror editor with live diagnostics, completions, and hover, next to a
+ * console pane, all driven by the self-hosted Zena compiler running as
+ * WebAssembly in a Web Worker.
+ *
+ * ```html
+ * <zena-playground></zena-playground>
+ * ```
  */
 @customElement('zena-playground')
 export class ZenaPlayground extends LitElement {
@@ -401,7 +416,7 @@ export class ZenaPlayground extends LitElement {
     }
   `;
 
-  /** Initial Zena source code */
+  /** Initial Zena source code. */
   @property({type: String})
   value = `// Welcome to the Zena Playground!
 
@@ -414,11 +429,18 @@ export let main = () => {
 };
 `;
 
-  /** Path to the lsp.wasm module or WASM binary */
+  /**
+   * Where to load the compiler from.
+   *
+   * Defaults to the `lsp.wasm` shipped with `@zena-lang/language-service`,
+   * resolved relative to this module. Bundlers that understand
+   * `new URL(..., import.meta.url)` emit it automatically; set this when
+   * yours does not, or to serve the binary from somewhere else.
+   */
   @property({type: String})
-  wasmUrl = '/wasm/lsp.wasm';
+  wasmUrl = lspWasmUrl;
 
-  /** Selected CodeMirror theme name */
+  /** Selected CodeMirror theme name. */
   @property({type: String})
   theme = 'one-dark';
 
@@ -426,7 +448,7 @@ export let main = () => {
   private status: 'loading' | 'ready' | 'checking' | 'error' = 'loading';
 
   @state()
-  private diagnostics: PlaygroundDiagnostic[] = [];
+  private diagnostics: Diagnostic[] = [];
 
   @state()
   private consoleLogs: ConsoleEntry[] = [];
@@ -441,6 +463,23 @@ export let main = () => {
   private worker?: Worker;
   private checkDebounceTimer?: number;
   private nextRequestId = 1;
+
+  /** Editor queries in flight, waiting on the worker to answer. */
+  private pendingHovers = new Map<number, (hover: HoverInfo | null) => void>();
+  private pendingCompletions = new Map<
+    number,
+    (items: CompletionItem[]) => void
+  >();
+
+  /**
+   * What `<cm-hover-zena>` calls to fill its tooltip.
+   *
+   * One bound instance, not an arrow in the template: setting the property
+   * rebuilds the CodeMirror extension, so a fresh function each render would
+   * rebuild it on every render.
+   */
+  private readonly hoverProvider: ZenaHoverProvider = (offset) =>
+    this.queryHover(offset);
 
   private get isMac(): boolean {
     return (
@@ -463,61 +502,44 @@ export let main = () => {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    if (this.worker) {
-      this.worker.terminate();
-      this.worker = undefined;
-    }
+    this.worker?.terminate();
+    this.worker = undefined;
+    this.pendingHovers.clear();
+    this.pendingCompletions.clear();
   }
 
-  private requestId = 0;
-
-  private pendingHoverResolvers = new Map<
-    number,
-    (res: WorkerResponse['hover']) => void
-  >();
-
-  private pendingCompletionResolvers = new Map<
-    number,
-    (res: WorkerResponse['completions']) => void
-  >();
-
-  public queryHover(
-    path: string = 'main.zena',
-    offset: number = 0,
-  ): Promise<WorkerResponse['hover']> {
+  /** Type information at a byte offset — what the hover tooltip shows. */
+  queryHover(offset: number): Promise<HoverInfo | null> {
     if (!this.worker || this.status === 'loading') {
       return Promise.resolve(null);
     }
-    const id = ++this.requestId;
+    const id = this.nextRequestId++;
     return new Promise((resolve) => {
-      this.pendingHoverResolvers.set(id, resolve);
+      this.pendingHovers.set(id, resolve);
       this.worker!.postMessage({
         type: 'hover',
         id,
-        path,
+        path: DOCUMENT_PATH,
         offset,
-      } as WorkerRequest);
+      } satisfies WorkerRequest);
     });
   }
 
-  public queryCompletions(
-    path: string = 'main.zena',
-    source: string,
-    offset: number = 0,
-  ): Promise<WorkerResponse['completions']> {
+  /** Completion proposals at a byte offset in `source`. */
+  queryCompletions(source: string, offset: number): Promise<CompletionItem[]> {
     if (!this.worker || this.status === 'loading') {
       return Promise.resolve([]);
     }
-    const id = ++this.requestId;
+    const id = this.nextRequestId++;
     return new Promise((resolve) => {
-      this.pendingCompletionResolvers.set(id, resolve);
+      this.pendingCompletions.set(id, resolve);
       this.worker!.postMessage({
         type: 'completions',
         id,
-        path,
+        path: DOCUMENT_PATH,
         source,
         offset,
-      } as WorkerRequest);
+      } satisfies WorkerRequest);
     });
   }
 
@@ -552,12 +574,8 @@ export let main = () => {
       const from = lastDot >= 0 ? word.from + lastDot + 1 : word.from;
 
       const fullSource = context.state.doc.toString();
-      const items = await this.queryCompletions(
-        'main.zena',
-        fullSource,
-        context.pos,
-      );
-      if (!items || items.length === 0) return null;
+      const items = await this.queryCompletions(fullSource, context.pos);
+      if (items.length === 0) return null;
 
       return {
         from,
@@ -609,82 +627,67 @@ export let main = () => {
   };
 
   private initWorker() {
-    console.log(
-      '[Zena Playground] Initializing worker. wasmUrl:',
-      this.wasmUrl,
-    );
-
     try {
       this.worker = new Worker(
         new URL('./worker/compiler-worker.js', import.meta.url),
         {type: 'module'},
       );
-      console.log('[Zena Playground] Worker created successfully.');
 
-      this.worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
-        console.log('[Zena Playground] Received message from worker:', e.data);
+      this.worker.onmessage = (e: MessageEvent<WorkerResponse>) =>
         this.handleWorkerResponse(e.data);
-      };
 
       this.worker.onerror = (err) => {
-        console.error('[Zena Playground] Worker onerror exception:', err);
         this.status = 'error';
-        this.addLog('error', `Worker Exception: ${err.message}`);
+        this.addLog('error', `Worker error: ${err.message}`);
       };
 
-      const cacheBustUrl =
-        this.wasmUrl +
-        (this.wasmUrl.includes('?') ? '&' : '?') +
-        't=' +
-        Date.now();
-      const initReq: WorkerRequest = {
+      this.worker.postMessage({
         type: 'init',
-        wasmUrl: cacheBustUrl,
-      };
-      console.log('[Zena Playground] Posting init request to worker:', initReq);
-      this.worker.postMessage(initReq);
-    } catch (err: any) {
-      console.error('[Zena Playground] Exception initializing worker:', err);
+        wasmUrl: this.wasmUrl,
+      } satisfies WorkerRequest);
+    } catch (err) {
       this.status = 'error';
-      this.addLog('error', `Failed to start worker: ${err.message || err}`);
+      this.addLog(
+        'error',
+        `Failed to start the compiler worker: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 
   private handleWorkerResponse(res: WorkerResponse) {
-    if (res.type === 'ready') {
-      this.status = 'ready';
-      console.log('[Zena Playground] Compiler worker ready.');
-      this.scheduleCheck(0, false);
-    } else if (res.type === 'diagnostics') {
-      const diags = res.diagnostics || [];
-      this.status = diags.some((d) => d.severity === 'error')
-        ? 'error'
-        : 'ready';
-      this.diagnostics = diags;
-      this.updateCodeMirrorDiagnostics(this.diagnostics);
-    } else if (res.type === 'console') {
-      if (res.level && res.message) {
+    switch (res.type) {
+      case 'ready':
+        this.status = 'ready';
+        this.scheduleCheck(0, false);
+        break;
+      case 'diagnostics':
+        this.status = res.diagnostics.some((d) => d.severity === 'error')
+          ? 'error'
+          : 'ready';
+        this.diagnostics = res.diagnostics;
+        this.updateCodeMirrorDiagnostics(this.diagnostics);
+        break;
+      case 'console':
         this.addLog(res.level, res.message);
-      }
-    } else if (res.type === 'hover' && res.id !== undefined) {
-      const resolver = this.pendingHoverResolvers.get(res.id);
-      if (resolver) {
-        this.pendingHoverResolvers.delete(res.id);
-        resolver(res.hover ?? null);
-      }
-    } else if (res.type === 'completions' && res.id !== undefined) {
-      const resolver = this.pendingCompletionResolvers.get(res.id);
-      if (resolver) {
-        this.pendingCompletionResolvers.delete(res.id);
-        resolver(res.completions ?? []);
-      }
-    } else if (res.type === 'error') {
-      this.status = 'error';
-      this.addLog('error', res.message || 'Compiler error');
+        break;
+      case 'hover':
+        this.pendingHovers.get(res.id)?.(res.hover);
+        this.pendingHovers.delete(res.id);
+        break;
+      case 'completions':
+        this.pendingCompletions.get(res.id)?.(res.completions);
+        this.pendingCompletions.delete(res.id);
+        break;
+      case 'error':
+        this.status = 'error';
+        this.addLog('error', res.message);
+        break;
     }
   }
 
-  private updateCodeMirrorDiagnostics(diagnostics: PlaygroundDiagnostic[]) {
+  private updateCodeMirrorDiagnostics(diagnostics: Diagnostic[]) {
     if (!this.codeMirrorEl?.editorView) return;
     const view = this.codeMirrorEl.editorView;
     const doc = view.state?.doc;
@@ -718,14 +721,13 @@ export let main = () => {
     }
   }
 
-  private onCodeInput(e: Event) {
-    const target = e.target as HTMLElement & {value?: string};
-    const code = target.value ?? '';
-    // Do NOT mutate this.value = code here to avoid Lit re-render selection reset
-    this.scheduleCheck(250, false);
+  private onCodeInput() {
+    // Deliberately not assigning to this.value: re-rendering the editor with a
+    // new value resets the selection out from under whoever is typing.
+    this.scheduleCheck(CHECK_DEBOUNCE_MS, false);
   }
 
-  private scheduleCheck(delayMs: number = 250, shouldRun: boolean = false) {
+  private scheduleCheck(delayMs = CHECK_DEBOUNCE_MS, shouldRun = false) {
     if (this.checkDebounceTimer) {
       clearTimeout(this.checkDebounceTimer);
     }
@@ -734,27 +736,25 @@ export let main = () => {
     }, delayMs);
   }
 
-  private triggerCheck(shouldRun: boolean = false) {
+  private triggerCheck(shouldRun = false) {
     if (!this.worker || this.status === 'loading') return;
-    const code = this.codeMirrorEl?.value ?? this.value;
 
     this.status = 'checking';
-    const reqId = this.nextRequestId++;
-    const checkReq: WorkerRequest = {
+    this.worker.postMessage({
       type: 'check',
-      id: reqId,
-      path: 'main.zena',
-      source: code,
+      id: this.nextRequestId++,
+      path: DOCUMENT_PATH,
+      source: this.codeMirrorEl?.value ?? this.value,
       run: shouldRun,
-    };
-    this.worker.postMessage(checkReq);
+    } satisfies WorkerRequest);
   }
 
-  public runProgram() {
+  /** Compiles and runs the current source, streaming output to the console. */
+  runProgram() {
     this.scheduleCheck(0, true);
   }
 
-  private addLog(level: 'log' | 'warn' | 'error' | 'info', message: string) {
+  private addLog(level: ConsoleLevel, message: string) {
     const entry: ConsoleEntry = {
       id: Date.now() + Math.random(),
       level,
@@ -871,7 +871,7 @@ export let main = () => {
           >
             <cm-lang-zena></cm-lang-zena>
             ${this.renderThemeElement()}
-            <cm-hover-zena .playground=${this}></cm-hover-zena>
+            <cm-hover-zena .hoverProvider=${this.hoverProvider}></cm-hover-zena>
           </cm-editor>
         </div>
 
@@ -906,5 +906,11 @@ export let main = () => {
         </div>
       </div>
     `;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'zena-playground': ZenaPlayground;
   }
 }

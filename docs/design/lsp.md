@@ -93,6 +93,19 @@ editors (Neovim, Helix, Zed) get support for free.
   diagnostic collection, definition provider, formatting provider
 - Status bar with Zena indicator, output channel for logging
 
+**JavaScript API** (`packages/language-service/src/index.ts`):
+
+- `createLanguageService()` — loads `lsp.wasm` and wraps its exports:
+  `check()`, `hover()`, `completions()`, `definition()`,
+  `documentSymbols()`, `format()`, `compileToWasm()`
+- Host-agnostic: the caller supplies the Wasm and a `readFile` hook, so the
+  same code runs in Node, in a browser, and in a Web Worker.
+  `createVirtualFileReader()` serves a bundled stdlib where there is no
+  filesystem
+- Used by `packages/playground`. `compiler-service.ts` in the extension
+  predates it and still marshals strings itself — folding it onto this API
+  would remove the duplication
+
 **Language service** (`packages/language-service/`):
 
 - `zena/lsp.zena` — WASM entry point compiled from Zena. Exports `init()`,
@@ -256,12 +269,23 @@ when the version hasn't changed (e.g., switching tabs back).
 
 ```
 packages/language-service/
-  package.json              # Wireit build: TS tests + WASM compilation
+  package.json              # Wireit build: TS + WASM compilation
   zena/
     lsp.zena                # WASM entry point (LanguageService, exports)
-  src/test/
-    lsp_test.ts             # Integration tests (load lsp.wasm in Node)
+  src/
+    index.ts                # JS API over the WASM exports (published)
+    test/
+      lsp_test.ts           # Integration tests (load lsp.wasm in Node)
+      language_service_test.ts  # Tests for the JS API
+  index.js                  # Built JS API
   lsp.wasm                  # Built artifact
+
+packages/playground/
+  src/
+    zena-playground.ts      # <zena-playground> element
+    worker/
+      compiler-worker.ts    # Runs the JS API in a Web Worker
+    stdlib-data.json        # The stdlib, bundled for a browser (generated)
 
 packages/vscode-zena/
   package.json              # Extension manifest, Wireit build

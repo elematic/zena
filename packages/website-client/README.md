@@ -31,4 +31,7 @@ interactive; without JavaScript the site is still fully navigable.
 | `<zena-appearance>`    | Light/dark switch, persisted to `localStorage`                                                 |
 | `<zena-code-copy>`     | Delegated copy-to-clipboard for every `button.copy` beneath it                                 |
 | `<zena-code-group>`    | Tabbed code blocks from `::: code-group`                                                       |
-| `<zena-playground>`    | Playground shell — the compiler isn't wired up yet                                             |
+
+`<zena-playground>` is not defined here. It lives in
+[`@zena-lang/playground`](../playground), which this package imports for its
+side effect so the docs site gets it in the same bundle.

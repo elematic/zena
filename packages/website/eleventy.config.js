@@ -12,7 +12,7 @@ const CLIENT_ENTRY = require.resolve('@zena-lang/website-client');
 const CSS_ENTRY = './src/css/index.css';
 // The playground starts this with `new URL('./worker/compiler-worker.js',
 // import.meta.url)`, so it has to land next to the client bundle in `js/`.
-const WORKER_ENTRY = require.resolve('@zena-lang/website-client/worker');
+const WORKER_ENTRY = require.resolve('@zena-lang/playground/worker');
 
 /** Held across rebuilds so esbuild's watcher is started exactly once. */
 let assetContext;
@@ -80,8 +80,12 @@ export default async function (eleventyConfig) {
   eleventyConfig.ignores.add('src/css/**');
 
   eleventyConfig.addPassthroughCopy({'src/public': '.'});
+  // The playground resolves the compiler with `new URL('./lsp.wasm',
+  // import.meta.url)`. Bundlers that understand that emit the binary
+  // themselves; esbuild leaves the expression alone, so at runtime it resolves
+  // against the bundle's own URL — which is why this lands in `js/`.
   eleventyConfig.addPassthroughCopy({
-    '../language-service/lsp.wasm': 'wasm/lsp.wasm',
+    '../language-service/lsp.wasm': 'js/lsp.wasm',
   });
 
   /* Search index --------------------------------------------------------- */
