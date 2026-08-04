@@ -149,6 +149,18 @@ export final class SharedCheckerState {
   preludeTypes = new HashMap<String, Type>();
   preludeValues = new HashMap<String, Type>();
   var preludeRegistered: boolean = false;
+
+  /**
+   * The canonical nominal type for each class/interface/variant
+   * declaration, keyed by its declaring symbol. Shared across every
+   * checking pass of a compilation so a declaration has exactly ONE
+   * type object no matter how many times its module is checked or
+   * which module materializes it first: an importer across a cycle's
+   * back edge creates a shell here from the origin's AST, and the
+   * origin's own registration later fills the same object
+   * (docs/design/import-cycles.md).
+   */
+  declaredNominalTypes = new HashMap<SymbolId, Type>();
 }
 
 /**
@@ -800,6 +812,32 @@ final class CheckerContext {
    * on demand. Returns null if the name doesn't exist in scope analysis.
    * Sets all boolean flags from the AST node at creation time.
    */
+  /**
+   * Materialize the canonical type for an imported nominal declaration
+   * (class, interface, sealed variant) whose module has no model yet —
+   * a cycle back edge in the first checking pass. The shell created
+   * here is the same object the origin module's own registration later
+   * fills (SharedCheckerState.declaredNominalTypes).
+   */
+  materializeCyclicImport(info: Symbol, name: String): Type | null {
+    let target = info.resolveTarget();
+    let d = target.declaration;
+    if (d == null) {
+      return null;
+    }
+    var nominal = false;
+    match (d as Node) {
+      case ClassDeclaration: { nominal = true; }
+      case InterfaceDeclaration: { nominal = true; }
+      case SealedVariant: { nominal = true; }
+      case _: {}
+    }
+    if (!nominal) {
+      return null;
+    }
+    return this.#materializeFromSymbol(info, name, target);
+  }
+
   #materializeFromScope(name: String): Type | null {
     let si = this.#scopeResult.rootScope.resolve(name);
     if (si == null) { return null; }
@@ -853,6 +891,37 @@ final class CheckerContext {
       return this.#resolveBuiltinOrPreludeType(nameHint);
     }
 
+    // Canonical nominal types are shared across checking passes: if any
+    // pass (of any module) already materialized this declaration, reuse
+    // that object — never mint a second identity for one declaration.
+    match (target.declaration) {
+      case ClassDeclaration: {
+        if (let (true, cached) = this.#sharedState.declaredNominalTypes.get(target.id)) {
+          this.#materializedTypes[info.id] = cached;
+          this.#materializedTypes[target.id] = cached;
+          this.model.setBindingType(info, cached);
+          return cached;
+        }
+      }
+      case InterfaceDeclaration: {
+        if (let (true, cached) = this.#sharedState.declaredNominalTypes.get(target.id)) {
+          this.#materializedTypes[info.id] = cached;
+          this.#materializedTypes[target.id] = cached;
+          this.model.setBindingType(info, cached);
+          return cached;
+        }
+      }
+      case SealedVariant: {
+        if (let (true, cached) = this.#sharedState.declaredNominalTypes.get(target.id)) {
+          this.#materializedTypes[info.id] = cached;
+          this.#materializedTypes[target.id] = cached;
+          this.model.setBindingType(info, cached);
+          return cached;
+        }
+      }
+      case _: {}
+    }
+
     // Cycle detection — keyed by Symbol.id, not name.
     if (this.#pendingTypes.has(target.id)) {
       return null;
@@ -874,6 +943,18 @@ final class CheckerContext {
         if (declNode.loc != null) {
           let declLoc = declNode.loc as SourceLocation;
           this.#materializedDeclTypes[declLoc.start] = materialized;
+        }
+        match (declNode) {
+          case ClassDeclaration: {
+            this.#sharedState.declaredNominalTypes[target.id] = materialized;
+          }
+          case InterfaceDeclaration: {
+            this.#sharedState.declaredNominalTypes[target.id] = materialized;
+          }
+          case SealedVariant: {
+            this.#sharedState.declaredNominalTypes[target.id] = materialized;
+          }
+          case _: {}
         }
         // Mirror into the value namespace only for class-like declarations
         // where type and value are intentionally the same constructor value.
@@ -979,7 +1060,7 @@ final class CheckerContext {
     match (node) {
       case ClassDeclaration as cd: {
         let typeId = this.freshTypeId();
-        var symbolId = -1 as SymbolId;
+        var symbolId = info.id;
         let sym = this.model.resolve(cd);
         if (sym != null) {
           symbolId = (sym as Symbol).id;
@@ -1022,7 +1103,7 @@ final class CheckerContext {
       }
       case InterfaceDeclaration as id: {
         let typeId = this.freshTypeId();
-        var symbolId = -1 as SymbolId;
+        var symbolId = info.id;
         let sym = this.model.resolve(id);
         if (sym != null) {
           symbolId = (sym as Symbol).id;
@@ -1049,7 +1130,7 @@ final class CheckerContext {
       }
       case SealedVariant as sv: {
         let typeId = this.freshTypeId();
-        var symbolId = -1 as SymbolId;
+        var symbolId = info.id;
         let sym = this.model.resolve(sv);
         if (sym != null) {
           symbolId = (sym as Symbol).id;
@@ -1503,30 +1584,32 @@ let checkCyclicImportRules = (
           DiagnosticCode.CyclicImport, spec.loc);
       }
     }
-    case ClassDeclaration {}: {
-      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
-    }
-    case InterfaceDeclaration {}: {
-      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
-    }
     case EnumDeclaration {}: {
-      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
+      if (originRechecked) {
+        ctx.error(
+          "Cyclic import of enum '" + importedName +
+            "': enums cannot cross an import cycle",
+          DiagnosticCode.CyclicImport, spec.loc);
+      }
     }
     case TypeAliasDeclaration {}: {
-      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
+      if (originRechecked) {
+        ctx.error(
+          "Cyclic import of type alias '" + importedName +
+            "': type aliases cannot cross an import cycle",
+          DiagnosticCode.CyclicImport, spec.loc);
+      }
     }
     case MixinDeclaration {}: {
-      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
+      if (originRechecked) {
+        ctx.error(
+          "Cyclic import of mixin '" + importedName +
+            "': mixins cannot cross an import cycle (mixin members are copied at application time)",
+          DiagnosticCode.CyclicImport, spec.loc);
+      }
     }
     case _: {}
   }
-};
-
-let cyclicTypeError = (ctx: CheckerContext, name: String, node: Node): void => {
-  ctx.error(
-    "Cyclic import of type '" + name +
-      "': types cannot cross an import cycle (only fully annotated functions can)",
-    DiagnosticCode.CyclicImport, node.loc);
 };
 
 export let checkModule = (
@@ -4642,6 +4725,13 @@ case _: {
                 if (resolvedType == null) {
                   resolvedType = lookupBindingTypeInDeps(ctx, typeExport);
                 }
+                if (resolvedType == null) {
+                  // Cycle back edge on the first pass: the origin has
+                  // no model yet. Materialize (or reuse) the canonical
+                  // shell for nominal declarations; the origin's own
+                  // registration fills the same object.
+                  resolvedType = ctx.materializeCyclicImport(typeExport as Symbol, importedName);
+                }
 
                 if (resolvedType != null) {
                   // Use the actual resolved type from the dependency.
@@ -4707,12 +4797,18 @@ case _: {
               if (valueExport != null) {
                 let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
                 if (localValInfo != null) {
-                  let resolvedValType = if (depModel != null) {
+                  var resolvedValType = if (depModel != null) {
                     let t = depModel.getBindingType(valueExport as Symbol);
                     if (t != null) { t } else { lookupBindingTypeInDeps(ctx, valueExport as Symbol) }
                   } else {
                     lookupBindingTypeInDeps(ctx, valueExport as Symbol)
                   };
+                  if (resolvedValType == null) {
+                    // Cycle back edge, first pass: nominal declarations
+                    // (class constructor values) resolve via their
+                    // canonical shell.
+                    resolvedValType = ctx.materializeCyclicImport(valueExport as Symbol, importedName);
+                  }
                   if (resolvedValType != null) {
                     ctx.declareBinding(localValInfo, resolvedValType);
                   } else if (typeExport == null) {
@@ -6616,10 +6712,21 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   classType.isSealed = cd.isSealed;
   classType.isCaseClass = false;
 
-  // Type parameters. Reset rather than append: the ClassType object
-  // may be shared with an earlier registration (compiler intrinsics,
-  // or a prior checking pass over the same module), and registration
-  // must be idempotent.
+  // Registration must be idempotent: the ClassType object may be
+  // shared with an earlier registration (compiler intrinsics, or a
+  // prior checking pass over the same module — identity-stable types
+  // across import-cycle re-checks). Reset everything this pass
+  // rebuilds rather than appending to or layering over stale state;
+  // in particular a stale own-field entry in `members` would be
+  // mistaken for an inherited field.
+  classType.members.clear();
+  classType.implementsList = new Array<InterfaceType>();
+  classType.mixins = new Array<MixinType>();
+  classType.constructorType = null;
+  classType.fieldSetterNames = null;
+  classType.declaredFields = null;
+  classType.sealedVariants = null;
+
   ctx.enterScope();
   if (cd.typeParameters != null) {
     let tps = cd.typeParameters as Array<TypeParameter>;

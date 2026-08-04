@@ -1402,6 +1402,7 @@ function predeclareTypeAlias(ctx: CheckerContext, decl: TypeAliasDeclaration) {
       ctx.module!.exports!.set(`type:${name}`, {
         type: existingType,
         kind: 'type',
+        declaration: decl,
       });
     }
     return;
@@ -1430,7 +1431,11 @@ function predeclareTypeAlias(ctx: CheckerContext, decl: TypeAliasDeclaration) {
   (decl as any).needsTargetResolution = true;
 
   if (decl.exported && ctx.module) {
-    ctx.module!.exports!.set(`type:${name}`, {type: typeAlias, kind: 'type'});
+    ctx.module!.exports!.set(`type:${name}`, {
+      type: typeAlias,
+      kind: 'type',
+      declaration: decl,
+    });
   }
 }
 
@@ -1482,7 +1487,11 @@ function checkTypeAliasDeclaration(
   decl.inferredType = typeAlias;
 
   if (decl.exported && ctx.module) {
-    ctx.module!.exports!.set(`type:${name}`, {type: typeAlias, kind: 'type'});
+    ctx.module!.exports!.set(`type:${name}`, {
+      type: typeAlias,
+      kind: 'type',
+      declaration: decl,
+    });
   }
 }
 
@@ -1686,14 +1695,33 @@ function checkCyclicImportRules(
       }
       break;
     }
-    case NodeType.ClassDeclaration:
-    case NodeType.InterfaceDeclaration:
-    case NodeType.EnumDeclaration:
-    case NodeType.TypeAliasDeclaration:
+    // Classes, interfaces, and sealed variants cross freely: the global
+    // predeclare pass gives each declaration one canonical type object
+    // before any checking, so identity survives the re-check.
+    case NodeType.EnumDeclaration: {
+      if (originLater && originRechecked) {
+        ctx.diagnostics.reportError(
+          `Cyclic import of enum '${importedName}': enums cannot cross an import cycle`,
+          DiagnosticCode.ImportError,
+          loc,
+        );
+      }
+      break;
+    }
+    case NodeType.TypeAliasDeclaration: {
+      if (originLater && originRechecked) {
+        ctx.diagnostics.reportError(
+          `Cyclic import of type alias '${importedName}': type aliases cannot cross an import cycle`,
+          DiagnosticCode.ImportError,
+          loc,
+        );
+      }
+      break;
+    }
     case NodeType.MixinDeclaration: {
       if (originLater && originRechecked) {
         ctx.diagnostics.reportError(
-          `Cyclic import of type '${importedName}': types cannot cross an import cycle (only fully annotated functions can)`,
+          `Cyclic import of mixin '${importedName}': mixins cannot cross an import cycle (mixin members are copied at application time)`,
           DiagnosticCode.ImportError,
           loc,
         );
@@ -6434,7 +6462,11 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
   ctx.declare(name, enumValueType, 'let', decl);
 
   if (decl.exported && ctx.module) {
-    ctx.module!.exports!.set(`type:${name}`, {type: enumType, kind: 'type'});
+    ctx.module!.exports!.set(`type:${name}`, {
+      type: enumType,
+      kind: 'type',
+      declaration: decl,
+    });
     ctx.module!.exports!.set(`value:${name}`, {
       type: enumValueType,
       kind: 'let',

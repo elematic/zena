@@ -7,6 +7,10 @@ import {
 import {Parser} from './parser.js';
 import {prelude} from './prelude.js';
 import {CheckerContext} from './checker/context.js';
+import {
+  predeclareSealedVariants,
+  predeclareType,
+} from './checker/statements.js';
 import {TypeChecker} from './checker/index.js';
 import {LibraryLoader, type SourceFile} from './loader/index.js';
 import type {Target} from './types.js';
@@ -266,6 +270,27 @@ export class Compiler {
           recheck.add(path);
           break;
         }
+      }
+    }
+
+    // With cycles present, predeclare every module's type names up
+    // front (identity-stable: predeclareClass reuses decl.inferredType)
+    // so a nominal type crossing a back edge resolves to its canonical
+    // object on the FIRST pass — member signatures referencing it are
+    // then correct everywhere (docs/design/import-cycles.md).
+    if (recheck.size > 0) {
+      for (const path of evalOrder) {
+        const module = this.#modules.get(path);
+        if (!module) continue;
+        this.#checkerContext.setCurrentLibrary(module);
+        this.#checkerContext.enterScope();
+        for (const stmt of module.body) {
+          predeclareType(this.#checkerContext, stmt);
+        }
+        for (const stmt of module.body) {
+          predeclareSealedVariants(this.#checkerContext, stmt);
+        }
+        this.#checkerContext.exitScope();
       }
     }
     for (const path of evalOrder) {

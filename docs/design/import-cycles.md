@@ -27,9 +27,10 @@ implementation in both compilers.
    - the origin runs **later** in evaluation order → its module-level
      initializers have not run when the importer initializes;
    - the origin is **re-checked** (it sits inside a cycle, see
-     Implementation) → its declarations are type-checked twice, so any
-     type identity or inferred signature taken from the first pass
-     would go stale.
+     Implementation) → anything derived from checking it — inferred
+     signatures, transparent alias targets, mixin member copies — is
+     computed twice and can differ between passes. Nominal type
+     *identity* is exempt: it is pinned per declaration, not per pass.
 
 4. **What may cross.** Per imported name:
 
@@ -45,14 +46,19 @@ implementation in both compilers.
      order-independent. An *unannotated* function is rejected when its
      origin is re-checked: its inferred type differs between checking
      passes.
-   - **Types** (classes, interfaces, enums, aliases, mixins): fine when
-     the origin is *not* re-checked — a module outside every cycle is
-     checked exactly once, so its type objects are unique and stable
-     even when the import edge that reaches them is a back edge (the
-     `reexport_cycle` fixtures are the canonical case). Rejected when
-     the origin is re-checked: the two passes would materialize two
-     distinct types for one declaration and split type identity between
-     the final models.
+   - **Classes, interfaces, and sealed variants**: fine, anywhere.
+     Nominal types are identity-stable across checking passes: each
+     declaration has exactly one canonical type object, created on
+     first demand (possibly as an empty shell by an importer across a
+     back edge) and filled in by the declaring module's own
+     registration. Mutually recursive classes across two modules are
+     the canonical use.
+   - **Mixins, enums, and type aliases**: rejected across a back edge
+     when the origin is re-checked. Mixin members are *copied* into
+     hosts at application time (a copy from a not-yet-filled shell
+     would go stale), and enum/alias resolution is transparent and
+     pass-dependent rather than identity-bearing. These can be lifted
+     later if a real program needs them.
 
 5. **Initializer hazard, accepted.** A module-level initializer may
    *call* a legally-imported function that transitively reads globals
@@ -66,8 +72,12 @@ Both compilers use the same architecture; no type is ever materialized
 from an unchecked module's AST.
 
 - **Pass one** checks every module once, in evaluation order. A
-  back-edge import cannot resolve (the exporter has no semantic model
-  yet); everything else resolves normally.
+  back-edge import of a *nominal* type resolves to the declaration's
+  canonical object — materialized as a shell from the origin's AST if
+  the origin has not been checked yet, and later filled in (never
+  replaced) by the origin's own registration. Value bindings and
+  function signatures cannot resolve until the exporter has a model;
+  those uses re-check in pass two.
 - **The re-check closure** is computed up front from the import graph:
   a module with a back-edge import, or one importing any re-checked
   module, re-checks. Everything acyclic and upstream — the stdlib in
@@ -101,6 +111,12 @@ from an unchecked module's AST.
   with their shape (`Symbol.isFunctionBinding` / `hasFullSignature`) so
   the checker's import handler can classify by the origin symbol
   (`resolveTarget().modulePath`) without touching the origin's AST.
+  Nominal identity lives in `SharedCheckerState.declaredNominalTypes`,
+  keyed by declaring symbol; `#materializeFromSymbol` is the single
+  funnel that consults and populates it, so no pass ever mints a second
+  type object for one declaration. Class registration resets what it
+  rebuilds (members, implements, mixins, constructor) instead of
+  layering over the previous pass's state.
 - **Codegen**: unchanged. `__start` already emits per-unit initializers
   in `Program.units` order (= evaluation order); cross-module calls
   resolve by symbol, not by unit order.
@@ -108,21 +124,27 @@ from an unchecked module's AST.
 ### Bootstrap compiler
 
 Same rules, so any cycle the self-hosted compiler's own source uses
-compiles identically at stage 0/1. Its recursive `#checkModules`
-already tolerates cycles structurally (an in-progress set breaks
-recursion); the second pass re-checks the closure in evaluation order
-(`#modules` insertion order — note the check recursion's own finish
-order differs and is not used), resetting each module's exports and
-diagnostics. Re-export handling stamps `SymbolInfo.origin` when copying
-entries so classification looks through hops, like the self-hosted
-`Symbol.resolveTarget()` chain.
+compiles identically at stage 0/1. Checking runs in evaluation order
+(the old dependency-first recursion is gone — under a cycle it checked
+importers before their dependencies and baked unresolved-import types
+into member signatures); when cycles are present, a predeclare pre-pass
+registers every module's type names first, which is the bootstrap's
+native form of identity-stable shells (`predeclareClass` reuses
+`decl.inferredType`). The second pass re-checks the closure, resetting
+each module's exports, diagnostics, checked-flags, and the synthetic
+prelude imports injected after pass one. Re-export handling stamps
+`SymbolInfo.origin` when copying entries so classification looks
+through hops, like the self-hosted `Symbol.resolveTarget()` chain.
 
 ## Diagnostics
 
 - `Cyclic import of value 'x': module-level bindings cannot cross an
   import cycle (the exporting module's initializers have not run)`
-- `Cyclic import of type 'X': types cannot cross an import cycle (only
-  fully annotated functions can)`
+- `Cyclic import of mixin 'M': mixins cannot cross an import cycle
+  (mixin members are copied at application time)`
+- `Cyclic import of enum 'E': enums cannot cross an import cycle`
+- `Cyclic import of type alias 'A': type aliases cannot cross an import
+  cycle`
 - `Cyclic import of 'f': a function crossing an import cycle needs an
   explicit signature (annotate every parameter and the return type)`
 - `Cyclic namespace import: 'x' originates in a module that has not
@@ -138,8 +160,9 @@ this reason.
 
 - `tests/language/execution/imports/`: `cycle_pingpong` (mutual
   recursion across a two-module cycle), `cycle_three` (three-module
-  cycle).
+  cycle), `cycle_mutual_classes` (classes referencing each other across
+  the cycle in fields and signatures).
 - `tests/language/semantics/modules/`: `@error` fixtures for the value,
-  type, and unannotated-function rules; `cyclic_functions_ok` pins the
-  legal case; the `reexport_cycle_*` fixtures (types crossing a cycle
-  whose origin is acyclic) run un-skipped on both compilers.
+  alias, and unannotated-function rules; `cyclic_functions_ok` and
+  `cyclic_mutual_classes` pin the legal cases; the `reexport_cycle_*`
+  fixtures run un-skipped on both compilers.

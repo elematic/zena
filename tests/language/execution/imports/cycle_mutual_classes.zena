@@ -1,0 +1,28 @@
+// @mode: run
+// @invoke: main
+// @result: 63
+// Mutually recursive classes across a two-module import cycle: fields
+// and method signatures reference the back-edge class both ways.
+
+import { Leaf } from './cycle_mutual_classes_b.zena';
+
+export class Branch {
+  var leaf: Leaf | null = null;
+  weight: i32 = 21;
+
+  total(): i32 {
+    let l = this.leaf;
+    if (l == null) {
+      return this.weight;
+    }
+    return this.weight + (l as Leaf).score();
+  }
+}
+
+export let main = (): i32 => {
+  let b = new Branch();
+  let l = new Leaf();
+  l.hook(b);
+  b.leaf = l;
+  return b.total();
+};
