@@ -253,6 +253,12 @@ For now, we prioritize **Performance** via full monomorphization, but we
 acknowledge that **Binary Size** is a critical constraint that may force us to
 adopt a hybrid model later.
 
+The same hybrid applies to **row-bounded generics**: the existential record
+form is the shared/erased lowering of a row-generic function (the getter
+vtable plays the role of the runtime tag, with primitives staying unboxed),
+and speed/size modes can mix per instantiation — see
+[row-types.md](row-types.md) §7.4.
+
 ### Final Decision: Pure Monomorphization & Explicit Boxing
 
 To ensure all memory allocations and boxing overheads are explicit, Zena has decided to pursue a **purely monomorphized generic architecture**:

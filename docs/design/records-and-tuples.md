@@ -2,14 +2,19 @@
 
 **Status: Proposed**
 
-> **Revision note:** [row-types.md](row-types.md) proposes row polymorphism
-> for records and tuples. It revises the width-subtyping default (§5.1 —
-> closed types by default, explicit `...` existentials for dispatch-based
-> width), **subsumes exact record types** (§5.3 / Phase 6 — never built as
-> a separate feature), defines spread semantics (open question 3 —
-> disjoint extension plus a `with` update form), and re-scopes the fat
-> pointer of Phase 4 to explicit existentials only. Sections below are
-> annotated where affected.
+> **Revision note:** two decisions now layer on this document.
+> **(1) Records and tuples are value types** — §3.1 records the decision
+> to make identity permanently unobservable (`===` on records becomes a
+> compile error), why, and what the _current_ implemented behavior is
+> (identity is observable today, and tested).
+> **(2) Row polymorphism** — [row-types.md](row-types.md) revises the
+> width-subtyping default (§5.1 — closed types by default, width by
+> projection, explicit `...` existentials for dispatch-based width),
+> **subsumes exact record types** (§5.3 / Phase 6 — never built as a
+> separate feature), defines spread semantics (open question 3 — disjoint
+> extension plus a `with` update form), and re-scopes the fat pointer of
+> Phase 4 to explicit existentials only. Sections below are annotated
+> where affected.
 
 This document outlines the design for immutable Records and Tuples in Zena.
 
@@ -84,6 +89,81 @@ let name = p[1];
   - `(a,) == (a,)` is `true` (where `a` is an object reference).
   - `(new Obj(),) == (new Obj(),)` is `false` (because the object references are different).
 
+### 3.1 Identity and `===`: records and tuples are value types (plan of record)
+
+**Current implemented behavior** — stated precisely, because earlier
+drafts of the row-types work misread it:
+
+- `===` exists and is reference equality (language-reference §Comparison
+  Operators), and on records it observes identity **through width
+  adaptation**: `tests/language/execution/records/adaptation_identity.zena`
+  asserts that a record widened to a narrower type stays `===` to the
+  original, and `identity_nullable_matrix.zena` pins a six-case matrix
+  across nullable slots and separately-adapted views. Adaptation
+  therefore unwraps fat pointers before comparing — identity is
+  preserved across views, deliberately.
+- Consequently, §4.2's allocation sinking / argument explosion /
+  multi-value returns are today **optimizations guarded by
+  observability**: they are legal only where no `===` (or future
+  identity-observing feature) could witness the re-boxing. `inline`
+  tuples are the existing opt-in that turns value representation into a
+  guarantee.
+
+**Decision**: records and tuples become **value types** — identity
+permanently unobservable:
+
+1. `===` / `!==` with a record- or tuple-typed operand becomes a
+   **compile error** ("records are values — use `==`"). This is one step
+   louder than Dart, whose `identical()` on records is merely
+   unspecified; an error is loud where unspecified behavior is a trap.
+2. No identity-observing feature — identity-keyed maps, weak-keyed
+   maps/refs, finalizers — ever accepts a record or tuple. The thing you
+   key by identity is an entity, and entities are classes (one keyword
+   away). Records remain ideal `HashMap`/`HashSet` keys: immutable +
+   structural `==` + compiler-derived structural `hashCode` per shape.
+3. Boxing becomes an unobservable implementation detail. Explosion,
+   sinking, multi-value returns, projection copies, and re-layout become
+   **unconditional lowerings** — a defined cost model — instead of
+   escape-guarded optimizations.
+4. `inline` is re-scoped, not removed: since all records now have value
+   _semantics_, `inline` is purely a **representation guarantee** (never
+   boxed; scalars only; heap storage is an error). Relaxing its
+   mandatory-destructuring rule (allow binding an inline tuple to a
+   local as scalars) becomes a natural follow-up.
+
+**Why**:
+
+- **Guarantees over optimizations.** The performance story for records
+  stops depending on escape analysis winning. This matches the direction
+  of the row-types and ZIR work: legible cost models over heroic
+  optimization.
+- **It unlocks dense layout.** Wasm GC has no inline array-of-structs —
+  `(array (ref $Point))` is an array of pointers to separately-allocated
+  boxes, and nothing else is expressible. Struct-of-arrays scattering
+  (MultiList, and eventually compiler-directed SoA) is legal **only** if
+  elements have no observable identity; under identity semantics,
+  `Array<record>` is condemned to array-of-boxes forever. The
+  data-oriented-design ambitions hang on this point directly.
+- **It unlocks cheap width and sharing.** Projection copies for width
+  coercion and re-layout at shared-generic boundaries
+  (row-types.md §3.2, §7.4) are sound only without identity.
+- **Precedent.** C#, Swift, Rust, Go, C++ records/tuples/structs are
+  values. Dart records leave `identical()` unspecified for exactly these
+  freedoms. The TC39 Record & Tuple proposal chose identity-free values.
+  Java records kept identity — and Valhalla has spent a decade trying to
+  remove it because identity is what blocks flattening.
+- **What is lost is class-shaped.** Memoize-by-object-identity and
+  weak caches keyed by option bags stop working on records; use a class
+  or an explicit key. (Weak-keying values whose boxes come and go would
+  have been a footgun regardless.)
+
+**Migration**: the checker change is small (reject `===`/`!==` on
+record/tuple operands), and the two identity tests above convert to
+expected-error tests. Ship it as part of the row-types R3 migration
+event (bootstrap retirement — see row-types.md §9) so record semantics
+changes land once, together. Until then the current identity semantics
+hold and the §4.2 optimizations stay observability-guarded.
+
 ## 4. Implementation Strategy
 
 To achieve high performance and avoid unnecessary allocations, we will employ **Allocation Sinking** and **Argument Explosion**.
@@ -99,6 +179,11 @@ The compiler will maintain a registry of used record shapes.
 ### 4.2 Allocation Sinking (The "Unboxed" Optimization)
 
 The user explicitly requested that we avoid allocations for common patterns like named arguments and multiple return values.
+
+> **Revision note:** under today's semantics the techniques below are
+> _optimizations_, legal only where re-boxing is unobservable (see §3.1 —
+> `===` currently observes record identity, so escape analysis gates
+> them). Under the §3.1 decision they become unconditional lowerings.
 
 #### 4.2.1 Function Parameters (Named Arguments)
 

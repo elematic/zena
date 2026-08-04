@@ -50,6 +50,22 @@ A fourth, strategic pressure: **effect rows** (the generalized
 `gen`/`async` design sketched in generators.md §8) need the same type
 machinery. Records are the low-risk place to build and evaluate it (§8).
 
+### 1.1 Prerequisite decision: records are value types
+
+This design builds on the decision recorded in
+[records-and-tuples.md](records-and-tuples.md) §3.1: **records and
+tuples are value types with permanently unobservable identity** (`===`
+on record operands becomes a compile error; boxing is an implementation
+detail). Several lowerings below are sound only under that decision —
+width-by-projection (§3.2), re-layout at shared boundaries (§7.4), and
+SoA scattering of record collections. Row-generic specialization itself
+is identity-agnostic (the callee receives the caller's own reference),
+but the design as a whole assumes the value-semantics contract. An
+earlier draft of this document wrongly assumed identity was already
+unobservable; in fact today's `===` observes record identity through
+width adaptation, and tests pin it — §3.1 of the records doc states the
+current behavior precisely and sequences the change.
+
 ## 2. Background: rows in ninety seconds
 
 A **row** is a finite map from labels to types, possibly with a variable
@@ -133,14 +149,36 @@ type PostRow = { title: string, ...Timestamps };        // concrete spread
 type Audited<R extends record> = { ...Timestamps, ...R }; // R lacks both
 ```
 
-### 3.2 Closed by default; `...` for existential
+### 3.2 Closed by default; width by projection; `...` for existential
 
-A record type with no spread is **closed**: it means exactly those
-fields, it rejects wider values, and it compiles to a concrete struct
-with direct access. This replaces today's width-subtyped default.
+A record type with no spread is **closed**: it denotes exactly those
+fields and compiles to a concrete struct with direct access. Closed is a
+statement about **representation**, not an assignability wall:
 
-The current behavior — "any value with at least these fields" — remains
-available, but **explicitly**, as an existential open record:
+- **Record literals check exactly** against their contextual type —
+  extra fields are errors. This is TypeScript's excess-property checking
+  as a language rule rather than a freshness heuristic (TS needed the
+  heuristic precisely because width subtyping is its default, and the
+  heuristic leaks through intermediate variables and unions). Misspelled
+  option keys become compile errors, which is most of what "strictness"
+  buys configs.
+- **Previously-typed wider values coerce to narrower closed types by
+  projection**: `let p2: {x: i32, y: i32} = point3d` compiles to
+  constructing the narrow shape from the wide value's fields (or to a
+  declared-subtype view, or to nothing at all under argument explosion —
+  the lowerings are interchangeable because records have no observable
+  identity, §1.1). This preserves the "almost-free polymorphism" of
+  width subtyping between statically-known shapes: cost is one boundary
+  conversion, never per-access dispatch, and it dissolves entirely when
+  the target is an exploded parameter.
+
+Projection is exactly the mechanism that **cannot** work for classes
+(identity + mutable fields forbid copying), which is why classes still
+reach record-typed positions only via row-generic bounds or the
+existential — the line falls where the semantics put it.
+
+The remaining case — shapes **not** statically known — is the
+existential open record:
 
 ```zena
 { x: i32, y: i32 }        // closed: exactly x and y
@@ -148,14 +186,15 @@ available, but **explicitly**, as an existential open record:
 ```
 
 Assigning a wider value to an existential type is the **pack point** —
-the one place a fat pointer is built (§7.3). The three forms cover the
-three needs:
+the one place a fat pointer is built (§7.3). The four situations and
+their costs:
 
-| Need                                   | Form                        | Cost                         |
-| -------------------------------------- | --------------------------- | ---------------------------- |
-| A concrete data shape                  | closed `{x: i32}`           | direct `struct.get`          |
-| A function accepting many shapes       | `<R>` + `{x: i32, ...R}`    | direct, per instantiation    |
-| _Storing_ heterogeneous shapes at rest | existential `{x: i32, ...}` | fat pointer, getter dispatch |
+| Need                                   | Form                        | Cost                           |
+| -------------------------------------- | --------------------------- | ------------------------------ |
+| A concrete data shape                  | closed `{x: i32}`           | direct `struct.get`            |
+| Width flow between static shapes       | closed → closed             | one projection at the boundary |
+| A function accepting many shapes       | `<R>` + `{x: i32, ...R}`    | direct, per instantiation      |
+| _Storing_ heterogeneous shapes at rest | existential `{x: i32, ...}` | fat pointer, getter dispatch   |
 
 The design intent: the dispatch cost that today appears _silently
 wherever the optimizer loses the shape_ instead appears _exactly where
@@ -209,6 +248,40 @@ heavier feature than v1 should carry. Interim position:
 
 Full presence polymorphism (rows over `label: present|absent`) is listed
 as future work (§10).
+
+### 3.5 Default-bearing record types (config records)
+
+The dominant record use cases are configs and named-parameter emulation,
+and most "optional" fields there mean _"absent = use the default"_ — not
+"absence is meaningful." That case deserves a first-class form that
+never pays presence tracking:
+
+```zena
+type ServerOpts = {
+  host: string = "localhost",
+  port: i32 = 8080,
+  tls: boolean = false,
+};
+
+let s = new Server({ port: 8080 });   // host and tls filled statically
+```
+
+- A literal checked against a default-bearing type may omit any
+  defaulted field; the **construction site** fills it in. The layout is
+  always the full shape — the type stays closed and exact downstream, no
+  presence bits, no dispatch, and unknown keys are still errors
+  (excess-property rule, §3.2).
+- Combined with option-bag constructors and single-shot `struct.new`
+  construction (ir.md §12.1, post-M4), this retires the
+  new-then-imperatively-assign config idiom: terse call sites,
+  immutable fields.
+- The escape hatch when "explicitly set to the default" must be
+  distinguishable from "absent" is a nullable field or true `?` (§3.4).
+
+Open design point: defaults make the type declaration carry _values_
+(evaluated where? — restrict to constant expressions initially), and
+they interact with `with`-update and destructuring defaults; spelled out
+at implementation time. Status: proposal, wanted for the config story.
 
 ## 4. Value-level spread: extension and update
 
@@ -313,12 +386,12 @@ The `exact` proposal (records-and-tuples.md §5.3, Phase 6) exists to buy
 back direct field access from width subtyping. Under this design its
 three properties are the _default_:
 
-| §5.3 exact records                   | This design                                  |
-| ------------------------------------ | -------------------------------------------- |
-| No width subtyping                   | Closed types: default. Openness is explicit. |
-| No optional fields                   | §3.4: `?` restricted to open/parameter forms |
-| Direct `struct.get`                  | Default for closed and row-generic access    |
-| Opt-in syntax TBD (`exact`/`!`/attr) | Not needed — nothing to opt into             |
+| §5.3 exact records                   | This design                                      |
+| ------------------------------------ | ------------------------------------------------ |
+| No width subtyping                   | Closed representation; width = projection (§3.2) |
+| No optional fields                   | §3.4: `?` restricted; §3.5 defaults for configs  |
+| Direct `struct.get`                  | Default for closed and row-generic access        |
+| Opt-in syntax TBD (`exact`/`!`/attr) | Not needed — nothing to opt into                 |
 
 So: **do not build Phase 6.** The syntax question dissolves; `exact` as
 a keyword never ships. What remains of §5.4's "dispatch optimization"
@@ -374,6 +447,14 @@ ref $GetterVTable)`. Built at the pack point (§3.2), one vtable per
   (concrete shape → existential type) pair, reusing the Phase 4
   machinery unchanged. Field access is one `call_ref`.
 
+**Width coercion (closed → closed)** lowers, per site, to whichever is
+cheapest — all indistinguishable under value semantics (§1.1):
+_projection_ (one `struct.new` of the narrow shape), _explosion_
+(nothing at all, when the target is an exploded parameter or multi-value
+position), or a _declared-subtype view_ (zero-cost `ref` reuse when the
+narrow shape is a sorted-order prefix of the wide one — the one slice of
+width that wasm's declared subtyping can express, §7.1).
+
 **Spread codegen**: extension and update on closed/row-generic values
 compile to a single `struct.new` of the result shape with operands drawn
 from the source's fields (statically known) and the new values — no
@@ -385,9 +466,10 @@ specializations is cheap at compile time too.
 
 **Help — structurally.** Every place a fat pointer is built or rewrapped
 today corresponds to a width coercion; under rows those sites become
-either (a) a row-generic instantiation — no fat pointer, direct access —
-or (b) a type error, prompting the author to choose between generic and
-existential. Packing survives only at explicit `...` boundaries.
+(a) a projection/explosion at a static boundary, (b) a row-generic
+instantiation — no fat pointer, direct access — or (c) for literals with
+junk keys, a type error. Packing survives only at explicit `...`
+boundaries.
 Dispatch becomes rare, visible in the source, and stable under
 refactoring (it can't reappear because an optimization got weaker —
 contrast §5.4's "the compiler aggressively optimizes this away when
@@ -415,6 +497,62 @@ types are statically known").
 
 Net: fat pointers go from the _default representation of record
 polymorphism_ to a _storage feature you ask for by name_.
+
+### 7.4 Size mode: shared lowering through the existential
+
+Zena's planned size/speed flag for generics (generics.md §Future
+Considerations: specialize primitive type arguments, share code for
+reference arguments behind a runtime representation) translates to rows
+— and more cleanly than to class generics, because **the row design
+already contains its own erased form: the existential is the erasure of
+the universal.**
+
+`<R extends record>(p: {x: i32, y: i32, ...R})` admits two lowerings
+with identical semantics:
+
+- **Speed mode**: one specialization per instantiated tail (§7.2) —
+  direct access, duplicated bodies.
+- **Size mode**: one shared body compiled against the existential form
+  `{x: i32, y: i32, ...}`; call sites perform the pack coercion the type
+  system already defines. (The Rust analogy: generic `fn` vs
+  `dyn Trait` — except here both are lowerings of one declaration, so
+  the flag chooses instead of the programmer.)
+
+Properties of the shared lowering:
+
+- **The "runtime tag" is a getter vtable, not a tag** — different tails
+  move field offsets, and `struct.get` needs a static index, so the
+  dictionary must carry accessors. This is the records Phase 4 machinery
+  reused.
+- **Primitives never box.** Getter signatures are fixed by the row
+  bound's known fields (`getX(): i32` returns a bare `i32`) — the
+  analogue of "always specialize primitive type arguments" is inherent.
+- **No allocation at the boundary.** The shared body takes
+  `(instance, vtable)` as two parameters; pack is "pass two refs." The
+  per-call cost is one `call_ref` per field access plus one tiny
+  per-(shape, bound) accessor thunk — versus a whole duplicated body per
+  tail in speed mode.
+- **Mixing is sound, per instantiation.** Because universal → existential
+  coercion always exists, hot instantiations can specialize while the
+  long tail routes through the shared body — enabling body-size ×
+  instantiation-count heuristics, `ZENA_ZIR_STATS` accounting of where
+  the bytes went, and later PGO promotion.
+- **Prefix bonus**: when the bound's known fields are a sorted-order
+  prefix of every instantiating shape, declared wasm subtyping lets even
+  the shared body read those fields with direct `struct.get` (§7.1's
+  chain case) — free when it fires, detectable per bound.
+- **Value semantics adds a tool** (§1.1): re-layout by copy at the
+  shared boundary is legal, so the compiler may canonicalize an argument
+  into a bound-preferred layout for direct access at the cost of one
+  small copy — a door identity semantics would have closed.
+- **Opt-outs**: operations needing the whole shape (`...rest`, spread of
+  a row-generic value) can't run against the erased form without
+  per-shape helper thunks; v1 rule: using them forces specialization of
+  that function, stated loudly.
+
+Nothing in the checker changes between modes; this is purely a backend
+choice, and it slots into the same `-Ospeed`/`-Osize` flag matrix the
+generics doc proposes.
 
 ## 8. Effects: what carries over
 
@@ -462,11 +600,15 @@ never sees). Two viable orderings:
   - **R2 (additive):** value-level extension spread with disjointness,
     the `with` update form, rest patterns in destructuring
     (destructuring.md already reserves the syntax).
-  - **R3 (breaking, at bootstrap retirement):** flip un-spread record
-    types to closed; introduce `...` existential syntax; migrate
-    width-subtyping call sites to row generics (mechanical: widen
-    signatures that genuinely accept many shapes) or existentials
-    (storage sites); exhaustive destructuring turns on with closed
+  - **R3 (breaking, at bootstrap retirement):** one migration event for
+    record semantics: flip un-spread record types to closed
+    (width-by-projection replaces adaptation between static shapes);
+    introduce `...` existential syntax; **land the value-semantics
+    decision** (records-and-tuples.md §3.1 — `===` on records becomes a
+    compile error; the two identity execution tests convert to
+    expected-error tests; explosion/sinking/projection become
+    unconditional); migrate remaining width call sites to row generics
+    or existentials; exhaustive destructuring turns on with closed
     types. Delete the Phase 6 `exact` plan.
 - **B: flip in both compilers now.** Implements row checking twice,
   including once in a compiler scheduled for deletion. Rejected for the
