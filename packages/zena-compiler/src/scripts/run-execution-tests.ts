@@ -10,11 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const repoRoot = join(pkgDir, '..', '..');
 const testsDir = join(repoRoot, 'tests', 'language', 'execution');
-// Outputs are cached per backend: each ZENA_BACKEND value gets its own
-// output folder, so switching backends never silently re-tests the
-// previous backend's cached wasm.
-const backendName = process.env.ZENA_BACKEND || 'streaming';
-const executionOutDir = join(pkgDir, 'zena', 'out', 'execution', backendName);
+const executionOutDir = join(pkgDir, 'zena', 'out', 'execution', 'zir');
 
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
