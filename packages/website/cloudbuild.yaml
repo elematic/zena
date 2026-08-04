@@ -1,0 +1,32 @@
+# Cloud Build config for the documentation site image.
+#
+# Submitted by `npm run deploy:image -w @zena-lang/website`, which sets the
+# substitutions and passes the repo root as the build context.
+#
+# Cloud Build only builds and pushes here. The Cloud Run deploy runs separately
+# under your own credentials, so the Cloud Build service account does not need
+# run.admin or iam.serviceAccountUser -- the usual place this setup goes wrong.
+#
+# Building here rather than locally is deliberate: Cloud Run is amd64, and
+# cross-building on an Apple Silicon Mac runs npm ci, tsc and the Zena->wasm
+# compile under qemu emulation, which is several times slower.
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=packages/website/Dockerfile
+      - --tag=$_IMAGE
+      # The context is the repo root: the site build needs the compiler,
+      # stdlib, cli, runtime and language-service packages.
+      - .
+
+images:
+  - $_IMAGE
+
+options:
+  # The build runs the whole toolchain, so give it more than the default
+  # machine and a timeout with room to spare.
+  machineType: E2_HIGHCPU_8
+
+timeout: 1800s

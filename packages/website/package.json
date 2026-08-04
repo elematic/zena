@@ -6,6 +6,14 @@
   "scripts": {
     "build": "wireit",
     "serve": "wireit",
+    "start": "node serve-static.js",
+    "docker:build": "wireit",
+    "docker:run": "wireit",
+    "deploy": "wireit",
+    "deploy:image": "wireit",
+    "deploy:preview": "wireit",
+    "deploy:promote": "wireit",
+    "deploy:setup": "wireit",
     "scaffold": "node scripts/scaffold-docs.js && node scripts/print-outline.js",
     "outline": "node scripts/print-outline.js"
   },
@@ -28,6 +36,61 @@
       "output": [
         "_site/**/*"
       ]
+    },
+    "docker:build": {
+      "command": "docker build --file Dockerfile --tag zena-website ../..",
+      "//": [
+        "The context is the repo root, so paths in the Dockerfile and in",
+        "../../.dockerignore are root-relative. Deliberately no `files` or",
+        "`output`: wireit then always runs this and Docker's layer cache does",
+        "the incremental work. An image is not a file, and `--iidfile` would",
+        "let wireit call the script fresh after `docker rmi` deleted the image",
+        "that file names.",
+        "",
+        "This does not depend on `build`. The image runs the site build itself",
+        "and .dockerignore excludes `**/_site/`, so a host build is invisible",
+        "to it. This builds for the host architecture -- it is for local",
+        "testing. Deploys build amd64 in Cloud Build; see cloudbuild.yaml."
+      ]
+    },
+    "docker:run": {
+      "command": "docker run --rm --init --name zena-website -p 8080:8080 zena-website",
+      "dependencies": [
+        "docker:build"
+      ],
+      "//": [
+        "--init runs tini as PID 1, which forwards signals to node and reaps it.",
+        "serve-static.js also handles SIGTERM/SIGINT itself, which is what makes",
+        "Cloud Run shut down cleanly; --init just means Ctrl-C still works here if",
+        "that ever regresses.",
+        "",
+        "--name makes the escape hatch memorable: `docker stop zena-website`."
+      ]
+    },
+    "deploy:setup": {
+      "command": "bash scripts/gcp-setup.sh",
+      "//": "One time, and idempotent. Enables the APIs, creates the Artifact Registry repository, and grants Cloud Build's service account push access to it -- builds push as that account, not as you, so your own access proves nothing. No `files`/`output`, so it always runs: re-running is the fix when a deploy fails on permissions, and wireit would otherwise skip it."
+    },
+    "deploy:image": {
+      "command": "gcloud builds submit --project ${ZENA_GCP_PROJECT:?set ZENA_GCP_PROJECT to the Cloud Run project id} --config cloudbuild.yaml --substitutions _IMAGE=${ZENA_GCP_REGION:-us-central1}-docker.pkg.dev/${ZENA_GCP_PROJECT}/${ZENA_GCP_REPO:-cloud-run-images}/zena-website ../..",
+      "//": "Builds and pushes only. gcloud uploads the repo root, honouring .gitignore, which comes to about 31MB."
+    },
+    "deploy": {
+      "command": "bash scripts/gcp-deploy.sh",
+      "dependencies": [
+        "deploy:image"
+      ],
+      "//": "Sends traffic to the new revision. Public unless ZENA_GCP_ALLOW_UNAUTH is set to something other than \"true\". Use deploy:preview to put a revision up without moving traffic."
+    },
+    "deploy:preview": {
+      "command": "bash scripts/gcp-deploy.sh preview",
+      "dependencies": [
+        "deploy:image"
+      ],
+      "//": "Prints a `next---` URL serving the new revision while live traffic stays put. Cloud Run rejects --no-traffic on a service that does not exist yet, so the first deploy has to be `deploy`."
+    },
+    "deploy:promote": {
+      "command": "gcloud run services update-traffic zena-website --project ${ZENA_GCP_PROJECT:?set ZENA_GCP_PROJECT to the Cloud Run project id} --region ${ZENA_GCP_REGION:-us-central1} --to-latest --quiet"
     },
     "serve": {
       "command": "node server.js",
