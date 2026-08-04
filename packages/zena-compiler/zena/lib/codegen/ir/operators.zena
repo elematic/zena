@@ -33,6 +33,7 @@ import {
 } from './lowering-context.zena';
 import { lowerErasedEq } from './equality.zena';
 import { lowerNullishCoalesce } from './control-flow.zena';
+import { lowerExpr } from './lowering.zena';
 
 
 /** Bail with the lowering-side message shape (reason @function). */
@@ -219,7 +220,7 @@ let refIdentityEqType = (tIn: Type): boolean => {
 
 /** Short-circuit && and || as a value-producing diamond. */
 let lowerLogical = (cx: LoweringContext, bin: BinaryExpression): i32 => {
-  let left = cx.lowerExpr(bin.left, null);
+  let left = lowerExpr(cx, bin.left, null);
   let evalRight = cx.b.newBlock();
   let merge = cx.b.newBlock();
   let result = cx.b.blockParam(merge, new ValTypeI32());
@@ -231,7 +232,7 @@ let lowerLogical = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     cx.b.brIf(left, merge, oneValue(one), evalRight, noValues());
   }
   cx.b.switchTo(evalRight);
-  let right = cx.lowerExpr(bin.right, null);
+  let right = lowerExpr(cx, bin.right, null);
   cx.b.br(merge, oneValue(right));
   cx.b.switchTo(merge);
   return result;
@@ -256,7 +257,7 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
       return cx.b.constI32(if (same) 1 else 0, new ValTypeI32());
     }
     let other = if (leftIsNull) bin.right else bin.left;
-    let value = cx.lowerExpr(other, null);
+    let value = lowerExpr(cx, other, null);
     let vt = cx.valueTypeOf(value);
     if (!isRefValType(vt)) {
       // The checker rejects null comparisons against non-nullable
@@ -271,8 +272,8 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   }
   // Reference identity: === / !== between eq-typed references.
   if (bin.operator == "===" || bin.operator == "!==") {
-    var left = cx.lowerExpr(bin.left, null);
-    var right = cx.lowerExpr(bin.right, null);
+    var left = lowerExpr(cx, bin.left, null);
+    var right = lowerExpr(cx, bin.right, null);
     // Fat-pointer identity is the INSTANCE's, not the pointer's: an
     // adapted record view or a re-packed interface value IS the same
     // object (the bootstrap compiler unwraps both the same way).
@@ -319,8 +320,8 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
       let opMember = if (bin.operator == "!=") "==" else bin.operator;
       let leftCt = eraseTypeParameters(leftBase) as ClassType;
       if (leftCt.members.has(opMember)) {
-        let left = cx.lowerExpr(bin.left, null);
-        let right = cx.lowerExpr(bin.right, null);
+        let left = lowerExpr(cx, bin.left, null);
+        let right = lowerExpr(cx, bin.right, null);
         let raw = cx.operatorMemberOn(opMember, left, right, leftCt);
         if (bin.operator == "!=") {
           return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), raw, -1);
@@ -337,8 +338,8 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     let lb = leftBaseOpt as Type;
     if (lb is TypeParameterType || lb is AnyRefType ||
         lb is EqRefType) {
-      let left = cx.lowerExpr(bin.left, null);
-      let right = cx.lowerExpr(bin.right, null);
+      let left = lowerExpr(cx, bin.left, null);
+      let right = lowerExpr(cx, bin.right, null);
       if (!isRefValType(cx.valueTypeOf(left)) ||
           !isRefValType(cx.valueTypeOf(right))) {
         bail(cx, 'erased eq operands');
@@ -359,8 +360,8 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   if ((bin.operator == "==" || bin.operator == "!=") &&
       leftBaseOpt != null &&
       refIdentityEqType(leftBaseOpt as Type)) {
-    var left = cx.lowerExpr(bin.left, null);
-    var right = cx.lowerExpr(bin.right, null);
+    var left = lowerExpr(cx, bin.left, null);
+    var right = lowerExpr(cx, bin.right, null);
     if (!isRefValType(cx.valueTypeOf(left)) ||
         !isRefValType(cx.valueTypeOf(right))) {
       bail(cx, 'identity compare on non-refs');
@@ -388,8 +389,8 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     let rb2 = substitutedBaseType(cx, bin.right);
     if (lb2 != null && rb2 != null &&
         refReprType(cx, lb2 as Type) && refReprType(cx, rb2 as Type)) {
-      var eqL = cx.lowerExpr(bin.left, null);
-      var eqR = cx.lowerExpr(bin.right, null);
+      var eqL = lowerExpr(cx, bin.left, null);
+      var eqR = lowerExpr(cx, bin.right, null);
       eqL = cx.unwrapFatPointer(lb2 as Type, eqL);
       eqR = cx.unwrapFatPointer(rb2 as Type, eqR);
       if (isRefValType(cx.valueTypeOf(eqL)) &&
@@ -405,8 +406,8 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   }
   requireScalarNode(cx, bin.left);
   requireScalarNode(cx, bin.right);
-  var left = cx.lowerExpr(bin.left, null);
-  var right = cx.lowerExpr(bin.right, null);
+  var left = lowerExpr(cx, bin.left, null);
+  var right = lowerExpr(cx, bin.right, null);
   var leftType = cx.valueTypeOf(left);
   let rightType = cx.valueTypeOf(right);
   if (!valTypeEquals(leftType, rightType)) {
@@ -458,7 +459,7 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
 };
 
 export let lowerUnary = (cx: LoweringContext, un: UnaryExpression): i32 => {
-  let value = cx.lowerExpr(un.argument, null);
+  let value = lowerExpr(cx, un.argument, null);
   let vt = cx.valueTypeOf(value);
   if (un.operator == "!") {
     if (!(vt is ValTypeI32)) {
@@ -534,7 +535,7 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     return cx.b.constF32(
         parseF64((expr.expression as NumberLiteral).raw), dstVt);
   }
-  let value = cx.lowerExpr(expr.expression, null);
+  let value = lowerExpr(cx, expr.expression, null);
   let srcVt = cx.valueTypeOf(value);
   if (valTypeEquals(srcVt, dstVt)) {
     return value;

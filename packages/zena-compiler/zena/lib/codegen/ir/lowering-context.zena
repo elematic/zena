@@ -46,6 +46,9 @@ import { IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
 import { IrBuilder } from './builder.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
+// Imported back across the module cycle: lowering.zena imports this
+// module (docs/design/import-cycles.md).
+import { lowerExpr } from './lowering.zena';
 
 /**
  * Thrown when lowering meets a construct it does not model; the
@@ -126,47 +129,14 @@ export final class LoweringContext {
   /** The receiver value for instance methods; -1 elsewhere. */
   var thisValue = -1;
   /**
-   * THE recursion seam. Split modules lower subexpressions through
-   * this late-bound field; the coordinator assigns it at
-   * construction (a module importing the dispatcher directly would
-   * cycle). A non-null `want` supplies the context type. This is the
-   * one injected function the workaround for module cycles costs; a
-   * future JS-style import-cycle fix deletes it.
+   * The owning FunctionLowerer (the coordinator in lowering.zena).
+   * Typed anyref: types cannot cross the import cycle's back edge, so
+   * this core module cannot name the coordinator's class — the seam
+   * functions in lowering.zena cast it back. Assigned when the
+   * coordinator builds its context.
    */
-  var lowerExpr: (e: Expression, want: ValType | null) => i32 =
-      (e: Expression, want: ValType | null): i32 => {
-        throw new Error('LoweringContext.lowerExpr not yet bound');
-      };
-  /** Optional-chain hit seam (member machinery): coordinator-bound. */
-  var optionalHit: (expr: Expression, recv: i32) => i32 =
-      (expr: Expression, recv: i32): i32 => {
-        throw new Error('LoweringContext.optionalHit not yet bound');
-      };
-  /** Adaptation-free expression lowering seam: coordinator-bound. */
-  var lowerExprRaw: (e: Expression) => i32 =
-      (e: Expression): i32 => {
-        throw new Error('LoweringContext.lowerExprRaw not yet bound');
-      };
-  /** Statement seam (see lowerExpr): bound by the coordinator. */
-  var lowerStmt: (st: Statement) => void =
-      (st: Statement): void => {
-        throw new Error('LoweringContext.lowerStmt not yet bound');
-      };
-  /** Variable-declaration seam: bound by the coordinator. */
-  var varDecl: (vd: VariableDeclaration) => void =
-      (vd: VariableDeclaration): void => {
-        throw new Error('LoweringContext.varDecl not yet bound');
-      };
-  /** Throw-statement seam: bound by the coordinator. */
-  var throwStmt: (thr: ThrowExpression) => void =
-      (thr: ThrowExpression): void => {
-        throw new Error('LoweringContext.throwStmt not yet bound');
-      };
-  /** Let-condition multi-value source seam: bound by the coordinator. */
-  var multiSource: (init: Expression) => Array<i32> =
-      (init: Expression): Array<i32> => {
-        throw new Error('LoweringContext.multiSource not yet bound');
-      };
+  var host: anyref | null = null;
+
   new(this.b, this.wasm, this.func);
 
   /**
@@ -414,7 +384,7 @@ export final class LoweringContext {
         }
       }
     }
-    return this.lowerExpr(obj, null);
+    return lowerExpr(this, obj, null);
   }
 
   /**

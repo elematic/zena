@@ -42,6 +42,7 @@ import {
   typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefGlobal, IrRefTag } from './ir.zena';
+import { lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, throwStmt, varDecl } from './lowering.zena';
 import {
   LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported,
   noValues, oneValue, twoValues,
@@ -74,7 +75,7 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
     bail(cx, 'let-condition pattern');
   }
   let tp = pat as TuplePattern;
-  let values = cx.multiSource(lpc.init);
+  let values = multiSource(cx, lpc.init);
   if (values.length != tp.elements.length) {
     bail(cx, 'let-condition arity');
   }
@@ -180,10 +181,10 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
     if (node is ThrowExpression) {
       // A bare throw as an arm: the arm ends unreachable and
       // produces no value; callers skip their merge branch.
-      cx.throwStmt(node as ThrowExpression);
+      throwStmt(cx, node as ThrowExpression);
       return -1;
     }
-    let value = cx.lowerExpr(node as Expression, ctxVt);
+    let value = lowerExpr(cx, node as Expression, ctxVt);
     return if (isVoid) -1 else value;
   }
   if (node is BlockStatement) {
@@ -195,7 +196,7 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
       bail(cx, 'empty value block');
     }
     for (var i = 0; i < body.length - 1; i += 1) {
-      cx.lowerStmt(body[i]);
+      lowerStmt(cx, body[i]);
       if (!cx.reachable) {
         return -1;
       }
@@ -206,14 +207,14 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
       if (lastExpr is ThrowExpression) {
         // A throw in arm-tail position: the arm ends unreachable and
         // produces no value; callers skip their merge branch.
-        cx.throwStmt(lastExpr as ThrowExpression);
+        throwStmt(cx, lastExpr as ThrowExpression);
         return -1;
       }
-      let value = cx.lowerExpr(lastExpr, ctxVt);
+      let value = lowerExpr(cx, lastExpr, ctxVt);
       return if (isVoid) -1 else value;
     }
     if (isVoid) {
-      cx.lowerStmt(last);
+      lowerStmt(cx, last);
       return -1;
     }
     bail(cx, 'value block tail');
@@ -247,7 +248,7 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
     null
   };
 
-  let disc = cx.lowerExpr(expr.discriminant, null);
+  let disc = lowerExpr(cx, expr.discriminant, null);
 
   let mergeSyms = new Array<SymbolId>();
   for (let mc in expr.cases) {
@@ -277,7 +278,7 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
     lowerPatternTest(cx, mc.pattern, disc, failB);
     lowerPatternBindings(cx, mc.pattern, disc);
     if (mc.guard != null) {
-      let cond = cx.lowerExpr(mc.guard as Expression, null);
+      let cond = lowerExpr(cx, mc.guard as Expression, null);
       branchUnless(cx, cond, failB);
     }
     let value = lowerValueNode(cx, mc.body, isVoid, resultVt);
@@ -302,7 +303,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
   var cond = -1;
   var letBinds: LetCondBinds | null = null;
   if (stmt.test is Expression) {
-    cond = cx.lowerExpr(stmt.test as Expression, null);
+    cond = lowerExpr(cx, stmt.test as Expression, null);
   } else if (stmt.test is LetPatternCondition) {
     let binds = lowerLetCondition(cx, stmt.test as LetPatternCondition);
     letBinds = binds;
@@ -338,7 +339,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
         cx.b.switchTo(resumeB);
       }
     }
-    cx.lowerStmt(stmt.consequent);
+    lowerStmt(cx, stmt.consequent);
     if (cx.reachable) {
       cx.b.br(mergeB, cx.envValues(mergeSyms));
     }
@@ -365,7 +366,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
   if (letBinds != null) {
     applyLetBinds(cx, letBinds as LetCondBinds, elseB);
   }
-  cx.lowerStmt(stmt.consequent);
+  lowerStmt(cx, stmt.consequent);
   if (cx.reachable) {
     cx.mergeArm(m, -1);
   }
@@ -373,7 +374,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
   cx.env = cx.copyOf(saved);
   cx.reachable = true;
   cx.b.switchTo(elseB);
-  cx.lowerStmt(alternate);
+  lowerStmt(cx, alternate);
   if (cx.reachable) {
     cx.mergeArm(m, -1);
   }
@@ -401,7 +402,7 @@ export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 =>
   var cond = -1;
   var letBinds: LetCondBinds | null = null;
   if (expr.test is Expression) {
-    cond = cx.lowerExpr(expr.test as Expression, null);
+    cond = lowerExpr(cx, expr.test as Expression, null);
   } else if (expr.test is LetPatternCondition) {
     // Pattern-test fail edges target the else arm — which exists
     // even for the void no-else form (it restores the saved env and
@@ -554,7 +555,7 @@ export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {
     letBinds = binds;
     cond = binds.cond;
   } else {
-    cond = cx.lowerExpr(stmt.test as Expression, null);
+    cond = lowerExpr(cx, stmt.test as Expression, null);
   }
 
   let bodyB = cx.b.newBlock();
@@ -582,7 +583,7 @@ export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {
       cx.b.switchTo(resumeB);
     }
   }
-  cx.lowerStmt(stmt.body);
+  lowerStmt(cx, stmt.body);
   if (cx.reachable) {
     cx.b.br(header, cx.envValues(carried));
   }
@@ -599,11 +600,11 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
   if (stmt.init != null) {
     let init = stmt.init as Node;
     if (init is VariableDeclaration) {
-      cx.varDecl(init as VariableDeclaration);
+      varDecl(cx, init as VariableDeclaration);
     } else if (init is ExpressionStatement) {
-      cx.lowerExpr((init as ExpressionStatement).expression, null);
+      lowerExpr(cx, (init as ExpressionStatement).expression, null);
     } else if (init is Expression) {
-      cx.lowerExpr(init as Expression, null);
+      lowerExpr(cx, init as Expression, null);
     } else {
       bail(cx, 'for-init kind');
     }
@@ -626,7 +627,7 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
   cx.applyParams(carried, headerParams);
   var cond = -1;
   if (stmt.test != null) {
-    cond = cx.lowerExpr(stmt.test as Expression, null);
+    cond = lowerExpr(cx, stmt.test as Expression, null);
   } else {
     cond = cx.b.constI32(1, new ValTypeI32());
   }
@@ -640,7 +641,7 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
 
   cx.loops.push(new LoopCtx(updateB, exitB, carried));
   cx.b.switchTo(bodyB);
-  cx.lowerStmt(stmt.body);
+  lowerStmt(cx, stmt.body);
   if (cx.reachable) {
     cx.b.br(updateB, cx.envValues(carried));
   }
@@ -650,7 +651,7 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
   cx.reachable = true;
   cx.applyParams(carried, updateParams);
   if (stmt.update != null) {
-    cx.lowerExpr(stmt.update as Expression, null);
+    lowerExpr(cx, stmt.update as Expression, null);
   }
   cx.b.br(header, cx.envValues(carried));
 
@@ -682,7 +683,7 @@ export let lowerNullishCoalesce = (cx: LoweringContext, bin: BinaryExpression): 
       bail(cx, 'optional receiver kind');
     }
   } else {
-    testValue = cx.lowerExpr(bin.left, null);
+    testValue = lowerExpr(cx, bin.left, null);
     if (!isRefValType(cx.valueTypeOf(testValue))) {
       bail(cx, 'nullish on non-reference');
     }
@@ -697,7 +698,7 @@ export let lowerNullishCoalesce = (cx: LoweringContext, bin: BinaryExpression): 
   let saved = cx.copyEnv();
   cx.b.switchTo(okB);
   let okValue = if (leftIsOptionalChain) {
-    cx.optionalHit(bin.left, cx.stripNonNull(testValue))
+    optionalHit(cx, bin.left, cx.stripNonNull(testValue))
   } else {
     cx.stripNonNull(testValue)
   };
@@ -714,7 +715,7 @@ export let lowerNullishCoalesce = (cx: LoweringContext, bin: BinaryExpression): 
   cx.env = cx.copyOf(saved);
   cx.reachable = true;
   cx.b.switchTo(rightB);
-  let rightValue = cx.lowerExpr(bin.right, overallVt);
+  let rightValue = lowerExpr(cx, bin.right, overallVt);
   if (cx.reachable) {
     if (!isValSubtype(cx.valueTypeOf(rightValue), overallVt)) {
       bail(cx, 'nullish arm type');
@@ -746,7 +747,7 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
   var iter = -1;
   if (resolved is ClassType) {
     let ct = eraseTypeParameters(resolved) as ClassType;
-    let recv = cx.lowerExprRaw(stmt.iterable);
+    let recv = lowerExprRaw(cx, stmt.iterable);
     let iteratorIface = findImplementedInterfaceTransitive(ct, 'Iterator');
     if (iteratorIface != null) {
       // The iterable IS an iterator: no :iterator call.
@@ -762,7 +763,7 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
     }
   } else if (resolved is InterfaceType) {
     let it = resolved as InterfaceType;
-    let recv = cx.lowerExpr(stmt.iterable, null);
+    let recv = lowerExpr(cx, stmt.iterable, null);
     if (it.name == 'Iterator') {
       iter = recv;
     } else {
@@ -835,7 +836,7 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
   let updateB = cx.b.newBlock();
   let updateParams = cx.addParams(updateB, carried);
   cx.loops.push(new LoopCtx(updateB, exitB, carried));
-  cx.lowerStmt(stmt.body);
+  lowerStmt(cx, stmt.body);
   if (cx.reachable) {
     cx.b.br(updateB, cx.envValues(carried));
   }
@@ -909,7 +910,7 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   // The fast paths consume the raw value; skip the top-level Iterable
   // adaptation the checker may have recorded on the iterable (the
   // streaming generator's ignoreAdaptations flag).
-  let iterable = cx.lowerExprRaw(stmt.iterable);
+  let iterable = lowerExprRaw(cx, stmt.iterable);
 
   var buf = -1;
   var len = -1;
@@ -992,7 +993,7 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   let updateB = cx.b.newBlock();
   let updateParams = cx.addParams(updateB, carried);
   cx.loops.push(new LoopCtx(updateB, exitB, carried));
-  cx.lowerStmt(stmt.body);
+  lowerStmt(cx, stmt.body);
   if (cx.reachable) {
     cx.b.br(updateB, cx.envValues(carried));
   }

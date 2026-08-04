@@ -24,6 +24,7 @@ import {
 import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
 import { typeToValTypeWithSub } from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
+import { lowerExpr } from './lowering.zena';
 import {
   LoweringContext, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
@@ -142,7 +143,7 @@ export let lowerTemplateLiteral = (cx: LoweringContext, tpl: TemplateLiteral): i
  * through; anything else bails.
  */
 let templateOperandString = (cx: LoweringContext, expr: Expression): i32 => {
-  let value = cx.lowerExpr(expr, null);
+  let value = lowerExpr(cx, expr, null);
   let tOpt = cx.substitutedNodeType(expr);
   if (tOpt == null) {
     cx.fail('untyped template operand');
@@ -311,7 +312,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   let valuesArr = cx.wasm.getArray(valVt, true);
   let valueParts = new Array<i32>();
   for (let sub in expr.quasi.expressions) {
-    let v = cx.lowerExpr(sub, valVt);
+    let v = lowerExpr(cx, sub, valVt);
     if (!isValSubtype(cx.valueTypeOf(v), valVt)) {
       cx.failConformance(v, valVt, 'tagged template value type');
     }

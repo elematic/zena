@@ -23,6 +23,7 @@ import {
 } from '../wasm-module.zena';
 import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc } from './ir.zena';
+import { lowerExpr } from './lowering.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
@@ -588,8 +589,8 @@ export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 =
   if (call.args.length != 2) {
     bail(cx, 'eq arity');
   }
-  let a = cx.lowerExpr(call.args[0], null);
-  let b2 = cx.lowerExpr(call.args[1], null);
+  let a = lowerExpr(cx, call.args[0], null);
+  let b2 = lowerExpr(cx, call.args[1], null);
   let va = cx.valueTypeOf(a);
   let vb = cx.valueTypeOf(b2);
   if (va is ValTypeI32 && vb is ValTypeI32) {
@@ -648,7 +649,7 @@ export let lowerHashIntrinsic = (cx: LoweringContext, call: CallExpression): i32
   if (call.args.length != 1) {
     bail(cx, 'hash arity');
   }
-  let v = cx.lowerExpr(call.args[0], null);
+  let v = lowerExpr(cx, call.args[0], null);
   let vv = cx.valueTypeOf(v);
   if (vv is ValTypeI32) {
     return v;

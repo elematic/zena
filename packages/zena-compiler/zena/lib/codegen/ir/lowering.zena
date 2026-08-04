@@ -5150,26 +5150,37 @@ final class FunctionLowerer {
         this.wasm,
         this.func,
 );
-    cx.optionalHit = (expr: Expression, recv: i32): i32 =>
-        this.#lowerOptionalHit(expr, recv);
-    cx.lowerExprRaw = (e: Expression): i32 =>
-        this.#lowerExpressionDispatch(e);
-    cx.lowerExpr = (e: Expression, want: ValType | null): i32 =>
-        if (want == null) this.#lowerExpression(e)
-        else this.#lowerExpressionCtx(e, want as ValType);
-    cx.lowerStmt = (st: Statement): void => {
-      this.#lowerStatement(st);
-    };
-    cx.varDecl = (vd: VariableDeclaration): void => {
-      this.#lowerVariableDeclaration(vd);
-    };
-    cx.throwStmt = (thr: ThrowExpression): void => {
-      this.#lowerThrowStatement(thr);
-    };
-    cx.multiSource = (init: Expression): Array<i32> =>
-        this.#lowerMultiSource(init);
+    cx.host = this;
     this.#cxCache = cx;
     return cx;
+  }
+
+  // Recursion entry points for the module-level seam functions at the
+  // bottom of this file (the emission modules call back through them
+  // across the import cycle).
+  hostLowerExpr(e: Expression, want: ValType | null): i32 {
+    if (want == null) {
+      return this.#lowerExpression(e);
+    }
+    return this.#lowerExpressionCtx(e, want as ValType);
+  }
+  hostLowerExprRaw(e: Expression): i32 {
+    return this.#lowerExpressionDispatch(e);
+  }
+  hostLowerStmt(st: Statement): void {
+    this.#lowerStatement(st);
+  }
+  hostVarDecl(vd: VariableDeclaration): void {
+    this.#lowerVariableDeclaration(vd);
+  }
+  hostThrowStmt(thr: ThrowExpression): void {
+    this.#lowerThrowStatement(thr);
+  }
+  hostMultiSource(init: Expression): Array<i32> {
+    return this.#lowerMultiSource(init);
+  }
+  hostOptionalHit(expr: Expression, recv: i32): i32 {
+    return this.#lowerOptionalHit(expr, recv);
   }
 
   #lowerStringLiteral(lit: StringLiteral): i32 {
@@ -5984,3 +5995,50 @@ final class FunctionLowerer {
     return this.#cx().fail(reason);
   }
 }
+
+// ============================================================================
+// Recursion seams
+// ============================================================================
+
+/**
+ * The emission modules (templates, equality, patterns, operators,
+ * control-flow, intrinsics) and the member machinery in
+ * lowering-context.zena lower subexpressions by importing these
+ * functions back across the module cycle. `cx.host` carries the
+ * owning FunctionLowerer — typed anyref in the shared core, which
+ * cannot name this module's class (types do not cross a cycle's back
+ * edge; fully annotated functions do).
+ */
+let hostOf = (cx: LoweringContext): FunctionLowerer =>
+    cx.host as FunctionLowerer;
+
+/** Lower `e` as a value; a non-null `want` supplies the context type. */
+export let lowerExpr = (cx: LoweringContext, e: Expression, want: ValType | null): i32 =>
+    hostOf(cx).hostLowerExpr(e, want);
+
+/** Adaptation-free expression lowering (see #lowerExpressionDispatch). */
+export let lowerExprRaw = (cx: LoweringContext, e: Expression): i32 =>
+    hostOf(cx).hostLowerExprRaw(e);
+
+/** Lower one statement. */
+export let lowerStmt = (cx: LoweringContext, st: Statement): void => {
+  hostOf(cx).hostLowerStmt(st);
+};
+
+/** Lower a variable declaration (patterns, celling, env binding). */
+export let varDecl = (cx: LoweringContext, vd: VariableDeclaration): void => {
+  hostOf(cx).hostVarDecl(vd);
+};
+
+/** Lower a throw in statement position. */
+export let throwStmt = (cx: LoweringContext, thr: ThrowExpression): void => {
+  hostOf(cx).hostThrowStmt(thr);
+};
+
+/** Lower a let-condition multi-value source. */
+export let multiSource = (cx: LoweringContext, init: Expression): Array<i32> =>
+    hostOf(cx).hostMultiSource(init);
+
+/** Optional-chain hit arm (member machinery). */
+export let optionalHit = (cx: LoweringContext, expr: Expression, recv: i32): i32 =>
+    hostOf(cx).hostOptionalHit(expr, recv);
