@@ -178,25 +178,20 @@ export class Compiler {
   #checkModules() {
     this.#loadPrelude();
 
-    const checking = new Set<string>();
-
     const checkModule = (module: Module) => {
-      if (
-        this.#checkedModules.has(module.path!) ||
-        checking.has(module.path!)
-      ) {
+      if (this.#checkedModules.has(module.path!)) {
         return;
       }
 
-      checking.add(module.path!);
-
-      // Check dependencies first
-      for (const importPath of module.imports!.values()) {
-        const imported = this.#modules.get(importPath);
-        if (imported) {
-          checkModule(imported);
-        }
-      }
+      // Modules are checked in EVALUATION order — the #modules
+      // insertion order (the loader's topological order, dependencies
+      // before importers except across cycle back edges). This
+      // matches the self-hosted compiler and keeps first-pass member
+      // signatures resolvable everywhere the import-cycle rules allow
+      // (docs/design/import-cycles.md); recursing into dependencies
+      // here instead would check a cycle's importer before its
+      // dependency and bake unresolved-import types into signatures
+      // the second pass keeps.
 
       // Ensure prelude modules are checked before this module.
       //
@@ -236,12 +231,77 @@ export class Compiler {
         this.#injectPreludeImports(module, checker.usedPreludeSymbols);
       }
 
-      checking.delete(module.path!);
       this.#checkedModules.add(module.path!);
     };
 
     for (const module of this.#modules.values()) {
       checkModule(module);
+    }
+
+    // Second pass, only when the import graph has cycles
+    // (docs/design/import-cycles.md): a module whose import finished
+    // checking AFTER it (a back edge) could not resolve that import on
+    // the first pass, and any module importing from a re-checked
+    // module must re-check to see the final state. Everything acyclic
+    // and upstream — the stdlib in particular — is checked exactly
+    // once. The re-check resets the module's exports and diagnostics;
+    // the cycle-rule diagnostics come from ctx.cyclicLaterPaths.
+    // Back edges are classified in EVALUATION order — the #modules
+    // insertion order, which codegen emits __start in (it differs from
+    // the check recursion's finish order). The re-check closure: a
+    // module importing a later module (back edge) or importing any
+    // re-checked module, scanned forward in evaluation order.
+    const evalOrder = [...this.#modules.keys()];
+    const evalIndex = new Map<string, number>();
+    evalOrder.forEach((path, i) => evalIndex.set(path, i));
+
+    const recheck = new Set<string>();
+    for (const path of evalOrder) {
+      const module = this.#modules.get(path);
+      if (!module) continue;
+      const own = evalIndex.get(path)!;
+      for (const dep of module.imports!.values()) {
+        const di = evalIndex.get(dep);
+        if (di !== undefined && (di > own || recheck.has(dep))) {
+          recheck.add(path);
+          break;
+        }
+      }
+    }
+    for (const path of evalOrder) {
+      if (!recheck.has(path)) continue;
+      const module = this.#modules.get(path)!;
+      const own = evalIndex.get(path)!;
+      module.exports?.clear();
+      // Strip the synthetic prelude imports injected after the first
+      // pass: the re-check must see the same module body the first
+      // pass saw (the checker's prelude auto-declaration would collide
+      // with them), and injection re-runs below.
+      module.body = module.body.filter(
+        (stmt) => !(stmt as {syntheticPrelude?: boolean}).syntheticPrelude,
+      );
+      // Clear the write-once checked flags the first pass stamped on
+      // this module's declarations: bodies must re-type against the
+      // now-complete models (members stay registered — their
+      // signatures never depend on back-edge imports, which the cycle
+      // rules ban).
+      for (const stmt of module.body) {
+        delete (stmt as {_checked?: boolean})._checked;
+      }
+      const later = new Set<string>();
+      for (const [p, i] of evalIndex) {
+        if (i > own) later.add(p);
+      }
+      this.#checkerContext.cyclicLaterPaths = later;
+      this.#checkerContext.cyclicRecheckPaths = recheck;
+      const checker = new TypeChecker(this.#checkerContext, module);
+      checker.preludeModules = this.#preludeModules;
+      module.diagnostics = checker.check();
+      this.#checkerContext.cyclicLaterPaths = null;
+      this.#checkerContext.cyclicRecheckPaths = null;
+      if (!module.isStdlib && !module.path!.startsWith('zena:')) {
+        this.#injectPreludeImports(module, checker.usedPreludeSymbols);
+      }
     }
   }
 
@@ -266,6 +326,7 @@ export class Compiler {
 
       newImports.push({
         type: NodeType.ImportDeclaration,
+        syntheticPrelude: true,
         imports: Array.from(names).map((name) => ({
           type: NodeType.ImportSpecifier,
           local: {type: NodeType.Identifier, name},

@@ -178,6 +178,22 @@ final class CheckerContext {
   #sharedState: SharedCheckerState;
 
   /**
+   * Module paths that run AFTER this module in evaluation order —
+   * an import whose declaration ORIGINATES in one of them crosses an
+   * import cycle's back edge (docs/design/import-cycles.md). Null when
+   * the compilation has no cycles.
+   */
+  var cyclicLaterPaths: HashSet<String> | null = null;
+
+  /**
+   * Modules the compiler re-checks because of import cycles. A type
+   * or inferred signature may cross a back edge only when it
+   * originates OUTSIDE this set: such an origin is checked exactly
+   * once, so its type objects are unique and stable.
+   */
+  var cyclicRecheckPaths: HashSet<String> | null = null;
+
+  /**
    * Type namespace map for built-in primitive types (i32, u32, f64, etc.).
    * Only index 0 is meaningful; the stack structure is retained because
    * enterScope/exitScope still push/pop frames for narrowing bookkeeping.
@@ -1431,6 +1447,88 @@ let collectPatternSymbols = (ctx: CheckerContext, pattern: Pattern, symbols: Arr
  * This version loads the standard prelude types (String, Array, etc.)
  * automatically.
  */
+/**
+ * Enforce the import-cycle rules (docs/design/import-cycles.md) for one
+ * imported name. When the name's declaration ORIGINATES in a module
+ * that runs later in evaluation order (a cycle back edge):
+ *  - module-level value bindings are rejected — their initializers
+ *    have not run when this module initializes, so a read would
+ *    observe the wasm default value;
+ *  - functions must carry a fully written signature (every parameter
+ *    and the return type) — inference has no stable order across a
+ *    cycle. A function-typed binding annotation also satisfies this.
+ * Type declarations pass through: they resolve on the second checking
+ * pass and involve no initialization order.
+ */
+let checkCyclicImportRules = (
+  ctx: CheckerContext,
+  depMod: ModuleExports,
+  importedName: String,
+  spec: Node
+): void => {
+  let later = ctx.cyclicLaterPaths;
+  if (later == null) {
+    return;
+  }
+  let exp = if (let (true, e) = depMod.get(importedName)) { e } else { null };
+  if (exp == null) {
+    return;
+  }
+  let origin = (exp as Symbol).resolveTarget();
+  if (!(later as HashSet<String>).has(origin.modulePath)) {
+    return;
+  }
+  // Whether the origin module is itself re-checked (it is inside a
+  // cycle). Origins outside the re-check set are checked exactly once,
+  // so their types and inferred signatures are unique and stable and
+  // may cross freely — only the value/init-order rule applies to them.
+  var originRechecked = false;
+  if (ctx.cyclicRecheckPaths != null &&
+      (ctx.cyclicRecheckPaths as HashSet<String>).has(origin.modulePath)) {
+    originRechecked = true;
+  }
+  match (origin.declaration) {
+    case IdentifierPattern {}: {
+      // A module-level `let`/`var` binding (the scope builder records
+      // the pattern node and stamps the binding's shape on the symbol).
+      if (!origin.isFunctionBinding) {
+        ctx.error(
+          "Cyclic import of value '" + importedName +
+            "': module-level bindings cannot cross an import cycle (the exporting module's initializers have not run)",
+          DiagnosticCode.CyclicImport, spec.loc);
+      } else if (!origin.hasFullSignature && originRechecked) {
+        ctx.error(
+          "Cyclic import of '" + importedName +
+            "': a function crossing an import cycle needs an explicit signature (annotate every parameter and the return type)",
+          DiagnosticCode.CyclicImport, spec.loc);
+      }
+    }
+    case ClassDeclaration {}: {
+      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
+    }
+    case InterfaceDeclaration {}: {
+      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
+    }
+    case EnumDeclaration {}: {
+      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
+    }
+    case TypeAliasDeclaration {}: {
+      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
+    }
+    case MixinDeclaration {}: {
+      if (originRechecked) { cyclicTypeError(ctx, importedName, spec); }
+    }
+    case _: {}
+  }
+};
+
+let cyclicTypeError = (ctx: CheckerContext, name: String, node: Node): void => {
+  ctx.error(
+    "Cyclic import of type '" + name +
+      "': types cannot cross an import cycle (only fully annotated functions can)",
+    DiagnosticCode.CyclicImport, node.loc);
+};
+
 export let checkModule = (
   ast: Module,
   scopeResult: ScopeResult,
@@ -1438,10 +1536,14 @@ export let checkModule = (
   depModels: HashMap<String, SemanticModel> | null = null,
   emitLocations: boolean = false,
   sharedState: SharedCheckerState | null = null,
-  warnUnnecessaryCasts: boolean = false
+  warnUnnecessaryCasts: boolean = false,
+  cyclicLaterPaths: HashSet<String> | null = null,
+  cyclicRecheckPaths: HashSet<String> | null = null
 ): CheckResult => {
   let state = if (sharedState != null) sharedState as SharedCheckerState else new SharedCheckerState();
   let ctx = new CheckerContext(state, ast.path, scopeResult, depExports, depModels, emitLocations, warnUnnecessaryCasts);
+  ctx.cyclicLaterPaths = cyclicLaterPaths;
+  ctx.cyclicRecheckPaths = cyclicRecheckPaths;
   ctx.model.typeIdGenerator = state.typeIdGenerator;
 
   // Register standard prelude types only once per shared state.
@@ -4473,9 +4575,31 @@ case _: {
             let importedName = spec.imported.name;
             let localName = spec.local.name;
 
+            if (importedName != "*") {
+              checkCyclicImportRules(ctx, depMod, importedName, spec);
+            }
+
             if (importedName == "*") {
               // It's a namespace import: import * as ns from 'mod'
               // We construct a RecordType populated with all value exports of the dependency.
+              // The record is materialized eagerly in __start, so any
+              // value originating across a cycle back edge would be
+              // read before its initializer runs — reject those
+              // (docs/design/import-cycles.md).
+              let laterForNs = ctx.cyclicLaterPaths;
+              if (laterForNs != null) {
+                for (let expKey in depMod.keys()) {
+                  if (let (true, exp) = depMod.get(expKey)) {
+                    if (exp.isValue() &&
+                        (laterForNs as HashSet<String>).has(exp.resolveTarget().modulePath)) {
+                      ctx.error(
+                        "Cyclic namespace import: '" + expKey +
+                          "' originates in a module that has not initialized yet",
+                        DiagnosticCode.CyclicImport, spec.loc);
+                    }
+                  }
+                }
+              }
               let properties = new HashMap<String, Type>();
               for (let expKey in depMod.keys()) {
                 if (let (true, exp) = depMod.get(expKey)) {
@@ -6492,10 +6616,14 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   classType.isSealed = cd.isSealed;
   classType.isCaseClass = false;
 
-  // Type parameters.
+  // Type parameters. Reset rather than append: the ClassType object
+  // may be shared with an earlier registration (compiler intrinsics,
+  // or a prior checking pass over the same module), and registration
+  // must be idempotent.
   ctx.enterScope();
   if (cd.typeParameters != null) {
     let tps = cd.typeParameters as Array<TypeParameter>;
+    let freshParams = new Array<TypeParameterType>();
     var tpi = 0;
     while (tpi < tps.length) {
       let tp = tps[tpi];
@@ -6510,13 +6638,10 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       let tpType = new TypeParameterType(tp.name, constraint, defaultT);
       ctx.declareTypeName(tp.name, tpType);
       ctx.registerTypeParameter(tp, tpType);
-
-      if (classType.typeParameters == null) {
-        classType.typeParameters = new Array<TypeParameterType>();
-      }
-      (classType.typeParameters as Array<TypeParameterType>).push(tpType);
+      freshParams.push(tpType);
       tpi = tpi + 1;
     }
+    classType.typeParameters = freshParams;
   }
 
   // Extension classes: resolve the underlying type from the 'on' clause.

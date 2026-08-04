@@ -24,7 +24,6 @@ type SkipEntry = { path: String, reason: String };
 
 let skippedTests = [
   // semantics skips
-  { path: "semantics/modules/reexport_cycle", reason: "Cyclic exports not yet supported" },
   { path: "semantics/classes/fields/field-init-required.zena", reason: "field init check not implemented" },
   { path: "semantics/interfaces/var-field-needs-setter.zena", reason: "var field setter check not implemented" }
 ];
@@ -178,10 +177,16 @@ let runSemanticTest = (
   // Store the check result for subsequent tests to use incrementally.
   prevCheckResult = checkResult;
   
-  // Aggregate diagnostics only from the entry module, unless you specifically want dependent errors.
+  // Aggregate diagnostics from every non-stdlib module of this
+  // compilation, not just the entry: import-cycle diagnostics land in
+  // the cycle member that evaluates first, which is never the entry.
   let diagnostics = new Array<Diagnostic>(4);
-  for (let diag in checkResult.entry.diagnostics) {
-    diagnostics.push(diag);
+  for (let file in result.files) {
+    if (!file.isStdlib && checkResult.results.has(file.path)) {
+      for (let diag in checkResult.results[file.path].diagnostics) {
+        diagnostics.push(diag);
+      }
+    }
   }
 
   // Collect only errors (not warnings).

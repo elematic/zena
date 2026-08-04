@@ -8,6 +8,8 @@ import {
   type BinaryExpression,
   type BreakStatement,
   type ClassDeclaration,
+  type Declaration,
+  type ImportSpecifier,
   type ContinueStatement,
   type DeclareFunction,
   type EnumDeclaration,
@@ -36,6 +38,7 @@ import {
   type Statement,
   type SuperInitializer,
   type SymbolDeclaration,
+  type SymbolInfo,
   type SymbolPropertyName,
   type TuplePattern,
   type TypeAliasDeclaration,
@@ -1562,7 +1565,12 @@ function checkExportAllDeclaration(
         // Error?
       }
     }
-    ctx.module!.exports!.set(name, symbolInfo);
+    // Preserve where the declaration originates: the import-cycle
+    // rules classify by the declaring module, not the re-export hop.
+    ctx.module!.exports!.set(name, {
+      ...symbolInfo,
+      origin: symbolInfo.origin ?? importedModule.path!,
+    });
   }
 }
 
@@ -1616,11 +1624,84 @@ function checkExportFromDeclaration(
     }
 
     if (valueSymbol) {
-      ctx.module!.exports!.set(`value:${localName}`, valueSymbol);
+      ctx.module!.exports!.set(`value:${localName}`, {
+        ...valueSymbol,
+        origin: valueSymbol.origin ?? importedModule.path!,
+      });
     }
     if (typeSymbol) {
-      ctx.module!.exports!.set(`type:${localName}`, typeSymbol);
+      ctx.module!.exports!.set(`type:${localName}`, {
+        ...typeSymbol,
+        origin: typeSymbol.origin ?? importedModule.path!,
+      });
     }
+  }
+}
+
+/**
+ * Enforce the import-cycle rules for one imported name whose exporting
+ * module runs later in evaluation order (docs/design/import-cycles.md):
+ * value bindings and types are rejected; functions must carry a fully
+ * written signature.
+ */
+function checkCyclicImportRules(
+  ctx: CheckerContext,
+  importedName: string,
+  declNode: Declaration | undefined,
+  originPath: string,
+  importSpecifier: ImportSpecifier,
+) {
+  if (!declNode) {
+    return;
+  }
+  const originLater =
+    ctx.cyclicLaterPaths !== null && ctx.cyclicLaterPaths.has(originPath);
+  const originRechecked =
+    ctx.cyclicRecheckPaths !== null && ctx.cyclicRecheckPaths.has(originPath);
+  const loc = ctx.getLocation(importSpecifier.imported.loc);
+  switch (declNode.type) {
+    case NodeType.VariableDeclaration: {
+      const vd = declNode as VariableDeclaration;
+      if (vd.init && vd.init.type === NodeType.FunctionExpression) {
+        const fe = vd.init as FunctionExpression;
+        const full =
+          vd.typeAnnotation != null ||
+          (fe.returnType != null &&
+            fe.params.every(
+              (p) => p.typeAnnotation != null || p.initializer != null,
+            ));
+        if (!full && originLater && originRechecked) {
+          ctx.diagnostics.reportError(
+            `Cyclic import of '${importedName}': a function crossing an import cycle needs an explicit signature (annotate every parameter and the return type)`,
+            DiagnosticCode.ImportError,
+            loc,
+          );
+        }
+      } else if (originLater) {
+        ctx.diagnostics.reportError(
+          `Cyclic import of value '${importedName}': module-level bindings cannot cross an import cycle (the exporting module's initializers have not run)`,
+          DiagnosticCode.ImportError,
+          loc,
+        );
+      }
+      break;
+    }
+    case NodeType.ClassDeclaration:
+    case NodeType.InterfaceDeclaration:
+    case NodeType.EnumDeclaration:
+    case NodeType.TypeAliasDeclaration:
+    case NodeType.MixinDeclaration: {
+      if (originLater && originRechecked) {
+        ctx.diagnostics.reportError(
+          `Cyclic import of type '${importedName}': types cannot cross an import cycle (only fully annotated functions can)`,
+          DiagnosticCode.ImportError,
+          loc,
+        );
+      }
+      break;
+    }
+    default:
+      break;
   }
 }
 
@@ -1662,6 +1743,16 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
 
   // Let's assume the compiler handles the order.
 
+  // Import-cycle rules (docs/design/import-cycles.md), classified by
+  // the ORIGIN module of each imported declaration (re-export hops
+  // are looked through via the `origin` stamp): value bindings cannot
+  // cross a back edge (their initializers have not run), and types /
+  // inferred signatures cannot cross when their origin module is
+  // itself re-checked (inside a cycle) — origins checked exactly once
+  // have stable, unique types and may cross freely.
+  const cyclicOrigin = (entry: SymbolInfo | undefined): string =>
+    entry?.origin ?? resolvedPath;
+
   for (const importSpecifier of decl.imports) {
     const importedName = importSpecifier.imported.name;
     const localName = importSpecifier.local.name;
@@ -1671,6 +1762,16 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
       for (const [key, value] of importedModule.exports!.entries()) {
         if (key.startsWith('value:')) {
           const exportName = key.slice('value:'.length);
+          if (
+            ctx.cyclicLaterPaths !== null &&
+            ctx.cyclicLaterPaths.has(cyclicOrigin(value))
+          ) {
+            ctx.diagnostics.reportError(
+              `Cyclic namespace import: '${exportName}' originates in a module that has not initialized yet`,
+              DiagnosticCode.ImportError,
+              ctx.getLocation(importSpecifier.imported.loc),
+            );
+          }
           properties.set(exportName, value.type);
         }
       }
@@ -1682,6 +1783,19 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
     const valueExport = importedModule.exports!.get(`value:${importedName}`);
     const typeExport = importedModule.exports!.get(`type:${importedName}`);
     const legacyExport = importedModule.exports!.get(importedName);
+
+    if (ctx.cyclicLaterPaths !== null) {
+      const entry = valueExport ?? legacyExport ?? typeExport;
+      if (entry) {
+        checkCyclicImportRules(
+          ctx,
+          importedName,
+          entry.declaration,
+          cyclicOrigin(entry),
+          importSpecifier,
+        );
+      }
+    }
 
     if (!valueExport && !typeExport && !legacyExport) {
       ctx.diagnostics.reportError(
@@ -3357,7 +3471,12 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   // Members already registered in the registration pass — skip to body checking.
   if ((decl as any)._membersRegistered) {
-    checkClassBodies(ctx, decl);
+    // During the signature-registration pass there is nothing left to
+    // do (a re-check keeps registered members); bodies wait for the
+    // full checkStatement pass, after imports and declare-functions.
+    if (!(ctx as any)._classRegistrationOnly) {
+      checkClassBodies(ctx, decl);
+    }
     return;
   }
 

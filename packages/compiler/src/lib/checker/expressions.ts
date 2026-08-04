@@ -1905,6 +1905,17 @@ export function signaturesMayOverlap(
 }
 
 function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
+  // A previous checking pass may have inlined default-argument
+  // initializers into the argument list (they are typed in the
+  // CALLEE's scope and must not be re-checked here). Undo that so
+  // re-checking a module (import cycles, docs/design/import-cycles.md)
+  // is idempotent — the tail is re-injected below.
+  if (expr.originalArgCount !== undefined) {
+    expr.arguments.length = expr.originalArgCount;
+    expr.originalArgCount = undefined;
+    expr.defaultArgsOwner = undefined;
+  }
+
   if (expr.callee.type === NodeType.SuperExpression) {
     // super() must be called in the initializer list, not the constructor body
     ctx.diagnostics.reportError(
@@ -3649,8 +3660,15 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
     return classType;
   }
 
+  // Undo a previous pass's default expansion (see checkCallExpression).
+  if (expr.originalArgCount !== undefined) {
+    expr.arguments.length = expr.originalArgCount;
+    expr.originalArgCount = undefined;
+  }
+
   // Track original argument count before expanding defaults
   const originalArgCount = expr.arguments.length;
+  expr.originalArgCount = originalArgCount;
 
   // Check arguments against constructor parameters
   if (expr.arguments.length !== constructor.parameters.length) {

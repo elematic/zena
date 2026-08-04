@@ -96,6 +96,22 @@ export class CheckerContext {
   // ============================================================
   #lib: LibraryState = createLibraryState();
 
+  /**
+   * Module paths that finish checking AFTER the module currently being
+   * checked — an import from one of them crosses an import cycle's
+   * back edge (docs/design/import-cycles.md). Null when the program
+   * has no cycles; set by the compiler's second checking pass.
+   */
+  cyclicLaterPaths: Set<string> | null = null;
+
+  /**
+   * Modules the compiler re-checks because of import cycles. Types
+   * and inferred signatures may cross a back edge only when they
+   * originate outside this set (such origins are checked exactly
+   * once, so their types are unique and stable).
+   */
+  cyclicRecheckPaths: Set<string> | null = null;
+
   // Convenience accessors for per-library state
   get scopes() {
     return this.#lib.scopes;

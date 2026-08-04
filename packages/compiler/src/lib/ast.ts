@@ -30,6 +30,12 @@ export interface SymbolInfo {
   declaration?: Declaration;
   /** The module path where this symbol is declared. */
   modulePath?: string;
+  /**
+   * For re-exported entries: the module where the declaration
+   * ultimately originates (the import-cycle rules classify by origin,
+   * looking through re-export hops — docs/design/import-cycles.md).
+   */
+  origin?: string;
 }
 
 /**
@@ -232,6 +238,8 @@ export interface ImportSpecifier extends Node {
 
 export interface ImportDeclaration extends Node {
   type: typeof NodeType.ImportDeclaration;
+  /** Injected by the compiler for used prelude names (not user code). */
+  syntheticPrelude?: boolean;
   moduleSpecifier: StringLiteral;
   imports: ImportSpecifier[];
 }
@@ -808,6 +816,12 @@ export interface NewExpression extends Node {
   callee: Identifier;
   typeArguments?: TypeAnnotation[];
   arguments: Expression[];
+  /**
+   * Number of arguments explicitly provided by the caller; entries at
+   * indices >= originalArgCount are constructor defaults pushed by the
+   * checker (undone and re-injected on re-check).
+   */
+  originalArgCount?: number;
 }
 
 export interface MemberExpression extends Node {

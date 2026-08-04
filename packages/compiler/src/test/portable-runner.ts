@@ -336,6 +336,9 @@ async function runCheckTest(
         if (path.startsWith('zena:')) {
           return loadStdlibModule(path);
         }
+        if (existsSync(path)) {
+          return readFileSync(path, 'utf-8');
+        }
         // Try to load relative to test file
         const resolvedPath = join(dirname(filePath), path);
         if (existsSync(resolvedPath)) {
@@ -344,7 +347,17 @@ async function runCheckTest(
         throw new Error(`File not found: ${path}`);
       },
       resolve: (specifier: string, referrer: string) => {
-        return resolveStdlibSpecifier(specifier, referrer, 'host') ?? specifier;
+        const std = resolveStdlibSpecifier(specifier, referrer, 'host');
+        if (std) return std;
+        // Canonicalize relative specifiers against the referrer so a
+        // module reached through two paths (the entry itself, in a
+        // cycle) is one module, not two.
+        if (specifier.startsWith('.')) {
+          const base =
+            referrer && referrer.length > 0 ? dirname(referrer) : dirname(filePath);
+          return join(base, specifier);
+        }
+        return specifier;
       },
     };
 

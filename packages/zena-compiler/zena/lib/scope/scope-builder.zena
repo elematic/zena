@@ -363,14 +363,26 @@ export final class ScopeBuilder {
           this.#exports[name.name] = info;
         }
       }
-      case VariableDeclaration {kind, pattern, init, exported}: {
+      case VariableDeclaration {kind, pattern, typeAnnotation, init, exported}: {
         // Pre-declare all function bindings for forward references / mutual recursion.
         match (pattern) {
           case IdentifierPattern {name} as pat: {
             match (init) {
-              case FunctionExpression: {
+              case FunctionExpression as fe: {
                 this.#current.declare(name, kind == "var", pat, this.#modulePath);
                 let sym = this.#current.getLocal(name) as Symbol;
+                sym.isFunctionBinding = true;
+                var full = typeAnnotation != null;
+                if (!full) {
+                  full = fe.returnType != null;
+                  for (let p in fe.params) {
+                    if (p.typeAnnotation == null && !p.isThisParam &&
+                        p.defaultValue == null) {
+                      full = false;
+                    }
+                  }
+                }
+                sym.hasFullSignature = full;
                 this.#symbols.record(pat, sym);
                 if (exported) {
                   this.#exports[name] = sym;

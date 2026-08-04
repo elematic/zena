@@ -218,6 +218,15 @@ export final class Compiler {
   #loader: LibraryLoader;
   #options: CompilerOptions;
   #nodeIdGenerator = new IdGenerator<NodeId>();
+
+  /**
+   * Each module's export map as the scope builder produced it (local
+   * declarations only), snapshotted before any import wiring. Wiring
+   * rebuilds the live export map from this base on every fixpoint
+   * pass, so re-export copies never accumulate stale entries and
+   * statement order keeps its last-writer-wins semantics.
+   */
+  #localExports = new HashMap<String, ScopeModuleExports>();
   #symbolIdGenerator = new IdGenerator<SymbolId>();
 
   new(host: CompilerHost, options: CompilerOptions, resolver: ModuleResolver, loader: LibraryLoader)
@@ -321,47 +330,74 @@ export final class Compiler {
   }
 
   /**
-   * Run scope analysis on all source files in topological order.
+   * Run scope analysis on all source files.
    *
-   * For each file:
-   * 1. Build the file-local scope tree (declarations, references).
-   * 2. Wire up imports by copying exported symbols from dependencies.
+   * Scope building is file-local; import wiring copies exported
+   * symbols between files. Because import graphs may contain cycles
+   * (docs/design/import-cycles.md), wiring cannot assume a
+   * dependency was wired first: all scopes are built up front, then
+   * wiring runs as a fixpoint (re-export chains grow export maps, so
+   * one pass can expose names an earlier pass missed), and missing
+   * names are recorded only after the fixpoint settles.
    *
-   * Because files are in dependency order, when we process file F,
-   * all of F's dependencies already have their scopeResult populated.
+   * The prelude scope is built between the stdlib and user phases: it
+   * reads stdlib export maps, which must be fully wired (stdlib index
+   * modules re-export), and user scope trees take it as their parent.
    *
-   * Optimisation: if a SourceFile was reused from the loader cache and
-   * already has a scopeResult from a previous compilation, skip it.
-   * Scope analysis is file-local (depends only on source text) and the
-   * import wiring is stable when all dependencies are also unchanged.
+   * Optimisation: a SourceFile reused from the loader cache keeps its
+   * scope tree (source unchanged), but wiring still runs — a changed
+   * dependency may carry fresh symbols.
    */
   #resolveScopes(files: Array<SourceFile>): void {
-    var preludeScope: Scope | null = null;
-    var builtPrelude = false;
-
+    // Phase 1: stdlib scope trees.
     for (let lib in files) {
-
-      // Build the prelude scope just before the first non-stdlib file.
-      // At this point, all prelude dependencies must have been scope-analyzed.
-      if (!lib.isStdlib && !builtPrelude) {
-        preludeScope = this.#buildPreludeScope();
-        builtPrelude = true;
+      if (lib.isStdlib && lib.scopeResult == null) {
+        let builder = new ScopeBuilder(lib.path, null, this.#symbolIdGenerator);
+        lib.scopeResult = builder.build(lib.ast);
+        this.#snapshotLocalExports(lib);
       }
+    }
 
-      // Skip files that already have a scope result from a previous
-      // compilation — the file was reused from the loader cache, so
-      // its source (and therefore its scope tree) hasn't changed.
+    // Phase 2: wire stdlib imports to fixpoint (prelude reads these).
+    this.#wireToFixpoint(files, true);
+
+    // Phase 3: the prelude scope, parent of every user module scope.
+    let preludeScope = this.#buildPreludeScope();
+
+    // Phase 4: user scope trees.
+    for (let lib in files) {
+      if (!lib.isStdlib && lib.scopeResult == null) {
+        let builder = new ScopeBuilder(lib.path, preludeScope, this.#symbolIdGenerator);
+        lib.scopeResult = builder.build(lib.ast);
+        this.#snapshotLocalExports(lib);
+      }
+    }
+
+    // Phase 5: wire everything to fixpoint, then record what is
+    // still missing.
+    this.#wireToFixpoint(files, false);
+    for (let lib in files) {
       if (lib.scopeResult != null) {
-        continue;
+        this.#wireImports(lib, lib.scopeResult as ScopeResult, true);
       }
+    }
+  }
 
-      // Phase 1: Build file-local scopes.
-      let builder = new ScopeBuilder(lib.path, if (lib.isStdlib) { null } else { preludeScope }, this.#symbolIdGenerator);
-      let result = builder.build(lib.ast);
-      lib.scopeResult = result;
-
-      // Phase 2: Wire up cross-module imports.
-      this.#wireImports(lib, result);
+  /** Repeat import wiring until no pass makes progress. */
+  #wireToFixpoint(files: Array<SourceFile>, stdlibOnly: boolean): void {
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (let lib in files) {
+        if (stdlibOnly && !lib.isStdlib) {
+          continue;
+        }
+        if (lib.scopeResult != null) {
+          if (this.#wireImports(lib, lib.scopeResult as ScopeResult, false)) {
+            changed = true;
+          }
+        }
+      }
     }
   }
 
@@ -400,84 +436,87 @@ export final class Compiler {
   }
 
   /**
-   * Wire up import specifiers to their resolved symbols from dependency modules.
+   * Wire up import specifiers to their resolved symbols from dependency
+   * modules.
    *
    * For each import in this library:
    *   import { Foo } from './other';
    *
-   * We look up './other' → canonical path → dependency SourceFile → its
-   * ModuleExports, then find 'Foo' and update the importing scope's bindings.
+   * We look up './other' -> canonical path -> dependency SourceFile ->
+   * its ModuleExports, then find 'Foo' and update the importing scope's
+   * bindings. Re-export declarations copy dependency exports into this
+   * module's own export map.
    *
-   * After wiring, previously-unresolved references that were due to imports
-   * are now resolvable through the import specifier's declaration.
+   * Runs repeatedly under #wireToFixpoint (import graphs may be
+   * cyclic), so every arm is idempotent and reports whether it made
+   * progress. Names that never resolve are recorded as UnresolvedName
+   * only when `record` is set — the one pass that runs after the
+   * fixpoint settles (with a duplicate guard: a cached file keeps its
+   * recordings from the previous compile).
    */
-  #wireImports(lib: SourceFile, result: ScopeResult): void {
+  #wireImports(lib: SourceFile, result: ScopeResult, record: boolean): boolean {
     let ast = lib.ast;
+    var changed = false;
+
+    // The export map is rebuilt from the local-declaration snapshot on
+    // every pass: re-export statements overwrite in statement order
+    // (last writer wins, matching single-pass behavior), and the
+    // rebuilt map replaces the live one only when it differs.
+    let base = if (let (true, snap) = this.#localExports.get(lib.path)) {
+      snap
+    } else {
+      result.exports
+    };
+    let rebuilt = new HashMap<String, Symbol>();
+    for (let key in base.keys()) {
+      if (let (true, info) = base.get(key)) {
+        rebuilt[key] = info;
+      }
+    }
+
     var j = 0;
     while (j < ast.body.length) {
       match (ast.body[j]) {
         case ImportDeclaration {moduleSpecifier, imports}: {
           let specifier = moduleSpecifier.value;
-
-          // Look up the resolved canonical path for this import.
           if (lib.imports.has(specifier)) {
-            let depPath = lib.imports[specifier];
-
-            // Get the dependency's source file and scope result.
-            let depLib = this.#loader.get(depPath);
-            if (depLib != null) {
-              let dep = depLib as SourceFile;
-              if (dep.scopeResult != null) {
-                let depScope = dep.scopeResult as ScopeResult;
-                let depExports = depScope.exports;
-
-                // For each imported name, check that the dependency exports it.
-                var k = 0;
-                while (k < imports.length) {
-                  let spec = imports[k];
-                  let importedName = spec.imported.name;
-                  let localName = spec.local.name;
-
-                  // Check if the dependency exports this name as a value or type.
-                  let exp = if (importedName != "*" && depExports.has(importedName)) {
-                    if (let (true, val) = depExports.get(importedName)) { val } else { null }
-                  } else {
-                    null
-                  };
-
-                  if (importedName != "*" && exp == null) {
-                    // The imported name doesn't exist in the dependency's exports.
-                    // Record as unresolved for later error reporting.
-                    result.unresolvedNames.push(new UnresolvedName(importedName, spec));
-                  } else if (exp != null) {
-                    let localSym = result.rootScope.getLocal(localName);
-                    if (localSym != null) {
-                      (localSym as Symbol).importTarget = exp as Symbol;
-                    }
+            let depLib = this.#loader.get(lib.imports[specifier]);
+            if (depLib != null && (depLib as SourceFile).scopeResult != null) {
+              let depExports = ((depLib as SourceFile).scopeResult as ScopeResult).exports;
+              var k = 0;
+              while (k < imports.length) {
+                let spec = imports[k];
+                let importedName = spec.imported.name;
+                let exp = if (importedName != "*" && depExports.has(importedName)) {
+                  if (let (true, val) = depExports.get(importedName)) { val } else { null }
+                } else {
+                  null
+                };
+                if (importedName != "*" && exp == null) {
+                  if (record) {
+                    this.#recordUnresolved(result, importedName, spec);
                   }
-
-                  k = k + 1;
+                } else if (exp != null) {
+                  let localSym = result.rootScope.getLocal(spec.local.name);
+                  if (localSym != null && (localSym as Symbol).importTarget != exp as Symbol) {
+                    (localSym as Symbol).importTarget = exp as Symbol;
+                    changed = true;
+                  }
                 }
+                k = k + 1;
               }
             }
           }
         }
         case ExportAllDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
-
           if (lib.imports.has(specifier)) {
-            let depPath = lib.imports[specifier];
-            let depLib = this.#loader.get(depPath);
-            if (depLib != null) {
-              let dep = depLib as SourceFile;
-              if (dep.scopeResult != null) {
-                let depScope = dep.scopeResult as ScopeResult;
-                let depExports = depScope.exports;
-
-                for (let key in depExports.keys()) {
-                  if (let (true, info) = depExports.get(key)) {
-                    result.exports[key] = info;
-                  }
+            let depLib = this.#loader.get(lib.imports[specifier]);
+            if (depLib != null && (depLib as SourceFile).scopeResult != null) {
+              let depExports = ((depLib as SourceFile).scopeResult as ScopeResult).exports;
+              for (let key in depExports.keys()) {
+                if (let (true, info) = depExports.get(key)) {
+                  rebuilt[key] = info;
                 }
               }
             }
@@ -485,33 +524,22 @@ export final class Compiler {
         }
         case ExportFromDeclaration {moduleSpecifier, specifiers}: {
           let specifier = moduleSpecifier.value;
-
           if (lib.imports.has(specifier)) {
-            let depPath = lib.imports[specifier];
-            let depLib = this.#loader.get(depPath);
-            if (depLib != null) {
-              let dep = depLib as SourceFile;
-              if (dep.scopeResult != null) {
-                let depScope = dep.scopeResult as ScopeResult;
-                let depExports = depScope.exports;
-
-                var m = 0;
-                while (m < specifiers.length) {
-                  let spec = specifiers[m];
-                  let importedName = spec.imported.name;
-                  let localName = spec.local.name;
-
-                  let exp = if (let (true, val) = depExports.get(importedName)) { val } else { null };
-
-                  if (exp == null) {
-                    result.unresolvedNames.push(new UnresolvedName(importedName, spec));
-                  } else {
-                    let info = exp as Symbol;
-                    result.exports[localName] = info;
+            let depLib = this.#loader.get(lib.imports[specifier]);
+            if (depLib != null && (depLib as SourceFile).scopeResult != null) {
+              let depExports = ((depLib as SourceFile).scopeResult as ScopeResult).exports;
+              var m = 0;
+              while (m < specifiers.length) {
+                let spec = specifiers[m];
+                let exp = if (let (true, val) = depExports.get(spec.imported.name)) { val } else { null };
+                if (exp == null) {
+                  if (record) {
+                    this.#recordUnresolved(result, spec.imported.name, spec);
                   }
-
-                  m = m + 1;
+                } else {
+                  rebuilt[spec.local.name] = exp as Symbol;
                 }
+                m = m + 1;
               }
             }
           }
@@ -520,6 +548,53 @@ export final class Compiler {
       }
       j = j + 1;
     }
+
+    // Replace the live export map in place (other components hold a
+    // reference to the same HashMap object) when the rebuild differs.
+    var same = rebuilt.size == result.exports.size;
+    if (same) {
+      for (let key in rebuilt.keys()) {
+        let cur = if (let (true, c) = result.exports.get(key)) { c } else { null };
+        let next = if (let (true, n) = rebuilt.get(key)) { n } else { null };
+        if (cur == null || cur as Symbol != next as Symbol) {
+          same = false;
+        }
+      }
+    }
+    if (!same) {
+      result.exports.clear();
+      for (let key in rebuilt.keys()) {
+        if (let (true, info) = rebuilt.get(key)) {
+          result.exports[key] = info;
+        }
+      }
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Snapshot a freshly built module's local-declaration exports. */
+  #snapshotLocalExports(lib: SourceFile): void {
+    if (lib.scopeResult != null) {
+      let exports = (lib.scopeResult as ScopeResult).exports;
+      let snap = new HashMap<String, Symbol>();
+      for (let key in exports.keys()) {
+        if (let (true, info) = exports.get(key)) {
+          snap[key] = info;
+        }
+      }
+      this.#localExports[lib.path] = snap;
+    }
+  }
+
+  /** Record an unresolved import name, once per (name, node). */
+  #recordUnresolved(result: ScopeResult, name: String, node: Node): void {
+    for (let existing in result.unresolvedNames) {
+      if (existing.name == name && existing.node == node) {
+        return;
+      }
+    }
+    result.unresolvedNames.push(new UnresolvedName(name, node));
   }
 }
 
@@ -1223,7 +1298,8 @@ let checkFile = (
   allFiles: Array<SourceFile>,
   emitLocations: boolean,
   sharedState: SharedCheckerState,
-  warnUnnecessaryCasts: boolean
+  warnUnnecessaryCasts: boolean,
+  recheckPaths: HashSet<String> | null
 ): CheckResult => {
   let depExports = new HashMap<String, ScopeModuleExports>();
   let depModels = new HashMap<String, SemanticModel>();
@@ -1250,6 +1326,25 @@ let checkFile = (
     depModels[path] = allResults[path].model;
   }
 
+  // Modules that run after this one in evaluation order: an import
+  // whose declaration originates in one of them crosses an import
+  // cycle's back edge (docs/design/import-cycles.md). Null in the
+  // common acyclic case so the checker skips the bookkeeping.
+  var laterPaths: HashSet<String> | null = null;
+  if (recheckPaths != null) {
+    let later = new HashSet<String>();
+    var seen = false;
+    for (let other in allFiles) {
+      if (seen) {
+        later.add(other.path);
+      }
+      if (other.path == file.path) {
+        seen = true;
+      }
+    }
+    laterPaths = later;
+  }
+
   return checkModule(
     file.ast,
     file.scopeResult as ScopeResult,
@@ -1257,7 +1352,9 @@ let checkFile = (
     depModels,
     emitLocations,
     sharedState,
-    warnUnnecessaryCasts);
+    warnUnnecessaryCasts,
+    laterPaths,
+    recheckPaths);
 };
 
 /**
@@ -1314,8 +1411,47 @@ export let checkCompilation = (
     }
   }
 
-  // Check each file in topo order.
   let tCheck = performance.start("check");
+
+  // When the import graph has cycles, compute the re-check closure up
+  // front (docs/design/import-cycles.md): a file with a back-edge
+  // import (a dependency later in evaluation order) cannot resolve it
+  // on the first pass, and any file importing from a re-checked file
+  // must also re-check. The set feeds both the second pass below and
+  // the checker's cycle rules (types and inferred signatures may only
+  // cross a back edge when they originate OUTSIDE this set — an
+  // origin checked exactly once has stable, unique types).
+  var recheckPaths: HashSet<String> | null = null;
+  if (result.hasCycle) {
+    let pathIndex = new HashMap<String, i32>();
+    var pi = 0;
+    while (pi < result.files.length) {
+      pathIndex[result.files[pi].path] = pi;
+      pi = pi + 1;
+    }
+    let recheck = new HashSet<String>();
+    var fi2 = 0;
+    while (fi2 < result.files.length) {
+      let file = result.files[fi2];
+      var needs = false;
+      let depIter = file.imports.keys();
+      while (let (true, spec) = depIter.next()) {
+        let depPath = file.imports[spec];
+        if (pathIndex.has(depPath)) {
+          if (pathIndex[depPath] > fi2 || recheck.has(depPath)) {
+            needs = true;
+          }
+        }
+      }
+      if (needs) {
+        recheck.add(file.path);
+      }
+      fi2 = fi2 + 1;
+    }
+    recheckPaths = recheck;
+  }
+
+  // Check each file in topo order.
   for (let file in result.files) {
     // Carry forward if source unchanged AND not invalidated by a dependency.
     if (previous != null && !mustCheck.has(file.path)) {
@@ -1331,7 +1467,7 @@ export let checkCompilation = (
     }
 
     // (Re-)check this file.
-    let checkResult = checkFile(file, allResults, result.files, emitLocations, sharedState, warnUnnecessaryCasts);
+    let checkResult = checkFile(file, allResults, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths);
     allResults[file.path] = checkResult;
     allSources[file.path] = file.source;
 
@@ -1398,6 +1534,27 @@ export let checkCompilation = (
           if (affected) {
             mustCheck.add(importerPath);
           }
+        }
+      }
+    }
+  }
+  // Second pass, only when the import graph has cycles
+  // (docs/design/import-cycles.md): a module with a back-edge import
+  // could not resolve it on the first pass (the exporting module had
+  // no model yet), and any module importing from a re-checked module
+  // must re-check so it sees the final model. The re-check set is that
+  // closure; everything acyclic and upstream (the stdlib, in
+  // particular) is checked exactly once. First-pass diagnostics of
+  // re-checked files are superseded wholesale by their second result.
+  if (recheckPaths != null) {
+    let recheck = recheckPaths as HashSet<String>;
+    for (let file in result.files) {
+      if (recheck.has(file.path)) {
+        let second = checkFile(file, allResults, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths);
+        allResults[file.path] = second;
+        if (file.scopeResult != null) {
+          let sr = file.scopeResult as ScopeResult;
+          allSignatures[file.path] = computeExportSignature(sr.exports, sr.rootScope, second.model);
         }
       }
     }
