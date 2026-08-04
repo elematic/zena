@@ -278,6 +278,33 @@ already succeeded for the current inputs. **The cached result is correct.**
    configuration issue (missing input, output, or dependency in `package.json`).
    Check the `wireit` config before assuming the cache is stale.
 
+### `ERR_MODULE_NOT_FOUND` on a file whose source exists
+
+Rare, and the one case where the build output really is wrong. If something
+fails to import, say, `packages/compiler/lib/ast.js` while `src/lib/ast.ts` is
+sitting right there, the package's output went partial and Wireit cached it as
+good:
+
+1. A file disappears from `lib/` — an interrupted build, a stray `rm`.
+2. An input changes, so Wireit re-runs `tsc`. The `tsc` scripts use
+   `clean: "if-file-deleted"` to stay incremental, so `tsconfig.tsbuildinfo`
+   survives — and it still lists that file as emitted, so `tsc` re-emits
+   nothing and exits 0.
+3. Wireit caches the incomplete output, and every dependent fails until some
+   unrelated input shifts the fingerprint.
+
+The fingerprint is computed from inputs, so deleting the output does not
+invalidate it — Wireit will just restore the same bad cache entry. Drop the
+entry instead:
+
+```bash
+rm -rf packages/compiler/.wireit packages/compiler/tsconfig.tsbuildinfo
+npm run build -w @zena-lang/compiler
+```
+
+This is the one situation where the cache is genuinely stale. Everything under
+"Rules" above still applies otherwise.
+
 ### Running Tests
 
 **ALWAYS** use `npm` to run tests. Never use `npx`, `tsx`, or bash scripts.
