@@ -90,6 +90,15 @@ from an unchecked module's AST.
   imports). The cycle rules above are enforced during this pass, keyed
   by two sets threaded into the checker: modules later in evaluation
   order, and the re-check closure.
+- **Incremental hosts** (a `previous` check result): closure members
+  never carry a previous result forward — their first-pass results are
+  order-dependent by design, and pass two consults closure models
+  before replacing them. Symmetrically, a shell is only materialized
+  for an import whose origin lies across a back edge of the *current*
+  compilation; any other model miss is stale incremental state (a
+  re-loaded module's rebuilt scope has fresh Symbols the old model
+  cannot resolve), and minting a shell there would give the
+  declaration a second nominal identity.
 
 ### Self-hosted compiler
 

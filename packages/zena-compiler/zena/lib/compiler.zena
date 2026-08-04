@@ -1454,7 +1454,15 @@ export let checkCompilation = (
   // Check each file in topo order.
   for (let file in result.files) {
     // Carry forward if source unchanged AND not invalidated by a dependency.
-    if (previous != null && !mustCheck.has(file.path)) {
+    // Members of the re-check closure never carry forward: their first-pass
+    // results are order-dependent by design, and the second pass consults
+    // closure models before replacing them — a result carried from an
+    // earlier compilation would be consulted through the current scope's
+    // Symbols and miss (models resolve bindings by Symbol identity, and a
+    // re-loaded module's rebuilt scope mints fresh Symbols).
+    let inRecheckClosure = recheckPaths != null
+      && (recheckPaths as HashSet<String>).has(file.path);
+    if (previous != null && !mustCheck.has(file.path) && !inRecheckClosure) {
       let prev = previous as ProgramCheckResult;
       if (prev.sources.has(file.path) && prev.results.has(file.path)) {
         allResults[file.path] = prev.results[file.path];

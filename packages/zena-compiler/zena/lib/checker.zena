@@ -821,6 +821,20 @@ final class CheckerContext {
    */
   materializeCyclicImport(info: Symbol, name: String): Type | null {
     let target = info.resolveTarget();
+    // Only a genuine back edge of the current compilation may create a
+    // shell: the origin evaluates later, so it has no model YET and its
+    // own registration is guaranteed to fill this object. Any other
+    // model miss is stale state — e.g. an incremental host re-loaded
+    // the origin after its model was computed, so lookups against the
+    // old model miss on the new Symbols. Minting a shell there would
+    // give the declaration a second nominal identity.
+    let later = this.cyclicLaterPaths;
+    if (later == null) {
+      return null;
+    }
+    if (!(later as HashSet<String>).has(target.modulePath)) {
+      return null;
+    }
     let d = target.declaration;
     if (d == null) {
       return null;

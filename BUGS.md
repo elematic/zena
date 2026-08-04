@@ -663,25 +663,21 @@ found, returning false`, so the reachability pass is probably
 - **Workaround**: Explicitly assign to a new local instead of overriding: `let classType = unnarrowedType as ClassType;`
 - **Details**: When a variable is narrowed by `if (x is ClassType)`, the Zena type system treats it as narrowed logic-wise, but the underlying Wasm local remains its original generic uncasted type (e.g. `(ref null $Type)`). The bootstrap compiler does not inject dynamic `ref.cast` when later reading this variable to evaluate a property access. Wasm compilation fails with: `type mismatch: expected (ref null $ClassType), found (ref null $Type)`. Assigning it explicitly circumvents the flaw.
 
-### zena-cli writes a full WAT dump next to every cache entry
+### Incremental carry-forward can serve models keyed by dead Symbols
 
-- **Found**: 2026-07-26 (a 135 MB "output" turned out to be the .wat)
-- **Severity**: low-medium (doubles codegen work per build; the
-  **all_tests** WAT is ~135 MB of text for a 4.5 MB module)
-- **Workaround**: none needed; the dump is unconditional in
-  zena/cli/main.zena (BinaryGenerator output, then a second full
-  WatGenerator pass whose text is written to <out>.wat).
-- **Details**: Probably a debug leftover. Should be behind a flag
-  (-g / ZENA_EMIT_WAT), which would roughly halve codegen time and
-  avoid giant text files in .zena/cache. (An earlier version of this
-  entry claimed the tests WASM was 85 MB — that was this WAT dump;
-  the binary is ~4.5 MB.)
+- **Found**: 2026-08-04 (diagnosing the import-cycles CI failure)
+- **Severity**: medium (acyclic incremental flows only; cyclic modules
+  are exempt — re-check-closure members never carry forward)
+- **Workaround**: none needed for batch compiles (no `previous`).
+- **Details**: `LibraryLoader.invalidate(X)` clears `scopeResult` on
+  X's direct importers, so their scopes rebuild with fresh Symbols,
+  but `checkCompilation` carries their CheckResults forward when X's
+  export signature is unchanged. The carried model resolves bindings
+  by Symbol identity, so a later compilation that re-checks one of
+  their dependents resolves imports through the current Symbols,
+  misses in the stale model, and degrades the imports to error types.
+  Fix shape: record the ScopeResult each result was checked against
+  and treat a rebuilt scope as invalidating (must not regress the
+  body-only-edit tests in incremental-checking_test), or mint stable
+  SymbolIds per (path, declaration) so rebuilt scopes stay addressable.
 
-### fs.zena errno messages lack the numeric code
-
-- **Found**: 2026-07-26 (debugging a WASI errno 48 as "UNKNOWN")
-- **Severity**: low
-- **Workaround**: none.
-- **Details**: \_\_errnoToString maps a subset of WASI errnos and prints
-  bare "UNKNOWN" otherwise; unmapped codes (48 = ENOMEM among them)
-  should at least print their number.
