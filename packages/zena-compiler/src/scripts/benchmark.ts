@@ -20,7 +20,6 @@ let runStrings = false;
 let runBasic = false;
 let runMapKeys = false;
 let runMaps = false;
-let runZirBench = false;
 let filter = '';
 
 const args = process.argv.slice(2);
@@ -42,8 +41,6 @@ for (let i = 0; i < args.length; i++) {
     runMapKeys = true;
   } else if (arg === '--maps') {
     runMaps = true;
-  } else if (arg === '--zir') {
-    runZirBench = true;
   } else if (arg === '--filter' || arg === '-f') {
     filter = args[i + 1] || '';
     i++;
@@ -467,63 +464,6 @@ if (runCompiler && targets.length > 0) {
       );
       console.log(makeBreakdownSeparator('└', '┴', '┘'));
     }
-    // --- Optional: Self-Hosted with the ZIR backend (--zir) ---
-    // Measures the migration overhead of try-lower-then-fallback and the
-    // ZIR emission path itself (docs/design/ir.md M2 gate: <= 1.15x).
-    if (runZirBench) {
-      const zirTimes: number[] = [];
-      let zirTotalCodegen = 0;
-      let zirTotalEmitCode = 0;
-      let zirCoverage = '';
-      for (let i = 0; i < targetRuns; i++) {
-        const t0 = performance.now();
-        const output = execSync(
-          `"${zenaCli}" build "${target.path}" -o "${selfOutWasm}" --time --no-cache`,
-          {
-            cwd: repoRoot,
-            encoding: 'utf-8',
-            stdio: 'pipe',
-            env: {
-              ...process.env,
-              ZENA_BACKEND: 'zir',
-              ZENA_ZIR_STATS: '1',
-              ZENA_GC_RESERVE_MB:
-                process.env.ZENA_GC_RESERVE_MB ??
-                (target.name === 'self_compile.zena' ? '1536' : '0'),
-            },
-          },
-        );
-        const t1 = performance.now();
-        zirTimes.push(t1 - t0);
-        for (const line of output.split('\n')) {
-          if (line.startsWith('Codegen:')) {
-            zirTotalCodegen += parseFloat(line.split(':')[1].trim());
-          } else if (line.trim().startsWith('Emit Code:')) {
-            zirTotalEmitCode += parseFloat(line.split(':')[1].trim());
-          } else if (line.startsWith('zir backend:')) {
-            zirCoverage = line.trim();
-          }
-        }
-      }
-      const zirMean = zirTimes.reduce((a, b) => a + b, 0) / targetRuns;
-      const zirCodegen = zirTotalCodegen / targetRuns;
-      const zirEmitCode = zirTotalEmitCode / targetRuns;
-      console.log(`\nZIR backend (ZENA_BACKEND=zir), same target:`);
-      console.log(
-        `  Mean compilation time: ${zirMean.toFixed(2)} ms ` +
-          `(streaming: ${selfMean.toFixed(2)} ms, ratio ${(zirMean / selfMean).toFixed(3)}x)`,
-      );
-      console.log(
-        `  Codegen phase: ${zirCodegen.toFixed(2)} ms (streaming: ${codegen.toFixed(2)} ms)`,
-      );
-      console.log(
-        `  Emit Code phase: ${zirEmitCode.toFixed(2)} ms (streaming: ${emitCode.toFixed(2)} ms)`,
-      );
-      if (zirCoverage) {
-        console.log(`  Coverage: ${zirCoverage}`);
-      }
-    }
-
     console.log('\n--------------------------------------------------\n');
   }
 }

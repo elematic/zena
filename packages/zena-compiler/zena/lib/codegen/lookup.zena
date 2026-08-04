@@ -1,0 +1,219 @@
+/**
+ * Cross-module lookup helpers: declaration resolution against the
+ * wasm module's discovery state and value-export collection. Kept
+ * out of codegen-utils to avoid an import cycle (wasm-module imports
+ * codegen-utils).
+ */
+import { String } from 'zena:string';
+import { Array } from 'zena:array';
+import {
+  CallExpression, ClassDeclaration, DeclareFunction, EnumDeclaration,
+  Expression, ExportAllDeclaration, ExportFromDeclaration, Identifier,
+  IdentifierPattern,
+  ImportDeclaration, ImportSpecifier, MemberExpression, Module, Node,
+  VariableDeclaration,
+} from '../ast.zena';
+import {
+  ArrayType, ClassType, FunctionType, InterfaceType, Type,
+  TypeParameterType,
+} from '../types.zena';
+import { Symbol, SymbolId } from '../scope/symbol.zena';
+import { SemanticModel } from '../semantic-model.zena';
+import { Program, CompilationUnit } from '../program.zena';
+import { WasmModule } from './wasm-module.zena';
+import { dirName, normalizePath } from '../module-resolver.zena';
+import { getTypeUniqueKey } from './codegen-utils.zena';
+
+let matchTypes = (t1: Type, t2: Type): boolean => {
+  if (t1 is TypeParameterType) {
+    return true;
+  }
+  match (t1) {
+    case ArrayType {elementType}: {
+      if (t2 is ArrayType) {
+        return matchTypes(elementType, (t2 as ArrayType).elementType);
+      }
+      return false;
+    }
+    case ClassType as ct1: {
+      if (t2 is ClassType) {
+        let ct2 = t2 as ClassType;
+        if (ct1.name != ct2.name) { return false; }
+        if (ct1.typeArguments != null && ct2.typeArguments != null) {
+          let args1 = ct1.typeArguments as Array<Type>;
+          let args2 = ct2.typeArguments as Array<Type>;
+          if (args1.length != args2.length) { return false; }
+          var i = 0;
+          while (i < args1.length) {
+            if (!matchTypes(args1[i], args2[i])) { return false; }
+            i += 1;
+          }
+        }
+        return true;
+      }
+      return false;
+    }
+    case InterfaceType as it1: {
+      if (t2 is InterfaceType) {
+        let it2 = t2 as InterfaceType;
+        if (it1.name != it2.name) { return false; }
+        if (it1.typeArguments != null && it2.typeArguments != null) {
+          let args1 = it1.typeArguments as Array<Type>;
+          let args2 = it2.typeArguments as Array<Type>;
+          if (args1.length != args2.length) { return false; }
+          var i = 0;
+          while (i < args1.length) {
+            if (!matchTypes(args1[i], args2[i])) { return false; }
+            i += 1;
+          }
+        }
+        return true;
+      }
+      return false;
+    }
+    case _: {
+      return getTypeUniqueKey(t1) == getTypeUniqueKey(t2);
+    }
+  }
+};
+
+let matchOverload = (t1: Type, t2: Type): boolean => {
+  if (t1 is FunctionType && t2 is FunctionType) {
+    let ft1 = t1 as FunctionType;
+    let ft2 = t2 as FunctionType;
+    if (ft1.parameters.length != ft2.parameters.length) {
+      return false;
+    }
+    var i = 0;
+    while (i < ft1.parameters.length) {
+      if (!matchTypes(ft1.parameters[i], ft2.parameters[i])) {
+        return false;
+      }
+      i += 1;
+    }
+    return true;
+  }
+  return matchTypes(t1, t2);
+};
+
+export let findDeclaration = (wasm: WasmModule, sym: Symbol, expectedType: Type | null): DeclareFunction | null => {
+  let resolved = sym.resolveTarget();
+  let decl = resolved.declaration;
+  if (decl == null) return null;
+
+  let prog = wasm.program;
+  if (prog != null && resolved.modulePath != "") {
+    let canonicalPath = resolved.modulePath;
+    if (prog.unitsByPath.has(canonicalPath)) {
+      let targetUnit = prog.unitsByPath[canonicalPath];
+      let importedName = resolved.name;
+      
+      let key = canonicalPath + "::" + importedName;
+      if (let (true, list) = prog.exportedFunctions.get(key)) {
+        var fallback: DeclareFunction | null = null;
+        for (let df in list) {
+          if (expectedType == null) {
+            return df;
+          }
+          let nodeType = targetUnit.model.getNodeType(df);
+          if (nodeType != null && matchOverload(nodeType as Type, expectedType as Type)) {
+            return df;
+          }
+          fallback = df;
+        }
+        if (fallback != null) {
+          return fallback;
+        }
+      }
+    }
+  }
+
+  if (decl is DeclareFunction) {
+    return decl as DeclareFunction;
+  }
+  return null;
+};
+
+
+export let collectValueExports = (program: Program, unit: CompilationUnit, result: HashMap<String, Symbol>): void => {
+  for (let stmt in unit.ast.body) {
+    match (stmt) {
+      case VariableDeclaration {pattern, exported}: {
+        if (exported && pattern is IdentifierPattern) {
+          let ident = pattern as IdentifierPattern;
+          let sym = unit.model.resolveDeclaration(ident);
+          if (sym != null) {
+            result[ident.name] = sym as Symbol;
+          }
+        }
+      }
+      case ClassDeclaration {name, exported}: {
+        if (exported) {
+          let sym = unit.model.resolveDeclaration(name);
+          if (sym != null) {
+            result[name.name] = sym as Symbol;
+          }
+        }
+      }
+      case EnumDeclaration {name, exported}: {
+        if (exported) {
+          let sym = unit.model.resolveDeclaration(name);
+          if (sym != null) {
+            result[name.name] = sym as Symbol;
+          }
+        }
+      }
+      case DeclareFunction {name, exported}: {
+        if (exported) {
+          let sym = unit.model.resolveDeclaration(name);
+          if (sym != null) {
+            result[name.name] = sym as Symbol;
+          }
+        }
+      }
+      case ExportFromDeclaration {specifiers, moduleSpecifier}: {
+        let specifier = moduleSpecifier.value;
+        var canonicalPath = specifier;
+        if (specifier.startsWith("./") || specifier.startsWith("../")) {
+          let dir = dirName(unit.ast.path);
+          canonicalPath = normalizePath(dir + "/" + specifier);
+        }
+        if (program.unitsByPath.has(canonicalPath)) {
+          let targetUnit = program.unitsByPath[canonicalPath];
+          for (let spec in specifiers) {
+            let importedName = spec.imported.name;
+            let localName = spec.local.name;
+            let targetExports = new HashMap<String, Symbol>();
+            collectValueExports(program, targetUnit, targetExports);
+            if (targetExports.has(importedName)) {
+              result[localName] = targetExports[importedName];
+            }
+          }
+        }
+      }
+      case ExportAllDeclaration {moduleSpecifier}: {
+        let specifier = moduleSpecifier.value;
+        var canonicalPath = specifier;
+        if (specifier.startsWith("./") || specifier.startsWith("../")) {
+          let dir = dirName(unit.ast.path);
+          canonicalPath = normalizePath(dir + "/" + specifier);
+        }
+        if (program.unitsByPath.has(canonicalPath)) {
+          let targetUnit = program.unitsByPath[canonicalPath];
+          collectValueExports(program, targetUnit, result);
+        }
+      }
+      case _: {}
+    }
+  }
+};
+
+
+export let isArrayIntrinsic = (name: String): boolean => {
+  return name == "__array_len" || name == "__byte_array_length" ||
+         name == "__array_get" || name == "__byte_array_get" ||
+         name == "__array_set" || name == "__byte_array_set" ||
+         name == "__array_new" || name == "__array_new_empty" ||
+         name == "__byte_array_new" || name == "__byte_array_copy";
+};
+

@@ -1,10 +1,11 @@
+import { collectValueExports } from './lookup.zena';
 import { ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeStructRef, ValTypeRef } from './wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature,
   WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, WasmTag, StringLiteralLocation
 } from './wasm-module.zena';
 import { ByteBuffer } from 'zena:byte-buffer';
 import { ReachabilityAnalysis } from './reachability/analysis.zena';
-import { getClassKey, getInterfaceKey, getInterfaceMemberKey, sortStringsByLengthDescending } from './codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getInterfaceMemberKey, sortStringsByLengthDescending, parseI64OrU64Literal } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { Node, VariableDeclaration, IdentifierPattern, Expression, NumberLiteral, StringLiteral, BooleanLiteral, ThrowExpression, TryExpression, DeclareFunction, FunctionExpression, EnumDeclaration, ImportSpecifier, ImportDeclaration, Module, AccessorDeclaration, SetterInfo } from '../ast.zena';
@@ -15,18 +16,18 @@ import { ValType } from './wasm.zena';
 import { parseI32, parseF64, parseI64, i32ToString } from 'zena:string-convert';
 import { Array } from 'zena:array';
 import { HashSet } from 'zena:set';
-import { FunctionGenerator } from './function-generator.zena';
+
 import { WasmEmitter } from './wasm-emitter.zena';
 import { ProgramInterface } from '../semantic-model.zena';
 import { performance } from '../time.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
 import { HashMap } from 'zena:map';
-import { collectValueExports } from './function-generator.zena';
-import { parseI64OrU64Literal } from './expr/primitives.zena';
+
+
 import { console } from 'zena:console';
 import { Error } from 'zena:error';
 import { IrBody } from './ir/ir.zena';
-import { tryLowerFunction } from './ir/lowering.zena';
+import { lowerFunction } from './ir/lowering.zena';
 import { verifyIr } from './ir/verifier.zena';
 import { runGvn } from './ir/gvn.zena';
 import { IrCfg } from './ir/cfg.zena';
@@ -36,18 +37,10 @@ export final class ModuleGenerator {
   program: Program;
   emitter: WasmEmitter;
   target: String;
-  /**
-   * Experimental ZIR backend (docs/design/ir.md): when enabled, function
-   * bodies the ZIR lowering supports are compiled AST → ZIR → wasm; the
-   * rest fall back to the streaming FunctionGenerator. Opt in with
-   * ZENA_BACKEND=zir; ZENA_ZIR_STATS=1 reports per-module coverage.
-   */
-  useZir: boolean;
+  /** ZENA_ZIR_STATS=1: report the per-module lowered-function count. */
   zirStats: boolean;
-  /** Fallback becomes a fatal error (ZENA_BACKEND=zir-strict). */
-  zirStrict: boolean;
 
-  new(this.program, this.emitter, this.target = "zena-cli", this.useZir = false, this.zirStats = false, this.zirStrict = false);
+  new(this.program, this.emitter, this.target = "zena-cli", this.zirStats = false);
 
   emitDefaultValue(type: ValType): void {
     if (type is ValTypeI32) {
@@ -76,9 +69,6 @@ export final class ModuleGenerator {
     }
   }
 
-  generateExpression(expr: Expression, funcComp: FunctionGenerator): void {
-    funcComp.generateExpression(expr);
-  }
   
   compile(): void {
     for (let u in this.program.units) {
@@ -620,65 +610,27 @@ export final class ModuleGenerator {
     let tEmitCode = performance.start("codegen-emit-code");
     this.emitter.emitCodeSectionStart(wasm.functions.length);
     var zirLowered = 0;
-    var zirFellBack = 0;
-    let zirBailReasons: HashMap<String, i32> | null =
-        if (this.useZir && this.zirStats) new HashMap<String, i32>() else null;
      for (let wasmFunc in wasm.functions) {
-        if (this.useZir) {
-          let irBody = tryLowerFunction(wasm, wasmFunc, this.zirStrict, zirBailReasons);
-          if (irBody != null) {
-            let body = irBody as IrBody;
-            runGvn(body, new IrCfg(body));
-            // Loud on verifier failure: a broken lowering must never limp
-            // into emission (and must not silently fall back either).
-            let verifyErrors = verifyIr(body);
-            if (verifyErrors.length > 0) {
-              var message = "zir verify failed for " +
-                  (if (wasmFunc.name != null) wasmFunc.name as String else "<unnamed>") + ":";
-              for (let e in verifyErrors) {
-                message = message + "\n  " + e;
-              }
-              throw new Error(message);
-            }
-            emitZirFunction(wasm, this.emitter, wasmFunc, body);
-            zirLowered += 1;
-            continue;
+        // Lowering failures throw: a bail is a compiler bug, not a
+        // coverage gap.
+        let body = lowerFunction(wasm, wasmFunc);
+        runGvn(body, new IrCfg(body));
+        // Loud on verifier failure: a broken lowering must never limp
+        // into emission.
+        let verifyErrors = verifyIr(body);
+        if (verifyErrors.length > 0) {
+          var message = "zir verify failed for " +
+              (if (wasmFunc.name != null) wasmFunc.name as String else "<unnamed>") + ":";
+          for (let e in verifyErrors) {
+            message = message + "\n  " + e;
           }
-          zirFellBack += 1;
+          throw new Error(message);
         }
-        let funcCompiler = new FunctionGenerator(wasm, this.emitter, wasmFunc);
-        funcCompiler.generate();
+        emitZirFunction(wasm, this.emitter, wasmFunc, body);
+        zirLowered += 1;
      }
-    if (this.useZir && this.zirStats) {
-      console.log("zir backend: " + i32ToString(zirLowered) + " lowered, " +
-          i32ToString(zirFellBack) + " fell back");
-      if (zirBailReasons != null) {
-        // Top bail reasons, most frequent first: the coverage worklist.
-        let reasons = zirBailReasons as HashMap<String, i32>;
-        let keys = new Array<String>();
-        let counts = new Array<i32>();
-        for (let pair in reasons) {
-          keys.push(pair.key);
-          counts.push(pair.value);
-        }
-        for (var i = 1; i < keys.length; i += 1) {
-          let k = keys[i];
-          let c = counts[i];
-          var j = i - 1;
-          while (j >= 0 && counts[j] < c) {
-            keys[j + 1] = keys[j];
-            counts[j + 1] = counts[j];
-            j -= 1;
-          }
-          keys[j + 1] = k;
-          counts[j + 1] = c;
-        }
-        var shown = 0;
-        for (var i = 0; i < keys.length && shown < 200; i += 1) {
-          console.log("  bail x" + i32ToString(counts[i]) + ": " + keys[i]);
-          shown += 1;
-        }
-      }
+    if (this.zirStats) {
+      console.log("zir backend: " + i32ToString(zirLowered) + " lowered");
     }
     if (wasm.datas.length > 0) {
       this.emitter.emitDataCountSection(wasm.datas.length);

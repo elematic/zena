@@ -129,21 +129,11 @@ export let main = (): i32 => {
     let tCodegen = performance.start("codegen");
     let program = new Program(units, entryUnit);
     
-    // Experimental ZIR backend (docs/design/ir.md): supported function
-    // bodies go AST -> ZIR -> wasm; the rest use the streaming generator.
-    // ZIR is the default (and soon only) backend; fallbacks to the
-    // streaming generator are FATAL by default — a bail is a compiler
-    // bug, not a coverage gap, now that strict coverage is total.
-    // ZENA_BACKEND=streaming keeps the old generator reachable as a
-    // release valve until it is deleted; ZENA_BACKEND=zir allows
-    // silent fallback (measurement only).
-    let backendEnv = getEnv("ZENA_BACKEND");
-    let backendName = if (backendEnv != null) backendEnv as String else "zir-strict";
-    let zirStrict = backendName == "zir-strict";
-    let useZir = backendName == "zir" || zirStrict;
+    // Every compile goes AST -> ZIR -> wasm; a lowering bail is a
+    // fatal error. ZENA_ZIR_STATS=1 prints the lowered count.
     let zirStats = getEnv("ZENA_ZIR_STATS") != null;
 
-    let generator = new BinaryGenerator(target, useZir, zirStats, zirStrict);
+    let generator = new BinaryGenerator(target, zirStats);
     let wasmBytes = generator.generate(program).toByteArray();
     writeFileBytes(outPath, wasmBytes);
 
@@ -151,7 +141,7 @@ export let main = (): i32 => {
     // dwarfs the binary (~30x — the tests module's dump is ~135 MB),
     // so it is opt-in for debugging.
     if (getEnv("ZENA_EMIT_WAT") != null) {
-      let watGenerator = new WatGenerator(target, useZir, false, zirStrict);
+      let watGenerator = new WatGenerator(target, false);
       let watString = watGenerator.generate(program);
       writeFile(outPath + ".wat", watString);
     }

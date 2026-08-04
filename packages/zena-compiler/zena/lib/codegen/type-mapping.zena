@@ -9,7 +9,6 @@ import {
 import { SemanticModel } from '../semantic-model.zena';
 import { Node, Identifier, ThisExpression, Expression } from '../ast.zena';
 import { Symbol } from '../scope/symbol.zena';
-import { FunctionContext } from './function-context.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -674,39 +673,6 @@ export let substituteTypeParamsInFunctionContext = (wasmFunction: WasmFunction |
 
   cacheVal[t] = substituted;
   return substituted;
-};
-
-export let getNodeType = (ctx: FunctionContext, node: Node): Type | null => {
-  let t = ctx.wasmFunction.model.getNodeType(node);
-  if (t == null) { return null; }
-  let ct = ctx.wasmFunction.classType;
-  if (t is ThisType && ct != null) {
-    return ct;
-  }
-  return substituteTypeParamsInFunctionContext(ctx.wasmFunction, t);
-};
-
-export let getExpressionType = (ctx: FunctionContext, node: Node): Type | null => {
-  let t = getNodeType(ctx, node);
-  if (t != null) {
-    if (node is ThisExpression) {
-      let types = new Array<Type>();
-      types.push(t);
-      types.push(new NullType());
-      return new UnionType(types);
-    }
-    return t;
-  }
-  if (node is Identifier) {
-    let sym = ctx.wasmFunction.model.resolve(node as Identifier);
-    if (sym != null) {
-      let bType = ctx.wasmFunction.model.getBindingType(sym);
-      if (bType != null) {
-        return substituteTypeParamsInFunctionContext(ctx.wasmFunction, bType);
-      }
-    }
-  }
-  return null;
 };
 
 export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, fieldName: String): WasmSignature => {
@@ -1642,86 +1608,6 @@ export let isWasmSubtypeWithStructs = (sub: ValType, superType: ValType): boolea
     case _: false
   }
   case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
-};
-
-export let castValTypeRefNullIfNeeded = (ctx: FunctionContext, initWasmType: ValType, targetWasmType: ValType): void => {
-  let isTargetRef = match (targetWasmType) {
-    case ValTypeRef: true
-    case ValTypeRefNull: true
-    case ValTypeStructRef: true
-    case _: false
-  };
-  let needCast = match (initWasmType) {
-    case ValTypeRef as ta: match (targetWasmType) {
-      case ValTypeRef as tb: ta.target.index != tb.target.index
-      case ValTypeRefNull as tb: ta.target.index != tb.target.index
-      case _: true
-    }
-    case ValTypeRefNull as ta: match (targetWasmType) {
-      case ValTypeRef as tb: ta.target.index != tb.target.index
-      case ValTypeRefNull as tb: ta.target.index != tb.target.index
-      case _: true
-    }
-    case _: !isWasmSubtypeWithStructs(initWasmType, targetWasmType)
-  };
-  if (isTargetRef && needCast) {
-    match (targetWasmType) {
-      case ValTypeRefNull as trn: {
-        let targetIdx = trn.target.index;
-        if (targetIdx != -1) {
-          ctx.emitter.emitRefCastNull(targetIdx);
-        }
-      }
-      case ValTypeRef as tr: {
-        let targetIdx = tr.target.index;
-        if (targetIdx != -1) {
-          ctx.emitter.emitRefCast(targetIdx);
-        } else if (initWasmType is ValTypeRefNull) {
-          ctx.emitter.emitRefAsNonNull();
-        }
-      }
-      case ValTypeStructRef: {
-        if (initWasmType is ValTypeRefNull) {
-          ctx.emitter.emitRefAsNonNull();
-        } else {
-          ctx.emitter.emitRefCastNull(heapTypeToSigned(HeapType.struct));
-        }
-      }
-      case _: {
-        if (initWasmType is ValTypeRefNull && targetWasmType is ValTypeRef) {
-          ctx.emitter.emitRefAsNonNull();
-        }
-      }
-    }
-  } else if (initWasmType is ValTypeRefNull && targetWasmType is ValTypeRef) {
-    // Same target type but a nullability mismatch (needCast compares
-    // targets only): a nullable value flowing into a non-null slot still
-    // needs the null check.
-    ctx.emitter.emitRefAsNonNull();
-  }
-};
-
-export let castRefNullIfNeeded = (ctx: FunctionContext, arg: Expression, argType: Type, targetType: Type): void => {
-  var initWasmType = typeToValTypeWithSub(ctx.wasm, argType, ctx.wasmFunction);
-  if (arg is Identifier) {
-    let idNode = arg as Identifier;
-    let sym = ctx.wasmFunction.model.resolve(idNode);
-    if (sym != null) {
-      let rSym = (sym as Symbol).resolveTarget();
-      let symId = if (ctx.localIndices.has((sym as Symbol).id)) (sym as Symbol).id else rSym.id;
-      if (ctx.localIndices.has(symId)) {
-        let localIndex = ctx.localIndices[symId];
-        let paramCount = ctx.wasmFunction.signature.params.length;
-        initWasmType = if (localIndex < paramCount) {
-          ctx.wasmFunction.signature.params[localIndex]
-        } else {
-          ctx.localTypes[localIndex - paramCount]
-        };
-      }
-    }
-  }
-  let targetWasmType = typeToValType(ctx.wasm, targetType);
-  castValTypeRefNullIfNeeded(ctx, initWasmType, targetWasmType);
 };
 
 

@@ -1,17 +1,10 @@
+import { findDeclaration, collectValueExports, isArrayIntrinsic } from '../lookup.zena';
 /**
- * AST → ZIR lowering (docs/design/ir.md §6), M2 slice 1.
+ * AST → ZIR lowering (docs/design/ir.md §6).
  *
- * Covers plain top-level functions over scalar wasm types (i32/i64/
- * f32/f64, plus booleans as i32): literals, locals, assignments
- * (including compound), signed arithmetic/comparison/bitwise operators,
- * short-circuit && and ||, unary -/!/~, if/else, while with break and
- * continue, and return.
- *
- * Everything else bails out by throwing ZirUnsupported, which
- * tryLowerFunction converts to null; the caller then falls back to the
- * streaming FunctionGenerator for that function. The bail is a migration
- * mechanism, not a fuzzy fallback: coverage is tracked per module and the
- * set of bails shrinks as lowering grows.
+ * This is the compiler's only backend: every function body compiles
+ * AST -> ZIR -> wasm. A ZirUnsupported bail is a compiler bug and
+ * fails the compile (see lowerFunction), never a silent fallback.
  *
  * SSA construction is the structured-AST form: an environment maps each
  * variable symbol to its current value; control-flow joins introduce
@@ -48,17 +41,17 @@ import { InterfaceAdaptation, RecordAdaptation, FunctionAdaptation } from '../..
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
-import { collectValueExports } from '../function-generator.zena';
+
 import { dirName, normalizePath } from '../../module-resolver.zena';
-import { parseI32WithHex } from '../expr/member.zena';
-import { findDeclaration } from '../expr/calls.zena';
-import { isArrayIntrinsic } from '../expr/intrinsics.zena';
+
+
+
 import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical } from '../wasm-module.zena';
 import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
-import { parseI64OrU64Literal } from '../expr/primitives.zena';
+
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, parseI32WithHex, parseI64OrU64Literal } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
@@ -271,58 +264,33 @@ final class MemberTarget {
 }
 
 /**
- * Attempts to lower `func` to ZIR. Returns null when the function uses
- * anything outside the currently supported subset; in strict mode
- * (ZENA_BACKEND=zir-strict) the ZirUnsupported propagates instead —
- * the migration ratchet for proving zero-fallback coverage before the
- * streaming path is deleted (ir.md §14 M4). When `bailReasons` is
- * provided (ZENA_ZIR_STATS=1), each fallback increments its reason so
- * coverage work can chase the biggest blockers first.
+ * Lowers `func` to ZIR. A ZirUnsupported bail is a compiler bug —
+ * re-thrown with the function named so the failure points straight
+ * at the construct that failed to lower; any other exception
+ * propagates untouched.
  */
-export let tryLowerFunction = (wasm: WasmModule, func: WasmFunction, strict: boolean = false, bailReasons: HashMap<String, i32> | null = null): IrBody | null => {
-  if (strict) {
-    // Strict mode is the coverage ratchet: name the function so the
-    // failure points straight at the next thing to lower. (The
-    // catch arm yields null rather than rethrowing directly — a
-    // catch whose every arm throws miscompiles under the bootstrap.)
-    var failMsg: String | null = null;
-    let result: IrBody | null = try {
-      lowerFunctionOrThrow(wasm, func)
-    } catch (e) {
-      if (e is ZirUnsupported) {
-        // message carries the class's own 'zir unsupported: ' prefix;
-        // strip it so re-wrapping does not double it.
-        let m = (e as ZirUnsupported).message;
-        failMsg = m.sliceBytes(17, m.length) + ' [in ' +
-            (if (func.name != null) func.name as String else '<unnamed>') + ']';
-        null
-      } else {
-        throw e
-      }
-    };
-    if (failMsg != null) {
-      throw new ZirUnsupported(failMsg as String);
-    }
-    return result;
-  }
-  // ZirUnsupported means "fall back to the streaming generator"; any
-  // other exception is a lowering bug and propagates.
+export let lowerFunction = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  // (The catch arm yields null rather than rethrowing directly — a
+  // catch whose every arm throws miscompiles under the bootstrap.)
+  var failMsg: String | null = null;
   let result: IrBody | null = try {
     lowerFunctionOrThrow(wasm, func)
   } catch (e) {
     if (e is ZirUnsupported) {
-      if (bailReasons != null) {
-        let reasons = bailReasons as HashMap<String, i32>;
-        let key = (e as ZirUnsupported).message;
-        let count = if (let (true, c) = reasons.get(key)) c else 0;
-        reasons[key] = count + 1;
-      }
+      // message carries the class's own 'zir unsupported: ' prefix;
+      // strip it so re-wrapping does not double it.
+      let m = (e as ZirUnsupported).message;
+      failMsg = m.sliceBytes(17, m.length) + ' [in ' +
+          (if (func.name != null) func.name as String else '<unnamed>') + ']';
       null
     } else {
       throw e
     }
   };
-  return result;
+  if (failMsg != null) {
+    throw new ZirUnsupported(failMsg as String);
+  }
+  return result as IrBody;
 };
 
 /** Entry block with one param per signature slot; leaves it current. */
@@ -1210,9 +1178,8 @@ final class FunctionLowerer {
 
   /**
    * Lowers one global's initializer under the global's OWN model —
-   * restoring the swap even when the expression bails, because the
-   * streaming fallback then re-generates __start from this same
-   * WasmFunction.
+   * restoring the swap even when the expression throws so no caller
+   * ever observes a leaked swap.
    */
   #lowerGlobalInit(g: WasmGlobal): void {
     let saved = this.func.model;
@@ -5256,8 +5223,8 @@ final class FunctionLowerer {
   /**
    * Lowers one call argument. Explicit arguments lower as written;
    * injected defaults lower under the callee's bindings (see
-   * #defaultArgInfo), restored even when lowering bails — a leaked
-   * swap would corrupt the streaming fallback's regeneration.
+   * #defaultArgInfo), restored even when lowering throws so no
+   * caller ever observes a leaked swap.
    */
   #lowerArgWithDefaults(call: CallExpression, i: i32, paramVt: ValType,
       info: DefaultArgInfo | null, receiver: i32): i32 {
