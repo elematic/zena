@@ -644,6 +644,17 @@ Everything before (parsing, checking) is untouched.
 
 ### 8. Formatter and LSP as Early Deliverables
 
+> **Status (2026-08): done, not planned.** Both shipped and are self-hosted.
+> `packages/zena-formatter/zena/` is the formatter; and
+> `packages/language-service/zena/lsp.zena` is the language server, written in
+> Zena against `zena-compiler`, `zena-formatter` and the stdlib — see
+> [lsp.md](lsp.md). The TypeScript in `packages/language-service` is a JS shim
+> exposing a JS API to the VS Code extension; it depends on
+> `@zena-lang/runtime`, not on the bootstrap compiler. The section below is
+> retained for its rationale. See
+> [bootstrap-retirement.md](bootstrap-retirement.md) §1 — neither is a blocker
+> for retiring the bootstrap compiler.
+
 A compiler that only emits WASM is useful but narrow. We can deliver value
 sooner by building tools that don't require codegen:
 
