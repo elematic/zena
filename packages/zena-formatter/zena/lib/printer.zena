@@ -22,7 +22,7 @@ import {
   TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression,
   // Statements
   Statement, VariableDeclaration, ExpressionStatement, BlockStatement,
-  ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
+  ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
   ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration,
@@ -274,6 +274,7 @@ let printStatementInner = (stmt: Statement): Doc => match (stmt) {
   case ExpressionStatement {expression}: concat(docs2(printExpression(expression), text(';')))
   case BlockStatement {}: printBlockStatement(stmt as BlockStatement)
   case ReturnStatement {}: printReturnStatement(stmt as ReturnStatement)
+  case YieldStatement {argument}: concat(docs3(text('yield '), printExpression(argument), text(';')))
   case BreakStatement {}: text('break;')
   case ContinueStatement {}: text('continue;')
   case IfStatement {}: printIfStatement(stmt as IfStatement)
@@ -601,6 +602,7 @@ let printMethodDefinition = (method: MethodDefinition): Doc => {
   if (method.isStatic) { parts.push(text('static ')); }
   if (method.isAbstract) { parts.push(text('abstract ')); }
   if (method.isFinal) { parts.push(text('final ')); }
+  if (method.isGenerator) { parts.push(text('gen ')); }
 
   parts.push(printNodeName(method.name));
 
@@ -1353,6 +1355,8 @@ let printArgList = (args: Array<Expression>): Array<Doc> => {
 
 let printFunctionExpression = (fn: FunctionExpression): Doc => {
   let parts = new Array<Doc>();
+
+  if (fn.isGenerator) { parts.push(text('gen ')); }
 
   if (fn.typeParameters != null) {
     parts.push(printTypeParams(fn.typeParameters as Array<TypeParameter>));

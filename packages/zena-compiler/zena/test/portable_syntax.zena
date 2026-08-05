@@ -10,8 +10,8 @@ import { console } from 'zena:console';
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
 import { jsonEqual } from 'zena:assert';
-import { readFile, listDir, exists, DirEntry, FileType } from 'zena:fs';
-import { parseJson, JsonValue, JsonOptions } from 'zena:json';
+import { readFile, writeFile, listDir, exists, DirEntry, FileType } from 'zena:fs';
+import { parseJson, stringify, JsonValue, JsonOptions } from 'zena:json';
 import { Array } from 'zena:array';
 import { StringReader } from 'zena:string-reader';
 import { parse } from '../lib/parser.zena';
@@ -140,10 +140,8 @@ let runSyntaxTest = (
     }
   } else {
     // Positive test: compare AST against snapshot
-    let expectedSnapshot = readFile(snapshotPath);
-    let expected = parseJson(expectedSnapshot, { allowComments: false, trackLocations: true });
     let mod = parse(source, fileName);
-    
+
     let actual = match (getTarget(directives)) {
       case "statement": {
         nodeToJson(mod.body[0]);
@@ -156,7 +154,17 @@ let runSyntaxTest = (
         nodeToJson(mod)
       }
     };
-  
+
+    if (!exists(snapshotPath)) {
+      // Mirror the bootstrap runner: a missing snapshot is generated on
+      // the first run (needed for @skip: bootstrap tests, which the
+      // bootstrap runner never sees).
+      writeFile(snapshotPath, stringify(actual, "  "));
+      return;
+    }
+
+    let expectedSnapshot = readFile(snapshotPath);
+    let expected = parseJson(expectedSnapshot, { allowComments: false, trackLocations: true });
     jsonEqual(actual, expected, filePath);
   }
 };
@@ -205,13 +213,11 @@ let runTests = (dirPath: String, relPrefix: String): void => {
     let directives = parseDirectives(source);
     let isErrorTest = hasErrorDirective(directives);
 
-    if (exists(snapshotPath) || isErrorTest) {
-      let reason = isSkipped(relPath);
-      if (reason == null) {
-        test(fileName, (ctx: TestContext): void => {
-          runSyntaxTest(source, filePath, directives, isErrorTest, snapshotPath, fileName);
-        });
-      }
+    let reason = isSkipped(relPath);
+    if (reason == null) {
+      test(fileName, (ctx: TestContext): void => {
+        runSyntaxTest(source, filePath, directives, isErrorTest, snapshotPath, fileName);
+      });
     }
   }
   

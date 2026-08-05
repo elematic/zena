@@ -19,7 +19,7 @@ import { Error } from 'zena:error';
 import { parseF64, parseI32, i32ToString } from 'zena:string-convert';
 import {
   Node, Statement, Expression, FunctionExpression, BlockStatement,
-  ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
+  ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ExpressionStatement, VariableDeclaration,
   BinaryExpression, UnaryExpression, AssignmentExpression, Identifier,
   NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, Pattern,
@@ -607,6 +607,22 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
       return b.finish();
     }
     throw new ZirUnsupported("synthesized function");
+  }
+  // Generators (G0): the front end accepts `gen`, but the split pass
+  // (G1, generators.md §5) does not exist yet — fail the compile
+  // loudly rather than miscompiling the body as a plain function.
+  var isGenFn = false;
+  match (func.node as Node) {
+    case FunctionExpression {isGenerator}: { isGenFn = isGenerator; }
+    case MethodDefinition {isGenerator}: { isGenFn = isGenerator; }
+    case _: {}
+  }
+  if (isGenFn) {
+    var genName = 'anonymous';
+    if (func.name != null) { genName = func.name as String; }
+    throw new Error(
+      "Generator functions are not yet supported by code generation " +
+      "(generators.md milestone G1) [in " + genName + "]");
   }
   // No adaptations, trampolines, synthesized accessors, imports, or
   // generics. Plain top-level functions, written-out method bodies,
@@ -1682,6 +1698,11 @@ export final class FunctionLowerer {
           this.#emitCheckedRet(value);
         }
         this.#cx().reachable = false;
+      }
+      case YieldStatement {}: {
+        // Generator bodies never reach lowering: lowerFunctionOrThrow
+        // rejects `gen` functions before the body is visited (G0).
+        throw new Error('yield statement reached ZIR lowering outside a generator body');
       }
       case IfStatement as ifStmt: {
         this.#lowerIf(ifStmt);

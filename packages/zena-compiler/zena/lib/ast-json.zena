@@ -11,7 +11,7 @@ import {
   Node, Module, Statement, Expression, Pattern, TypeAnnotation,
   VariableDeclaration, ExpressionStatement, BlockStatement,
   IfStatement, WhileStatement, ForStatement, ForInStatement, LetPatternCondition,
-  ReturnStatement, BreakStatement, ContinueStatement,
+  ReturnStatement, YieldStatement, BreakStatement, ContinueStatement,
   Identifier, BindingPattern, IdentifierPattern,
   NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral,
   TemplateElement, TemplateLiteral, TaggedTemplateExpression,
@@ -99,6 +99,7 @@ let nodeTypeName = (node: Node): String => {
     case ExpressionStatement {}: 'ExpressionStatement'
     case BlockStatement {}: 'BlockStatement'
     case ReturnStatement {}: 'ReturnStatement'
+    case YieldStatement {}: 'YieldStatement'
     case BreakStatement {}: 'BreakStatement'
     case ContinueStatement {}: 'ContinueStatement'
     case IfStatement {}: 'IfStatement'
@@ -319,7 +320,7 @@ export let nodeToJson = (node: Node): JsonObject => {
       }
       obj['arguments'] = expressionsToJson(args);
     }
-    case FunctionExpression { typeParameters, params, returnType, body }: {
+    case FunctionExpression { typeParameters, params, returnType, body, isGenerator }: {
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
       }
@@ -328,6 +329,10 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['returnType'] = nodeToJson(returnType as Node);
       }
       obj['body'] = nodeToJson(body);
+      // Only emitted when set: bootstrap snapshots predate generators.
+      if (isGenerator) {
+        obj['isGenerator'] = new Box<boolean>(true);
+      }
     }
     
     // Arrays, Records, Tuples
@@ -379,6 +384,9 @@ export let nodeToJson = (node: Node): JsonObject => {
       if (argument != null) {
         obj['argument'] = nodeToJson(argument as Expression);
       }
+    }
+    case YieldStatement { argument }: {
+      obj['argument'] = nodeToJson(argument);
     }
     case BreakStatement {}: {
       // No additional fields
@@ -659,7 +667,7 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['mutability'] = mutability as String;
       }
     }
-    case MethodDefinition { name, typeParameters, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, isDeclare, decorators }: {
+    case MethodDefinition { name, typeParameters, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, isDeclare, isGenerator, decorators }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
@@ -681,6 +689,10 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['isAbstract'] = new Box<boolean>(isAbstract);
       obj['isStatic'] = new Box<boolean>(isStatic);
       obj['isDeclare'] = new Box<boolean>(isDeclare);
+      // Only emitted when set: bootstrap snapshots predate generators.
+      if (isGenerator) {
+        obj['isGenerator'] = new Box<boolean>(true);
+      }
       obj['decorators'] = decoratorsToJson(decorators);
     }
     case AccessorDeclaration { name, typeAnnotation, getter, setter, isFinal, isStatic, decorators }: {

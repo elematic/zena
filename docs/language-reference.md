@@ -1051,6 +1051,58 @@ print(3.14); // Calls print(f32)
 
 Overload resolution is performed based on the argument types at the call site.
 
+### Generator Functions (in progress)
+
+> **Status:** front end only (self-hosted compiler). The syntax and
+> checking below are implemented, but code generation is not yet —
+> compiling a generator fails with a clear error until the split pass
+> lands. See `docs/design/generators.md`.
+
+A generator is a function expression with the `gen` modifier; `yield`
+is a statement valid only in the immediately enclosing `gen` body. The
+declared return type is the **yield** type; calling a generator
+produces an `Iterator<T>` lazily (none of the body runs until the first
+`next()`):
+
+```zena
+let range = gen (start: i32, end: i32): i32 => {
+  var i = start;
+  while (i < end) {
+    yield i;
+    i += 1;
+  }
+};
+
+for (let i in range(0, 5)) {
+  console.log(i.toString());
+}
+```
+
+`gen` also applies to methods (modifier position, like `static`), where
+the yield type annotation is required:
+
+```zena
+class Tree {
+  gen values(): i32 {
+    yield this.value;
+  }
+}
+```
+
+Rules:
+
+- Generators require a block body (no expression bodies).
+- Value returns are rejected; complete with bare `return;` or by
+  falling off the end.
+- `yield` inside `try`/`catch`/`finally` is rejected (v1 restriction).
+- `yield` inside a non-`gen` closure nested in a generator is an error.
+- With no annotation, the yield type is inferred from the `yield`
+  statements; a generator that never yields needs an annotation.
+
+The keywords `gen`, `yield`, `async`, and `await` are reserved words in
+the self-hosted compiler (`async`/`await` are reserved for future async
+functions).
+
 ## 5. Expressions & Operators
 
 ### Literals

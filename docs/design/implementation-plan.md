@@ -15,14 +15,14 @@ Track letters and milestone numbers are used throughout this file and in
 review discussion. Their definitions live in several documents, so they are
 collected here.
 
-| Label | Meaning | Defined in |
-| --- | --- | --- |
-| **Track G** — G0–G3 | Generators, then async | Track: below. Milestones: [generators.md](generators.md) §9 |
-| **Track V** — V0–V2 | Equality/identity contractions | Below; decisions D1–D4 in [equality.md](equality.md) |
-| **Track A** — A0–A3 | Rows and config records | Below; detail in [row-types.md](row-types.md) §9 |
-| **R3** | "The flip" — the single breaking record-semantics migration | Below |
-| **Track B** | Representation harvest, post-flip | Below |
-| **M1–M5** | ZIR backend migration milestones | [ir.md](ir.md) §14 |
+| Label               | Meaning                                                     | Defined in                                                  |
+| ------------------- | ----------------------------------------------------------- | ----------------------------------------------------------- |
+| **Track G** — G0–G3 | Generators, then async                                      | Track: below. Milestones: [generators.md](generators.md) §9 |
+| **Track V** — V0–V2 | Equality/identity contractions                              | Below; decisions D1–D4 in [equality.md](equality.md)        |
+| **Track A** — A0–A3 | Rows and config records                                     | Below; detail in [row-types.md](row-types.md) §9            |
+| **R3**              | "The flip" — the single breaking record-semantics migration | Below                                                       |
+| **Track B**         | Representation harvest, post-flip                           | Below                                                       |
+| **M1–M5**           | ZIR backend migration milestones                            | [ir.md](ir.md) §14                                          |
 
 Two things that trip people up:
 
@@ -56,7 +56,15 @@ either adopted here or dropped.
 
 ## Track G — generators, then async (the priority track)
 
-Milestones G0–G3 per generators.md §9. The async-specific refinement:
+Milestones G0–G3 per generators.md §9. **Status: G0 (front end) is
+implemented** — the self-hosted tokenizer reserves
+`gen`/`yield`/`async`/`await`, the parser/checker accept `gen`
+functions and methods with the yield-type convention and the v1
+rejections (yield-in-try, yield-in-closure, value returns), and
+codegen hard-errors on any generator reaching lowering until G1's
+split pass exists.
+
+The async-specific refinement:
 
 - **Async's prerequisite is G1 (the split pass), not G2 (fusion).**
   Fusion is the generator _performance_ story; async needs only the

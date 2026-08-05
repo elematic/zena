@@ -66,7 +66,7 @@ import {
   PipePlaceholder,
   // Statements
   Statement, VariableDeclaration, ExpressionStatement, BlockStatement,
-  ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
+  ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration,
@@ -245,6 +245,25 @@ final class CheckerContext {
    * Used when a function has no explicit return type annotation.
    */
   var #inferredReturnTypes = new Array<Type>();
+
+  /**
+   * The current generator's expected yield type, or null when the
+   * nearest enclosing function is not a `gen` function. VoidType is
+   * the inference sentinel, mirroring #returnType's convention.
+   */
+  var #yieldType: Type | null = null;
+
+  /**
+   * Inferred yield types collected from yield statements.
+   * Used when a generator has no explicit yield type annotation.
+   */
+  var #inferredYieldTypes = new Array<Type>();
+
+  /**
+   * Depth of enclosing try blocks within the current function body.
+   * `yield` inside `try` is rejected in v1 (generators.md §6).
+   */
+  var #tryDepth: i32 = 0;
 
   /**
    * Stack of class types being checked. The top is the innermost class.
@@ -635,7 +654,7 @@ final class CheckerContext {
           // Recursive call. If fully annotated, we can resolve from annotations.
           if (returnType != null) {
             // Resolve from annotations only (no body check needed).
-            return this.resolveFunctionFromAnnotations(typeParameters, params, returnType as TypeAnnotation, si);
+            return this.resolveFunctionFromAnnotations(typeParameters, params, returnType as TypeAnnotation, si, fe.isGenerator);
           } else {
             // Recursive without return type annotation — error.
             this.error(
@@ -652,7 +671,7 @@ final class CheckerContext {
 
         let funcType = if (returnType != null) {
           // Fully annotated — resolve from annotations.
-          this.resolveFunctionFromAnnotations(typeParameters, params, returnType as TypeAnnotation, si)
+          this.resolveFunctionFromAnnotations(typeParameters, params, returnType as TypeAnnotation, si, fe.isGenerator)
         } else {
           // No return type annotation — eagerly check the function body.
           checkFunctionExpression(this, fe, null)
@@ -678,7 +697,8 @@ final class CheckerContext {
     typeParameters: Array<TypeParameter> | null,
     params: Array<Parameter>,
     returnTypeAnn: TypeAnnotation,
-    si: Symbol
+    si: Symbol,
+    isGenerator: boolean = false
   ): Type {
     // Enter a temporary scope for type parameter names.
     this.enterScope();
@@ -710,8 +730,12 @@ final class CheckerContext {
       }
     }
 
-    // Resolve return type.
-    let retType = resolveTypeAnnotation(this, returnTypeAnn, true);
+    // Resolve return type. For generators the annotation is the yield
+    // type; the external return type is Iterator<yieldType>.
+    var retType = resolveTypeAnnotation(this, returnTypeAnn, true);
+    if (isGenerator) {
+      retType = makeIteratorType(this, retType, returnTypeAnn.loc);
+    }
 
     this.exitScope();
 
@@ -1294,6 +1318,41 @@ final class CheckerContext {
   addInferredReturnType(t: Type): void {
     this.#inferredReturnTypes.push(t);
   }
+
+  // --- Yield type (generators) ---
+
+  yieldType: Type | null {
+    get { return this.#yieldType; }
+  }
+
+  setYieldType(t: Type | null): void {
+    this.#yieldType = t;
+  }
+
+  inferredYieldTypes: Array<Type> {
+    get { return this.#inferredYieldTypes; }
+  }
+
+  setInferredYieldTypes(a: Array<Type>): void {
+    this.#inferredYieldTypes = a;
+  }
+
+  addInferredYieldType(t: Type): void {
+    this.#inferredYieldTypes.push(t);
+  }
+
+  // --- Try depth (yield-in-try rejection) ---
+
+  tryDepth: i32 {
+    get { return this.#tryDepth; }
+  }
+
+  setTryDepth(d: i32): void {
+    this.#tryDepth = d;
+  }
+
+  enterTry(): void { this.#tryDepth = this.#tryDepth + 1; }
+  exitTry(): void { this.#tryDepth = this.#tryDepth - 1; }
 
   // --- Loop depth ---
 
@@ -4456,7 +4515,17 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     }
     case ReturnStatement {argument, loc}: {
       let expectedReturn = ctx.returnType;
-      if (argument != null) {
+      if (ctx.yieldType != null && argument != null) {
+        // Generators complete via bare `return;` or falling off the end;
+        // the iteration protocol has no completion payload
+        // (generators.md §2.2).
+        ctx.error(
+          "Generators cannot return a value; use 'yield' to produce values and bare 'return;' to finish.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        checkExpression(ctx, argument as Expression, null);
+      } else if (argument != null) {
         let argExpr = argument as Expression;
         // By convention, if expectedReturn is VoidType, we are inferring the return type.
         // We should not pass it down as expectedType since it will force if-expressions to void.
@@ -4496,6 +4565,50 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
               DiagnosticCode.TypeMismatch,
               loc
             );
+          }
+        }
+      }
+    }
+    case YieldStatement {argument, loc}: {
+      let expectedYield = ctx.yieldType;
+      if (expectedYield == null) {
+        // Not in a `gen` body. A closure nested inside a generator hits
+        // this too: it is its own function and cannot suspend its
+        // lexical parent (generators.md §2.2).
+        ctx.error(
+          "'yield' is only valid inside the body of a 'gen' function.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        checkExpression(ctx, argument, null);
+      } else {
+        if (ctx.tryDepth > 0) {
+          ctx.error(
+            "'yield' may not appear inside 'try' (not yet supported).",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+        }
+        let expected = expectedYield as Type;
+        if (expected is VoidType) {
+          // No yield type annotation — infer from yield statements.
+          let argType = checkExpression(ctx, argument, null);
+          ctx.addInferredYieldType(argType);
+        } else {
+          let argType = checkExpression(ctx, argument, expected);
+          if (!isAssignableTo(ctx, argType, expected)) {
+            ctx.error(
+              "Type mismatch: cannot yield '" + typeToString(argType) +
+              "' from a generator with yield type '" + typeToString(expected) + "'.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+          } else {
+            let instantiated = tryInstantiateGenericFunction(ctx, argType, expected);
+            if (instantiated != argType) {
+              ctx.setNodeType(argument, instantiated);
+            }
+            checkAndRegisterInterfaceAdaptation(ctx, argument, instantiated, expected);
           }
         }
       }
@@ -6378,6 +6491,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (deps != null) {
       deps.needsExceptionInfra = true;
     }
+    // yield is rejected anywhere inside try/catch/finally (v1).
+    ctx.enterTry();
     let tryType = checkMatchCaseBody(ctx, body as Node, expectedType);
     var catchType: Type | null = null;
     if (handler != null) {
@@ -6397,6 +6512,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (finalizer != null) {
       checkMatchCaseBody(ctx, finalizer as Node, null);
     }
+    ctx.exitTry();
     if (catchType != null) {
       let types = new Array<Type>();
       types.push(tryType);
@@ -8213,6 +8329,22 @@ let checkMethodSignature = (
     retType = resolveTypeAnnotation(ctx, md.returnType as TypeAnnotation, true);
   }
 
+  // Generator methods: the annotation is the yield type; the method's
+  // external return type is Iterator<yieldType>. Methods do not infer
+  // return types, so the annotation is required.
+  if (md.isGenerator) {
+    if (md.returnType == null) {
+      ctx.error(
+        "A generator method requires a yield type annotation.",
+        DiagnosticCode.TypeMismatch,
+        md.loc
+      );
+      retType = makeIteratorType(ctx, new ErrorType(), md.loc);
+    } else {
+      retType = makeIteratorType(ctx, retType, md.loc);
+    }
+  }
+
   let paramSymbols = new Array<SymbolId>();
   var pi = 0;
   while (pi < md.params.length) {
@@ -8302,9 +8434,28 @@ let checkMethodBody = (
     i += 1;
   }
 
-  // Set expected return type.
+  // Set expected return type. Generator methods check their body
+  // against the yield type (extracted back out of Iterator<T>) with a
+  // void return type; everything else checks against the return type.
   let prevReturnType = ctx.returnType;
-  ctx.setReturnType(effectiveReturnType);
+  let prevYieldType = ctx.yieldType;
+  if (md.isGenerator) {
+    var yieldT: Type = new ErrorType();
+    match (effectiveReturnType) {
+      case InterfaceType {typeArguments}: {
+        if (typeArguments != null) {
+          let args = typeArguments as Array<Type>;
+          if (args.length > 0) { yieldT = args[0]; }
+        }
+      }
+      case _: {}
+    }
+    ctx.setReturnType(new VoidType());
+    ctx.setYieldType(yieldT);
+  } else {
+    ctx.setReturnType(effectiveReturnType);
+    ctx.setYieldType(null);
+  }
 
   // Check body.
   match (md.body as Node) {
@@ -8464,6 +8615,7 @@ let checkMethodBody = (
   }
 
   ctx.setReturnType(prevReturnType);
+  ctx.setYieldType(prevYieldType);
   ctx.exitScope();
 };
 
@@ -11144,6 +11296,31 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
   }
 };
 
+/**
+ * The external type of a `gen` function: Iterator<yieldType> from the
+ * prelude. The declared/inferred annotation of a generator is its
+ * yield type; the type of calling it is the wrapped iterator
+ * (generators.md §2.2).
+ */
+let makeIteratorType = (
+  ctx: CheckerContext,
+  yieldType: Type,
+  loc: SourceLocation | null
+): Type => {
+  let prelude = ctx.resolvePreludeType("Iterator");
+  if (prelude == null || !(prelude is InterfaceType)) {
+    ctx.error(
+      "Generator functions require the 'Iterator' interface from the prelude.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return new ErrorType();
+  }
+  let args = new Array<Type>();
+  args.push(yieldType);
+  return instantiateInterfaceType(prelude as InterfaceType, args);
+};
+
 let checkFunctionExpression = (
   ctx: CheckerContext,
   fe: FunctionExpression,
@@ -11298,12 +11475,36 @@ let checkFunctionExpression = (
     needsInference = true;
   }
 
+  // Generators: the annotation is the *yield* type, not the return
+  // type. The body may only `yield` values and `return;` bare; the
+  // external return type becomes Iterator<yieldType> at the end.
+  let isGenerator = fe.isGenerator;
+  var declaredYieldType: Type = new VoidType();
+  if (isGenerator) {
+    declaredYieldType = retType;
+    retType = new VoidType();
+    needsInference = false;
+  }
+
   // Set expected return type for return statements.
   // Save and reset inferred return types for this function.
+  // Yield context and try depth are per-function: a non-gen closure
+  // nested in a generator must not inherit its parent's yield type
+  // (and vice versa), and a closure inside `try` is not "in" the try.
   let prevReturnType = ctx.returnType;
   let prevInferredReturns = ctx.inferredReturnTypes;
+  let prevYieldType = ctx.yieldType;
+  let prevInferredYields = ctx.inferredYieldTypes;
+  let prevTryDepth = ctx.tryDepth;
   ctx.setReturnType(retType);
   ctx.setInferredReturnTypes(new Array<Type>());
+  var newYieldType: Type | null = null;
+  if (isGenerator) {
+    newYieldType = declaredYieldType;
+  }
+  ctx.setYieldType(newYieldType);
+  ctx.setInferredYieldTypes(new Array<Type>());
+  ctx.setTryDepth(0);
 
   // Check the body.
   match (body) {
@@ -11388,8 +11589,32 @@ let checkFunctionExpression = (
     }
   }
 
+  // Generators: resolve the final yield type (declared, or inferred
+  // from yield statements) and wrap it as Iterator<yieldType>.
+  var finalRetType = retType;
+  if (isGenerator) {
+    var yieldT = declaredYieldType;
+    if (yieldT is VoidType) {
+      let inferredYs = ctx.inferredYieldTypes;
+      if (inferredYs.length == 0) {
+        ctx.error(
+          "Cannot infer the yield type of a generator that never yields; add a yield type annotation.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        yieldT = new ErrorType();
+      } else {
+        yieldT = inferredYs[0];
+      }
+    }
+    finalRetType = makeIteratorType(ctx, yieldT, loc);
+  }
+
   ctx.setReturnType(prevReturnType);
   ctx.setInferredReturnTypes(prevInferredReturns);
+  ctx.setYieldType(prevYieldType);
+  ctx.setInferredYieldTypes(prevInferredYields);
+  ctx.setTryDepth(prevTryDepth);
   ctx.exitScope();
 
   let paramSymbols = new Array<SymbolId>();
@@ -11428,7 +11653,7 @@ let checkFunctionExpression = (
     pi += 1;
   }
 
-  let fnType = new FunctionType(paramTypes, paramNames, retType);
+  let fnType = new FunctionType(paramTypes, paramNames, finalRetType);
   fnType.parameterSymbols = paramSymbols;
   fnType.typeParameters = resolvedTypeParams;
   if (hasOptionals) {
