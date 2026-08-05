@@ -30,8 +30,27 @@ every shipping WASI package uses. Until they were fixed, neither
 3. **Doc comment inside a function parameter list** — covered by
    `param-doc-comments.wit`.
 
-Real WASI still fails *after* parsing, in name resolution. Check with
-`node dev/parse-real-wit.mjs <wit-dir>`.
+Name resolution then had a gap of its own, for the same reason — the corpus
+never puts two things with one name in scope at once:
+
+4. **An interface name shadowed by a type bound from an earlier `use`** — a
+   `use` path was resolved with a general symbol lookup that walks every
+   enclosing scope, so a same-named type won. `wasi:sockets` depends on the
+   distinction: `interface network` declares `resource network`, so
+   `use network.{network}` binds a type whose name equals the interface's, and
+   the next `use` in that interface can no longer find the interface. Covered
+   by `interface-shadowed-by-use.wit`.
+
+With that fixed, all of `wasi:http@0.2.8` resolves — 33 files, 7 packages, 31
+interfaces, 9 worlds. `wasi:http@0.3.0-rc-2025-09-16` does not; see
+`cross-package-name-collision`, a known failure kept in `tests/` as a minimal
+repro.
+
+Both of those are now asserted by `npm test`, against a pinned copy of the real
+WIT (`test:real-wit` → `node dev/parse-real-wit.js --check`). It pins the p2
+counts so they cannot regress silently, and pins the p3 *failure* so that fixing
+it reports here first. See the README for how the corpus is fetched; the check
+fails rather than skips when it is missing.
 
 
 Detail and impact: [component-model.md](../../docs/design/component-model.md),

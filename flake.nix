@@ -13,6 +13,23 @@
 
         nodejs = pkgs.nodejs_latest;
 
+        # Real-world WIT the parser is checked against (see
+        # packages/wit-parser/wit-corpus.json, which is the single source of
+        # truth for the URL — dev/fetch-wit-corpus.js reads the same file for
+        # checkouts that are not using Nix).
+        #
+        # Third-party WIT with its own license, so it is fetched rather than
+        # vendored. fetchzip hashes the unpacked tree, which is what we want:
+        # GitHub regenerates archives and the gzip framing changes even when no
+        # file does.
+        witCorpusPin = builtins.fromJSON
+          (builtins.readFile ./packages/wit-parser/wit-corpus.json);
+
+        witCorpus = pkgs.fetchzip {
+          url = witCorpusPin.url;
+          hash = witCorpusPin.nixHash;
+        };
+
         wasmtime =
           let
             suffix = {
@@ -133,6 +150,11 @@
             pkgs.wasm-tools
           ];
 
+          # The sandbox has no network, so the wit-parser's real-WIT check
+          # cannot fetch its corpus — hand it the same fetchzip'd tree the dev
+          # shell uses. Without this the check fails closed, by design.
+          ZENA_WASI_WIT = "${witCorpus}";
+
           # Run the suite after the existing build phase. wireit rebuilds into a
           # fresh .wireit cache inside the sandbox, so this is self-contained.
           postBuild = ''
@@ -188,7 +210,11 @@
           # system `cc` as the linker, which reads neither NIX_LDFLAGS nor
           # finds libiconv in the nix apple-sdk SDKROOT. Point rustc at the
           # nix libiconv explicitly.
-          env = pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+          env = {
+            # Where packages/wit-parser's real-WIT check finds its corpus, so a
+            # Nix shell never needs the network or a fetch step.
+            ZENA_WASI_WIT = "${witCorpus}";
+          } // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
             RUSTFLAGS = "-L${pkgs.libiconv}/lib";
           };
 
@@ -204,6 +230,7 @@
             echo "Run 'npm install' to install dependencies"
             echo "Run 'npm run build' to build the compiler"
             echo "Run 'npm test' to run tests"
+            echo "WASI WIT corpus: $ZENA_WASI_WIT"
           '';
         };
       }

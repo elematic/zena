@@ -1763,7 +1763,7 @@ export class Resolver {
       let iface = this.#findInterface(id.name);
       if (iface != null) {
         let ifaceDef = iface as InterfaceDef;
-        // Only resolve if not already resolved (to avoid infinite recursion 
+        // Only resolve if not already resolved (to avoid infinite recursion
         // in valid cases where an interface is used multiple times)
         let targetQualified = this.#getQualifiedInterfaceName(ifaceDef.name.name);
         if (!this.#isResolvingInterface(targetQualified)) {
@@ -1950,21 +1950,32 @@ export class Resolver {
           );
         }
       } else {
-        // For use statements, check symbol table for interfaces
-        let sym = this.#findSymbol(id.name);
-        if (sym == null) {
-          throw new ResolveError(
-            "interface `" + id.name + "` not found in package",
-            id.span
-          );
-        }
-        // Verify it's an interface
-        let s = sym as SymbolEntry;
-        if (s.kind != SymbolKind.Interface) {
-          throw new ResolveError(
-            "`" + id.name + "` is not an interface",
-            id.span
-          );
+        // For use statements, look for interface definitions specifically,
+        // for the same reason worlds do above: a plain symbol lookup walks
+        // every enclosing scope, so a *type* of the same name shadows the
+        // interface. `wasi:sockets` relies on the distinction — `interface
+        // network` declares `resource network`, so an earlier `use
+        // network.{network}` in the enclosing interface binds that type
+        // before a later `use` recurses back into the interface.
+        let iface = this.#findInterface(id.name);
+        if (iface == null) {
+          // Not a declared interface, but it may still be an interface
+          // *alias* (`use foo as bar;`), which lives only in the symbol
+          // table, so fall back to it rather than reporting a failure.
+          let sym = this.#findSymbol(id.name);
+          if (sym == null) {
+            throw new ResolveError(
+              "interface `" + id.name + "` not found in package",
+              id.span
+            );
+          }
+          let s = sym as SymbolEntry;
+          if (s.kind != SymbolKind.Interface) {
+            throw new ResolveError(
+              "`" + id.name + "` is not an interface",
+              id.span
+            );
+          }
         }
       }
     } else if (path.tag == UsePathTag.Package) {

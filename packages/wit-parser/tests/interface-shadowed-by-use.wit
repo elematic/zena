@@ -1,0 +1,33 @@
+package test:shadowing;
+
+interface network {
+    resource network;
+}
+
+interface tcp {
+    use network.{network};
+
+    resource tcp-socket {
+        start-connect: func(net: borrow<network>);
+    }
+}
+
+interface tcp-create-socket {
+    use network.{network};
+    use tcp.{tcp-socket};
+
+    create-tcp-socket: func(n: borrow<network>) -> tcp-socket;
+}
+
+// An interface name must still resolve as an interface when an earlier `use`
+// in the *enclosing* interface has bound a type of the same name.
+//
+// This is the shape `wasi:sockets` uses: `interface network` declares
+// `resource network`, so every consumer of it binds a type whose name equals
+// the interface's. In `tcp-create-socket` above, `use network.{network}` runs
+// first and binds the type; resolving `use tcp.{...}` then recurses into
+// `tcp`'s own `use network.{...}` while that binding is still in scope.
+//
+// (The explanation sits at the end of the file on purpose: a comment before
+// an item becomes that item's docs, and one before `package` becomes the
+// package's — which the parser does not yet capture.)

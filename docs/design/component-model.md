@@ -486,8 +486,8 @@ Ordered; each stage is useful on its own.
 1. **Parser → compiler integration.** `parseWit()` in the compiler, a stable
    exported entry point on the parser module (today only test harnesses exist),
    and a bootstrap decision (wit-parser.md Phase 3 lists three options; none
-   chosen). Also fix the three parser bugs in Part 9 — without them no real
-   WASI WIT parses at all.
+   chosen). Real `wasi:http@0.2.8` parses and resolves today; p3 additionally
+   needs gap 5 in Part 9.
 2. **`Result<T, E>` in the stdlib.** Blocks essentially every binding.
 3. **Bindgen, types only.** WIT types → Zena declarations. No ABI yet; output
    is checkable Zena source. Verifiable against real `wasi:http` WIT. Resource
@@ -535,11 +535,15 @@ reachable on Track W alone.
 
 ---
 
-## Part 9: Parser gaps blocking real WASI WIT
+## Part 9: Parser and resolver gaps blocking real WASI WIT
 
-The parser passes 211/211 wasm-tools UI tests but **cannot parse any real WASI
-package**, because the upstream UI corpus does not cover these three
-combinations. Each was isolated to a minimal repro:
+**Status: gaps 1–4 are fixed. All of `wasi:http@0.2.8` now parses and resolves —
+33 files, 7 packages, 31 interfaces, 9 worlds. `wasi:http@0.3.0-rc-2025-09-16`
+is still blocked by gap 5.**
+
+The parser passed every wasm-tools UI test while being unable to handle any real
+WASI package, because the upstream UI corpus does not cover these combinations.
+Each was isolated to a minimal repro:
 
 ### Gap 1 — prerelease/build semver in a `use`/`import` path
 
@@ -589,8 +593,55 @@ records, variants, and resource bodies. Only parameter lists break.
 **Blocks: `wasi:io/streams`, `wasi:filesystem/types`, `wasi:sockets/*`** — which
 transitively blocks nearly every WASI world.
 
-All three are narrow and independently fixable. Reproduce with
-`node packages/wit-parser/dev/parse-real-wit.mjs --probe`.
+Reproduce with `node packages/wit-parser/dev/parse-real-wit.js --probe`.
+
+### Gap 4 — an interface name shadowed by a type bound from an earlier `use`
+
+```wit
+package test:shadowing;
+interface network { resource network; }
+interface tcp { use network.{network}; resource tcp-socket { } }
+interface tcp-create-socket {
+  use network.{network};      // binds a *type* called `network`
+  use tcp.{tcp-socket};       // recurses into tcp's own `use network.{…}`
+}                             // ParseError: `network` is not an interface
+```
+
+A `use` path was resolved with a general symbol lookup that walks every
+enclosing scope, so the type won over the interface. World `include` paths
+already avoided this by looking specifically for world definitions; `use` now
+looks specifically for interfaces, falling back to the symbol table so that
+interface *aliases* (`use foo as bar;`), which exist only there, still resolve.
+
+**Blocked: all of `wasi:sockets`**, and so `wasi:cli` and `wasi:http` with it.
+Covered by `tests/interface-shadowed-by-use.wit`.
+
+### Gap 5 — same interface name in two packages (open)
+
+```wit
+package test:clocks@1.0.0;
+interface types { type duration = u64; }
+interface monotonic-clock { use types.{duration}; now: func() -> duration; }
+
+package test:sockets@1.0.0;
+interface types { use test:clocks/monotonic-clock@1.0.0.{duration}; }
+// ParseError: interface `test:clocks@1.0.0/monotonic-clock` depends on itself
+```
+
+Resolving the cross-package `use` recurses into `monotonic-clock`, whose own
+unqualified `use types.{duration}` must mean `test:clocks/types`. It is answered
+from the scope stack instead, which yields the `types` currently being resolved
+in the *other* package, and the two appear mutually dependent.
+
+Preferring the current package via the registry is not sufficient on its own:
+`#currentResolvePackage` is only updated for nested `package x { … }` blocks, not
+for repeated file-level `package …;` declarations, which is how every real WASI
+package is written. Tracking the package across those declarations is the actual
+fix.
+
+**Blocks: all of WASI p3**, where `wasi:clocks` and `wasi:sockets` both declare
+an `interface types`. Kept as a known failure in
+`tests/cross-package-name-collision/`.
 
 ---
 
