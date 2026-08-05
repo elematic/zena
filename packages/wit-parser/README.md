@@ -4,22 +4,38 @@ This package contains the WIT (WebAssembly Interface Types) parser for Zena.
 
 ## Status
 
-🚧 **In Development** - Parser not yet implemented. Test infrastructure is ready.
+✅ **Implemented** — lexer, parser, resolver, and `.wit.json` serialization, all
+written in Zena (`zena/`). The full ported wasm-tools UI corpus passes:
+**211/211** (130 parse-fail + 81 resolve-and-compare).
+
+⚠️ Passing that corpus is **not** sufficient to parse real WASI packages. The
+upstream UI tests miss three combinations that every shipping WASI package uses,
+so `wasi:http` (p2 and p3) does not parse today. The gaps are documented with
+minimal repros in [component-model.md](../../docs/design/component-model.md),
+Part 9, and reproducible with `node dev/parse-real-wit.mjs --probe`.
+
+Nothing in the compiler calls this parser yet — see the same document for the
+integration and bindgen plan.
 
 ## Directory Structure
 
 ```
 packages/wit-parser/
 ├── README.md              # This file
-├── TEST_INVENTORY.md      # Full inventory of tests to port
 ├── package.json           # Package config with Wireit scripts
-├── scripts/
-│   └── run-tests.js       # Node-based test runner
+├── zena/                  # The parser itself, in Zena
+│   ├── lexer.zena
+│   ├── parser.zena
+│   ├── resolver.zena
+│   ├── ast-json.zena      # .wit.json serialization
+│   └── *-test-harness.zena
+├── src/scripts/
+│   └── run-tests.ts       # Node-based test runner
+├── dev/
+│   └── parse-real-wit.mjs # Run the parser over real-world WIT
 └── tests/                 # Ported test files (mirrors wasm-tools ui/ structure)
     ├── empty.wit              # Success test input
     ├── empty.wit.json         # Expected parsed output
-    ├── types.wit              # Success test input
-    ├── types.wit.json         # Expected parsed output
     └── parse-fail/            # Error test cases
         ├── bad-list.wit           # Error test input
         └── bad-list.wit.result    # Expected error message
@@ -35,7 +51,18 @@ npm test -w @zena-lang/wit-parser
 npm test
 ```
 
-Currently, the test runner operates in **discovery mode** - it verifies test files exist and are properly structured, but skips actual parsing since the parser isn't implemented yet.
+The runner compiles the Zena parser to WASM, instantiates it, feeds each test's
+WIT in, and compares the result against the expected `.wit.json` or
+`.wit.result`.
+
+To check the parser against real-world WIT rather than the synthetic corpus:
+
+```bash
+curl -L https://github.com/WebAssembly/wasi-http/archive/refs/heads/main.tar.gz | tar xz
+node dev/parse-real-wit.mjs wasi-http-main/wit wasi-http-main/wit-0.3.0-draft
+node dev/parse-real-wit.mjs --files wasi-http-main/wit   # per-file breakdown
+node dev/parse-real-wit.mjs --probe                      # known-gap repros
+```
 
 ## Test Formats
 
@@ -51,16 +78,11 @@ Tests that verify invalid WIT files produce expected error messages. The `.wit.r
 
 Some tests use directories containing multiple `.wit` files (multi-file packages). The expected output is at the parent level: `dirname.wit.json` or `dirname.wit.result`.
 
-## Porting Progress
+## Next Steps
 
-See [TEST_INVENTORY.md](./TEST_INVENTORY.md) for the full list of tests and porting status.
+The parser is done; the consumers are not. See
+[component-model.md](../../docs/design/component-model.md):
 
-Current progress: **3 / 201 tests ported (1.5%)**
-
-## Future Plans
-
-Once the parser is implemented in Zena:
-
-1. The test runner will compile and invoke the Zena parser
-2. For WASI filesystem access, tests may run via wasmtime
-3. Parser source will live in `packages/stdlib/zena/wit/`
+1. Fix the three real-world parse gaps (Part 9)
+2. Expose a stable entry point and add `parseWit()` to the compiler (Part 8)
+3. Generate Zena bindings from resolved WIT (Parts 2–5)
