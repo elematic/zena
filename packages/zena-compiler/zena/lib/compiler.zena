@@ -349,24 +349,30 @@ export final class Compiler {
    * dependency may carry fresh symbols.
    */
   #resolveScopes(files: Array<SourceFile>): void {
-    // Phase 1: stdlib scope trees.
+    // Only the prelude's own transitive closure is denied the prelude —
+    // those are the modules where injecting it would be circular. Every
+    // other stdlib module (zena:fs, zena:regex, zena:benchmark, ...) is
+    // ordinary code and sees the prelude exactly like user code does.
+    let core = this.#preludeClosure(files);
+
+    // Phase 1: scope trees for the prelude closure, with no prelude parent.
     for (let lib in files) {
-      if (lib.isStdlib && lib.scopeResult == null) {
+      if (core.has(lib.path) && lib.scopeResult == null) {
         let builder = new ScopeBuilder(lib.path, null, this.#symbolIdGenerator);
         lib.scopeResult = builder.build(lib.ast);
         this.#snapshotLocalExports(lib);
       }
     }
 
-    // Phase 2: wire stdlib imports to fixpoint (prelude reads these).
-    this.#wireToFixpoint(files, true);
+    // Phase 2: wire those imports to fixpoint (the prelude reads them).
+    this.#wireToFixpoint(files, core);
 
-    // Phase 3: the prelude scope, parent of every user module scope.
+    // Phase 3: the prelude scope, parent of every other module's scope.
     let preludeScope = this.#buildPreludeScope();
 
-    // Phase 4: user scope trees.
+    // Phase 4: everything else — non-closure stdlib and user code alike.
     for (let lib in files) {
-      if (!lib.isStdlib && lib.scopeResult == null) {
+      if (!core.has(lib.path) && lib.scopeResult == null) {
         let builder = new ScopeBuilder(lib.path, preludeScope, this.#symbolIdGenerator);
         lib.scopeResult = builder.build(lib.ast);
         this.#snapshotLocalExports(lib);
@@ -375,7 +381,7 @@ export final class Compiler {
 
     // Phase 5: wire everything to fixpoint, then record what is
     // still missing.
-    this.#wireToFixpoint(files, false);
+    this.#wireToFixpoint(files, null);
     for (let lib in files) {
       if (lib.scopeResult != null) {
         this.#wireImports(lib, lib.scopeResult as ScopeResult, true);
@@ -383,13 +389,63 @@ export final class Compiler {
     }
   }
 
-  /** Repeat import wiring until no pass makes progress. */
-  #wireToFixpoint(files: Array<SourceFile>, stdlibOnly: boolean): void {
+  /**
+   * The prelude's transitive import closure, by module path.
+   *
+   * These are the only modules that must be built without a prelude
+   * parent: the prelude scope is assembled from their exports, so
+   * handing it back to them would be circular. Everything else in the
+   * stdlib is ordinary code — it was never the source of the
+   * circularity, and denying it the prelude only produced silent
+   * divergence from the bootstrap, which resolved prelude names in
+   * stdlib modules regardless.
+   *
+   * Computed rather than listed, so it cannot drift as the prelude changes.
+   */
+  #preludeClosure(files: Array<SourceFile>): HashSet<String> {
+    let byPath = new HashMap<String, SourceFile>();
+    for (let lib in files) {
+      byPath[lib.path] = lib;
+    }
+
+    let closure = new HashSet<String>();
+    let pending = new Array<String>();
+
+    let prelude = getStandardPrelude();
+    let specifierIter = prelude.keys();
+    while (let (true, specifier) = specifierIter.next()) {
+      pending.push(this.#resolver.resolve(specifier, "").path);
+    }
+
+    while (pending.length > 0) {
+      let path = pending.pop();
+      if (!closure.has(path)) {
+        closure.add(path);
+        if (let (true, lib) = byPath.get(path)) {
+          let depIter = lib.imports.keys();
+          while (let (true, spec) = depIter.next()) {
+            if (let (true, dep) = lib.imports.get(spec)) {
+              if (!closure.has(dep)) {
+                pending.push(dep);
+              }
+            }
+          }
+        }
+      }
+    }
+    return closure;
+  }
+
+  /**
+   * Repeat import wiring until no pass makes progress. When `only` is
+   * non-null, wiring is restricted to that set of module paths.
+   */
+  #wireToFixpoint(files: Array<SourceFile>, only: HashSet<String> | null): void {
     var changed = true;
     while (changed) {
       changed = false;
       for (let lib in files) {
-        if (stdlibOnly && !lib.isStdlib) {
+        if (only != null && !(only as HashSet<String>).has(lib.path)) {
           continue;
         }
         if (lib.scopeResult != null) {
