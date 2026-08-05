@@ -259,17 +259,35 @@ immediately trying to fix it (which can pollute the current task's context).
   Postfix call chaining is evidently not applied to a NewExpression the way
   member access is. Pin with a syntax test once fixed.
 
-### Self-hosted codegen: ~2x on devirtualized field access
+### Self-hosted codegen: ~2x on two of the four field-access benchmarks
 
-- **Found**: 2026-08-05
-- **Severity**: low (2x on a fast operation; was masked by the 59x above)
-- **Details**: after the virtual-field-access fix, the worst remaining codegen
-  regressions are `FieldAccessDevirtFinal` (2.14 -> 4.30 ms, **2.01x**) and
-  `FieldAccessDevirtEffectivelyFinal` (**2.00x**). Both read a field through a
-  reference whose class is final or effectively final, so the access is already
-  devirtualized — the residual 2x looks like the accessor being *called*
-  directly rather than inlined to a `struct.get`. Everything else is within
-  1.4x, and the median is 0.96x.
+- **Found**: 2026-08-05, re-characterised after the 2026-08-05 baseline
+- **Severity**: low (2x on a ~0.2ns operation)
+- **Details**: of the four field-access benchmarks, two consistently run at
+  ~4.2 ms per 10M iterations against the bootstrap's ~2.1 ms, and two match the
+  bootstrap:
+
+  | Benchmark | Bootstrap | Self-hosted | Ratio |
+  | --- | --- | --- | --- |
+  | `FieldAccessVirtual` | 2.15 ms | 4.23 ms | 1.97x |
+  | `FieldAccessDevirtFinalField` | 2.13 ms | 4.23 ms | 1.99x |
+  | `FieldAccessDevirtFinal` | 2.40 ms | 2.12 ms | 0.88x |
+  | `FieldAccessDevirtEffectivelyFinal` | 2.12 ms | 2.11 ms | 1.00x |
+
+  **Which two are slow is not stable across compiler changes.** Immediately
+  after the synthesized-accessor fix the slow pair was `DevirtFinal` and
+  `DevirtEffectivelyFinal`; after the closure-wrapper reachability change it
+  became `Virtual` and `DevirtFinalField`. Both configurations reproduce across
+  consecutive runs, so this is not measurement noise — the split moves in
+  response to unrelated codegen changes.
+
+  Two always fast and two always slow, swapping membership, points at an
+  inlining or code-layout threshold rather than anything intrinsic to
+  devirtualization. Worth a look at what wasmtime does differently with the two
+  shapes before optimising anything specific.
+
+- **Reproduce**: `npm run benchmark -w @zena-lang/zena-compiler -- --basic`,
+  "Codegen Comparison: basic".
 
 ### Narrowing survives an assignment that invalidates it (unsound)
 
