@@ -259,47 +259,6 @@ immediately trying to fix it (which can pollute the current task's context).
   Postfix call chaining is evidently not applied to a NewExpression the way
   member access is. Pin with a syntax test once fixed.
 
-### FIXED: 59x regression on virtual field access
-
-- **Found**: 2026-08-05 (first run of the bootstrap-vs-self-hosted codegen
-  comparison)
-- **Fixed**: 2026-08-05 — synthesized default accessors no longer count as
-  subclass overrides.
-- **Was**: `FieldAccessVirtual (N=10M)` 2.13 ms bootstrap-emitted vs 126.79 ms
-  self-hosted (**59.53x**), and `FieldAssignVirtual` 4.29 vs 123.83 ms
-  (**28.86x**).
-
-- **Root cause**: reading `obj.value` through a base-class-typed reference
-  compiled to a vtable load, `ref.cast` and `call_ref` on every access:
-  ```wat
-  local.get 0
-  struct.get 823 0      ;; vtable pointer
-  struct.get 748 0      ;; vtable slot
-  ref.cast (ref 547)
-  call_ref 547          ;; indirect call to get#value
-  ```
-  The decision came from `memberProvidedBySubclass`, which returns true when
-  any transitive subclass has an entry in `classMethodMap` for the slot. Every
-  class holding a physical field gets a *synthesized* default accessor — a
-  `ref.cast` plus `struct.get` on its own struct — so a subclass that merely
-  inherits the field registers `get#value` and was counted as an override.
-
-  The scope was broad: **any class with a subclass lost direct field access**,
-  read and write. The benchmark's `SubClassWithField` overrides nothing at all.
-
-- **Fix**: `accessorOverriddenBySubclass()` ignores synthesized accessors that
-  resolve to the same field — matching both name and struct index, since
-  wasm-gc keeps inherited fields at their supertype index and a moved index
-  means the subclass redeclared rather than inherited. Applied to the read path
-  in `#resolveMemberTarget` and the write path in `#lowerMemberAssign`.
-
-  Both now 1.00x. Median across all 59 codegen comparisons improved to 0.96x.
-
-- **Note for whoever touches this next**: the write-side fix belongs in
-  `#lowerMemberAssign`, not `#lowerSetterWrite`. The latter runs only when
-  there is *no* physical field on the receiver, where a subclass that does
-  store one genuinely needs dispatch — relaxing it there would be unsound.
-
 ### Self-hosted codegen: ~2x on devirtualized field access
 
 - **Found**: 2026-08-05
@@ -311,46 +270,6 @@ immediately trying to fix it (which can pollute the current task's context).
   devirtualized — the residual 2x looks like the accessor being *called*
   directly rather than inlined to a `struct.get`. Everything else is within
   1.4x, and the median is 0.96x.
-
-### FIXED: "unresolved callee" on stdlib-importing programs
-
-- **Found**: 2026-08-04 (capturing the pre-retirement benchmark baseline; it was
-  why the benchmark suite stopped after `minimal`)
-- **Fixed**: 2026-08-04 — the prelude is now given to every stdlib module
-  outside the prelude's own transitive closure.
-- **Was**: `zena-cli build` failed on `stdlib_moderate.zena`,
-  `stdlib_heavy.zena`, `string_bench.zena` and `basic_bench.zena` with
-  `zir unsupported: unresolved callee @<fn>`, while the bootstrap compiled all
-  four.
-
-- **Root cause**: the self-hosted compiler built *every* stdlib module's scope
-  tree with no prelude parent (`lib.isStdlib` in `#resolveScopes`), so a stdlib
-  module using a prelude name — `zena:benchmark`'s `formatFloat` calling
-  `i32ToString` — had no binding for it. The bootstrap passes
-  `preludeModules` to the checker unconditionally and resolved the same name
-  fine, so the divergence was invisible until ZIR lowering, which needs a real
-  symbol from `model.resolve()` and bails without one.
-
-- **Fix**: the no-prelude set is now the prelude's **transitive import
-  closure**, computed in `#preludeClosure()` rather than listed. Those are
-  exactly the modules where injecting the prelude would be circular, since the
-  prelude scope is assembled from their exports. Every other stdlib module is
-  ordinary code and now sees the prelude like user code. Currently 18 modules in
-  the closure; 17 stdlib modules gained the prelude.
-
-- **Two things worth remembering.**
-
-  The error message does not name the callee. `#bail()` appends
-  `' @' + this.func.name`, so in `unresolved callee @X [in X]` both X's are the
-  function being *lowered*. Reading them as "callee X in function X" suggests a
-  self-recursion pattern that does not exist, and cost real time here. Including
-  the callee's name would be a cheap improvement.
-
-  The bootstrap being more permissive than the self-hosted compiler is a bug
-  pipeline: `zena:benchmark` shipped with a missing import because the only
-  compiler that would have caught it was the one nobody built the stdlib with.
-  Worth auditing for other cases before retirement, while two implementations
-  still exist to disagree.
 
 ### Narrowing survives an assignment that invalidates it (unsound)
 
