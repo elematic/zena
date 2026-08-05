@@ -3,7 +3,7 @@ import { Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisito
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { SemanticModel, InterfaceAdaptation } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, ByteArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType } from '../../types.zena';
-import { Node, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral } from '../../ast.zena';
+import { Node, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction } from '../wasm-module.zena';
 import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeExternRef } from '../wasm.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
@@ -414,6 +414,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.queueExplicitCtor(resolved);
         }
       }
+      if (n is MapLiteral) {
+        this.registerMapLiteral(n as MapLiteral, model, resolveType);
+      }
       if (n is CallExpression) {
         // Plain identifier calls: the dependency records omit
         // module-private symbols, so the call edge here is the only
@@ -440,6 +443,12 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let alType = model.getNodeType(al);
         if (alType != null) {
           let resolved = resolveType(alType as Type);
+          // Discover the array type structurally too: dependency records
+          // are symbol-level, so on this walk (bodies with records skip
+          // discoverNodeTypes) a structural ELEMENT type — an array of
+          // tuple literals — would otherwise first materialize during
+          // lowering, after layout locked the type section.
+          this.pass.typeLowerer.discoverType(resolved, model);
           if (resolved is ArrayType) {
             let iaClass = this.pass.findPreludeClass("ImmutableArray");
             if (iaClass != null) {
@@ -449,6 +458,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               specializer.instantiateClassType(instantiated, model);
             }
           }
+        }
+      }
+      if (n is TupleLiteral) {
+        // Boxed tuple literals need their struct before layout, for the
+        // same records-are-symbol-level reason as the ArrayLiteral arm.
+        let tl = n as TupleLiteral;
+        let tlType = model.getNodeType(tl);
+        if (tlType != null) {
+          this.pass.typeLowerer.discoverType(resolveType(tlType as Type), model);
         }
       }
       if (n is RangeExpression) {
@@ -488,6 +506,25 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               (md as Node).id as i32, cdModel, resolved, true));
         }
       }
+    }
+  }
+
+  /**
+   * A map literal instantiates its checked HashMap class and calls its
+   * constructor and `[]=` (lowerMapLiteral's shape), but carries no
+   * NewExpression to prove the instantiation. Without this, a program
+   * whose only HashMap construction is a literal — the tokenizer's
+   * KEYWORDS global, reached from an external entry point — fails with
+   * 'map constructor missing' in __start.
+   */
+  registerMapLiteral(ml: MapLiteral, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    let mlType = model.getNodeType(ml);
+    if (mlType != null && mlType is ClassType) {
+      let resolved = resolveType(mlType as ClassType) as ClassType;
+      this.pass.specializer.instantiateClassType(resolved, model);
+      this.queueExplicitCtor(resolved);
+      this.queuePrivateMethod(resolved, '[]=');
     }
   }
 
@@ -582,6 +619,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           specializer.instantiateClassType(resolved, model);
           this.queueExplicitCtor(resolved);
         }
+      }
+      if (n is MapLiteral) {
+        this.registerMapLiteral(n as MapLiteral, model, resolveType);
       }
       if (n is CallExpression) {
         // Plain identifier calls: the dependency records omit

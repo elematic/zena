@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 16
+// An array of tuple literals inside a CLASS METHOD: method bodies with
+// checker dependency records skip the full discoverNodeTypes walk, so the
+// registerInstantiations walk must discover the boxed tuple element struct
+// before layout. Previously this materialized during lowering, after the
+// type section locked ("Struct allocated after layout"); the same code in
+// a plain function body always worked.
+
+class Svc {
+  count: i32;
+  new(this.count);
+
+  completions(): i32 {
+    let builtins = [
+      ("alpha", "one"),
+      ("beta", "two"),
+    ];
+    var total = 0;
+    for (let b in builtins) {
+      let (name, detail) = b;
+      total += name.length + detail.length;
+    }
+    return total + this.count;
+  }
+}
+
+export let main = (): i32 => {
+  let s = new Svc(1);
+  return s.completions();
+};
