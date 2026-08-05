@@ -23,9 +23,55 @@ now covered by a test of our own (`versioned-paths/`, `param-doc-comments.wit`,
 `interface-shadowed-by-use.wit`, `cross-package-name-collision/`); see
 TEST-STATUS.md.
 
-Nothing in the compiler calls this parser yet — see
-[component-model.md](../../docs/design/component-model.md) for the integration
-and bindgen plan.
+## Using it
+
+The parser is a Zena package. `zena-packages.json` at the repository root maps
+it, so any Zena code in this repo can import it:
+
+```zena
+import { parse } from 'wit-parser:wit';
+import { AstItemTag } from 'wit-parser:parser';
+
+let doc = parse(source);   // parses AND resolves; throws on either failure
+```
+
+`zena/wit.zena` is the entry point:
+
+| | |
+| --- | --- |
+| `parse(source)` | parse + resolve → `Ast`. What you almost always want. |
+| `parseSyntax(source)` | parse only, for tooling that reparses a file in isolation |
+| `resolve(ast)` | resolve an AST in place, for documents assembled from several sources |
+| `toJson(ast, order?)` | the `.wit.json` shape `wasm-tools` emits |
+
+The names are unqualified because the module already says what they are about;
+rename at the import site if `parse` is ambiguous in context. The test harness
+does exactly that — it has its own `parse()` export, so it imports
+`parse as parseWit`.
+
+Errors are thrown, not returned — `Result<T, E>` is an inline multi-value union
+([result-option.md](../../docs/design/result-option.md)) but is not in the
+stdlib yet. `ParseError` and `ResolveError` both carry a `Span`.
+
+The AST types live in `wit-parser:parser`; walking a document touches most of 87
+declarations, so `wit.zena` re-exports only what you need to call it and catch
+its failures.
+
+`examples/parse-wit.zena` is a runnable consumer. It sits outside the package
+root deliberately, so it can only reach the parser through the package map — it
+stops compiling if that wiring breaks, which a test using relative imports would
+not.
+
+> **It does not run under the self-hosted compiler yet.** The package map
+> resolves correctly — `zena-cli` finds and loads `parser.zena` — but that
+> compiler cannot yet parse a generic *private* method, and `Parser.#parseList<T>`
+> is declared that way. See BUGS.md, "Self-hosted compiler cannot compile
+> generic methods on classes". Until it is fixed, only the bootstrap compiler
+> can build this package, which is also why the gap went unnoticed.
+
+Nothing in the *compiler* calls the parser yet — making WIT imports first-class
+is the next step; see
+[component-model.md](../../docs/design/component-model.md).
 
 ## Directory Structure
 
@@ -133,5 +179,8 @@ Some tests use directories containing multiple `.wit` files (multi-file packages
 The parser is done, p2 and p3 alike; the consumers do not exist yet. See
 [component-model.md](../../docs/design/component-model.md):
 
-1. Expose a stable entry point and add `parseWit()` to the compiler (Part 8)
-2. Generate Zena bindings from resolved WIT (Parts 2–5)
+1. ~~Expose a stable entry point~~ — done, `zena/wit.zena`
+2. Make WIT imports first-class in the compiler: a WIT-backed package resolves
+   to a `SourceFile` whose `ModuleExports` are synthesized from the resolved
+   WIT, so `import {Request} from 'wasi:http/types'` binds real symbols with no
+   generated source (Parts 2–5)

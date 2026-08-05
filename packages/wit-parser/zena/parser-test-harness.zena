@@ -11,6 +11,9 @@ import {InterfaceDef, WorldDef, InterfaceItem, InterfaceItemTag} from './parser.
 import {TypeDef, TypeDefTag, Type, TypeTag, PackageName, Id, ToplevelUse} from './parser.zena';
 import {Resolver, ResolveError} from './resolver.zena';
 import {serializeAstToJson} from './ast-json.zena';
+// The harness drives the same entry point external consumers use, so the
+// corpus exercises it rather than a parallel code path.
+import {parse as parseWit, toJson as witToJson} from './wit.zena';
 
 // ============================================================================
 // Input: TypeScript provides these via imports
@@ -179,10 +182,7 @@ export let parse = (): void => {
   let input = readInput();
   
   outputString = try {
-    let ast = Parser.parse(input);
-    // Run semantic validation
-    Resolver.resolve(ast);
-    formatAst(ast)
+    formatAst(parseWit(input))
   } catch (e) {
     "ParseError: " + e.message + "\n"
   };
@@ -244,10 +244,7 @@ export let parseJson = (): void => {
       }
     }
 
-    let ast = Parser.parse(witContent);
-    // Run semantic validation
-    Resolver.resolve(ast);
-    serializeAstToJson(ast, pkgOrderStr)
+    witToJson(parseWit(witContent), pkgOrderStr)
   } catch (e) {
     "ParseError: " + e.message + "\n"
   };

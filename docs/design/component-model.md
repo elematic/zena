@@ -14,7 +14,7 @@
 | ------------------------------------ | ---------------------------------------------------------------------------------- |
 | WIT lexer / parser / resolver        | ✅ Done — [wit-parser.md](./wit-parser.md), 211/211 wasm-tools UI tests             |
 | WIT → `.wit.json` (wasm-tools shape) | ✅ Done                                                                            |
-| Parser callable from the compiler    | ❌ Nothing calls it; no `parseWit`                                                  |
+| Parser callable from the compiler    | ⚠️ Has a public entry point (`wit-parser:wit`) and is in the package map; nothing in the compiler calls it yet |
 | WIT → Zena bindings (bindgen)        | ❌ Does not exist                                                                   |
 | Canonical ABI lift/lower             | ❌ Does not exist. WASI is used today via hand-written `@external` decls at the      |
 |                                      | already-flattened core ABI with manual `i32.store8` pokes (see `wasi_fs_test.ts`)   |
@@ -483,10 +483,22 @@ open question 2 is not cosmetic.
 
 Ordered; each stage is useful on its own.
 
-1. **Parser → compiler integration.** `parseWit()` in the compiler, a stable
-   exported entry point on the parser module (today only test harnesses exist),
-   and a bootstrap decision (wit-parser.md Phase 3 lists three options; none
-   chosen). Real `wasi:http` parses and resolves today, p2 and p3 both.
+1. **Parser → compiler integration.** The parser now has a public entry point
+   (`wit-parser:wit` — `parse`, `parseSyntax`, `resolve`, `toJson`) and is an
+   entry in the root `zena-packages.json`, so any Zena code in the repo can
+   import it. Real `wasi:http` parses and resolves today, p2 and p3 both.
+
+   There is no bootstrap decision to make: the self-hosted compiler consumes the
+   parser as source, like any other Zena package. (`wit-parser.md` used to carry
+   a "Bootstrapping Strategy" section proposing a prebuilt `.wasm` checked into
+   `packages/compiler`; that assumed the TypeScript compiler was the consumer,
+   and has been removed.)
+
+   What remains is making WIT imports *first-class*: a WIT-backed package
+   resolving to a `SourceFile` whose `ModuleExports` are synthesized from the
+   resolved WIT, so `import {Request} from 'wasi:http/types'` binds real symbols
+   with no generated source. Blocked on the self-hosted compiler being able to
+   compile `packages/wit-parser` at all — see BUGS.md, generic methods.
 2. **`Result<T, E>` in the stdlib — as an inline multi-value union, not a
    heap type.** Blocks essentially every binding. **DECIDED 2026-08-05:** the
    representation is

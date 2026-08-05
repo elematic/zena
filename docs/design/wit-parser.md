@@ -245,85 +245,7 @@ For the initial implementation, we'll use **JSON string output** since:
 
 ---
 
-## Phase 3: Bootstrapping Strategy [NOT STARTED]
-
-The Zena compiler needs the WIT parser to process WIT files, but the WIT parser
-is written in Zena and needs the compiler to be built. This is a classic
-bootstrap problem.
-
-### 3.1 Bootstrap Approaches
-
-**Option A: Lazy Loading**
-
-The compiler loads the WIT parser WASM only when needed:
-
-```typescript
-// packages/compiler/src/wit.ts
-let witParser: WitParser | null = null;
-
-async function getWitParser(): Promise<WitParser> {
-  if (!witParser) {
-    // Load pre-compiled WASM from package
-    const wasm = await import('./wit-parser.wasm');
-    witParser = new WitParser(wasm);
-  }
-  return witParser;
-}
-
-export async function parseWit(source: string): Promise<WitResolve> {
-  const parser = await getWitParser();
-  return parser.parse(source);
-}
-```
-
-**Option B: Build-Time Pre-compilation**
-
-The WIT parser WASM is pre-compiled and checked into the repo (or built by CI):
-
-```
-packages/compiler/
-├── src/
-│   └── wit-parser.wasm     # Pre-compiled, checked in
-└── scripts/
-    └── build-wit-parser.ts # Rebuilds the WASM
-```
-
-**Option C: Staged Build**
-
-npm build script compiles the parser first, then the rest of the compiler:
-
-```json
-{
-  "scripts": {
-    "build": "npm run build:wit-parser && npm run build:compiler",
-    "build:wit-parser": "zena build stdlib/zena/wit-parser.zena -o src/wit-parser.wasm"
-  }
-}
-```
-
-**Recommendation**: Use **Option B** initially—pre-compile and check in the
-WASM. This avoids complexity during early development. Once stable, switch to
-Option C for CI builds.
-
-### 3.2 Version Consistency
-
-The pre-compiled WIT parser WASM must be compatible with the current compiler.
-We'll add a version check:
-
-```typescript
-// At load time
-const parserVersion = exports.$version?.() ?? 0;
-const compilerVersion = COMPILER_WIT_PARSER_VERSION;
-if (parserVersion !== compilerVersion) {
-  throw new Error(
-    `WIT parser version mismatch: expected ${compilerVersion}, got ${parserVersion}`,
-  );
-}
-```
-
----
-
-## Phase 4: Parser Implementation [IN PROGRESS]
+## Phase 3: Parser Implementation [IN PROGRESS]
 
 Once tests are in place, implement the parser itself.
 
@@ -393,49 +315,18 @@ This project will stress-test:
 
 ---
 
-## Phase 5: Integration [NOT STARTED]
+## Phase 4: Integration [NOT STARTED]
 
-### 5.1 Compiler Integration
+Designed in [component-model.md](./component-model.md), which is the document of
+record for everything past the parser: what a WIT import means, named import
+slots, the type mapping, the canonical ABI, and component emission.
 
-```typescript
-// packages/compiler/src/wit-integration.ts
-import {parseWit, WitResolve, WitInterface} from './wit-parser';
-
-export async function loadWitBindings(witPath: string): Promise<ZenaModule> {
-  const source = await fs.readFile(witPath, 'utf-8');
-  const resolved = await parseWit(source);
-  return generateZenaBindings(resolved);
-}
-
-function generateZenaBindings(wit: WitResolve): ZenaModule {
-  // Generate Zena types from WIT types
-  // Generate import stubs for WIT imports
-  // Generate export wrappers for WIT exports
-}
-```
-
-### 5.2 Zena Syntax for WIT
-
-Long-term, we want inline WIT support:
-
-```zena
-// Option A: Import WIT files directly
-import {Greeter} from './greeter.wit';
-
-// Option B: Inline WIT blocks
-@wit """
-  interface greeter {
-    greet: func(name: string) -> string;
-  }
-"""
-class MyGreeter implements Greeter {
-  greet(name: String) => "Hello, " + name;
-}
-```
-
-This is out of scope for the initial implementation.
-
----
+The sketch that used to sit here is gone for the same two reasons Phase 3 was.
+It integrated with the **TypeScript** compiler (`packages/compiler/src/wit-integration.ts`),
+which is being retired; and it generated Zena *source* from WIT, which is not the
+direction — WIT is to be first-class in the compiler, with a WIT-backed package
+resolving to a `SourceFile` whose `ModuleExports` are synthesized from the
+resolved WIT, so no `.zena` files are emitted at all.
 
 ## Appendix A: WIT Test File Reference
 
@@ -580,9 +471,9 @@ the parser is implemented.
 
 ### Integration
 
-- [ ] Add `parseWit` function to compiler
-- [ ] Generate Zena bindings from WIT
-- [ ] Test with real WASI WIT files
+- [x] Public entry point on the parser (`wit-parser:wit`)
+- [x] Test against real WASI WIT files (pinned corpus, gated in `npm test`)
+- [ ] Make WIT imports first-class in the compiler (see component-model.md)
 
 ### Testing Milestones
 

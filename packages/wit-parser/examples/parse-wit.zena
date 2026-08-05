@@ -1,0 +1,57 @@
+/**
+ * Consuming the WIT parser as a Zena package.
+ *
+ * This file lives outside `packages/wit-parser/zena/`, which is the package
+ * root, so it can only reach the parser through the package map in the
+ * repository's `zena-packages.json`. That is the point: it fails to compile if
+ * the wiring is wrong, which a test using relative imports would not.
+ *
+ * Build and run it from the repository root, so the manifest beside it is the
+ * one that gets loaded:
+ *
+ *     ./target/release/zena-cli run packages/wit-parser/examples/parse-wit.zena
+ *
+ * Expected exit code: 3 — the number of top-level items in the document below.
+ */
+import { console } from 'zena:console';
+import { parse } from 'wit-parser:wit';
+import { AstItemTag } from 'wit-parser:parser';
+
+let SOURCE = "package example:greeter@1.0.0;\n" +
+  "\n" +
+  "interface greet {\n" +
+  "  record greeting { text: string, formal: bool }\n" +
+  "  hello: func(name: string) -> greeting;\n" +
+  "}\n" +
+  "\n" +
+  "interface farewell {\n" +
+  "  use greet.{greeting};\n" +
+  "  goodbye: func(name: string) -> greeting;\n" +
+  "}\n" +
+  "\n" +
+  "world greeter {\n" +
+  "  export greet;\n" +
+  "  export farewell;\n" +
+  "}\n";
+
+export let main = (): i32 => {
+  // Throws on a syntax or resolution error; nothing here should throw.
+  let doc = parse(SOURCE);
+
+  var interfaces = 0;
+  var worlds = 0;
+  for (let item in doc.items) {
+    if (item.tag == AstItemTag.Interface) {
+      interfaces += 1;
+    } else if (item.tag == AstItemTag.World) {
+      worlds += 1;
+    }
+  }
+
+  console.log("interfaces: " + interfaces.toString());
+  console.log("worlds: " + worlds.toString());
+
+  // `farewell` resolving `use greet.{greeting}` is what proves resolution ran,
+  // not just parsing — an unresolvable `use` would have thrown above.
+  return doc.items.length;
+};

@@ -7,6 +7,38 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ```
+### Self-hosted compiler cannot compile generic methods on classes
+- **Found**: 2026-08-05 (wiring `wit-parser` into the package map; the
+  self-hosted compiler could not build the WIT parser's own source)
+- **Severity**: high (blocks the self-hosted compiler consuming
+  `packages/wit-parser`, which is a prerequisite for first-class WIT imports)
+- **Tests**: `tests/language/execution/classes/generic-method.zena` and
+  `generic-private-method.zena`, both `@skip: self-hosted`. They pass under
+  bootstrap.
+- **Details**: Two distinct failures, one per visibility.
+
+  A generic **private** method fails in the *parser*. Seeing `#name` followed
+  by `<`, it decides this is a private field:
+
+  ```
+  packages/wit-parser/zena/parser.zena:2156:13:
+    Private field must have a type annotation or initializer (got '<')
+  ```
+
+  This is what blocks the WIT parser specifically: `Parser.#parseList<T>` is
+  declared this way and called six times.
+
+  *Calling* a generic **public** method gets past the parser and fails in ZIR
+  with `zir unsupported: method not found @Box_s787.run`. Declaring one is
+  fine — `tests/language/execution/classes/generic-loop-member.zena` has
+  `fold<R>(…)` and runs under self-hosted today — but that method is never
+  called, so no portable test covered the call path until now. Worth knowing
+  when judging how much of the feature works: declaration coverage is not call
+  coverage.
+
+  The bootstrap compiler handles both, which is why `packages/wit-parser`
+  builds today and why this went unnoticed.
+
 ### if-let accepts any refutable pattern but only inline tuples are implemented
 - **Found**: 2026-07-31 (review question on #95: "if-let should work
   with any refutable pattern — do we need more coverage?")

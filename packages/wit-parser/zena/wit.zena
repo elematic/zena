@@ -1,0 +1,80 @@
+/**
+ * The WIT parser's public entry point.
+ *
+ * Until now the only way in was `parser-test-harness.zena`, whose interface
+ * (`parse(): void` plus `getOutputByte(i)`) exists to be driven from a Wasm
+ * host one byte at a time. That is a test rig, not an API. This module is the
+ * callable surface: a consumer hands over WIT source and gets back a validated
+ * AST, or an exception describing what was wrong with it.
+ *
+ * The AST types themselves live in `parser.zena`, which the package also
+ * exports — walking a document means touching most of 87 declarations, so
+ * mirroring them here would be a maintenance tax with no benefit. Only the
+ * handful needed to call these functions and catch their failures are
+ * re-exported below.
+ *
+ * Names are unqualified because the module already says what they are about —
+ * an importer wanting `parseWit` can rename at the import site.
+ *
+ *     import {parse} from 'wit-parser:wit';
+ *     import {AstItemTag} from 'wit-parser:parser';
+ *
+ *     let doc = parse(source);
+ *
+ * Errors are thrown rather than returned. `Result<T, E>` is an inline
+ * multi-value union (docs/design/result-option.md) but is not in the stdlib
+ * yet; once it is, a non-throwing variant can be added alongside these without
+ * disturbing callers.
+ */
+import { String } from 'zena:string';
+import { Parser, Ast } from './parser.zena';
+import { Resolver } from './resolver.zena';
+import { serializeAstToJson } from './ast-json.zena';
+
+/**
+ * Parse and resolve WIT source into a validated AST.
+ *
+ * This is what a consumer almost always wants: parsing alone accepts documents
+ * that are syntactically fine but meaningless, such as a `use` of an interface
+ * that does not exist.
+ *
+ * Throws `ParseError` for malformed syntax and `ResolveError` for a name or
+ * semantic failure. Both carry a `Span` locating the problem.
+ */
+export let parse = (source: String): Ast => {
+  let ast = Parser.parse(source);
+  Resolver.resolve(ast);
+  return ast;
+};
+
+/**
+ * Parse without resolving names.
+ *
+ * For tooling that wants a syntax tree of a single file in isolation — a
+ * formatter, or an editor reparsing on keystroke — where cross-package
+ * references cannot be resolved yet and their absence is not an error.
+ */
+export let parseSyntax = (source: String): Ast => Parser.parse(source);
+
+/**
+ * Resolve an already-parsed AST, validating it in place.
+ *
+ * Separate from `parseSyntax` so a caller assembling a document from several
+ * sources can parse each and resolve once at the end.
+ */
+export let resolve = (ast: Ast): void => {
+  Resolver.resolve(ast);
+};
+
+/**
+ * Serialize an AST to the `.wit.json` shape `wasm-tools component wit --json`
+ * emits, which is how the test corpus compares against upstream.
+ *
+ * `packageOrder` optionally fixes the order packages are emitted in; it exists
+ * because a concatenated multi-package document has no inherent order.
+ */
+export let toJson = (ast: Ast, packageOrder: String | null = null): String =>
+  serializeAstToJson(ast, packageOrder);
+
+export { Ast, ParseError } from './parser.zena';
+export { ResolveError } from './resolver.zena';
