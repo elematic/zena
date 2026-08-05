@@ -23,19 +23,29 @@ problems, and only the first is the classic bootstrap question:
 
 ## 1. What depends on the TypeScript compiler today
 
-| Package | Kind | What it uses the TS compiler for | Replacement |
+| Package | Kind | How it uses the TS compiler | Migration |
 | --- | --- | --- | --- |
-| `packages/cli` | **dep** | it *is* the TS CLI | `zena-cli` (Rust), modulo the gaps below |
-| `packages/wit-parser` | **dep** | compiles `zena/*.zena` to WASM to run the parser | build via `zena-cli` |
-| `packages/zena-compiler` | devDep | `build:cli` — builds the seed | the seed itself (§2) |
-| `packages/language-service` | devDep | `build:wasm` — compiles `zena/lsp.zena` | point `build:wasm` at `zena-cli` |
-| `packages/zena-formatter` | devDep | build step | same |
-| `packages/runtime` | devDep | test fixtures | verify; likely just test wiring |
+| `packages/zena-compiler` | CLI | `build:cli` shells out to `cli.js build` to build the seed | replaced by the checked-in seed (§2) |
+| `packages/language-service` | CLI | `build:wasm` shells out, `--target host` | swap the command — **needs `--target` on `zena-cli build`** |
+| `packages/zena-formatter` | CLI | `build-wasi-tests.ts` `execSync`s `cli.js` | swap the command |
+| `packages/wit-parser` | **library** | imports `Compiler`, `CodeGenerator`; compiles in-process and instantiates the result | restructure: shell out to `zena-cli build`, then instantiate |
+| `packages/runtime` | **library** | test files import `compile` | restructure, or use prebuilt fixtures |
+| `packages/cli` | **library** | it *is* the TS CLI | deleted, not migrated |
 
-**Every one of these is a build-step dependency, not a missing capability.** No
-package needs the TypeScript compiler for anything the self-hosted compiler
-cannot already do — they invoke `node ../cli/lib/cli.js build …` and need to
-invoke `zena-cli build …` instead.
+**Two shapes, not one.** An earlier draft of this document claimed every
+dependent was a build-step dependency that just needed its command swapped.
+That is true of the first three. It is **not** true of `wit-parser` and
+`runtime`, which use the compiler as an **in-process library** — constructing
+`Compiler`/`CodeGenerator` against a custom `CompilerHost`, or calling
+`compile()`, and consuming the emitted bytes directly. Those cannot be fixed by
+changing a command line; they need restructuring to shell out to `zena-cli
+build` and instantiate the resulting `.wasm`, or an equivalent library surface
+from the self-hosted compiler.
+
+Neither is a *capability* gap — the self-hosted compiler can compile everything
+involved — but they are meaningfully more work than the command swaps, and
+`wit-parser`'s custom host (which maps `/wit-parser/` and `zena:` specifiers
+onto a virtual filesystem) is the fiddliest part.
 
 ### The LSP is already self-hosted
 
@@ -223,11 +233,19 @@ point where an independent implementation existed.
 
 ## 6. Order of operations
 
-1. **Land the fixpoint gate** (§4) while the oracle still exists.
-2. **Capture and commit final benchmarks** (§5).
-3. **Clear the six dependents** (§1). Start with the two `zena-cli` gaps
-   (`--target` passthrough, `check`), which unblock most of the rest
-   mechanically.
+**Capture the benchmarks first (§5).** It is the only step here that is
+irreversible if skipped: `benchmark.ts` already drives both compilers, so it
+costs almost nothing now, and once `packages/compiler` is deleted the
+cross-implementation comparison can never be reproduced. Everything else in this
+plan can be redone.
+
+1. **Capture and commit final benchmarks** (§5).
+2. **Land the fixpoint gate** (§4) while the oracle still exists.
+3. **Clear the six dependents** (§1), in two waves. First the `--target`
+   passthrough plus the three command swaps (`zena-compiler`,
+   `language-service`, `zena-formatter`), which are mechanical. Then the two
+   in-process library users (`wit-parser`, `runtime`), which need restructuring
+   to shell out and instantiate.
 4. **Choose and populate the seed** (§2), with the pin in-tree.
 5. **Prove a clean-checkout build from the seed alone**, with the TypeScript
    compiler still present but unused — a dry run that can be reverted.
