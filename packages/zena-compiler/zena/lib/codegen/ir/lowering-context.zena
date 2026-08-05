@@ -445,6 +445,62 @@ export final class LoweringContext {
     return found;
   }
 
+  /**
+   * True if a transitive subclass provides an accessor for `slotName`
+   * that actually differs from a direct field read.
+   *
+   * Every class carrying a physical field gets a *synthesized* default
+   * accessor — a `ref.cast` plus `struct.get` on its own struct. A
+   * subclass that merely inherits the field therefore has a `get#x`
+   * entry of its own, and `memberProvidedBySubclass` counts it, which
+   * forced `obj.field` to dispatch through the vtable on every read
+   * whenever the receiver's class had any subclass at all. That cost
+   * ~59x on the FieldAccessVirtual benchmark against a direct
+   * `struct.get`.
+   *
+   * A synthesized accessor for the *same* field is not an override:
+   * wasm-gc struct subtyping puts the inherited field at the same
+   * index, so reading it off the receiver's struct is exactly what the
+   * subclass accessor would have done. Only a hand-written accessor,
+   * or a synthesized one bound to a different field, needs dispatch.
+   */
+  accessorOverriddenBySubclass(classInfo: ClassCodegenInfo, slotName: String,
+      fieldName: String): boolean {
+    let subclasses = new Array<ClassCodegenInfo>();
+    classInfo.getTransitiveSubclasses(subclasses);
+    for (let sub in subclasses) {
+      let subClassType = sub.structType.classType;
+      if (subClassType != null) {
+        let key = getClassMethodKey(getClassKey(subClassType as ClassType), slotName);
+        if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+          let isGetter = slotName.startsWith("get#");
+          let st = if (isGetter) f.getterStruct else f.setterStruct;
+          let idx = if (isGetter) f.getterFieldIndex else f.setterFieldIndex;
+          if (st == null || idx < 0) {
+            // Hand-written accessor: a real override.
+            return true;
+          }
+          let fields = (st as WasmStruct).fields;
+          if (idx >= fields.length || fields[idx].name != fieldName) {
+            // Synthesized, but bound to a different field.
+            return true;
+          }
+          // Same name is not enough: require the same slot. wasm-gc
+          // subtyping keeps inherited fields at their supertype index,
+          // so an index that moved means the subclass redeclared the
+          // field rather than inheriting it, and a direct read off the
+          // receiver's struct would target the wrong slot.
+          if (idx != classInfo.structType.fieldIndexByName(fieldName)) {
+            return true;
+          }
+          // Synthesized accessor for the same field: equivalent to a
+          // direct read, so it does not force dispatch.
+        }
+      }
+    }
+    return false;
+  }
+
   /** True if any transitive subclass provides its own `methodName`. */
   memberProvidedBySubclass(classInfo: ClassCodegenInfo, methodName: String): boolean {
     let subclasses = new Array<ClassCodegenInfo>();

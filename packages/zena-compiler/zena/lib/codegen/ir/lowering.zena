@@ -3101,10 +3101,14 @@ export final class FunctionLowerer {
     if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
       infoOpt = info;
     }
+    // A synthesized default setter on a subclass targets this same
+    // physical field, so it is not an override — see
+    // accessorOverriddenBySubclass. Safe to use the field-name form
+    // here because this branch already established a physical field.
     if (!isPrivateWrite &&
         (this.#accessorRedefined(receiverCt, propName, 'set#' + propName) ||
-         (infoOpt != null && this.#cx().memberProvidedBySubclass(
-             infoOpt as ClassCodegenInfo, 'set#' + propName)))) {
+         (infoOpt != null && this.#cx().accessorOverriddenBySubclass(
+             infoOpt as ClassCodegenInfo, 'set#' + propName, fieldName)))) {
       // An accessor shadows the physical field somewhere between the
       // receiver and a subclass: the write must dispatch.
       return this.#lowerVirtualSetterWrite(
@@ -4682,7 +4686,8 @@ export final class FunctionLowerer {
       return new MemberTarget(structType, lookupName, null);
     }
     if (hasField && !this.#accessorRedefined(ct, propName, 'get#' + propName)) {
-      if (this.#cx().memberProvidedBySubclass(classInfo, 'get#' + propName)) {
+      if (this.#cx().accessorOverriddenBySubclass(
+              classInfo, 'get#' + propName, lookupName)) {
         // A subclass overrides the accessor: the read must dispatch.
         // The slot signature is the DEFAULT getter registered by the
         // declaring class (present whenever the slot is).

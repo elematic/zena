@@ -259,36 +259,58 @@ immediately trying to fix it (which can pollute the current task's context).
   Postfix call chaining is evidently not applied to a NewExpression the way
   member access is. Pin with a syntax test once fixed.
 
-### Self-hosted codegen: 59x regression on virtual field access
+### FIXED: 59x regression on virtual field access
 
 - **Found**: 2026-08-05 (first run of the bootstrap-vs-self-hosted codegen
   comparison)
-- **Severity**: high (a 59x slowdown on a common operation)
-- **Details**: With the same source compiled by each compiler and both
-  artifacts run under wasmtime, two benchmarks sit far outside the noise:
+- **Fixed**: 2026-08-05 — synthesized default accessors no longer count as
+  subclass overrides.
+- **Was**: `FieldAccessVirtual (N=10M)` 2.13 ms bootstrap-emitted vs 126.79 ms
+  self-hosted (**59.53x**), and `FieldAssignVirtual` 4.29 vs 123.83 ms
+  (**28.86x**).
 
-  | Benchmark | Bootstrap-emitted | Self-hosted-emitted | Ratio |
-  | --- | --- | --- | --- |
-  | `FieldAccessVirtual (N=10M)` | 2.13 ms | 126.79 ms | **59.53x** |
-  | `FieldAssignVirtual (N=10M)` | 4.29 ms | 123.83 ms | **28.86x** |
-  | `FieldAccessDevirtEffectivelyFinal` | 2.14 ms | 4.28 ms | 2.00x |
-  | `FieldAccessDevirtFinal` | 2.42 ms | 4.34 ms | 1.79x |
+- **Root cause**: reading `obj.value` through a base-class-typed reference
+  compiled to a vtable load, `ref.cast` and `call_ref` on every access:
+  ```wat
+  local.get 0
+  struct.get 823 0      ;; vtable pointer
+  struct.get 748 0      ;; vtable slot
+  ref.cast (ref 547)
+  call_ref 547          ;; indirect call to get#value
+  ```
+  The decision came from `memberProvidedBySubclass`, which returns true when
+  any transitive subclass has an entry in `classMethodMap` for the slot. Every
+  class holding a physical field gets a *synthesized* default accessor — a
+  `ref.cast` plus `struct.get` on its own struct — so a subclass that merely
+  inherits the field registers `get#value` and was counted as an override.
 
-  Note the shape: the *devirtualized* field-access variants are only ~2x off
-  while the *virtual* ones are 30-60x, so the self-hosted compiler appears to
-  be missing an optimization for virtual field access that the streaming
-  backend applied.
+  The scope was broad: **any class with a subclass lost direct field access**,
+  read and write. The benchmark's `SubClassWithField` overrides nothing at all.
 
-  Context: across all 59 comparisons the median ratio is **0.95x** and only 7
-  exceed 1.10x, so self-hosted codegen is broadly at parity or better —
-  notably 0.46-0.50x on interface iteration and devirtualized calls. These
-  field-access cases are a sharp, isolated outlier, not a general regression.
-  Emitted size is 1.4-1.5x larger excluding custom sections (a raw byte count
-  says ~2x, but 55-62% of that gap is a name section only the self-hosted
-  compiler emits).
+- **Fix**: `accessorOverriddenBySubclass()` ignores synthesized accessors that
+  resolve to the same field — matching both name and struct index, since
+  wasm-gc keeps inherited fields at their supertype index and a moved index
+  means the subclass redeclared rather than inherited. Applied to the read path
+  in `#resolveMemberTarget` and the write path in `#lowerMemberAssign`.
 
-- **Reproduce**: `npm run benchmark -w @zena-lang/zena-compiler -- --basic`,
-  see the "Codegen Comparison: basic" table.
+  Both now 1.00x. Median across all 59 codegen comparisons improved to 0.96x.
+
+- **Note for whoever touches this next**: the write-side fix belongs in
+  `#lowerMemberAssign`, not `#lowerSetterWrite`. The latter runs only when
+  there is *no* physical field on the receiver, where a subclass that does
+  store one genuinely needs dispatch — relaxing it there would be unsound.
+
+### Self-hosted codegen: ~2x on devirtualized field access
+
+- **Found**: 2026-08-05
+- **Severity**: low (2x on a fast operation; was masked by the 59x above)
+- **Details**: after the virtual-field-access fix, the worst remaining codegen
+  regressions are `FieldAccessDevirtFinal` (2.14 -> 4.30 ms, **2.01x**) and
+  `FieldAccessDevirtEffectivelyFinal` (**2.00x**). Both read a field through a
+  reference whose class is final or effectively final, so the access is already
+  devirtualized — the residual 2x looks like the accessor being *called*
+  directly rather than inlined to a `struct.get`. Everything else is within
+  1.4x, and the median is 0.96x.
 
 ### FIXED: "unresolved callee" on stdlib-importing programs
 
