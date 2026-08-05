@@ -487,7 +487,19 @@ Ordered; each stage is useful on its own.
    exported entry point on the parser module (today only test harnesses exist),
    and a bootstrap decision (wit-parser.md Phase 3 lists three options; none
    chosen). Real `wasi:http` parses and resolves today, p2 and p3 both.
-2. **`Result<T, E>` in the stdlib.** Blocks essentially every binding.
+2. **`Result<T, E>` in the stdlib — as an inline multi-value union, not a
+   heap type.** Blocks essentially every binding. **DECIDED 2026-08-05:** the
+   representation is
+
+   ```zena
+   type Result<T, E> = inline (true, T, _) | inline (false, _, E);
+   ```
+
+   not a sealed class or a record union. Zena already has this idiom — the
+   iterator protocol is `next(): inline (true, T) | inline (false, _)` — and
+   inline tuples compile to WASM multi-value returns, so an ok/err return costs
+   no allocation. Pattern-based narrowing (`if (let (true, v) = f())`) already
+   works on it. See Part 8a for where this meets WIT.
 3. **Bindgen, types only.** WIT types → Zena declarations. No ABI yet; output
    is checkable Zena source. Verifiable against real `wasi:http` WIT. Resource
    wrappers take their shape from stage 5, so this follows the ownership model
@@ -509,6 +521,113 @@ Ordered; each stage is useful on its own.
    that proves the stages above.
 8. **p3**, after async/CPS lands: re-run bindgen against the p3 world, add the
    callback ABI, map `future`/`stream` onto Zena async.
+
+### Part 8a: `Result` as an inline union, measured against real WIT
+
+The inline representation fits WIT's *shape* exactly. WIT's `result` has four
+forms and our parser already models them as `ResultKind(ok: TypeRef | null, err:
+TypeRef | null)`, which maps onto the two arms with `_` in the unit slots:
+
+| WIT | Zena |
+| --- | --- |
+| `result<T, E>` | `inline (true, T, _) \| inline (false, _, E)` |
+| `result<T>` | `inline (true, T, _) \| inline (false, _, _)` |
+| `result<_, E>` | `inline (true, _, _) \| inline (false, _, E)` |
+| `result` | `inline (true, _, _) \| inline (false, _, _)` |
+
+No conflict there — and `result<_, E>` is the single most common form in real
+WASI (117 of 291 occurrences), which is exactly the case that benefits most from
+not allocating.
+
+**The constraint is position, not shape.** The language reference is explicit
+that inline tuples "only exist in return position and destructuring — they
+cannot be stored in variables or passed as arguments". Real WASI uses `result`
+in all of those forbidden positions. Counted across the three pinned trees
+(291 `result` occurrences total):
+
+- **31** nested inside another generic — `future<result<_, error-code>>` (25,
+  all of p3's async surface), `option<result<…>>`, `tuple<…, future<result<…>>>`
+- **4** in parameter position —
+  `consume-body: static func(this: request, res: future<result<_, error-code>>)`
+- **2** nested in itself — `option<result<result<option<trailers>, error-code>>>`
+  in `wasi:http` p2, where the outer result means "already taken" and the inner
+  one is the actual outcome
+- **1** as a record field — `response: result<outgoing-response, error-code>`
+
+So roughly 88% of uses are plain return-position results the inline form covers
+perfectly, and ~12% are positions it cannot occupy today.
+
+**A second gap: binding the error arm.** The documented idiom for inline unions
+is `if (let (true, v) = f())` / `while (let (true, v) = f())`, which discards the
+false arm. That is sufficient for the iterator protocol, whose false arm is
+`inline (false, _)` and carries nothing — but `Result`'s false arm carries `E`,
+and there is currently **no way to bind it**: `match` is not documented to work
+over inline tuple unions, and no `let (false, …)` pattern appears anywhere in the
+stdlib or the compiler today. Grepping both turns up zero uses. So adopting this
+representation implies one of:
+
+- `match` over inline tuple unions with literal-pattern narrowing per arm, or
+- an else-binding form, or
+- an accessor pair that re-runs narrowing internally.
+
+This is a language question, not a WIT one, but it lands before `Result` is
+usable for anything that inspects the error — which is most of WASI, given
+`result<_, error-code>` is the single most common form.
+[result-option.md](./result-option.md) takes the question up in full — the
+cross-language precedent (Rust, Swift, Zig), why the boolean tag stays in the
+representation, an else-binding design sketch, and the proposed `??` /
+error-forwarding sugar. Short version: `match` (below) remains the required
+general form, and a Zig-style `else let (false, _, e)` binding is the
+recommended ergonomic companion.
+
+**Considered and rejected: destructure, then test the flag.**
+
+```zena
+let (ok, value, err) = foo();
+if (ok) { /* value */ } else { /* err */ }
+```
+
+This does not typecheck usefully. Narrowing is `#narrowings:
+Array<HashMap<SymbolId, Type>>` (checker.zena) — keyed by a *single* symbol — so
+`if (ok)` narrows `ok` and nothing else; narrowing `value` off a test of `ok` is
+correlated narrowing between distinct bindings, which that structure cannot
+express. And with no literal in the pattern no arm is selected, so `value` is
+typed `T | _` and `err` is `E | _`. Both branches then need a cast, and in the ok
+branch `err` is a nameable, readable hole. For a language whose premise is a
+sound type system with no implicit coercion, paying a cast at every call site is
+the wrong trade.
+
+**Recommended: `match` over inline tuple unions.**
+
+```zena
+match (foo()) {
+  case (true, value, _): use(value)
+  case (false, _, err): handle(err)
+}
+```
+
+Per-arm narrowing, so no correlated narrowing is needed; the tuple is never
+stored; the callee runs once; and exhaustiveness is decidable because `true` and
+`false` are literal types, so two arms provably cover the union. `TuplePattern`
+and `LiteralPattern` already exist (ast.zena), and literal-driven arm selection
+is what `if (let (true, v) = …)` already does — the work is wiring `match` to
+inline tuple unions, not new pattern machinery.
+
+**OPEN — pick one before bindgen materialises `result`:**
+
+- **(a) Two representations.** Inline in return position, boxed when nested or
+  stored. Cheapest for the common path, but `Result<T, E>` is then not one type,
+  and a WIT-derived signature's representation depends on where it appears.
+- **(b) Let inline tuples nest and be stored.** A language change well beyond
+  WIT, and it partly defeats the point: something stored has to live somewhere.
+- **(c) Box only at the WIT boundary.** Keep the inline union as *the* Zena
+  `Result`, and have bindgen introduce an explicit boxed carrier for the nested
+  cases (a `Future<Result<…>>` wrapper class). Keeps the language unchanged and
+  confines the cost to the 12%.
+
+Recommendation: **(c)**. It leaves `Result` a single honest type, and every
+nested case is already behind a `future`/`option`/`stream` that has to be a real
+object anyway.
 
 ### Relationship to the plan of record
 

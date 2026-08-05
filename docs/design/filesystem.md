@@ -149,18 +149,29 @@ WASI operations frequently fail (file not found, permission denied). Two options
 **Option A: Value-based `Result<T, E>`** (recommended for expected failures)
 
 ```zena
-// Standard library Result type
-type Result<T, E> = { ok: true, value: T } | { ok: false, error: E };
+// Standard library Result type — an inline multi-value union, so returning
+// one costs no allocation. See component-model.md Part 8a.
+type Result<T, E> = inline (true, T, _) | inline (false, _, E);
 
 let openAt = (path: String): Result<Descriptor, FsErrorCode> => { ... };
 
-// Usage with pattern matching
-match (openAt("config.json")) {
-  case { ok: true, value: fd } => processFile(fd),
-  case { ok: false, error: FsErrorCode.NotFound } => useDefaults(),
-  case { ok: false, error: e } => throw new FsError(e),
+// Usage with pattern-based narrowing
+if (let (true, fd) = openAt("config.json")) {
+  processFile(fd);
 }
+// NOTE: binding the error arm needs language support that does not exist yet
+// — see result-option.md for the design (match over inline unions, plus a
+// Zig-style else-binding: `else let (false, _, e) { … }`).
 ```
+
+> **Superseded 2026-08-05.** This file previously specified
+> `type Result<T, E> = { ok: true, value: T } | { ok: false, error: E }` — a
+> record union, which heap-allocates on every call. The decision is the inline
+> multi-value form above, matching the existing iterator protocol
+> (`next(): inline (true, T) | inline (false, _)`). Note inline tuples cannot be
+> stored or passed as arguments, so a `result` nested inside `future`/`option`
+> needs a boxed carrier; component-model.md Part 8a has the measurements and the
+> open choice.
 
 **Option B: Exceptions** (for unexpected failures)
 
@@ -236,8 +247,9 @@ let gcPath: GCString = path.toGCString();
 The standard library provides a `Result<T, E>` type for explicit error handling:
 
 ```zena
-// Standard library Result type (from zena:core)
-type Result<T, E> = { ok: true, value: T } | { ok: false, error: E };
+// Standard library Result type (from zena:core) — inline multi-value union;
+// see component-model.md Part 8a.
+type Result<T, E> = inline (true, T, _) | inline (false, _, E);
 
 // Extension methods (via extension class)
 extension class ResultExt<T, E> on Result<T, E> {
