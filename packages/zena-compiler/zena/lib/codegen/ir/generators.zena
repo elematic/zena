@@ -331,11 +331,12 @@ let prepareOne = (
   func: WasmFunction,
   funcIndex: i32
 ): void => {
-  if (func.isClosure || func.captures.length > 0 || func.capturesThis) {
-    throw new Error(
-        'Generator closures (captured variables) are not yet supported: ' +
-        funcDisplayName(func));
-  }
+  // Generator closures need no special handling: the context struct
+  // ref arrives as param 0 of the implementation function (the ramp),
+  // gets spilled to a frame field like every other param, and capture
+  // reads in the body go through it; mutable captures are heap cells,
+  // so mutation is shared between the generator and its enclosing
+  // scope (and between sibling iterators) through the cell.
 
   // The Iterator<T> instantiation and its wasm-side structs.
   let iface = iteratorInstantiationOf(func);

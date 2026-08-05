@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 3160
+// @skip: bootstrap
+// Generator closures: an immutable capture is stored in the closure
+// context, which rides in the frame like any other parameter.
+import { Iterator } from 'zena:iterator';
+
+let make = (k: i32): () => Iterator<i32> => {
+  return gen (): Iterator<i32> => {
+    yield k;
+    yield k * 2;
+  };
+};
+
+export let main = (): i32 => {
+  let five = make(5);
+  let hundred = make(100);
+  var acc = 0;
+  for (let v in five()) { acc += v; }    // 5 + 10 = 15
+  for (let v in hundred()) { acc += v; } // 100 + 200 = 300 -> 315
+  // Two iterators from the SAME closure are independent.
+  let a = five();
+  let b = five();
+  var pairSum = 0;
+  if (let (true, x) = a.next()) { pairSum += x; } // 5
+  if (let (true, y) = b.next()) { pairSum += y; } // 5
+  return acc * 10 + pairSum; // 315 * 10 + 10 = 3160
+};

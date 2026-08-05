@@ -63,10 +63,13 @@ lowers each generator body to presplit ZIR with `yield_` terminators
 between RTA and layout, synthesizes the frame struct + `next()` +
 `Iterator<T>` vtable global, and rewrites the body into a
 dispatcher-loop state machine (reducible by construction; `br_if`
-chain until `br_table` gains emit support). v1 deviations, all loud:
-the RUNNING poison state traps instead of throwing; generator
-closures (captured variables) and non-specialized generic generators
-are compile errors. Fusion is G2.
+chain until `br_table` gains emit support). Generator closures
+(immutable, mutable, and `this` captures) and specialized generic
+generators work. Remaining v1 deviations, all loud: the RUNNING
+poison state traps instead of throwing (an Error payload would pull
+exception machinery into every generator program; waits for the async
+runtime work), and a generic gen method reached only through erased
+vtable dispatch fails with a clear error. Fusion is G2.
 
 The async-specific refinement:
 

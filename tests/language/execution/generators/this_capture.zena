@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 2030
+// @skip: bootstrap
+// A gen closure inside a method captures `this`; mutations through it
+// are visible on the object.
+import { Iterator } from 'zena:iterator';
+
+class Box {
+  var total: i32 = 0;
+
+  makeAdder(): () => Iterator<i32> {
+    return gen (): Iterator<i32> => {
+      this.total += 10;
+      yield this.total;
+      this.total += 10;
+      yield this.total;
+    };
+  }
+}
+
+export let main = (): i32 => {
+  let box = new Box();
+  let g = box.makeAdder();
+  var acc = 0;
+  for (let v in g()) { acc += v; } // 10 + 20 = 30
+  return box.total * 100 + acc; // 20 * 100 + 30 = 2030
+};

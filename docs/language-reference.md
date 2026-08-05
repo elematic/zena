@@ -1054,8 +1054,7 @@ Overload resolution is performed based on the argument types at the call site.
 ### Generator Functions
 
 > **Status:** implemented in the self-hosted compiler only (the
-> bootstrap compiler never learns generators). Generator closures
-> (capturing enclosing variables) are not yet supported. See
+> bootstrap compiler never learns generators). See
 > `docs/design/generators.md`.
 
 A generator is a function expression with the `gen` modifier; `yield`

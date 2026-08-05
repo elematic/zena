@@ -1,0 +1,24 @@
+// @mode: run
+// @result: 1234
+// @skip: bootstrap
+// A mutable capture lives in a heap cell shared by the enclosing
+// scope and every iterator: state persists across iterators.
+import { Iterator } from 'zena:iterator';
+
+let counter = (): () => Iterator<i32> => {
+  var n = 0;
+  return gen (): Iterator<i32> => {
+    n += 1;
+    yield n;
+    n += 1;
+    yield n;
+  };
+};
+
+export let main = (): i32 => {
+  let f = counter();
+  var acc = 0;
+  for (let v in f()) { acc = acc * 10 + v; } // 1, 2
+  for (let v in f()) { acc = acc * 10 + v; } // 3, 4
+  return acc; // 1234
+};

@@ -636,9 +636,13 @@ progress; M3 loop not started).
   lowering, so nothing can be synthesized "after GVN"); the frame is a
   bare struct with a hand-rolled `Iterator<T>` vtable global rather
   than a ClassType; the RUNNING poison state traps (`unreachable`)
-  instead of throwing until synthesized code can construct an Error;
-  generator closures and non-specialized generic generators are
-  compile errors in v1._
+  instead of throwing — a synthesized throw needs an Error payload,
+  which would pull Error + string machinery into every program with a
+  generator, so it waits for the async runtime work. Generator
+  closures (immutable, celled-mutable, and `this` captures) and
+  specialized generic generators work; the one unsupported corner is a
+  generic gen method reached only through erased vtable dispatch,
+  which fails loudly._
 - **G2 — fusion.** Presplit body memoization + bottom-up generator
   lowering order; block-splice/clone machinery (built as the shared
   substrate for the M3 inliner); the `#lowerForIn` fusion arm with
