@@ -322,33 +322,31 @@ immediately trying to fix it (which can pollute the current task's context).
   Postfix call chaining is evidently not applied to a NewExpression the way
   member access is. Pin with a syntax test once fixed.
 
-### Self-hosted codegen: ~2x on two of the four field-access benchmarks
+### RESOLVED (not a codegen bug): field-access benchmark 2x is a machine-code alignment artifact
 
-- **Found**: 2026-08-05, re-characterised after the 2026-08-05 baseline
-- **Severity**: low (2x on a ~0.2ns operation)
-- **Details**: of the four field-access benchmarks, two consistently run at
-  ~4.2 ms per 10M iterations against the bootstrap's ~2.1 ms, and two match the
-  bootstrap:
-
-  | Benchmark | Bootstrap | Self-hosted | Ratio |
-  | --- | --- | --- | --- |
-  | `FieldAccessVirtual` | 2.15 ms | 4.23 ms | 1.97x |
-  | `FieldAccessDevirtFinalField` | 2.13 ms | 4.23 ms | 1.99x |
-  | `FieldAccessDevirtFinal` | 2.40 ms | 2.12 ms | 0.88x |
-  | `FieldAccessDevirtEffectivelyFinal` | 2.12 ms | 2.11 ms | 1.00x |
-
-  **Which two are slow is not stable across compiler changes.** Immediately
-  after the synthesized-accessor fix the slow pair was `DevirtFinal` and
-  `DevirtEffectivelyFinal`; after the closure-wrapper reachability change it
-  became `Virtual` and `DevirtFinalField`. Both configurations reproduce across
-  consecutive runs, so this is not measurement noise — the split moves in
-  response to unrelated codegen changes.
-
-  Two always fast and two always slow, swapping membership, points at an
-  inlining or code-layout threshold rather than anything intrinsic to
-  devirtualization. Worth a look at what wasmtime does differently with the two
-  shapes before optimising anything specific.
-
+- **Found**: 2026-08-05; **root-caused 2026-08-05** — kept here because the
+  symptom will recur and looks alarming.
+- **Severity**: none (measurement artifact on a ~0.2ns operation)
+- **Details**: two of the four field-access benchmarks read ~4.2 ms per 10M
+  iterations from self-hosted output vs ~2.1 ms from the bootstrap's, with the
+  slow pair *changing membership* after unrelated codegen changes. Root cause:
+  both compilers fully devirtualize all four accesses to a bare `struct.get`
+  loop (the self-hosted body is one instruction *shorter* — Cranelift folds
+  the load into the add), and the entire difference is code placement. On
+  Zen 3, a tight dependent loop whose ~34-byte body fits inside one 64-byte
+  fetch/op-cache block sustains 1 cycle/iteration; a body straddling a block
+  boundary costs 2. Disassembling the exact cwasm caches behind the timings
+  showed a 16/16 correlation between straddling and the slow numbers, in both
+  compilers' artifacts and in both inlining configurations. Function starts
+  are 16-byte-aligned cumulative sums of all preceding code, so any unrelated
+  change re-rolls start%64 — which is precisely the observed slow-pair
+  flip-flopping.
+- **Do not "fix" this in Zena codegen** — it would only re-roll the dice.
+  Cranelift has no loop-header-alignment option (the durable fix would be an
+  upstream wasmtime/Cranelift feature request). When a sub-nanosecond-per-op
+  benchmark delta quantizes to exactly ~2x, suspect alignment and verify by
+  diffing loop addresses in `wasmtime objdump` output before investigating
+  codegen.
 - **Reproduce**: `npm run benchmark -w @zena-lang/zena-compiler -- --basic`,
   "Codegen Comparison: basic".
 
