@@ -259,6 +259,77 @@ immediately trying to fix it (which can pollute the current task's context).
   Postfix call chaining is evidently not applied to a NewExpression the way
   member access is. Pin with a syntax test once fixed.
 
+### Self-hosted codegen: 59x regression on virtual field access
+
+- **Found**: 2026-08-05 (first run of the bootstrap-vs-self-hosted codegen
+  comparison)
+- **Severity**: high (a 59x slowdown on a common operation)
+- **Details**: With the same source compiled by each compiler and both
+  artifacts run under wasmtime, two benchmarks sit far outside the noise:
+
+  | Benchmark | Bootstrap-emitted | Self-hosted-emitted | Ratio |
+  | --- | --- | --- | --- |
+  | `FieldAccessVirtual (N=10M)` | 2.13 ms | 126.79 ms | **59.53x** |
+  | `FieldAssignVirtual (N=10M)` | 4.29 ms | 123.83 ms | **28.86x** |
+  | `FieldAccessDevirtEffectivelyFinal` | 2.14 ms | 4.28 ms | 2.00x |
+  | `FieldAccessDevirtFinal` | 2.42 ms | 4.34 ms | 1.79x |
+
+  Note the shape: the *devirtualized* field-access variants are only ~2x off
+  while the *virtual* ones are 30-60x, so the self-hosted compiler appears to
+  be missing an optimization for virtual field access that the streaming
+  backend applied.
+
+  Context: across all 59 comparisons the median ratio is **0.95x** and only 7
+  exceed 1.10x, so self-hosted codegen is broadly at parity or better —
+  notably 0.46-0.50x on interface iteration and devirtualized calls. These
+  field-access cases are a sharp, isolated outlier, not a general regression.
+  Emitted size is 1.4-1.5x larger excluding custom sections (a raw byte count
+  says ~2x, but 55-62% of that gap is a name section only the self-hosted
+  compiler emits).
+
+- **Reproduce**: `npm run benchmark -w @zena-lang/zena-compiler -- --basic`,
+  see the "Codegen Comparison: basic" table.
+
+### FIXED: "unresolved callee" on stdlib-importing programs
+
+- **Found**: 2026-08-04 (capturing the pre-retirement benchmark baseline; it was
+  why the benchmark suite stopped after `minimal`)
+- **Fixed**: 2026-08-04 — the prelude is now given to every stdlib module
+  outside the prelude's own transitive closure.
+- **Was**: `zena-cli build` failed on `stdlib_moderate.zena`,
+  `stdlib_heavy.zena`, `string_bench.zena` and `basic_bench.zena` with
+  `zir unsupported: unresolved callee @<fn>`, while the bootstrap compiled all
+  four.
+
+- **Root cause**: the self-hosted compiler built *every* stdlib module's scope
+  tree with no prelude parent (`lib.isStdlib` in `#resolveScopes`), so a stdlib
+  module using a prelude name — `zena:benchmark`'s `formatFloat` calling
+  `i32ToString` — had no binding for it. The bootstrap passes
+  `preludeModules` to the checker unconditionally and resolved the same name
+  fine, so the divergence was invisible until ZIR lowering, which needs a real
+  symbol from `model.resolve()` and bails without one.
+
+- **Fix**: the no-prelude set is now the prelude's **transitive import
+  closure**, computed in `#preludeClosure()` rather than listed. Those are
+  exactly the modules where injecting the prelude would be circular, since the
+  prelude scope is assembled from their exports. Every other stdlib module is
+  ordinary code and now sees the prelude like user code. Currently 18 modules in
+  the closure; 17 stdlib modules gained the prelude.
+
+- **Two things worth remembering.**
+
+  The error message does not name the callee. `#bail()` appends
+  `' @' + this.func.name`, so in `unresolved callee @X [in X]` both X's are the
+  function being *lowered*. Reading them as "callee X in function X" suggests a
+  self-recursion pattern that does not exist, and cost real time here. Including
+  the callee's name would be a cheap improvement.
+
+  The bootstrap being more permissive than the self-hosted compiler is a bug
+  pipeline: `zena:benchmark` shipped with a missing import because the only
+  compiler that would have caught it was the one nobody built the stdlib with.
+  Worth auditing for other cases before retirement, while two implementations
+  still exist to disagree.
+
 ### Narrowing survives an assignment that invalidates it (unsound)
 
 - **Found**: 2026-08-04 (evaluating whether a checker flow graph would

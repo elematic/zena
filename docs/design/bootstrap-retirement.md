@@ -222,7 +222,15 @@ What to capture, in priority order:
 3. **Runtime speed of generated code**, both compilers' output on the benchmark
    suite. This is the one that matters most and is the easiest to lose: it
    answers "did self-hosting cost us codegen quality?" and after retirement
-   there is nothing to compare against.
+   there is nothing to compare against. **The current suite does not measure
+   this** — the micro-benchmarks build their fixtures with the bootstrap
+   compiler and run that one artifact under wasmtime, Node and against JS, so
+   they measure Zena against JavaScript rather than one compiler's output
+   against the other's. Note the suite *does* compare the two compilers on
+   compile **time**, including the compiler compiling itself. **Emitted code
+   size** is nearly free to add — both artifacts are already written per target
+   — and already shows the self-hosted compiler emitting ~2× the bytes; see the
+   [2026-08-04 baseline](../benchmarks/2026-08-04-pre-retirement-baseline.md).
 4. **Peak memory / GC reserve** for a self-compile. `build:self-hosted` already
    needs `ZENA_GC_RESERVE_MB=1536`, which is worth recording as a baseline
    rather than folklore.
@@ -239,7 +247,11 @@ costs almost nothing now, and once `packages/compiler` is deleted the
 cross-implementation comparison can never be reproduced. Everything else in this
 plan can be redone.
 
-1. **Capture and commit final benchmarks** (§5).
+1. **Capture and commit final benchmarks** (§5). *Partially done —
+   [2026-08-04 baseline](../benchmarks/2026-08-04-pre-retirement-baseline.md).
+   Compile time, emitted size and emitted-code runtime are all captured and
+   now measured by the suite; `stdlib_moderate` and `stdlib_heavy` were
+   blocked at capture time and need a re-run.*
 2. **Land the fixpoint gate** (§4) while the oracle still exists.
 3. **Clear the six dependents** (§1), in two waves. First the `--target`
    passthrough plus the three command swaps (`zena-compiler`,
