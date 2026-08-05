@@ -103,30 +103,48 @@ immediately trying to fix it (which can pollute the current task's context).
   trampoline body is already synthesized, so this is call-site work in
   `operators.zena`/`lowering.zena`.
 
-### Self-hosted compiler cannot build the language service (two bugs)
+### RESOLVED: Self-hosted compiler cannot build the language service
 
 - **Found**: 2026-08-05 (attempting the language-service build swap for
-  bootstrap retirement wave 1)
-- **Severity**: high for retirement (blocks the last mechanical command
-  swap; the LSP stays on the bootstrap until fixed)
-- **Details**: `zena-cli build zena/lsp.zena --target host` fails two
-  ways, and a minimal reduction shows they are distinct:
-  1. **Checker, import-set dependent**: with lsp.zena's full import list,
-     checking reports `parser.zena:3419:91 - Error: Class 'IdGenerator'
-     not found` (twice) — the location is `parse`'s default argument
-     `new IdGenerator<NodeId>()`. A minimal file importing only
-     `zena-compiler:parser` and calling `parse(source, path)` checks
-     fine, so resolution of the default-argument expression depends on
-     the surrounding module set — likely the caller's scope being used
-     for a callee-module expression. All in-compiler callers of `parse`
-     happen to import `IdGenerator` themselves, masking this.
-  2. **ZIR bail**: the same minimal file then fails lowering with
-     `zir unsupported: map constructor missing @__start [in __start]`,
-     on both `host` and `zena-cli` targets — some module-level HashMap
-     initializer in the parser import graph loses its constructor.
-  (A third blocker — lsp.zena's duplicate module-scope `getHoverLabel`,
-  which the bootstrap tolerated and the self-hosted checker correctly
-  rejects — was fixed by renaming the internal helper.)
+  bootstrap retirement wave 1); **fixed 2026-08-05** — kept briefly as a
+  map of the four distinct bugs the one symptom covered, since each has
+  a portable test that pins it:
+  1. **Checker: spliced default arguments vs the cycle re-check pass.**
+     Omitted optional arguments are filled by splicing the callee's
+     default-initializer AST into the caller's argument list — a
+     mutation of the shared AST — while the guard record (the
+     caller-written arg count) lived only in the per-pass
+     SemanticModel. A file re-checked by the cycle-driven second pass
+     starts a fresh model, so the re-check resolved the callee's
+     initializer (`new IdGenerator<NodeId>()`) in the caller's scope:
+     `Class 'IdGenerator' not found`. Masked everywhere in-compiler
+     because every caller of `parse` imports IdGenerator. The record
+     now also lives in SharedCheckerState (which exists to survive
+     passes), re-seeds the fresh model for codegen, and the
+     union-typed-callee arm gained the guard it never had.
+     Test: `execution/imports/default_param_cycle.zena`.
+  2. **RTA: map literals never registered their HashMap instantiation.**
+     A `{k => v}` literal instantiates its checked HashMap class and
+     calls its constructor and `[]=`, but carried no NewExpression, so
+     a program whose ONLY HashMap construction is a literal (the
+     tokenizer's KEYWORDS global, reached from an external entry) hit
+     `zir unsupported: map constructor missing @__start`.
+     Test: `execution/collections/map-literal-global-only.zena`.
+  3. **RTA: tuple/array literals in method bodies missed struct
+     discovery.** Method bodies with checker dependency records skip
+     the full discoverNodeTypes walk; registerInstantiations never
+     discovered array literals' element types nor boxed tuple literal
+     structs, so an array-of-tuples local in a method materialized its
+     struct during lowering — after layout ("Struct allocated after
+     layout"). Test: `execution/records/tuple-array-in-method.zena`.
+  4. **Codegen: host target emitted memory ops with no memory.**
+     `ensureMemory()` only ran via WASI infra registration, so a host
+     build reaching `zena:memory` (the compiler's time.zena, via the
+     LSP) produced wasm that failed instantiation with `memory index 0
+     exceeds number of declared memories`. Reaching any linear-memory
+     intrinsic now declares (and exports) the memory, matching the
+     bootstrap. Covered by the language-service suite (54/54) against
+     the self-hosted-built lsp.wasm.
 
 ### Self-hosted compiler: constructor not registered for a specialized OrderedMap
 
