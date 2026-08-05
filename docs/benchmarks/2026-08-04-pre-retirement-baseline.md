@@ -146,9 +146,20 @@ ex-custom figure as the headline.
 
 So the honest figure is **~1.4–1.5× larger**, not the ~2× a raw byte count
 suggests. Within that, the `code` section is 1.34–1.44× and the **`types`
-section is the disproportionate one** — 1.7–2.4× by bytes, and by count 14 → 71
-type entries on `basic_bench`. That is a specific, actionable lead rather than a
-diffuse "bigger output".
+section is the disproportionate one** — 1.7–2.4× by bytes.
+
+Investigated further (BUGS.md): the self-hosted compiler **dedupes signatures
+perfectly** (605 of 605 distinct, against the bootstrap's 411 with only 287
+distinct), so this is not a deduplication failure — it emits more *distinct*
+types.
+
+Dead closure value-wrappers were found and fixed along the way (50 on
+`basic_bench` against the bootstrap's zero, now 7), which removed 43 functions
+and ~455 code bytes. But that did **not** move the type section at all — it is
+byte-identical before and after, because those wrappers reused signatures other
+functions already needed. **The types gap remains unexplained**, and the larger
+part of it is struct-ish types going 207 → 500, which was never
+wrapper-related.
 
 ### It is not fixed support-code overhead
 

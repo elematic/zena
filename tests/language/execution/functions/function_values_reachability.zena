@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 23322
+//
+// Function values must stay reachable through every route that can
+// produce one. Reachability registers closure value-wrappers from
+// identifier references outside callee position; a called-only function
+// needs none, but each case below does.
+
+type IntFn = (x: i32) => i32;
+
+class Holder {
+  var fn: IntFn;
+  new(this.fn);
+}
+
+let double = (x: i32): i32 => x * 2;
+let triple = (x: i32): i32 => x * 3;
+let apply = (f: IntFn, v: i32): i32 => f(v);
+let pick = (useDouble: boolean): IntFn => if (useDouble) double else triple;
+
+export let main = (): i32 => {
+  var total = 0;
+  total = total + double(1);           // called only — needs no wrapper
+  total = total + apply(double, 10);   // passed as an argument
+  let h = new Holder(triple);          // stored in a field
+  total = total + h.fn(100);           // called back through the field
+  let chosen = pick(false);            // returned from a function
+  total = total + chosen(1000);
+  let local = double;                  // bound to a local
+  total = total + local(10000);
+  return total;
+};

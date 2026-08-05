@@ -1409,8 +1409,30 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (resolved is ClassType) {
         this.specializer.instantiateClassType(resolved as ClassType, model);
       } else if (resolved is FunctionType) {
-        this.visitor.discoverFunctionValueWrapper(resolved as FunctionType, model);
+        // Generic instantiations only. The identifier-reference path
+        // below cannot see these: at the reference site the specialized
+        // function may not exist yet, so the wrapper has to be
+        // registered from the type. Dropping this breaks
+        // execution/functions/generic_closure_substitution.zena with
+        // "non-local identifier @Holder_s788_i32.getVal".
+        let rft = resolved as FunctionType;
+        if (rft.typeArguments != null &&
+            (rft.typeArguments as Array<Type>).length > 0) {
+          this.visitor.discoverFunctionValueWrapper(rft, model);
+        }
       }
+      // A non-generic FunctionType here does NOT imply a value is needed.
+      // `referencedTypes` collects every type the checker assigns to a
+      // node (checker.zena setNodeType/resolveIdentifier), so a plain
+      // call contributes its callee's FunctionType, and in Zena every
+      // function is an arrow bound to a `let`. Registering a wrapper
+      // from this set emitted one for every function in the program —
+      // 51 dead wrappers in basic_bench, each with its own signature
+      // and an entry in the declared-func elem table.
+      //
+      // Wrappers come from visitor.discoverIdentifierReferenceAsValue(),
+      // which fires on identifier references outside callee position and
+      // so covers arguments, field stores, returns and local bindings.
     }
 
     // 2. Queue referenced symbols
