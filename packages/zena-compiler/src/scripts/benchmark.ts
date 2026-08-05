@@ -1,5 +1,5 @@
 import {execSync, spawnSync} from 'node:child_process';
-import {existsSync, mkdirSync} from 'node:fs';
+import {existsSync, mkdirSync, readFileSync, statSync} from 'node:fs';
 import {dirname, join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -110,6 +110,37 @@ const runStep = (cmd: string, opts: Parameters<typeof execSync>[1], label: strin
     }
     throw new Error(`${label} failed`);
   }
+};
+
+/**
+ * Byte size of a wasm module excluding custom sections.
+ *
+ * Raw file size is not a fair comparison between the two compilers: the
+ * self-hosted compiler always emits a `name` custom section while the
+ * bootstrap only does so under `-g`, and on these fixtures that section is
+ * 55-62% of the apparent size difference. Excluding custom sections compares
+ * the code that actually runs.
+ */
+const sizeExcludingCustom = (path: string): number => {
+  const buf = readFileSync(path);
+  let off = 8; // magic + version
+  let total = 8;
+  while (off < buf.length) {
+    const id = buf[off];
+    let size = 0;
+    let shift = 0;
+    let n = off + 1;
+    for (;;) {
+      const b = buf[n++];
+      size |= (b & 0x7f) << shift;
+      if ((b & 0x80) === 0) break;
+      shift += 7;
+    }
+    const headerLen = n - off;
+    if (id !== 0) total += headerLen + size;
+    off = n + size;
+  }
+  return total;
 };
 
 const bootstrapCli = join(repoRoot, 'packages', 'cli', 'lib', 'cli.js');
@@ -353,6 +384,34 @@ if (runCompiler && targets.length > 0) {
         `${(selfNodeMean / bootMean).toFixed(2)}x`,
       ]),
     );
+
+    // Both compilers have now emitted a module from the same source. Comparing
+    // those two artifacts is the only signal here about the *quality* of what
+    // the self-hosted compiler produces rather than how fast it produces it —
+    // and it is the signal that becomes unobtainable once the bootstrap
+    // compiler is deleted (docs/design/bootstrap-retirement.md §5).
+    const sizeOf = (p: string): number => {
+      try {
+        return statSync(p).size;
+      } catch {
+        return 0;
+      }
+    };
+    const bootBytes = bootOutWasm ? sizeExcludingCustom(bootOutWasm) : 0;
+    const selfBytes = selfOutWasm ? sizeExcludingCustom(selfOutWasm) : 0;
+    void sizeOf;
+    if (bootBytes > 0 && selfBytes > 0) {
+      console.log(
+        formatRow([
+          'Emitted Size (no custom)',
+          `${bootBytes.toLocaleString()} B`,
+          `${selfBytes.toLocaleString()} B`,
+          `${selfBytes.toLocaleString()} B`,
+          `${(selfBytes / bootBytes).toFixed(2)}x`,
+          `${(selfBytes / bootBytes).toFixed(2)}x`,
+        ]),
+      );
+    }
     console.log(makeSeparator('└', '┴', '┘'));
 
     if (meanTotalTime > 0 || meanNodeTotalTime > 0) {
@@ -1397,3 +1456,152 @@ if (runMapKeys) {
   }
   console.log('\n--------------------------------------------------\n');
 }
+
+// ============================================================================
+// Codegen comparison: bootstrap-emitted vs self-hosted-emitted code
+// ============================================================================
+
+/**
+ * The suites above compile each fixture with the *bootstrap* compiler and then
+ * run that single artifact under wasmtime, Node and against hand-written JS.
+ * That answers "how fast is Zena versus JavaScript" — it says nothing about
+ * whether the self-hosted compiler emits code as good as the bootstrap's.
+ *
+ * This section answers that: compile the same fixture with both compilers and
+ * run both artifacts under the same runtime, so the only variable is which
+ * compiler produced the code.
+ *
+ * It is the measurement that becomes impossible once packages/compiler is
+ * deleted, because there is no longer a second implementation to compare
+ * against (docs/design/bootstrap-retirement.md §5).
+ */
+const parseBenchTimes = (output: string): Map<string, number> => {
+  const map = new Map<string, number>();
+  for (const line of output.split('\n')) {
+    if (line.includes(':') && line.includes('ms')) {
+      const parts = line.split(':');
+      const name = parts[0].trim();
+      const time = parseFloat(parts[1].replace('ms', '').trim());
+      if (name && !isNaN(time)) map.set(name, time);
+    }
+  }
+  return map;
+};
+
+const compareCodegen = (label: string, srcName: string) => {
+  const src = join(benchmarksDir, srcName);
+  if (!existsSync(src)) return;
+
+  const bootWasm = join(outDir, `${label}.codegen.boot.wasm`);
+  const selfWasm = join(outDir, `${label}.codegen.self.wasm`);
+  const filterArg = filter ? ` -- "${filter}"` : '';
+
+  console.log('==================================================');
+  console.log(`Codegen Comparison: ${label}`);
+  console.log('==================================================\n');
+
+  try {
+    execSync(
+      `node "${bootstrapCli}" build "${src}" --target wasi -o "${bootWasm}"`,
+      {cwd: repoRoot, stdio: 'pipe'},
+    );
+  } catch (e) {
+    console.error(`  bootstrap failed to compile ${srcName}:`, e);
+    return;
+  }
+  try {
+    execSync(`"${zenaCli}" build "${src}" -o "${selfWasm}"`, {
+      cwd: repoRoot,
+      stdio: 'pipe',
+    });
+  } catch (e) {
+    console.error(`  self-hosted failed to compile ${srcName}:`, e);
+    return;
+  }
+
+  const bootRaw = statSync(bootWasm).size;
+  const selfRaw = statSync(selfWasm).size;
+  const bootCode = sizeExcludingCustom(bootWasm);
+  const selfCode = sizeExcludingCustom(selfWasm);
+  console.log(
+    `  emitted size (excluding custom sections): ` +
+      `bootstrap ${bootCode.toLocaleString()} B, ` +
+      `self-hosted ${selfCode.toLocaleString()} B ` +
+      `(${(selfCode / bootCode).toFixed(2)}x)`,
+  );
+  console.log(
+    `  raw file size: ${bootRaw.toLocaleString()} B vs ` +
+      `${selfRaw.toLocaleString()} B (${(selfRaw / bootRaw).toFixed(2)}x) — ` +
+      `the gap is mostly the name section, which only one side emits\n`,
+  );
+
+  let bootOut = '';
+  let selfOut = '';
+  try {
+    bootOut = execSync(`"${zenaCli}" run "${bootWasm}"${filterArg}`, {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    selfOut = execSync(`"${zenaCli}" run "${selfWasm}"${filterArg}`, {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+  } catch (e) {
+    console.error('  failed to run one of the artifacts:', e);
+    return;
+  }
+
+  const bootTimes = parseBenchTimes(bootOut);
+  const selfTimes = parseBenchTimes(selfOut);
+  if (bootTimes.size === 0) {
+    console.log('  (no timings parsed)\n');
+    return;
+  }
+
+  const widths = [44, 20, 20, 12];
+  const row = (cells: string[]) =>
+    '│ ' +
+    cells
+      .map((c, i) => (i === 0 ? c.padEnd(widths[i]) : c.padStart(widths[i])))
+      .join(' │ ') +
+    ' │';
+  const sep = (l: string, m: string, r: string) =>
+    l + widths.map((w) => '─'.repeat(w + 2)).join(m) + r;
+
+  console.log(sep('┌', '┬', '┐'));
+  console.log(
+    row(['Test Case', 'Bootstrap-emitted', 'Self-hosted-emitted', 'Ratio']),
+  );
+  console.log(sep('├', '┼', '┤'));
+  let worst = 0;
+  let worstName = '';
+  for (const [name, bootTime] of bootTimes.entries()) {
+    const selfTime = selfTimes.get(name);
+    if (selfTime === undefined) continue;
+    const ratio = selfTime / bootTime;
+    if (ratio > worst) {
+      worst = ratio;
+      worstName = name;
+    }
+    console.log(
+      row([
+        name,
+        `${bootTime.toFixed(2)} ms`,
+        `${selfTime.toFixed(2)} ms`,
+        `${ratio.toFixed(2)}x`,
+      ]),
+    );
+  }
+  console.log(sep('└', '┴', '┘'));
+  if (worstName !== '') {
+    console.log(
+      `\n  worst regression: ${worstName} at ${worst.toFixed(2)}x\n`,
+    );
+  }
+};
+
+if (runStrings) compareCodegen('string', 'string_bench.zena');
+if (runBasic) compareCodegen('basic', 'basic_bench.zena');
+if (runMapKeys) compareCodegen('map-key', 'map_key_bench.zena');
