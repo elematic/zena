@@ -61,12 +61,46 @@ signature well-defined for arbitrary `T`, `E`.
 
 ## 2. Binding the error arm
 
-The documented idiom binds only the ok arm:
+**Correction to Part 8a (verified 2026-08-05): the error arm CAN be bound
+today.** `if (let (false, _, e) = f())` narrows correctly — pattern-based
+narrowing filters union members for the `false` tag exactly as it does for
+`true`. What is actually missing is consuming **both arms of a single
+evaluation**: if-let's else branch sees nothing, and `match` arms do not
+narrow (below). Two if-lets means calling `f()` twice — wrong for effectful
+callees.
 
 ```zena
-if (let (true, v) = f()) { use(v); }
-// the error is unreachable from here
+if (let (true, v, _) = f(x)) {
+  use(v);
+} else {
+  // f(x)'s error is not reachable from here without calling f(x) again
+}
 ```
+
+### What the compilers actually do (verified 2026-08-05)
+
+- **if-let binds both arms** (each from its own call):
+  `tests/language/execution/control-flow/if_let_result.zena` runs the full
+  `inline (true, i32, _) | inline (false, _, String)` shape — numeric ok
+  lane, reference error lane, crossed holes — through `(true, v, _)` and
+  `(false, _, e)` patterns. Self-hosted only: the bootstrap compiler emits an
+  i32 for a hole in a reference lane (invalid wasm; BUGS.md), so the test is
+  `@skip: bootstrap`.
+- **match over an inline union does not narrow per arm** in the self-hosted
+  checker: `case (false, _, e):` binds `e` at the merged lane type
+  `_ | String`, so using it is a type error. Pinned by
+  `tests/language/semantics/control-flow/match/inline-union-arm-narrowing-unimplemented.zena`.
+  Notably the **bootstrap checker does narrow** these arms (`e: String`) —
+  the behavior has a reference implementation to port. Codegen for a
+  multi-value match scrutinee is untested beyond the checker.
+- **The crossed-reference-holes miscompile in BUGS.md is fixed self-hosted**
+  (regression test `tests/language/execution/tuples/inline_union_crossed_ref_holes.zena`);
+  it remains in the bootstrap compiler.
+- **The alias spelling is not yet legal.** `type Result<T, E> = inline …` is
+  rejected today — "Inline tuple types can only appear in function return
+  types" (pinned by `inline_tuple_restrictions.zena`) — so shipping the
+  stdlib alias is itself a deliberate language change, not just a stdlib
+  edit.
 
 ### Precedent
 
@@ -108,6 +142,13 @@ match (f()) {
 }
 ```
 
+Measured cost (from the verification above): the checker work is wiring
+if-let's member filtering (`narrowTypeByPattern`/`patternCanMatchType`) into
+`checkMatchExpression`'s arm binding — the bootstrap checker already narrows
+these arms, so there is a reference implementation. The ZIR lowering for a
+multi-value scrutinee (which cannot be stored in a local) is unproven; the
+checker rejection has masked whatever it currently does.
+
 **(2) An else-binding for `if (let …)`** — the Zig form in Zena spelling:
 
 ```zena
@@ -132,26 +173,45 @@ if (let (true, v, _) = f()) {
 
 **(3) Operator sugar** — proposed direction, not yet designed in detail:
 
-- **`??` over inline unions.** `m.get(k) ?? fallback` — a tag test instead of
-  a null test, yielding `T`. Precedent is direct: Swift's `??` is defined on
-  `Optional` (a tagged enum), not on null pointers; Zig spells it `orelse`.
-  For `Result` it discards the error (Rust's `unwrap_or`). Typing:
+- **`??` over inline unions, unwrapping the ok arm.** `m.get(k) ?? fallback`
+  — a tag test instead of a null test. The unwrap is the point: the
+  expression yields `T`, not the tuple. Precedent is direct: Swift's `??` is
+  defined on `Optional` (a tagged enum), not on null pointers; Zig spells it
+  `orelse`. Typing:
   `(inline (true, T, _) | inline (false, _, E)) ?? U → T | U`.
-- **An error-binding coalesce** (Zig's `catch |e| expr`) — useful, spelling
-  open (`f() ?? (e) => fallback(e)`?). Can be deferred; (1)/(2) cover it.
-- **A forwarding operator** — Rust's `?`, Zig's `try`:
+- **`$` as the error binding in the `??` right-hand side.** The pipeline
+  operator already establishes `$` as the topic variable
+  (`data |> parse($)`), so the natural extension is: when the left side is
+  err, evaluate the right side with `$: E` in scope. That one feature
+  subsumes both the error-binding coalesce (Zig's `catch |e| expr`) **and**
+  the forwarding operator:
 
   ```zena
-  let fd = openAt(path)?;
-  // ≡ match (openAt(path)) {
-  //     case (true, v, _): v
-  //     case (false, _, e): return (false, _, e)
-  //   }
+  let x = foo() ?? defaultValue;              // discard the error
+  let y = foo() ?? log($);                    // use the error, recover
+  let z = foo() ?? return (false, _, $);      // forward — this IS Rust's `?`
   ```
 
-  This composes unusually well with Zena's position restriction: the desugar's
-  early exit is a `return` of an inline tuple — precisely the one position
-  inline tuples are allowed to occupy. Requires the enclosing function to
+  Semantically, yes, this is "a match expression with symbols" — but so is
+  `x ?? y` over `T | null`, and it earns its keep the same way: expression
+  position, chaining, and the asymmetric unwrap that a `match` spelling
+  forces you to write out. Open questions:
+  - `return` is a statement today (`ReturnStatement ::= "return" Expression?
+";"`) while `throw` is already an expression — `?? return …` needs
+    return in diverging-expression position (typed `never`-like), or a
+    special case in the `??` grammar.
+  - Nested `??` shadows `$`, same as nested pipelines; explicit-binder
+    languages (Zig's `|e|`) avoid this at the cost of syntax.
+  - For `Option`-shaped unions the false arm carries nothing, so `$` is
+    simply not bound in the RHS there.
+
+- **A dedicated forwarding operator** (`openAt(path)?` — Rust's `?`, Zig's
+  `try`) then becomes optional spelling on top: `f()?` ≡
+  `f() ?? return (false, _, $)`. Still worth considering for frequency —
+  but it is no longer load-bearing. Either way the desugar composes
+  unusually well with Zena's position restriction: the early exit is a
+  `return` of an inline tuple — precisely the one position inline tuples
+  are allowed to occupy. Forwarding requires the enclosing function to
   return `Result<_, E2>` with `E` assignable to `E2` (Rust inserts a
   `From` conversion here; plain subtyping is the right starting point).
 

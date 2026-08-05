@@ -557,14 +557,19 @@ in all of those forbidden positions. Counted across the three pinned trees
 So roughly 88% of uses are plain return-position results the inline form covers
 perfectly, and ~12% are positions it cannot occupy today.
 
-**A second gap: binding the error arm.** The documented idiom for inline unions
-is `if (let (true, v) = f())` / `while (let (true, v) = f())`, which discards the
-false arm. That is sufficient for the iterator protocol, whose false arm is
-`inline (false, _)` and carries nothing — but `Result`'s false arm carries `E`,
-and there is currently **no way to bind it**: `match` is not documented to work
-over inline tuple unions, and no `let (false, …)` pattern appears anywhere in the
-stdlib or the compiler today. Grepping both turns up zero uses. So adopting this
-representation implies one of:
+**A second gap: binding both arms of one call.** The documented idiom for
+inline unions is `if (let (true, v) = f())` / `while (let (true, v) = f())`,
+which discards the false arm. That is sufficient for the iterator protocol,
+whose false arm is `inline (false, _)` and carries nothing — but `Result`'s
+false arm carries `E`. _(Corrected 2026-08-05: an earlier revision claimed the
+error arm cannot be bound at all. It can — `if (let (false, _, e) = f())`
+narrows correctly, now pinned by
+`tests/language/execution/control-flow/if_let_result.zena`.)_ What is missing
+is consuming **both arms of a single evaluation**: if-let's else branch sees
+nothing, and `match` arms over an inline union do not narrow — the binding
+gets the merged lane type (pinned by
+`tests/language/semantics/control-flow/match/inline-union-arm-narrowing-unimplemented.zena`).
+So adopting this representation implies one of:
 
 - `match` over inline tuple unions with literal-pattern narrowing per arm, or
 - an else-binding form, or

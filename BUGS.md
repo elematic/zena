@@ -277,6 +277,17 @@ immediately trying to fix it (which can pollute the current task's context).
   pinned by tests/language/semantics/type-system/inline_tuple_restrictions.zena),
   so `type Result<V, E> = ...` needs a separate, deliberate language change.
 
+  **Update 2026-08-05: FIXED in the self-hosted compiler, still broken in
+  bootstrap.** Both the crossed one-ref case
+  (`inline (true, i32, _) | inline (false, _, String)`) and the crossed
+  two-ref case (`… String … | … String`) compile and run correctly
+  self-hosted — pinned by
+  `tests/language/execution/control-flow/if_let_result.zena` and
+  `tests/language/execution/tuples/inline_union_crossed_ref_holes.zena`.
+  The bootstrap compiler still emits an i32 for a hole in a reference lane
+  ("type error in return[2] (expected (ref null …), got i32)"), so both
+  tests carry `@skip: bootstrap`.
+
 ### Inline-tuple union with mismatched slot representations is accepted, then miscompiles
 
 - **Found**: 2026-07-28 (same investigation)
@@ -301,6 +312,32 @@ immediately trying to fix it (which can pollute the current task's context).
   lowering, so it can never be valid. Catching it in the checker also turns
   the confusing wasm-validation failure into a message that points at the
   signature.
+
+### Match arms over inline tuple unions do not narrow (self-hosted); bootstrap narrows
+
+- **Found**: 2026-08-05 (adding a match test for the Result shape, PR #155)
+- **Severity**: medium (blocks `match` as the two-arm consumer of
+  `Result`-shaped inline unions; also a checker divergence between compilers)
+- **Workaround**: consume both arms with two if-lets — pattern-based
+  narrowing works there (`if (let (true, v, _) = f())` /
+  `if (let (false, _, e) = f())`, pinned by
+  `tests/language/execution/control-flow/if_let_result.zena`).
+- **Details**: In the self-hosted checker, a match arm's tuple pattern over a
+  union of inline tuples binds each element at the **merged lane type**
+  instead of filtering union members by the literal tag: for
+  `inline (true, i32, _) | inline (false, _, String)`,
+  `case (false, _, e):` gives `e: _ | String` (and `case (true, v, _):`
+  gives `v: i32 | _`), so using either binding is a type error. if-let
+  narrows correctly via `narrowTypeByPattern`/`patternCanMatchType`; match
+  arms (`checkMatchExpression`) never invoke that filtering. The bootstrap
+  checker DOES narrow the arms (`e: String`) and then fails differently
+  (no `.length` on `String` in check mode). Divergence pinned by
+  `tests/language/semantics/control-flow/match/inline-union-arm-narrowing-unimplemented.zena`
+  (`@skip: bootstrap`) — when self-hosted narrowing lands, that test starts
+  failing and should be replaced with an execution test. Note codegen for a
+  multi-value match scrutinee is untested beyond the checker — the checker
+  rejection has masked whatever the ZIR lowering does. See
+  docs/design/result-option.md.
 
 ### Bootstrap parser's generic-call lookahead scans across statement boundaries
 

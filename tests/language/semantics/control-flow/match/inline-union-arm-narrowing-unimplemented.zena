@@ -1,0 +1,30 @@
+// @mode: check
+// @skip: bootstrap
+// Skipped on bootstrap: its checker narrows these arms (e: String), then
+// fails differently (no .length on String in check mode) — the two
+// compilers genuinely diverge here.
+//
+// Pins a current limitation: match arms over an inline tuple union do not
+// filter union members by literal tag, so a binding gets the merged lane
+// type (here `_ | String`) instead of the per-arm type. if-let DOES narrow
+// (see execution/control-flow/if_let_result.zena); wiring the same
+// narrowing into match arms is the open work recorded in
+// docs/design/result-option.md. When per-arm narrowing lands, this test
+// should start failing — replace it with an execution test.
+
+let checkedSub = (
+  a: i32,
+  b: i32,
+): inline (true, i32, _) | inline (false, _, String) => {
+  if (b > a) {
+    return (false, _, "underflow");
+  }
+  return (true, a - b, _);
+};
+
+let valueOrErrorLength = (a: i32, b: i32): i32 => {
+  return match (checkedSub(a, b)) { // @error: Type mismatch
+    case (true, v, _): v
+    case (false, _, e): e.length // @error: Property access
+  };
+};

@@ -1,0 +1,47 @@
+// @mode: run
+// @skip: bootstrap
+// @result: 10
+// Skipped on bootstrap: it emits an i32 for the hole in the String lane
+// ("type error in return[2] (expected (ref null …), got i32)") — see BUGS.md.
+
+// The full Result shape — inline (true, T, _) | inline (false, _, E) — with a
+// numeric ok lane (i32) and a reference error lane (String), so the hole is
+// exercised in both a numeric and a nullable-ref lane. Both arms are bound
+// via if-let: (true, v, _) narrows to the ok member, (false, _, e) to the
+// error member. See docs/design/result-option.md.
+
+let checkedSub = (
+  a: i32,
+  b: i32,
+): inline (true, i32, _) | inline (false, _, String) => {
+  if (b > a) {
+    return (false, _, "underflow");
+  }
+  return (true, a - b, _);
+};
+
+let okValue = (a: i32, b: i32): i32 => {
+  if (let (true, v, _) = checkedSub(a, b)) {
+    return v;
+  }
+  return -1;
+};
+
+let errorLength = (a: i32, b: i32): i32 => {
+  if (let (false, _, e) = checkedSub(a, b)) {
+    return e.length;
+  }
+  return -1;
+};
+
+export let main = (): i32 => {
+  // ok arm: 12 - 2 == 10
+  if (okValue(12, 2) != 10) return 1;
+  // ok pattern must not match an error result
+  if (okValue(1, 2) != -1) return 2;
+  // error arm: "underflow".length == 9
+  if (errorLength(1, 2) != 9) return 3;
+  // error pattern must not match an ok result
+  if (errorLength(12, 2) != -1) return 4;
+  return 10;
+};

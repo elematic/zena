@@ -1,0 +1,23 @@
+// @mode: run
+// @skip: bootstrap
+// @result: 1
+
+// Regression test for the BUGS.md entry "Inline-tuple union miscompiles when
+// both arms hole out a reference slot": each arm holes a slot the other arm
+// fills with a REFERENCE type. Fixed in the self-hosted compiler (verified
+// 2026-08-05); the bootstrap compiler still emits an i32 for a hole in a
+// reference lane, hence the skip.
+
+let f = (b: boolean): inline (true, String, _) | inline (false, _, String) => {
+  if (b) {
+    return (true, "v", _);
+  }
+  return (false, _, "e");
+};
+
+export let main = (): i32 => {
+  if (let (false, _, e) = f(false)) {
+    return e.length;
+  }
+  return 0;
+};
