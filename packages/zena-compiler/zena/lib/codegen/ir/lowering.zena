@@ -328,11 +328,47 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
   let b = new IrBuilder();
   let params = synthEntryParams(b, func);
   if (target.intrinsic != null) {
-    if ((target.intrinsic as String) == 'array.len') {
+    let iname = target.intrinsic as String;
+    if (iname == 'array.len') {
       let recv = castToConcreteRef(b, params[0], target.signature.params[0]);
       let len = b.emit(IrOp.array_len, new ValTypeI32(), recv, -1);
       b.ret(len);
       return b.finish();
+    }
+    // Array element access through an interface (FixedArray/ImmutableArray
+    // as Sequence): inline the op, like every direct call site does.
+    if (iname == 'array.get' || iname == 'array.set') {
+      let arrTypeOpt = asWasmArray(target.signature.params[0]);
+      if (arrTypeOpt != null) {
+        let arrType = arrTypeOpt as WasmArray;
+        let recv = castToConcreteRef(b, params[0], target.signature.params[0]);
+        if (iname == 'array.get') {
+          // Packed i8 elements read unsigned as i32; the erased slot is i32.
+          if (arrType.elementType is ValTypeI8) {
+            let value = b.emit(IrOp.array_get_u, new ValTypeI32(), recv, params[1]);
+            b.ret(value);
+            return b.finish();
+          }
+          var value = b.emit(IrOp.array_get, arrType.elementType, recv, params[1]);
+          if (func.signature.returns.length == 1 &&
+              !isWasmSubtype(arrType.elementType, func.signature.returns[0])) {
+            value = castToConcreteRef(b, value, func.signature.returns[0]);
+          }
+          b.ret(value);
+          return b.finish();
+        }
+        var elem = params[2];
+        if (!isWasmSubtype(func.signature.params[2], arrType.elementType)) {
+          elem = castToConcreteRef(b, elem, arrType.elementType);
+        }
+        let triple = new Array<i32>();
+        triple.push(recv);
+        triple.push(params[1]);
+        triple.push(elem);
+        b.emitVoid(IrOp.array_set, b.pushExtra(triple), -1);
+        b.retVoid();
+        return b.finish();
+      }
     }
     b.unreachable();
     return b.finish();
