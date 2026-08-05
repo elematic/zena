@@ -65,6 +65,69 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Bootstrap miscompiles an assignment as the last statement of a try block
+
+- **Found**: 2026-08-05 (adding manifest loading to the self-hosted CLI's
+  `main.zena`)
+- **Severity**: medium (emits invalid wasm — fails at instantiation, not
+  silently — but the trigger is an ordinary statement shape)
+- **Workaround**: don't end a `try` (or `catch`) block with a bare
+  assignment; hoist the pattern into a helper that `return`s instead.
+- **Details**: The bootstrap compiler leaves the value of an assignment
+  expression on the stack when the assignment is the last statement of a
+  `try` block, producing `type mismatch: values remaining on stack at end
+  of block` at validation/instantiation. ZIR does not miscompile the same
+  shape but does not support it either — it bails loudly with `assignment
+  to enclosing local in try body`, and additionally treats a try whose
+  body `return`s as a value expression, bailing with `value block tail`
+  (tail position) or `try result type` (statement position). In practice
+  no catch-and-recover try shape lowers today; prefer probing the failure
+  condition up front (e.g. `fs.exists`). So the portable coverage is currently
+  double-skipped: `tests/language/execution/exceptions/
+  try-tail-assignment.zena` (`@skip: bootstrap, self-hosted`); whichever
+  side gains support first drops its marker. Probably not worth fixing in
+  the bootstrap given retirement.
+
+### Index writes through an interface are unsupported in ZIR
+
+- **Found**: 2026-08-05 (writing a portable test for Sequence indexing
+  through the trampoline)
+- **Severity**: medium (loud bail, so no silent miscompile; blocks
+  `MutableSequence`-typed writes)
+- **Workaround**: operate on the concrete type (`FixedArray`, `Array`)
+  instead of a `MutableSequence`-typed value when writing.
+- **Details**: `parts[0] = v` where `parts: MutableSequence<T>` bails with
+  `zir unsupported: interface index write`. Reads through `Sequence<T>`
+  work (the `[]` trampoline inlines `array.get` as of 2026-08-05); the
+  write-side call-site lowering was never implemented. The `[]=`
+  trampoline body is already synthesized, so this is call-site work in
+  `operators.zena`/`lowering.zena`.
+
+### Self-hosted compiler cannot build the language service (two bugs)
+
+- **Found**: 2026-08-05 (attempting the language-service build swap for
+  bootstrap retirement wave 1)
+- **Severity**: high for retirement (blocks the last mechanical command
+  swap; the LSP stays on the bootstrap until fixed)
+- **Details**: `zena-cli build zena/lsp.zena --target host` fails two
+  ways, and a minimal reduction shows they are distinct:
+  1. **Checker, import-set dependent**: with lsp.zena's full import list,
+     checking reports `parser.zena:3419:91 - Error: Class 'IdGenerator'
+     not found` (twice) — the location is `parse`'s default argument
+     `new IdGenerator<NodeId>()`. A minimal file importing only
+     `zena-compiler:parser` and calling `parse(source, path)` checks
+     fine, so resolution of the default-argument expression depends on
+     the surrounding module set — likely the caller's scope being used
+     for a callee-module expression. All in-compiler callers of `parse`
+     happen to import `IdGenerator` themselves, masking this.
+  2. **ZIR bail**: the same minimal file then fails lowering with
+     `zir unsupported: map constructor missing @__start [in __start]`,
+     on both `host` and `zena-cli` targets — some module-level HashMap
+     initializer in the parser import graph loses its constructor.
+  (A third blocker — lsp.zena's duplicate module-scope `getHoverLabel`,
+  which the bootstrap tolerated and the self-hosted checker correctly
+  rejects — was fixed by renaming the internal helper.)
+
 ### Self-hosted compiler: constructor not registered for a specialized OrderedMap
 
 - **Found**: 2026-08-02 (first clean build after the compiler `outDir` fix)

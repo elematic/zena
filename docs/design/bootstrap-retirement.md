@@ -64,9 +64,18 @@ So the only TypeScript-compiler dependency is this line:
 build:wasm: node ../cli/lib/cli.js build zena/lsp.zena --target host -g -o lsp.wasm
 ```
 
-Pointing it at `zena-cli` is the whole fix. The self-hosted compiler already
-accepts the target (`zena/cli/main.zena` validates `zena-cli` and `host`); what
-is missing is a `--target` passthrough on `zena-cli build` (§1.1).
+Pointing it at `zena-cli` is the whole *build-system* fix. The self-hosted
+compiler already accepts the target (`zena/cli/main.zena` validates `zena-cli`
+and `host`); the `--target` passthrough on `zena-cli build` landed 2026-08-05.
+
+**Update (2026-08-05): the swap was attempted and is blocked on compiler
+bugs, not build plumbing.** The self-hosted compiler cannot yet compile
+`lsp.zena`: a module-set-dependent checker failure resolving `parse`'s
+default argument (`Class 'IdGenerator' not found`), and a ZIR bail
+(`map constructor missing @__start`) reachable from a minimal
+`zena-compiler:parser` import. Both are recorded in BUGS.md ("Self-hosted
+compiler cannot build the language service"). The LSP stays on the
+bootstrap until they are fixed; this is the remaining wave-1 item.
 
 Packaging is a separate, later question — a standalone LSP package, or an npm
 package bundling `lsp.wasm` with the shim moved into the VS Code extension.
@@ -266,10 +275,15 @@ plan can be redone.
 2. ~~**Land the fixpoint gate** (§4) while the oracle still exists~~ — **done**,
    `test:fixpoint`.
 3. **Clear the six dependents** (§1), in two waves. First the `--target`
-   passthrough plus the three command swaps (`zena-compiler`,
-   `language-service`, `zena-formatter`), which are mechanical. Then the two
-   in-process library users (`wit-parser`, `runtime`), which need restructuring
-   to shell out and instantiate.
+   passthrough plus the command swaps (`zena-compiler`, `language-service`,
+   `zena-formatter`). Then the two in-process library users (`wit-parser`,
+   `runtime`), which need restructuring to shell out and instantiate.
+   *Progress 2026-08-05: `--target` passthrough and the `zena-formatter`
+   swap are done (the self-hosted CLI now loads `zena-packages.json`, and
+   the Sequence `[]` trampoline traps it exposed are fixed). The
+   `language-service` swap is blocked on two self-hosted compiler bugs —
+   see §1 and BUGS.md. `zena-compiler`'s own `build:cli` intentionally
+   stays on the bootstrap until the seed lands (§2).*
 4. **Choose and populate the seed** (§2), with the pin in-tree.
 5. **Prove a clean-checkout build from the seed alone**, with the TypeScript
    compiler still present but unused — a dry run that can be reverted.
