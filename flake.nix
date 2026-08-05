@@ -15,7 +15,7 @@
 
         # Real-world WIT the parser is checked against (see
         # packages/wit-parser/wit-corpus.json, which is the single source of
-        # truth for the URL — dev/fetch-wit-corpus.js reads the same file for
+        # truth for the URLs — dev/fetch-wit-corpus.js reads the same file for
         # checkouts that are not using Nix).
         #
         # Third-party WIT with its own license, so it is fetched rather than
@@ -25,10 +25,18 @@
         witCorpusPin = builtins.fromJSON
           (builtins.readFile ./packages/wit-parser/wit-corpus.json);
 
-        witCorpus = pkgs.fetchzip {
-          url = witCorpusPin.url;
-          hash = witCorpusPin.nixHash;
-        };
+        # One root holding every pinned source as <root>/<name>, matching the
+        # layout dev/fetch-wit-corpus.js produces, so the checks address a
+        # source the same way however it arrived.
+        witCorpus = pkgs.linkFarm "zena-wit-corpus" (pkgs.lib.mapAttrsToList
+          (name: src: {
+            inherit name;
+            path = pkgs.fetchzip {
+              url = src.url;
+              hash = src.nixHash;
+            };
+          })
+          witCorpusPin.sources);
 
         wasmtime =
           let

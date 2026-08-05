@@ -536,10 +536,11 @@ reachable on Track W alone.
 
 ## Part 9: Parser and resolver gaps blocking real WASI WIT
 
-**Status: all five gaps are fixed. Both real WASI versions parse and resolve —
-`wasi:http@0.2.8` (33 files, 7 packages, 31 interfaces, 9 worlds) and
-`wasi:http@0.3.0-rc-2025-09-16` (24 files, 6 packages, 25 interfaces, 8 worlds).
-`npm test -w @zena-lang/wit-parser` checks both against a pinned copy.**
+**Status: all five gaps are fixed. Every real WASI tree we pin parses and
+resolves — WASI 0.2 (`wasi:http@0.2.8` + 6 deps, 7 packages / 31 interfaces /
+9 worlds), the `0.3.0-rc-2025-09-16` draft (6/25/8), and released **WASI 0.3.0**
+from `WebAssembly/WASI` (6/25/8). `npm test -w @zena-lang/wit-parser` checks all
+three against pinned copies, with exact counts.**
 
 The parser passed every wasm-tools UI test while being unable to handle any real
 WASI package, because the upstream UI corpus does not cover these combinations.
@@ -651,9 +652,14 @@ than against whatever is nearest on the scope stack.
 > same-named interfaces bounced between each other until the stack blew. The
 > bogus "depends on itself" error had been the only thing stopping it.
 
-**Unblocked: all of WASI p3.** `wasi:http@0.3.0-rc-2025-09-16` resolves — 24
-files, 6 packages, 25 interfaces, 8 worlds. Regression test:
+**Unblocked: all of WASI p3**, both the `0.3.0-rc-2025-09-16` draft and released
+`0.3.0` — 6 packages, 25 interfaces, 8 worlds each. Regression test:
 `tests/cross-package-name-collision/`.
+
+Worth noting for the async work: released 0.3.0 is where `async func`, `stream<T>`,
+`future<T>` and `error-context` actually appear (36 `async func` alone across the
+draft), so the parser is already handling that surface — it is the *bindgen* and
+canonical-ABI sides that remain unbuilt.
 
 ---
 

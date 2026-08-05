@@ -49,9 +49,11 @@ never puts two things with one name in scope at once:
    closed an unguarded mutual recursion between the last two. Covered by
    `cross-package-name-collision/`.
 
-With those fixed, **both** real WASI versions resolve: `wasi:http@0.2.8` (33
-files, 7 packages, 31 interfaces, 9 worlds) and `@0.3.0-rc-2025-09-16` (24
-files, 6 packages, 25 interfaces, 8 worlds).
+With those fixed, every real WASI tree we pin resolves: WASI 0.2
+(`wasi:http@0.2.8` + 6 deps, 7/31/9), the `0.3.0-rc-2025-09-16` draft (6/25/8),
+and **released WASI 0.3.0** from `WebAssembly/WASI` (6/25/8). The last of those
+has no vendored deps and one `wit/` per proposal, so it exercises the
+topological package ordering rather than a `deps/` directory.
 
 Both are asserted by `npm test`, against a pinned copy of the real WIT
 (`test:real-wit` → `node dev/parse-real-wit.js --check`), with exact counts so

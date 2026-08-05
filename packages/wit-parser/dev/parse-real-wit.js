@@ -20,10 +20,10 @@ import {readdir, readFile} from 'node:fs/promises';
 import {dirname, join, posix, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
-  contentDigest,
   findCorpus,
   MISSING_CORPUS_MESSAGE,
   readManifest,
+  verifyCorpus,
 } from './wit-corpus.js';
 import * as fs from 'node:fs';
 import {Compiler, CodeGenerator} from '@zena-lang/compiler';
@@ -312,16 +312,38 @@ const probe = async () => {
 };
 
 /**
- * What the pinned corpus is expected to resolve to. Exact counts, so a
- * regression cannot hide; the pin is a fixed commit, so they do not drift.
+ * What each pinned tree is expected to resolve to, as `<source>/<subdir>`.
+ * Exact counts, so a regression cannot hide; the pins are fixed commits, so
+ * they do not drift.
  */
-const EXPECTED = {
-  p2: {packages: 7, interfaces: 31, worlds: 9},
-  p3: {packages: 6, interfaces: 25, worlds: 8},
-};
+const EXPECTED = [
+  {
+    label: 'wasi 0.2 (wasi:http@0.2.8)',
+    dir: 'wasi-http/wit',
+    packages: 7,
+    interfaces: 31,
+    worlds: 9,
+  },
+  {
+    label: 'wasi 0.3.0-rc-2025-09-16 draft',
+    dir: 'wasi-http/wit-0.3.0-draft',
+    packages: 6,
+    interfaces: 25,
+    worlds: 8,
+  },
+  {
+    // Released 0.3, and a different shape: one wit/ per proposal, no vendored
+    // deps, so this leans on the topological package ordering.
+    label: 'wasi 0.3.0 (released)',
+    dir: 'wasi/proposals',
+    packages: 6,
+    interfaces: 25,
+    worlds: 8,
+  },
+];
 
 /**
- * The gating check: assert the pinned real-world corpus still resolves.
+ * The gating check: assert every pinned tree still resolves.
  *
  * Absence is a failure, never a skip — a check that quietly skips reports the
  * same green tick as one that ran, which is how "we test against real WASI"
@@ -334,29 +356,28 @@ const check = async () => {
     process.exit(1);
   }
   const manifest = await readManifest();
-  const digest = await contentDigest(found.dir);
-  if (digest !== manifest.contentDigest) {
-    console.error(
-      `✗ corpus at ${found.source} does not match the pin\n` +
-        `  expected ${manifest.contentDigest}\n` +
-        `  actual   ${digest}\n` +
-        '  Re-fetch with: node dev/fetch-wit-corpus.js',
-    );
+  const problems = await verifyCorpus(found.dir, manifest);
+  if (problems.length > 0) {
+    console.error(`✗ corpus at ${found.source} does not match wit-corpus.json`);
+    for (const p of problems) console.error(`  ${p}`);
+    console.error('  Re-fetch with: node dev/fetch-wit-corpus.js');
     process.exit(1);
   }
-  console.log(
-    `corpus: ${found.source} (${manifest.repo}@${manifest.commit.slice(0, 12)})`,
-  );
+  const pins = Object.entries(manifest.sources)
+    .map(([n, src]) => `${n}@${src.ref}`)
+    .join(', ');
+  console.log(`corpus: ${found.source} (${pins})`);
 
   const failures = [];
-  for (const [name, want] of Object.entries(EXPECTED)) {
-    const dir = join(found.dir, manifest.witDirs[name]);
+  for (const want of EXPECTED) {
     const out = await tryParse(
-      (await findWitFiles(dir)).map(([, src]) => src).join(NL),
+      (await findWitFiles(join(found.dir, want.dir)))
+        .map(([, src]) => src)
+        .join(NL),
       true,
     );
     if (failed(out)) {
-      failures.push(`${name} no longer resolves: ${out.split(NL)[0]}`);
+      failures.push(`${want.label} no longer resolves: ${out.split(NL)[0]}`);
       continue;
     }
     const json = JSON.parse(out);
@@ -365,13 +386,20 @@ const check = async () => {
       interfaces: (json.interfaces ?? []).length,
       worlds: (json.worlds ?? []).length,
     };
-    if (JSON.stringify(got) !== JSON.stringify(want)) {
+    const expected = {
+      packages: want.packages,
+      interfaces: want.interfaces,
+      worlds: want.worlds,
+    };
+    if (JSON.stringify(got) !== JSON.stringify(expected)) {
       failures.push(
-        `${name} resolved to ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`,
+        `${want.label} resolved to ${JSON.stringify(got)}, ` +
+          `expected ${JSON.stringify(expected)}`,
       );
     } else {
       console.log(
-        `✔ ${name} resolves: ${got.packages} packages, ${got.interfaces} interfaces, ${got.worlds} worlds`,
+        `✔ ${want.label}: ${got.packages} packages, ` +
+          `${got.interfaces} interfaces, ${got.worlds} worlds`,
       );
     }
   }

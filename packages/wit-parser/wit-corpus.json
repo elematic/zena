@@ -1,12 +1,13 @@
 {
   "$comment": [
-    "Pin for the real-world WIT the parser is checked against. Read by BOTH",
+    "Pins for the real-world WIT the parser is checked against. Read by BOTH",
     "flake.nix (fetchzip, for Nix checkouts) and dev/fetch-wit-corpus.js (for",
-    "checkouts without Nix), so the URL never drifts between the two.",
+    "checkouts without Nix), so the URLs never drift between the two.",
     "",
-    "Pinned to a commit, not a branch: `refs/heads/main` is a moving target.",
+    "Each source is pinned to a commit, not a tag or branch: both can move.",
+    "`ref` records what that commit was, for humans.",
     "",
-    "Two hashes because the two fetchers verify different things:",
+    "Two hashes per source, because the two fetchers verify different things:",
     "  nixHash        - hash of the UNPACKED tree, what fetchzip wants.",
     "                   Regenerate: nix-prefetch-url --unpack --type sha256 <url>",
     "                   then: nix hash convert --hash-algo sha256 --to sri <hash>",
@@ -14,15 +15,40 @@
     "                   'relpath sha256(bytes)' lines). Deliberately NOT a hash",
     "                   of the tarball bytes: GitHub regenerates archives and",
     "                   the gzip framing changes even when the content does not.",
-    "                   Regenerate: node dev/fetch-wit-corpus.js --print-digest"
+    "                   Regenerate: node dev/fetch-wit-corpus.js --print-digest",
+    "",
+    "Both fetchers lay the sources out as <root>/<source-name>/…, so the checks",
+    "in dev/parse-real-wit.js address them the same way either way."
   ],
-  "repo": "WebAssembly/wasi-http",
-  "commit": "7c678c4c10238a4bf4db91a0e27023d680ff65fe",
-  "url": "https://github.com/WebAssembly/wasi-http/archive/7c678c4c10238a4bf4db91a0e27023d680ff65fe.tar.gz",
-  "nixHash": "sha256-ufi6Z049QHdy3MFFY1jJYRtz9/v6Lh4FfBD8ohX/QFw=",
-  "contentDigest": "sha256:416a886ce5101a3898d93f4cbbbe276a07b87e14138b21b47ffa872bbf7ad0f3",
-  "witDirs": {
-    "p2": "wit",
-    "p3": "wit-0.3.0-draft"
+  "sources": {
+    "wasi-http": {
+      "$why": [
+        "WASI 0.2 (`wasi:http@0.2.8` and its six vendored deps), plus the",
+        "0.3.0-rc-2025-09-16 draft. Vendors its deps under wit/deps/, with the",
+        "package header in only one file per package — the layout that exposed",
+        "the ordering bugs the synthetic corpus never did. The repo is archived",
+        "(merged into WebAssembly/WASI), so this pin will not move again."
+      ],
+      "repo": "WebAssembly/wasi-http",
+      "ref": "main",
+      "commit": "7c678c4c10238a4bf4db91a0e27023d680ff65fe",
+      "url": "https://github.com/WebAssembly/wasi-http/archive/7c678c4c10238a4bf4db91a0e27023d680ff65fe.tar.gz",
+      "nixHash": "sha256-ufi6Z049QHdy3MFFY1jJYRtz9/v6Lh4FfBD8ohX/QFw=",
+      "contentDigest": "sha256:416a886ce5101a3898d93f4cbbbe276a07b87e14138b21b47ffa872bbf7ad0f3"
+    },
+    "wasi": {
+      "$why": [
+        "Released WASI 0.3.0 — where 0.3 actually lives now. Structurally",
+        "different from wasi-http: one wit/ per proposal under proposals/, no",
+        "vendored deps at all, so resolving it depends on the topological",
+        "package ordering rather than on a deps/ directory."
+      ],
+      "repo": "WebAssembly/WASI",
+      "ref": "v0.3.0",
+      "commit": "3ee2a590c766594ae44a54730fc74fc27da5c609",
+      "url": "https://github.com/WebAssembly/WASI/archive/3ee2a590c766594ae44a54730fc74fc27da5c609.tar.gz",
+      "nixHash": "sha256-4HyinQe94BWhM5i2hxuO4BCetW0HyncDUjEvuYIsHEw=",
+      "contentDigest": "sha256:2dd2dc3f9b01ecf57205238e39b63fc1f3dbb705226c4d82df82bf799f81a7ed"
+    }
   }
 }

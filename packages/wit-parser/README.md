@@ -8,9 +8,14 @@ This package contains the WIT (WebAssembly Interface Types) parser for Zena.
 written in Zena (`zena/`). The full ported wasm-tools UI corpus passes:
 **215/215** (130 parse-fail, 81 ported resolve-and-compare, 4 of our own).
 
-**Real `wasi:http` parses and resolves end to end, both versions** —
-`@0.2.8` (33 files, 7 packages, 31 interfaces, 9 worlds) and
-`@0.3.0-rc-2025-09-16` (24 files, 6 packages, 25 interfaces, 8 worlds).
+**Real WASI parses and resolves end to end** — three trees, checked on every
+`npm test`:
+
+| tree | packages / interfaces / worlds |
+| --- | --- |
+| WASI 0.2 (`wasi:http@0.2.8` + 6 deps) | 7 / 31 / 9 |
+| WASI 0.3.0-rc-2025-09-16 draft | 6 / 25 / 8 |
+| **WASI 0.3.0, released** | 6 / 25 / 8 |
 
 Getting there took five fixes for combinations the synthetic corpus never
 exercised — passing it was no evidence at all that real WASI would work. Each is
@@ -64,11 +69,11 @@ WIT in, and compares the result against the expected `.wit.json` or
 
 ### The real-world WIT corpus
 
-`npm test` also checks the parser against real `wasi:http`, which is where every
-bug the synthetic corpus missed was found. That WIT is third-party and carries
-its own license, so it is **fetched, not vendored** — pinned by
-[`wit-corpus.json`](wit-corpus.json) (a commit, not a branch) and reaching a
-checkout one of two ways:
+`npm test` also checks the parser against real WASI, which is where every bug
+the synthetic corpus missed was found. That WIT is third-party and carries its
+own license, so it is **fetched, not vendored** — pinned by
+[`wit-corpus.json`](wit-corpus.json) (commits, not tags or branches) and
+reaching a checkout one of two ways:
 
 ```bash
 nix develop                     # exports ZENA_WASI_WIT; no download, works offline
@@ -85,12 +90,27 @@ Nix's `fetchzip` hashes the unpacked tree; the script hashes the extracted
 `.wit` files. Updating the pin means refreshing both hashes — `wit-corpus.json`
 documents the commands.
 
+Two sources are pinned, laid out as `<root>/<source-name>/…` by both fetchers:
+
+- **`wasi-http`** — `WebAssembly/wasi-http`, which carries WASI 0.2 (`wasi:http@0.2.8`
+  with its six deps vendored under `wit/deps/`) and the `0.3.0-rc-2025-09-16`
+  draft. That repo is archived, having been merged into `WebAssembly/WASI`, so
+  the pin will not move again. Its layout — deps vendored, the package header in
+  only one file per package — is what exposed the ordering bugs.
+- **`wasi`** — `WebAssembly/WASI` at `v0.3.0`, where 0.3 actually lives now.
+  Structurally different: one `wit/` per proposal under `proposals/`, with *no*
+  vendored deps, so resolving it leans on topological package ordering instead.
+
+Both pins are deliberately behind upstream (0.2 is now at 0.2.12, and 0.3 has
+newer RCs). They are fixtures, not a dependency — bump them when there is a
+reason to.
+
 Other modes take explicit directories, so they work on any WIT:
 
 ```bash
 node dev/parse-real-wit.js --check                      # what npm test runs
-node dev/parse-real-wit.js .wit-corpus/wit              # resolve a tree
-node dev/parse-real-wit.js --files .wit-corpus/wit      # per-file breakdown
+node dev/parse-real-wit.js .wit-corpus/wasi/proposals   # resolve a tree
+node dev/parse-real-wit.js --files .wit-corpus/wasi-http/wit  # per-file breakdown
 node dev/parse-real-wit.js --probe                      # known-gap repros
 ```
 
