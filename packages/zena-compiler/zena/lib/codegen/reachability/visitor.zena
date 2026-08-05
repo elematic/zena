@@ -89,6 +89,14 @@ export final class TypeLowerer implements TypeLowererInterface {
         this.discoverType(paramType, model);
       }
       this.discoverType(ft.returnType, model);
+      // discoverType is only called for types that can occupy a wasm
+      // value position (locals, fields, body-referenced types), so the
+      // function type needs its closure struct before layout locks the
+      // type section — lowered bodies demand it afterwards. Signatures
+      // that are NOT values — every reached method's own signature —
+      // must go through discoverSignatureType instead: minting for
+      // those put a dead closure struct + impl signature pair in the
+      // type section per reached method, about half of it.
       let contextStruct = getClosureStruct(this.pass.wasm, eraseType(ft) as FunctionType);
       this.pass.markTypeReached(contextStruct);
 
@@ -284,6 +292,30 @@ export final class TypeLowerer implements TypeLowererInterface {
     } else if (t is ByteArrayType) {
       this.pass.wasm.getByteArrayType();
     }
+  }
+
+  /**
+   * Discover a function signature's component types WITHOUT treating the
+   * signature itself as a value-position function type. Reached methods
+   * register their own signature through here: routing them through
+   * discoverType minted a closure struct + impl signature pair per
+   * reached method — nearly half the emitted type section, all dead.
+   * The signature deliberately does not claim the discovered-set slot,
+   * so a later discoverType of the same erased type (a genuine value
+   * position) still processes and mints it.
+   */
+  discoverSignatureType(rawT: Type | null, model: SemanticModel): void {
+    if (rawT == null) { return; }
+    let t = eraseTypeParameters(rawT as Type);
+    if (t is FunctionType) {
+      let ft = t as FunctionType;
+      for (let paramType in ft.parameters) {
+        this.discoverType(paramType, model);
+      }
+      this.discoverType(ft.returnType, model);
+      return;
+    }
+    this.discoverType(rawT, model);
   }
 }
 

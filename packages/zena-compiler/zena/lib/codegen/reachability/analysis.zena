@@ -1273,6 +1273,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.markTypeReached(rd.fatPtrType);
       this.markTypeReached(rd.vtableType);
     }
+    // Closure structs are created on demand at genuine value positions
+    // (typeToValType's FunctionType arm, wrappers, adaptations — see
+    // discoverType, which no longer mints one per discovered
+    // FunctionType) but are referenced from lowered bodies, which run
+    // after layout and are invisible to signature-driven reachability.
+    // Root every created one; closeReachedTypes pulls in its impl
+    // signature through the struct's func field.
+    for (let pair in this.wasm.closureStructs) {
+      this.markTypeReached(pair.value);
+    }
     this.closeReachedTypes();
     this.wasm.types = this.emittedTypes;
     performance.end(tLayout3);
