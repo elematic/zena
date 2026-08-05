@@ -13,8 +13,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const zenaDir = join(pkgDir, 'zena');
 const outDir = join(zenaDir, 'out');
-const cliPath = join(pkgDir, '..', 'cli', 'lib', 'cli.js');
 const repoRoot = join(pkgDir, '..', '..');
+const zenaCliPath = join(repoRoot, 'target', 'release', 'zena-cli');
 
 // Build all test files
 const testPattern = 'test/*_test.zena';
@@ -49,10 +49,10 @@ for (const zenaFile of files) {
     mkdirSync(wasmDir, {recursive: true});
   }
 
-  // Compile with wasi target and debug info
+  // Compile for the zena-cli host, which run-wasmtime.ts uses to run these
   try {
     execSync(
-      `node "${cliPath}" build "${zenaFile}" --target wasi -g -o "${wasmFile}"`,
+      `"${zenaCliPath}" build "${zenaFile}" -o "${wasmFile}"`,
       {
         stdio: 'pipe',
         cwd: repoRoot,
