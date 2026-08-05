@@ -45,6 +45,11 @@ enum Commands {
         /// Disable compiler caching and force rebuild
         #[arg(long = "no-cache")]
         no_cache: bool,
+
+        /// Compilation target, passed through to the compiler
+        /// (it validates the value; currently 'zena-cli' or 'host')
+        #[arg(short = 't', long)]
+        target: Option<String>,
     },
     /// Run a compiled Zena source file or WASM file
     Run {
@@ -97,7 +102,9 @@ struct MyState {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Build { file, output, time, no_cache } => build_file(&file, &output, cli.verbose, time, no_cache, cli.debug),
+        Commands::Build { file, output, time, no_cache, target } => {
+            build_file(&file, &output, cli.verbose, time, no_cache, cli.debug, target.as_deref())
+        }
         Commands::Run { file, invoke, dirs, time, no_cache, args } => {
             if file.ends_with(".wasm") {
                 run_wasm(&file, &invoke, cli.verbose, &dirs, &args, cli.debug)
@@ -153,18 +160,18 @@ fn precompile_file(file: &str, debug: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_file(file: &str, output: &str, verbose: bool, time: bool, _no_cache: bool, debug: bool) -> Result<()> {
+fn build_file(file: &str, output: &str, verbose: bool, time: bool, _no_cache: bool, debug: bool, target: Option<&str>) -> Result<()> {
     // `build` is an explicit request to compile: invoking it at all expresses
     // the staleness decision, and the build scripts that call it are gated by
     // Wireit's own input tracking. Always compile rather than second-guessing
     // with mtime heuristics.
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, true, debug)?;
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, true, debug, target)?;
     std::fs::copy(&cached_wasm_path, output)?;
     Ok(())
 }
 
 fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache: bool, dirs: &[String], args: &[String], debug: bool) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache, debug)?;
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache, debug, None)?;
     run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args, debug)
 }
 
@@ -263,6 +270,7 @@ fn compile_to_cache(
     capture_output: bool,
     no_cache: bool,
     debug: bool,
+    target: Option<&str>,
 ) -> Result<std::path::PathBuf> {
     let repo_root = std::fs::canonicalize(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -305,6 +313,8 @@ fn compile_to_cache(
     abs_path.hash(&mut hasher);
     test_mode.hash(&mut hasher);
     debug.hash(&mut hasher);
+    // The target changes the emitted bytes, so it must key the cache.
+    target.hash(&mut hasher);
     // Identify the compiler by (mtime, len) rather than hashing all of its
     // bytes: reading tens of MiB on every invocation is measurable, and a
     // rebuilt-but-identical compiler only costs one spurious recompile.
@@ -318,6 +328,15 @@ fn compile_to_cache(
     // Env vars that change compiler output must key the cache, or toggling
     // them serves stale artifacts.
     std::env::var("ZENA_BACKEND").unwrap_or_default().hash(&mut hasher);
+
+    // The package manifest steers module resolution, so its content keys the
+    // cache too (mtime+len, same identity scheme as the compiler wasm).
+    if let Ok(metadata) = std::fs::metadata(repo_root.join("zena-packages.json")) {
+        if let Ok(modified) = metadata.modified() {
+            modified.hash(&mut hasher);
+        }
+        metadata.len().hash(&mut hasher);
+    }
 
     // Walk packages/stdlib to include standard library files
     let stdlib_dir = repo_root.join("packages/stdlib");
@@ -409,6 +428,10 @@ fn compile_to_cache(
     let out_path_arg = cached_wasm_path.to_string_lossy().to_string();
 
     let mut compiler_args = vec!["zc".to_string(), file_arg, "-o".to_string(), out_path_arg];
+    if let Some(target) = target {
+        compiler_args.push("-t".to_string());
+        compiler_args.push(target.to_string());
+    }
     if time {
         compiler_args.push("--time".to_string());
     }
@@ -964,7 +987,7 @@ fn run_single_test(
 ) -> Result<(TestStatus, String, String, Option<String>)> {
     let t_start = std::time::Instant::now();
     // Compile to cache (always capture compiler output during tests to prevent log flooding)
-    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true, false, debug)?;
+    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true, false, debug, None)?;
     let t_compile = t_start.elapsed();
 
     let t_load_start = std::time::Instant::now();
