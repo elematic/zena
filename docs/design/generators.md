@@ -52,7 +52,7 @@ A generator is a function expression with the `gen` modifier. `yield` is a
 statement (v1) valid only in the immediately enclosing `gen` body:
 
 ```zena
-let range = gen (start: i32, end: i32): i32 => {
+let range = gen (start: i32, end: i32): Iterator<i32> => {
   var i = start;
   while (i < end) {
     yield i;
@@ -65,19 +65,15 @@ for (let i in range(0, 5)) {
 }
 ```
 
-`gen` also applies to methods:
+`gen` also applies to methods (modifier position, like `static` —
+resolving §10.1):
 
 ```zena
 class Tree {
   // ...
-  values(): gen i32 { ... yield node.value; ... }
+  gen values(): Iterator<i32> { ... yield node.value; ... }
 }
 ```
-
-(Exact method spelling — `gen values(): i32` vs `values(): gen i32` — is an
-open question, §10; the examples below use the modifier-before-params form
-for function expressions, matching where `async` will sit per
-concurrency.md.)
 
 New keywords, reserved in the self-hosted tokenizer only: `gen`, `yield`.
 A repo-wide grep found zero uses of either as an identifier in Zena source,
@@ -86,23 +82,33 @@ the same time — one tokenizer divergence, not two.)
 
 ### 2.2 Typing
 
-The declared return type of a `gen` function is the **yield type**. The
-type of the function value wraps it:
+The declared return type of a `gen` function is the **full
+`Iterator<T>` type** — the call expression's type, exactly as
+annotations mean everywhere else. The yield type is its argument:
 
 ```zena
 let range: (start: i32, end: i32) => Iterator<i32> =
-    gen (start: i32, end: i32): i32 => { ... };
+    gen (start: i32, end: i32): Iterator<i32> => { ... };
 ```
 
-This matches the convention concurrency.md already sketches for `async`
-(`async (url: string) => Response` — the annotation is the logical type;
-the modifier wraps it: `Future<Response>` there, `Iterator<i32>` here).
+(This resolves §10.2 the honest-annotation way — an earlier draft made
+the annotation the unwrapped yield type, with the modifier implying
+the wrapper. That convention belongs to keyword-languages like
+Swift/Kotlin, where the declared type IS what a call gives you in
+context; in Zena nothing implicitly unwraps `range(0, 5)`, so the
+annotation would lie about the call's type. TS/Python/C# — the
+type-annotated languages — all spell the wrapper for the same reason,
+and it is what TS muscle memory writes. `Iterator` resolves from the
+prelude without an import. Consequence for concurrency.md: `async`
+annotations spell `Future<Response>` for the same reason.)
 
 Checker rules:
 
-- `yield e;` — `e` must be assignable to the declared yield type. With no
-  annotation, the yield type is inferred as the union/LUB of all `yield`
-  operands (same machinery as return-type inference).
+- The annotation, when present, must be `Iterator<T>` (anything else is
+  an error naming the rule). With no annotation, the yield type is
+  inferred as the union/LUB of all `yield` operands (same machinery as
+  return-type inference) and the function types as `Iterator<inferred>`.
+- `yield e;` — `e` must be assignable to the yield type `T`.
 - `return;` (bare) and falling off the end complete the generator. Value
   returns are **rejected** (§3.1 — the protocol has no completion payload).
 - `yield` inside a non-`gen` closure nested in a `gen` body is an error
@@ -654,16 +660,13 @@ progress; M3 loop not started).
 
 ## 10. Open questions
 
-1. **Method syntax**: `gen values(): i32` (modifier position, like
-   `static`) vs `values(): gen i32` (type position). Function expressions
-   read best as `gen (…): T => {…}`; methods probably want the modifier
-   position for symmetry with `static`/`abstract`. Decide at G0 with the
-   parser in front of us.
-2. **Annotation semantics**: declared type = yield type (this doc) vs
-   declared type = `Iterator<T>` (TS/Python convention). Unwrapped wins on
-   consistency with concurrency.md's `async` sketch and on inference
-   ergonomics, but it means the annotation isn't the call expression's
-   type — worth a second look when `async` typing is finalized.
+1. **Method syntax**: ✅ Resolved at G0 — modifier position
+   (`gen values(): Iterator<i32>`), symmetric with `static`/`abstract`.
+2. **Annotation semantics**: ✅ Resolved at G1 (PR #157 review) —
+   declared type = `Iterator<T>`, the call expression's type (§2.2 has
+   the reasoning; the unwrapped convention belongs to keyword-languages
+   where calls implicitly unwrap, which Zena's `gen` does not).
+   `async` follows suit: annotations spell `Future<T>`.
 3. **`yield*` spelling**: `yield* e` (JS), `yield in e` (reads like
    for-in), or nothing (let users write the two-line loop).
 4. **Reentrancy/poison semantics**: is throwing from `next()` on a

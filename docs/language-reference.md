@@ -1059,13 +1059,15 @@ Overload resolution is performed based on the argument types at the call site.
 > `docs/design/generators.md`.
 
 A generator is a function expression with the `gen` modifier; `yield`
-is a statement valid only in the immediately enclosing `gen` body. The
-declared return type is the **yield** type; calling a generator
-produces an `Iterator<T>` lazily (none of the body runs until the first
-`next()`):
+is a statement valid only in the immediately enclosing `gen` body.
+Calling a generator produces an `Iterator<T>` lazily (none of the body
+runs until the first `next()`), and the declared return type is that
+`Iterator<T>` — annotations always name the call expression's type.
+The yield type is its argument. `Iterator` resolves from the prelude
+without an import:
 
 ```zena
-let range = gen (start: i32, end: i32): i32 => {
+let range = gen (start: i32, end: i32): Iterator<i32> => {
   var i = start;
   while (i < end) {
     yield i;
@@ -1079,11 +1081,11 @@ for (let i in range(0, 5)) {
 ```
 
 `gen` also applies to methods (modifier position, like `static`), where
-the yield type annotation is required:
+the return type annotation is required:
 
 ```zena
 class Tree {
-  gen values(): i32 {
+  gen values(): Iterator<i32> {
     yield this.value;
   }
 }
@@ -1091,13 +1093,16 @@ class Tree {
 
 Rules:
 
+- The declared return type must be `Iterator<T>`; each `yield e;`
+  checks `e` against `T`.
+- With no annotation, the yield type is inferred from the `yield`
+  statements (the function still types as `Iterator<inferred>`); a
+  generator that never yields needs an annotation.
 - Generators require a block body (no expression bodies).
 - Value returns are rejected; complete with bare `return;` or by
   falling off the end.
 - `yield` inside `try`/`catch`/`finally` is rejected (v1 restriction).
 - `yield` inside a non-`gen` closure nested in a generator is an error.
-- With no annotation, the yield type is inferred from the `yield`
-  statements; a generator that never yields needs an annotation.
 
 The keywords `gen`, `yield`, `async`, and `await` are reserved words in
 the self-hosted compiler (`async`/`await` are reserved for future async
