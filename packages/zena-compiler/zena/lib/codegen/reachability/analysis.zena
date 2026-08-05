@@ -217,6 +217,20 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         }
         this.markTypeReached(func.signature);
 
+        // Reaching a linear-memory intrinsic means the module needs a
+        // memory section (and the "memory" export). WASI targets get
+        // this from registerWasiInfra, but the host target reaches
+        // zena:memory only through user code — the compiler's own
+        // time.zena, for the LSP — and previously emitted memory ops
+        // with no declared memory (invalid wasm at instantiation).
+        if (func.intrinsic != null) {
+          let iname = func.intrinsic as String;
+          if (iname == 'memory.size' || iname == 'memory.grow' ||
+              iname.contains('.load') || iname.contains('.store')) {
+            this.wasm.ensureMemory();
+          }
+        }
+
         if (func.contextStruct != null) {
           this.markTypeReached(func.contextStruct as WasmStruct);
         }
