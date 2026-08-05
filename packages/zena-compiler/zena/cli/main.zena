@@ -1,9 +1,10 @@
 // Cache invalidation comment to force clean rebuild - 31
 import { getArguments, getEnv, exit, ExitCode } from 'zena:cli';
 import { console } from 'zena:console';
-import { readFile, writeFileBytes, writeFile } from 'zena:fs';
+import { readFile, writeFileBytes, writeFile, exists } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { loadPackageMap } from '../lib/package-manifest.zena';
 import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
 import { DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
 import { i32ToString } from 'zena:string-convert';
@@ -39,6 +40,19 @@ class WasiHost implements CompilerHost {
     return content;
   }
 }
+
+// Load package configs ("zena-compiler:parser" → file path) from the manifest
+// in the working directory. A missing manifest is fine — standalone files need
+// only stdlib and relative imports — but a malformed one throws loudly.
+// (An existence probe instead of try/catch: both compilers currently
+// mishandle catch-and-recover shapes here — see BUGS.md "try block"
+// entries and tests/language/execution/exceptions/try-tail-assignment.zena.)
+let loadPackages = (host: CompilerHost): HashMap<String, PackageConfig> => {
+  if (!exists("zena-packages.json")) {
+    return new HashMap<String, PackageConfig>();
+  }
+  return loadPackageMap(host, "zena-packages.json");
+};
 
 export let main = (): i32 => {
   let args = getArguments();
@@ -79,8 +93,7 @@ export let main = (): i32 => {
   }
 
   let host = new WasiHost(testMode, filename);
-  let packages = new HashMap<String, PackageConfig>();
-  // We'll hardcode stdlib path mapping for now or assume it will be passed 
+  let packages = loadPackages(host);
   let options = new CompilerOptions(target, "/stdlib", packages);
   options.time = time;
   let compiler = createCompiler(host, options);
