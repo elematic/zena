@@ -87,6 +87,31 @@ if (filter) {
   targets = targets.filter((t) => t.name.includes(filter));
 }
 
+/**
+ * Run a benchmark step, surfacing the child's output when it fails.
+ *
+ * These steps use `stdio: 'pipe'` so the compiler's own timing output can be
+ * parsed, which also means a failure would otherwise surface as an opaque
+ * `Command failed` with the actual compiler diagnostics swallowed. Print them.
+ */
+const runStep = (cmd: string, opts: Parameters<typeof execSync>[1], label: string): string => {
+  try {
+    return (execSync(cmd, opts) ?? '') as unknown as string;
+  } catch (e) {
+    const err = e as {stderr?: unknown; stdout?: unknown};
+    console.error(`\n\u2717 ${label} failed:`);
+    console.error(`  ${cmd}`);
+    const out = [err.stdout, err.stderr]
+      .map((x) => (x == null ? '' : String(x)))
+      .filter((x) => x.trim() !== '')
+      .join('\n');
+    if (out.trim() !== '') {
+      console.error(out.replace(/^/gm, '  '));
+    }
+    throw new Error(`${label} failed`);
+  }
+};
+
 const bootstrapCli = join(repoRoot, 'packages', 'cli', 'lib', 'cli.js');
 const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 const runWasiNode = join(pkgDir, 'scripts', 'run-wasi-node.js');
@@ -113,9 +138,10 @@ if (runCompiler && targets.length > 0) {
     const bootTimes: number[] = [];
     for (let i = 0; i < targetRuns; i++) {
       const t0 = performance.now();
-      execSync(
+      runStep(
         `node "${bootstrapCli}" build "${target.path}" --target wasi -o "${bootOutWasm}"`,
         {cwd: repoRoot, stdio: 'pipe'},
+        `${target.name}: bootstrap compile`,
       );
       const t1 = performance.now();
       bootTimes.push(t1 - t0);
@@ -140,7 +166,7 @@ if (runCompiler && targets.length > 0) {
 
     for (let i = 0; i < targetRuns; i++) {
       const t0 = performance.now();
-      const output = execSync(
+      const output = runStep(
         `"${zenaCli}" build "${target.path}" -o "${selfOutWasm}" --time --no-cache`,
         {
           cwd: repoRoot,
@@ -158,6 +184,7 @@ if (runCompiler && targets.length > 0) {
               (target.name === 'self_compile.zena' ? '1536' : '0'),
           },
         },
+        `${target.name}: self-hosted compile`,
       );
       const t1 = performance.now();
       selfTimes.push(t1 - t0);
