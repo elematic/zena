@@ -6,16 +6,16 @@ This package contains the WIT (WebAssembly Interface Types) parser for Zena.
 
 ✅ **Implemented** — lexer, parser, resolver, and `.wit.json` serialization, all
 written in Zena (`zena/`). The full ported wasm-tools UI corpus passes:
-**211/211** (130 parse-fail + 81 resolve-and-compare).
+**213/213** (130 parse-fail, 81 ported resolve-and-compare, 2 of our own).
 
-⚠️ Passing that corpus is **not** sufficient to parse real WASI packages. The
-upstream UI tests miss three combinations that every shipping WASI package uses,
-so `wasi:http` (p2 and p3) does not parse today. The gaps are documented with
-minimal repros in [component-model.md](../../docs/design/component-model.md),
-Part 9, and reproducible with `node dev/parse-real-wit.mjs --probe`.
+Three combinations that every shipping WASI package uses were missing from the
+ported corpus and are now covered by two tests of our own — `versioned-paths/`
+and `param-doc-comments.wit`; see TEST-STATUS.md. Real `wasi:http` (p2 and p3)
+now gets past the parser, though both still fail later, in name resolution.
 
-Nothing in the compiler calls this parser yet — see the same document for the
-integration and bindgen plan.
+Nothing in the compiler calls this parser yet — see
+[component-model.md](../../docs/design/component-model.md) for the integration
+and bindgen plan.
 
 ## Directory Structure
 

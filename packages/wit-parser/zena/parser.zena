@@ -991,6 +991,13 @@ export class Ast {
 export class Parser {
   #lexer: Lexer;
   var #current: Token;
+  /**
+   * One token of pushback, filled only by #peekAhead(). The grammar is
+   * otherwise single-lookahead; versions are the exception, where a `.`
+   * may start another pre-release segment or may be the separator before
+   * `.{`, and telling them apart needs to see past it.
+   */
+  var #peeked: Token | null = null;
   #source: String;
 
   new(source: String, lexer: Lexer, current: Token) 
@@ -1026,8 +1033,35 @@ export class Parser {
   /** Consume current token and return it. */
   #advance(): Token {
     let token = this.#current;
-    this.#current = this.#lexer.next();
+    if (this.#peeked != null) {
+      this.#current = this.#peeked as Token;
+      this.#peeked = null;
+    } else {
+      this.#current = this.#lexer.next();
+    }
     return token;
+  }
+
+  /** The token after the current one. */
+  #peekAhead(): Token {
+    if (this.#peeked == null) {
+      this.#peeked = this.#lexer.next();
+    }
+    return this.#peeked as Token;
+  }
+
+  /**
+   * True when the current token is a `.` introducing another semver
+   * segment, rather than the `.` that separates a version from what
+   * follows it — `use foo:bar/baz@1.0.0-alpha.{a}` ends its version at
+   * `alpha`, and the next `.` belongs to the use path.
+   */
+  #atVersionSegmentDot(): boolean {
+    if (!this.#check(TokenType.Period)) {
+      return false;
+    }
+    let next = this.#peekAhead().type;
+    return next == TokenType.Id || next == TokenType.Integer;
   }
 
   /** Consume current token if it matches, return true if consumed. */
@@ -1202,9 +1236,10 @@ export class Parser {
       while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
         lastToken = this.#advance();
         end = lastToken.span.end;
-        if (!this.#eat(TokenType.Period)) {
+        if (!this.#atVersionSegmentDot()) {
           break;
         }
+        this.#advance();
       }
     }
     
@@ -1278,37 +1313,47 @@ export class Parser {
     
     // Check for package path: namespace:name/interface or namespace:name@version/interface
     if (this.#eat(TokenType.Colon)) {
-      // This is a package path
-      let pkgName = this.#parseId();
-      
-      // Optional version after package name (namespace:name@version/interface)
-      var version: String | null = null;
-      var versionSpan: Span | null = null;
-      if (this.#eat(TokenType.At)) {
-        let parsed = this.#parseVersion();
-        version = parsed.version;
-        versionSpan = parsed.span;
-      }
-      
-      this.#expect(TokenType.Slash);
-      let interfaceName = this.#parseId();
-      
-      // Optional version after interface name (namespace:name/interface@version)
-      if (version == null && this.#eat(TokenType.At)) {
-        let parsed = this.#parseVersion();
-        version = parsed.version;
-        versionSpan = parsed.span;
-      }
-      
-      let pkgId = new PackageName(id, pkgName, new Span(id.span.start, pkgName.span.end));
-      pkgId.version = version;
-      pkgId.versionSpan = versionSpan;
-      
-      return UsePath.fromPackage(pkgId, interfaceName);
+      return this.#parsePackagePath(id);
     }
     
     // Just an identifier
     return UsePath.fromId(id);
+  }
+
+  /**
+   * Parse a package path once `namespace:` has been consumed.
+   *
+   * The version may sit after the package name or after the interface
+   * name — `wasi:clocks@0.2.8/monotonic-clock` and
+   * `wasi:clocks/monotonic-clock@0.2.8` are both legal, and real WASI
+   * uses the second. Shared with world import/export, which previously
+   * had its own copy that accepted only the first.
+   */
+  #parsePackagePath(id: Id): UsePath {
+    let pkgName = this.#parseId();
+    
+    var version: String | null = null;
+    var versionSpan: Span | null = null;
+    if (this.#eat(TokenType.At)) {
+      let parsed = this.#parseVersion();
+      version = parsed.version;
+      versionSpan = parsed.span;
+    }
+    
+    this.#expect(TokenType.Slash);
+    let interfaceName = this.#parseId();
+    
+    if (version == null && this.#eat(TokenType.At)) {
+      let parsed = this.#parseVersion();
+      version = parsed.version;
+      versionSpan = parsed.span;
+    }
+    
+    let pkgId = new PackageName(id, pkgName, new Span(id.span.start, pkgName.span.end));
+    pkgId.version = version;
+    pkgId.versionSpan = versionSpan;
+    
+    return UsePath.fromPackage(pkgId, interfaceName);
   }
   
   /** Parse a semver version string. Returns the version text and span. */
@@ -1327,9 +1372,10 @@ export class Parser {
       while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
         lastToken = this.#advance();
         versionEnd = lastToken.span.end;
-        if (!this.#eat(TokenType.Period)) {
+        if (!this.#atVersionSegmentDot()) {
           break;
         }
+        this.#advance();
       }
     }
     
@@ -1551,8 +1597,17 @@ export class Parser {
     return func;
   }
 
-  /** Parse a function parameter: name: type */
+  /**
+   * Parse a function parameter: name: type
+   *
+   * WIT allows a doc comment on a parameter, and real WASI uses them
+   * heavily — wasi:io/streams documents most of its arguments this way.
+   * They carry no meaning downstream (Param has nowhere to put them, and
+   * the wasm-tools JSON does not record them), but they must be consumed
+   * or the `///` is met where an identifier is expected.
+   */
   #parseParam(): Param {
+    this.#parseDocs();
     let name = this.#parseId();
     this.#expect(TokenType.Colon);
     let type = this.#parseType();
@@ -1904,42 +1959,7 @@ export class Parser {
           return ExternKind.makeFunc(id, func);
         }
         
-        // Otherwise this is a package path: namespace:name/interface
-        // id is the namespace, now parse the rest
-        let pkgName = this.#parseId();
-        
-        // Optional version
-        var version: String | null = null;
-        if (this.#eat(TokenType.At)) {
-          let versionStart = this.#peek().span.start;
-          this.#expect(TokenType.Integer);
-          this.#expect(TokenType.Period);
-          this.#expect(TokenType.Integer);
-          this.#expect(TokenType.Period);
-          var lastToken = this.#expect(TokenType.Integer);
-          var versionEnd = lastToken.span.end;
-          
-          while (this.#check(TokenType.Minus) || this.#check(TokenType.Plus)) {
-            this.#advance();
-            while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
-              lastToken = this.#advance();
-              versionEnd = lastToken.span.end;
-              if (!this.#eat(TokenType.Period)) {
-                break;
-              }
-            }
-          }
-          
-          version = this.#text(new Span(versionStart, versionEnd));
-        }
-        
-        this.#expect(TokenType.Slash);
-        let interfaceName = this.#parseId();
-        
-        let pkgId = new PackageName(id, pkgName, new Span(id.span.start, pkgName.span.end));
-        pkgId.version = version;
-        
-        let path = UsePath.fromPackage(pkgId, interfaceName);
+        let path = this.#parsePackagePath(id);
         this.#expectSemicolon();
         return ExternKind.fromPath(path);
       }

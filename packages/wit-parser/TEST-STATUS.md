@@ -1,39 +1,39 @@
 # WIT Parser Test Status
 
-**Last Updated**: 2026-08-04
-**Summary**: 211/211 ported wasm-tools UI tests passing (100%)
+**Last Updated**: 2026-08-05
+**Summary**: 213/213 passing (100%)
 
-- ✅ 130/130 error tests (`parse-fail/*`)
-- ✅ 81/81 success tests (resolve + `.wit.json` compare)
-- ⏭️ 0 skipped
+- 130/130 error tests (`parse-fail/*`)
+- 81/81 ported success tests (resolve + `.wit.json` compare)
+- 2/2 tests of our own, covering gaps the ported corpus missed
 
-Run with `npm test -w @zena-lang/wit-parser` (~11s).
+Run with `npm test -w @zena-lang/wit-parser` (~11s). Run it through npm, not
+`node scripts/run-tests.js` — the compiled runner goes stale against
+`src/scripts/run-tests.ts`, and a stale one fails every test on a stdlib path
+that no longer exists.
 
 Per-test tables are not maintained here — the suite is green, so the runner's
-own output is the source of truth. This file exists mainly to record the caveat
-below, which the pass rate hides.
+own output is the source of truth.
 
-## The corpus is not representative
+## The corpus under-represented real WIT
 
-Passing 211/211 does **not** mean we can parse real WIT. The ported wasm-tools
-UI corpus is synthetic and misses three combinations that every shipping WASI
-package uses. As of 2026-08-04, neither `wasi:http@0.2.8` nor
-`wasi:http@0.3.0-rc-2025-09-16` parses:
+The ported wasm-tools UI corpus is synthetic and missed three combinations that
+every shipping WASI package uses. Until they were fixed, neither
+`wasi:http@0.2.8` nor `wasi:http@0.3.0-rc-2025-09-16` would parse:
 
-1. **Prerelease/build semver in a `use`/`import` path** — `use
-   foo:bar/baz@1.0.0-alpha.{a}` fails, though `@1.0.0` works and prereleases
-   parse fine in `package` declarations and in `@since(...)`. Blocks all of
-   WASI p3, whose every package is `@0.3.0-rc-2025-09-16`.
-2. **Versioned interface path in a world `import`/`export`** — `import
-   wasi:clocks/monotonic-clock@0.2.8;` fails, though `include` of the same
-   versioned path works. Blocks the p2 `proxy` and p3 `service`/`middleware`
-   worlds.
-3. **Doc comment inside a function parameter list** — a `///` line between
-   `func(` and the first parameter fails, though `//` in that position and
-   `///` inside records/variants/resource bodies all work. Blocks
-   `wasi:io/streams`, `wasi:filesystem/types`, `wasi:sockets/*`.
+1. **Pre-release/build semver in a `use`/`import` path** — the version parser
+   consumed the `.` separating `@1.0.0-alpha` from `.{a}`. Covered by
+   `versioned-paths/`.
+2. **Versioned interface path in a world `import`/`export`** — that path had its
+   own copy of the version parser which accepted the version only *before* the
+   slash, while WIT puts it after. Covered by `versioned-paths/`.
+3. **Doc comment inside a function parameter list** — covered by
+   `param-doc-comments.wit`.
 
-Reproduce: `node dev/parse-real-wit.mjs --probe`.
+Real WASI still fails *after* parsing, in name resolution. Check with
+`node dev/parse-real-wit.mjs <wit-dir>`.
+
+
 Detail and impact: [component-model.md](../../docs/design/component-model.md),
 Part 9.
 
