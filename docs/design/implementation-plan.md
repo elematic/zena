@@ -9,6 +9,35 @@ This sequences the feature arc decided across
 ([ir.md](ir.md) §14) and bootstrap-compiler retirement (PLAN.md
 Phase 1).
 
+## Legend
+
+Track letters and milestone numbers are used throughout this file and in
+review discussion. Their definitions live in several documents, so they are
+collected here.
+
+| Label | Meaning | Defined in |
+| --- | --- | --- |
+| **Track G** — G0–G3 | Generators, then async | Track: below. Milestones: [generators.md](generators.md) §9 |
+| **Track V** — V0–V2 | Equality/identity contractions | Below; decisions D1–D4 in [equality.md](equality.md) |
+| **Track A** — A0–A3 | Rows and config records | Below; detail in [row-types.md](row-types.md) §9 |
+| **R3** | "The flip" — the single breaking record-semantics migration | Below |
+| **Track B** | Representation harvest, post-flip | Below |
+| **M1–M5** | ZIR backend migration milestones | [ir.md](ir.md) §14 |
+
+Two things that trip people up:
+
+- **There is no R1 or R2 here.** The R-numbering originates in
+  [row-types.md](row-types.md) §9, which proposed R1/R2/R3; this plan absorbed
+  R1 and R2 into Track A and kept only the flip, which stayed named R3.
+- **The M-track is not one of this file's tracks.** It is the ZIR backend
+  migration in [ir.md](ir.md) §14, referenced here because several items
+  depend on it. M1 and M2 are complete; M3 is in progress.
+
+Proposed but **not adopted**: `docs/design/ownership.md` suggests a **Track O**
+(O0–O4) for resource management and ownership. It is a proposal under review,
+not part of this plan of record; treat the label as provisional until it is
+either adopted here or dropped.
+
 ## Organizing principles
 
 1. **Contractions early, in both compilers.** Bans (e.g. `===` on

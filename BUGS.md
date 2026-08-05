@@ -259,6 +259,39 @@ immediately trying to fix it (which can pollute the current task's context).
   Postfix call chaining is evidently not applied to a NewExpression the way
   member access is. Pin with a syntax test once fixed.
 
+### Narrowing survives an assignment that invalidates it (unsound)
+
+- **Found**: 2026-08-04 (evaluating whether a checker flow graph would
+  improve narrowing, for ownership.md layer 2)
+- **Severity**: high (type-checks clean, traps at runtime)
+- **Workaround**: don't reassign a narrowed variable inside the narrowed
+  branch. There is no diagnostic, so this is not discoverable.
+- **Details**: Narrowing is stored in a lexically-scoped stack of
+  `narrowedTypes` maps (checker/context.ts) that is pushed and popped per
+  scope. Nothing removes a narrowing when the narrowed path is assigned, so
+  a narrowing outlives the fact that established it:
+  ```zena
+  class Box { var v: i32 = 42; }
+  let f = (b: Box | null): i32 => {
+    var x = b;
+    if (x !== null) {
+      x = null;
+      return x.v;   // accepted; x is null
+    }
+    return 0;
+  };
+  ```
+  `zena check` reports nothing; running it fails with
+  `RuntimeError: dereferencing a null pointer`. The unnarrowed control
+  (`b.v` with no guard) correctly reports Z2001, so the null check itself
+  works — it is invalidation that is missing.
+
+  The fix wants an assignment-aware flow graph rather than a scope stack:
+  see [ownership.md](docs/design/ownership.md) "A flow graph, not a new IR".
+  A targeted patch (clear narrowings for a path on assignment to it) would
+  close this specific hole sooner, and is worth doing independently since
+  the flow graph is a larger piece of work.
+
 ### `--dce` crashes codegen on `Regex.replaceAll`
 
 - **Found**: 2026-07-30 (measuring regex engine size for the website)
