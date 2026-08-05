@@ -1401,6 +1401,13 @@ let checkFile = (
     laterPaths = later;
   }
 
+  // The same file's model from an earlier pass over this compilation
+  // (the cycle-driven re-check): the splice of default arguments into
+  // call nodes persists in the shared AST, and the re-check needs the
+  // prior pass's caller-written-count records to not re-resolve those
+  // spliced expressions in this module's scope.
+  let priorModel = if (allResults.has(file.path)) allResults[file.path].model else null;
+
   return checkModule(
     file.ast,
     file.scopeResult as ScopeResult,
@@ -1410,7 +1417,8 @@ let checkFile = (
     sharedState,
     warnUnnecessaryCasts,
     laterPaths,
-    recheckPaths);
+    recheckPaths,
+    priorModel);
 };
 
 /**

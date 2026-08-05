@@ -1,0 +1,25 @@
+// @mode: run
+// @invoke: main
+// @result: 3
+
+// Like default_param_class, but this module sits in an import CYCLE with
+// default_param_cycle_b, so it is re-checked on the checker's second pass
+// with a fresh SemanticModel. The first pass spliced takeStep's default
+// initializer (new Counter()) into the call's argument list — mutating the
+// shared AST — and the re-check must not resolve that spliced expression
+// in THIS module's scope: Counter is deliberately not imported here.
+
+import {takeStep} from './default_param_class_helper.zena';
+import {Echo} from './default_param_cycle_b.zena';
+
+export class Ping {
+  value: i32;
+  new(this.value);
+}
+
+export let main = (): i32 => {
+  let first = takeStep();
+  let second = takeStep();
+  let e = new Echo(first + second);
+  return e.get() + 1;
+};
