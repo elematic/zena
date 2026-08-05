@@ -41,16 +41,25 @@ never puts two things with one name in scope at once:
    the next `use` in that interface can no longer find the interface. Covered
    by `interface-shadowed-by-use.wit`.
 
-With that fixed, all of `wasi:http@0.2.8` resolves — 33 files, 7 packages, 31
-interfaces, 9 worlds. `wasi:http@0.3.0-rc-2025-09-16` does not; see
-`cross-package-name-collision`, a known failure kept in `tests/` as a minimal
-repro.
+5. **The same interface name in two packages** — an unqualified `use types.{…}`
+   inside `wasi:clocks/monotonic-clock` was answered from the scope stack, which
+   during a cross-package `use` yields `wasi:sockets`' `types` instead. The two
+   then looked mutually dependent. The owning package is now threaded through
+   `#validateUseNames` / `#findItemInInterface` / `#getUseNameKind`, which also
+   closed an unguarded mutual recursion between the last two. Covered by
+   `cross-package-name-collision/`.
 
-Both of those are now asserted by `npm test`, against a pinned copy of the real
-WIT (`test:real-wit` → `node dev/parse-real-wit.js --check`). It pins the p2
-counts so they cannot regress silently, and pins the p3 *failure* so that fixing
-it reports here first. See the README for how the corpus is fetched; the check
-fails rather than skips when it is missing.
+With those fixed, **both** real WASI versions resolve: `wasi:http@0.2.8` (33
+files, 7 packages, 31 interfaces, 9 worlds) and `@0.3.0-rc-2025-09-16` (24
+files, 6 packages, 25 interfaces, 8 worlds).
+
+Both are asserted by `npm test`, against a pinned copy of the real WIT
+(`test:real-wit` → `node dev/parse-real-wit.js --check`), with exact counts so
+they cannot regress silently. See the README for how the corpus is fetched; the
+check fails rather than skips when it is missing.
+
+That check earned its keep immediately: it had pinned the p3 *failure*, so the
+moment p3 started resolving it said so and named what to update.
 
 
 Detail and impact: [component-model.md](../../docs/design/component-model.md),

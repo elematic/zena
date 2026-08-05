@@ -486,8 +486,7 @@ Ordered; each stage is useful on its own.
 1. **Parser → compiler integration.** `parseWit()` in the compiler, a stable
    exported entry point on the parser module (today only test harnesses exist),
    and a bootstrap decision (wit-parser.md Phase 3 lists three options; none
-   chosen). Real `wasi:http@0.2.8` parses and resolves today; p3 additionally
-   needs gap 5 in Part 9.
+   chosen). Real `wasi:http` parses and resolves today, p2 and p3 both.
 2. **`Result<T, E>` in the stdlib.** Blocks essentially every binding.
 3. **Bindgen, types only.** WIT types → Zena declarations. No ABI yet; output
    is checkable Zena source. Verifiable against real `wasi:http` WIT. Resource
@@ -537,9 +536,10 @@ reachable on Track W alone.
 
 ## Part 9: Parser and resolver gaps blocking real WASI WIT
 
-**Status: gaps 1–4 are fixed. All of `wasi:http@0.2.8` now parses and resolves —
-33 files, 7 packages, 31 interfaces, 9 worlds. `wasi:http@0.3.0-rc-2025-09-16`
-is still blocked by gap 5.**
+**Status: all five gaps are fixed. Both real WASI versions parse and resolve —
+`wasi:http@0.2.8` (33 files, 7 packages, 31 interfaces, 9 worlds) and
+`wasi:http@0.3.0-rc-2025-09-16` (24 files, 6 packages, 25 interfaces, 8 worlds).
+`npm test -w @zena-lang/wit-parser` checks both against a pinned copy.**
 
 The parser passed every wasm-tools UI test while being unable to handle any real
 WASI package, because the upstream UI corpus does not cover these combinations.
@@ -616,7 +616,7 @@ interface *aliases* (`use foo as bar;`), which exist only there, still resolve.
 **Blocked: all of `wasi:sockets`**, and so `wasi:cli` and `wasi:http` with it.
 Covered by `tests/interface-shadowed-by-use.wit`.
 
-### Gap 5 — same interface name in two packages (open)
+### Gap 5 — same interface name in two packages
 
 ```wit
 package test:clocks@1.0.0;
@@ -629,18 +629,30 @@ interface types { use test:clocks/monotonic-clock@1.0.0.{duration}; }
 ```
 
 Resolving the cross-package `use` recurses into `monotonic-clock`, whose own
-unqualified `use types.{duration}` must mean `test:clocks/types`. It is answered
+unqualified `use types.{duration}` must mean `test:clocks/types`. It was answered
 from the scope stack instead, which yields the `types` currently being resolved
-in the *other* package, and the two appear mutually dependent.
+in the *other* package, so the two appeared mutually dependent.
 
-Preferring the current package via the registry is not sufficient on its own:
-`#currentResolvePackage` is only updated for nested `package x { … }` blocks, not
-for repeated file-level `package …;` declarations, which is how every real WASI
-package is written. Tracking the package across those declarations is the actual
-fix.
+The fix threads the **owning package** — the package of the interface a `use`
+sits in — through `#validateUseNames`, `#findItemInInterface` and
+`#getUseNameKind`, so an unqualified path resolves against that package rather
+than against whatever is nearest on the scope stack.
 
-**Blocks: all of WASI p3**, where `wasi:clocks` and `wasi:sockets` both declare
-an `interface types`. Kept as a known failure in
+> **A correction.** An earlier revision of this document claimed the blocker was
+> that `#currentResolvePackage` is only updated for nested `package x { … }`
+> blocks and not for repeated file-level `package …;` declarations. That is
+> wrong: the parser turns a second file-level package into a `NestedPackage`
+> (parser.zena, `#parseAstItem`), and the resolver does set the package context
+> for those. The real reason a registry lookup alone was not enough is that
+> removing the false cycle exposed an **unguarded mutual recursion** between
+> `#findItemInInterface` and `#getUseNameKind` — they follow `use` chains to
+> work out whether an imported name is a type or a resource, and had no notion
+> of which package owned the interface being inspected, so two packages with
+> same-named interfaces bounced between each other until the stack blew. The
+> bogus "depends on itself" error had been the only thing stopping it.
+
+**Unblocked: all of WASI p3.** `wasi:http@0.3.0-rc-2025-09-16` resolves — 24
+files, 6 packages, 25 interfaces, 8 worlds. Regression test:
 `tests/cross-package-name-collision/`.
 
 ---

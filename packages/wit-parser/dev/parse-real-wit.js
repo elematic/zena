@@ -312,18 +312,16 @@ const probe = async () => {
 };
 
 /**
- * What the pinned corpus is expected to do. Exact counts, so that the p2 result
- * cannot silently regress; the pin is a fixed commit, so they do not drift.
+ * What the pinned corpus is expected to resolve to. Exact counts, so a
+ * regression cannot hide; the pin is a fixed commit, so they do not drift.
  */
 const EXPECTED = {
   p2: {packages: 7, interfaces: 31, worlds: 9},
-  // Gap 5 in docs/design/component-model.md. Asserted rather than ignored: if
-  // p3 starts resolving we want to hear about it here, not discover it later.
-  p3: {knownError: 'depends on itself'},
+  p3: {packages: 6, interfaces: 25, worlds: 8},
 };
 
 /**
- * The gating check: assert the pinned real-world corpus behaves as recorded.
+ * The gating check: assert the pinned real-world corpus still resolves.
  *
  * Absence is a failure, never a skip — a check that quietly skips reports the
  * same green tick as one that ran, which is how "we test against real WASI"
@@ -346,53 +344,36 @@ const check = async () => {
     );
     process.exit(1);
   }
-  console.log(`corpus: ${found.source} (${manifest.repo}@${manifest.commit.slice(0, 12)})`);
+  console.log(
+    `corpus: ${found.source} (${manifest.repo}@${manifest.commit.slice(0, 12)})`,
+  );
 
   const failures = [];
-
-  const p2Dir = join(found.dir, manifest.witDirs.p2);
-  const out = await tryParse(
-    (await findWitFiles(p2Dir)).map(([, src]) => src).join(NL),
-    true,
-  );
-  if (failed(out)) {
-    failures.push(`p2 (wasi:http@0.2.8) no longer resolves: ${out.split(NL)[0]}`);
-  } else {
+  for (const [name, want] of Object.entries(EXPECTED)) {
+    const dir = join(found.dir, manifest.witDirs[name]);
+    const out = await tryParse(
+      (await findWitFiles(dir)).map(([, src]) => src).join(NL),
+      true,
+    );
+    if (failed(out)) {
+      failures.push(`${name} no longer resolves: ${out.split(NL)[0]}`);
+      continue;
+    }
     const json = JSON.parse(out);
     const got = {
       packages: (json.packages ?? []).length,
       interfaces: (json.interfaces ?? []).length,
       worlds: (json.worlds ?? []).length,
     };
-    const want = EXPECTED.p2;
     if (JSON.stringify(got) !== JSON.stringify(want)) {
       failures.push(
-        `p2 resolved to ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`,
+        `${name} resolved to ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`,
       );
     } else {
       console.log(
-        `✔ p2 resolves: ${got.packages} packages, ${got.interfaces} interfaces, ${got.worlds} worlds`,
+        `✔ ${name} resolves: ${got.packages} packages, ${got.interfaces} interfaces, ${got.worlds} worlds`,
       );
     }
-  }
-
-  const p3Dir = join(found.dir, manifest.witDirs.p3);
-  const p3 = await tryParse(
-    (await findWitFiles(p3Dir)).map(([, src]) => src).join(NL),
-    true,
-  );
-  if (!failed(p3)) {
-    failures.push(
-      'p3 now resolves. That is good news — drop the p3 expectation here and ' +
-        'un-skip tests/cross-package-name-collision in tests/test-config.json.',
-    );
-  } else if (!p3.includes(EXPECTED.p3.knownError)) {
-    failures.push(
-      `p3 failed differently than recorded:\n  got      ${p3.split(NL)[0]}\n` +
-        `  expected an error containing "${EXPECTED.p3.knownError}"`,
-    );
-  } else {
-    console.log(`✔ p3 still blocked as recorded: ${p3.split(NL)[0]}`);
   }
 
   if (failures.length > 0) {

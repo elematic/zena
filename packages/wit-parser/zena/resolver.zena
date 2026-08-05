@@ -1760,7 +1760,7 @@ export class Resolver {
       }
       
       // Recursively resolve the target interface to detect transitive cycles
-      let iface = this.#findInterface(id.name);
+      let iface = this.#findInterfaceInCurrentPackage(id.name);
       if (iface != null) {
         let ifaceDef = iface as InterfaceDef;
         // Only resolve if not already resolved (to avoid infinite recursion
@@ -1810,18 +1810,26 @@ export class Resolver {
     for (var i = 0; i < use.names.length; i += 1) {
       let useName = use.names[i];
       let name = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
-      let kind = this.#getUseNameKind(use, useName.name.name);
+      let kind = this.#getUseNameKind(use, useName.name.name, this.#currentResolvePackage);
       this.#define(name, kind, useName.name.span);
     }
   }
 
-  /** Get the SymbolKind for a name being imported via use statement. */
-  #getUseNameKind(use: Use, lookupName: String): SymbolKind {
+  /**
+   * Get the SymbolKind for a name being imported via a use statement.
+   *
+   * `ownerPkg` is the package owning the interface that holds `use` — the scope
+   * an unqualified path in it resolves against. Threading it through is what
+   * stops this and `#findItemInInterface` from recursing forever between two
+   * packages that declare same-named interfaces.
+   */
+  #getUseNameKind(use: Use, lookupName: String, ownerPkg: PackageName | null): SymbolKind {
     if (use.from.tag == UsePathTag.Id) {
       let id = use.from.id as Id;
-      let iface = this.#findInterface(id.name);
+      let iface = this.#findInterfaceInPackage(ownerPkg, id.name);
       if (iface != null) {
-        let entry = this.#findItemInInterface(iface as InterfaceDef, lookupName);
+        // An unqualified path stays inside the owning package.
+        let entry = this.#findItemInInterface(iface as InterfaceDef, lookupName, ownerPkg);
         if (entry != null) {
           return (entry as SymbolEntry).kind;
         }
@@ -1832,7 +1840,7 @@ export class Resolver {
       let registry = this.#registry as PackageRegistry;
       let iface = registry.getInterfaceByPkg(pkgId, itemName.name);
       if (iface != null) {
-        let entry = this.#findItemInInterface(iface as InterfaceDef, lookupName);
+        let entry = this.#findItemInInterface(iface as InterfaceDef, lookupName, pkgId);
         if (entry != null) {
           return (entry as SymbolEntry).kind;
         }
@@ -1846,13 +1854,13 @@ export class Resolver {
     if (use.from.tag == UsePathTag.Id) {
       // Local interface reference
       let id = use.from.id as Id;
-      let iface = this.#findInterface(id.name);
+      let iface = this.#findInterfaceInCurrentPackage(id.name);
       if (iface == null) {
         // Interface not found - already reported by #resolveUsePath
         return;
       }
       let ifaceDef = iface as InterfaceDef;
-      this.#validateUseNamesInInterface(use, ifaceDef);
+      this.#validateUseNamesInInterface(use, ifaceDef, this.#currentResolvePackage);
     } else if (use.from.tag == UsePathTag.Package) {
       // Cross-package reference
       let pkgId = use.from.packageId as PackageName;
@@ -1863,17 +1871,17 @@ export class Resolver {
         // Interface not found - already reported by #resolveUsePath
         return;
       }
-      this.#validateUseNamesInInterface(use, iface as InterfaceDef);
+      this.#validateUseNamesInInterface(use, iface as InterfaceDef, pkgId);
     }
   }
 
   /** Helper to validate use names against an interface definition. */
-  #validateUseNamesInInterface(use: Use, ifaceDef: InterfaceDef): void {
+  #validateUseNamesInInterface(use: Use, ifaceDef: InterfaceDef, ownerPkg: PackageName | null): void {
     // Check each imported name
     for (var i = 0; i < use.names.length; i += 1) {
       let useName = use.names[i];
       let lookupName = useName.name.name;
-      let found = this.#findItemInInterface(ifaceDef, lookupName);
+      let found = this.#findItemInInterface(ifaceDef, lookupName, ownerPkg);
       if (found == null) {
         throw new ResolveError(
           "name `" + lookupName + "` is not defined",
@@ -1891,8 +1899,11 @@ export class Resolver {
     }
   }
 
-  /** Find an item in an interface by name, returning a SymbolEntry if found. */
-  #findItemInInterface(iface: InterfaceDef, name: String): SymbolEntry | null {
+  /**
+   * Find an item in an interface by name. `ownerPkg` is the package `iface`
+   * belongs to, so that a `use` inside it resolves unqualified names there.
+   */
+  #findItemInInterface(iface: InterfaceDef, name: String, ownerPkg: PackageName | null): SymbolEntry | null {
     for (var i = 0; i < iface.items.length; i += 1) {
       let item = iface.items[i];
       if (item.tag == InterfaceItemTag.TypeDef) {
@@ -1914,13 +1925,38 @@ export class Resolver {
           let importedName = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
           if (importedName == name) {
             // Recursively look up the original type to get its kind
-            let originalKind = this.#getUseNameKind(u, useName.name.name);
+            let originalKind = this.#getUseNameKind(u, useName.name.name, ownerPkg);
             return new SymbolEntry(name, originalKind, useName.name.span);
           }
           }
       }
     }
     return null;
+  }
+
+  /**
+   * Find an interface by name within `pkg`, falling back to the scope walk.
+   *
+   * An unqualified interface name means "in this package", so the owning
+   * package has to be consulted first. The scope walk alone returns whichever
+   * same-named interface sits nearest on the stack, which is the wrong one once
+   * resolution has followed a `use` into another package — WASI p3 declares an
+   * `interface types` in both `wasi:clocks` and `wasi:sockets`.
+   */
+  #findInterfaceInPackage(pkg: PackageName | null, name: String): InterfaceDef | null {
+    if (pkg != null && this.#registry != null) {
+      let registry = this.#registry as PackageRegistry;
+      let owned = registry.getInterfaceByPkg(pkg as PackageName, name);
+      if (owned != null) {
+        return owned;
+      }
+    }
+    return this.#findInterface(name);
+  }
+
+  /** As above, for the package currently being resolved. */
+  #findInterfaceInCurrentPackage(name: String): InterfaceDef | null {
+    return this.#findInterfaceInPackage(this.#currentResolvePackage, name);
   }
 
   /** Find an interface definition by name in any scope. */
