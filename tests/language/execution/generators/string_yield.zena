@@ -1,0 +1,24 @@
+// @mode: run
+// @stdout: alpha\nbeta\ngamma\ndone
+// @skip: bootstrap
+// Reference yield type: the multi-value payload slot is nullable at the
+// wasm level (the false arm carries no value), so binding must cast in
+// the taken branch only.
+import { console } from 'zena:console';
+
+let words = gen (): String => {
+  yield 'alpha';
+  yield 'beta';
+  yield 'gamma';
+};
+
+export let main = (): void => {
+  for (let w in words()) {
+    console.log(w);
+  }
+  let it = words();
+  if (let (true, _w) = it.next()) {
+    // consume one, then drop the iterator (no disposal protocol).
+  }
+  console.log('done');
+};

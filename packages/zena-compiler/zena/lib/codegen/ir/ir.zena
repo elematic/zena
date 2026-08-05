@@ -59,6 +59,9 @@
  *   br_table:    a = selector,
  *                b -> [count, (target, argc, arg*)*]  (last entry = default)
  *   ret:         a = value, or -1 for void
+ *   yield_:      a = yielded value, b -> [target, argc, arg*]
+ *                (presplit generator bodies only; rewritten by the
+ *                split pass, never emitted)
  *
  * A result type of -1 in `typeId` means the instruction produces no value.
  * Instruction and block ids are plain i32 indices for now; -1 means "none".
@@ -263,6 +266,10 @@ export enum IrOp {
   ret_multi,
   throw,
   unreachable,
+  /** Generator suspension (presplit form only, generators.md §4.1):
+   * yields value `a` and resumes at the single successor. Never
+   * emitted — the split pass rewrites every yield before emission. */
+  yield_,
   /** Sentinel: the number of ops. Keep last. */
   op_count
 }
@@ -574,7 +581,8 @@ export final class IrBody {
       return;
     }
     if (op == IrOp.br_if || op == IrOp.br_on_cast ||
-        op == IrOp.br_on_cast_fail || op == IrOp.br_table) {
+        op == IrOp.br_on_cast_fail || op == IrOp.br_table ||
+        op == IrOp.yield_) {
       out.push(av);
       this.#appendSuccessorArgs(inst, out);
       return;
@@ -682,7 +690,8 @@ export final class IrBody {
       return;
     }
     if (op == IrOp.br_if || op == IrOp.br_on_cast ||
-        op == IrOp.br_on_cast_fail || op == IrOp.br_table) {
+        op == IrOp.br_on_cast_fail || op == IrOp.br_table ||
+        op == IrOp.yield_) {
       this.a[inst] = map(av);
       this.#rewriteSuccessorArgs(inst, map);
       return;
@@ -762,6 +771,12 @@ export final class IrBody {
         idx += 2 + argc;
         i += 1;
       }
+      return result;
+    }
+    if (op == IrOp.yield_) {
+      let idx = this.b[inst];
+      let argc = this.extra[idx + 1];
+      result.push(new IrSuccessor(this.extra[idx], idx + 2, argc));
       return result;
     }
     throw new Error(`successors: not a terminator: ${irOpName(op)}`);
@@ -950,6 +965,7 @@ let buildIrOpNames = (): Array<String> => {
   n[IrOp.ret_multi as i32] = 'ret.multi';
   n[IrOp.throw as i32] = 'throw';
   n[IrOp.unreachable as i32] = 'unreachable';
+  n[IrOp.yield_ as i32] = 'yield';
   return n;
 };
 

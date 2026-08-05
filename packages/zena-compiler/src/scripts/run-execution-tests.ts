@@ -42,6 +42,7 @@ async function run() {
     'enums',
     'exceptions',
     'functions',
+    'generators',
     'imports',
     'interfaces',
     'intrinsics',

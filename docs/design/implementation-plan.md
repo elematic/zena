@@ -56,13 +56,17 @@ either adopted here or dropped.
 
 ## Track G — generators, then async (the priority track)
 
-Milestones G0–G3 per generators.md §9. **Status: G0 (front end) is
-implemented** — the self-hosted tokenizer reserves
-`gen`/`yield`/`async`/`await`, the parser/checker accept `gen`
-functions and methods with the yield-type convention and the v1
-rejections (yield-in-try, yield-in-closure, value returns), and
-codegen hard-errors on any generator reaching lowering until G1's
-split pass exists.
+Milestones G0–G3 per generators.md §9. **Status: G0 (front end) and
+G1 (the split pass) are implemented** — generators compile and run in
+the self-hosted compiler. The split pass (`codegen/ir/generators.zena`)
+lowers each generator body to presplit ZIR with `yield_` terminators
+between RTA and layout, synthesizes the frame struct + `next()` +
+`Iterator<T>` vtable global, and rewrites the body into a
+dispatcher-loop state machine (reducible by construction; `br_if`
+chain until `br_table` gains emit support). v1 deviations, all loud:
+the RUNNING poison state traps instead of throwing; generator
+closures (captured variables) and non-specialized generic generators
+are compile errors. Fusion is G2.
 
 The async-specific refinement:
 

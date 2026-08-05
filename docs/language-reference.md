@@ -1051,12 +1051,12 @@ print(3.14); // Calls print(f32)
 
 Overload resolution is performed based on the argument types at the call site.
 
-### Generator Functions (in progress)
+### Generator Functions
 
-> **Status:** front end only (self-hosted compiler). The syntax and
-> checking below are implemented, but code generation is not yet —
-> compiling a generator fails with a clear error until the split pass
-> lands. See `docs/design/generators.md`.
+> **Status:** implemented in the self-hosted compiler only (the
+> bootstrap compiler never learns generators). Generator closures
+> (capturing enclosing variables) are not yet supported. See
+> `docs/design/generators.md`.
 
 A generator is a function expression with the `gen` modifier; `yield`
 is a statement valid only in the immediately enclosing `gen` body. The

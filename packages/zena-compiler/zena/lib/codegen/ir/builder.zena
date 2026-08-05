@@ -3,13 +3,21 @@ import { Error } from 'zena:error';
 import { ValType, valTypeEquals, ValTypeRef, ValTypeRefNull, valTypeToOpcode } from '../wasm.zena';
 import { IrBody, IrBlock, IrOp, IrRef, isIrTerminator } from './ir.zena';
 
-let valTypesStrictlyEqual = (a: ValType, b: ValType): boolean => match (a) {
+/**
+ * Compares ref targets by OBJECT IDENTITY, not type-section index:
+ * indices are all -1 until layout() runs, so index equality spuriously
+ * merges distinct types in bodies built pre-layout (the generator
+ * split pass builds bodies there). Identity is equivalent to index
+ * equality for laid-out types — see valTypeKeyEquals in
+ * wasm-module.zena for the same reasoning.
+ */
+export let valTypesStrictlyEqual = (a: ValType, b: ValType): boolean => match (a) {
   case ValTypeRef as ta: match (b) {
-    case ValTypeRef as tb: ta.target.index == tb.target.index
+    case ValTypeRef as tb: ta.target === tb.target
     case _: false
   }
   case ValTypeRefNull as ta: match (b) {
-    case ValTypeRefNull as tb: ta.target.index == tb.target.index
+    case ValTypeRefNull as tb: ta.target === tb.target
     case _: false
   }
   case _: valTypeToOpcode(a) == valTypeToOpcode(b)
@@ -282,6 +290,19 @@ export final class IrBuilder {
 
   ret(value: i32): void {
     this.#emitInCurrent(IrOp.ret, -1, value, -1);
+  }
+
+  /** yield_: a = yielded value, b = [resumeTarget, argc, arg*].
+   * Suspension terminator for presplit generator bodies; the split
+   * pass rewrites every yield before emission. */
+  yieldTo(value: i32, resumeTarget: i32, args: Array<i32>): void {
+    let idx = this.body.extra.length;
+    this.body.extra.push(resumeTarget);
+    this.body.extra.push(args.length);
+    for (let v in args) {
+      this.body.extra.push(v);
+    }
+    this.#emitInCurrent(IrOp.yield_, -1, value, idx);
   }
 
   retVoid(): void {

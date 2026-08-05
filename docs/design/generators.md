@@ -610,19 +610,29 @@ pattern, not a blessed API; we should not ship stdlib support for it.
 Independent of, but sequenced against, ir.md's M-track (M2 parity in
 progress; M3 loop not started).
 
-- **G0 — front end.** Reserve `gen`/`yield` (+ `async`/`await`) in the
-  self-hosted tokenizer; parse `gen` functions/methods and `yield`
+- **G0 — front end.** ✅ **Done.** Reserve `gen`/`yield` (+ `async`/`await`)
+  in the self-hosted tokenizer; parse `gen` functions/methods and `yield`
   statements; AST + checker (yield typing, `Iterator<T>` wrapping,
   yield-in-try and yield-in-closure rejections, lazy-call semantics).
   Portable syntax/semantics tests with `// @skip: bootstrap`.
   _No dependency on ZIR work; can start immediately._
-- **G1 — split pass (protocol form).** `yield` terminator in
+- **G1 — split pass (protocol form).** ✅ **Done**
+  (`codegen/ir/generators.zena`). `yield_` terminator in
   `codegen/ir/ir.zena`; presplit lowering of `gen` bodies (ZIR-only,
-  hard-error on bail); split pass — frame class via the closure-struct
-  machinery, `next()` synthesis, `RUNNING`/`DONE` semantics; execution
-  tests through the existing for-in `Iterator` path and manual
+  hard-error on bail); split pass — frame struct from suspension
+  liveness, `next()` synthesis as a dispatcher-loop state machine
+  (reducible by construction; `br_if` chain until `br_table` gains
+  emit support), `RUNNING`/`DONE` semantics; execution tests through
+  the existing for-in `Iterator` path and manual
   `while (let (true, x) = it.next())` consumption.
-  _Needs current ZIR (M2-era) only._
+  _Implementation notes vs. this section: the split runs between RTA
+  and `layout()` (today's pipeline locks type/function indices before
+  lowering, so nothing can be synthesized "after GVN"); the frame is a
+  bare struct with a hand-rolled `Iterator<T>` vtable global rather
+  than a ClassType; the RUNNING poison state traps (`unreachable`)
+  instead of throwing until synthesized code can construct an Error;
+  generator closures and non-specialized generic generators are
+  compile errors in v1._
 - **G2 — fusion.** Presplit body memoization + bottom-up generator
   lowering order; block-splice/clone machinery (built as the shared
   substrate for the M3 inliner); the `#lowerForIn` fusion arm with

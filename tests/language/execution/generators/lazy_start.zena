@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 2112
+// @skip: bootstrap
+// Calling a generator runs none of the body (lazy until first next()).
+var effects = 0;
+
+let g = gen (): i32 => {
+  effects += 1;
+  yield 1;
+  effects += 1;
+  yield 2;
+};
+
+export let main = (): i32 => {
+  let it = g();
+  // Nothing has run yet.
+  let before = effects; // 0
+  var acc = before;
+  if (let (true, v) = it.next()) {
+    acc = acc * 10 + effects; // effects == 1
+    acc = acc * 10 + v; // 1
+  }
+  if (let (true, v) = it.next()) {
+    acc = acc * 10 + v; // 2
+    acc = acc + effects * 1000; // effects == 2
+  }
+  return acc;
+};

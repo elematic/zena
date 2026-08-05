@@ -1,0 +1,1097 @@
+/**
+ * The generator split pass (generators.md §4–§5, protocol form).
+ *
+ * Runs between RTA and layout() (`prepareGenerators`): every reached
+ * `gen` function's body is lowered to presplit ZIR (an ordinary CFG
+ * with yield_ suspension terminators), a hidden frame struct
+ * implementing Iterator<T> is synthesized from suspension liveness,
+ * and two finished IrBodies are produced and stashed for the
+ * per-function loop:
+ *
+ *  - the RAMP (the generator function itself): allocate the frame,
+ *    spill the arguments into it, pack the Iterator<T> fat pointer,
+ *    return. Lazy by construction — none of the body runs.
+ *  - next(): the state machine. A single dispatcher loop (a br_if
+ *    chain; br_table has no emit support yet) heads every resume
+ *    point and every yield-containing loop header, so the CFG stays
+ *    reducible for the emitter's stackifier. Values live into any
+ *    dispatch target are demoted to frame fields: stored at their
+ *    definition, loaded at each use (generators.md §5.2's "values
+ *    live across any yield — including loop-carried block
+ *    parameters — get frame fields").
+ *
+ * $state encoding: 0 = START, 1 = RUNNING, 2 = DONE, 3+k = suspended
+ * at yield k. Suspend states double as dispatcher pc values; headers
+ * of yield-containing loops get pc values above the suspend range
+ * (never stored in $state — they are internal re-entry points only).
+ * RUNNING is the poison state: reentrancy and resume-after-throw both
+ * land on it. The design calls for throwing an Error there; v1 traps
+ * (unreachable) — loud either way, revisit with the async runtime.
+ */
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
+import { Error } from 'zena:error';
+import { i32ToString } from 'zena:string-convert';
+import {
+  ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef,
+  ValTypeRefNull,
+} from '../wasm.zena';
+import {
+  WasmModule, WasmStruct, WasmField, WasmFunction, WasmGlobal,
+  WasmSignature, VTableInit,
+} from '../wasm-module.zena';
+import {
+  IrOp, IrBody, IrBlock, IrRef, IrRefField, IrRefType, IrRefGlobal,
+  isIrTerminator,
+} from './ir.zena';
+import { IrBuilder, valTypesStrictlyEqual } from './builder.zena';
+import { IrCfg } from './cfg.zena';
+import { FunctionLowerer } from './lowering.zena';
+import { ReachabilityAnalysis } from '../reachability/analysis.zena';
+import {
+  getInterfaceMemberSignature, getClassTypeParameters,
+  substituteTypeParamsInCodegen,
+} from '../type-mapping.zena';
+import {
+  ClassKey, getInterfaceKey, getInterfaceMemberKey, getClassInterfaceKey,
+  getClassInterfaceVTableName, getInterfaceTrampolineName,
+} from '../codegen-utils.zena';
+import { Type, InterfaceType, FunctionType, ClassType } from '../../types.zena';
+import { FunctionExpression, MethodDefinition, Node } from '../../ast.zena';
+
+let STATE_RUNNING = 1;
+let STATE_DONE = 2;
+let STATE_FIRST_SUSPEND = 3;
+
+/** The finished bodies for one generator, keyed by WasmFunction uid. */
+final class GeneratorArtifacts(rampBody: IrBody, nextBody: IrBody)
+
+/**
+ * Prep-time registry: prepareGenerators fills it, the per-function
+ * loop reads it back through lowerGeneratorRamp/lowerGeneratorNext.
+ * Cleared at the start of every prepare so repeated compiles in one
+ * process stay independent.
+ */
+var rampBodies = new HashMap<i32, GeneratorArtifacts>();
+var nextBodies = new HashMap<i32, GeneratorArtifacts>();
+
+/** True if this WasmFunction carries a `gen` AST node. */
+export let isGeneratorFunction = (func: WasmFunction): boolean => {
+  let node = func.node;
+  if (node == null) {
+    return false;
+  }
+  return match (node as Node) {
+    case FunctionExpression {isGenerator}: isGenerator
+    case MethodDefinition {isGenerator}: isGenerator
+    case _: false
+  };
+};
+
+let funcDisplayName = (func: WasmFunction): String => {
+  if (func.name != null) {
+    return func.name as String;
+  }
+  return 'generator';
+};
+
+/**
+ * The Iterator<T> instantiation a generator returns, from its checked
+ * FunctionType with class/function type arguments substituted (the
+ * memoized instantiation object, so interface keys match the call
+ * sites').
+ */
+let iteratorInstantiationOf = (func: WasmFunction): InterfaceType => {
+  let t = func.model.getNodeType(func.node as Node);
+  if (t == null || !(t is FunctionType)) {
+    throw new Error('generator has no checked function type: ' +
+        funcDisplayName(func));
+  }
+  var ret: Type = (t as FunctionType).returnType;
+  if (func.classType != null) {
+    let ct = func.classType as ClassType;
+    if (ct.typeArguments != null) {
+      ret = substituteTypeParamsInCodegen(
+          getClassTypeParameters(ct), ct.typeArguments, ret);
+    }
+  }
+  if (func.typeParameters != null && func.typeArguments != null) {
+    ret = substituteTypeParamsInCodegen(
+        func.typeParameters, func.typeArguments, ret);
+  }
+  if (!(ret is InterfaceType)) {
+    throw new Error('generator return type is not Iterator<T>: ' +
+        funcDisplayName(func));
+  }
+  return ret as InterfaceType;
+};
+
+// ---------------------------------------------------------------------------
+// Raw IrBody append helpers. The transform mutates the presplit body in
+// place (blocks own their inst lists; the flat arrays are append-only),
+// so it cannot go through IrBuilder, which refuses terminated blocks.
+// ---------------------------------------------------------------------------
+
+let truncate = (a: Array<i32>): void => {
+  while (a.length > 0) {
+    a.pop();
+  }
+};
+
+/** Replaces dst's contents with src's, in place (IrBlock fields are
+ * immutable bindings; the arrays themselves are mutable). */
+let replaceContents = (dst: Array<i32>, src: Array<i32>): void => {
+  truncate(dst);
+  for (let v in src) {
+    dst.push(v);
+  }
+};
+
+let internVt = (body: IrBody, vt: ValType): i32 => {
+  let table = body.typeTable;
+  var i = 0;
+  while (i < table.length) {
+    if (valTypesStrictlyEqual(table[i], vt)) {
+      return i;
+    }
+    i += 1;
+  }
+  table.push(vt);
+  return table.length - 1;
+};
+
+let addRawRef = (body: IrBody, ref: IrRef): i32 => {
+  body.refTable.push(ref);
+  return body.refTable.length - 1;
+};
+
+/** Appends an instruction to the flat arrays, unplaced (instBlock -1). */
+let rawInst = (body: IrBody, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
+  body.opcode.push(op as i32);
+  body.typeId.push(typeIdx);
+  body.a.push(a);
+  body.b.push(b);
+  body.instBlock.push(-1);
+  return body.opcode.length - 1;
+};
+
+let placeInst = (body: IrBody, blockId: i32, inst: i32): void => {
+  body.blocks[blockId].insts.push(inst);
+  body.instBlock[inst] = blockId;
+};
+
+let rawParam = (body: IrBody, blockId: i32, vt: ValType): i32 => {
+  let inst = rawInst(body, IrOp.param, internVt(body, vt), -1, -1);
+  body.blocks[blockId].params.push(inst);
+  body.instBlock[inst] = blockId;
+  return inst;
+};
+
+let rawConstI32 = (body: IrBody, value: i32): i32 => {
+  return rawInst(body, IrOp.const_i32, internVt(body, new ValTypeI32()), value, -1);
+};
+
+/** A zero/null of the given type, for the exhausted `(false, _)` slot. */
+let rawDefaultOf = (body: IrBody, vt: ValType): i32 => {
+  return match (vt) {
+    case ValTypeI32: rawConstI32(body, 0)
+    case ValTypeI64: {
+      body.constI64.push(0 as i64);
+      rawInst(body, IrOp.const_i64, internVt(body, vt),
+          body.constI64.length - 1, -1)
+    }
+    case ValTypeF32: {
+      body.constF64.push(0.0);
+      rawInst(body, IrOp.const_f32, internVt(body, vt),
+          body.constF64.length - 1, -1)
+    }
+    case ValTypeF64: {
+      body.constF64.push(0.0);
+      rawInst(body, IrOp.const_f64, internVt(body, vt),
+          body.constF64.length - 1, -1)
+    }
+    case _: rawInst(body, IrOp.ref_null, internVt(body, vt), -1, -1)
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Liveness on the presplit CFG (standard backward per-block dataflow).
+// ---------------------------------------------------------------------------
+
+/** live-in set per block: values live on entry (block params excluded). */
+let computeLiveIn = (body: IrBody, cfg: IrCfg): Array<HashSet<i32>> => {
+  let n = body.blocks.length;
+  let uses = new Array<HashSet<i32>>(n);
+  let defs = new Array<HashSet<i32>>(n);
+  let liveIn = new Array<HashSet<i32>>(n);
+  var bi = 0;
+  while (bi < n) {
+    let use = new HashSet<i32>();
+    let def = new HashSet<i32>();
+    let block = body.blocks[bi];
+    for (let p in block.params) {
+      def.add(p);
+    }
+    let ops = new Array<i32>();
+    for (let inst in block.insts) {
+      truncate(ops);
+      body.appendValueOperands(inst, ops);
+      for (let v in ops) {
+        if (!def.has(v)) {
+          use.add(v);
+        }
+      }
+      def.add(inst);
+    }
+    uses.push(use);
+    defs.push(def);
+    liveIn.push(new HashSet<i32>());
+    bi += 1;
+  }
+  var changed = true;
+  while (changed) {
+    changed = false;
+    // Reverse RPO converges fastest for backward problems; correctness
+    // only needs the fixpoint.
+    var ri = cfg.rpo.length - 1;
+    while (ri >= 0) {
+      let b = cfg.rpo[ri];
+      ri -= 1;
+      let inSet = liveIn[b];
+      let term = body.blocks[b].insts[body.blocks[b].insts.length - 1];
+      for (let s in body.successors(term)) {
+        for (let v in liveIn[s.target]) {
+          if (!defs[b].has(v) && !inSet.has(v)) {
+            inSet.add(v);
+            changed = true;
+          }
+        }
+      }
+      for (let v in uses[b]) {
+        if (!inSet.has(v)) {
+          inSet.add(v);
+          changed = true;
+        }
+      }
+    }
+  }
+  return liveIn;
+};
+
+// ---------------------------------------------------------------------------
+// The pass driver.
+// ---------------------------------------------------------------------------
+
+/**
+ * Called by ModuleGenerator between RTA and wasm.layout(): everything
+ * a generator needs (frame struct, next() function, trampoline,
+ * Iterator<T> vtable global) must exist before indices lock.
+ */
+export let prepareGenerators = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis
+): void => {
+  rampBodies = new HashMap<i32, GeneratorArtifacts>();
+  nextBodies = new HashMap<i32, GeneratorArtifacts>();
+  // Index loop: prepareOne appends trampoline/next functions.
+  var i = 0;
+  while (i < wasm.functions.length) {
+    let func = wasm.functions[i];
+    i += 1;
+    if (!isGeneratorFunction(func)) {
+      continue;
+    }
+    if (func.typeParameters != null && func.typeArguments == null) {
+      // Generic template; its specializations are processed instead.
+      continue;
+    }
+    prepareOne(wasm, pass, func, i - 1);
+  }
+};
+
+export let lowerGeneratorRamp = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  if (let (true, art) = rampBodies.get(func.uid)) {
+    return art.rampBody;
+  }
+  throw new Error('generator was not prepared (split pass did not run): ' +
+      funcDisplayName(func));
+};
+
+export let lowerGeneratorNext = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  if (let (true, art) = nextBodies.get(func.uid)) {
+    return art.nextBody;
+  }
+  throw new Error('generator next() was not prepared: ' + funcDisplayName(func));
+};
+
+let prepareOne = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis,
+  func: WasmFunction,
+  funcIndex: i32
+): void => {
+  if (func.isClosure || func.captures.length > 0 || func.capturesThis) {
+    throw new Error(
+        'Generator closures (captured variables) are not yet supported: ' +
+        funcDisplayName(func));
+  }
+
+  // The Iterator<T> instantiation and its wasm-side structs.
+  let iface = iteratorInstantiationOf(func);
+  pass.typeLowerer.discoverType(iface as Type, func.model);
+  let iKey = getInterfaceKey(iface);
+  if (!wasm.interfaceStructs.has(iKey) ||
+      !wasm.interfaceVTableStructs.has(iKey)) {
+    throw new Error('generator Iterator instantiation was not materialized: ' +
+        funcDisplayName(func));
+  }
+  let fatPtr = wasm.interfaceStructs[iKey];
+  let vst = wasm.interfaceVTableStructs[iKey];
+  wasm.usedInterfaceMembers[getInterfaceMemberKey(iKey, 'next')] = true;
+  let slotSig = getInterfaceMemberSignature(wasm, iface, 'next');
+  if (slotSig.returns.length != 2 || !(slotSig.returns[0] is ValTypeI32)) {
+    throw new Error('unexpected Iterator.next result shape for generator: ' +
+        funcDisplayName(func));
+  }
+
+  // Presplit lowering: the body as an ordinary CFG with yield_
+  // terminators. A bail inside a generator body is a hard error
+  // (ZirUnsupported propagates; there is no fallback backend).
+  let fl = new FunctionLowerer(wasm, func);
+  fl.presplitGenerator = true;
+  fl.presplitYieldVt = slotSig.returns[1];
+  let presplit = fl.lower();
+  let cfg = new IrCfg(presplit);
+
+  // Suspension analysis on the pristine CFG: yields (in block order),
+  // dispatch targets, spill set.
+  let yieldBlocks = new Array<i32>();
+  let resumeOf = new Array<i32>();
+  var bi = 0;
+  while (bi < presplit.blocks.length) {
+    let insts = presplit.blocks[bi].insts;
+    if (insts.length > 0) {
+      let term = insts[insts.length - 1];
+      if (presplit.op(term) == IrOp.yield_) {
+        yieldBlocks.push(bi);
+        resumeOf.push(presplit.successors(term)[0].target);
+      }
+    }
+    bi += 1;
+  }
+
+  // pc assignment: resume blocks get their suspend-state value;
+  // yield-containing loop headers get values above the suspend range.
+  let pcOfBlock = new HashMap<i32, i32>();
+  var yi = 0;
+  while (yi < resumeOf.length) {
+    pcOfBlock[resumeOf[yi]] = STATE_FIRST_SUSPEND + yi;
+    yi += 1;
+  }
+  var nextPc = STATE_FIRST_SUSPEND + resumeOf.length;
+  // Headers of natural loops containing a yield, ascending block id.
+  var hb = 0;
+  while (hb < presplit.blocks.length) {
+    if (cfg.isReachable(hb) && !pcOfBlock.has(hb) && hb != 0 &&
+        loopContainsYield(presplit, cfg, hb, yieldBlocks)) {
+      pcOfBlock[hb] = nextPc;
+      nextPc += 1;
+    }
+    hb += 1;
+  }
+
+  let liveIn = computeLiveIn(presplit, cfg);
+
+  // Spill set: everything live into a dispatch target, every dispatch
+  // target's block params, and every function parameter (the ramp
+  // stores them all; unused fields cost a few bytes).
+  let spilled = new HashSet<i32>();
+  let entryParamIds = new Array<i32>();
+  for (let p in presplit.blocks[0].params) {
+    entryParamIds.push(p);
+    spilled.add(p);
+  }
+  let dTargets = new Array<i32>();
+  dTargets.push(0);
+  var db = 0;
+  while (db < presplit.blocks.length) {
+    if (pcOfBlock.has(db)) {
+      dTargets.push(db);
+      for (let v in liveIn[db]) {
+        spilled.add(v);
+      }
+      for (let p in presplit.blocks[db].params) {
+        spilled.add(p);
+      }
+    }
+    db += 1;
+  }
+  for (let v in liveIn[0]) {
+    spilled.add(v);
+  }
+
+  // The frame struct: $state plus one nullable-weakened field per
+  // spilled value, ascending value id (deterministic layout).
+  let fields = new Array<WasmField>();
+  fields.push(new WasmField('$state', new ValTypeI32(), true));
+  var vid = 0;
+  while (vid < presplit.instCount()) {
+    if (spilled.has(vid)) {
+      let vt = presplit.resultType(vid);
+      if (vt == null) {
+        throw new Error('generator spill of valueless instruction');
+      }
+      fields.push(new WasmField('$v' + i32ToString(vid),
+          weakenToNullable(vt as ValType), true));
+    }
+    vid += 1;
+  }
+  let frameName = funcDisplayName(func) + '$' + i32ToString(funcIndex) + '$Frame';
+  let frame = new WasmStruct(frameName, fields);
+  wasm.types.push(frame);
+  pass.markTypeReached(frame);
+
+  // next(): (ref null $Frame) -> Iterator.next's scalarized results.
+  let nextParams = new Array<ValType>();
+  nextParams.push(new ValTypeRefNull(frame));
+  let nextSig = wasm.getSignature(nextParams, slotSig.returns);
+  let nextFunc = new WasmFunction(nextSig, null, func.model);
+  nextFunc.name = frameName + '.next';
+  nextFunc.isGeneratorNext = true;
+  wasm.addFunction(nextFunc);
+  pass.markFunctionReached(nextFunc);
+
+  // Iterator<T> vtable global for the frame: trampoline per slot,
+  // mirroring RTA's class-interface vtable construction.
+  let frameKey = frameName as ClassKey;
+  let methods = new Array<WasmFunction>();
+  for (let field in vst.fields) {
+    if ((field.name as String) != 'next') {
+      throw new Error('unexpected Iterator vtable member for generator: ' +
+          (field.name as String));
+    }
+    let tramp = new WasmFunction(slotSig, null, func.model);
+    tramp.name = getInterfaceTrampolineName(frameKey, iKey, 'next');
+    tramp.interfaceTrampolineTarget = nextFunc;
+    wasm.addFunction(tramp);
+    pass.markFunctionReached(tramp);
+    methods.push(tramp);
+  }
+  let vtableInit = new VTableInit(vst, methods);
+  let viName = getClassInterfaceVTableName(frameKey, iKey);
+  let vtableGlobal = new WasmGlobal(
+    viName,
+    viName,
+    new ValTypeRef(vst),
+    false,
+    null,
+    vtableInit,
+    func.model
+  );
+  wasm.globals.push(vtableGlobal);
+  wasm.classInterfaceVTables[getClassInterfaceKey(frameKey, iKey)] = vtableGlobal;
+  wasm.usedInterfaceAdaptations[getClassInterfaceKey(frameKey, iKey)] = true;
+  let unspecIKey = getInterfaceKey((iface.genericSource ?? iface) as InterfaceType);
+  wasm.usedInterfaceAdaptations[getClassInterfaceKey(frameKey, unspecIKey)] = true;
+
+  // The two bodies.
+  let rampBody = buildRamp(func, frame, fatPtr, vtableGlobal, entryParamIds);
+  let nextBody = buildNextBody(presplit, cfg, frame, spilled, pcOfBlock,
+      dTargets, slotSig, resumeOf);
+  let artifacts = new GeneratorArtifacts(rampBody, nextBody);
+  func.isGeneratorRamp = true;
+  rampBodies[func.uid] = artifacts;
+  nextBodies[nextFunc.uid] = artifacts;
+};
+
+/** Does the natural loop of header h (any backedge into h) contain a yield? */
+let loopContainsYield = (
+  body: IrBody,
+  cfg: IrCfg,
+  h: i32,
+  yieldBlocks: Array<i32>
+): boolean => {
+  if (yieldBlocks.length == 0) {
+    return false;
+  }
+  // Collect the natural loop: h plus every block reaching a backedge
+  // source without passing through h.
+  let inLoop = new HashSet<i32>();
+  inLoop.add(h);
+  let work = new Array<i32>();
+  for (let p in cfg.preds[h]) {
+    if (cfg.isReachable(p) && cfg.dominates(h, p)) {
+      if (!inLoop.has(p)) {
+        inLoop.add(p);
+        work.push(p);
+      }
+    }
+  }
+  if (work.length == 0 && inLoop.size == 1) {
+    return false;
+  }
+  while (work.length > 0) {
+    let b = work.pop();
+    for (let p in cfg.preds[b]) {
+      if (cfg.isReachable(p) && !inLoop.has(p)) {
+        inLoop.add(p);
+        work.push(p);
+      }
+    }
+  }
+  for (let yb in yieldBlocks) {
+    if (inLoop.has(yb)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+let weakenToNullable = (vt: ValType): ValType => {
+  return match (vt) {
+    case ValTypeRef {target}: new ValTypeRefNull(target)
+    case _: vt
+  };
+};
+
+/** ramp: allocate the frame, spill the arguments, pack, return. */
+let buildRamp = (
+  func: WasmFunction,
+  frame: WasmStruct,
+  fatPtr: WasmStruct,
+  vtableGlobal: WasmGlobal,
+  entryParamIds: Array<i32>
+): IrBody => {
+  let b = new IrBuilder();
+  let entry = b.newBlock();
+  let params = new Array<i32>();
+  for (let vt in func.signature.params) {
+    params.push(b.blockParam(entry, vt));
+  }
+  b.switchTo(entry);
+  let typeRef = b.addRef(new IrRefType(frame));
+  let inst = b.emit(IrOp.struct_new_default, new ValTypeRef(frame), -1, typeRef);
+  // $state defaults to 0 == START via struct.new_default.
+  var i = 0;
+  while (i < params.length) {
+    let fieldRef = b.addRef(new IrRefField(frame,
+        '$v' + i32ToString(entryParamIds[i])));
+    let pair = new Array<i32>();
+    pair.push(inst);
+    pair.push(params[i]);
+    b.emitVoid(IrOp.struct_set, b.pushExtra(pair), fieldRef);
+    i += 1;
+  }
+  let packed = b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr), inst,
+      b.addRef(new IrRefGlobal(vtableGlobal)));
+  b.ret(packed);
+  return b.finish();
+};
+
+// ---------------------------------------------------------------------------
+// The state-machine transform: mutates the presplit body in place into
+// the next() body.
+// ---------------------------------------------------------------------------
+
+let buildNextBody = (
+  body: IrBody,
+  cfg: IrCfg,
+  frame: WasmStruct,
+  spilled: HashSet<i32>,
+  pcOfBlockIn: HashMap<i32, i32>,
+  dTargetsIn: Array<i32>,
+  slotSig: WasmSignature,
+  resumeOf: Array<i32>
+): IrBody => {
+  let origCount = body.blocks.length;
+  let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
+  let i32Vt: ValType = new ValTypeI32();
+
+  // Snapshot the dispatch targets' params (cleared below; edges into
+  // them turn into frame stores).
+  let dParams = new HashMap<i32, Array<i32>>();
+  for (let d in dTargetsIn) {
+    let copy = new Array<i32>();
+    for (let p in body.blocks[d].params) {
+      copy.push(p);
+    }
+    dParams[d] = copy;
+  }
+
+  // 1. Evacuate the old entry into a fresh block E; block 0 becomes
+  // the prologue head (the function's real entry: one frame param).
+  let entryCopy = new IrBlock();
+  let oldEntry = body.blocks[0];
+  body.blocks.push(entryCopy);
+  let entryCopyId = body.blocks.length - 1;
+  for (let p in oldEntry.params) {
+    entryCopy.params.push(p);
+    body.instBlock[p] = entryCopyId;
+  }
+  for (let inst in oldEntry.insts) {
+    entryCopy.insts.push(inst);
+    body.instBlock[inst] = entryCopyId;
+  }
+  body.blocks[0] = new IrBlock();
+
+  // Dispatch-target bookkeeping with entry remapped to its new id.
+  let pcOfBlock = new HashMap<i32, i32>();
+  pcOfBlock[entryCopyId] = 0;
+  for (let d in dTargetsIn) {
+    if (d == 0) {
+      continue;
+    }
+    pcOfBlock[d] = pcOfBlockIn[d];
+  }
+  let dParamsById = new HashMap<i32, Array<i32>>();
+  for (let d in dTargetsIn) {
+    let mapped = if (d == 0) { entryCopyId } else { d };
+    dParamsById[mapped] = dParams[d];
+  }
+
+  // 2. Prologue: state checks, RUNNING store, dispatcher loop.
+  let frameParam = rawParam(body, 0, new ValTypeRefNull(frame));
+
+  let newBlockId = (): i32 => {
+    body.blocks.push(new IrBlock());
+    return body.blocks.length - 1;
+  };
+  let doneBlock = newBlockId();
+  let runCheckBlock = newBlockId();
+  let trapBlock = newBlockId();
+  let enterBlock = newBlockId();
+  let dispatcher = newBlockId();
+
+  let emitIn = (blockId: i32, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
+    let inst = rawInst(body, op, typeIdx, a, b);
+    placeInst(body, blockId, inst);
+    return inst;
+  };
+  let brTo = (fromBlock: i32, target: i32, args: Array<i32>): void => {
+    let idx = body.extra.length;
+    body.extra.push(target);
+    body.extra.push(args.length);
+    for (let v in args) {
+      body.extra.push(v);
+    }
+    let inst = rawInst(body, IrOp.br, -1, idx, -1);
+    placeInst(body, fromBlock, inst);
+  };
+  let brIfTo = (fromBlock: i32, cond: i32, thenTarget: i32, elseTarget: i32): void => {
+    let idx = body.extra.length;
+    body.extra.push(thenTarget);
+    body.extra.push(0);
+    body.extra.push(elseTarget);
+    body.extra.push(0);
+    let inst = rawInst(body, IrOp.br_if, -1, cond, idx);
+    placeInst(body, fromBlock, inst);
+  };
+  let storeState = (blockId: i32, valueInst: i32): void => {
+    let idx = body.extra.length;
+    body.extra.push(frameParam);
+    body.extra.push(valueInst);
+    let inst = rawInst(body, IrOp.struct_set, -1, idx, stateRef);
+    placeInst(body, blockId, inst);
+  };
+
+  let i32Idx = internVt(body, i32Vt);
+
+  // b0: state = frame.$state; state == DONE ?
+  let stateVal = emitIn(0, IrOp.struct_get, i32Idx, frameParam, stateRef);
+  let doneConst = emitIn(0, IrOp.const_i32, i32Idx, STATE_DONE, -1);
+  let isDone = emitIn(0, IrOp.i32_eq, i32Idx, stateVal, doneConst);
+  brIfTo(0, isDone, doneBlock, runCheckBlock);
+
+  // done: politely exhausted forever: (false, default).
+  let doneFlag = emitIn(doneBlock, IrOp.const_i32, i32Idx, 0, -1);
+  let doneDflt = rawDefaultOf(body, slotSig.returns[1]);
+  placeInst(body, doneBlock, doneDflt);
+  let doneExtra = body.extra.length;
+  body.extra.push(2);
+  body.extra.push(doneFlag);
+  body.extra.push(doneDflt);
+  let doneRet = rawInst(body, IrOp.ret_multi, -1, doneExtra, -1);
+  placeInst(body, doneBlock, doneRet);
+
+  // runCheck: state == RUNNING ? trap : enter.
+  let runConst = emitIn(runCheckBlock, IrOp.const_i32, i32Idx, STATE_RUNNING, -1);
+  let isRunning = emitIn(runCheckBlock, IrOp.i32_eq, i32Idx, stateVal, runConst);
+  brIfTo(runCheckBlock, isRunning, trapBlock, enterBlock);
+
+  // trap: reentrancy or resume-after-throw (poison state).
+  let trapInst = rawInst(body, IrOp.unreachable, -1, -1, -1);
+  placeInst(body, trapBlock, trapInst);
+
+  // enter: $state = RUNNING; dispatch on the saved state.
+  let runningConst = emitIn(enterBlock, IrOp.const_i32, i32Idx, STATE_RUNNING, -1);
+  storeState(enterBlock, runningConst);
+  let dispatchArgs = new Array<i32>();
+  dispatchArgs.push(stateVal);
+  brTo(enterBlock, dispatcher, dispatchArgs);
+
+  // dispatcher(pc): br_if chain over the dispatch targets, ascending
+  // pc. The final fall-through is an invalid state — trap.
+  let pcParam = rawParam(body, dispatcher, i32Vt);
+  let chainTargets = new Array<i32>();
+  let chainPcs = new Array<i32>();
+  chainTargets.push(entryCopyId);
+  chainPcs.push(0);
+  var scanPc = STATE_FIRST_SUSPEND;
+  var remaining = pcOfBlock.size - 1;
+  while (remaining > 0) {
+    var found = -1;
+    var fb = 0;
+    while (fb < body.blocks.length) {
+      if (pcOfBlock.has(fb) && pcOfBlock[fb] == scanPc) {
+        found = fb;
+        break;
+      }
+      fb += 1;
+    }
+    if (found >= 0) {
+      chainTargets.push(found);
+      chainPcs.push(scanPc);
+      remaining -= 1;
+    }
+    scanPc += 1;
+  }
+  var chainBlock = dispatcher;
+  var ci = 0;
+  while (ci < chainTargets.length) {
+    let cmpConst = emitIn(chainBlock, IrOp.const_i32, i32Idx, chainPcs[ci], -1);
+    let cmp = emitIn(chainBlock, IrOp.i32_eq, i32Idx, pcParam, cmpConst);
+    let elseBlock = if (ci == chainTargets.length - 1) { trapBlock } else { newBlockId() };
+    brIfTo(chainBlock, cmp, chainTargets[ci], elseBlock);
+    chainBlock = elseBlock;
+    ci += 1;
+  }
+
+  // The body blocks the remaining passes operate on.
+  let bodyBlocks = new Array<i32>();
+  bodyBlocks.push(entryCopyId);
+  var obi = 1;
+  while (obi < origCount) {
+    bodyBlocks.push(obi);
+    obi += 1;
+  }
+
+  // 3. Reroute every edge into a dispatch target through the
+  // dispatcher, converting its branch args into frame stores.
+  for (let blockId in bodyBlocks) {
+    rerouteEdges(body, blockId, pcOfBlock, dParamsById, dispatcher,
+        frameParam, frame, i32Idx, entryCopyId);
+  }
+  // Dispatch targets no longer take params (their values now flow
+  // through frame fields; the loads are inserted by the use pass).
+  for (let d in dTargetsIn) {
+    let mapped = if (d == 0) { entryCopyId } else { d };
+    truncate(body.blocks[mapped].params);
+  }
+
+  // 4. Store every spilled definition to its frame field.
+  let skipRemap = new HashSet<i32>();
+  for (let blockId in bodyBlocks) {
+    let block = body.blocks[blockId];
+    let rebuilt = new Array<i32>();
+    // Spilled params of non-dispatch blocks: store at block top.
+    for (let p in block.params) {
+      if (spilled.has(p)) {
+        let idx = body.extra.length;
+        body.extra.push(frameParam);
+        body.extra.push(p);
+        let st = rawInst(body, IrOp.struct_set, -1, idx,
+            addRawRef(body, new IrRefField(frame, '$v' + i32ToString(p))));
+        skipRemap.add(st);
+        rebuilt.push(st);
+        body.instBlock[st] = blockId;
+      }
+    }
+    for (let inst in block.insts) {
+      rebuilt.push(inst);
+      if (spilled.has(inst) && !isIrTerminator(body.op(inst))) {
+        let idx = body.extra.length;
+        body.extra.push(frameParam);
+        body.extra.push(inst);
+        let st = rawInst(body, IrOp.struct_set, -1, idx,
+            addRawRef(body, new IrRefField(frame, '$v' + i32ToString(inst))));
+        skipRemap.add(st);
+        rebuilt.push(st);
+        body.instBlock[st] = blockId;
+      }
+    }
+    replaceContents(block.insts, rebuilt);
+  }
+
+  // 5. Load every use of a spilled value from its frame field,
+  // immediately before the use (correct on every dispatch path; GVN
+  // never merges struct_gets, so resumes reload).
+  for (let blockId in bodyBlocks) {
+    let block = body.blocks[blockId];
+    let rebuilt = new Array<i32>();
+    let ops = new Array<i32>();
+    for (let inst in block.insts) {
+      if (skipRemap.has(inst)) {
+        rebuilt.push(inst);
+        continue;
+      }
+      truncate(ops);
+      body.appendValueOperands(inst, ops);
+      let loadOf = new HashMap<i32, i32>();
+      for (let v in ops) {
+        if (spilled.has(v) && !loadOf.has(v)) {
+          let vt = body.resultType(v) as ValType;
+          let weak = weakenToNullable(vt);
+          var load = rawInst(body, IrOp.struct_get, internVt(body, weak),
+              frameParam,
+              addRawRef(body, new IrRefField(frame, '$v' + i32ToString(v))));
+          rebuilt.push(load);
+          body.instBlock[load] = blockId;
+          if (!valTypesStrictlyEqual(weak, vt)) {
+            load = rawInst(body, IrOp.ref_as_non_null, internVt(body, vt),
+                load, -1);
+            rebuilt.push(load);
+            body.instBlock[load] = blockId;
+          }
+          loadOf[v] = load;
+        }
+      }
+      if (loadOf.size > 0) {
+        body.rewriteValueOperands(inst, (v: i32) => {
+          if (let (true, l) = loadOf.get(v)) {
+            return l;
+          }
+          return v;
+        });
+      }
+      rebuilt.push(inst);
+    }
+    replaceContents(block.insts, rebuilt);
+  }
+
+  // 6. Rewrite suspensions and completions.
+  let flagVt = slotSig.returns[0];
+  var yieldIndex = 0;
+  for (let blockId in bodyBlocks) {
+    let block = body.blocks[blockId];
+    if (block.insts.length == 0) {
+      continue;
+    }
+    let term = block.insts[block.insts.length - 1];
+    let op = body.op(term);
+    if (op == IrOp.yield_) {
+      let resumeTarget = body.successors(term)[0].target;
+      let pc = pcOfBlock[resumeTarget];
+      let yieldVal = body.a[term];
+      let rebuilt = new Array<i32>();
+      var k = 0;
+      while (k < block.insts.length - 1) {
+        rebuilt.push(block.insts[k]);
+        k += 1;
+      }
+      let pcConst = rawInst(body, IrOp.const_i32, i32Idx, pc, -1);
+      rebuilt.push(pcConst);
+      body.instBlock[pcConst] = blockId;
+      let idx = body.extra.length;
+      body.extra.push(frameParam);
+      body.extra.push(pcConst);
+      let st = rawInst(body, IrOp.struct_set, -1, idx, stateRef);
+      rebuilt.push(st);
+      body.instBlock[st] = blockId;
+      let flag = rawInst(body, IrOp.const_i32, i32Idx, 1, -1);
+      rebuilt.push(flag);
+      body.instBlock[flag] = blockId;
+      let retIdx = body.extra.length;
+      body.extra.push(2);
+      body.extra.push(flag);
+      body.extra.push(yieldVal);
+      body.opcode[term] = IrOp.ret_multi as i32;
+      body.a[term] = retIdx;
+      body.b[term] = -1;
+      rebuilt.push(term);
+      replaceContents(block.insts, rebuilt);
+      yieldIndex += 1;
+    } else if (op == IrOp.ret) {
+      // Bare return / fell off the end: DONE forever.
+      let rebuilt = new Array<i32>();
+      var k = 0;
+      while (k < block.insts.length - 1) {
+        rebuilt.push(block.insts[k]);
+        k += 1;
+      }
+      let doneC = rawInst(body, IrOp.const_i32, i32Idx, STATE_DONE, -1);
+      rebuilt.push(doneC);
+      body.instBlock[doneC] = blockId;
+      let idx = body.extra.length;
+      body.extra.push(frameParam);
+      body.extra.push(doneC);
+      let st = rawInst(body, IrOp.struct_set, -1, idx, stateRef);
+      rebuilt.push(st);
+      body.instBlock[st] = blockId;
+      let flag = rawInst(body, IrOp.const_i32, i32Idx, 0, -1);
+      rebuilt.push(flag);
+      body.instBlock[flag] = blockId;
+      let dflt = rawDefaultOf(body, slotSig.returns[1]);
+      rebuilt.push(dflt);
+      body.instBlock[dflt] = blockId;
+      let retIdx = body.extra.length;
+      body.extra.push(2);
+      body.extra.push(flag);
+      body.extra.push(dflt);
+      body.opcode[term] = IrOp.ret_multi as i32;
+      body.a[term] = retIdx;
+      body.b[term] = -1;
+      rebuilt.push(term);
+      replaceContents(block.insts, rebuilt);
+    }
+  }
+
+  return body;
+};
+
+/**
+ * Rewrites the terminator of `blockId` so every successor that is a
+ * dispatch target branches to the dispatcher with that target's pc,
+ * spilling the edge's branch args into the target's param fields.
+ */
+let rerouteEdges = (
+  body: IrBody,
+  blockId: i32,
+  pcOfBlock: HashMap<i32, i32>,
+  dParamsById: HashMap<i32, Array<i32>>,
+  dispatcher: i32,
+  frameParam: i32,
+  frame: WasmStruct,
+  i32Idx: i32,
+  entryCopyId: i32
+): void => {
+  let block = body.blocks[blockId];
+  if (block.insts.length == 0) {
+    return;
+  }
+  let term = block.insts[block.insts.length - 1];
+  let op = body.op(term);
+  if (op == IrOp.ret || op == IrOp.ret_multi || op == IrOp.throw ||
+      op == IrOp.unreachable || op == IrOp.yield_) {
+    // yield_ successors are resume blocks; the suspension rewrite
+    // replaces the terminator wholesale, so no reroute is needed.
+    return;
+  }
+  // Decode all successors up front (re-encoding appends to extra).
+  let succs = body.successors(term);
+  var touchesDispatch = false;
+  let targets = new Array<i32>();
+  let argLists = new Array<Array<i32>>();
+  for (let s in succs) {
+    var target = s.target;
+    if (target == 0) {
+      target = entryCopyId;
+    }
+    let args = new Array<i32>();
+    var ai = 0;
+    while (ai < s.argCount) {
+      args.push(body.extra[s.argStart + ai]);
+      ai += 1;
+    }
+    targets.push(target);
+    argLists.push(args);
+    if (pcOfBlock.has(target)) {
+      touchesDispatch = true;
+    }
+  }
+  if (!touchesDispatch) {
+    return;
+  }
+  if (op == IrOp.try_br || op == IrOp.br_table) {
+    throw new Error('generator split: unsupported terminator shape into a resume point');
+  }
+
+  // Inserted instructions go right before the terminator.
+  let inserted = new Array<i32>();
+  var si = 0;
+  while (si < targets.length) {
+    let target = targets[si];
+    if (pcOfBlock.has(target)) {
+      // Spill the edge args into the target's (former) param fields.
+      let tps = dParamsById[target];
+      let args = argLists[si];
+      if (tps.length != args.length) {
+        throw new Error('generator split: edge arity mismatch at resume point');
+      }
+      var pi = 0;
+      while (pi < tps.length) {
+        let idx = body.extra.length;
+        body.extra.push(frameParam);
+        body.extra.push(args[pi]);
+        let st = rawInst(body, IrOp.struct_set, -1, idx,
+            addRawRef(body, new IrRefField(frame,
+                '$v' + i32ToString(tps[pi]))));
+        inserted.push(st);
+        body.instBlock[st] = blockId;
+        pi += 1;
+      }
+      let pcConst = rawInst(body, IrOp.const_i32, i32Idx, pcOfBlock[target], -1);
+      inserted.push(pcConst);
+      body.instBlock[pcConst] = blockId;
+      targets[si] = dispatcher;
+      let newArgs = new Array<i32>();
+      newArgs.push(pcConst);
+      argLists[si] = newArgs;
+    }
+    si += 1;
+  }
+
+  // Re-encode the successor records at the end of extra.
+  if (op == IrOp.br) {
+    let idx = body.extra.length;
+    body.extra.push(targets[0]);
+    body.extra.push(argLists[0].length);
+    for (let v in argLists[0]) {
+      body.extra.push(v);
+    }
+    body.a[term] = idx;
+  } else if (op == IrOp.br_if) {
+    let idx = body.extra.length;
+    var ti = 0;
+    while (ti < 2) {
+      body.extra.push(targets[ti]);
+      body.extra.push(argLists[ti].length);
+      for (let v in argLists[ti]) {
+        body.extra.push(v);
+      }
+      ti += 1;
+    }
+    body.b[term] = idx;
+  } else if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail) {
+    let typePrefix = body.extra[body.b[term]];
+    let idx = body.extra.length;
+    body.extra.push(typePrefix);
+    var ti = 0;
+    while (ti < 2) {
+      body.extra.push(targets[ti]);
+      body.extra.push(argLists[ti].length);
+      for (let v in argLists[ti]) {
+        body.extra.push(v);
+      }
+      ti += 1;
+    }
+    body.b[term] = idx;
+  } else {
+    throw new Error('generator split: unhandled terminator during reroute');
+  }
+
+  // Place the inserted spills/consts before the terminator.
+  if (inserted.length > 0) {
+    let rebuilt = new Array<i32>();
+    var k = 0;
+    while (k < block.insts.length - 1) {
+      rebuilt.push(block.insts[k]);
+      k += 1;
+    }
+    for (let inst in inserted) {
+      rebuilt.push(inst);
+    }
+    rebuilt.push(term);
+    replaceContents(block.insts, rebuilt);
+  }
+};

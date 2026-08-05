@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 642100
+// @skip: bootstrap
+// Manual protocol consumption: while (let (true, x) = it.next()),
+// exhausted iterators stay politely done, and two iterators from the
+// same generator are independent.
+import { Iterator } from 'zena:iterator';
+
+let countdown = gen (n: i32): i32 => {
+  var i = n;
+  while (i > 0) {
+    yield i;
+    i -= 1;
+  }
+};
+
+export let main = (): i32 => {
+  var acc = 0;
+  let it = countdown(3);
+  while (let (true, v) = it.next()) {
+    acc = acc * 10 + v * 2;
+  }
+  // Exhausted: every further next() is (false, _).
+  if (let (true, _v) = it.next()) {
+    return -1;
+  }
+  if (let (true, _v2) = it.next()) {
+    return -2;
+  }
+  // Independent second iterator from the same generator.
+  let it2: Iterator<i32> = countdown(1);
+  while (let (true, v) = it2.next()) {
+    acc = acc * 10 + v;
+  }
+  return acc * 100;
+};

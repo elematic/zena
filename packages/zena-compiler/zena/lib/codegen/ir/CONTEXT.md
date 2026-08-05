@@ -7,8 +7,8 @@ a silent fallback.
 
 Design doc: [`docs/design/ir.md`](../../../../../../docs/design/ir.md)
 (section numbers below refer to it). Upstream of this directory,
-[`../reachability/`](../reachability/CONTEXT.md) (RTA) decides *what
-exists* — reached functions, generic instantiations, vtables — and
+[`../reachability/`](../reachability/CONTEXT.md) (RTA) decides _what
+exists_ — reached functions, generic instantiations, vtables — and
 populates the `WasmModule` model; ZIR only compiles what RTA reached.
 
 ## Per-function pipeline
@@ -24,24 +24,25 @@ emitZirFunction(...)        → wasm bytes    (emit.zena)
 
 ## File map
 
-| File | Role |
-| --- | --- |
-| `ir.zena` | Instruction set (`IrOp`), `IrBody` flat-array encoding, operand decoding. `appendValueOperands` and `rewriteValueOperands` are branch-for-branch mirrors — **keep them in sync** when adding ops. |
-| `builder.zena` | `IrBuilder`: append-only construction API used by all lowering code. |
-| `cfg.zena` | CFG + dominator tree (RPO) over an `IrBody`. |
-| `lowering.zena` | `FunctionLowerer` — the core: SSA environment, expression/statement dispatch, calls, member access, constructors. Ends with the exported **recursion seams** (below). |
-| `lowering-context.zena` | `LoweringContext` (`cx`) — the one shared state object every lowering module receives. `cx.host` is the `FunctionLowerer` coordinating the current function. |
-| `control-flow.zena` | if/while/for/for-in/try/match statement shapes, let-conditions. |
-| `patterns.zena` | Pattern test/bind machinery (tuples, records, or-patterns, destructuring). |
-| `operators.zena` | Binary/unary/compound operators, operator-method dispatch. |
-| `equality.zena` | `==`/`hashCode`: case-class synthesizers, erased eq diamond, eq/hash intrinsics. |
-| `templates.zena` | Template literals and tagged templates. |
-| `intrinsics.zena` | One function per `@intrinsic`; `lowerIntrinsic` is a pure router. |
-| `scaffold.zena` | Helpers synthesized without an AST (string creation/hashing, wasi write). |
-| `gvn.zena` | Dominator-scoped value numbering; string keys + id-order walk keep it deterministic. |
-| `verifier.zena` | Structural/type checks on `IrBody`; failures are loud compile errors. |
-| `emit.zena` | SSA destruction: stack scheduling (`#pushValue` discipline), block-param copy coalescing, domtree stackifier, terminator streaming. |
-| `printer.zena` | ZIR-as-WAT-comments dump for debugging and snapshots. |
+| File                    | Role                                                                                                                                                                                                                        |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ir.zena`               | Instruction set (`IrOp`), `IrBody` flat-array encoding, operand decoding. `appendValueOperands` and `rewriteValueOperands` are branch-for-branch mirrors — **keep them in sync** when adding ops.                           |
+| `builder.zena`          | `IrBuilder`: append-only construction API used by all lowering code.                                                                                                                                                        |
+| `cfg.zena`              | CFG + dominator tree (RPO) over an `IrBody`.                                                                                                                                                                                |
+| `lowering.zena`         | `FunctionLowerer` — the core: SSA environment, expression/statement dispatch, calls, member access, constructors. Ends with the exported **recursion seams** (below).                                                       |
+| `lowering-context.zena` | `LoweringContext` (`cx`) — the one shared state object every lowering module receives. `cx.host` is the `FunctionLowerer` coordinating the current function.                                                                |
+| `control-flow.zena`     | if/while/for/for-in/try/match statement shapes, let-conditions.                                                                                                                                                             |
+| `patterns.zena`         | Pattern test/bind machinery (tuples, records, or-patterns, destructuring).                                                                                                                                                  |
+| `operators.zena`        | Binary/unary/compound operators, operator-method dispatch.                                                                                                                                                                  |
+| `equality.zena`         | `==`/`hashCode`: case-class synthesizers, erased eq diamond, eq/hash intrinsics.                                                                                                                                            |
+| `templates.zena`        | Template literals and tagged templates.                                                                                                                                                                                     |
+| `intrinsics.zena`       | One function per `@intrinsic`; `lowerIntrinsic` is a pure router.                                                                                                                                                           |
+| `scaffold.zena`         | Helpers synthesized without an AST (string creation/hashing, wasi write).                                                                                                                                                   |
+| `generators.zena`       | The generator split pass (generators.md §5): presplit-lowers `gen` bodies, synthesizes frame structs + `next()` + `Iterator<T>` vtable globals between RTA and layout, rewrites bodies into dispatcher-loop state machines. |
+| `gvn.zena`              | Dominator-scoped value numbering; string keys + id-order walk keep it deterministic.                                                                                                                                        |
+| `verifier.zena`         | Structural/type checks on `IrBody`; failures are loud compile errors.                                                                                                                                                       |
+| `emit.zena`             | SSA destruction: stack scheduling (`#pushValue` discipline), block-param copy coalescing, domtree stackifier, terminator streaming.                                                                                         |
+| `printer.zena`          | ZIR-as-WAT-comments dump for debugging and snapshots.                                                                                                                                                                       |
 
 ## The import cycle (deliberate)
 
@@ -89,7 +90,7 @@ ZENA_ZIR_STATS=1 npm run build:self-hosted   # self-compile; expect 0 bails
 UPDATE_SNAPSHOTS=1 npm run test:unit         # regenerate zir WAT snapshots
 ```
 
-Snapshot tests fail on *any* emission change — regenerate and eyeball
+Snapshot tests fail on _any_ emission change — regenerate and eyeball
 the diff rather than fighting them. The final gate for backend changes
 is **stage-2 byte parity**: the compiler compiled by itself must
 byte-match the compiler compiled by the bootstrap-built compiler:
@@ -101,7 +102,7 @@ ZENA_GC_RESERVE_MB=1536 ZENA_COMPILER_WASM=zena/out/cli-self.wasm \
 cmp zena/out/cli-self.wasm zena/out/cli-self2.wasm
 ```
 
-Note: compiler-source refactors change the self-compile *input*, so
+Note: compiler-source refactors change the self-compile _input_, so
 self-compile output is not a parity signal for them — byte-compare a
 fixed input program instead.
 
@@ -111,7 +112,7 @@ fixed input program instead.
   second full generator pass — leave off otherwise).
 - Build with `-g` (bootstrap CLI, `npm run zena -- build ... -g`) for a
   name section; then map a trap PC with `wasm-tools print
-  --print-offsets` and read the surrounding WAT against the source.
+--print-offsets` and read the surrounding WAT against the source.
 - Suspected miscompile in the self-compile: add a temporary index-range
   env filter in module-generator's function loop and bisect — a culprit
   function falls out in ~15 iterations.

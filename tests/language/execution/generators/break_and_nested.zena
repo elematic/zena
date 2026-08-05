@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 1175
+// @skip: bootstrap
+// break out of for-in just drops the frame (no disposal protocol), and
+// nested loops with a yield in the inner body exercise the resume
+// dispatch through loop-carried state.
+let pairs = gen (n: i32): i32 => {
+  var i = 1;
+  while (i <= n) {
+    var j = 1;
+    while (j <= i) {
+      yield i * 10 + j;
+      j += 1;
+    }
+    i += 1;
+  }
+};
+
+export let main = (): i32 => {
+  var acc = 0;
+  // 11, 21, 22, 31, ... — stop after three values.
+  var seen = 0;
+  for (let v in pairs(3)) {
+    acc = acc * 100 + v;
+    seen += 1;
+    if (seen == 2) {
+      break;
+    }
+  }
+  // A fresh iterator is unaffected by the abandoned one.
+  for (let v in pairs(2)) {
+    acc += v;
+  }
+  // acc = (11*100 + 21) + (11 + 21 + 22) = 1121 + 54 = 1175
+  return acc;
+};
