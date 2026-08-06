@@ -1,0 +1,138 @@
+/**
+ * Library surface for the self-hosted compiler: compile a source string
+ * to WASM bytes fully in memory — no filesystem in the loop for the
+ * entry or the output. Build with --target host and instantiate from
+ * JS; the host supplies a `compiler.read_file` import for every OTHER
+ * file the compilation pulls in (the stdlib, files reached by relative
+ * imports), exactly like the language service's lsp.zena.
+ *
+ * Protocol: cross the JS boundary with the runtime's string helpers
+ * ($stringCreate/$stringSetByte to build arguments, $stringGetByte to
+ * read getErrors()); call compileSource(...), then on 0 read the bytes
+ * back through getOutputLength()/getOutputByte().
+ */
+import { HashMap } from 'zena:map';
+import { Array } from 'zena:array';
+import { StringBuilder } from 'zena:string-builder';
+import { i32ToString } from 'zena:string-convert';
+import { CompilerHost } from '../lib/library-loader.zena';
+import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
+import { DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+
+/**
+ * Read a file from the host by absolute path. The JS side provides
+ * this import at instantiation time.
+ */
+@external("compiler", "read_file")
+declare function __read_file(path: String, len: i32): String;
+
+/**
+ * CompilerHost that serves the entry module from memory and reads
+ * everything else (stdlib, relative imports) through the JS host.
+ */
+class ApiHost implements CompilerHost {
+  #stdlibRoot: String;
+  var entryPath: String = "";
+  var entrySource: String = "";
+
+  new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
+
+  readFile(path: String): String {
+    if (path == this.entryPath) {
+      return this.entrySource;
+    }
+    if (path.startsWith("zena:")) {
+      let fsPath = this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path);
+      return __read_file(fsPath, fsPath.length);
+    }
+    return __read_file(path, path.length);
+  }
+}
+
+var lastOutput: ByteArray | null = null;
+var lastErrors = "";
+
+/**
+ * Compile `source` as the module at `entryPath` (relative imports
+ * resolve against it and are read through the host's read_file).
+ * Returns 0 on success, otherwise the number of errors — their
+ * messages are available from getErrors().
+ */
+export let compileSource = (
+  source: String,
+  entryPath: String,
+  stdlibRoot: String,
+  target: String
+): i32 => {
+  lastOutput = null;
+  lastErrors = "";
+
+  let host = new ApiHost(stdlibRoot);
+  host.entryPath = entryPath;
+  host.entrySource = source;
+  let packages = new HashMap<String, PackageConfig>();
+  let options = new CompilerOptions(target, stdlibRoot, packages);
+  let compiler = createCompiler(host, options);
+
+  let compResult = compiler.compile(entryPath);
+  let checkResults = checkCompilation(compResult, null, false);
+
+  let sb = new StringBuilder();
+  var errorCount = 0;
+  for (let diag in checkResults.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      if (diag.location != null) {
+        let loc = diag.location as SourceSpan;
+        sb.append(loc.file + ":" + i32ToString(loc.line + 1) + ":" +
+            i32ToString(loc.column + 1) + " - Error: " + diag.message + "\n");
+      } else {
+        sb.append("Error: " + diag.message + "\n");
+      }
+      errorCount += 1;
+    }
+  }
+  if (errorCount > 0) {
+    lastErrors = sb.toString();
+    return errorCount;
+  }
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    let res = checkResults.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+  let program = new Program(units, entryUnit);
+  let generator = new BinaryGenerator(target, false);
+  lastOutput = generator.generate(program).toByteArray();
+  return 0;
+};
+
+/** Diagnostics text from the last failed compileSource call. */
+export let getErrors = (): String => {
+  return lastErrors;
+};
+
+/** Output size of the last successful compile, or -1 if none. */
+export let getOutputLength = (): i32 => {
+  let o = lastOutput;
+  if (o == null) {
+    return 0 - 1;
+  }
+  return (o as ByteArray).length;
+};
+
+/** One output byte from the last successful compile. */
+export let getOutputByte = (index: i32): i32 => {
+  return (lastOutput as ByteArray)[index];
+};
