@@ -1,6 +1,6 @@
 # Portable Syntax Tests
 
-This directory contains portable syntax tests for Zena. These tests verify parser correctness and AST structure, and are shared between the TypeScript bootstrap compiler and the Zena self-hosted parser.
+This directory contains portable syntax tests for Zena. These tests verify parser correctness and AST structure, and are run by the self-hosted parser.
 
 ## Conventions
 
@@ -20,7 +20,7 @@ The portable test runner lives at `packages/compiler/src/test/portable-runner.ts
 When a `.zena` file has no corresponding `.ast.json` file, the runner parses the source, strips location info, and writes the cleaned AST as the snapshot automatically. The workflow is:
 
 1. Create only the `.zena` file.
-2. Run `npm test -w @zena-lang/compiler` (Wireit runs the portable suite).
+2. Run `npm test -w @zena-lang/zena-compiler` (Wireit runs the portable suite).
 3. Verify the auto-generated `.ast.json` looks correct.
 4. Commit both files.
 

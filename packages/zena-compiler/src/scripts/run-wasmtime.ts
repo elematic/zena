@@ -31,8 +31,7 @@ if (process.env.HOST_PATH) {
 // Find all .wasm files
 const pattern = join(outDir, '**/*.wasm');
 const allWasmFiles = await glob(pattern);
-const selfHosted = process.env.SELF_HOSTED === 'true';
-const testSubdir = selfHosted ? 'test-self' : 'test';
+const testSubdir = 'test-self';
 
 let wasmFiles = allWasmFiles.filter(
   (f) =>

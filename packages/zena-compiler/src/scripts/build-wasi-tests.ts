@@ -17,11 +17,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const zenaDir = join(pkgDir, 'zena');
 const outDir = join(zenaDir, 'out');
-const cliPath = join(pkgDir, '..', 'cli', 'lib', 'cli.js');
 const repoRoot = join(pkgDir, '..', '..');
 
-const selfHosted = process.env.SELF_HOSTED === 'true';
-const testSubdir = selfHosted ? 'test-self' : 'test';
+const testSubdir = 'test-self';
 
 // Generate a single monolithic test file
 const generateWrapper = (testFileNames: string[]): string => {
@@ -49,9 +47,7 @@ ${pushes}
 // Build all test files
 const testPattern = 'test/*_test.zena';
 
-console.log(
-  `Building zena-compiler tests (${selfHosted ? 'self-hosted' : 'bootstrap'})...`,
-);
+console.log('Building zena-compiler tests...');
 console.log('');
 
 const fullPattern = join(zenaDir, testPattern);
@@ -72,18 +68,12 @@ if (!existsSync(wasmDir)) {
 writeFileSync(wrapperPath, generateWrapper(testFileNames));
 
 const compileCommand = (src: string, dest: string): string => {
-  if (selfHosted) {
-    const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
-    return `"${zenaCli}" build "${src}" -o "${dest}"`;
-  } else {
-    return `node --stack-size=4096 "${cliPath}" build "${src}" --target wasi -g -l -o "${dest}" --warn-unnecessary-casts`;
-  }
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+  return `"${zenaCli}" build "${src}" -o "${dest}"`;
 };
 
 const runEnv = {...process.env};
-if (selfHosted) {
-  runEnv.ZENA_COMPILER_WASM = 'packages/zena-compiler/zena/out/cli-self.wasm';
-}
+runEnv.ZENA_COMPILER_WASM = 'packages/zena-compiler/zena/out/cli-self.wasm';
 
 let failed = false;
 

@@ -1,6 +1,6 @@
 # Portable Semantics Tests
 
-This directory contains portable semantics (type checker) tests for Zena. These tests are `.zena` files with type-checking assertions, shared between the TypeScript bootstrap compiler and the Zena self-hosted checker.
+This directory contains portable semantics (type checker) tests for Zena. These tests are `.zena` files with type-checking assertions, run by the self-hosted checker.
 
 ## Conventions
 
@@ -11,7 +11,7 @@ This directory contains portable semantics (type checker) tests for Zena. These 
 - **Error tests** use `// @error: pattern` on the line that should produce an error.
 - **Warning tests** use `// @warning: pattern` on the line that should produce a warning.
 - **Positive tests** have no `// @error:` — they must produce zero errors.
-- Error patterns are **regex** in the bootstrap runner and **substring** in the self-hosted runner. Use simple substrings that work for both.
+- Error patterns are matched as **substrings** by the runner. Keep them simple.
 
 ### Placement Rules
 
@@ -55,6 +55,5 @@ The runner:
 ## Porting & Testing Workflow
 
 1. Create the `.zena` file in the appropriate `tests/language/semantics/` directory.
-2. Run `npm test -w @zena-lang/compiler` to verify it passes the bootstrap checker.
-3. Run `npm test -w @zena-lang/zena-compiler` to verify it passes the self-hosted checker.
-4. If the self-hosted checker fails, either fix the checker or mark the test as known-failing (skip list in `portable_test.zena`).
+2. Run `npm test -w @zena-lang/zena-compiler` to verify it passes the checker.
+3. If the checker fails, either fix the checker or mark the test as known-failing (skip list in `portable_test.zena`).
