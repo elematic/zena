@@ -14,10 +14,12 @@ it with esbuild from an Eleventy hook, so `npm run build` here just runs `tsc
 (`BehaviorElement`). The site's stylesheet is a port of the VitePress default
 theme, and a shadow root would cut these elements off from it for no benefit.
 
-**Progressive enhancement.** Eleventy renders the sidebar, the outline, the nav,
-and the code groups as complete HTML — including which sidebar group is
-expanded and which code-group tab is active. These elements make that markup
-interactive; without JavaScript the site is still fully navigable.
+**Progressive enhancement.** Eleventy renders the sidebar, the outline, and the
+nav as complete HTML, including which sidebar group is expanded. These elements
+make that markup interactive; without JavaScript the site is still fully
+navigable. Code groups are the one place a control is built client-side — the
+tab strip is generated from the panel captions, and until it exists CSS shows
+the first panel with its caption as a heading.
 
 ## Elements
 
@@ -30,7 +32,7 @@ interactive; without JavaScript the site is still fully navigable.
 | `<zena-search>`        | Search button and modal over the prebuilt `/search-index.json`                                 |
 | `<zena-appearance>`    | Light/dark switch, persisted to `localStorage`                                                 |
 | `<zena-code-copy>`     | Delegated copy-to-clipboard for every `button.copy` beneath it                                 |
-| `<zena-code-group>`    | Tabbed code blocks from `::: code-group`                                                       |
+| `<zena-code-group>`    | Tabbed code blocks; builds the tab strip from each `<figure>`'s `<figcaption>`                 |
 
 `<zena-playground>` is not defined here. It lives in
 [`@zena-lang/playground`](../playground), which this package imports for its

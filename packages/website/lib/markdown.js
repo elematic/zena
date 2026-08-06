@@ -95,84 +95,23 @@ export const configureMarkdown = (md, highlighter) => {
     },
   });
 
-  // ::: code-group — consecutive fences become tabs. Labels come from the
-  // fence info strings: ```zena [main.zena]
-  md.use(container, 'code-group', {
-    render(tokens, idx) {
-      if (tokens[idx].nesting !== 1) return '</div></zena-code-group>\n';
-
-      const labels = [];
-      for (let i = idx + 1; i < tokens.length; i++) {
-        if (tokens[i].type === 'container_code-group_close') break;
-        if (tokens[i].type !== 'fence') continue;
-        const {lang, label} = parseFenceInfo(tokens[i].info);
-        labels.push(label ?? lang);
-      }
-
-      const tabs = labels
-        .map(
-          (label, i) =>
-            `<button role="tab" aria-selected="${i === 0}">${escapeHtml(label)}</button>`,
-        )
-        .join('');
-
-      return (
-        `<zena-code-group class="code-group">` +
-        `<div class="tabs" role="tablist">${tabs}</div>` +
-        `<div class="blocks">`
-      );
-    },
-  });
-
-  // Hide every code-group tab panel but the first, so the group degrades to a
-  // single readable block without JS.
+  // Tabbed code groups have no markdown syntax of their own: author them as
+  // <zena-code-group> wrapping one <figure> per tab, each with a <figcaption>
+  // for its label and an ordinary fence for its body. Leave a blank line
+  // around the fences so markdown-it closes the HTML block and parses them.
+  // See zena-code-group.ts, which builds the tab strip from the captions.
   const defaultFence = md.renderer.rules.fence;
-  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  md.renderer.rules.fence = (tokens, idx) => {
     const {lang, label} = parseFenceInfo(tokens[idx].info);
-    const html = renderCodeBlock(
+    return renderCodeBlock(
       highlighter,
       tokens[idx].content,
       lang,
       label ?? undefined,
     );
-
-    if (env?.codeGroupDepth) {
-      const hidden = env.codeGroupSeen++ > 0 ? ' hidden' : '';
-      return html.replace(
-        '<div class="language-',
-        `<div${hidden} class="language-`,
-      );
-    }
-    return html;
   };
   // Keep a reference so the rule can be restored if a plugin wraps it later.
   md.renderer.rules.fence.defaultFence = defaultFence;
-
-  // Track code-group nesting for the fence rule above.
-  const openCodeGroup = md.renderer.rules['container_code-group_open'];
-  md.renderer.rules['container_code-group_open'] = (
-    tokens,
-    idx,
-    options,
-    env,
-    self,
-  ) => {
-    env.codeGroupDepth = (env.codeGroupDepth ?? 0) + 1;
-    env.codeGroupSeen = 0;
-    return openCodeGroup(tokens, idx, options, env, self);
-  };
-
-  const closeCodeGroup = md.renderer.rules['container_code-group_close'];
-  md.renderer.rules['container_code-group_close'] = (
-    tokens,
-    idx,
-    options,
-    env,
-    self,
-  ) => {
-    env.codeGroupDepth = Math.max(0, (env.codeGroupDepth ?? 1) - 1);
-    return closeCodeGroup(tokens, idx, options, env, self);
-  };
 
   // Mark off-site links so the doc CSS can add the external-link icon.
   const defaultLinkOpen =

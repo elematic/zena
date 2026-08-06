@@ -78,20 +78,30 @@ zena build main.zena -o main.wasm
 
 Pick the target that matches where the module will run:
 
-::: code-group
+<zena-code-group class="code-group">
 
-```bash [host]
+<figure>
+<figcaption>host</figcaption>
+
+```bash
 # Core Wasm GC with console imports, for @zena-lang/runtime and the browser
 zena build main.zena -o main.wasm --target host
 ```
 
-```bash [wasi]
+</figure>
+
+<figure>
+<figcaption>wasi</figcaption>
+
+```bash
 # Core Wasm GC with WASI imports, for wasmtime and jco
 zena build main.zena -o main.wasm --target wasi
 wasmtime main.wasm
 ```
 
-:::
+</figure>
+
+</zena-code-group>
 
 Type-check without emitting anything — this is the fast inner loop:
 

@@ -290,12 +290,59 @@
 }
 
 /**
- * Code groups (::: code-group)
+ * Code groups (<zena-code-group>)
+ *
+ * One <figure> per tab; the tab strip is built by the element from the
+ * captions. Layout is grid rather than flow so the panels can share a cell —
+ * they are stacked on top of each other and all but one is `hidden`, which
+ * keeps the group from resizing as you move between tabs.
  * -------------------------------------------------------------------------- */
 
+.code-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.code-group > figure {
+  grid-row: 2;
+  grid-column: 1;
+  margin: 0;
+}
+
+.code-group > figure[hidden] {
+  display: none;
+}
+
+/*
+ * Before the element upgrades (and forever, without JS) there is no tab strip,
+ * so the group shows its first entry with the caption acting as the label.
+ */
+.code-group:not(:defined) > figure ~ figure {
+  display: none;
+}
+
+.code-group:defined figcaption {
+  display: none;
+}
+
+.code-group:not(:defined) > figure > figcaption {
+  padding: 8px 12px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-code-tab-text-color);
+}
+
+/*
+ * `flex-wrap` rather than VitePress's horizontal scroll: a long group would
+ * otherwise hide most of its tabs behind a gesture. Groups with two or three
+ * tabs fit on one line either way, so this changes nothing for them.
+ */
 .code-group .tabs {
+  grid-row: 1;
+  grid-column: 1;
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   margin-right: -24px;
   margin-left: -24px;
   padding: 0 12px;
@@ -333,14 +380,80 @@
   border-bottom-color: var(--vp-code-tab-active-bar-color);
 }
 
-.code-group .blocks > div[class*='language-'] {
+.code-group > figure > div[class*='language-'] {
   border-top-left-radius: 0;
   border-top-right-radius: 0;
   margin-top: 0 !important;
 }
 
-.code-group .blocks > div[hidden] {
-  display: none;
+/*
+ * `class="code-group vertical"` — tab list down the left, code on the right.
+ *
+ * Only above 720px: narrower than that the two columns would leave the code
+ * too cramped to read, so it inherits the horizontal layout above. Everything
+ * here is unsetting a rule from that layout, which is why there is so much of
+ * it — the horizontal tab strip is a full-bleed bar and the vertical one is a
+ * list of standalone buttons.
+ */
+@media (min-width: 720px) {
+  .code-group.vertical {
+    grid-template-columns: minmax(9rem, 12rem) minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+  }
+
+  /* Side by side rather than stacked: the rail and the panels share row 1. */
+  .code-group.vertical .tabs {
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  .code-group.vertical > figure {
+    grid-row: 1;
+    grid-column: 2;
+  }
+
+  .code-group.vertical .tabs {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+    background-color: transparent;
+    box-shadow: none;
+    overflow: visible;
+  }
+
+  .code-group.vertical .tabs button {
+    border: 1px solid var(--vp-c-divider);
+    border-radius: 8px;
+    padding: 8px 12px;
+    line-height: 1.4;
+    text-align: left;
+    white-space: normal;
+    transition:
+      color 0.25s,
+      border-color 0.25s,
+      background-color 0.25s;
+  }
+
+  .code-group.vertical .tabs button:hover {
+    border-color: var(--vp-c-brand-1);
+  }
+
+  .code-group.vertical .tabs button[aria-selected='true'] {
+    border-color: var(--vp-c-brand-1);
+    background-color: var(--vp-c-brand-soft);
+    color: var(--vp-c-brand-1);
+    font-weight: 600;
+  }
+
+  /* The blocks no longer butt up against a tab strip, so square corners and
+     the margin reset that produced them both go. */
+  .code-group.vertical > figure > div[class*='language-'] {
+    border-radius: 8px;
+  }
 }
 
 /**

@@ -171,9 +171,28 @@ Beyond CommonMark, pages can use:
 
 - `::: tip` / `note` / `info` / `important` / `warning` / `danger` — callouts
 - `::: details Summary` — a collapsed block
-- `::: code-group` — consecutive fences become tabs; label them with
-  ` ```zena [main.zena] `
 - ` ```zena ` — highlighted with the same grammar the VS Code extension uses
+- ` ```zena [main.zena] ` — the label shows in the corner of the block
+
+Tabbed code groups have no syntax of their own; write the markup, with ordinary
+fences inside. Add `vertical` to put the tabs down the left rather than across
+the top. The blank lines are load-bearing — they end each HTML block so
+markdown-it parses the fence between them:
+
+````md
+<zena-code-group class="code-group">
+
+<figure>
+<figcaption>host</figcaption>
+
+```bash
+zena build main.zena --target host
+```
+
+</figure>
+
+</zena-code-group>
+````
 
 ## Styling
 
