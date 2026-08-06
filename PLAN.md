@@ -5,7 +5,7 @@ This document tracks completed work and planned features. For project instructio
 ## Completed
 
 - **Core Infrastructure**: Project setup with TypeScript compiler, CLI, and portable test suites.
-- **Language Syntax & Semantics**: Arrow functions, lexical blocks, and control flow.
+- **Language Syntax & Semantics**: Arrow functions, top-level `function` declarations (hoisted, never closures), lexical blocks, and control flow.
 - **WASM-GC Native Code Generation**: Implemented natively targeting WebAssembly GC.
 - **Data Structures & Types**:
   - Primitives (`i32`, `i64`, `u32`, `f32`, `f64`, `boolean`, `String`).

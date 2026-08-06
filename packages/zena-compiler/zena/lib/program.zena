@@ -1,4 +1,4 @@
-import { Module, VariableDeclaration, MixinDeclaration, DeclareFunction, IdentifierPattern, NodeId } from './ast.zena';
+import { Module, VariableDeclaration, FunctionDeclaration, MixinDeclaration, DeclareFunction, IdentifierPattern, NodeId } from './ast.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { SemanticModel, ProgramInterface, SemanticModelProgramUnit } from './semantic-model.zena';
@@ -123,45 +123,56 @@ export final class Program implements ProgramInterface {
           case VariableDeclaration as vd: {
             match (vd.pattern) {
               case IdentifierPattern {name} as pat: {
-            let sym = u.model.resolveDeclaration(pat);
-            if (sym != null) {
-              let key = u.ast.path + "::" + name;
-              var arr = if (let (true, a) = this.exportedSymbols.get(key)) {
-                a
-              } else {
-                let newArr = new Array<Symbol>();
-                this.exportedSymbols[key] = newArr;
-                newArr
-              };
-              arr.push(sym as Symbol);
-
-              var lastSlash2 = -1;
-              var idx2 = 0;
-              while (idx2 < u.ast.path.length) {
-                if (u.ast.path.getByteAt(idx2) == 47) { lastSlash2 = idx2; }
-                idx2 += 1;
-              }
-              let fileName2 = if (lastSlash2 >= 0) u.ast.path.sliceBytes(lastSlash2 + 1, u.ast.path.length) else u.ast.path;
-              if (fileName2.endsWith(".zena")) {
-                let stdName2 = fileName2.sliceBytes(0, fileName2.length - 5);
-                let stdKey = "zena:" + stdName2 + "::" + name;
-                var stdArr = if (let (true, sa) = this.exportedSymbols.get(stdKey)) {
-                  sa
-                } else {
-                  let newArr2 = new Array<Symbol>();
-                  this.exportedSymbols[stdKey] = newArr2;
-                  newArr2
-                };
-                stdArr.push(sym as Symbol);
-              }
-            }
+                this.#recordValueBinding(u, pat, name);
               }
               case _: {}
             }
           }
+          case FunctionDeclaration {name as namePat}: {
+            this.#recordValueBinding(u, namePat, namePat.name);
+          }
           case _: {}
         }
       }
+    }
+  }
+
+  /**
+   * Record a module-level value binding (a `let`/`var` name or a
+   * `function` declaration's name) under both its file path key and, for
+   * stdlib modules, its `zena:<name>` key.
+   */
+  #recordValueBinding(u: CompilationUnit, pat: IdentifierPattern, name: String): void {
+    let sym = u.model.resolveDeclaration(pat);
+    if (sym == null) { return; }
+    let key = u.ast.path + "::" + name;
+    var arr = if (let (true, a) = this.exportedSymbols.get(key)) {
+      a
+    } else {
+      let newArr = new Array<Symbol>();
+      this.exportedSymbols[key] = newArr;
+      newArr
+    };
+    arr.push(sym as Symbol);
+
+    var lastSlash2 = -1;
+    var idx2 = 0;
+    while (idx2 < u.ast.path.length) {
+      if (u.ast.path.getByteAt(idx2) == 47) { lastSlash2 = idx2; }
+      idx2 += 1;
+    }
+    let fileName2 = if (lastSlash2 >= 0) u.ast.path.sliceBytes(lastSlash2 + 1, u.ast.path.length) else u.ast.path;
+    if (fileName2.endsWith(".zena")) {
+      let stdName2 = fileName2.sliceBytes(0, fileName2.length - 5);
+      let stdKey = "zena:" + stdName2 + "::" + name;
+      var stdArr = if (let (true, sa) = this.exportedSymbols.get(stdKey)) {
+        sa
+      } else {
+        let newArr2 = new Array<Symbol>();
+        this.exportedSymbols[stdKey] = newArr2;
+        newArr2
+      };
+      stdArr.push(sym as Symbol);
     }
   }
 

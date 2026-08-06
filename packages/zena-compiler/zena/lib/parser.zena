@@ -26,6 +26,7 @@ import {
   UnaryExpression,
   AssignmentExpression,
   VariableDeclaration,
+  FunctionDeclaration,
   ExpressionStatement,
   BlockStatement,
   ReturnStatement,
@@ -141,7 +142,7 @@ export final class Parser {
     }
     
     while (!this.#isAtEnd()) {
-      let stmt = this.#parseStatement();
+      let stmt = this.#parseStatement(true);
       body.push(stmt);
     }
     
@@ -324,7 +325,13 @@ export final class Parser {
   // Statement Parsing
   // ==========================================================================
   
-  #parseStatement(): Statement {
+  /**
+   * `topLevel` is true only for statements directly in a module body.
+   * `function` declarations are top-level-only, which is what makes their
+   * "never a closure" guarantee structural: at module scope the only names
+   * in scope are globals and imports.
+   */
+  #parseStatement(topLevel: boolean = false): Statement {
     let startToken = this.#peek();
     
     // Decorated statement: @decorator ... declare function ...
@@ -378,6 +385,16 @@ export final class Parser {
       return this.#parseDeclareFunction(new Array<Decorator>(0), exported, startToken);
     }
     
+    // Function declarations: `function f() {}`, `gen function f() {}`,
+    // `async function f() {}`. `gen`/`async` alone still start an arrow
+    // function expression, so the lookahead for `function` is what
+    // distinguishes them.
+    if (this.#check(TokenType.Function) ||
+        ((this.#check(TokenType.Gen) || this.#check(TokenType.Async)) &&
+         this.#peek2().kind == TokenType.Function)) {
+      return this.#parseFunctionDeclaration(exported, topLevel, startToken);
+    }
+
     // Variable declarations
     if (this.#match(TokenType.Let)) {
       return this.#parseVariableDeclaration('let', exported, startToken);
@@ -489,7 +506,59 @@ export final class Parser {
     
     return new VariableDeclaration(kind, pattern, typeAnnotation, init, exported, this.#makeLocation(startToken));
   }
-  
+
+  /**
+   * `function name<T>(params): Ret { ... }`, optionally prefixed by `gen`
+   * or `async`. The body must be a block: a `function` reads as a
+   * declaration, and an expression body would just be a longer spelling of
+   * `let name = (params) => expr`.
+   */
+  #parseFunctionDeclaration(exported: boolean, topLevel: boolean, startToken: Token): FunctionDeclaration {
+    var isGenerator = false;
+    var isAsync = false;
+    if (this.#match(TokenType.Gen)) {
+      isGenerator = true;
+    } else if (this.#match(TokenType.Async)) {
+      isAsync = true;
+      if (this.#check(TokenType.Gen)) {
+        throw this.#error('Async generators are not yet supported');
+      }
+    }
+    this.#consume(TokenType.Function, "Expected 'function'");
+
+    if (!topLevel) {
+      throw this.#error("'function' declarations may only appear at the top level of a module. Use an arrow function, e.g. `let f = () => ...`, inside a body.");
+    }
+
+    let nameToken = this.#peek();
+    let nameIdent = this.#parseIdentifier();
+    let name = new IdentifierPattern(nameIdent.name, this.#makeLocation(nameToken));
+
+    // Type parameters: function f<T>(...)
+    var typeParameters: Array<TypeParameter> | null = null;
+    if (this.#check(TokenType.Less)) {
+      this.#advance();
+      typeParameters = this.#parseTypeParameterList();
+    }
+
+    this.#consume(TokenType.LParen, "Expected '(' after function name");
+    let params = this.#parseParameters();
+    this.#consume(TokenType.RParen, "Expected ')' after parameters");
+
+    var returnType: TypeAnnotation | null = null;
+    if (this.#match(TokenType.Colon)) {
+      returnType = this.#parseTypeAnnotation();
+    }
+
+    let braceToken = this.#consume(TokenType.LBrace, "Expected '{' before function body");
+    let body = this.#parseBlockStatement(braceToken);
+
+    let func = new FunctionExpression(
+      typeParameters, params, returnType, body, isGenerator, isAsync,
+      this.#makeLocation(startToken));
+    return new FunctionDeclaration(name, func, exported, this.#makeLocation(startToken));
+  }
+
   #parseReturnStatement(startToken: Token): ReturnStatement {
     var argument: Expression | null = null;
     

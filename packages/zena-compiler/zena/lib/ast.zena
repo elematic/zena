@@ -225,6 +225,26 @@ export sealed class Statement extends Node {
     init: Expression,
     exported: boolean,
     loc?: SourceLocation)
+  /**
+   * A top-level `function` declaration.
+   *
+   * `name` is an `IdentifierPattern`, not an `Identifier`, so the binding
+   * site has the same shape as `let f = () => ...`: the scope builder
+   * records the symbol on the pattern, and everything downstream that
+   * reads `Symbol.declaration` (documented to be an `IdentifierPattern`
+   * for function bindings) keeps working unchanged.
+   *
+   * `func` holds the signature and body, and is the same
+   * `FunctionExpression` an arrow produces, so the checker, reachability
+   * and lowering paths are shared. What differs is a static guarantee:
+   * a `function` never closes over anything, so it needs no context
+   * struct and no closure wrapper. See language-reference.md §4.
+   */
+  case FunctionDeclaration(
+    name: IdentifierPattern,
+    func: FunctionExpression,
+    exported: boolean,
+    loc?: SourceLocation)
   case ExpressionStatement(expression: Expression, loc?: SourceLocation)
   case BlockStatement(body: Array<Statement>, loc?: SourceLocation)
   case ReturnStatement(argument: Expression | null, loc?: SourceLocation)

@@ -1,6 +1,6 @@
 import { 
   Node, Expression, ClassDeclaration, NodeId, ImportSpecifier, FunctionExpression, MethodDefinition,
-  DeclareFunction, VariableDeclaration, IdentifierPattern
+  DeclareFunction, VariableDeclaration, FunctionDeclaration, IdentifierPattern
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, Symbol } from '../scope/symbol.zena';
@@ -757,6 +757,16 @@ export final class WasmModule {
                 this.#stdlibFuncCache[key] = f;
                 return f;
               }
+            }
+          }
+        }
+        case FunctionDeclaration as fd: {
+          if (fd.name.name == exportName) {
+            let sym = unit.model.resolve(fd.name);
+            if (sym != null && this.functionMap.has((sym as Symbol).id)) {
+              let f = this.functionMap[(sym as Symbol).id];
+              this.#stdlibFuncCache[key] = f;
+              return f;
             }
           }
         }

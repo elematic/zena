@@ -65,7 +65,7 @@ import {
   ThrowExpression, TryExpression, AwaitExpression, RangeExpression, PipelineExpression,
   PipePlaceholder,
   // Statements
-  Statement, VariableDeclaration, ExpressionStatement, BlockStatement,
+  Statement, VariableDeclaration, FunctionDeclaration, ExpressionStatement, BlockStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
@@ -1848,6 +1848,12 @@ let prescanPendingFunctions = (ctx: CheckerContext, body: Array<Statement>): voi
           case _: {}
         }
       }
+      case FunctionDeclaration {name as namePat, func}: {
+        let info = ctx.model.resolveDeclaration(namePat as Node);
+        if (info != null) {
+          ctx.registerPendingFunction((info as Symbol).id, func as Node);
+        }
+      }
       case _: {}
     }
     fi += 1;
@@ -1949,6 +1955,18 @@ export let checkModule = (
       case SymbolDeclaration {}: {}
       case ExportAllDeclaration {}: {}
       case ExportFromDeclaration {}: {}
+      case FunctionDeclaration as fd: {
+        let sym = ctx.model.resolveDeclaration(fd.name as Node);
+        if (sym != null) {
+          let symId = (sym as Symbol).id;
+          ctx.model.addDeclaredGlobal(symId, fd);
+          ctx.enterSymbolReferrer(symId);
+          checkStatement(ctx, fd);
+          ctx.exitSymbolReferrer(symId);
+        } else {
+          checkStatement(ctx, fd);
+        }
+      }
       // Everything else: variable declarations, expression statements, etc.
       case VariableDeclaration as vd: {
         let syms = new Array<Symbol>();
@@ -4736,6 +4754,12 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
   match (stmt) {
     case VariableDeclaration {kind, pattern, typeAnnotation, init, loc}: {
       checkVariableDeclaration(ctx, kind, pattern, typeAnnotation, init, loc);
+    }
+    case FunctionDeclaration {name as namePat, func}: {
+      // A `function` is a `let` binding of a function value that happens to
+      // be spelled with its name in front, so it checks the same way.
+      let funcType = checkExpression(ctx, func as Expression, null);
+      bindPattern(ctx, namePat as Pattern, funcType);
     }
     case ExpressionStatement {expression}: {
       checkExpression(ctx, expression, new VoidType());
@@ -12057,7 +12081,8 @@ let checkFunctionExpression = (
   var isClosure = !(ctx.referrerStack.length == 1 && ctx.referrerStack[0] == "sym");
   if (!isClosure) {
     let parent = ctx.model.getParent(fe);
-    if (parent == null || !(parent is VariableDeclaration)) {
+    if (parent == null ||
+        !(parent is VariableDeclaration || parent is FunctionDeclaration)) {
       isClosure = true;
     }
   }

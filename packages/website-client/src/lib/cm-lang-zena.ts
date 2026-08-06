@@ -6,6 +6,7 @@ import {CodeMirrorExtensionElement} from 'codemirror-elements/lib/cm-extension-e
 const keywords = new Set([
   'let',
   'var',
+  'function',
   'class',
   'sealed',
   'case',

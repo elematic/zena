@@ -21,11 +21,16 @@ sound type system with no implicit coercion.
 let x = 42;
 var y = 'hello';
 
-// Functions: arrow syntax only
+// Functions: arrow syntax
 let add = (a: i32, b: i32) => a + b;
 let greet = (name: String) => {
   return 'Hello, ' + name;
 };
+
+// ...or a top-level `function` declaration, which is never a closure
+function addOne(a: i32): i32 {
+  return a + 1;
+}
 
 // Classes: fields immutable by default, Dart-style constructors
 class Point {
@@ -76,7 +81,8 @@ export let main = () => 0;
 
 Key things that differ from TypeScript:
 
-- **No `function` keyword** — arrow functions only.
+- **`function` is for top-level declarations only** — everything else is an
+  arrow function. A `function` can never be a closure; an arrow can.
 - **No `const`** — use `let` (immutable) and `var` (mutable).
 - **Class fields are immutable by default** — use `var` to make mutable.
 - **Dart-style constructors** — initializer lists (`: x = x, y = y`), `this.`

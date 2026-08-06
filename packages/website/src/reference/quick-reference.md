@@ -214,9 +214,10 @@ Helper functions `some(value)` and `none()` are also available for creating
 
 ## Functions
 
-All functions in Zena use arrow syntax—there is no `function` keyword. Functions
-are first-class values that can be assigned to variables, passed as arguments,
-and returned from other functions.
+Functions are first-class values that can be assigned to variables, passed as
+arguments, and returned from other functions. They come in two forms: arrow
+functions, which are expressions, and `function` declarations, which are
+top-level statements.
 
 ```zena
 // Expression body
@@ -230,6 +231,44 @@ let greet = (name: String): String => {
 // No parameters
 let getAnswer = () => 42;
 ```
+
+### Function Declarations
+
+A `function` declaration names a function at the top level of a module. It is
+hoisted, so forward references and mutual recursion just work.
+
+```zena
+export function main(): i32 {
+  return isEven(10);   // declared below
+}
+
+function isEven(n: i32): i32 {
+  if (n == 0) { return 1; }
+  return isOdd(n - 1);
+}
+
+function isOdd(n: i32): i32 {
+  if (n == 0) { return 0; }
+  return isEven(n - 1);
+}
+```
+
+**The difference from an arrow function is closures: a `function` can never be
+one.** It may only appear at the top level, so its body sees only its own
+parameters and locals plus module-level bindings — never a variable from an
+enclosing scope. When you need to capture, use an arrow function.
+
+```zena
+let makeAdder = (x: i32) => (y: i32) => x + y;   // arrows capture
+
+function bad(y: i32): i32 {
+  return y + x;   // there is no enclosing `x` to capture
+}
+```
+
+`gen` and `async` work the same as on arrows: `gen function items(): Iterator<i32>`,
+`async function load(): Future<i32>`. Type parameters go after the name:
+`function identity<T>(x: T): T`.
 
 ### Generic Functions
 

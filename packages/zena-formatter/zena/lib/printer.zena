@@ -21,7 +21,7 @@ import {
   SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
   TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression,
   // Statements
-  Statement, VariableDeclaration, ExpressionStatement, BlockStatement,
+  Statement, VariableDeclaration, FunctionDeclaration, ExpressionStatement, BlockStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
@@ -242,6 +242,7 @@ let needsBlankLineBetween = (a: Statement, b: Statement): boolean => {
         case _: {}
       }
     }
+    case FunctionDeclaration {}: { return true; }
     case _: {}
   }
   match (b) {
@@ -255,6 +256,7 @@ let needsBlankLineBetween = (a: Statement, b: Statement): boolean => {
         case _: {}
       }
     }
+    case FunctionDeclaration {}: { return true; }
     case _: {}
   }
   return false;
@@ -271,6 +273,7 @@ let printStatement = (stmt: Statement): Doc => {
 
 let printStatementInner = (stmt: Statement): Doc => match (stmt) {
   case VariableDeclaration {}: printVariableDeclaration(stmt as VariableDeclaration)
+  case FunctionDeclaration {}: printFunctionDeclaration(stmt as FunctionDeclaration)
   case ExpressionStatement {expression}: concat(docs2(printExpression(expression), text(';')))
   case BlockStatement {}: printBlockStatement(stmt as BlockStatement)
   case ReturnStatement {}: printReturnStatement(stmt as ReturnStatement)
@@ -319,6 +322,34 @@ let printVariableDeclaration = (decl: VariableDeclaration): Doc => {
   parts.push(text(' = '));
   parts.push(printExpression(decl.init));
   parts.push(text(';'));
+  return group(concat(parts));
+};
+
+// ============================================================================
+// Function Declaration
+// ============================================================================
+
+let printFunctionDeclaration = (decl: FunctionDeclaration): Doc => {
+  let fn = decl.func;
+  let parts = new Array<Doc>();
+  if (decl.exported) { parts.push(text('export ')); }
+  if (fn.isGenerator) { parts.push(text('gen ')); }
+  if (fn.isAsync) { parts.push(text('async ')); }
+  parts.push(text('function '));
+  parts.push(text(decl.name.name));
+  if (fn.typeParameters != null) {
+    parts.push(printTypeParams(fn.typeParameters as Array<TypeParameter>));
+  }
+  parts.push(text('('));
+  parts.push(printParams(fn.params));
+  parts.push(text(')'));
+  if (fn.returnType != null) {
+    parts.push(text(': '));
+    parts.push(printTypeAnnotation(fn.returnType as TypeAnnotation));
+  }
+  parts.push(text(' '));
+  // The parser guarantees a block body.
+  parts.push(printBlockStatement(fn.body as BlockStatement));
   return group(concat(parts));
 };
 
@@ -1834,6 +1865,7 @@ let printNode = (node: Node): Doc => match (node) {
   case TryExpression {}: printExpression(node as Expression)
   // Statements
   case VariableDeclaration {}: printStatement(node as Statement)
+  case FunctionDeclaration {}: printStatement(node as Statement)
   case ExpressionStatement {}: printStatement(node as Statement)
   case BlockStatement {}: printStatement(node as Statement)
   case ReturnStatement {}: printStatement(node as Statement)

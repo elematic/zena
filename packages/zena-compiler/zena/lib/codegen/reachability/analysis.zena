@@ -3,7 +3,7 @@ import { walkEnter } from '../../visitor.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeId, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, isVoidOrNeverType, typeToString, ThisType } from '../../types.zena';
-import { Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, TaggedTemplateExpression, TemplateElement, SourceLocation, Expression, ThrowExpression, TryExpression, Module, ImportSpecifier, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator } from '../../ast.zena';
+import { Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, TaggedTemplateExpression, TemplateElement, SourceLocation, Expression, ThrowExpression, TryExpression, Module, ImportSpecifier, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator } from '../../ast.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
@@ -561,20 +561,24 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.symbolIdToDecl[id] = model.globalDeclarations[id];
         
         let decl = model.globalDeclarations[id];
+        // Both `let f = <T>() => ...` and `function f<T>() { ... }` bind a
+        // FunctionExpression; either can be generic.
+        var initNode: Node | null = null;
         if (decl is VariableDeclaration) {
-          let varDecl = decl as VariableDeclaration;
-          let initNode = varDecl.init;
-          if (initNode != null && initNode is FunctionExpression) {
-            let funcExpr = initNode as FunctionExpression;
-            let funcTypeNode = model.getNodeType(funcExpr);
-            if (funcTypeNode is FunctionType) {
-              let fType = funcTypeNode as FunctionType;
-              let hasParams = fType.typeParameters != null;
-              let len = if (fType.typeParameters != null) (fType.typeParameters as Array<TypeParameterType>).length else 0;
-              if (hasParams && len > 0) {
-                this.wasm.genericFunctions[id] = funcExpr;
-                this.wasm.genericFunctionModels[id] = model;
-              }
+          initNode = (decl as VariableDeclaration).init;
+        } else if (decl is FunctionDeclaration) {
+          initNode = (decl as FunctionDeclaration).func;
+        }
+        if (initNode != null && initNode is FunctionExpression) {
+          let funcExpr = initNode as FunctionExpression;
+          let funcTypeNode = model.getNodeType(funcExpr);
+          if (funcTypeNode is FunctionType) {
+            let fType = funcTypeNode as FunctionType;
+            let hasParams = fType.typeParameters != null;
+            let len = if (fType.typeParameters != null) (fType.typeParameters as Array<TypeParameterType>).length else 0;
+            if (hasParams && len > 0) {
+              this.wasm.genericFunctions[id] = funcExpr;
+              this.wasm.genericFunctionModels[id] = model;
             }
           }
         }
@@ -645,6 +649,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           if (isEntry && vd.pattern is IdentifierPattern && (vd.pattern as IdentifierPattern).name == "main") {
             isMain = true;
           }
+        } else if (decl is FunctionDeclaration) {
+          let fd = decl as FunctionDeclaration;
+          isExported = isEntry && fd.exported;
+          if (isEntry && fd.name.name == "main") {
+            isMain = true;
+          }
         } else if (decl is DeclareFunction) {
           isExported = isEntry && (decl as DeclareFunction).exported;
         }
@@ -658,7 +668,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
       let mod = unit.ast;
       for (let stmt in mod.body) {
-        if (!(stmt is VariableDeclaration) && !(stmt is DeclareFunction) && !(stmt is ClassDeclaration) && !(stmt is InterfaceDeclaration) && !(stmt is MixinDeclaration) && !(stmt is ImportDeclaration) && !(stmt is ExportAllDeclaration) && !(stmt is ExportFromDeclaration)) {
+        if (!(stmt is VariableDeclaration) && !(stmt is FunctionDeclaration) && !(stmt is DeclareFunction) && !(stmt is ClassDeclaration) && !(stmt is InterfaceDeclaration) && !(stmt is MixinDeclaration) && !(stmt is ImportDeclaration) && !(stmt is ExportAllDeclaration) && !(stmt is ExportFromDeclaration)) {
           this.nodeIdToNode[stmt.id as i32] = stmt;
           this.nodeIdToModel[stmt.id as i32] = model;
           this.queueReferrer(new Referrer(false, -1 as SymbolId, stmt.id as i32, model, null, true));
@@ -2077,7 +2087,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let visitor = this.visitor;
               let resolver = (t: Type): Type => t;
               visitor.discoverNodeTypes(decl, model, resolver);
-              if (decl is VariableDeclaration) {
+              if (decl is FunctionDeclaration) {
+                visitor.discoverFunctionDeclaration(symId, decl as FunctionDeclaration, model);
+              } else if (decl is VariableDeclaration) {
                 let vd = decl as VariableDeclaration;
                 visitor.discoverVariableDeclaration(symId, vd, model);
                 if (vd.init is FunctionExpression) {

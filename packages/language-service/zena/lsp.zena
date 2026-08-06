@@ -42,7 +42,7 @@ import {
   ClassDeclaration, InterfaceDeclaration, EnumDeclaration,
   MixinDeclaration, TypeAliasDeclaration, DeclareFunction,
   SymbolDeclaration, ImportDeclaration, ImportSpecifier,
-  Parameter, Statement, VariableDeclaration, ExpressionStatement,
+  Parameter, Statement, VariableDeclaration, FunctionDeclaration, ExpressionStatement,
   BlockStatement, FunctionExpression, CallExpression, StringLiteral,
   MethodDefinition, FieldDefinition, AccessorDeclaration,
   MethodSignature, AccessorSignature,
@@ -267,6 +267,13 @@ let extractSymbols = (ast: Module): Array<DocumentSymbol> => {
       }
       case SymbolDeclaration {name, loc}: {
         symbols.push(symbolFromNamedNode(name, SK_VARIABLE, loc));
+      }
+      case FunctionDeclaration {name as namePat, func, loc}: {
+        let sym = symbolFromPattern(namePat.name, SK_FUNCTION, loc, namePat as Node);
+        if (isTestFile) {
+          extractTestSymbols(func.body, sym);
+        }
+        symbols.push(sym);
       }
       case VariableDeclaration {pattern, init, loc}: {
         let varName = getPatternName(pattern);

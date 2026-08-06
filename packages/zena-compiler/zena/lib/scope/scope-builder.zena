@@ -15,7 +15,7 @@ import {
   SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
   TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression,
   // Statements
-  VariableDeclaration, ExpressionStatement, BlockStatement,
+  VariableDeclaration, FunctionDeclaration, ExpressionStatement, BlockStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
@@ -398,6 +398,24 @@ export final class ScopeBuilder {
           case _: {}
         }
       }
+      case FunctionDeclaration {name as namePat, func, exported}: {
+        // Same predeclaration as an annotated `let f = () => ...`, which is
+        // what makes forward references and mutual recursion work.
+        this.#current.declare(namePat.name, false, namePat, this.#modulePath);
+        let sym = this.#current.getLocal(namePat.name) as Symbol;
+        sym.isFunctionBinding = true;
+        var full = func.returnType != null;
+        for (let p in func.params) {
+          if (p.typeAnnotation == null && !p.isThisParam && p.defaultValue == null) {
+            full = false;
+          }
+        }
+        sym.hasFullSignature = full;
+        this.#symbols.record(namePat, sym);
+        if (exported) {
+          this.#exports[namePat.name] = sym;
+        }
+      }
       case DeclareFunction {name, exported}: {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         let sym = this.#current.getLocal(name.name) as Symbol;
@@ -455,6 +473,12 @@ export final class ScopeBuilder {
             this.#declarePattern(pattern, kind, stmt);
           }
         }
+      }
+      case FunctionDeclaration {name as namePat, func}: {
+        // The name was already bound by #predeclare, so the body can see
+        // it (recursion) and so can earlier statements (forward refs).
+        this.#processExpression(func as Expression);
+        this.#allVariables.push(this.#current.getLocal(namePat.name) as Symbol);
       }
       case ExpressionStatement {expression}: {
         this.#processExpression(expression);

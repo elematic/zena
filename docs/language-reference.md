@@ -676,12 +676,18 @@ to be tracked through tuple element access.
 
 ## 4. Functions
 
-Zena currently supports functions using arrow syntax.
+Zena has two ways to write a function: **arrow functions**, which are
+expressions and can close over their surrounding scope, and **`function`
+declarations**, which are top-level statements and cannot.
 
 ### Syntax
 
 ```zena
+// Arrow function (an expression)
 (param1: Type, param2: Type) => expression;
+
+// Function declaration (a top-level statement)
+function name(param1: Type, param2: Type): Ret { ... }
 ```
 
 ### Parameters
@@ -751,10 +757,137 @@ let add = (a: i32, b: i32) => {
 };
 ```
 
+### Function Declarations
+
+A `function` declaration binds a name to a function at the top level of a
+module. It is a statement, not an expression, so its body must be a block.
+
+```zena
+function add(a: i32, b: i32): i32 {
+  return a + b;
+}
+
+export function main(): i32 {
+  return add(1, 2);
+}
+```
+
+#### The difference from arrow functions: no closures
+
+This is the one semantic difference, and the reason the form exists: **a
+`function` declaration can never be a closure.** Its body can reach only its
+own parameters, its own locals, and module-level bindings (globals, imports,
+classes). There is nothing else in scope, because a `function` may only appear
+at the top level of a module — writing one inside another function or a block
+is an error:
+
+```zena
+let makeCounter = (start: i32) => {
+  function bad(): i32 {   // Error: 'function' declarations may only appear
+    return start;         //        at the top level of a module.
+  }
+  return bad;
+};
+```
+
+Use an arrow function where you need to capture:
+
+```zena
+let makeCounter = (start: i32) => {
+  let next = (): i32 => start + 1;   // fine: arrows capture
+  return next;
+};
+```
+
+Because a `function` provably has no captured environment, the compiler never
+allocates a context object for it: a call compiles to a direct call, and there
+is nothing to heap-allocate at the point the function "comes into existence."
+(Referring to one as a *value* still produces a function value — see
+[As a value](#as-a-value) — because that is what every function value in Zena
+is.) An arrow bound to a top-level `let` that happens not to capture anything
+compiles the same way today, but only `function` *guarantees* it: a later edit
+cannot silently turn it into a closure.
+
+#### Hoisting, recursion, and mutual recursion
+
+Declarations are hoisted, so order in the file does not matter. A declaration
+can be referenced before it appears, can call itself, and can be mutually
+recursive with its siblings:
+
+```zena
+export function main(): i32 {
+  return isEven(10);        // forward reference
+}
+
+function isEven(n: i32): i32 {
+  if (n == 0) { return 1; }
+  return isOdd(n - 1);      // mutual recursion
+}
+
+function isOdd(n: i32): i32 {
+  if (n == 0) { return 0; }
+  return isEven(n - 1);
+}
+```
+
+As with arrow functions bound to a `let`, a forward reference needs a
+resolvable signature: annotate the return type when a function is used before
+its declaration or participates in a recursive cycle.
+
+#### As a value
+
+A declared function is an ordinary function value and can be passed, stored,
+and returned:
+
+```zena
+function double(x: i32): i32 { return x * 2; }
+
+function apply(f: (x: i32) => i32, v: i32): i32 { return f(v); }
+
+let alias = double;
+let result = apply(double, 21);   // 42
+```
+
+#### Generics, generators, and async
+
+`function` declarations take type parameters, and the `gen` and `async`
+modifiers work exactly as they do on arrows:
+
+```zena
+function identity<T>(value: T): T {
+  return value;
+}
+
+gen function counter(n: i32): Iterator<i32> {
+  var i = 0;
+  while (i < n) {
+    yield i;
+    i += 1;
+  }
+}
+
+async function load(url: String): Future<String> {
+  return await fetch(url);
+}
+```
+
+`async gen function` is rejected, matching `async gen` arrows.
+
+#### Exporting
+
+Prefix with `export`, as with any other declaration:
+
+```zena
+export function helper(): i32 { return 1; }
+export gen function items(): Iterator<i32> { yield 1; }
+export async function load(): Future<i32> { return 1; }
+```
+
 ### Closures
 
-Functions in Zena are closures. They can capture variables from their
-surrounding scope. Captured variables are stored in a heap-allocated context,
+Arrow functions in Zena are closures. They can capture variables from their
+surrounding scope. (`function` declarations cannot — see
+[Function Declarations](#function-declarations) above.) Captured variables are stored in a heap-allocated context,
 ensuring they remain available even after the outer scope has returned.
 
 ```zena
