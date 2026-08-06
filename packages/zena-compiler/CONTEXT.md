@@ -76,9 +76,8 @@ Code generation separates semantic discovery from lowering and emission
 
 ## Portable Tests & Selective Execution
 
-- **Portable tests** are shared language tests located in `tests/language/`.
-  Both the bootstrap compiler and the self-hosted compiler run against these
-  same test files to ensure identical behavior.
+- **Portable tests** are compiler-agnostic language tests located in
+  `tests/language/`.
 - **Category gating (`runList`)**: `src/scripts/run-execution-tests.ts`
   filters execution tests by top-level category directory via its
   `runList` array, which currently names every category. A new test in

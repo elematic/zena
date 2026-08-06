@@ -90,17 +90,17 @@ Key things that differ from TypeScript:
 - **`match` expressions** with exhaustiveness checking.
 - **Sealed classes** for sum types, not TypeScript discriminated unions.
 
-## Two Compilers
+## The Compiler
 
-The project has **two compiler implementations**:
+The compiler (`packages/zena-compiler`, package name
+`@zena-lang/zena-compiler`) is **self-hosted**: written in Zena, with a
+ZIR (CFG+SSA IR) backend. See `docs/design/self-hosted-compiler.md` for
+the architecture. It is executed by `zena-cli` (`packages/zena-cli`),
+the Rust/wasmtime host. An earlier TypeScript implementation
+(`packages/compiler`, "the bootstrap compiler") has been deleted; older
+docs and comments may still refer to it.
 
-1. **Bootstrap compiler** (`packages/compiler`): Written in TypeScript. Mostly
-   working. Package name: `@zena-lang/compiler`.
-2. **Self-hosted compiler** (`packages/zena-compiler`): Written in Zena.
-   Fully passes all syntax, language, and execution tests, with active development on the new IR-based backend. Package name: `@zena-lang/zena-compiler`. See
-   `docs/design/self-hosted-compiler.md` for the architecture.
-
-Both compilers should pass the same **portable tests** in `tests/language/`.
+The compiler must pass the **portable tests** in `tests/language/`.
 
 ## The Bootstrap (CRITICAL)
 
@@ -130,20 +130,17 @@ directives. They're organized into three categories:
 - **`semantics/`** — Type checker tests. Directive: `// @mode: check` with `// @error:` on error lines.
 - **`execution/`** — Codegen tests. Directive: `// @mode: run` with `// @result:` for expected return value.
 
-When fixing bugs or adding features, prefer adding portable tests here over
-TypeScript-only tests in `packages/compiler/src/test/`.
+When fixing bugs or adding features, prefer adding portable tests here.
 
 ## Project Structure
 
 This project is an **npm monorepo** managed with **Wireit**.
 
-- **`packages/compiler`**: Bootstrap compiler (`@zena-lang/compiler`).
-- **`packages/zena-compiler`**: Self-hosted compiler (`@zena-lang/zena-compiler`). (See [CONTEXT.md](packages/zena-compiler/CONTEXT.md); the ZIR backend and the reachability pass each have their own CONTEXT.md under `zena/lib/codegen/`.)
+- **`packages/zena-compiler`**: The self-hosted compiler (`@zena-lang/zena-compiler`). (See [CONTEXT.md](packages/zena-compiler/CONTEXT.md); the ZIR backend and the reachability pass each have their own CONTEXT.md under `zena/lib/codegen/`. The checked-in bootstrap lives in `bootstrap/`.)
 - **`packages/stdlib`**: Standard library (`@zena-lang/stdlib`).
-- **`packages/cli`**: Node-based CLI tool (`@zena-lang/cli`).
 - **`packages/zena-cli`**: Native Rust CLI for executing Zena via Wasmtime. (See [CONTEXT.md](packages/zena-cli/CONTEXT.md)).
 - **`packages/runtime`**: JS runtime helpers.
-- **`tests/language/`**: Portable tests (shared across compilers).
+- **`tests/language/`**: Portable language tests.
 - **`docs/language-reference.md`**: Official language reference.
 - **`docs/design/`**: Design documents for complex features.
 - **`PLAN.md`**: Completed and planned work.
@@ -173,23 +170,19 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
 - **When is Nix needed?**: Only for WASI testing (wasmtime) and WASM debugging
   (wasm-tools). Regular `npm test` and `npm run build` work without Nix.
 
-### Running Zena Programs with WASI
-
-To run a Zena program with the bootstrap compiler, which is
-fully featured, use:
-
-```bash
-zena build main.zena -o main.wasm --target wasi
-wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
-```
-
-To run a Zena program with the self-hosted compiler, use:
+### Running Zena Programs
 
 ```bash
 npm run zena -w @zena-lang/zena-cli -- run main.zena
 ```
 
-Self-hosted compiler paths are relative to `packages/zena-cli`.
+Paths are relative to `packages/zena-cli`. To build a standalone wasm
+and run it under wasmtime directly:
+
+```bash
+npm run zena -w @zena-lang/zena-cli -- build main.zena -o main.wasm
+wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
+```
 
 ### Running Benchmarks
 
@@ -210,7 +203,7 @@ stack traces show anonymous function indices by default. Use the **`-g` flag**
 to emit a WASM name section with readable function names:
 
 ```bash
-npm run zena -- build main.zena -o main.wasm --target host -g
+npm run zena -w @zena-lang/zena-cli -- -g build main.zena -o main.wasm --target host
 ```
 
 This produces stack traces like `ScopeBuilder.#processClassBody → Compiler.compile`
@@ -286,17 +279,17 @@ There is no `wireit` command. Use `npm test`.
 npm test
 
 # Run tests for a specific package
-npm test -w @zena-lang/compiler
+npm test -w @zena-lang/zena-compiler
 
 # Run a specific test file (note: path is relative, uses .js extension)
-npm test -w @zena-lang/compiler -- test/checker/checker_test.js
+npm test -w @zena-lang/runtime -- test/runtime_test.js
 
 # Isolate a specific test (use test.only() in the file)
-npm test -w @zena-lang/compiler -- --test-only test/checker/checker_test.js
+npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
 ```
 
-- Packages are referred to by **package name** (`@zena-lang/compiler`), not path.
-- **NEVER** use `npm test packages/compiler/...` or `npm test -- some/path`.
+- Packages are referred to by **package name** (`@zena-lang/zena-compiler`), not path.
+- **NEVER** use `npm test packages/zena-compiler/...` or `npm test -- some/path`.
 - If test output is large and written to a file by the system, use the
   `read_file` tool, which supports `startLine` and `endLine` parameters, to read
   the file.
@@ -309,7 +302,7 @@ npm test -w @zena-lang/compiler -- --test-only test/checker/checker_test.js
 import project modules because relative paths are broken.
 
 - If you truly need a temporary file for debugging, create temporary test files
-  in the **normal test directories** (e.g., `packages/compiler/src/test/`).
+  in the **normal test directories** (e.g., `packages/runtime/src/test/`).
 - For portable tests, create them in `tests/language/`.
 - Delete temporary files when done, or better yet, keep them as permanent tests.
 
@@ -326,7 +319,7 @@ Do not skip step 1. A test that was never seen to fail proves nothing.
 
 ## Coding Standards
 
-### TypeScript (Bootstrap Compiler)
+### TypeScript (scripts, runtime, tooling)
 
 - **Strict TypeScript**, modern ES2024.
 - **Erasable syntax only**: No `enum` (use `const` objects with `as const`),

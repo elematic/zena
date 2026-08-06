@@ -82,9 +82,7 @@ Run from `packages/zena-compiler/`. When editing anything under
 both serve stale results: `rm -rf .wireit ../../.zena/cache` first.
 
 ```bash
-node ../cli/lib/cli.js check zena/lib/codegen/ir/X.zena  # fast type-check
-npm test                       # unit + syntax + semantics + execution + interop
-npm run test:self-hosted       # same suites compiled by the self-hosted compiler
+npm test                       # unit + syntax + semantics + execution + interop + fixpoint
 npm run test:execution -- classes            # filter one category
 ZENA_ZIR_STATS=1 npm run build:self-hosted   # self-compile; expect 0 bails
 UPDATE_SNAPSHOTS=1 npm run test:unit         # regenerate zir WAT snapshots
@@ -93,7 +91,7 @@ UPDATE_SNAPSHOTS=1 npm run test:unit         # regenerate zir WAT snapshots
 Snapshot tests fail on _any_ emission change — regenerate and eyeball
 the diff rather than fighting them. The final gate for backend changes
 is **stage-2 byte parity**: the compiler compiled by itself must
-byte-match the compiler compiled by the bootstrap-built compiler:
+byte-match the compiler that compiled it:
 
 ```bash
 npm run build:self-hosted   # writes zena/out/cli-self.wasm
@@ -110,8 +108,8 @@ fixed input program instead.
 
 - `ZENA_EMIT_WAT=1` writes a `.wat` dump next to the output (huge; a
   second full generator pass — leave off otherwise).
-- Build with `-g` (bootstrap CLI, `npm run zena -- build ... -g`) for a
-  name section; then map a trap PC with `wasm-tools print
+- Build with `-g` (`npm run zena -w @zena-lang/zena-cli -- -g build ...`)
+  for a name section; then map a trap PC with `wasm-tools print
 --print-offsets` and read the surrounding WAT against the source.
 - Suspected miscompile in the self-compile: add a temporary index-range
   env filter in module-generator's function loop and bisect — a culprit

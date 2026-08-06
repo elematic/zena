@@ -2,7 +2,8 @@
 
 ## Status
 
-- **Status**: Proposed — plan for deleting the TypeScript compiler
+- **Status**: **Complete (2026-08-06)** — historical; the standing
+  architecture is [bootstrapping.md](./bootstrapping.md)
 - **Date**: 2026-08-04
 - **Goal**: PLAN.md Phase 1 — retire `packages/compiler` (TypeScript) and build
   Zena only with Zena.
@@ -328,8 +329,24 @@ plan can be redone.
    with dependents given the explicit edge.*
 5. **Prove a clean-checkout build from the seed alone**, with the TypeScript
    compiler still present but unused — a dry run that can be reverted.
+
+   *DONE 2026-08-06: `nix flake check` builds the whole monorepo
+   hermetically — cargo → `zena-cli`, seed → `cli.wasm`, everything
+   else on top — and runs the full test suite offline.*
+
 6. **Delete `packages/compiler`**, and with it the `@skip: bootstrap` markers
    (13 files) and the BUGS.md items deferred to retirement.
+
+   *DONE 2026-08-06: `packages/compiler` and `packages/cli` are gone
+   (the marker count had grown to 47 by then — generators alone added
+   a dozen). The dual test suites collapsed onto the self-hosted
+   variants first, so the deletion itself was reference cleanup: root
+   build/test graph, vestigial deps, tsconfig project references, the
+   flake's `zena` command (now `zena-cli`; its
+   can't-compile-outside-the-repo limitation is filed in BUGS.md), and
+   the two deferred BUGS.md items are marked unblocked. **Retirement
+   complete** — the standing architecture is
+   [bootstrapping.md](./bootstrapping.md).*
 
 Steps 1, 2 and 3 are independent and can run in parallel. Only 5 and 6 are
 ordered.

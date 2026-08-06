@@ -30,10 +30,10 @@ This document tracks completed work and planned features. For project instructio
 > and the record-semantics flip at bootstrap retirement — is in
 > [docs/design/implementation-plan.md](docs/design/implementation-plan.md).
 
-### Phase 1: Self-Hosted Compiler (Current Focus)
+### Phase 1: Self-Hosted Compiler (COMPLETE 2026-08-06)
 
 - **Goal**: Retire the TypeScript bootstrap compiler and move entirely to the self-hosted compiler (`packages/zena-compiler`).
-- **Current Status**: The self-hosted compiler already passes all syntax, language, and execution tests.
+- **Status**: **Done.** The TypeScript compiler is deleted; a fresh checkout bootstraps from the checked-in `packages/zena-compiler/bootstrap/cli.wasm` (see `docs/design/bootstrapping.md`), gated by the `test:fixpoint` self-compilation byte-parity check.
 - **New IR Backend**: Building a new IR-based backend to unlock advanced optimizations (devirtualization, specialization, and size reductions).
 - **Performance Optimizations**:
   - Solve quadratic JIT compilation/lookups. Introduce hashed lookup indices for WASM functions in the code generator to eliminate $O(N)$ linear scans.

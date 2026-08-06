@@ -12,7 +12,7 @@ immediately trying to fix it (which can pollute the current task's context).
   self-hosted compiler could not build the WIT parser's own source)
 - **Severity**: medium (no longer blocks `packages/wit-parser`)
 - **Tests**: `tests/language/execution/classes/generic-method.zena`,
-  `@skip: self-hosted`. Passes under bootstrap.
+  `@skip: self-hosted` (the deleted bootstrap compiler handled it).
 - **Details**: *Calling* a generic public method fails in ZIR with
   `zir unsupported: method not found @Box_s787.run`. Declaring one is fine —
   `tests/language/execution/classes/generic-loop-member.zena` has `fold<R>(…)`
@@ -28,8 +28,9 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Found**: 2026-07-31 (review question on #95: "if-let should work
   with any refutable pattern — do we need more coverage?")
 - **Severity**: medium (checker-accepted syntax crashes codegen)
-- **Deferred**: per review (2026-07-31) — implement once the bootstrap
-  compiler is retired; one implementation instead of two.
+- **Deferred**: per review (2026-07-31), until bootstrap retirement so
+  there would be one implementation instead of two. **Unblocked
+  2026-08-06** — the bootstrap is deleted.
 - **Workaround**: destructure through an inline-tuple shape, or use a
   match expression.
 - **Details**: Both checkers accept non-tuple refutable patterns in
@@ -48,8 +49,9 @@ immediately trying to fix it (which can pollute the current task's context).
 ### Method/field same-name semantics are unsettled
 - **Found**: 2026-07-31 (review discussion on #87's field-closure calls)
 - **Severity**: medium (silent acceptance with resolution divergence)
-- **Deferred**: per review (2026-07-31) — fix once the bootstrap
-  compiler is retired; one implementation to change instead of two.
+- **Deferred**: per review (2026-07-31), until bootstrap retirement so
+  there would be one implementation to change instead of two.
+  **Unblocked 2026-08-06** — the bootstrap is deleted.
 - **Workaround**: none needed yet; ZIR refuses the ambiguous case
   (the bail is a hard compile error, so the shadowing declaration
   effectively cannot compile).
@@ -118,6 +120,23 @@ immediately trying to fix it (which can pollute the current task's context).
   `resolveTypeAnnotation`, and an inferred declaration has no annotation
   to resolve. Pinned (as a comment, not a directive) in
   `semantics/type-system/inline_tuple_restrictions.zena`.
+
+### zena-cli cannot compile files outside the repository root
+
+- **Found**: 2026-08-06 (repointing the nix flake's `zena` command at
+  zena-cli during bootstrap retirement)
+- **Severity**: low for development (in-repo files are the workflow),
+  high for an *installable* zena — `nix run .#zena` can only compile
+  files under ZENA_REPO_ROOT
+- **Details**: `compile_to_cache` requires the source under the repo
+  root (`strip_prefix(repo_root)` — "File must be inside the Zena
+  repository for now"), because the guest compiler's WASI view and the
+  stdlib both resolve through that root. Supporting arbitrary paths
+  means preopening the file's directory for the guest and mapping the
+  entry path independently of the stdlib root.
+- **Workaround**: set ZENA_REPO_ROOT to a checkout containing the
+  files (the flake wrapper keeps ZENA_COMPILER_WASM pointing at the
+  installed compiler).
 
 ### RESOLVED: a checkable member visit satisfied the later reachable one, stranding its closures (`Invalid ref_func: index < 0`)
 
