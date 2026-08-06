@@ -6305,12 +6305,30 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     }
   }
   case RecordLiteral {properties, loc}: {
+    // Contextual typing: expected property types flow into the property
+    // values, and (below) an assignable literal takes the expected record
+    // type as its own. Codegen mints one struct per distinct record type,
+    // so two literals of the same declared type must not come out as two
+    // different mints ({p: null} and {p: somePofTypeP} against {p: P | null}) —
+    // record dispatch casts the receiver to the declared type's mint.
+    var expectedProps: HashMap<String, Type> | null = null;
+    if (expectedType != null) {
+      let baseExpected = baseType(expectedType as Type);
+      if (baseExpected is RecordT) {
+        expectedProps = (baseExpected as RecordT).properties;
+      }
+    }
     let propTypes = new HashMap<String, Type>();
     var i = 0;
     while (i < properties.length) {
       match (properties[i]) {
         case PropertyAssignment {name, value}: {
-          let valType = checkExpression(ctx, value, null);
+          var propExpected: Type | null = null;
+          if (expectedProps != null &&
+              (expectedProps as HashMap<String, Type>).has(name.name)) {
+            propExpected = (expectedProps as HashMap<String, Type>)[name.name];
+          }
+          let valType = checkExpression(ctx, value, propExpected);
           propTypes[name.name] = valType;
         }
         case SpreadElement {argument}: {
@@ -6340,7 +6358,14 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
       i += 1;
     }
-    new RecordT(propTypes, null)
+    let recT = new RecordT(propTypes, null);
+    if (expectedType != null) {
+      let baseExpected = baseType(expectedType as Type);
+      if (baseExpected is RecordT && isAssignableTo(ctx, recT, baseExpected)) {
+        return baseExpected;
+      }
+    }
+    recT
   }
   case TupleLiteral {elements, loc}: {
     // Inline tuple literals are parsed as TupleLiteral nodes.

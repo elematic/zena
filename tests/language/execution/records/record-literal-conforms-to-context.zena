@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 3
+
+// Two record literals with the same DECLARED type but different
+// initializer static types: `{p: null}` and `{p: somePofTypeP}`. The
+// literal built from the non-null value must still be constructed as
+// the contextual record type ({p: P | null}) — if the compiler mints a
+// narrower one-off struct for it, the record-dispatch adapter for the
+// declared shape casts the receiver to the wrong mint and traps with
+// an illegal cast.
+//
+// This is the WIT parser's serializeAstToJson shape: pkgSources holds
+// {name: PackageName | null, items} literals built both from a
+// nullable field and from a non-null nested-package name.
+
+class P {
+  v: i32;
+  new(this.v);
+}
+
+let get = (r: {p: P | null}): i32 => {
+  let held = r.p;
+  if (held != null) {
+    return (held as P).v;
+  }
+  return 0 - 1;
+};
+
+export let main = (): i32 => {
+  let a = new Array<{p: P | null}>();
+  a.push({p: null});
+  a.push({p: new P(3)});
+  if (get(a[0]) != 0 - 1) {
+    return 100;
+  }
+  return get(a[1]);
+};
