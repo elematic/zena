@@ -201,6 +201,20 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
+  /**
+   * markFunctionReached regardless of the ambient phase flag. For
+   * callers that KNOW the function will be emitted (a vtable of an
+   * instantiated class references it), where checkable-phase gating
+   * would leave an emitted body whose dependencies were never
+   * traversed.
+   */
+  forceReachFunction(func: WasmFunction): void {
+    let saved = this.currentReachable;
+    this.currentReachable = true;
+    this.markFunctionReached(func);
+    this.currentReachable = saved;
+  }
+
   markFunctionReached(func: WasmFunction): void {
     if (this.currentReachable) {
       if (!this.reachedFunctionsSet.has(func)) {

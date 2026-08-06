@@ -1064,8 +1064,7 @@ export final class Specializer implements SpecializerInterface {
       let hasInst = this.pass.instantiatedSpecializedClasses.has(getClassKey(cType) as String);
       if (!isGenericTemplate && (hasInst || cType.isExtension)) {
         if (!this.pass.reachedFunctionsSet.has(func)) {
-          this.pass.wasm.addFunction(func);
-          this.pass.markFunctionReached(func);
+          this.#reachRegisteredMethod(func);
         }
       }
       return func;
@@ -1073,8 +1072,7 @@ export final class Specializer implements SpecializerInterface {
 
     let hasInst = this.pass.instantiatedSpecializedClasses.has(getClassKey(cType) as String);
     if (!isGenericTemplate && (hasInst || cType.isExtension)) {
-      this.pass.wasm.addFunction(wasmFunc);
-      this.pass.markFunctionReached(wasmFunc);
+      this.#reachRegisteredMethod(wasmFunc);
     }
 
     this.pass.wasm.classMethodMap[registeredKey] = wasmFunc;
@@ -1084,6 +1082,23 @@ export final class Specializer implements SpecializerInterface {
     }
     this.pass.wasm.classMethods[cKey].push(wasmFunc);
     return wasmFunc;
+  }
+
+  /**
+   * Force-reach a method a registration decided must exist (the class
+   * is instantiated or an extension, so its vtable references the
+   * function and it WILL be emitted). markFunctionReached is a no-op
+   * when the ambient phase flag says "checkable", but registration
+   * added the function to wasm.functions unconditionally — leaving an
+   * emitted body whose dependencies were never traversed. Whether the
+   * flag happened to be true here depended on which referrer processed
+   * last, so the miss was graph-order dependent (String.split lowering
+   * without its FixedArray<String> extension constructor registered,
+   * in wit-parser's graph but not others).
+   */
+  #reachRegisteredMethod(func: WasmFunction): void {
+    this.pass.wasm.addFunction(func);
+    this.pass.forceReachFunction(func);
   }
 
   populateClassStructAndMethods(ct: ClassType, cd: Node | null, sourceModel: SemanticModel): void {
