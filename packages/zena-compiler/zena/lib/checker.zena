@@ -1306,7 +1306,11 @@ final class CheckerContext {
         let aliasType = new TypeAliasType(ta.name.name, typeParams, new HoleType(), ta.isDistinct, null);
         this.#materializedTypes[info.id] = aliasType;
         
-        let targetType: Type = resolveTypeAnnotation(this, ta.typeAnnotation, false);
+        // Permitted here for the same reason as in checkTypeAliasDeclaration:
+        // naming an inline tuple is legal, using it outside a return type is
+        // not, and containsInlineTuple sees through the alias at each use.
+        let targetType: Type = resolveTypeAnnotation(this, ta.typeAnnotation, true);
+        checkAliasTargetInlineTuples(this, targetType, ta.typeAnnotation.loc);
         aliasType.target = targetType;
         this.exitScope();
         
@@ -1991,37 +1995,58 @@ export let checkModule = (
   return new CheckResult(ctx.model, ctx.diagnostics.diagnostics);
 };
 
-let containsInlineTuple = (t: Type): boolean => {
+/**
+ * Maximum alias hops `containsInlineTuple` will follow. Aliases nest only a
+ * few deep in practice; the bound exists because a recursive alias
+ * (`type T = Array<T>`) otherwise cycles forever between the structural and
+ * alias steps — `resolving` guards only the declaration, not later uses. A
+ * chain this long is already an error elsewhere, and an endlessly expanding
+ * alias cannot name a concrete inline tuple, so giving up is safe.
+ */
+let maxAliasHops = 32;
+
+let containsInlineTuple = (t: Type, aliasHops: i32 = 0): boolean => {
   if (t is InlineTupleT) { return true; }
   match (t) {
     case InlineTupleT as _tut: true
+    // Aliases are transparent here — `type Pair = inline (i32, i32)` is
+    // legal to declare, so the restriction has to be enforced through the
+    // name at each use. `resolving` means we are inside this alias's own
+    // target resolution, where reading `target` would not terminate.
+    case TypeAliasType as alias: {
+      if (alias.resolving || aliasHops >= maxAliasHops) {
+        false
+      } else {
+        containsInlineTuple(alias.target, aliasHops + 1)
+      }
+    }
     case UnionT {types}: {
       for (let subtype in types) {
-        if (containsInlineTuple(subtype)) return true;
+        if (containsInlineTuple(subtype, aliasHops)) return true;
       }
       false
     }
-    case ArrayType {elementType}: containsInlineTuple(elementType)
+    case ArrayType {elementType}: containsInlineTuple(elementType, aliasHops)
     case TupleT {elementTypes}: {
       for (let subtype in elementTypes) {
-        if (containsInlineTuple(subtype)) return true;
+        if (containsInlineTuple(subtype, aliasHops)) return true;
       }
       false
     }
     case RecordT {properties}: {
       for (let entry in properties) {
-        if (containsInlineTuple(entry.value)) return true;
+        if (containsInlineTuple(entry.value, aliasHops)) return true;
       }
       false
     }
     case FunctionType {parameters, typeArguments}: {
       for (let param in parameters) {
-        if (containsInlineTuple(param)) return true;
+        if (containsInlineTuple(param, aliasHops)) return true;
       }
       if (typeArguments != null) {
         let args = typeArguments as Array<Type>;
         for (let arg in args) {
-          if (containsInlineTuple(arg)) return true;
+          if (containsInlineTuple(arg, aliasHops)) return true;
         }
       }
       false
@@ -2030,7 +2055,7 @@ let containsInlineTuple = (t: Type): boolean => {
       if (typeArguments != null) {
         let args = typeArguments as Array<Type>;
         for (let arg in args) {
-          if (containsInlineTuple(arg)) return true;
+          if (containsInlineTuple(arg, aliasHops)) return true;
         }
       }
       false
@@ -2039,7 +2064,7 @@ let containsInlineTuple = (t: Type): boolean => {
       if (typeArguments != null) {
         let args = typeArguments as Array<Type>;
         for (let arg in args) {
-          if (containsInlineTuple(arg)) return true;
+          if (containsInlineTuple(arg, aliasHops)) return true;
         }
       }
       false
@@ -2050,6 +2075,53 @@ let containsInlineTuple = (t: Type): boolean => {
   return false;
 };
 
+
+/**
+ * Report inline tuples that a type alias may not contain.
+ *
+ * An alias may *name* an inline tuple — `type Pair = inline (i32, i32)` — so
+ * the target's top level is allowed to be one, or a union of them. That is the
+ * position the alias stands for, and every use of the name is re-checked
+ * against the position it appears in.
+ *
+ * Anything deeper is illegal no matter where the alias is used: an inline
+ * tuple in a parameter, an array element, or a record field has no legal
+ * position to be used *from*. Those are reported here, at the declaration,
+ * which is where the author can see them.
+ */
+let checkAliasTargetInlineTuples = (
+  ctx: CheckerContext,
+  target: Type,
+  loc: SourceLocation | null,
+): void => {
+  let reportNested = (t: Type): void => {
+    if (containsInlineTuple(t)) {
+      ctx.error(
+        "Inline tuple types can only appear in function return types, not here.",
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+    }
+  };
+  // A top-level inline tuple is fine, but its own elements are not.
+  let checkMember = (member: Type): void => {
+    if (member is InlineTupleT) {
+      for (let element in (member as InlineTupleT).elementTypes) {
+        reportNested(element);
+      }
+    } else {
+      reportNested(member);
+    }
+  };
+  match (target) {
+    case UnionT {types}: {
+      for (let member in types) {
+        checkMember(member);
+      }
+    }
+    case _: { checkMember(target); }
+  }
+};
 
 /**
  * Resolve a type annotation AST node to a Type.
@@ -9026,7 +9098,12 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
         }
         
         t.resolving = true;
-        t.target = resolveTypeAnnotation(ctx, ta.typeAnnotation);
+        // An alias may name an inline tuple. The alias is a name for the
+        // type, not a new position for it: `containsInlineTuple` looks
+        // through TypeAliasType, so every use site still reports the
+        // restriction after expansion.
+        t.target = resolveTypeAnnotation(ctx, ta.typeAnnotation, true);
+        checkAliasTargetInlineTuples(ctx, t.target, ta.typeAnnotation.loc);
         t.resolving = false;
         
         ctx.exitScope();

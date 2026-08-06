@@ -1,0 +1,29 @@
+// @mode: check
+// @skip: bootstrap
+// An `inline` tuple may be written in a type alias, and the alias may then be
+// used wherever the spelled-out type would be legal — i.e. a return type.
+//
+// Deliberately carries NO @error directive: the portable-semantics runner only
+// rejects unexpected errors when a file expects none, so the negative cases
+// live in inline_tuple_alias_restrictions.zena. Keeping them apart is what
+// makes this file fail if the alias is rejected.
+
+type Pair = inline (i32, i32);
+type Result<T, E> = inline (true, T, _) | inline (false, _, E);
+
+export let makePair = (): Pair => (1, 2);
+
+export let checkedSub = (a: i32, b: i32): Result<i32, String> => {
+  if (b > a) {
+    return (false, _, "underflow");
+  }
+  return (true, a - b, _);
+};
+
+// The alias must narrow like the spelled-out union it stands for.
+export let okOr = (a: i32, b: i32): i32 => {
+  if (let (true, v, _) = checkedSub(a, b)) {
+    return v;
+  }
+  return -1;
+};

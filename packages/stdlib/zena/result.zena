@@ -1,0 +1,32 @@
+/**
+ * Result<T, E> — a value that is either an ok payload or an error payload.
+ *
+ * Unlike Option<T>, this is an **inline multi-value union**, not a heap type:
+ * it compiles to WebAssembly multi-value returns, so returning an ok or an
+ * error costs no allocation. That is why it is a type alias rather than a
+ * class hierarchy — see docs/design/result-option.md.
+ *
+ * There are three lanes, not two, so that each lane is type-homogeneous: the
+ * discriminant, the ok payload, and the error payload. The unused payload in
+ * each arm is a hole (`_`).
+ *
+ * ```zena
+ * import { Result } from 'zena:result';
+ *
+ * let checkedSub = (a: i32, b: i32): Result<i32, String> => {
+ *   if (b > a) {
+ *     return (false, _, "underflow");
+ *   }
+ *   return (true, a - b, _);
+ * };
+ *
+ * if (let (true, v, _) = checkedSub(10, 4)) {
+ *   // v is 6
+ * }
+ * ```
+ *
+ * Inline tuples are return-position-only, so `Result<T, E>` may name a
+ * function's return type but cannot be stored in a variable, field, or
+ * collection. To keep a result around, match it and store the payload.
+ */
+export type Result<T, E> = inline (true, T, _) | inline (false, _, E);

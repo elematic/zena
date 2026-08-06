@@ -1,0 +1,33 @@
+// @mode: run
+// @invoke: main
+// @skip: bootstrap
+// @result: 15
+// 6 from the ok arm (10 - 4), plus 9 for the length of "underflow".
+// Result<T, E> comes from the stdlib as a type alias over an inline union, so
+// this exercises the alias crossing a module boundary — the defining module
+// resolves the inline tuples, the importer only sees the name.
+
+import { Result } from 'zena:result';
+
+let checkedSub = (a: i32, b: i32): Result<i32, String> => {
+  if (b > a) {
+    return (false, _, "underflow");
+  }
+  return (true, a - b, _);
+};
+
+export let main = (): i32 => {
+  var total = 0;
+
+  // Ok arm binds the payload.
+  if (let (true, v, _) = checkedSub(10, 4)) {
+    total += v;
+  }
+
+  // Error arm binds the error, and the ok lane stays a hole.
+  if (let (false, _, e) = checkedSub(1, 5)) {
+    total += e.length;
+  }
+
+  return total;
+};

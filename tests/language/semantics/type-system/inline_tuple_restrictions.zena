@@ -3,8 +3,10 @@
 export let ok1 = (): inline (i32, i32) => (1, 2);
 export let ok2 = (): inline (true, i32) | inline (false, _) => (true, 42);
 
-// @error: Inline tuple types can only appear in function return types, not here.
-type Bad1 = inline (i32, i32);
+// Naming an inline tuple in an alias is legal — the alias is a name for the
+// type, not a new position for it, and every *use* is still checked. See
+// inline_tuple_alias.zena and inline_tuple_alias_restrictions.zena.
+type Ok3 = inline (i32, i32);
 
 // @error: Inline tuple types can only appear in function return types, not here.
 type Bad2 = (x: inline (i32, i32)) => i32;
@@ -23,5 +25,10 @@ type Bad5 = (String, inline (i32, i32));
 // @error: Inline tuple types can only appear in function return types, not here.
 type BadRecord = { a: inline (i32, i32) };
 
-// @error: Inline tuple types can only appear in function return types, not here.
+// NOT enforced today: binding an inline tuple to a variable should be an
+// error, but the message is only ever emitted from resolveTypeAnnotation and
+// this declaration has no annotation to resolve. The directive that used to
+// sit here passed spuriously — the runner matches an expected error against
+// *any* actual error in the file, so the six real ones above satisfied it.
+// Filed in BUGS.md.
 let bad6 = ok1();

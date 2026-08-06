@@ -82,6 +82,43 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Portable semantics runner: `@error` directives are matched loosely enough to pass on the wrong error
+
+- **Found**: 2026-08-06, while adding inline-tuple alias tests.
+- **Severity**: medium — it does not break the compiler, but it silently
+  weakens every semantics test that declares an expected error.
+- **Details**: `runSemanticTest` in
+  `packages/zena-compiler/zena/test/portable_semantics.zena` matches each
+  `@error` directive by asking whether **any** diagnostic in the file
+  contains the message. It does not compare line numbers (the parsed
+  `expected.line` is used only in the failure text) and it does not
+  consume a matched diagnostic, unlike the warning matcher just below it,
+  which at least keeps a `matchedWarnings` array. Consequences:
+  - *N* identical directives are all satisfied by **one** actual error.
+  - An error expected on line 10 passes if the only error is on line 40.
+  - Unexpected errors are ignored entirely whenever the file declares at
+    least one expected error — the "fail on any unexpected error" branch
+    runs only when `expectedErrors.length == 0`.
+- **Caught in the wild**: `semantics/type-system/inline_tuple_restrictions.zena`
+  carried seven directives while the checker only ever produced six
+  errors; the directive on `let bad6 = ok1();` had never once matched its
+  own line. Splitting positive cases into a file with *no* directives is
+  the current workaround, since only that path is strict.
+- **Fix**: match on line as well as message, consume matched diagnostics,
+  and report unexpected errors even when some are expected. Expect
+  fallout: some existing tests are likely relying on the looseness.
+
+### Inline tuples can be bound to a variable
+
+- **Found**: 2026-08-06 (same investigation).
+- **Severity**: low
+- **Details**: `let x = f();` where `f` returns `inline (i32, i32)` is
+  accepted. Inline tuples are return-position-only, so this should be an
+  error, but the diagnostic is only ever emitted from
+  `resolveTypeAnnotation`, and an inferred declaration has no annotation
+  to resolve. Pinned (as a comment, not a directive) in
+  `semantics/type-system/inline_tuple_restrictions.zena`.
+
 ### RESOLVED: a checkable member visit satisfied the later reachable one, stranding its closures (`Invalid ref_func: index < 0`)
 
 - **Fixed 2026-08-06.** The guess in the original entry — an adaptation
