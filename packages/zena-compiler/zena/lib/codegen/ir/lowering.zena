@@ -36,7 +36,7 @@ import {
   LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant,
   RecordPattern, BindingProperty
 } from '../../ast.zena';
-import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, typeToString } from '../../types.zena';
+import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, typeToString, arrayElementType, isSignedNarrowIntType } from '../../types.zena';
 import { InterfaceAdaptation, RecordAdaptation, FunctionAdaptation } from '../../semantic-model.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -46,7 +46,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 
 
 
-import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical } from '../wasm-module.zena';
 import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 
@@ -4429,9 +4429,16 @@ export final class FunctionLowerer {
       if (!(this.#valueType(index) is ValTypeI32)) {
         this.#bail('index operand type');
       }
-      if (arr.elementType is ValTypeI8) {
-        // Packed byte elements read unsigned, as i32 (array.get_u).
-        return this.b.emit(IrOp.array_get_u, new ValTypeI32(), receiver, index);
+      if (arr.elementType is ValTypeI8 || arr.elementType is ValTypeI16) {
+        // Packed elements unpack to i32. The wasm array type does not
+        // distinguish u8 from i8, so the extension comes from the
+        // semantic element type of the receiver.
+        let op = if (this.#packedElementSigned(idx.object)) {
+          IrOp.array_get_s
+        } else {
+          IrOp.array_get_u
+        };
+        return this.b.emit(op, new ValTypeI32(), receiver, index);
       }
       this.#requireSupported(arr.elementType, 'array element type');
       let value = this.b.emit(IrOp.array_get, arr.elementType, receiver, index);
@@ -4930,9 +4937,11 @@ export final class FunctionLowerer {
       if (!(this.#valueType(index) is ValTypeI32)) {
         this.#bail('index operand type');
       }
-      // Packed byte elements write plain i32 values.
+      // Packed elements write plain i32 values; array.set truncates.
+      let packedElem = arr.elementType is ValTypeI8 ||
+          arr.elementType is ValTypeI16;
       var elemCtx: ValType = new ValTypeI32();
-      if (!(arr.elementType is ValTypeI8)) {
+      if (!packedElem) {
         this.#requireSupported(arr.elementType, 'array element type');
         elemCtx = arr.elementType;
       }
@@ -4942,8 +4951,13 @@ export final class FunctionLowerer {
       } else {
         // Compound: SSA reuses the receiver and index values, so the
         // element reads once and writes once.
-        let current = if (arr.elementType is ValTypeI8) {
-          this.b.emit(IrOp.array_get_u, new ValTypeI32(), receiver, index)
+        let current = if (packedElem) {
+          let op = if (this.#packedElementSigned(idx.object)) {
+            IrOp.array_get_s
+          } else {
+            IrOp.array_get_u
+          };
+          this.b.emit(op, new ValTypeI32(), receiver, index)
         } else {
           this.b.emit(IrOp.array_get, arr.elementType, receiver, index)
         };
@@ -5960,6 +5974,33 @@ export final class FunctionLowerer {
       return this.#reassertNonNull(result, want);
     }
     return result;
+  }
+
+  /**
+   * Whether a packed array read through `receiver` must sign-extend.
+   *
+   * The wasm array type cannot say: `array<u8>` and `array<i8>` are
+   * both `(array (mut i8))`, and the extension is chosen by the
+   * instruction. So the semantic element type of the receiver decides,
+   * and unsigned is the safe default when it cannot be recovered — a
+   * zero-extending read of a signed value is visibly wrong at the top
+   * of the range, while the reverse invents negatives everywhere.
+   */
+  #packedElementSigned(receiver: Expression): boolean {
+    // MUST be the substituted type. Inside a generic like
+    // `GrowableArray<i8>`, the buffer's checked type is the
+    // unsubstituted `FixedArray<T>`, whose element is a type parameter
+    // and therefore never looks narrow — which silently selects the
+    // unsigned read and turns every stored -1 into 255.
+    let t = this.#substitutedNodeType(receiver);
+    if (t == null) {
+      return false;
+    }
+    let elem = arrayElementType(t as Type);
+    if (elem == null) {
+      return false;
+    }
+    return isSignedNarrowIntType(elem as Type);
   }
 
   /**

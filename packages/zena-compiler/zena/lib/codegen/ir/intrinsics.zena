@@ -13,7 +13,8 @@
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { CallExpression, Expression } from '../../ast.zena';
-import { ValType, ValTypeI32, ValTypeI8, ValTypeRef, ValTypeRefNull } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeI8, ValTypeI16, ValTypeRef, ValTypeRefNull } from '../wasm.zena';
+import { Type, arrayElementType, isSignedNarrowIntType } from '../../types.zena';
 import { WasmModule, WasmFunction, WasmArray, isValSubtype, asWasmArray } from '../wasm-module.zena';
 import { ValTypeI64, ValTypeF32, ValTypeF64 } from '../wasm.zena';
 import { IrRefFunc } from './ir.zena';
@@ -88,12 +89,46 @@ let lowerArrayLen = (cx: LoweringContext, call: CallExpression): i32 => {
   return cx.b.emit(IrOp.array_len, new ValTypeI32(), arr, -1);
 };
 
-/** __array_get: array.get of a non-packed element. */
+/** Whether a wasm element type is one of the packed widths. */
+let isPackedElement = (vt: ValType): boolean => {
+  return vt is ValTypeI8 || vt is ValTypeI16;
+};
+
+/**
+ * Whether a packed array's elements should be read sign-extended.
+ *
+ * The wasm array type cannot answer this: `array<u8>` and `array<i8>`
+ * are the same `(array (mut i8))`, and signedness lives on the read
+ * instruction. So the semantic element type of the receiver decides,
+ * and an unsigned element is the safer default when it cannot be
+ * recovered — a zero-extending read of a `u8` is always correct, while
+ * a sign-extending read of one silently invents negative values.
+ */
+let packedArrayElementSigned = (cx: LoweringContext, e: Expression): boolean => {
+  let t = cx.substitutedNodeType(e);
+  if (t == null) {
+    return false;
+  }
+  let elem = arrayElementType(t as Type);
+  if (elem == null) {
+    return false;
+  }
+  return isSignedNarrowIntType(elem as Type);
+};
+
+/** __array_get: array.get, choosing the packed read for narrow elements. */
 let lowerArrayGet = (cx: LoweringContext, call: CallExpression): i32 => {
   let (arr, arrType) = arrayOperand(cx, call.args[0]);
   let index = indexOperand(cx, call.args[1]);
-  if (arrType.elementType is ValTypeI8) {
-    cx.fail('array builtin packed element');
+  if (isPackedElement(arrType.elementType)) {
+    // Packed elements unpack to a full i32, zero- or sign-extended to
+    // the canonical form the narrow types are carried in.
+    let op = if (packedArrayElementSigned(cx, call.args[0])) {
+      IrOp.array_get_s
+    } else {
+      IrOp.array_get_u
+    };
+    return cx.b.emit(op, new ValTypeI32(), arr, index);
   }
   cx.requireSupported(arrType.elementType, 'array element type');
   let value = cx.b.emit(IrOp.array_get, arrType.elementType, arr, index);
@@ -110,12 +145,19 @@ let lowerByteArrayGet = (cx: LoweringContext, call: CallExpression): i32 => {
   return cx.b.emit(IrOp.array_get_u, new ValTypeI32(), arr, index);
 };
 
-/** __array_set: array.set of a non-packed element. */
+/** __array_set: array.set, taking a plain i32 for packed elements. */
 let lowerArraySet = (cx: LoweringContext, call: CallExpression): i32 => {
   let (arr, arrType) = arrayOperand(cx, call.args[0]);
   let index = indexOperand(cx, call.args[1]);
-  if (arrType.elementType is ValTypeI8) {
-    cx.fail('array builtin packed element');
+  if (isPackedElement(arrType.elementType)) {
+    // array.set on a packed element takes an i32 and truncates to the
+    // stored width, which is exactly the narrow value's canonical form.
+    let packedValue = lowerExpr(cx, call.args[2], new ValTypeI32());
+    if (!(cx.valueTypeOf(packedValue) is ValTypeI32)) {
+      cx.fail('array builtin write type');
+    }
+    let packedIdx = cx.b.pushExtra(threeValues(arr, index, packedValue));
+    return cx.b.emitVoid(IrOp.array_set, packedIdx, -1);
   }
   cx.requireSupported(arrType.elementType, 'array element type');
   let value = lowerExpr(cx, call.args[2], arrType.elementType);
@@ -159,8 +201,16 @@ let newResultArray = (cx: LoweringContext, call: CallExpression): (ValType, Wasm
 let lowerArrayNew = (cx: LoweringContext, call: CallExpression): i32 => {
   let (resultVt, arrType) = newResultArray(cx, call);
   let length = indexOperand(cx, call.args[0]);
-  if (arrType.elementType is ValTypeI8) {
-    cx.fail('array builtin packed element');
+  if (isPackedElement(arrType.elementType)) {
+    // As with array.set, the initializer crosses as an i32 and the
+    // instruction truncates to the packed width.
+    let packedInit = lowerExpr(cx, call.args[1], new ValTypeI32());
+    if (!(cx.valueTypeOf(packedInit) is ValTypeI32)) {
+      cx.fail('array builtin init type');
+    }
+    let packedPair = cx.b.pushExtra(twoValues(length, packedInit));
+    return cx.b.emit(IrOp.array_new, resultVt, packedPair,
+        cx.b.addRef(new IrRefType(arrType)));
   }
   cx.requireSupported(arrType.elementType, 'array element type');
   let init = lowerExpr(cx, call.args[1], arrType.elementType);

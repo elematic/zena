@@ -1233,6 +1233,40 @@ export let integerLiteralMagnitude = (raw: String): inline (boolean, u64) => {
 };
 
 /**
+ * The element type of an array-shaped type: the intrinsic `array<T>`,
+ * or a generic class over it (`FixedArray<T>`, `Array<T>`) whose first
+ * type argument is the element. Returns null for anything else.
+ *
+ * Callers use this to recover the *semantic* element type when the wasm
+ * type cannot answer a question — chiefly whether a packed element
+ * should be read sign-extended, since `u8` and `i8` share one wasm
+ * array type.
+ */
+export let arrayElementType = (t: Type): Type | null => match (baseType(t)) {
+  case ArrayType {elementType}: elementType
+  case ClassType as ct: {
+    if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
+      (ct.typeArguments as Array<Type>)[0]
+    } else {
+      null
+    }
+  }
+  case _: null
+};
+
+/**
+ * Whether a narrow integer type is one of the signed ones, i.e. whether
+ * a packed load of it must sign-extend. False for everything that is not
+ * a narrow type, so a caller that has already established packing can
+ * read this as "use array.get_s".
+ */
+export let isSignedNarrowIntType = (t: Type): boolean => match (baseType(t)) {
+  case I8Type: true
+  case I16Type: true
+  case _: false
+};
+
+/**
  * Whether an integer literal fits a type with a checked range. `raw` is
  * the unsigned source text and `negative` reports a leading unary minus,
  * kept separate so that `-128` fits `i8` even though `128` alone does

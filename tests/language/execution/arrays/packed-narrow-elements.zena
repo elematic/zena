@@ -1,0 +1,64 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+// FixedArray over a narrow element type is stored packed — wasm i8/i16 —
+// and unpacks to a full i32 on read. The wasm array type carries no
+// signedness (u8 and i8 share `(array (mut i8))`), so the read instruction
+// decides: array.get_u zero-extends, array.get_s sign-extends. That choice
+// comes from the semantic element type, which is what this test pins.
+
+import { FixedArray } from 'zena:array';
+
+export let main = (): i32 => {
+  // Unsigned bytes read back zero-extended: 200 stays 200, not -56.
+  let bytes = new FixedArray<u8>(4, 0);
+  bytes[0] = 200;
+  bytes[1] = 255;
+  bytes[2] = 1;
+  if (bytes[0] as i32 != 200) return 1;
+  if (bytes[1] as i32 != 255) return 2;
+  if (bytes[2] as i32 != 1) return 3;
+  if (bytes[3] as i32 != 0) return 4;
+  if (bytes.length != 4) return 5;
+
+  // Signed bytes read back sign-extended.
+  let signed = new FixedArray<i8>(3, 0);
+  signed[0] = -128;
+  signed[1] = 127;
+  signed[2] = -1;
+  if (signed[0] as i32 != -128) return 6;
+  if (signed[1] as i32 != 127) return 7;
+  if (signed[2] as i32 != -1) return 8;
+
+  // Storing a value wider than the element truncates to the packed width.
+  let wide = 511; // 0x1FF
+  bytes[0] = wide as u8;
+  if (bytes[0] as i32 != 255) return 9;
+
+  // The 16-bit widths behave the same way.
+  let halves = new FixedArray<u16>(2, 0);
+  halves[0] = 65535;
+  halves[1] = 40000;
+  if (halves[0] as i32 != 65535) return 10;
+  if (halves[1] as i32 != 40000) return 11;
+
+  let shalves = new FixedArray<i16>(2, 0);
+  shalves[0] = -32768;
+  shalves[1] = 32767;
+  if (shalves[0] as i32 != -32768) return 12;
+  if (shalves[1] as i32 != 32767) return 13;
+
+  // The array initializer fills through the same packed path.
+  let filled = new FixedArray<u8>(3, 7);
+  if (filled[0] as i32 != 7) return 14;
+  if (filled[2] as i32 != 7) return 15;
+
+  let filledSigned = new FixedArray<i8>(2, -5);
+  if (filledSigned[0] as i32 != -5) return 16;
+
+  // Elements promote like any other narrow value.
+  let sum: u32 = bytes[1] + bytes[2];
+  if (sum != 256) return 17;
+
+  return 0;
+};

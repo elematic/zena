@@ -35,7 +35,8 @@
  *   array_new_data: a -> [offset, length, dataIndex], b = ref (array type)
  *   array_new_fixed: a -> [argc, arg*],       b = ref (array type)
  *   array_get:   a = array, b = index
- *   array_get_u: a = array, b = index  (unsigned read of packed i8 elements)
+ *   array_get_u: a = array, b = index  (zero-extending read of a packed element)
+ *   array_get_s: a = array, b = index  (sign-extending read of a packed element)
  *   array_set:   a -> [array, index, value]
  *   array_copy:  a -> [dest, destOff, src, srcOff, len]
  *   array_len:   a = array
@@ -232,6 +233,7 @@ export enum IrOp {
   array_new_fixed,
   array_get,
   array_get_u,
+  array_get_s,
   array_set,
   array_copy,
   array_len,
@@ -485,7 +487,8 @@ export final class IrBody {
       return;
     }
     // Shape: two values, inline in slots a and b.
-    if (op == IrOp.array_get || op == IrOp.array_get_u || op == IrOp.ref_eq ||
+    if (op == IrOp.array_get || op == IrOp.array_get_u ||
+        op == IrOp.array_get_s || op == IrOp.ref_eq ||
         isBinaryNumericOp(op)) {
       out.push(av);
       out.push(this.b[inst]);
@@ -610,7 +613,8 @@ export final class IrBody {
       this.a[inst] = map(av);
       return;
     }
-    if (op == IrOp.array_get || op == IrOp.array_get_u || op == IrOp.ref_eq ||
+    if (op == IrOp.array_get || op == IrOp.array_get_u ||
+        op == IrOp.array_get_s || op == IrOp.ref_eq ||
         isBinaryNumericOp(op)) {
       this.a[inst] = map(av);
       this.b[inst] = map(this.b[inst]);
@@ -943,6 +947,7 @@ let buildIrOpNames = (): Array<String> => {
   n[IrOp.array_new_fixed as i32] = 'array.new_fixed';
   n[IrOp.array_get as i32] = 'array.get';
   n[IrOp.array_get_u as i32] = 'array.get_u';
+  n[IrOp.array_get_s as i32] = 'array.get_s';
   n[IrOp.array_set as i32] = 'array.set';
   n[IrOp.array_copy as i32] = 'array.copy';
   n[IrOp.array_len as i32] = 'array.len';

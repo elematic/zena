@@ -1,0 +1,60 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+// The growable Array<T> is backed by a FixedArray<T>, so a narrow element
+// type makes its buffer packed too — including across a grow, which
+// reallocates and copies element by element through the same packed
+// read/write path.
+
+import { Array } from 'zena:array';
+
+export let main = (): i32 => {
+  let bytes = new Array<u8>();
+  bytes.push(200);
+  bytes.push(255);
+  bytes.push(0);
+  if (bytes.length != 3) return 1;
+  if (bytes[0] as i32 != 200) return 2;
+  if (bytes[1] as i32 != 255) return 3;
+  if (bytes[2] as i32 != 0) return 4;
+
+  // Push past the initial capacity so the buffer grows and every element
+  // is copied through the packed path.
+  var i = 0;
+  while (i < 40) {
+    bytes.push((i & 255) as u8);
+    i += 1;
+  }
+  if (bytes.length != 43) return 5;
+  if (bytes[0] as i32 != 200) return 6;
+  if (bytes[1] as i32 != 255) return 7;
+  if (bytes[42] as i32 != 39) return 8;
+
+  // Writes through the index setter truncate to the packed width.
+  bytes[0] = 511 as u8;
+  if (bytes[0] as i32 != 255) return 9;
+
+  // Signed elements keep sign-extending after a grow.
+  let signed = new Array<i8>();
+  var j = 0;
+  while (j < 20) {
+    signed.push(-1);
+    j += 1;
+  }
+  if (signed.length != 20) return 10;
+  if (signed[0] as i32 != -1) return 11;
+  if (signed[19] as i32 != -1) return 12;
+
+  signed[5] = -128;
+  if (signed[5] as i32 != -128) return 13;
+
+  // Iterating yields unpacked values.
+  var total = 0;
+  for (let b in signed) {
+    total += b as i32;
+  }
+  // Nineteen -1s and one -128.
+  if (total != -147) return 14;
+
+  return 0;
+};

@@ -26,12 +26,12 @@ import {
 } from '../../ast.zena';
 import {
   ArrayType, ClassType, InterfaceType, Type, VoidType, baseType,
-  isVoidOrNeverType,
+  isVoidOrNeverType, arrayElementType, isSignedNarrowIntType,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
-  ValType, ValTypeI32, ValTypeRef, ValTypeRefNull, WasmType,
-  isRefValType, refTargetOf,
+  ValType, ValTypeI32, ValTypeI8, ValTypeI16, ValTypeRef, ValTypeRefNull,
+  WasmType, isRefValType, refTargetOf,
 } from '../wasm.zena';
 import {
   ClassCodegenInfo, WasmArray, WasmGlobal, WasmTag, asWasmArray,
@@ -946,7 +946,23 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   if (bufTarget == null) {
     bail(cx, 'for-in buffer kind');
   }
-  let elemVt = (bufTarget as WasmArray).elementType;
+  let storedVt = (bufTarget as WasmArray).elementType;
+  // Packed elements (narrow integers) are stored as wasm i8/i16 but
+  // unpack to a full i32, so the loop variable is an i32 and the read
+  // picks its extension from the semantic element type — the wasm array
+  // type cannot distinguish u8 from i8.
+  let packed = storedVt is ValTypeI8 || storedVt is ValTypeI16;
+  let elemVt = if (packed) new ValTypeI32() as ValType else storedVt;
+  var packedSigned = false;
+  if (packed) {
+    let iterT = cx.substitutedNodeType(stmt.iterable);
+    if (iterT != null) {
+      let elemT = arrayElementType(iterT as Type);
+      if (elemT != null) {
+        packedSigned = isSignedNarrowIntType(elemT as Type);
+      }
+    }
+  }
   cx.requireSupported(elemVt, 'for-in element type');
 
   var pat = stmt.pattern;
@@ -984,7 +1000,12 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   cx.b.brIf(done, exitB, cx.envValues(carried), bodyB, noValues());
 
   cx.b.switchTo(bodyB);
-  let elem = cx.b.emit(IrOp.array_get, elemVt, buf, idxParam);
+  let getOp = if (packed) {
+    if (packedSigned) IrOp.array_get_s else IrOp.array_get_u
+  } else {
+    IrOp.array_get
+  };
+  let elem = cx.b.emit(getOp, elemVt, buf, idxParam);
   if (symOpt != null) {
     cx.bindPatternSym(symOpt as Symbol, elem);
   } else {

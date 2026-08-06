@@ -15,7 +15,8 @@ import {
   sortWasmFields, WasmArray
 } from './wasm-module.zena';
 import { 
-  ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef, 
+  ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeFuncRef,
+  ValTypeI8, ValTypeI16,
   ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode,
   WasmType, isWasmSubtype, HeapType, heapTypeToSigned
 } from './wasm.zena';
@@ -1109,6 +1110,31 @@ export let getCellStruct = (wasm: WasmModule, valType: ValType): WasmStruct => {
   return st;
 };
 
+/**
+ * The wasm type a value of `t` occupies in *storage* — an array element
+ * or (eventually) a struct field — as opposed to the type it has as a
+ * live value.
+ *
+ * The two differ only for the narrow integers, which are packed into
+ * wasm `i8`/`i16` when stored and unpacked to `i32` everywhere else.
+ * Packed storage has no signedness of its own: `u8` and `i8` share the
+ * single wasm type `(array (mut i8))`, and the choice between a
+ * zero-extending and a sign-extending read is made by the instruction
+ * (`array.get_u` vs `array.get_s`), not by the type. Lowering therefore
+ * has to consult the *semantic* element type at each read; see
+ * `packedArrayElementSigned` in `ir/intrinsics.zena`.
+ */
+export let typeToStorageValType = (wasm: WasmModule, t: Type): ValType => {
+  let b = baseType(t);
+  if (b is U8Type || b is I8Type) {
+    return new ValTypeI8();
+  }
+  if (b is U16Type || b is I16Type) {
+    return new ValTypeI16();
+  }
+  return typeToValType(wasm, t);
+};
+
 export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   let erasedT = eraseTypeParameters(t);
   return match (erasedT) {
@@ -1174,7 +1200,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   }
   case ClassType as ct: {
     if (ct.name == "array" && ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
-      let elemValType = typeToValType(wasm, (ct.typeArguments as Array<Type>)[0]);
+      let elemValType = typeToStorageValType(wasm, (ct.typeArguments as Array<Type>)[0]);
       return new ValTypeRef(wasm.getArray(elemValType, true));
     }
     if (ct.name == "ByteArray") {
@@ -1199,7 +1225,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
     }
   }
   case ArrayType as at: {
-    let elemValType = typeToValType(wasm, at.elementType);
+    let elemValType = typeToStorageValType(wasm, at.elementType);
     new ValTypeRef(wasm.getArray(elemValType, true))
   }
   case ByteArrayType: {
