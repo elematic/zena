@@ -82,25 +82,21 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-### ZIR: closures cannot capture their own (or a later sibling's) binding — needs celled captures
+### RESOLVED: self/forward-referencing closure captures (the last wit-parser blocker)
 
-- **Found**: 2026-08-05 (wit-parser wave-2 swap; the LAST compiler bug
-  blocking it — `ast-json.zena`'s recursive local `visit`/
-  `ensureRegistered` closures)
-- **Severity**: high for retirement (blocks `ast-json.zena`,
-  `parser-test-harness.zena`, `wit.zena`)
-- **Details**: `let visit = (k) => { … visit(dep); … }` — the closure
-  captures its own binding, which has no value yet when the closure's
-  context struct is built. The CHECKER side is fixed (block statement
-  lists now run the pending-function prescan, so the reference
-  resolves), but ZIR lowering bails with `captured symbol not local`
-  (and the neighboring `celled capture` bail shows cell-based capture
-  is a known hole). The fix is celled captures: allocate a cell at the
-  declaration, capture the cell ref in the context struct, and read
-  or write through it in the closure body.
-- **Test**: `execution/closures/recursive-local-closure.zena`
-  (`@skip: self-hosted` — drop the marker when this lands; passes the
-  bootstrap).
+- **Fixed 2026-08-05.** `let visit = (k) => { … visit(dep); … }` and
+  forward references between sibling closures now lower through the
+  existing celled-capture machinery: the capture analysis marks
+  captured-before-init bindings as celled, statement lists pre-allocate
+  an empty (null-holding) cell for celled `let f = (…) => …` bindings
+  before any statement runs, and the declaration writes the closure
+  value through the shared cell instead of allocating a fresh one.
+  A follow-on in method registration: a METHOD registration no longer
+  takes its signature from a same-named shadowing FIELD (a distributed
+  variant's case param over the sealed base's accessor). With this,
+  **every wit-parser module compiles with the self-hosted compiler**
+  (12/12). Test: `execution/closures/recursive-local-closure.zena`
+  (both shapes, both compilers).
 
 ### RESOLVED: distributed sealed variants and vtable-population reach (the other two wit-parser blockers)
 

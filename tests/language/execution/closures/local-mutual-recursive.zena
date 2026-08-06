@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 1
+
+// Two `let`-bound arrows inside a function body that call each other.
+//
+// The scope builder already pre-declares every function binding in a statement
+// list before processing any of them, so the *names* resolve; the checker's
+// pending-function prescan then types every binding in the list before any
+// statement is checked. Covered separately from `local-self-recursive.zena`
+// because a self-reference needs only the symbol currently being declared,
+// while this needs a later one.
+//
+// Lowering needs the same block-level treatment: `isEven` captures `isOdd`'s
+// cell before `isOdd` is declared at all, so cells for captured-before-init
+// function bindings are pre-allocated empty at statement-list entry and the
+// declarations write through into them — a letrec pre-pass, not a
+// per-declaration one.
+
+export let main = (): i32 => {
+  let isEven = (n: i32): boolean => {
+    if (n == 0) { return true; }
+    return isOdd(n - 1);
+  };
+  let isOdd = (n: i32): boolean => {
+    if (n == 0) { return false; }
+    return isEven(n - 1);
+  };
+
+  if (isEven(10) && isOdd(7)) {
+    return 1;
+  }
+  return 0;
+};

@@ -1,0 +1,24 @@
+// @mode: run
+// @result: 55
+
+// A `let`-bound arrow function that calls itself, declared *inside* a function
+// body rather than at the top level.
+//
+// `predeclare-self-recursive.zena` covers the top-level form, which is why this
+// gap went unnoticed: the self-hosted checker's pending-function prescan only
+// ran on the module body, so a local binding had no type while its own
+// initializer was being checked and the call reported "Variable 'sum' not
+// found". The prescan now runs at every statement-list entry.
+//
+// This is the shape the WIT parser's `ast-json.zena` uses for its topological
+// sorts (`let visit = (key: String): void => { … visit(dep) … }`), three times.
+
+export let main = (): i32 => {
+  let sum = (n: i32): i32 => {
+    if (n <= 0) {
+      return 0;
+    }
+    return n + sum(n - 1);
+  };
+  return sum(10);
+};

@@ -80,6 +80,45 @@ let isDeclaredInClosure = (sym: Symbol, funcExpr: FunctionExpression, model: Sem
   return false;
 };
 
+/**
+ * True when the symbol is captured before its binding initializes: its
+ * declaration is the closure's own binding (`let visit = () => …
+ * visit() …` — the closure sits inside the initializer) or a later
+ * statement in the enclosing scope (`let a = () => b(); let b = …`).
+ * Such captures must be celled: the cell exists (empty) before the
+ * closure is created, and the declaration later writes through it.
+ */
+let isCapturedBeforeInit = (s: Symbol, func: FunctionExpression, model: SemanticModel): boolean => {
+  if (s.declaration == null) { return false; }
+  let decl = s.declaration as Node;
+  if (decl is Parameter) { return false; }
+  // Parser node ids are assigned in source order, so a declaration with
+  // a larger id than the closure node is a forward reference.
+  if ((decl.id as i32) > (func.id as i32)) { return true; }
+  // Self-capture: the closure appears inside the symbol's own
+  // initializer.
+  var curr: Node = func;
+  while (true) {
+    let parentOpt = model.getParent(curr);
+    if (parentOpt == null) { return false; }
+    let parent = parentOpt as Node;
+    match (parent) {
+      case VariableDeclaration {pattern}: {
+        match (pattern) {
+          case IdentifierPattern as pat: {
+            let ps = model.resolveDeclaration(pat);
+            if (ps != null && (ps as Symbol).id == s.id) { return true; }
+          }
+          case _: {}
+        }
+      }
+      case _: {}
+    }
+    curr = parent;
+  }
+  return false;
+};
+
 export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): CaptureInfo => {
   let info = new CaptureInfo();
   let seen = new HashSet<SymbolId>();
@@ -95,6 +134,9 @@ export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): C
             if (!seen.has(s.id)) {
               seen.add(s.id);
               info.captures.push(s);
+            }
+            if (isCapturedBeforeInit(s, func, model)) {
+              info.mutableCaptures.add(s.id);
             }
           }
         }

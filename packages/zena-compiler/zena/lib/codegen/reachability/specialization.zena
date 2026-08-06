@@ -798,7 +798,17 @@ export final class Specializer implements SpecializerInterface {
               }
             } else {
               if (cc.members.has(methName)) {
-                methodTypeNode = cc.members[methName].type;
+                let mInfo = cc.members[methName];
+                // A METHOD registration must not take its signature from
+                // a same-named FIELD: a distributed variant's case param
+                // may shadow the sealed base's accessor method (docs()
+                // over a docs field), and the walk must continue up to
+                // the class that declares the method itself.
+                let isMethodReg = methodNode != null &&
+                    (methodNode as Node) is MethodDefinition;
+                if (!isMethodReg || mInfo is MethodInfo) {
+                  methodTypeNode = mInfo.type;
+                }
               }
             }
             if (methodTypeNode == null) {

@@ -961,6 +961,9 @@ export final class FunctionLowerer {
       // checker accepts exactly that shape). Generators have no return
       // value, so in presplit mode the tail is an ordinary statement.
       let stmts = (body as BlockStatement).body;
+      // Cells for self/forward-referencing closure bindings exist
+      // before any statement runs (see precellBindings).
+      this.#cx().precellBindings(stmts);
       var tailExpr: Expression | null = null;
       if (!this.presplitGenerator && sig.returns.length == 1 &&
           stmts.length > 0 &&
@@ -1729,6 +1732,9 @@ export final class FunctionLowerer {
     }
     match (stmt) {
       case BlockStatement {body}: {
+        // Cells for self/forward-referencing closure bindings exist
+        // before any statement runs (see precellBindings).
+        this.#cx().precellBindings(body);
         for (let s in body) {
           this.#lowerStatement(s);
         }
@@ -1832,7 +1838,15 @@ export final class FunctionLowerer {
     if (this.#isCelled((sym as Symbol).id)) {
       // The binding lives in a heap cell shared with capturing
       // closures; the environment holds the (invariant) cell ref.
-      this.#cx().env[(sym as Symbol).id] = this.#cellAlloc(bindingVt, value);
+      let symId = (sym as Symbol).id;
+      if (this.#cx().precelledBindings.has(symId)) {
+        // Pre-allocated for self/forward-referencing closures, which
+        // already captured this cell: write through it, don't replace.
+        this.#cx().precelledBindings.delete(symId);
+        this.#cellWrite(this.#cx().env[symId], value);
+      } else {
+        this.#cx().env[symId] = this.#cellAlloc(bindingVt, value);
+      }
     } else {
       this.#cx().env[(sym as Symbol).id] = value;
     }
