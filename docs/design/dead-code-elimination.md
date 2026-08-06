@@ -388,27 +388,27 @@ Key test cases:
 
 ```zena
 // Test 1: Minimal program should have no stdlib
-export let main = () => 42;
+export function main(): i32 { return 42; }
 
 // Test 2: Using String should include String class
-export let main = () => "hello".length;
+export function main(): i32 { return "hello".length; }
 
 // Test 3: Unused local function should be eliminated
-const unused = () => 1;
-export let main = () => 2;
+let unused = () => 1;
+export function main(): i32 { return 2; }
 
 // Test 4: Transitively used function should be kept
-const helper = () => 1;
-const used = () => helper();
-export let main = () => used();
+let helper = () => 1;
+let used = () => helper();
+export function main(): i32 { return used(); }
 
 // Test 5: Unused class should be eliminated
 class Unused {}
-export let main = () => 42;
+export function main(): i32 { return 42; }
 
 // Test 6: Class used via new expression should be kept
-class Used { x: i32; new() { this.x = 1; } }
-export let main = () => new Used().x;
+class Used { x: i32; new(this.x); }
+export function main(): i32 { return new Used(1).x; }
 ```
 
 ## Related Work

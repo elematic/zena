@@ -742,7 +742,7 @@ wasmtime run -W gc=y -W exceptions=y --dir /tmp/zena-test::/ /tmp/test.wasm
 import { readFile, writeFile, listDir, getRootDir, OpenFlags } from 'zena:fs';
 import { console } from 'zena:console';
 
-export let main = (): i32 => {
+export function main(): i32 {
   // Simple API: readFile throws on error
   let content = readFile("hello.txt");
   console.log("File contents:");
@@ -782,7 +782,7 @@ export let main = (): i32 => {
   }
 
   return 0;
-};
+}
 ```
 
 Running with wasmtime:

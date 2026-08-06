@@ -101,7 +101,7 @@ import { suite as arrayTests } from './array_test.zena';
 import { suite as mapTests } from './map_test.zena';
 import { runAll } from 'zena:test';
 
-export let main = () => runAll([arrayTests, mapTests]);
+export function main() { return runAll([arrayTests, mapTests]); }
 ```
 
 **Pros**:

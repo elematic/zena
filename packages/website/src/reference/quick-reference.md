@@ -11,9 +11,9 @@ system and low- or zero-cost abstractions.
 
 ```zena
 // hello.zena
-export let main = () => {
+export function main() {
   return 42;
-};
+}
 ```
 
 > **Note**: Zena is not yet released. The CLI examples below assume you've built

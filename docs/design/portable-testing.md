@@ -158,7 +158,7 @@ The test runner wraps the code (if it's a fragment) or calls the `main` function
 ```zena
 // @mode: run
 // @result: 42
-export let main = () => 40 + 2;
+export function main(): i32 { return 40 + 2; }
 ```
 
 **Stdout Tests**:
@@ -168,14 +168,14 @@ For tests that print to the console.
 // @mode: run
 // @stdout: Hello\nWorld
 import { console } from 'zena:console';
-export let main = () => {
+export function main() {
   console.log("Hello");
   console.log("World");
-};
+}
 ```
 
 **Fragment Support**:
-For simple expression tests, we can avoid the boilerplate of `export let main ...`.
+For simple expression tests, we can avoid the boilerplate of `export function main ...`.
 
 ```zena
 // @mode: run
@@ -259,10 +259,10 @@ let tests = suite('My WASI Tests', (): void => {
 });
 
 // Entry point - returns number of failed tests (0 = success)
-export let main = (): i32 => {
+export function main(): i32 {
   let result = tests.run();
   return result.failed;
-};
+}
 ```
 
 ## Test Runner Implementation

@@ -12,10 +12,10 @@ pattern matching — enough to read most Zena code.
 ```zena [main.zena]
 import {console} from 'zena:console';
 
-export let main = (): i32 => {
+export function main(): i32 {
   console.log('Hello, world!');
   return 0;
-};
+}
 ```
 
 ```bash
@@ -41,10 +41,10 @@ import {console} from 'zena:console';
 
 let greet = (name: String): String => `Hello, ${name}!`;
 
-export let main = (): i32 => {
+export function main(): i32 {
   console.log(greet('world'));
   return 0;
-};
+}
 ```
 
 An arrow function with an expression body returns that expression. Template
@@ -174,7 +174,7 @@ let area = (shape: Shape): f64 => match (shape) {
   case Rect {width, height}: width * height
 };
 
-export let main = (): i32 => {
+export function main(): i32 {
   let shapes: FixedArray<Shape> = [
     new Circle(1.0),
     new Rect(2.0, 3.0),
@@ -188,7 +188,7 @@ export let main = (): i32 => {
 
   console.log(`Total area: ${total}`);
   return 0;
-};
+}
 ```
 
 ## Compiling to Wasm

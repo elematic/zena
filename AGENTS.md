@@ -76,7 +76,7 @@ if (let Some {value} = maybeVal) { ... }
 
 // Modules: ES-style imports/exports
 import {Map} from 'zena:collections';
-export let main = () => 0;
+export function main(): i32 { return 0; }
 ```
 
 Key things that differ from TypeScript:

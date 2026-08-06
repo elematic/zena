@@ -422,7 +422,7 @@ input for async v1.)
 1. **`Future<void>`**: does `async (): Future<void>` want a distinct
    spelling (`async (): void`?) or is `Future<void>` fine? (Leaning:
    `Future<void>`, no special case — consistency over brevity.)
-2. **Async main**: is `export let main = async (): Future<i32>` the
+2. **Async main**: is `export async function main(): Future<i32>` the
    blessed form, with the export wrapper doing start+drain? (Leaning:
    yes; sync main stays valid.)
 3. **Unhandled rejections**: a future that fails with no awaiter —

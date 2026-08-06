@@ -57,11 +57,11 @@ suite('Math stdlib', () => {
       import { equal } from 'zena:assert';
       import { abs } from 'zena:math';
 
-      export let main = (): i32 => {
+      export function main(): i32 {
         equal(abs(-5), 5);
         equal(abs(5), 5);
         return 1;  // success sentinel
-      };
+      }
     `);
     assert.strictEqual(result, 1);
   });

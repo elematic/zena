@@ -55,7 +55,7 @@ registered on a `BenchRunner`, timed with the WASI monotonic clock
 import { BenchRunner, BenchContext, reportToString, reportToJson } from 'zena:bench';
 import { console } from 'zena:console';
 
-export let main = (): i32 => {
+export function main(): i32 {
   let runner = new BenchRunner('string concat');
   runner.options.minSamples = 50;        // default
   runner.options.horizons = ['0%'];      // default; also e.g. ['1%', '0.5ms']
@@ -70,7 +70,7 @@ export let main = (): i32 => {
   console.log(reportToString(report));
   console.log(reportToJson(report));     // versioned schema, for recording
   return 0;
-};
+}
 ```
 
 By default a sample is one whole invocation; `ctx.start()`/`ctx.stop()`
