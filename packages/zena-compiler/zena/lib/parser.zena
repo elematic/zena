@@ -30,6 +30,7 @@ import {
   BlockStatement,
   ReturnStatement,
   YieldStatement,
+  AwaitExpression,
   BreakStatement,
   ContinueStatement,
   IfStatement,
@@ -1444,7 +1445,14 @@ export final class Parser {
       let opStr = op.value;
       return new UnaryExpression(opStr, argument, true, this.#makeLocation(op));
     }
-    
+
+    // await expr — unary precedence, chains (await await f).
+    if (this.#match(TokenType.Await)) {
+      let startToken = this.#previous();
+      let argument = this.#parseUnary();
+      return new AwaitExpression(argument, this.#makeLocation(startToken));
+    }
+
     if (this.#check(TokenType.Throw)) {
       let next = this.#peek2().kind;
       if (next != TokenType.RParen
@@ -1641,15 +1649,28 @@ export final class Parser {
       return this.#parseTryExpression(startToken);
     }
     
-    // Generator function expression: gen (params): T => { ... }
-    // (or generic: gen <T>(params): T => { ... })
+    // Generator function expression: gen (params): Iterator<T> => { ... }
+    // (or generic: gen <T>(params): Iterator<T> => { ... })
     if (this.#match(TokenType.Gen)) {
       var genTypeParams: Array<TypeParameter> | null = null;
       if (this.#match(TokenType.Less)) {
         genTypeParams = this.#parseTypeParameterList();
       }
       this.#consume(TokenType.LParen, "Expected '(' after 'gen'");
-      return this.#parseArrowFunction(startToken, genTypeParams, true);
+      return this.#parseArrowFunction(startToken, genTypeParams, true, false);
+    }
+
+    // Async function expression: async (params): Future<T> => { ... }
+    if (this.#match(TokenType.Async)) {
+      if (this.#check(TokenType.Gen)) {
+        throw this.#error('Async generators are not yet supported');
+      }
+      var asyncTypeParams: Array<TypeParameter> | null = null;
+      if (this.#match(TokenType.Less)) {
+        asyncTypeParams = this.#parseTypeParameterList();
+      }
+      this.#consume(TokenType.LParen, "Expected '(' after 'async'");
+      return this.#parseArrowFunction(startToken, asyncTypeParams, false, true);
     }
 
     // Generic arrow function: <T>(x: T) => x
@@ -1657,14 +1678,14 @@ export final class Parser {
       this.#advance(); // consume '<'
       let typeParams = this.#parseTypeParameterList();
       this.#consume(TokenType.LParen, "Expected '(' after type parameters");
-      return this.#parseArrowFunction(startToken, typeParams, false);
+      return this.#parseArrowFunction(startToken, typeParams, false, false);
     }
 
     // Parenthesized expression, tuple, or arrow function
     if (this.#match(TokenType.LParen)) {
       // Check for arrow function: (params) =>
       if (this.#isArrowFunction()) {
-        return this.#parseArrowFunction(startToken, null, false);
+        return this.#parseArrowFunction(startToken, null, false, false);
       }
       
       // Parse first expression
@@ -1961,7 +1982,7 @@ export final class Parser {
     return params;
   }
   
-  #parseArrowFunction(startToken: Token, typeParameters: Array<TypeParameter> | null, isGenerator: boolean): FunctionExpression {
+  #parseArrowFunction(startToken: Token, typeParameters: Array<TypeParameter> | null, isGenerator: boolean, isAsync: boolean): FunctionExpression {
     // We're after the '('
     let params = this.#parseParameters();
 
@@ -1979,13 +2000,15 @@ export final class Parser {
     if (this.#check(TokenType.LBrace)) {
       let blockStart = this.#advance();
       let body = this.#parseBlockStatement(blockStart);
-      return new FunctionExpression(typeParameters, params, returnType, body, isGenerator, this.#makeLocation(startToken));
+      return new FunctionExpression(typeParameters, params, returnType, body, isGenerator, isAsync, this.#makeLocation(startToken));
     } else {
       if (isGenerator) {
         throw this.#error("Generator functions require a block body");
       }
+      // Async expression bodies are fine: await is an expression, and
+      // an awaitless async body still runs eagerly to completion.
       let body = this.#parseExpression();
-      return new FunctionExpression(typeParameters, params, returnType, body, false, this.#makeLocation(startToken));
+      return new FunctionExpression(typeParameters, params, returnType, body, false, isAsync, this.#makeLocation(startToken));
     }
   }
   
@@ -2675,7 +2698,7 @@ export final class Parser {
       this.#advance();
     }
 
-    // Generator method modifier: gen name(params): T { ... }
+    // Generator/async method modifiers: gen name(...) / async name(...)
     var isGen = false;
     if (this.#match(TokenType.Gen)) {
       isGen = true;
@@ -2687,6 +2710,22 @@ export final class Parser {
       }
       if (this.#check(TokenType.Operator)) {
         throw this.#error("Operator methods cannot be generators");
+      }
+    }
+    var isAsyncM = false;
+    if (this.#match(TokenType.Async)) {
+      isAsyncM = true;
+      if (isGen || this.#check(TokenType.Gen)) {
+        throw this.#error('Async generators are not yet supported');
+      }
+      if (isDeclare) {
+        throw this.#error("'declare' methods cannot be async");
+      }
+      if (this.#check(TokenType.New)) {
+        throw this.#error('Constructors cannot be async');
+      }
+      if (this.#check(TokenType.Operator)) {
+        throw this.#error('Operator methods cannot be async');
       }
     }
 
@@ -2730,7 +2769,7 @@ export final class Parser {
     // Constructor: new(...)
     if (this.#check(TokenType.New)) {
       this.#advance();
-      return this.#parseMethodBody(new Identifier('<constructor>', this.#makeLocation(startToken)), null, isFinal, isAbstract, isDeclare, isStatic, isGen, decorators, startToken);
+      return this.#parseMethodBody(new Identifier('<constructor>', this.#makeLocation(startToken)), null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
     }
     
     // Operator method: operator ==(other), operator [](index), operator +(other)
@@ -2756,7 +2795,7 @@ export final class Parser {
         }
       }
       let operatorName = new Identifier(opName, this.#makeLocation(startToken));
-      return this.#parseMethodBody(operatorName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, decorators, startToken);
+      return this.#parseMethodBody(operatorName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
     }
     
     // Private field/method: #name
@@ -2767,16 +2806,16 @@ export final class Parser {
       
       // Private method: #name(params) { ... }
       if (this.#check(TokenType.LParen)) {
-        return this.#parseMethodBody(hashName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, decorators, startToken);
+        return this.#parseMethodBody(hashName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
       }
       // Generic private method: #name<T>(params) { ... }
       if (this.#check(TokenType.Less) && this.#isGenericMethodStart()) {
         this.#advance(); // consume '<'
         let typeParams = this.#parseTypeParameterList();
-        return this.#parseMethodBody(hashName, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, decorators, startToken);
+        return this.#parseMethodBody(hashName, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
       }
-      if (isGen) {
-        throw this.#error("Expected '(' after generator method name");
+      if (isGen || isAsyncM) {
+        throw this.#error("Expected '(' after generator/async method name");
       }
 
       // Private field: #name: Type; or #name?: Type; or #name = value;
@@ -2822,10 +2861,10 @@ export final class Parser {
       
       // Symbol-keyed method: :name(params) { ... }
       if (this.#check(TokenType.LParen)) {
-        return this.#parseMethodBody(symPropName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, decorators, startToken);
+        return this.#parseMethodBody(symPropName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
       }
-      if (isGen) {
-        throw this.#error("Expected '(' after generator method name");
+      if (isGen || isAsyncM) {
+        throw this.#error("Expected '(' after generator/async method name");
       }
 
       // Symbol-keyed field: :name: Type;
@@ -2851,15 +2890,15 @@ export final class Parser {
     if (this.#check(TokenType.Less) && this.#isGenericMethodStart()) {
       this.#advance(); // consume '<'
       let typeParams = this.#parseTypeParameterList();
-      return this.#parseMethodBody(name, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, decorators, startToken);
+      return this.#parseMethodBody(name, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
     }
     
     // Method: name(params) { ... }
     if (this.#check(TokenType.LParen)) {
-      return this.#parseMethodBody(name, null, isFinal, isAbstract, isDeclare, isStatic, isGen, decorators, startToken);
+      return this.#parseMethodBody(name, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
     }
-    if (isGen) {
-      throw this.#error("Expected '(' after generator method name");
+    if (isGen || isAsyncM) {
+      throw this.#error("Expected '(' after generator/async method name");
     }
 
     // Abstract field: abstract name: Type; or abstract name?: Type;
@@ -2973,7 +3012,7 @@ export final class Parser {
     return new AccessorDeclaration(name, typeAnnotation, getter, setter, isFinal, false, decorators, this.#makeLocation(startToken));
   }
   
-  #parseMethodBody(name: Node, typeParameters: Array<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isDeclare: boolean, isStatic: boolean, isGenerator: boolean, decorators: Array<Decorator>, startToken: Token): MethodDefinition {
+  #parseMethodBody(name: Node, typeParameters: Array<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isDeclare: boolean, isStatic: boolean, isGenerator: boolean, isAsync: boolean, decorators: Array<Decorator>, startToken: Token): MethodDefinition {
     this.#consume(TokenType.LParen, "Expected '(' after method name");
     let params = this.#parseParameters();
     this.#consume(TokenType.RParen, "Expected ')' after parameters");
@@ -3048,7 +3087,7 @@ export final class Parser {
           initListResult = combined;
         }
         
-        return new MethodDefinition(name, typeParameters, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, isDeclare, isGenerator, decorators, this.#makeLocation(startToken));
+        return new MethodDefinition(name, typeParameters, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, this.#makeLocation(startToken));
       } else {
         returnType = this.#parseTypeAnnotation();
       }
@@ -3072,7 +3111,7 @@ export final class Parser {
       thisInitResult = thisInits;
     }
     
-    return new MethodDefinition(name, typeParameters, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, isDeclare, isGenerator, decorators, this.#makeLocation(startToken));
+    return new MethodDefinition(name, typeParameters, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, this.#makeLocation(startToken));
   }
   
   #parseFieldInitializer(): FieldInitializer {

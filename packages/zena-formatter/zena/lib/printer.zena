@@ -19,7 +19,7 @@ import {
   RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression,
   CallExpression, MemberExpression, IndexExpression, ThisExpression,
   SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
-  TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression,
+  TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression,
   // Statements
   Statement, VariableDeclaration, ExpressionStatement, BlockStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
@@ -603,6 +603,7 @@ let printMethodDefinition = (method: MethodDefinition): Doc => {
   if (method.isAbstract) { parts.push(text('abstract ')); }
   if (method.isFinal) { parts.push(text('final ')); }
   if (method.isGenerator) { parts.push(text('gen ')); }
+  if (method.isAsync) { parts.push(text('async ')); }
 
   parts.push(printNodeName(method.name));
 
@@ -989,6 +990,7 @@ let printExpressionInner = (expr: Expression): Doc => match (expr) {
   case MatchExpression {}: printMatchExpression(expr as MatchExpression)
   case IfExpression {}: printIfExpression(expr as IfExpression)
   case ThrowExpression {argument}: concat(docs2(text('throw '), printExpression(argument)))
+  case AwaitExpression {argument}: concat(docs2(text('await '), printExpression(argument)))
   case TryExpression {}: printTryExpression(expr as TryExpression)
 };
 
@@ -1357,6 +1359,7 @@ let printFunctionExpression = (fn: FunctionExpression): Doc => {
   let parts = new Array<Doc>();
 
   if (fn.isGenerator) { parts.push(text('gen ')); }
+  if (fn.isAsync) { parts.push(text('async ')); }
 
   if (fn.typeParameters != null) {
     parts.push(printTypeParams(fn.typeParameters as Array<TypeParameter>));

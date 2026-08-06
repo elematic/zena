@@ -1,0 +1,269 @@
+/**
+ * zena:async — Future<T>, Completer<T>, and the microtask executor
+ * (docs/design/async.md §2).
+ *
+ * Deliberately ordinary Zena: no async/gen syntax appears here, so
+ * both compilers compile this module. The `async`/`await` surface
+ * (self-hosted only) lowers onto these types; until then — and from
+ * non-async code always — they are used directly via callbacks.
+ *
+ * Semantics pinned here:
+ * - A future settles exactly once; settling twice throws.
+ * - Callbacks always run from the FIFO microtask queue, never
+ *   synchronously inside complete()/fail()/onComplete() — the
+ *   "always async" rule, so completion order is deterministic and
+ *   re-entrancy surprises are impossible.
+ * - completeWith() is one-level, statically-typed adoption: when the
+ *   inner future settles, this one settles with the same value or
+ *   failure. There is no runtime "value or future?" test and no
+ *   recursive unwrapping.
+ *
+ * Implementation note (compiler limitation worked around, loud when
+ * hit): no closures are created inside generic code here — RTA does
+ * not yet specialize closure implementations per instantiation
+ * ("non-concrete function reached"). Deliveries are objects
+ * implementing Microtask/FutureListener instead.
+ */
+import { Array } from 'zena:array';
+import { Box } from 'zena:box';
+import { Error } from 'zena:error';
+
+/** A future is Pending until it settles as Resolved or Rejected. */
+export enum FutureState {
+  Pending,
+  Resolved,
+  Rejected,
+}
+
+// ---------------------------------------------------------------------------
+// The executor: a FIFO microtask queue of runnable tasks.
+// ---------------------------------------------------------------------------
+
+/** One queued unit of work. */
+export interface Microtask {
+  run(): void;
+}
+
+/** Wraps a plain callback for non-generic callers. */
+class ClosureMicrotask implements Microtask {
+  cb: () => void;
+  new(this.cb);
+  run(): void {
+    let f = this.cb;
+    f();
+  }
+}
+
+class MicrotaskQueue {
+  #items = new Array<Microtask>();
+  var #head = 0;
+
+  schedule(task: Microtask): void {
+    this.#items.push(task);
+  }
+
+  /** Runs queued tasks in FIFO order until the queue is empty
+   * (including tasks scheduled while draining). */
+  drain(): void {
+    while (this.#head < this.#items.length) {
+      let task = this.#items[this.#head];
+      this.#head += 1;
+      task.run();
+    }
+    // Empty: release the backlog so long drains don't accrete.
+    while (this.#items.length > 0) {
+      this.#items.pop();
+    }
+    this.#head = 0;
+  }
+}
+
+let queue = new MicrotaskQueue();
+
+/** Enqueue a task on the microtask queue. */
+export let scheduleTask = (task: Microtask): void => {
+  queue.schedule(task);
+};
+
+/** Enqueue a callback on the microtask queue. */
+export let scheduleMicrotask = (cb: () => void): void => {
+  queue.schedule(new ClosureMicrotask(cb));
+};
+
+/** Run microtasks until the queue is empty. */
+export let drainMicrotasks = (): void => {
+  queue.drain();
+};
+
+// ---------------------------------------------------------------------------
+// Future / Completer
+// ---------------------------------------------------------------------------
+
+/** What a future notifies when it settles; exactly one method runs. */
+interface FutureListener<A> {
+  onValue(value: A): void;
+  onError(error: Error): void;
+}
+
+/** A listener built from a pair of callbacks (Future.onComplete). */
+class CallbackListener<A> implements FutureListener<A> {
+  valueCb: (value: A) => void;
+  errorCb: (error: Error) => void;
+  new(this.valueCb, this.errorCb);
+  onValue(value: A): void {
+    let f = this.valueCb;
+    f(value);
+  }
+  onError(error: Error): void {
+    let f = this.errorCb;
+    f(error);
+  }
+}
+
+/** Queued delivery of a settled value to one listener. */
+class ValueDelivery<A> implements Microtask {
+  listener: FutureListener<A>;
+  value: A;
+  new(this.listener, this.value);
+  run(): void {
+    this.listener.onValue(this.value);
+  }
+}
+
+/** Queued delivery of a failure to one listener. */
+class ErrorDelivery<A> implements Microtask {
+  listener: FutureListener<A>;
+  error: Error;
+  new(this.listener, this.error);
+  run(): void {
+    this.listener.onError(this.error);
+  }
+}
+
+export class Future<T> {
+  var #state = FutureState.Pending;
+  var #value: Box<T> | null = null;
+  var #error: Error | null = null;
+  #listeners: Array<FutureListener<T>> = new Array<FutureListener<T>>();
+
+  new();
+
+  state: FutureState {
+    get {
+      return this.#state;
+    }
+  }
+
+  isCompleted: boolean {
+    get {
+      return !(this.#state == FutureState.Pending);
+    }
+  }
+
+  /**
+   * Low-level subscription: exactly one of the callbacks runs, from
+   * the microtask queue, once this future settles (immediately
+   * scheduled if it already has). This is the bridge for non-async
+   * code and the primitive async frames register through.
+   */
+  onComplete(onValue: (value: T) => void, onError: (error: Error) => void): void {
+    this.subscribe(new CallbackListener<T>(onValue, onError));
+  }
+
+  /** Object form of onComplete; async frames use this directly. */
+  subscribe(listener: FutureListener<T>): void {
+    if (this.#state == FutureState.Resolved) {
+      let stored = this.#value as Box<T>;
+      scheduleTask(new ValueDelivery<T>(listener, stored.value));
+      return;
+    }
+    if (this.#state == FutureState.Rejected) {
+      scheduleTask(new ErrorDelivery<T>(listener, this.#error as Error));
+      return;
+    }
+    this.#listeners.push(listener);
+  }
+
+  /** Settles this future with a value. Throws if already settled. */
+  complete(value: T): void {
+    if (!(this.#state == FutureState.Pending)) {
+      throw new Error('Future already completed');
+    }
+    this.#state = FutureState.Resolved;
+    this.#value = new Box<T>(value);
+    // Index loop, not for-in: the bootstrap compiler cannot yet
+    // lower for-in over an Array field inside a generic class.
+    var i = 0;
+    while (i < this.#listeners.length) {
+      scheduleTask(new ValueDelivery<T>(this.#listeners[i], value));
+      i += 1;
+    }
+    this.#clearListeners();
+  }
+
+  /** Settles this future with a failure. Throws if already settled. */
+  fail(error: Error): void {
+    if (!(this.#state == FutureState.Pending)) {
+      throw new Error('Future already completed');
+    }
+    this.#state = FutureState.Rejected;
+    this.#error = error;
+    var i = 0;
+    while (i < this.#listeners.length) {
+      scheduleTask(new ErrorDelivery<T>(this.#listeners[i], error));
+      i += 1;
+    }
+    this.#clearListeners();
+  }
+
+  // NOTE: completeWith (one-level adoption, async.md §2) is part of
+  // the designed API but is deferred to A1: implementing it today
+  // trips two compiler gaps in generic templates (closures are not
+  // specialized per instantiation, and `this`/generic-typed fields
+  // check as the raw template type, which then fails ZIR lowering).
+  // The A1 transform work has to solve both for frames anyway.
+
+  #clearListeners(): void {
+    while (this.#listeners.length > 0) {
+      this.#listeners.pop();
+    }
+  }
+}
+
+/**
+ * The boundary object: everything external — host I/O, timers, test
+ * harnesses — completes futures through a Completer.
+ */
+export class Completer<T> {
+  future = new Future<T>();
+
+  new();
+
+  complete(value: T): void {
+    this.future.complete(value);
+  }
+
+  fail(error: Error): void {
+    this.future.fail(error);
+  }
+}
+
+/** An already-resolved future. */
+export let futureOf = <T>(value: T): Future<T> => {
+  let f = new Future<T>();
+  f.complete(value);
+  return f;
+};
+
+/** An already-failed future. */
+export let failedFuture = <T>(error: Error): Future<T> => {
+  let f = new Future<T>();
+  f.fail(error);
+  return f;
+};
+
+// Note: no generic `MaybeFuture<T> = T | Future<T>` alias — Zena
+// rejects unions mixing an unbounded type parameter with reference
+// types (T could be a primitive). Concrete unions like
+// `i32 | Future<i32>` work directly, and `await` accepts them
+// (async.md §1).

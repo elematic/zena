@@ -62,7 +62,7 @@ import {
   ThisExpression, SuperExpression, NewExpression, AsExpression, IsExpression,
   ArrayLiteral, RecordLiteral, TupleLiteral, MapLiteral,
   TemplateLiteral, TaggedTemplateExpression, MatchExpression, IfExpression,
-  ThrowExpression, TryExpression, RangeExpression, PipelineExpression,
+  ThrowExpression, TryExpression, AwaitExpression, RangeExpression, PipelineExpression,
   PipePlaceholder,
   // Statements
   Statement, VariableDeclaration, ExpressionStatement, BlockStatement,
@@ -284,9 +284,24 @@ final class CheckerContext {
 
   /**
    * Depth of enclosing try blocks within the current function body.
-   * `yield` inside `try` is rejected in v1 (generators.md §6).
+   * `yield`/`await` inside `try` are rejected in v1 (generators.md §6,
+   * async.md §1).
    */
   var #tryDepth: i32 = 0;
+
+  /**
+   * The value type T of the enclosing async function's Future<T>, or
+   * null when the nearest enclosing function is not async. VoidType is
+   * the inference sentinel, mirroring #returnType's convention.
+   */
+  var #asyncValueType: Type | null = null;
+
+  /**
+   * The declared Future<T> of the enclosing async function — the
+   * return-adoption target (async.md §2). Null while inferring (no
+   * adoption during inference) and outside async bodies.
+   */
+  var #asyncFutureType: Type | null = null;
 
   /**
    * Stack of class types being checked. The top is the innermost class.
@@ -1449,6 +1464,24 @@ final class CheckerContext {
 
   enterTry(): void { this.#tryDepth = this.#tryDepth + 1; }
   exitTry(): void { this.#tryDepth = this.#tryDepth - 1; }
+
+  // --- Async context ---
+
+  asyncValueType: Type | null {
+    get { return this.#asyncValueType; }
+  }
+
+  setAsyncValueType(t: Type | null): void {
+    this.#asyncValueType = t;
+  }
+
+  asyncFutureType: Type | null {
+    get { return this.#asyncFutureType; }
+  }
+
+  setAsyncFutureType(t: Type | null): void {
+    this.#asyncFutureType = t;
+  }
 
   // --- Loop depth ---
 
@@ -4725,12 +4758,25 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
             // No explicit return type - infer from return statements
             ctx.addInferredReturnType(argType);
           } else if (!isAssignableTo(ctx, argType, expected)) {
-            ctx.error(
-              "Type mismatch: cannot return '" + typeToString(argType) +
-              "' from function expecting '" + typeToString(expected) + "'.",
-              DiagnosticCode.TypeMismatch,
-              loc
-            );
+            // Async return-adoption (async.md §2): `return e` in an
+            // annotated async body also accepts the declared Future<T>
+            // itself, forwarding its result — legal only when T is
+            // distinguishable from Future<T>.
+            let adoptTarget = ctx.asyncFutureType;
+            var adopted = false;
+            if (adoptTarget != null &&
+                extractFutureValueType(ctx, expected) == null &&
+                isAssignableTo(ctx, argType, adoptTarget as Type)) {
+              adopted = true;
+            }
+            if (!adopted) {
+              ctx.error(
+                "Type mismatch: cannot return '" + typeToString(argType) +
+                "' from function expecting '" + typeToString(expected) + "'.",
+                DiagnosticCode.TypeMismatch,
+                loc
+              );
+            }
           } else {
             let instantiated = tryInstantiateGenericFunction(ctx, argType, expected);
             if (instantiated != argType) {
@@ -6665,6 +6711,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case MatchExpression {discriminant, cases, loc}: {
     checkMatchExpr(ctx, discriminant, cases, loc, expectedType)
   }
+  case AwaitExpression as aw: {
+    checkAwaitExpression(ctx, aw)
+  }
+
   case ThrowExpression {argument, loc}: {
     let deps = ctx.currentDependencies();
     if (deps != null) {
@@ -8607,6 +8657,26 @@ let checkMethodSignature = (
     }
   }
 
+  // Async methods: the annotation is the full Future<T> return type.
+  if (md.isAsync) {
+    if (md.returnType == null) {
+      ctx.error(
+        "An async method requires a return type annotation of 'Future<T>'.",
+        DiagnosticCode.TypeMismatch,
+        md.loc
+      );
+      retType = makeFutureType(ctx, new ErrorType(), md.loc);
+    } else if (extractFutureValueType(ctx, retType) == null) {
+      ctx.error(
+        "An async function's return type must be 'Future<T>', got '" +
+        typeToString(retType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        md.loc
+      );
+      retType = makeFutureType(ctx, new ErrorType(), md.loc);
+    }
+  }
+
   let paramSymbols = new Array<SymbolId>();
   var pi = 0;
   while (pi < md.params.length) {
@@ -8698,9 +8768,12 @@ let checkMethodBody = (
 
   // Set expected return type. Generator methods check their body
   // against the yield type (extracted back out of Iterator<T>) with a
-  // void return type; everything else checks against the return type.
+  // void return type; async methods check against the Future's value
+  // type; everything else checks against the return type.
   let prevReturnType = ctx.returnType;
   let prevYieldType = ctx.yieldType;
+  let prevAsyncValue = ctx.asyncValueType;
+  let prevAsyncFuture = ctx.asyncFutureType;
   if (md.isGenerator) {
     var yieldT: Type = new ErrorType();
     match (effectiveReturnType) {
@@ -8714,9 +8787,23 @@ let checkMethodBody = (
     }
     ctx.setReturnType(new VoidType());
     ctx.setYieldType(yieldT);
+    ctx.setAsyncValueType(null);
+    ctx.setAsyncFutureType(null);
+  } else if (md.isAsync) {
+    var valueT: Type = new ErrorType();
+    let fv = extractFutureValueType(ctx, effectiveReturnType);
+    if (fv != null) {
+      valueT = fv as Type;
+    }
+    ctx.setReturnType(valueT);
+    ctx.setYieldType(null);
+    ctx.setAsyncValueType(valueT);
+    ctx.setAsyncFutureType(effectiveReturnType);
   } else {
     ctx.setReturnType(effectiveReturnType);
     ctx.setYieldType(null);
+    ctx.setAsyncValueType(null);
+    ctx.setAsyncFutureType(null);
   }
 
   // Check body.
@@ -8879,6 +8966,8 @@ let checkMethodBody = (
 
   ctx.setReturnType(prevReturnType);
   ctx.setYieldType(prevYieldType);
+  ctx.setAsyncValueType(prevAsyncValue);
+  ctx.setAsyncFutureType(prevAsyncFuture);
   ctx.exitScope();
 };
 
@@ -11618,6 +11707,127 @@ let makeIteratorType = (
   return instantiateInterfaceType(prelude as InterfaceType, args);
 };
 
+/**
+ * If `t` is the prelude Future<T> instantiation, returns T; otherwise
+ * null. An async function's declared return type must satisfy this
+ * (async.md §1); the annotation is the call expression's type.
+ */
+let extractFutureValueType = (ctx: CheckerContext, t: Type): Type | null => {
+  if (!(t is ClassType)) {
+    return null;
+  }
+  let ct = t as ClassType;
+  let prelude = ctx.resolvePreludeType('Future');
+  if (prelude == null || !(prelude is ClassType)) {
+    return null;
+  }
+  if (ct.id != (prelude as ClassType).id) {
+    return null;
+  }
+  if (ct.typeArguments == null) {
+    return null;
+  }
+  let args = ct.typeArguments as Array<Type>;
+  if (args.length != 1) {
+    return null;
+  }
+  return args[0];
+};
+
+/**
+ * The external type of an `async` function with no annotation:
+ * Future<inferredValueType> from the prelude.
+ */
+let makeFutureType = (
+  ctx: CheckerContext,
+  valueType: Type,
+  loc: SourceLocation | null
+): Type => {
+  let prelude = ctx.resolvePreludeType('Future');
+  if (prelude == null || !(prelude is ClassType)) {
+    ctx.error(
+      "Async functions require the 'Future' class from the prelude.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return new ErrorType();
+  }
+  let args = new Array<Type>();
+  args.push(valueType);
+  return instantiateClassType(prelude as ClassType, args);
+};
+
+/**
+ * Types `await e` (async.md §1): the operand must be Future<T>
+ * (result T) or a distinguishable union T | Future<T> (result T).
+ */
+let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
+  let operandType = checkExpression(ctx, aw.argument, null);
+  if (ctx.asyncValueType == null) {
+    // Includes non-async closures nested in async bodies: they are
+    // their own functions and cannot suspend their lexical parent.
+    ctx.error(
+      "'await' is only valid inside the body of an 'async' function.",
+      DiagnosticCode.TypeMismatch,
+      aw.loc
+    );
+    return new ErrorType();
+  }
+  if (ctx.tryDepth > 0) {
+    ctx.error(
+      "'await' may not appear inside 'try' (not yet supported).",
+      DiagnosticCode.TypeMismatch,
+      aw.loc
+    );
+  }
+  let direct = extractFutureValueType(ctx, operandType);
+  if (direct != null) {
+    return direct as Type;
+  }
+  if (operandType is UnionT) {
+    let arms = (operandType as UnionT).types;
+    let valueArms = new Array<Type>();
+    var futureValue: Type | null = null;
+    var futureCount = 0;
+    for (let arm in arms) {
+      let fv = extractFutureValueType(ctx, arm);
+      if (fv != null) {
+        futureValue = fv;
+        futureCount += 1;
+      } else {
+        valueArms.push(arm);
+      }
+    }
+    if (futureCount == 1 && valueArms.length > 0) {
+      let valueType = if (valueArms.length == 1) {
+        valueArms[0]
+      } else {
+        createUnionType(valueArms)
+      };
+      if (typesEqual(valueType, futureValue as Type)) {
+        return valueType;
+      }
+      ctx.error(
+        "Type mismatch: 'await' on a union requires 'T | Future<T>' with matching T, got '" +
+        typeToString(operandType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        aw.loc
+      );
+      return new ErrorType();
+    }
+  }
+  if (operandType is ErrorType) {
+    return new ErrorType();
+  }
+  ctx.error(
+    "Type mismatch: 'await' operand must be 'Future<T>' or 'T | Future<T>', got '" +
+    typeToString(operandType) + "'.",
+    DiagnosticCode.TypeMismatch,
+    aw.loc
+  );
+  return new ErrorType();
+};
+
 let checkFunctionExpression = (
   ctx: CheckerContext,
   fe: FunctionExpression,
@@ -11799,15 +12009,46 @@ let checkFunctionExpression = (
     needsInference = false;
   }
 
+  // Async functions: the annotation is the full Future<T> return type
+  // (the call expression's type); the body checks against T, and
+  // `return e` may also adopt a Future<T> (async.md §1–§2). With no
+  // annotation, T is inferred from the returns and wrapped.
+  let isAsync = fe.isAsync;
+  var declaredFutureType: Type | null = null;
+  if (isAsync) {
+    if (returnTypeAnn != null) {
+      let extracted = extractFutureValueType(ctx, retType);
+      if (extracted == null) {
+        ctx.error(
+          "An async function's return type must be 'Future<T>', got '" +
+          typeToString(retType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        retType = new ErrorType();
+        declaredFutureType = new ErrorType();
+      } else {
+        declaredFutureType = retType;
+        retType = extracted as Type;
+      }
+    }
+    // Unannotated: retType stays VoidType with needsInference — the
+    // ordinary return-inference machinery infers T (no adoption while
+    // inferring: the returned expression's type is taken as-is).
+  }
+
   // Set expected return type for return statements.
   // Save and reset inferred return types for this function.
-  // Yield context and try depth are per-function: a non-gen closure
-  // nested in a generator must not inherit its parent's yield type
-  // (and vice versa), and a closure inside `try` is not "in" the try.
+  // Yield/async context and try depth are per-function: a plain
+  // closure nested in a generator or async body must not inherit its
+  // parent's suspension context, and a closure inside `try` is not
+  // "in" the try.
   let prevReturnType = ctx.returnType;
   let prevInferredReturns = ctx.inferredReturnTypes;
   let prevYieldType = ctx.yieldType;
   let prevInferredYields = ctx.inferredYieldTypes;
+  let prevAsyncValue = ctx.asyncValueType;
+  let prevAsyncFuture = ctx.asyncFutureType;
   let prevTryDepth = ctx.tryDepth;
   ctx.setReturnType(retType);
   ctx.setInferredReturnTypes(new Array<Type>());
@@ -11817,6 +12058,12 @@ let checkFunctionExpression = (
   }
   ctx.setYieldType(newYieldType);
   ctx.setInferredYieldTypes(new Array<Type>());
+  var newAsyncValue: Type | null = null;
+  if (isAsync) {
+    newAsyncValue = retType;
+  }
+  ctx.setAsyncValueType(newAsyncValue);
+  ctx.setAsyncFutureType(if (isAsync) { declaredFutureType } else { null });
   ctx.setTryDepth(0);
 
   // Check the body.
@@ -11889,12 +12136,23 @@ let checkFunctionExpression = (
       // Expression body: validate return type if annotated
       if (returnTypeAnn != null) {
         if (!isAssignableTo(ctx, bodyType, retType)) {
-          ctx.error(
-            "Type mismatch: expression body returns '" + typeToString(bodyType) +
-            "' but function expects '" + typeToString(retType) + "'.",
-            DiagnosticCode.TypeMismatch,
-            loc
-          );
+          // Async return-adoption: the body may produce the declared
+          // Future<T> itself (forwarded, not double-wrapped), when T
+          // is distinguishable from Future<T> (async.md §2).
+          var adopted = false;
+          if (declaredFutureType != null &&
+              extractFutureValueType(ctx, retType) == null &&
+              isAssignableTo(ctx, bodyType, declaredFutureType as Type)) {
+            adopted = true;
+          }
+          if (!adopted) {
+            ctx.error(
+              "Type mismatch: expression body returns '" + typeToString(bodyType) +
+              "' but function expects '" + typeToString(retType) + "'.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+          }
         }
       } else {
         // Infer return type from expression body.
@@ -11926,10 +12184,22 @@ let checkFunctionExpression = (
     }
   }
 
+  // Async: the declared Future<T> is the return type; with no
+  // annotation, wrap the inferred value type.
+  if (isAsync) {
+    if (declaredFutureType != null) {
+      finalRetType = declaredFutureType as Type;
+    } else {
+      finalRetType = makeFutureType(ctx, retType, loc);
+    }
+  }
+
   ctx.setReturnType(prevReturnType);
   ctx.setInferredReturnTypes(prevInferredReturns);
   ctx.setYieldType(prevYieldType);
   ctx.setInferredYieldTypes(prevInferredYields);
+  ctx.setAsyncValueType(prevAsyncValue);
+  ctx.setAsyncFutureType(prevAsyncFuture);
   ctx.setTryDepth(prevTryDepth);
   ctx.exitScope();
 

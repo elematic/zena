@@ -1,0 +1,66 @@
+// @mode: run
+// @result: 241
+// @skip: bootstrap
+// Future/Completer/executor are ordinary library code (async.md §2)
+// with no async syntax — but the bootstrap compiler's codegen cannot
+// handle the generic-interface listener pattern (undefined
+// vtableGlobalIndex), so execution is self-hosted only. Pins the
+// always-async rule (callbacks never run before drain), FIFO order,
+// and the failure path.
+import { Future, Completer, futureOf, drainMicrotasks } from 'zena:async';
+
+var log = 0;
+
+export let main = (): i32 => {
+  let c = new Completer<i32>();
+  c.future.onComplete(
+    (v: i32) => {
+      log = log * 10 + v;
+    },
+    (e) => {
+      log = -1;
+    }
+  );
+  // Already-resolved future: callback still waits for the queue.
+  let ready = futureOf(2);
+  ready.onComplete(
+    (v: i32) => {
+      log = log * 10 + v;
+    },
+    (e) => {
+      log = -1;
+    }
+  );
+  c.complete(4);
+  // Nothing has run yet: the always-async rule.
+  if (log != 0) {
+    return -2;
+  }
+  drainMicrotasks();
+  // FIFO: ready's delivery was scheduled at onComplete (before
+  // c.complete scheduled c's), so ready(2) runs first, then c(4):
+  // log = 2 then 24.
+  if (log != 24) {
+    return -3;
+  }
+
+  // Failure path.
+  let failing = new Completer<i32>();
+  var failed = 0;
+  failing.future.onComplete(
+    (v: i32) => {
+      failed = -1;
+    },
+    (e) => {
+      failed = 1;
+    }
+  );
+  failing.fail(new Error('nope'));
+  drainMicrotasks();
+  if (failed != 1) {
+    return -5;
+  }
+
+  // log 24, failed 1 => 241
+  return log * 10 + failed;
+};

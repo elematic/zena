@@ -1078,3 +1078,37 @@ found, returning false`, so the reachability pass is probably
   same-shape forward reference WITHOUT the generic field initializer
   (plain scalar fields) works, so the initializer's type resolution
   order is implicated. The bootstrap compiler accepts both orders.
+
+### Closures inside generic class methods are not specialized by RTA
+
+- **Found**: 2026-08-05 (writing zena:async's Future<V>)
+- **Severity**: medium (loud: "non-concrete function reached:
+  closure*impl*...")
+- **Details**: A closure created inside a method of a generic class
+  (e.g. `scheduleMicrotask(() => { cb(value); })` inside
+  `Future<V>.complete`) registers one closure implementation for the
+  template; RTA never produces per-instantiation specialized copies,
+  so reaching it fails with "non-concrete function reached". Applies
+  to the self-hosted compiler's RTA; the checker accepts the code.
+- **Workaround**: avoid closures in generic code — use small generic
+  classes implementing an interface (see zena:async's
+  Microtask/FutureListener objects).
+
+### Generic templates: `this` and generic-typed fields check as the raw template type
+
+- **Found**: 2026-08-05 (writing zena:async's completeWith)
+- **Severity**: medium (bootstrap/self-hosted divergence; downstream
+  ZIR bail "identifier type shift" even when casts appease the checker)
+- **Details**: Inside a generic class's methods, the self-hosted
+  checker types `this` and reads of fields whose declared type
+  mentions a type parameter (e.g. `owner: Future<A>`) as the RAW
+  template type ("Future", no arguments). Passing them where the
+  instantiated type is expected fails ("argument 'Future' is not
+  assignable to parameter 'Future<V>'"); `as`-casts silence the
+  checker but the recorded node types still fail ZIR lowering with
+  "identifier type shift" in the specialized copy. The bootstrap
+  compiler substitutes correctly. Blocks mutually-generic patterns
+  like Future<V> + AdoptListener<V> (zena:async's completeWith is
+  deferred to async A1 because of this).
+- **Workaround**: none clean; restructure to avoid calling methods on
+  generic-typed fields/`this` across class boundaries in templates.

@@ -23,7 +23,7 @@ import {
   MapLiteral, MapEntry,
   RecordPattern, TuplePattern, BindingProperty, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, LiteralPattern,
   MatchExpression, MatchCase, IfExpression,
-  ThrowExpression, TryExpression, CatchClause,
+  ThrowExpression, TryExpression, AwaitExpression, CatchClause,
   NamedTypeAnnotation, UnionTypeAnnotation,
   FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
   TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation,
@@ -112,6 +112,7 @@ let nodeTypeName = (node: Node): String => {
     case IfExpression {}: 'IfExpression'
     case ThrowExpression {}: 'ThrowExpression'
     case TryExpression {}: 'TryExpression'
+    case AwaitExpression {}: 'AwaitExpression'
     case CatchClause {}: 'CatchClause'
     case LetPatternCondition {}: 'LetPatternCondition'
     // Parameters
@@ -320,7 +321,7 @@ export let nodeToJson = (node: Node): JsonObject => {
       }
       obj['arguments'] = expressionsToJson(args);
     }
-    case FunctionExpression { typeParameters, params, returnType, body, isGenerator }: {
+    case FunctionExpression { typeParameters, params, returnType, body, isGenerator, isAsync }: {
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
       }
@@ -332,6 +333,9 @@ export let nodeToJson = (node: Node): JsonObject => {
       // Only emitted when set: bootstrap snapshots predate generators.
       if (isGenerator) {
         obj['isGenerator'] = new Box<boolean>(true);
+      }
+      if (isAsync) {
+        obj['isAsync'] = new Box<boolean>(true);
       }
     }
     
@@ -422,6 +426,9 @@ export let nodeToJson = (node: Node): JsonObject => {
       }
     }
     case ThrowExpression { argument }: {
+      obj['argument'] = nodeToJson(argument);
+    }
+    case AwaitExpression { argument }: {
       obj['argument'] = nodeToJson(argument);
     }
     case TryExpression { body, handler, finalizer }: {
@@ -667,7 +674,7 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['mutability'] = mutability as String;
       }
     }
-    case MethodDefinition { name, typeParameters, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, isDeclare, isGenerator, decorators }: {
+    case MethodDefinition { name, typeParameters, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
@@ -692,6 +699,9 @@ export let nodeToJson = (node: Node): JsonObject => {
       // Only emitted when set: bootstrap snapshots predate generators.
       if (isGenerator) {
         obj['isGenerator'] = new Box<boolean>(true);
+      }
+      if (isAsync) {
+        obj['isAsync'] = new Box<boolean>(true);
       }
       obj['decorators'] = decoratorsToJson(decorators);
     }

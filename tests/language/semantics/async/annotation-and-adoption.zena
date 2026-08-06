@@ -1,0 +1,26 @@
+// @mode: check
+// @skip: bootstrap
+// The declared return type is the full Future<T>; `return e` also
+// adopts a Future<T> when T is distinguishable (async.md §1-§2).
+import { Future, futureOf } from 'zena:async';
+
+let bad = async (): i32 => { // @error: An async function's return type must be 'Future<T>'
+  return 1;
+};
+
+let source = async (): Future<i32> => {
+  return 7;
+};
+
+let adopts = async (): Future<i32> => {
+  return source(); // adoption: forwards the future's result
+};
+
+let plain = async (): Future<i32> => {
+  return await source();
+};
+
+let chained = async (): Future<i32> => {
+  let direct: Future<i32> = adopts();
+  return await direct;
+};

@@ -34,6 +34,7 @@ function isSelfHostedSkipped(file: string): boolean {
 async function run() {
   const runList = [
     'arrays',
+    'async',
     'case-classes',
     'classes',
     'closures',

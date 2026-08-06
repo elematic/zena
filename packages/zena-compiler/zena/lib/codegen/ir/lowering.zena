@@ -655,9 +655,16 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     return lowerGeneratorRamp(wasm, func);
   }
   var isGenFn = false;
+  var isAsyncFn = false;
   match (func.node as Node) {
-    case FunctionExpression {isGenerator}: { isGenFn = isGenerator; }
-    case MethodDefinition {isGenerator}: { isGenFn = isGenerator; }
+    case FunctionExpression {isGenerator, isAsync}: {
+      isGenFn = isGenerator;
+      isAsyncFn = isAsync;
+    }
+    case MethodDefinition {isGenerator, isAsync}: {
+      isGenFn = isGenerator;
+      isAsyncFn = isAsync;
+    }
     case _: {}
   }
   if (isGenFn) {
@@ -665,6 +672,13 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     if (func.name != null) { genName = func.name as String; }
     throw new Error(
       "generator was not prepared by the split pass [in " + genName + "]");
+  }
+  if (isAsyncFn) {
+    var asyncName = 'anonymous';
+    if (func.name != null) { asyncName = func.name as String; }
+    throw new Error(
+      "Async functions are not yet supported by code generation " +
+      "(async.md milestone A1) [in " + asyncName + "]");
   }
   // No adaptations, trampolines, synthesized accessors, imports, or
   // generics. Plain top-level functions, written-out method bodies,
