@@ -1,42 +1,27 @@
-# The seed
+# The bootstrap compiler
 
-`cli.wasm` is the prebuilt self-hosted Zena compiler that breaks the
-bootstrap cycle: `build:cli` runs it (through `zena-cli`, which cargo
+`cli.wasm` is the prebuilt self-hosted Zena compiler that bootstraps a
+fresh checkout: `build:cli` runs it through `zena-cli` (which cargo
 builds from source) to compile `zena/cli/main.zena` into the working
 compiler, and everything else builds from there. It is the only
-prebuilt artifact in the repository; see
-`docs/design/bootstrap-retirement.md` §2 for why it is checked into
-git rather than fetched.
+prebuilt artifact in the repository.
 
-## Provenance
+The full story — why it is checked into git, the invariant it must
+uphold, how to audit it, and how to land changes it cannot compile —
+is in [docs/design/bootstrapping.md](../../../docs/design/bootstrapping.md).
 
-- **Built from**: commit `6d6404e1049d8997726e4dd312e363a16b7323cb`
-  (tree `b8e4d7a0e369350ede00f5dfd0df75e22701b01b`), 2026-08-06.
-- **How**: `npm run build:self-hosted -w @zena-lang/zena-compiler`,
-  i.e. this is the *self-hosted-built* compiler (stage B of the
-  fixpoint gate), not the TypeScript-bootstrap-built one. Because the
-  B≡C fixpoint held at the pin commit, this seed compiling its own
-  source reproduces itself byte-for-byte — `cmp` against a fresh
-  `zena/out/cli.wasm` built at the pin commit is the integrity check.
+Its provenance is its git history: the commit that last changed
+`cli.wasm` is the re-baseline commit, and the artifact reproduces
+itself byte-for-byte from that commit's source (it is the
+self-hosted-built stage, and the B≡C fixpoint held when it was made).
 
-## The rule
-
-**The seed must be able to build current HEAD.** Nothing more — see
-the ratchet in `docs/design/bootstrap-retirement.md` §3. When a
-language change makes HEAD unbuildable by the seed, land the change in
-two steps (first a version the seed can compile, then the version
-using the new feature), or re-baseline.
-
-## Re-baselining
-
-From a commit where the full suite and `test:fixpoint` are green:
+To re-baseline:
 
 ```bash
-npm run build:self-hosted -w @zena-lang/zena-compiler
-cp packages/zena-compiler/zena/out/cli-self.wasm \
-   packages/zena-compiler/bootstrap/cli.wasm
+npm run reseed -w @zena-lang/zena-compiler   # gated on the full suite + fixpoint
+npm test                                     # rebuild + retest from the new bootstrap
 ```
 
-Then update the provenance block above with the new commit hash, and
-commit both together. Re-baseline on demand (a seed too old to build
-HEAD, or a codegen improvement worth capturing), not per change.
+then commit the new `cli.wasm` together with the change that motivated
+it. Never edit this artifact by hand; `cli.cwasm`/`cli.lock` beside it
+are local precompilation caches, gitignored.

@@ -112,6 +112,11 @@ targets are `host` | `wasi`; the self-hosted compiler's are `host` | `zena-cli`.
 
 ## 2. The seed
 
+> The standing, post-retirement description of this architecture lives
+> in [bootstrapping.md](./bootstrapping.md) — that document stays
+> current after this plan completes; the artifact is called **the
+> bootstrap** there. This section records the decision as planned.
+
 After retirement the build is `seed → compiler → everything`.
 
 **What the seed is not:** a native binary. The seed is a `cli.wasm`, and it is

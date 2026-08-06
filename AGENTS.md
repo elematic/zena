@@ -102,6 +102,25 @@ The project has **two compiler implementations**:
 
 Both compilers should pass the same **portable tests** in `tests/language/`.
 
+## The Bootstrap (CRITICAL)
+
+The self-hosted compiler builds itself from a prebuilt, checked-in
+compiler: `packages/zena-compiler/bootstrap/cli.wasm` — **the
+bootstrap**. `build:cli` runs it through `zena-cli` (built from source
+by cargo) to produce the working compiler; everything else builds from
+that. Design doc: `docs/design/bootstrapping.md`. Rules:
+
+- **NEVER edit, delete, or regenerate `bootstrap/cli.wasm` by hand.**
+  Re-baselining goes through `npm run reseed -w @zena-lang/zena-compiler`,
+  which is gated on the full suite plus the fixpoint check, followed by
+  a second `npm test` that rebuilds everything from the new bootstrap.
+- **The invariant**: the bootstrap must build a HEAD that passes the
+  test suite. `test:fixpoint` (stage-1 ≡ stage-2 byte parity) is part
+  of `npm test` — a compiler that miscompiles itself fails the gate.
+- A compiler-source change the current bootstrap cannot compile lands
+  in two steps (feature first, self-use after a reseed) — see the
+  design doc.
+
 ## Portable Tests
 
 Tests in `tests/language/` are compiler-agnostic `.zena` files with comment
