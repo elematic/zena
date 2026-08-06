@@ -1,0 +1,47 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+// An integer literal takes its type from context for the unsigned types the
+// same way it already did for i32/i64/f32/f64. Before narrow integers landed
+// the checker rejected every literal in an unsigned context outright, so u32
+// and u64 values had to be written with an `as` cast on each literal.
+//
+// Every check below stays within one width. Widening an unsigned value —
+// `someU32 as u64` — is a separate, pre-existing bug: that conversion
+// sign-extends, so a u32 above 2^31 widens to a negative i64. See the
+// "Unsigned widening casts" entry in BUGS.md. Narrow values are unaffected
+// by it (u8 and u16 cannot reach 2^31), so it is out of scope here, but a
+// test must not lean on the broken path to prove an unrelated point.
+
+export let main = (): i32 => {
+  // Above i32::MAX. An unsigned comparison is the observable difference: if
+  // the literal had been typed i32 these bits would read as negative.
+  let big: u32 = 4000000000;
+  let small: u32 = 5;
+  if (!(big > small)) return 1;
+
+  let maxU32: u32 = 4294967295;
+  if (!(maxU32 > big)) return 2;
+
+  // Context flows through arithmetic, so the literal operand adopts u32 and
+  // the addition wraps at 32 bits.
+  let wrapped: u32 = maxU32 + 1;
+  if (wrapped != 0) return 3;
+
+  // The same literal written twice must produce the same value.
+  let alsoBig: u32 = 4000000000;
+  if (big != alsoBig) return 4;
+
+  // u64 gets its type from context too, including values above i64::MAX.
+  let maxU64: u64 = 18446744073709551615;
+  if (maxU64 != 18446744073709551615 as u64) return 5;
+
+  let zeroU64: u64 = 0;
+  if (!(maxU64 > zeroU64)) return 6;
+
+  // i64::MAX + 1, which a signed read would see as negative.
+  let boundary: u64 = 9223372036854775808;
+  if (!(boundary > zeroU64)) return 7;
+
+  return 0;
+};

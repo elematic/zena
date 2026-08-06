@@ -58,6 +58,16 @@ export sealed class Type implements Hashable {
   case F32Type
   case F64Type
 
+  // Narrow integer primitives. These are storage widths, not arithmetic
+  // widths: every one is carried in a wasm i32 (unsigned zero-extended,
+  // signed sign-extended) and promotes to its 32-bit counterpart the
+  // moment it takes part in an operation. See
+  // docs/design/arithmetic-conversions.md.
+  case U8Type
+  case U16Type
+  case I8Type
+  case I16Type
+
   // Other primitives
   case BooleanType
   case VoidType
@@ -944,6 +954,10 @@ export let isNumericType = (t: Type): boolean => match (baseType(t)) {
   case U64Type: true
   case F32Type: true
   case F64Type: true
+  case U8Type: true
+  case U16Type: true
+  case I8Type: true
+  case I16Type: true
   case _: false
 };
 
@@ -955,7 +969,59 @@ export let isIntegerType = (t: Type): boolean => match (baseType(t)) {
   case U32Type: true
   case I64Type: true
   case U64Type: true
+  case U8Type: true
+  case U16Type: true
+  case I8Type: true
+  case I16Type: true
   case _: false
+};
+
+/**
+ * Check if a type is one of the narrow integer types — the ones stored in
+ * fewer than 32 bits and promoted before use.
+ */
+export let isNarrowIntType = (t: Type): boolean => match (baseType(t)) {
+  case U8Type: true
+  case U16Type: true
+  case I8Type: true
+  case I16Type: true
+  case _: false
+};
+
+/**
+ * Check if an integer type is unsigned. Signedness drives operator
+ * selection (`_u` vs `_s` variants) and cast normalization.
+ */
+export let isUnsignedIntType = (t: Type): boolean => match (baseType(t)) {
+  case U32Type: true
+  case U64Type: true
+  case U8Type: true
+  case U16Type: true
+  case _: false
+};
+
+/**
+ * Storage width in bits of a narrow integer type, or 32 for everything
+ * else. Used to build the normalizing mask/sign-extend on a cast.
+ */
+export let narrowIntBits = (t: Type): i32 => match (baseType(t)) {
+  case U8Type: 8
+  case I8Type: 8
+  case U16Type: 16
+  case I16Type: 16
+  case _: 32
+};
+
+/**
+ * The 32-bit type a narrow integer promotes to. Non-narrow types are
+ * returned unchanged, so this is safe to apply to any operand.
+ */
+export let promoteNarrowInt = (t: Type): Type => match (baseType(t)) {
+  case U8Type: new U32Type()
+  case U16Type: new U32Type()
+  case I8Type: new I32Type()
+  case I16Type: new I32Type()
+  case _: t
 };
 
 /**
@@ -1004,6 +1070,10 @@ export let numericTypeName = (t: Type): String => match (t) {
   case U64Type: "u64"
   case F32Type: "f32"
   case F64Type: "f64"
+  case U8Type: "u8"
+  case U16Type: "u16"
+  case I8Type: "i8"
+  case I16Type: "i16"
   case _: "unknown"
 };
 
@@ -1050,8 +1120,15 @@ export let baseType = (t: Type): Type => match (t) {
  * Returns null if the types are incompatible.
  */
 export let promoteNumeric = (leftOrig: Type, rightOrig: Type): Type | null => {
-  let left = match (leftOrig) { case NumLiteralType: baseType(leftOrig) case _: leftOrig };
-  let right = match (rightOrig) { case NumLiteralType: baseType(rightOrig) case _: rightOrig };
+  let leftLit = match (leftOrig) { case NumLiteralType: baseType(leftOrig) case _: leftOrig };
+  let rightLit = match (rightOrig) { case NumLiteralType: baseType(rightOrig) case _: rightOrig };
+  // Narrow integers are storage widths, not arithmetic widths: each side
+  // promotes to its 32-bit counterpart before anything else is decided.
+  // Mixed sizes within one signedness therefore just work (u8 + u16 is
+  // u32), while mixed signedness stays an error at every width, and a
+  // narrow type never survives the operation.
+  let left = promoteNarrowInt(leftLit);
+  let right = promoteNarrowInt(rightLit);
   // f64 dominates everything
   if (left is F64Type || right is F64Type) {
     return new F64Type();
@@ -1094,6 +1171,102 @@ export let promoteNumeric = (leftOrig: Type, rightOrig: Type): Type | null => {
 };
 
 /**
+ * Parse the magnitude of an integer literal, reporting overflow rather
+ * than wrapping. `raw` is the literal's source text without a sign;
+ * underscores are ignored and a `0x` prefix selects hex. Returns
+ * `(false, _)` for a malformed literal or one that does not fit in 64
+ * bits, which is the widest magnitude any Zena integer type can hold.
+ */
+export let integerLiteralMagnitude = (raw: String): inline (boolean, u64) => {
+  var start = 0;
+  var isHex = false;
+  if (start + 2 <= raw.length) {
+    let c0 = raw.getByteAt(start);
+    let c1 = raw.getByteAt(start + 1);
+    if (c0 == 48 && (c1 == 120 || c1 == 88)) { // '0' then 'x'/'X'
+      isHex = true;
+      start = start + 2;
+    }
+  }
+
+  // Largest value that can still absorb another digit, and the largest
+  // digit it can absorb: u64Max / base and u64Max % base. Written as
+  // constants because `/` on integers promotes to a float in Zena.
+  let limit = if (isHex) 1152921504606846975 as u64 else 1844674407370955161 as u64;
+  let lastDigit = if (isHex) 15 as u64 else 5 as u64;
+  let base = if (isHex) 16 as u64 else 10 as u64;
+
+  var res = 0 as u64;
+  var i = start;
+  var hasDigits = false;
+  while (i < raw.length) {
+    let code = raw.getByteAt(i);
+    if (code == 95) { // '_'
+      i += 1;
+      continue;
+    }
+    var digit = 0 as u64;
+    if (code >= 48 && code <= 57) { // '0'..'9'
+      digit = (code - 48) as u64;
+    } else if (isHex && code >= 97 && code <= 102) { // 'a'..'f'
+      digit = (code - 97 + 10) as u64;
+    } else if (isHex && code >= 65 && code <= 70) { // 'A'..'F'
+      digit = (code - 65 + 10) as u64;
+    } else {
+      return (false, 0 as u64);
+    }
+    if (res > limit) {
+      return (false, 0 as u64);
+    }
+    if (res == limit && digit > lastDigit) {
+      return (false, 0 as u64);
+    }
+    res = res * base + digit;
+    hasDigits = true;
+    i += 1;
+  }
+
+  if (!hasDigits) {
+    return (false, 0 as u64);
+  }
+  return (true, res);
+};
+
+/**
+ * Whether an integer literal fits a type with a checked range. `raw` is
+ * the unsigned source text and `negative` reports a leading unary minus,
+ * kept separate so that `-128` fits `i8` even though `128` alone does
+ * not. Callers must have established `integerTypeHasCheckedRange(t)`.
+ */
+export let integerLiteralFits = (raw: String, negative: boolean, t: Type): boolean => {
+  if (let (true, mag) = integerLiteralMagnitude(raw)) {
+    let zero = 0 as u64;
+    if (negative) {
+      // Negative zero is still zero, and so fits anywhere.
+      if (mag == zero) { return true; }
+      return match (baseType(t)) {
+        case I8Type: mag <= (128 as u64)
+        case I16Type: mag <= (32768 as u64)
+        // The unsigned types hold no negative value at all.
+        case _: false
+      };
+    }
+    return match (baseType(t)) {
+      case U8Type: mag <= (255 as u64)
+      case U16Type: mag <= (65535 as u64)
+      case I8Type: mag <= (127 as u64)
+      case I16Type: mag <= (32767 as u64)
+      case U32Type: mag <= (4294967295 as u64)
+      // Any magnitude that parsed at all fits u64.
+      case U64Type: true
+      case _: false
+    };
+  }
+  // Malformed, or wider than 64 bits: fits nothing.
+  return false;
+};
+
+/**
  * Format a type as a human-readable string for diagnostics.
  */
 export let typeToString = (t: Type): String => match (t) {
@@ -1103,6 +1276,10 @@ export let typeToString = (t: Type): String => match (t) {
   case U64Type: "u64"
   case F32Type: "f32"
   case F64Type: "f64"
+  case U8Type: "u8"
+  case U16Type: "u16"
+  case I8Type: "i8"
+  case I16Type: "i16"
   case BooleanType: "boolean"
   case VoidType: "void"
   case NullType: "null"

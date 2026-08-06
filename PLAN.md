@@ -48,12 +48,16 @@ This document tracks completed work and planned features. For project instructio
     component. The near-term work is *language* work, because a WIT import needs
     a Zena type for every construct it mentions — see
     [component-model.md](docs/design/component-model.md) Part 8:
-    1. `Result<T, E>` in the stdlib, plus `inline` tuples permitted in type
-       aliases (45% of WASI p2 functions return a `result`)
-    2. Narrow integers `u8`/`u16`/`i8`/`i16`
-       ([arithmetic-conversions.md](docs/design/arithmetic-conversions.md))
+    1. ~~`Result<T, E>` in the stdlib, plus `inline` tuples permitted in type
+       aliases~~ **done** (45% of WASI p2 functions return a `result`)
+    2. ~~Narrow integers `u8`/`u16`/`i8`/`i16`~~ **done** — types, promotion,
+       casts and literal range checking
+       ([arithmetic-conversions.md](docs/design/arithmetic-conversions.md)).
+       Their packed `i8`/`i16` storage is deliberately left to step 3, which
+       is the step that needs it.
     3. `FixedArray<u8>` / `Array<u8>`, retiring the bespoke `ByteArray`
-       primitive (`list<u8>` is half of all lists in p2)
+       primitive (`list<u8>` is half of all lists in p2), and with it the
+       packed storage representation for narrow fields and elements
     4. `Disposable`, giving WIT `resource` a shape (79% of p2 functions are
        resource methods)
     5. Only then: first-class WIT imports.

@@ -103,6 +103,14 @@ safety.
 - **`u32`**: 32-bit unsigned integer. Operations like division, modulo, and
   comparison use unsigned semantics. `i32` and `u32` cannot be mixed in
   operations without explicit casting using `as`.
+- **`u64`**: 64-bit unsigned integer, with the same unsigned semantics.
+- **`u8`, `u16`, `i8`, `i16`**: narrow integers, for describing exact storage
+  widths — byte buffers, packed records, and WIT interop. They are storage
+  types rather than arithmetic types: an operand promotes to its 32-bit
+  counterpart (`u8`/`u16` to `u32`, `i8`/`i16` to `i32`) before any operation,
+  so a narrow type never survives arithmetic and storing a result back needs
+  an explicit `as`. See
+  [arithmetic-conversions.md](design/arithmetic-conversions.md).
 - **`f32`**: 32-bit floating-point number. This is the default type for
   floating-point literals.
 - **`f64`**: 64-bit floating-point number. Constructed via casting (e.g., `1.0
@@ -240,25 +248,27 @@ The inference is **bidirectional**: whichever operand is a literal gets its type
 from the non-literal operand. When both operands are literals, they default to
 `i32` (or `f32` for decimals).
 
-**Variable Declarations**: Contextual typing does **not** apply to variable
-declarations with explicit type annotations:
+**Variable Declarations**: Contextual typing applies here too — an annotation
+on a declaration supplies the literal's type:
 
 ```zena
-let a: i64 = 1;         // Error: expected i64, got i32
-let b: i64 = 1 as i64;  // OK: explicit cast
+let a: i64 = 1;         // OK: the literal is typed i64
+let b: u8 = 255;        // OK
+let c: u8 = 256;        // Error: Integer literal 256 is out of range for type 'u8'
 ```
 
-This is intentional. Type annotations on declarations serve as explicit
-programmer intent and should be validated against the literal's default type.
-If contextual typing applied here, a typo in the annotation (e.g., `i64` instead
-of `i32`) would silently create a value of the wrong type. For stored values,
-explicit casts make the intent clear and catch annotation errors at compile
-time.
+For the types whose range the compiler checks — the narrow types (`u8`, `u16`,
+`i8`, `i16`) and the unsigned types (`u32`, `u64`) — a literal that cannot be
+represented is rejected. `i32` and `i64` do not currently range-check their
+literals.
 
-In contrast, comparisons and arithmetic are transient operations where the
-context unambiguously determines the expected type. A future version may add
-explicit numeric literal suffixes (e.g., `1i64`, `3.14f64`) for clearer intent
-in declarations.
+A negated literal is measured as a whole, so `let low: i8 = -128;` is accepted
+even though `128` alone would not fit.
+
+> Earlier versions of this document stated that contextual typing did *not*
+> apply to annotated declarations and that `let a: i64 = 1;` was an error.
+> That has never matched the compiler's behaviour; the rule above is what
+> ships.
 
 ### Type Casting
 
@@ -278,6 +288,9 @@ specific WASM conversion instructions (e.g., `i64.extend_i32_s`,
 - `i32` <-> `f32` (Convert / Truncate)
 - `i64` <-> `f64` (Convert / Truncate)
 - `i32` <-> `u32` (Reinterpret bits - zero cost)
+- `i32`/`u32` -> `u8`, `u16` (Truncate to the low bits, zero-extended)
+- `i32`/`u32` -> `i8`, `i16` (Truncate to the low bits, sign-extended, so
+  `200 as i8` is `-56`)
 
 **Implicit Conversions**: Zena supports implicit conversion **only** between
 `i32` and `f32` in binary arithmetic operations.

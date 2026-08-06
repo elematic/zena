@@ -5,8 +5,10 @@
 - **Implemented** for `i32`/`u32`/`i64`/`u64`/`f32`/`f64` — the tables below
   describe `promoteNumeric` in `packages/zena-compiler/zena/lib/types.zena`,
   not a proposal.
-- **Narrow integers (`u8`, `u16`, `i8`, `i16`) decided 2026-08-06, not yet
-  implemented.** See [Narrow integers](#narrow-integers).
+- **Narrow integers (`u8`, `u16`, `i8`, `i16`) implemented 2026-08-06**, as
+  types, promotion, casts and literal range checking. Their *packed storage*
+  is not built yet — see [Two representations](#two-representations). See
+  [Narrow integers](#narrow-integers).
 - This document previously proposed rules that the compiler never adopted —
   notably `i32 op u32 -> i32` by bit-pattern reinterpretation. The compiler
   **rejects** that combination. The proposal has been replaced with what
@@ -60,16 +62,28 @@ general-purpose numeric tier.
 
 A narrow integer is stored packed and computed wide:
 
-| Position | Representation |
-| --- | --- |
-| array element, struct/record field | packed — wasm `i8` / `i16` storage |
-| local, parameter, return, expression value | unpacked — wasm `i32` |
+| Position | Representation | Status |
+| --- | --- | --- |
+| array element, struct/record field | packed — wasm `i8` / `i16` storage | **not yet** — currently `i32` like everything else |
+| local, parameter, return, expression value | unpacked — wasm `i32` | implemented |
 
 This is exactly what `ByteArray` already does: a wasm `(array i8)` whose reads
 produce `i32`. Loads zero-extend for unsigned types (`array.get_u`) and
 sign-extend for signed ones (`array.get_s`), so the unpacked value always
 carries the mathematically correct number, never a bit pattern needing
 interpretation.
+
+Packing is a storage-size optimization, not a semantic one, so it was
+deliberately left out of the first implementation: it changes no observable
+behaviour, and it belongs with the array work that needs it (`FixedArray<u8>`
+for WIT's `list<u8>`), where `array.get_u`/`array.get_s` can be introduced
+once rather than twice.
+
+**The invariant that makes this work** is that an unpacked narrow value is
+always in *canonical* form — unsigned values zero-extended, signed values
+sign-extended — so every promotion and comparison downstream is plain 32-bit
+work with no masking. Only `as` can break that invariant, so `as` is the only
+operation that re-normalizes (`normalizeNarrow` in `ir/operators.zena`).
 
 ### Arithmetic: narrow operands promote, narrow results do not exist
 
@@ -111,11 +125,32 @@ changes meaning. Narrowing, which can change meaning, stays explicit.
 Comparisons follow the same promotion, so `b[i] == 0` works without a cast.
 Mixed signedness is an error in comparisons too.
 
+### Literals
+
+An integer literal takes its type from context, so `let b: u8 = 200;` needs no
+cast, and in `b + 1` the literal adopts `u8` from the other operand before both
+promote. A literal that cannot be represented is an error:
+
+```zena
+let ok: u8 = 255;
+let bad: u8 = 256;   // Error: Integer literal 256 is out of range for type 'u8'
+let low: i8 = -128;  // fine — the sign is part of the literal for this check
+```
+
+The range check covers the narrow types and the unsigned types. `i32` and
+`i64` are deliberately excluded: they have never checked their literals, and
+tightening them is a separate change with its own fallout.
+
+This replaced a hard `throw` in the checker that rejected *every* literal in a
+`u32` or `u64` context, which is why unsigned code previously had to write
+`5 as u32` on each constant.
+
 ### `as` conversions
 
 `x as u8` on a wider integer truncates to the low 8 bits — the same semantics
 as the packed store it feeds. It is explicit precisely because it can lose
-information.
+information. The signed narrow types sign-extend on the way back out, so
+`200 as i8` is `-56`.
 
 ## Related
 

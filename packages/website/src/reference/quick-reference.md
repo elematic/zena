@@ -155,6 +155,8 @@ use `as` to convert to other numeric types.
 | `i64`     | `i64`           | 64-bit signed integer                                |
 | `u32`     | `i32`           | 32-bit unsigned (uses unsigned WASM operators)       |
 | `u64`     | `i64`           | 64-bit unsigned (uses unsigned WASM operators)       |
+| `u8` `u16` | `i32`          | Narrow unsigned; promote to `u32` in any operation   |
+| `i8` `i16` | `i32`          | Narrow signed; promote to `i32` in any operation     |
 | `f32`     | `f32`           | 32-bit float (default for float literals)            |
 | `f64`     | `f64`           | 64-bit float                                         |
 | `boolean` | `i32`           | `true` or `false`                                    |
@@ -168,11 +170,17 @@ use `as` to convert to other numeric types.
 ```zena
 let i: i32 = 42;
 let n: i64 = 100 as i64;
-let u: u32 = 255 as u32;
+let u: u32 = 255;
 let f: f32 = 3.14;
 let d: f64 = 3.14 as f64;
 let b: boolean = true;
 let s: String = 'hello';
+
+// Narrow integers describe exact storage widths. A literal must fit,
+// and arithmetic promotes to the 32-bit counterpart.
+let byte: u8 = 255;
+let sum: u32 = byte + 1;      // 256 — u8 does not survive the addition
+let back: u8 = sum as u8;     // 0 — narrowing is explicit and truncates
 ```
 
 ## Built-in Types (Prelude)

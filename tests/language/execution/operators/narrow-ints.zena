@@ -1,0 +1,79 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+// Runtime behaviour of the narrow integer types. Each type is carried in an
+// i32 in its canonical form — unsigned values zero-extended, signed values
+// sign-extended — so a narrowing cast must normalize, and the promoted
+// arithmetic that follows is plain 32-bit arithmetic.
+
+class Holder {
+  b: u8;
+  s: i8;
+  w: u16;
+  h: i16;
+  new(this.b, this.s, this.w, this.h);
+}
+
+let identityU8 = (b: u8): u8 => b;
+let identityI8 = (s: i8): i8 => s;
+
+export let main = (): i32 => {
+  // A narrowing cast keeps the low bits and re-normalizes.
+  let big = 511; // 0x1FF
+  let byte: u8 = big as u8;
+  if (byte as i32 != 255) return 1;
+
+  // The signed narrow types sign-extend, so 200 becomes -56.
+  let sbyte: i8 = 200 as i8;
+  if (sbyte as i32 != -56) return 2;
+
+  let half: u16 = 65535;
+  if (half as i32 != 65535) return 3;
+
+  let shalf: i16 = 65535 as i16;
+  if (shalf as i32 != -1) return 4;
+
+  // Comparison happens at the promoted width, and the normalization above
+  // is what makes signed and unsigned disagree here.
+  let hi: u8 = 200;
+  let lo: u8 = 100;
+  if (!(hi > lo)) return 5;
+
+  let shi: i8 = 200 as i8; // -56
+  let slo: i8 = 100;
+  if (!(shi < slo)) return 6;
+
+  // Arithmetic promotes: the result is u32/i32 and does NOT wrap at the
+  // narrow width.
+  let sum: u32 = hi + hi;
+  if (sum != 400) return 7;
+
+  let ssum: i32 = slo + slo;
+  if (ssum != 200) return 8;
+
+  // Literals in narrow context combine with narrow operands directly.
+  let bumped: u32 = hi + 1;
+  if (bumped != 201) return 9;
+
+  // Values survive a call boundary in canonical form.
+  if (identityU8(255) as i32 != 255) return 10;
+  if (identityI8(-128) as i32 != -128) return 11;
+
+  // ...and a field round-trip.
+  let h = new Holder(250, -6, 40000, -30000);
+  if (h.b as i32 != 250) return 12;
+  if (h.s as i32 != -6) return 13;
+  if (h.w as i32 != 40000) return 14;
+  if (h.h as i32 != -30000) return 15;
+
+  // Bitwise operators run at the promoted width.
+  let masked: u32 = hi & lo;
+  if (masked != 64) return 16;
+
+  // A mutable narrow variable can be reassigned from an explicit cast.
+  var cursor: u8 = 0;
+  cursor = (hi + 56) as u8; // 256 truncates to 0
+  if (cursor as i32 != 0) return 17;
+
+  return 0;
+};

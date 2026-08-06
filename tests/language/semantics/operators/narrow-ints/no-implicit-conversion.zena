@@ -1,0 +1,34 @@
+// @mode: check
+// Narrow integers follow the same no-implicit-coercion rule as the rest of
+// the type system. Widening is safe but still explicit; narrowing is lossy
+// and therefore certainly explicit. In particular, arithmetic on narrow
+// operands produces the 32-bit type, so storing the result back into a
+// narrow variable needs a cast.
+
+let assignBack = (a: u8, b: u8) => {
+  let sum: u8 = a + b; // @error: Type mismatch
+};
+
+let assignBackSigned = (a: i8, b: i8) => {
+  let sum: i8 = a + b; // @error: Type mismatch
+};
+
+// Narrow to wide is not implicit either.
+let widenImplicitly = (a: u8) => {
+  let wide: u32 = a; // @error: Type mismatch
+};
+
+// Nor is wide to narrow.
+let narrowImplicitly = (x: u32) => {
+  let small: u8 = x; // @error: Type mismatch
+};
+
+// Different narrow widths are distinct types.
+let acrossWidths = (a: u8) => {
+  let half: u16 = a; // @error: Type mismatch
+};
+
+// Signedness is not bridged implicitly, at any width.
+let acrossSignedness = (a: u8) => {
+  let signed: i8 = a; // @error: Type mismatch
+};

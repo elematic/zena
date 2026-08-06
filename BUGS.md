@@ -121,6 +121,31 @@ immediately trying to fix it (which can pollute the current task's context).
   to resolve. Pinned (as a comment, not a directive) in
   `semantics/type-system/inline_tuple_restrictions.zena`.
 
+### An unresolved name in a `case` pattern silently becomes a catch-all
+
+- **Found**: 2026-08-06 (adding the narrow integer types; four new
+  `case U8Type:` arms were added to a match in `compiler.zena` without
+  adding the names to that file's import list).
+- **Severity**: high (silently disables exhaustiveness checking, which is
+  the main safety property of sealed hierarchies)
+- **Details**: `case SomeName:` where `SomeName` resolves to nothing is
+  parsed as an *identifier pattern* — a binding that matches anything —
+  rather than a class pattern. No unresolved-name diagnostic is emitted.
+  The arm therefore consumes the whole scrutinee, and every later arm is
+  reported as `Unreachable case.`, which points the reader at the wrong
+  arms entirely: the errors began ten lines *below* the actual mistake,
+  and the arms named in them were all perfectly correct.
+- **Why it is dangerous**: a *typo* in a variant name has the same shape.
+  `case ClasType:` in an otherwise-exhaustive match would silently turn
+  into a catch-all, and exhaustiveness would stop protecting that match
+  from then on — with no diagnostic anywhere.
+- **Fix sketch**: an identifier pattern whose name is capitalized, or
+  which resolves to nothing while the scrutinee is a sealed type, should
+  be an error suggesting the import. Distinguishing "intended binding"
+  from "intended class pattern" purely by resolution is the fuzzy
+  fallback here; a capitalization convention check would be a cheap
+  additional signal.
+
 ### zena-cli cannot compile files outside the repository root
 
 - **Found**: 2026-08-06 (repointing the nix flake's `zena` command at
@@ -401,18 +426,28 @@ immediately trying to fix it (which can pollute the current task's context).
   back to the get# walk), so lifting the checker restriction should
   need no ZIR backend work.
 
-### Unsigned widening casts: bootstrap uses \_u opcodes, self-hosted signs-extends
+### Unsigned widening casts sign-extend
 
 - **Found**: 2026-07-27 (lowering `as` casts from unsigned in ZIR)
 - **Severity**: medium (silent wrong values for u32 >= 2^31 / u64 >=
-  2^63 in widening/float casts, self-hosted only)
+  2^63 in widening and float casts)
 - **Workaround**: mask explicitly before widening.
-- **Details**: The bootstrap's AsExpression codegen picks
-  i64.extend_i32_u / f64.convert_i{32,64}_u for unsigned sources; the
-  self-hosted compiler has no unsigned conversion path at all and
-  emits the signed variants (e.g. `(3000000000 as u32) as u64`
-  sign-extends) — the `_u` IrOps and emitter methods do not exist in
-  ZIR. Verified still present 2026-08-05.
+- **Details**: Widening an unsigned value emits the *signed* conversion
+  — `(3000000000 as u32) as u64` sign-extends to a negative i64 —
+  because the `_u` IrOps and emitter methods do not exist in ZIR.
+  Verified still present 2026-08-06.
+- **The justification for this is now void.** `scalarConvert` in
+  `ir/operators.zena` still carries a comment explaining that the signed
+  ops are deliberate, to stay byte-compatible with the streaming
+  backend, "until that ruling". That backend and the bootstrap compiler
+  are both deleted, so nothing is being matched any more; what remains
+  is just a wrong answer. Fixing it means adding the four `_u`
+  conversion ops and picking them from the operand's *semantic* type
+  (`scalarConvert` currently sees only wasm valtypes, so signedness has
+  to be threaded in from the caller).
+- **Not a narrow-integer problem**: `u8` and `u16` cannot reach 2^31, so
+  they widen correctly regardless. `execution/literals/unsigned_literal_context.zena`
+  deliberately stays within a single width to avoid resting on this path.
 
 ### Inline-tuple union miscompiles when both arms hole out a reference slot
 

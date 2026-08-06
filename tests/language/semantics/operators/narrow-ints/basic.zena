@@ -1,0 +1,61 @@
+// @mode: check
+// Narrow integer types (u8, u16, i8, i16) are backed by i32. They exist so
+// that memory-shaped data — WIT `list<u8>`, byte buffers, packed records —
+// can be described precisely. They are storage types, not arithmetic types:
+// an operand promotes to its 32-bit counterpart and the narrow type never
+// survives the operation. See docs/design/arithmetic-conversions.md.
+
+let widths = (a: u8, b: u16, c: i8, d: i16) => {
+  // Unsigned narrows promote to u32...
+  let sumU: u32 = a + b;
+  let prodU: u32 = a * a;
+  // ...and signed narrows to i32.
+  let sumI: i32 = c + d;
+  let prodI: i32 = c * c;
+
+  // Mixed sizes within one signedness are fine — both sides promote.
+  let mixedU: u32 = b - a;
+  let mixedI: i32 = d - c;
+};
+
+// Narrowing back is always explicit.
+let truncate = (x: u32, y: i32) => {
+  let byte: u8 = x as u8;
+  let half: u16 = x as u16;
+  let sbyte: i8 = y as i8;
+  let shalf: i16 = y as i16;
+};
+
+// Widening is explicit too, in both directions across signedness.
+let widen = (a: u8, c: i8) => {
+  let wide: u32 = a as u32;
+  let wider: u64 = a as u64;
+  let signed: i32 = c as i32;
+  let crossed: i32 = a as i32;
+};
+
+// In-range integer literals adopt the narrow type from context.
+let u8Min: u8 = 0;
+let u8Max: u8 = 255;
+let u16Max: u16 = 65535;
+let i8Min: i8 = -128;
+let i8Max: i8 = 127;
+let i16Min: i16 = -32768;
+let i16Max: i16 = 32767;
+
+// The same context rule applies to the wider unsigned types, which
+// previously required a cast on every literal.
+let u32Max: u32 = 4294967295;
+let u64Max: u64 = 18446744073709551615;
+
+// Literals combine with narrow operands without an intervening cast: the
+// literal takes the operand's type, then both promote.
+let increment = (b: u8): u32 => b + 1;
+let offset = (s: i8): i32 => s - 1;
+
+// Comparison works at the promoted width and yields boolean.
+let compare = (a: u8, b: u8): boolean => a < b;
+let compareSigned = (a: i8, b: i8): boolean => a < b;
+
+// Bitwise operators are available at the promoted width.
+let mask = (a: u8, b: u8): u32 => (a & b) | (a ^ b);

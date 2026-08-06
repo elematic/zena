@@ -89,6 +89,7 @@ import {
 } from './ast.zena';
 import {
   Type, TypeId, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
+  U8Type, U16Type, I8Type, I16Type,
   BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType,
   AnyRefType, EqRefType, ByteArrayType,
   BoolLiteralType, StringLiteralType, NumLiteralType,
@@ -100,6 +101,7 @@ import {
   instantiateTypeAliasType, instantiateFunctionType, GenericNamedType,
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, baseType,
+  integerLiteralFits,
   promoteNumeric, typeToString
 } from './types.zena';
 import { SemanticModel, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency } from './semantic-model.zena';
@@ -498,6 +500,10 @@ final class CheckerContext {
     this.declareBuiltinType("u64", new U64Type());
     this.declareBuiltinType("f32", new F32Type());
     this.declareBuiltinType("f64", new F64Type());
+    this.declareBuiltinType("u8", new U8Type());
+    this.declareBuiltinType("u16", new U16Type());
+    this.declareBuiltinType("i8", new I8Type());
+    this.declareBuiltinType("i16", new I16Type());
     this.declareBuiltinType("boolean", new BooleanType());
     this.declareBuiltinType("void", new VoidType());
     this.declareBuiltinType("null", new NullType());
@@ -2951,6 +2957,10 @@ let satisfiesHashableConstraint = (
     case U64Type: { return true; }
     case F32Type: { return true; }
     case F64Type: { return true; }
+    case U8Type: { return true; }
+    case U16Type: { return true; }
+    case I8Type: { return true; }
+    case I16Type: { return true; }
     case BooleanType: { return true; }
     // Enum member types: i32-backed enums unwrap to number literals, string
     // enums to string literals. Both hash by value via the intrinsics.
@@ -3151,6 +3161,10 @@ let isValuePrimitive = (type: Type): boolean => {
     case U64Type: true
     case F32Type: true
     case F64Type: true
+    case U8Type: true
+    case U16Type: true
+    case I8Type: true
+    case I16Type: true
     case BooleanType: true
     case BoolLiteralType: true
     case NumLiteralType: true
@@ -3200,11 +3214,13 @@ let isValidCast = (sourceType: Type, targetType: Type): boolean => {
   // Primitive → Primitive: VALID only if both are numeric or both are boolean
   if (isValuePrimitive(sourceType) && isValuePrimitive(targetType)) {
     let isSrcNum: boolean = match (sourceType) {
-      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type | NumLiteralType: true
+      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
+          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
       case _: false
     };
     let isTgtNum: boolean = match (targetType) {
-      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type | NumLiteralType: true
+      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
+          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
       case _: false
     };
     let isSrcBool: boolean = match (sourceType) {
@@ -3227,11 +3243,13 @@ let isValidCast = (sourceType: Type, targetType: Type): boolean => {
     if (ct.isExtension && ct.onType != null) {
       let onType = ct.onType as Type;
       let isSrcNum: boolean = match (sourceType) {
-        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type | NumLiteralType: true
+        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
+          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
         case _: false
       };
       let isOnNum: boolean = match (onType) {
-        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type | NumLiteralType: true
+        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
+          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
         case _: false
       };
       if (isSrcNum && isOnNum) {
@@ -3407,6 +3425,10 @@ let isBoxablePrimitive = (t: Type): boolean => match (baseType(t)) {
   case U64Type: true
   case F32Type: true
   case F64Type: true
+  case U8Type: true
+  case U16Type: true
+  case I8Type: true
+  case I16Type: true
   case BooleanType: true
   case _: false
 };
@@ -3771,6 +3793,10 @@ let typesEqual = (a: Type, b: Type): boolean => {
     case U64Type: b is U64Type
     case F32Type: b is F32Type
     case F64Type: b is F64Type
+    case U8Type: b is U8Type
+    case U16Type: b is U16Type
+    case I8Type: b is I8Type
+    case I16Type: b is I16Type
     case BooleanType: b is BooleanType
     case VoidType: b is VoidType
     case NullType: b is NullType
@@ -5776,6 +5802,68 @@ let getMatchedLiteralType = (expr: Expression, expected: Type): Type | null => {
   return null;
 };
 
+/**
+ * The integer types whose literal range the checker enforces: the narrow
+ * types, which exist to describe exact storage widths, and the unsigned
+ * types, which previously rejected every literal outright. Deliberately
+ * direct `is` tests — a `baseType`-based predicate would also capture a
+ * `NumLiteralType` expectation, which must keep falling through to i32.
+ */
+let isRangeCheckedIntType = (t: Type): boolean => {
+  return t is U8Type || t is U16Type || t is I8Type || t is I16Type ||
+      t is U32Type || t is U64Type;
+};
+
+/**
+ * Type an integer literal against its context. The literal adopts a
+ * numeric expected type when there is one, and for the types whose range
+ * the checker enforces — the narrow types and the unsigned types — it
+ * must also fit, so a byte-sized constant that cannot be stored is
+ * reported rather than silently wrapped.
+ *
+ * `negative` reports a unary minus applied directly to this literal. It
+ * is threaded in rather than inferred so that `-128` is measured against
+ * i8's lower bound instead of its upper one.
+ */
+let checkIntegerLiteral = (
+  ctx: CheckerContext,
+  raw: String,
+  negative: boolean,
+  expectedType: Type | null,
+  loc: SourceLocation | null
+): Type => {
+  if (expectedType == null) {
+    return new I32Type();
+  }
+  let expected = expectedType as Type;
+  // i32/i64/f32/f64 adopt the context without a range check, exactly as
+  // they always have. Tightening them is a separate change with its own
+  // fallout. Note these are deliberately direct `is` tests rather than
+  // `isIntegerType`, which looks through `baseType` and would therefore
+  // also capture a `NumLiteralType` expectation and hand it back as the
+  // literal's type instead of i32.
+  if (expected is I32Type || expected is I64Type ||
+      expected is F32Type || expected is F64Type) {
+    return expected;
+  }
+  if (!isRangeCheckedIntType(expected)) {
+    return new I32Type();
+  }
+  if (integerLiteralFits(raw, negative, expected)) {
+    return expected;
+  }
+  let sign = if (negative) "-" else "";
+  ctx.error(
+    "Integer literal " + sign + raw + " is out of range for type '" +
+    typeToString(expected) + "'.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+  // Carry on as the expected type: the range is the only thing wrong, and
+  // reporting a cascade of operator errors on top would not help.
+  return expected;
+};
+
 let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
   let t = checkExpressionInner(ctx, expr, expectedType);
   // Record the inferred type in the semantic model.
@@ -5807,15 +5895,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     } else {
       // Integer literal — default to i32; use context to pick other int or
       // float types.
-      if (expectedType is I32Type || expectedType is I64Type ||
-          expectedType is F32Type || expectedType is F64Type) {
-        expectedType as Type
-      } else if (expectedType is U32Type || expectedType is U64Type) {
-        // TODO: Throwing until we know what to do with -1, etc
-        throw new Error("u32 anad u64 not supported yet");
-      } else {
-        new I32Type()
-      }
+      checkIntegerLiteral(ctx, raw, false, expectedType, loc)
     }
   }
 
@@ -5889,6 +5969,20 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   // --- Unary Expressions ---
 
   case UnaryExpression {operator, argument, loc}: {
+    // A negated integer literal is typed as a single unit, because the
+    // bound that applies to `-128` is i8's lower bound, which the bare
+    // literal `128` would fail. Only the range-checked types need this;
+    // every other context keeps its original path exactly.
+    if (operator == "-" && argument is NumberLiteral && expectedType != null &&
+        isRangeCheckedIntType(expectedType as Type)) {
+      let numArg = argument as NumberLiteral;
+      if (!numArg.raw.contains('.')) {
+        let litType = checkIntegerLiteral(ctx, numArg.raw, true, expectedType, loc);
+        ctx.setNodeType(argument, litType);
+        return litType;
+      }
+    }
+
     let argType = checkExpression(ctx, argument, expectedType);
 
     if (operator == "-") {

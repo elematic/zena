@@ -18,7 +18,7 @@ import {
   AnyRefType, BooleanType, ClassType, EqRefType, F32Type, F64Type,
   I32Type, I64Type, InterfaceType, NullType, Type, TypeParameterType,
   U32Type, U64Type, UnionType, baseType, instantiateClassType,
-  typeToString,
+  typeToString, isNarrowIntType, isUnsignedIntType, narrowIntBits,
 } from '../../types.zena';
 import {
   ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeRef,
@@ -50,11 +50,13 @@ let substitutedBaseType = (cx: LoweringContext, expr: Expression): Type | null =
   return baseType(t as Type);
 };
 
-/** Whether the operand's checked type is u32/u64 (name-driven: only
- * these pick the _u operator variants). */
+/** Whether the operand's checked type is unsigned (name-driven: only
+ * these pick the _u operator variants). u8/u16 count — they are held
+ * zero-extended, so the unsigned comparison is the correct one even
+ * though the operands have already widened to i32. */
 export let isUnsignedNode = (cx: LoweringContext, expr: Expression): boolean => {
   let bt = substitutedBaseType(cx, expr);
-  return bt != null && ((bt as Type) is U32Type || (bt as Type) is U64Type);
+  return bt != null && isUnsignedIntType(bt as Type);
 };
 
 export let mapBinaryOp = (cx: LoweringContext, operator: String, vt: ValType,
@@ -130,7 +132,7 @@ let requireScalarNode = (cx: LoweringContext, expr: Expression): void => {
   let btVal = bt as Type;
   let ok = btVal is I32Type || btVal is I64Type || btVal is U32Type ||
       btVal is U64Type || btVal is F32Type || btVal is F64Type ||
-      btVal is BooleanType;
+      btVal is BooleanType || isNarrowIntType(btVal);
   if (ok) {
     return;
   }
@@ -499,13 +501,59 @@ export let lowerUnary = (cx: LoweringContext, un: UnaryExpression): i32 => {
 };
 
 /**
+ * Re-normalize a value that has just been cast to a narrow integer type.
+ * Narrow values ride in an i32 in canonical form — unsigned zero-
+ * extended, signed sign-extended — which is what lets every later
+ * promotion and comparison be plain 32-bit work. A cast is the only
+ * operation that can break that invariant, so it is the only one that
+ * has to restore it.
+ *
+ * The sign extension is spelled as a shift pair rather than
+ * `i32.extend8_s`/`extend16_s`: those opcodes are not in the IR's op
+ * set, and adding them would mean threading two more entries through
+ * the contiguous enum bands that `isBinaryNumericOp` decodes by range —
+ * a poor trade for saving one instruction on a rare operation.
+ */
+let normalizeNarrow = (cx: LoweringContext, value: i32, target: Type | null): i32 => {
+  if (target == null) {
+    return value;
+  }
+  let t = target as Type;
+  if (!isNarrowIntType(t)) {
+    return value;
+  }
+  let bits = narrowIntBits(t);
+  let vt = new ValTypeI32() as ValType;
+  if (isUnsignedIntType(t)) {
+    let mask = if (bits == 8) 255 else 65535;
+    return cx.b.binary(IrOp.i32_and, vt, value, cx.b.constI32(mask, vt));
+  }
+  let shift = cx.b.constI32(32 - bits, vt);
+  let shifted = cx.b.binary(IrOp.i32_shl, vt, value, shift);
+  return cx.b.binary(IrOp.i32_shr_s, vt, shifted, shift);
+};
+
+/** The narrow type an `as` expression targets, or null if it is not one. */
+let narrowCastTarget = (cx: LoweringContext, expr: AsExpression): Type | null => {
+  let t = cx.substitutedNodeType(expr);
+  if (t == null) {
+    return null;
+  }
+  let bt = baseType(t as Type);
+  return if (isNarrowIntType(bt)) bt else null;
+};
+
+/**
  * Scalar `as` casts. Same-representation casts (i32 as u32, boolean as
  * i32) are no-ops; cross-representation casts use signed conversions
  * and saturating truncation, matching the streaming backend. Casts
- * FROM unsigned types bail (no unsigned convert ops wired yet).
+ * FROM unsigned types bail (no unsigned convert ops wired yet). A cast
+ * TO a narrow integer additionally re-normalizes (`normalizeNarrow`),
+ * including when the wasm type does not change.
  */
 export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
   let dstVt = cx.exprVt(expr);
+  let narrowTarget = narrowCastTarget(cx, expr);
   // Literal-through-cast (`9223372036854775807 as u64`,
   // `1.5 as f32`): the bare literal checks as i32/f64 and cannot
   // lower alone at that width — parse it directly at the cast's
@@ -538,7 +586,9 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
   let value = lowerExpr(cx, expr.expression, null);
   let srcVt = cx.valueTypeOf(value);
   if (valTypeEquals(srcVt, dstVt)) {
-    return value;
+    // Same wasm type, but possibly a different narrow width: `x as u8`
+    // is i32-to-i32 and still has to truncate.
+    return normalizeNarrow(cx, value, narrowTarget);
   }
   if (isRefValType(srcVt) && isRefValType(dstVt)) {
     // Reference casts, mirroring streaming: subtype-compatible
@@ -579,7 +629,7 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     let boxed = cx.b.emit(IrOp.ref_cast, boxVt, value, cx.b.internType(boxVt));
     let fieldRef = cx.b.addRef(new IrRefField(boxStruct, boxStruct.fields[1].name as String));
     let raw = cx.b.emit(IrOp.struct_get, boxStruct.fields[1].type, boxed, fieldRef);
-    return scalarConvert(cx, raw, dstVt);
+    return normalizeNarrow(cx, scalarConvert(cx, raw, dstVt), narrowTarget);
   }
-  return scalarConvert(cx, value, dstVt);
+  return normalizeNarrow(cx, scalarConvert(cx, value, dstVt), narrowTarget);
 };
