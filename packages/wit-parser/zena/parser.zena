@@ -220,10 +220,13 @@ export sealed class UsePath {
 
   /** Get the final name component. */
   getName(): Id {
-    return match (this) {
-      case let IdUsePath {id}: id as Id
-      case let PackageUsePath {name}: name as Id
-    };
+    // Not a match: the self-hosted checker does not (yet) prove
+    // exhaustiveness over a sealed class whose subclasses are declared
+    // separately with `extends` rather than as `case` members.
+    if (this is IdUsePath) {
+      return (this as IdUsePath).id as Id;
+    }
+    return (this as PackageUsePath).name as Id;
   }
 }
 
