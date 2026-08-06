@@ -82,6 +82,45 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Self-hosted: calling into a package-mapped module crashes emit with `Invalid ref_func: index < 0`
+
+- **Found**: 2026-08-05, immediately after the celled-captures fix made
+  all 12 wit-parser modules compile.
+- **Severity**: blocking for the WIT track — the *next* stage makes the
+  compiler itself a consumer of `wit-parser`, which is exactly the
+  shape that crashes.
+- **Details**: compiling the wit-parser package as an entry point
+  succeeds (`zena-cli build packages/wit-parser/zena/wit.zena`), but a
+  *consumer* reaching it through the package map crashes the compiler:
+
+  ```zena
+  import { parse } from 'wit-parser:wit';
+  export let main = (): i32 => {
+    let doc = parse("package a:b@1.0.0;\n");
+    return doc.items.length;
+  };
+  ```
+
+  → `Exception caught in CLI compiler! Invalid ref_func: index < 0`,
+  thrown from `BinaryEmitter.emitRefFunc` via `ZirFunctionEmitter`.
+  `emit.zena`'s `IrOp.ref_func` case emits
+  `(ref as IrRefFunc).target.index`, so some `WasmFunction` reached
+  lowering without RTA assigning it an index — a function synthesized
+  during lowering (an adaptation wrapper is the likeliest candidate;
+  `lowering.zena` has four `ref_func` sites) that the reachability pass
+  never saw for a cross-module target.
+- **Narrowing already done**:
+  - `parse` and `parseSyntax` both crash → not resolve-specific.
+  - A **type-only** import (`import {AstItemTag}` + a match on it)
+    compiles fine → importing the package is not enough; *calling* into
+    it is what triggers it.
+  - Nothing to do with `console` or string formatting; the minimal
+    repro above has neither.
+- **Blocks**: `packages/wit-parser/examples/parse-wit.zena` under the
+  self-hosted compiler (it type-checks now, and reaches codegen). The
+  example is guarded by `npm run test:example -w @zena-lang/wit-parser`,
+  which runs the **bootstrap** check only, for this reason.
+
 ### RESOLVED: self/forward-referencing closure captures (the last wit-parser blocker)
 
 - **Fixed 2026-08-05.** `let visit = (k) => { … visit(dep); … }` and

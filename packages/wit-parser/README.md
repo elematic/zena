@@ -62,12 +62,22 @@ root deliberately, so it can only reach the parser through the package map — i
 stops compiling if that wiring breaks, which a test using relative imports would
 not.
 
-> **It does not run under the self-hosted compiler yet.** The package map
-> resolves correctly — `zena-cli` finds and loads `parser.zena` — but that
-> compiler cannot yet parse a generic *private* method, and `Parser.#parseList<T>`
-> is declared that way. See BUGS.md, "Self-hosted compiler cannot compile
-> generic methods on classes". Until it is fixed, only the bootstrap compiler
-> can build this package, which is also why the gap went unnoticed.
+That guard only works if something builds it, and for a while nothing did: the
+example had rotted into calling `.toString()` on an `i32`, which neither
+compiler accepts. `npm test` now type-checks it (`test:example`).
+
+> **All 12 modules now compile under the self-hosted compiler.** Every
+> blocker is fixed: generic *private* methods (`Parser.#parseList<T>`,
+> 0e7effe4), distributed sealed variants and block-scoped function bindings
+> (#164), and self/forward-referencing closure captures (#165).
+>
+> **Consuming the package from another module still crashes that compiler**,
+> so this example builds only under the bootstrap. A caller reaching the
+> package through the package map dies in emit with `Invalid ref_func:
+> index < 0`; compiling this package as an *entry point* is fine, and a
+> type-only import is fine, so it is the cross-module **call** that trips
+> it. See BUGS.md. It blocks the next stage directly: making WIT imports
+> first-class makes the compiler itself a consumer of this package.
 
 Nothing in the *compiler* calls the parser yet — making WIT imports first-class
 is the next step; see
