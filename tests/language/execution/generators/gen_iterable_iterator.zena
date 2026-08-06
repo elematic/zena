@@ -1,0 +1,77 @@
+// @mode: run
+// @result: 663
+// @skip: bootstrap
+// A class implements Iterable<T> with its :iterator() written as a
+// generator method — no hand-written iterator class at all. This is
+// the shape stdlib collections adopt after bootstrap retirement.
+import { Iterable, Iterator } from 'zena:iterator';
+
+class Countdown implements Iterable<i32> {
+  n: i32;
+  new(this.n);
+
+  gen :Iterable.iterator(): Iterator<i32> {
+    var i = this.n;
+    while (i > 0) {
+      yield i;
+      i -= 1;
+    }
+  }
+
+  contains(value: i32): boolean {
+    return value >= 1 && value <= this.n;
+  }
+  all(predicate: (item: i32) => boolean): boolean {
+    for (let v in this) {
+      if (!predicate(v)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  some(predicate: (item: i32) => boolean): boolean {
+    for (let v in this) {
+      if (predicate(v)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  fold<R>(initial: R, combine: (acc: R, item: i32) => R): R {
+    var acc = initial;
+    for (let v in this) {
+      acc = combine(acc, v);
+    }
+    return acc;
+  }
+  find(predicate: (item: i32) => boolean): inline (true, i32) | inline (false, _) {
+    for (let v in this) {
+      if (predicate(v)) {
+        return (true, v);
+      }
+    }
+    return (false, _);
+  }
+}
+
+let sumOf = (xs: Iterable<i32>): i32 => {
+  var s = 0;
+  for (let x in xs) {
+    s += x;
+  }
+  return s;
+};
+
+export let main = (): i32 => {
+  let c = new Countdown(3);
+  var acc = 0;
+  // Direct for-in over the Iterable (packs + calls :iterator()).
+  for (let v in c) {
+    acc += v; // 3 + 2 + 1 = 6
+  }
+  // Through an Iterable-typed parameter (interface dispatch).
+  acc = acc * 10 + sumOf(c); // 66
+  // Through the generator-backed default-style members.
+  let found = if (let (true, v) = c.find((x: i32) => x == 3)) { v } else { -1 };
+  return acc * 10 + found; // 663
+};
