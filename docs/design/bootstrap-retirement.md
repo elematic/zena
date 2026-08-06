@@ -287,16 +287,19 @@ plan can be redone.
    BUGS.md). `zena-compiler`'s own `build:cli` intentionally stays on
    the bootstrap until the seed lands (§2).*
 
-   *Wave two progress 2026-08-05: the `runtime` restructure is DONE —
-   its tests write inline sources to an in-repo scratch dir and shell
-   out to `zena-cli build --target host`; the package no longer depends
-   on `@zena-lang/compiler` at all. The `wit-parser` swap is STARTED
-   but blocked on two self-hosted compiler bugs (BUGS.md:
-   sealed-with-`extends` variants not recognized by the checker;
-   vtable-population-reached methods missing body dependency
-   registration). Generic private methods (`#name<T>`), which
-   wit-parser's parser depends on, now parse, specialize, and run —
-   fixed with portable tests along the way.*
+   *Wave two progress 2026-08-05: both restructures are DONE. The
+   `runtime` tests and the `wit-parser` build/tests compile through the
+   self-hosted compiler as a library: `api.wasm` (`build:api`) exports
+   `compileSource()` plus error/output accessors, and the packages
+   instantiate it in-process (`packages/runtime/src/test/compile-zena.ts`,
+   `packages/wit-parser/src/lib/compile.ts`) — no file round-trips, and
+   neither package depends on `@zena-lang/compiler`. Six self-hosted
+   compiler bugs fell out of the wit-parser swap, each fixed with a
+   portable test: deterministic vtable reach, distributed sealed
+   variants, block-scoped function bindings, celled captures,
+   inherited-member snapshots freezing pre-inference field types, and
+   record literals ignoring their contextual type. The full wit-parser
+   suite passes self-hosted-compiled.*
 4. **Choose and populate the seed** (§2), with the pin in-tree.
 5. **Prove a clean-checkout build from the seed alone**, with the TypeScript
    compiler still present but unused — a dry run that can be reverted.

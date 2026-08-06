@@ -121,29 +121,40 @@ immediately trying to fix it (which can pollute the current task's context).
   example is guarded by `npm run test:example -w @zena-lang/wit-parser`,
   which runs the **bootstrap** check only, for this reason.
 
-### Synthesized field getter typed anyref over an i32 field (last wit-parser test blocker)
+### RESOLVED: inherited-member snapshot froze pre-inference field types (the anyref getter)
 
-- **Found**: 2026-08-05 (wit-parser build swap; parser-test-harness only)
-- **Severity**: high for retirement (blocks 18 of 317 wit-parser unit
-  tests — everything needing the combined parser-test-harness program;
-  lexer harness and echo interop pass)
-- **Details**: in the combined harness program (parser + resolver +
-  ast-json in one compilation), the synthesized accessor
-  `StringType_s1413.get#fixedLength` gets vtable-slot signature
-  `(param (ref null …)) (result anyref)` while the physical field is
-  i32 — the body returns i32 against an anyref result:
-  `type mismatch: expected anyref, found i32`. `fixedLength` is a plain
-  `var fixedLength = 0 - 1;` i32 field on the sealed `Type` base
-  (parser.zena:305), and `parser.zena` standalone compiles and
-  validates fine — the mis-typed signature only appears in the larger
-  program, so the member map consulted by `getClassMemberSignature` /
-  the get# registration presumably lacks `fixedLength` for the variant
-  in that configuration (falls to a default). Two invalid-wasm bugs
-  with the same shape were fixed on the way here (adapted record
-  dispatch types unrooted; see below) — this is the remaining one.
-- **Reproduce**: `zena-cli build
-  packages/wit-parser/zena/parser-test-harness.zena --target host -o
-  /tmp/x.wasm && wasm-tools validate --features all /tmp/x.wasm`.
+- **Fixed 2026-08-05.** The `anyref` was a stale ErrorType snapshot,
+  not a lookup default: an unannotated field (`var fixedLength = 0 - 1;`)
+  holds an ErrorType placeholder in the base's member map until its
+  initializer is inferred, and the inference patches the FieldInfo *in
+  place* — but extends-resolution used to *clone* every inherited
+  member into the subclass. A variant materialized on demand before the
+  base's body check (here: the base's own earlier methods match over
+  the variants, and `fixedLength` is declared after them) froze the
+  placeholder forever, and RTA's synthesized variant getter lowered it
+  to anyref over the physical i32 field. Fix: when the superclass has
+  no type parameters to substitute, the subclass now *shares* the
+  parent's MemberInfo object, so the in-place inference fix-up is seen
+  everywhere (the only in-place member mutation is that fix-up). Test:
+  `execution/sealed-classes/inferred-field-copied-before-inference.zena`
+  (both compilers).
+
+### RESOLVED: record literals ignored their contextual type (one mint per initializer shape)
+
+- **Fixed 2026-08-05** (surfaced by the wit-parser swap the moment the
+  harness validated: 26 runtime `illegal cast` failures, all in
+  multi-package tests). `serializeAstToJson` builds
+  `{name: PackageName | null, items}` literals from both a nullable
+  field and a non-null nested-package name; the checker synthesized the
+  literal's type from its property initializers and never consulted the
+  expected type, so the two literals got two different record mints —
+  and record dispatch casts the receiver to the declared type's single
+  mint. Fix: the RecordLiteral checker arm now does contextual typing
+  like TupleLiteral always has — expected property types flow into the
+  property values, and an assignable literal takes the expected record
+  type as its node type. Test:
+  `execution/records/record-literal-conforms-to-context.zena`
+  (both compilers).
 
 ### RESOLVED: self/forward-referencing closure captures (the last wit-parser blocker)
 
