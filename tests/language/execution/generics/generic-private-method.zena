@@ -1,0 +1,41 @@
+// @mode: run
+// @result: 42
+// Generic PRIVATE methods (#name<T>(...)): the self-hosted parser only
+// recognized `#name(` as a method start, so `#name<` fell through to the
+// private-field path and failed with "Private field must have a type
+// annotation or initializer". The bootstrap accepted this all along
+// (wit-parser's Parser.#parseList<T> depends on it).
+
+class Collector {
+  var total: i32 = 0;
+
+  // An index loop, not for-in: the bootstrap cannot lower for-in over
+  // Array<T> inside a generic private method specialization ("for-in:
+  // ClassInfo for Array not found") — keep this test portable to both.
+  #apply<T>(items: Array<T>, measure: (item: T) => i32): i32 {
+    var sum = 0;
+    var i = 0;
+    while (i < items.length) {
+      sum += measure(items[i]);
+      i += 1;
+    }
+    return sum;
+  }
+
+  collect(): i32 {
+    let words = new Array<String>();
+    words.push("forty");
+    words.push("two!!");
+    let numbers = new Array<i32>();
+    numbers.push(16);
+    numbers.push(16);
+    this.total += this.#apply(words, (w: String) => w.length);
+    this.total += this.#apply(numbers, (n: i32) => n);
+    return this.total;
+  }
+}
+
+export let main = (): i32 => {
+  let c = new Collector();
+  return c.collect();
+};

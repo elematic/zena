@@ -2769,6 +2769,12 @@ export final class Parser {
       if (this.#check(TokenType.LParen)) {
         return this.#parseMethodBody(hashName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, decorators, startToken);
       }
+      // Generic private method: #name<T>(params) { ... }
+      if (this.#check(TokenType.Less) && this.#isGenericMethodStart()) {
+        this.#advance(); // consume '<'
+        let typeParams = this.#parseTypeParameterList();
+        return this.#parseMethodBody(hashName, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, decorators, startToken);
+      }
       if (isGen) {
         throw this.#error("Expected '(' after generator method name");
       }

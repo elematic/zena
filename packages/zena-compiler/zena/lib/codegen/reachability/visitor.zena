@@ -401,7 +401,26 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let me = callee as MemberExpression;
           let pName = me.property.name;
           if (pName.length > 0 && pName.sliceBytes(0, 1) == "#") {
-            this.queuePrivateMethod(classType as ClassType, pName);
+            // Generic private methods monomorphize per solved
+            // type-argument list; thread the checker-solved arguments
+            // (substituted into the walking specialization's context)
+            // so the declaration registers its specialized copy under
+            // the mangled slot name the call site will look up — not
+            // just the shared template.
+            var targs: Array<Type> | null = null;
+            let calleeType = model.getNodeType(me);
+            if (calleeType != null && calleeType is FunctionType) {
+              let ft = calleeType as FunctionType;
+              if (ft.typeArguments != null &&
+                  (ft.typeArguments as Array<Type>).length > 0) {
+                let resolved = new Array<Type>();
+                for (let a in (ft.typeArguments as Array<Type>)) {
+                  resolved.push(resolveType(a));
+                }
+                targs = resolved;
+              }
+            }
+            this.queuePrivateMethod(classType as ClassType, pName, targs);
           }
         }
       }
@@ -529,7 +548,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   /** Queues a specialization's private method (by name) as reachable. */
-  queuePrivateMethod(classType: ClassType, methName: String): void {
+  queuePrivateMethod(classType: ClassType, methName: String,
+      typeArguments: Array<Type> | null = null): void {
     let declId = ((classType.genericSource ?? classType)).symbolId;
     if (!this.pass.classDecls.has(declId)) {
       return;
@@ -543,8 +563,19 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (member is MethodDefinition) {
         let md = member as MethodDefinition;
         if (ctorMethodName(md) == methName) {
-          this.pass.queueReferrer(new Referrer(false, -1 as SymbolId,
-              (md as Node).id as i32, cdModel, classType, true));
+          if (typeArguments != null &&
+              (typeArguments as Array<Type>).length > 0) {
+            // Generic private method: register the monomorphized copy
+            // under its specialized slot name, exactly like public
+            // generic member references do — queuing the bare
+            // declaration would only register the shared template.
+            this.pass.specializer.instantiateGenericMethod(classType,
+                cdNode, methName, md as Node,
+                typeArguments as Array<Type>, cdModel);
+          } else {
+            this.pass.queueReferrer(new Referrer(false, -1 as SymbolId,
+                (md as Node).id as i32, cdModel, classType, true));
+          }
         }
       }
     }
