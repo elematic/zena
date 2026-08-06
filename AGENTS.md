@@ -280,10 +280,17 @@ already succeeded for the current inputs. **The cached result is correct.**
 
 ### `ERR_MODULE_NOT_FOUND` on a file whose source exists
 
-Rare, and the one case where the build output really is wrong. If something
-fails to import, say, `packages/compiler/lib/ast.js` while `src/lib/ast.ts` is
-sitting right there, the package's output went partial and Wireit cached it as
-good:
+If something fails to import, say, `packages/compiler/lib/ast.js` while
+`src/lib/ast.ts` is sitting right there, the package's output has gone partial.
+
+**Check for a second build first.** Two Wireit runs over one checkout — a
+second terminal, an editor task, `npm install` re-linking the workspaces — will
+race on the same output directories, and one will read `lib/` while the other
+is rewriting it. Wireit usually says so: "Input file … was deleted
+unexpectedly. Is another process writing to the same location?" Wait for the
+other run to finish; nothing is broken.
+
+Otherwise the output really is wrong, and Wireit has cached it as good:
 
 1. A file disappears from `lib/` — an interrupted build, a stray `rm`.
 2. An input changes, so Wireit re-runs `tsc`. The `tsc` scripts use
