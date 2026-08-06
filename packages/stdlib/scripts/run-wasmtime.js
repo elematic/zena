@@ -82,11 +82,16 @@ for (const wasmFile of wasmFiles.sort()) {
     passed++;
   } else {
     console.log(`${RED}FAIL${NC}`);
+    if (output) {
+      console.log(`    Output:\n    ${output.split('\n').join('\n    ')}`);
+    }
     if (result.stderr) {
       console.log(`    ${result.stderr.trim().split('\n').join('\n    ')}`);
     }
     if (returnValue && returnValue !== '0') {
       console.log(`    ${returnValue} test(s) failed`);
+    } else if (result.status !== 0) {
+      console.log(`    Process exited with status ${result.status}`);
     }
     failed++;
   }

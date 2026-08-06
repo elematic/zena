@@ -1,63 +1,62 @@
 #!/usr/bin/env node
-/**
- * Build WASI tests for stdlib.
- *
- * These are tests that require wasmtime (have @requires: wasmtime directive).
- * Currently hardcoded to fs/, hello_test.zena, memory_test.zena.
- */
-
-import {execSync} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {
+  writeFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   statSync,
-  writeFileSync,
 } from 'node:fs';
 import {dirname, join, relative, basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
+import {availableParallelism, cpus} from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
+const repoRoot = join(pkgDir, '..', '..');
 const testsDir = join(pkgDir, 'tests');
 const outDir = join(testsDir, 'out');
-const cliPath = join(pkgDir, '..', 'cli', 'lib', 'cli.js');
-
-// Files/patterns that need wasmtime (--target wasi)
-const wasiPatterns = [
-  'fs/*_test.zena',
-  'memory_test.zena',
-  'fixed_array/*_test.zena',
-  'array/*_test.zena',
-  'bench/*_test.zena',
-  'process/*_test.zena',
-];
+const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 
 console.log('Building WASI tests...');
-console.log('');
 
-let built = 0;
-let skipped = 0;
-let failed = 0;
+// Find all test files
+const allTestFiles = await glob(join(testsDir, '**/*_test.zena'), {
+  ignore: '**/cli/**',
+});
 
-for (const pattern of wasiPatterns) {
-  const fullPattern = join(testsDir, pattern);
-  const files = await glob(fullPattern);
+const filesToCompile = [];
+const cliWasm = join(
+  repoRoot,
+  'packages',
+  'zena-compiler',
+  'zena',
+  'out',
+  'cli.wasm',
+);
 
-  for (const zenaFile of files) {
-    const baseName = basename(zenaFile, '.zena');
-    const runnerFile = join(dirname(zenaFile), `${baseName}.__runner__.zena`);
+// Get compiler modification times for cache invalidation
+let compilerMtime = 0;
+if (existsSync(zenaCli)) {
+  compilerMtime = Math.max(compilerMtime, statSync(zenaCli).mtimeMs);
+}
+if (existsSync(cliWasm)) {
+  compilerMtime = Math.max(compilerMtime, statSync(cliWasm).mtimeMs);
+}
 
-    // Write wrapper runner file
-    // Propagate @requires: wasmtime into the generated wrapper so the
-    // node-based portable runner skips it too (the wrapper sits in the
-    // source tree, so other test discoverers will see it).
-    const sourceContent = readFileSync(zenaFile, 'utf-8');
-    const requiresWasmtime = sourceContent.includes('@requires: wasmtime')
-      ? '// @requires: wasmtime\n'
-      : '';
-    const wrapperContent = `${requiresWasmtime}import {runAndReport} from 'zena:test';
+for (const testFile of allTestFiles) {
+  const relPath = relative(testsDir, testFile);
+  const baseName = basename(testFile, '.zena');
+  const runnerFile = join(dirname(testFile), `${baseName}.__runner__.zena`);
+
+  // Write wrapper runner file. Propagate @requires: wasmtime so the
+  // node-based portable runner skips wrappers of wasmtime-only tests.
+  const sourceContent = readFileSync(testFile, 'utf-8');
+  const requiresWasmtime = sourceContent.includes('@requires: wasmtime')
+    ? '// @requires: wasmtime\n'
+    : '';
+  const wrapperContent = `${requiresWasmtime}import {runAndReport} from 'zena:test';
 import {console} from 'zena:console';
 import {tests} from './${baseName}.zena';
 
@@ -67,51 +66,109 @@ export let main = (): i32 => {
   });
 };
 `;
-    writeFileSync(runnerFile, wrapperContent, 'utf-8');
+  writeFileSync(runnerFile, wrapperContent, 'utf-8');
 
-    const relPath = relative(testsDir, runnerFile);
-    const wasmFile = join(outDir, relPath.replace(/\.zena$/, '.wasm'));
+  const wasmFile = join(outDir, relPath.replace(/\.zena$/, '.wasm'));
 
-    // Check if rebuild needed
-    if (existsSync(wasmFile)) {
-      const srcStat = statSync(zenaFile);
-      const outStat = statSync(wasmFile);
-      if (srcStat.mtimeMs <= outStat.mtimeMs) {
-        skipped++;
-        continue;
-      }
+  // Check if rebuild needed
+  let needsBuild = true;
+  if (existsSync(wasmFile)) {
+    const srcStat = statSync(testFile);
+    const outStat = statSync(wasmFile);
+    if (
+      srcStat.mtimeMs <= outStat.mtimeMs &&
+      compilerMtime <= outStat.mtimeMs
+    ) {
+      needsBuild = false;
     }
+  }
 
-    // Ensure output directory exists
-    const wasmDir = dirname(wasmFile);
-    if (!existsSync(wasmDir)) {
-      mkdirSync(wasmDir, {recursive: true});
-    }
-
-    // Compile with wasi target and debug info for better stack traces
-    try {
-      execSync(
-        `node "${cliPath}" build "${runnerFile}" --target wasi -g -o "${wasmFile}"`,
-        {
-          stdio: 'pipe',
-          cwd: pkgDir,
-        },
-      );
-      console.log(`✓ ${relPath}`);
-      built++;
-    } catch (e) {
-      console.error(`✗ ${relPath}`);
-      if (e.stderr) {
-        console.error(`  ${e.stderr.toString().trim()}`);
-      }
-      failed++;
-    }
+  if (needsBuild) {
+    filesToCompile.push({
+      testFile,
+      runnerFile,
+      wasmFile,
+      relPath,
+    });
   }
 }
 
-console.log('');
-console.log(`Built: ${built}, Skipped: ${skipped}, Failed: ${failed}`);
-
-if (failed > 0) {
-  process.exit(1);
+if (filesToCompile.length === 0) {
+  console.log('All tests up to date.');
+  process.exit(0);
 }
+
+// Ensure output directories exist
+for (const item of filesToCompile) {
+  const wasmDir = dirname(item.wasmFile);
+  if (!existsSync(wasmDir)) {
+    mkdirSync(wasmDir, {recursive: true});
+  }
+}
+
+const pLimit = availableParallelism ? availableParallelism() : cpus().length;
+console.log(
+  `Compiling ${filesToCompile.length} tests using ${pLimit} parallel workers...`,
+);
+
+let fileIndex = 0;
+let activeCount = 0;
+let failedCompile = false;
+let compileErrorMsg = '';
+
+await new Promise((resolve, reject) => {
+  const checkDone = () => {
+    if (fileIndex >= filesToCompile.length && activeCount === 0) {
+      if (failedCompile) {
+        reject(new Error(compileErrorMsg));
+      } else {
+        resolve();
+      }
+    }
+  };
+
+  const startNext = () => {
+    if (failedCompile) return;
+    if (fileIndex >= filesToCompile.length) {
+      checkDone();
+      return;
+    }
+
+    const {runnerFile, wasmFile, relPath} = filesToCompile[fileIndex++];
+    activeCount++;
+
+    const child = spawn(zenaCli, ['build', runnerFile, '-o', wasmFile], {
+      cwd: pkgDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    child.stdout?.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    let stderr = '';
+    child.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    child.on('close', (code) => {
+      activeCount--;
+      if (code !== 0) {
+        failedCompile = true;
+        compileErrorMsg = `Compilation failed for ${relPath}:\nStdout:\n${stdout}\nStderr:\n${stderr}`;
+        reject(new Error(compileErrorMsg));
+        return;
+      }
+      console.log(`✓ ${relPath}`);
+      startNext();
+    });
+  };
+
+  const initialWorkers = Math.min(pLimit, filesToCompile.length);
+  for (let i = 0; i < initialWorkers; i++) {
+    startNext();
+  }
+});
+
+console.log('Build completed successfully.');
