@@ -7017,6 +7017,22 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           if ((key.length == 0 || key.sliceBytes(0, 1) != "#") &&
               !key.startsWith("get##") && !key.startsWith("set##")) {
             let parentMember = st.members[key];
+            // With no type parameters to substitute, share the parent's
+            // MemberInfo instead of cloning it. An unannotated field holds
+            // an ErrorType placeholder until its initializer is inferred,
+            // and that inference patches the FieldInfo in place — a clone
+            // taken by a subclass materialized on demand before the base's
+            // body check (e.g. a sealed variant mentioned by an earlier
+            // base method) would keep the stale placeholder forever.
+            let stParams = st.typeParameters;
+            var noSubstitution = true;
+            if (stParams != null) {
+              noSubstitution = (stParams as Array<TypeParameterType>).length == 0;
+            }
+            if (noSubstitution) {
+              classType.members[key] = parentMember;
+              continue;
+            }
             let subType = substituteTypeParams(st.typeParameters, st.typeArguments, parentMember.type);
             classType.members[key] = match (parentMember) {
               case FieldInfo as fi: {

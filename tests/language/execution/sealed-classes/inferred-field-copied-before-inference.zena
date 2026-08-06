@@ -1,0 +1,39 @@
+// @mode: run
+// @result: 42
+
+// A sealed base whose UNANNOTATED field is declared after a method that
+// mentions the variants. Checking that method materializes each variant
+// on demand, and materialization snapshot-copies the base's members into
+// the variant — at a point where the field's type is still the ErrorType
+// placeholder that unannotated fields hold until their initializer is
+// inferred. The base's own entry is later fixed up in place; a cloned
+// copy in the variant would keep the stale placeholder, and the getter
+// RTA synthesizes for the variant's vtable slot (the base-typed access
+// below makes the accessor virtual) would be typed anyref over an i32
+// field — invalid wasm.
+//
+// This is the WIT parser's `Type.fixedLength` shape: `var fixedLength =
+// 0 - 1;` on the sealed base, declared after methods that match over the
+// variants, written through a base-typed reference.
+
+sealed class Base {
+  case A, B
+
+  pick(): i32 {
+    return match (this) {
+      case A: 1
+      case B: 2
+    };
+  }
+
+  var n = 40 + 2;
+}
+
+final class A() extends Base
+final class B() extends Base
+
+export let main = (): i32 => {
+  let b = new A() as Base;
+  b.n = 40 + 2;
+  return b.n;
+};
