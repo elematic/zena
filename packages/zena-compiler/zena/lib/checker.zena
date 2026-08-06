@@ -161,6 +161,21 @@ export final class SharedCheckerState {
    * (docs/design/import-cycles.md).
    */
   declaredNominalTypes = new HashMap<SymbolId, Type>();
+
+  /**
+   * The canonical TypeParameterType per declared type parameter, keyed
+   * by "<source path>#<byte offset>" of the parameter's declaration
+   * (importers re-materialize an exporter's signature from its AST,
+   * where the importer's model has no Symbol for the foreign parameter
+   * — the location is shared). NOT keyed by node id: node id spaces
+   * restart per compilation while shared state (prelude/stdlib types)
+   * can carry forward across compilations in one process, so ids
+   * collide across programs; source locations are stable. Substitution
+   * matches parameters by object identity, so every pass and every
+   * importing module must see the same object — same reasoning as
+   * declaredNominalTypes.
+   */
+  typeParameterTypes = new HashMap<String, Type>();
 }
 
 /**
@@ -737,9 +752,8 @@ final class CheckerContext {
         if (tp.constraint != null) {
           constraint = resolveTypeAnnotation(this, tp.constraint as TypeAnnotation, false);
         }
-        let tpType = new TypeParameterType(tp.name, constraint, null);
+        let tpType = this.getOrCreateTypeParameter(tp, constraint, null);
         this.declareTypeName(tp.name, tpType);
-        this.registerTypeParameter(tp, tpType);
         (resolvedTypeParams as Array<TypeParameterType>).push(tpType);
       }
     }
@@ -801,6 +815,61 @@ final class CheckerContext {
       this.#materializedTypes[(info as Symbol).id] = tpType as Type;
       this.model.setBindingType(info as Symbol, tpType as Type);
     }
+  }
+
+  /**
+   * The ONE TypeParameterType for a declared type parameter.
+   * Substitution matches parameters by object identity, so every
+   * resolution of the same declaration — lazy annotation resolution,
+   * signature checks, body checks — must see the same object.
+   * Creation therefore goes through a shared registry keyed by the
+   * parameter's AST node id; constraint/default stick from the first
+   * call that resolves them.
+   */
+  getOrCreateTypeParameter(
+    tp: TypeParameter,
+    constraint: Type | null,
+    defaultType: Type | null
+  ): TypeParameterType {
+    // Location-based key: stable across re-parses and across the
+    // compilations that share this state (node ids are not). Synthesized
+    // parameters without a location fall back to the node id, which is
+    // unique within one compilation.
+    var key = "id:" + i32ToString(tp.id as i32);
+    if (tp.loc != null) {
+      let loc = tp.loc as SourceLocation;
+      key = (loc.path ?? "") + "#" + i32ToString(loc.start);
+    }
+    var result: TypeParameterType | null = null;
+    if (let (true, existing) = this.#sharedState.typeParameterTypes.get(key)) {
+      if (existing is TypeParameterType) {
+        result = existing as TypeParameterType;
+      }
+    }
+    if (result == null) {
+      let created = new TypeParameterType(tp.name, constraint, defaultType);
+      this.#sharedState.typeParameterTypes[key] = created as Type;
+      result = created;
+    }
+    let tpType = result as TypeParameterType;
+    // A resolution can reach the parameter before the declaring pass has
+    // resolved its constraint/default annotations (creating the canonical
+    // object with nulls). Later calls carry the resolved types — fill
+    // them in; never null out what an earlier call established.
+    if (constraint != null && tpType.constraint == null) {
+      tpType.constraint = constraint;
+    }
+    if (defaultType != null && tpType.defaultType == null) {
+      tpType.defaultType = defaultType;
+    }
+    // Register for name resolution in THIS module's model too (the
+    // symbol exists when the parameter is declared locally).
+    let info = this.model.resolveDeclaration(tp as Node);
+    if (info != null) {
+      this.#materializedTypes[(info as Symbol).id] = tpType as Type;
+      this.model.setBindingType(info as Symbol, tpType as Type);
+    }
+    return tpType;
   }
 
   /**
@@ -1214,7 +1283,7 @@ final class CheckerContext {
           let tempTypeParams = new Array<TypeParameterType>();
           typeParams = tempTypeParams;
           for (let param in declarationParams) {
-            let tpType = new TypeParameterType(param.name, null, null);
+            let tpType = this.getOrCreateTypeParameter(param, null, null);
             tempTypeParams.push(tpType);
             this.declareTypeName(tpType.name, tpType);
             this.registerTypeParameter(param, tpType);
@@ -2431,12 +2500,20 @@ let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | 
         }
         return null;
       }
-      // Walk extends list.
-      var i = 0;
-      while (i < iface.extendsList.length) {
-        let result = findIterableInterface(ctx, iface.extendsList[i]);
-        if (result != null) { return result; }
-        i += 1;
+      // Walk the extends list, substituting this instantiation's type
+      // arguments into inherited entries first — the extendsList is
+      // shared by reference with the generic source, so its entries
+      // mention the SOURCE's parameters.
+      for (let ext in iface.extendsList) {
+        var parent: Type = ext as Type;
+        if (iface.typeArguments != null) {
+          parent = substituteTypeParams(
+              iface.typeParameters, iface.typeArguments, parent);
+        }
+        if (parent is InterfaceType) {
+          let result = findIterableInterface(ctx, parent as InterfaceType);
+          if (result != null) { return result; }
+        }
       }
       return null;
     }
@@ -2466,10 +2543,10 @@ let substituteTypeParams = (
   let taLen = args.length;
 
   match (t) {
-    case TypeParameterType {name}: {
-      // Find the matching type parameter and substitute.
+    case TypeParameterType as tpRef: {
+      // Find the matching type parameter (by identity) and substitute.
       for (var i = 0; i < tpLen && i < taLen; i += 1) {
-        if (params[i].name == name) {
+        if (params[i] === tpRef) {
           return args[i];
         }
       }
@@ -2547,7 +2624,7 @@ let substituteTypeParams = (
         for (let arg in srcArgs) {
           let sub = substituteTypeParams(typeParams, typeArgs, arg);
           subArgs.push(sub);
-          if (!typesEqual(sub, arg)) {
+          if (sub !== arg) {
             changed = true;
           }
         }
@@ -2565,7 +2642,7 @@ let substituteTypeParams = (
         for (let arg in srcArgs) {
           let sub = substituteTypeParams(typeParams, typeArgs, arg);
           subArgs.push(sub);
-          if (!typesEqual(sub, arg)) {
+          if (sub !== arg) {
             changed = true;
           }
         }
@@ -2583,7 +2660,7 @@ let substituteTypeParams = (
         for (let arg in srcArgs) {
           let sub = substituteTypeParams(typeParams, typeArgs, arg);
           subArgs.push(sub);
-          if (!typesEqual(sub, arg)) {
+          if (sub !== arg) {
             changed = true;
           }
         }
@@ -2614,11 +2691,11 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       var changed = false;
       for (let param in ft.parameters) {
         let sub = substituteThisType(receiverType, param);
-        if (!typesEqual(sub, param)) { changed = true; }
+        if (sub !== param) { changed = true; }
         subParams.push(sub);
       }
       let subRet = substituteThisType(receiverType, ft.returnType);
-      if (!changed && typesEqual(subRet, ft.returnType)) { return t; }
+      if (!changed && subRet === ft.returnType) { return t; }
       let newFt = new FunctionType(subParams, ft.parameterNames, subRet);
       newFt.typeParameters = ft.typeParameters;
       newFt.optionalParameters = ft.optionalParameters;
@@ -6935,9 +7012,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       if (tp.defaultType != null) {
         defaultT = resolveTypeAnnotation(ctx, tp.defaultType as TypeAnnotation);
       }
-      let tpType = new TypeParameterType(tp.name, constraint, defaultT);
+      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, defaultT);
       ctx.declareTypeName(tp.name, tpType);
-      ctx.registerTypeParameter(tp, tpType);
       freshParams.push(tpType);
       tpi = tpi + 1;
     }
@@ -8336,7 +8412,7 @@ let checkMethodSignature = (
   if (astTypeParameters != null) {
     let typeParameters = new Array<TypeParameterType>();
     for (let astParam in astTypeParameters) {
-      let tpType = new TypeParameterType(astParam.name, null, null);
+      let tpType = ctx.getOrCreateTypeParameter(astParam, null, null);
       typeParameters.push(tpType);
       ctx.declareTypeName(astParam.name, tpType);
       ctx.registerTypeParameter(astParam, tpType);
@@ -8762,9 +8838,8 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       if (tp.constraint != null) {
         constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
       }
-      let tpType = new TypeParameterType(tp.name, constraint, null);
+      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
-      ctx.registerTypeParameter(tp, tpType);
       (ifaceType.typeParameters as Array<TypeParameterType>).push(tpType);
     }
   }
@@ -8826,9 +8901,8 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
             if (tp.constraint != null) {
               constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
             }
-            let tpType = new TypeParameterType(tp.name, constraint, null);
+            let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
             ctx.declareTypeName(tp.name, tpType);
-            ctx.registerTypeParameter(tp, tpType);
             tpArr.push(tpType);
           }
           typeParams = tpArr;
@@ -9075,9 +9149,8 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       if (tp.constraint != null) {
         constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
       }
-      let tpType = new TypeParameterType(tp.name, constraint, null);
+      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
-      ctx.registerTypeParameter(tp, tpType);
       resolvedTps.push(tpType);
     }
     mixinType.typeParameters = resolvedTps;
@@ -9494,9 +9567,8 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
       if (tp.constraint != null) {
         constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
       }
-      let tpType = new TypeParameterType(tp.name, constraint, null);
+      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
-      ctx.registerTypeParameter(tp, tpType);
       (resolvedTypeParams as Array<TypeParameterType>).push(tpType);
       tpi += 1;
     }
@@ -11507,9 +11579,8 @@ let checkFunctionExpression = (
         if (tp.constraint != null) {
           constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
         }
-        let tpType = new TypeParameterType(tp.name, constraint, null);
+        let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
         ctx.declareTypeName(tp.name, tpType);
-        ctx.registerTypeParameter(tp, tpType);
         tpTypes.push(tpType);
         tpi += 1;
       }

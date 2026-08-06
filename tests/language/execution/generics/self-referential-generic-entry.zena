@@ -1,0 +1,34 @@
+// @mode: run
+// @result: 42
+// Regression: a self-referential generic class (SetEntry<E> linking to
+// SetEntry<E>) instantiates ITSELF while its own declaration is
+// mid-check, before its constructorType is filled; the cached
+// instantiation kept the null and codegen registered a bogus
+// receiver-only constructor ("signature/param shape mismatch").
+// Historically this surfaced as bogus recursive substitution errors
+// (SetEntry<SetEntry<SetEntry<T> | null> | null>) from the name-keyed
+// substitution era — see BUGS.md.
+class SetEntry<E> {
+  value: E;
+  var next: SetEntry<E> | null = null;
+  new(this.value);
+}
+
+class MySet<T> {
+  var head: SetEntry<T> | null = null;
+  add(v: T): void {
+    let e = new SetEntry(v);
+    e.next = this.head;
+    this.head = e;
+  }
+  first(): T {
+    return (this.head as SetEntry<T>).value;
+  }
+}
+
+export let main = (): i32 => {
+  let s = new MySet<i32>();
+  s.add(41);
+  s.add(58);
+  return s.first() - 16;
+};

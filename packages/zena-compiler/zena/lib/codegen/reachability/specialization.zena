@@ -721,6 +721,20 @@ export final class Specializer implements SpecializerInterface {
     if (cType != null) {
       if (methName == "<constructor>") {
         methodTypeNode = cType.constructorType;
+        // A self-referential generic class instantiates ITSELF while its
+        // own declaration is mid-check — before constructorType is filled
+        // — and that cached instantiation keeps the null forever (the
+        // instantiation caches copy constructorType by value). Derive the
+        // signature from the generic source instead of registering a
+        // bogus receiver-only constructor.
+        if (methodTypeNode == null && cType.genericSource != null) {
+          let gs = cType.genericSource as ClassType;
+          if (gs.constructorType != null) {
+            methodTypeNode = substituteTypeParamsInCodegen(
+                gs.typeParameters, cType.typeArguments,
+                gs.constructorType as FunctionType);
+          }
+        }
       } else {
         var specificFuncType: FunctionType | null = null;
         var hasOverloads = false;

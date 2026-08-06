@@ -16,6 +16,7 @@ import { HashMap, Map } from 'zena:map';
 import { OrderedMap } from 'zena:ordered-map';
 import { HashSet } from 'zena:set';
 import { StringBuilder } from 'zena:string-builder';
+import { i32ToString } from 'zena:string-convert';
 
 
 import { Expression, Statement } from './ast.zena';
@@ -257,7 +258,7 @@ let substituteInType = (
       if (typeParameters != null) {
         let tps = typeParameters as Array<TypeParameterType>;
         for (var i = 0; i < tps.length; i += 1) {
-          if (tps[i].name == tp.name && i < typeArguments.length) {
+          if (tps[i] === tp && i < typeArguments.length) {
             found = typeArguments[i];
             break;
           }
@@ -553,19 +554,127 @@ let substituteInType = (
 };
 
 /**
- * Create an instantiated copy of a generic ClassType with concrete type arguments.
- * This is a factory function that properly initializes all fields from the source.
+ * Cache key for one type argument. A type parameter keys by identity
+ * (name plus the base Type uid) at any nesting depth: same-named
+ * parameters of different declarations are different parameters and
+ * must not share a cached instantiation. This matters doubly because
+ * instantiate* re-assigns the cached object's fields on every call, so
+ * a key collision would not just return the wrong object, it would
+ * mutate the shared one. Composite arms mirror typeToString and
+ * recurse; anything that cannot embed a type parameter falls through
+ * to typeToString.
  */
+let instantiationKeyOf = (t: Type): String => match (t) {
+  case TypeParameterType as tp: tp.name + "#" + i32ToString(tp.uid)
+  case ArrayType {elementType}: "Array<" + instantiationKeyOf(elementType) + ">"
+  case TupleType {elementTypes}: {
+    var s = "[";
+    var first = true;
+    for (let elem in elementTypes) {
+      if (!first) { s = s + ","; }
+      first = false;
+      s = s + instantiationKeyOf(elem);
+    }
+    s + "]"
+  }
+  case InlineTupleType {elementTypes}: {
+    var s = "(";
+    var first = true;
+    for (let elem in elementTypes) {
+      if (!first) { s = s + ","; }
+      first = false;
+      s = s + instantiationKeyOf(elem);
+    }
+    s + ")"
+  }
+  case UnionType {types}: {
+    var s = "";
+    var first = true;
+    for (let member in types) {
+      if (!first) { s = s + "|"; }
+      first = false;
+      s = s + instantiationKeyOf(member);
+    }
+    s
+  }
+  case RecordType {properties}: {
+    var s = "{";
+    var first = true;
+    for (let key in properties.keys()) {
+      if (!first) { s = s + ","; }
+      first = false;
+      s = s + key + ":" + instantiationKeyOf(properties[key]);
+    }
+    s + "}"
+  }
+  case FunctionType as ft: {
+    var s = "(";
+    var first = true;
+    for (let param in ft.parameters) {
+      if (!first) { s = s + ","; }
+      first = false;
+      s = s + instantiationKeyOf(param);
+    }
+    s + ")=>" + instantiationKeyOf(ft.returnType)
+  }
+  case ClassType as ct: {
+    if (ct.typeArguments != null) {
+      namedKey(ct.name, ct.typeArguments as Array<Type>)
+    } else {
+      ct.name
+    }
+  }
+  case InterfaceType as it: {
+    if (it.typeArguments != null) {
+      namedKey(it.name, it.typeArguments as Array<Type>)
+    } else {
+      it.name
+    }
+  }
+  case MixinType as mt: {
+    if (mt.typeArguments != null) {
+      namedKey(mt.name, mt.typeArguments as Array<Type>)
+    } else {
+      mt.name
+    }
+  }
+  case TypeAliasType as ta: {
+    if (ta.typeArguments != null) {
+      namedKey(ta.name, ta.typeArguments as Array<Type>)
+    } else {
+      ta.name
+    }
+  }
+  case _: typeToString(t)
+};
+
+/** `Name<key,key,...>` for a generic nominal type's cache key. */
+let namedKey = (name: String, args: Array<Type>): String => {
+  var s = name + "<";
+  var first = true;
+  for (let arg in args) {
+    if (!first) { s = s + ","; }
+    first = false;
+    s = s + instantiationKeyOf(arg);
+  }
+  return s + ">";
+};
+
 let getInstantiationKey = (typeArguments: Array<Type>): String => {
   var sb = "";
   for (let arg in typeArguments) {
     if (sb != "") {
       sb = sb + ",";
     }
-    sb = sb + typeToString(arg);
+    sb = sb + instantiationKeyOf(arg);
   }
   return sb;
 };
+
+/**
+ * Create an instantiated copy of a generic ClassType with concrete type arguments.
+ * This is a factory function that properly initializes all fields from the source.
+ */
 
 export let instantiateClassType = (
   source: ClassType,

@@ -1,0 +1,23 @@
+// @mode: run
+// @result: 32
+// Regression: for-in over OrderedMap resolves its element type through
+// the interface hop `OrderedMap implements Map<K, V>` where
+// `Map<K, V> extends Iterable<MapEntry<K, V>>`. Same-named type
+// parameters of DIFFERENT declarations (Map's K/V vs OrderedMap's K/V)
+// used to collide in the name-keyed instantiation caches — and since
+// instantiation mutates the cached object, the collision re-pointed the
+// shared `Iterable<MapEntry<K, V>>` entry in Map's extendsList at the
+// wrong declaration's parameters, leaking raw K/V into the element type.
+import {OrderedMap} from 'zena:ordered-map';
+
+export let main = (): i32 => {
+  let m = new OrderedMap<String, i32>();
+  m['a'] = 1;
+  m['b'] = 2;
+  var total = 0;
+  for (let pair in m) {
+    total += pair.value * 10 + pair.key.length;
+  }
+  // Insertion order: (1*10+1) + (2*10+1) = 32.
+  return total;
+};
