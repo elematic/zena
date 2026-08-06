@@ -127,7 +127,7 @@ Current sizes:
 
 | Artifact | Size | Checked in? |
 | --- | --- | --- |
-| `cli.wasm` | 2.6 MB | **yes** — this is the seed |
+| `cli.wasm` (self-hosted-built) | 4.0 MB | **yes** — this is the seed (`bootstrap/cli.wasm`) |
 | `cli.cwasm` (precompiled native) | 42 MB | no — regenerate locally via `zena-cli precompile` |
 
 **Decided: check `cli.wasm` into git** at a stable path such as
@@ -310,6 +310,17 @@ plan can be redone.
    created but not marked reached (BUGS.md). `packages/wit-parser` no
    longer invokes the bootstrap anywhere.*
 4. **Choose and populate the seed** (§2), with the pin in-tree.
+
+   *DONE 2026-08-06: `packages/zena-compiler/bootstrap/cli.wasm` (4.0 MB),
+   with provenance and re-baseline instructions in `bootstrap/README.md`.
+   The seed is the **self-hosted-built** compiler (stage B), not the
+   bootstrap-built one: since B≡C held at the pin commit, the seed
+   compiling its own source reproduces itself byte-for-byte, so seed
+   integrity is a `cmp` away. `build:cli` now runs the seed through
+   `zena-cli` (`ZENA_COMPILER_WASM=bootstrap/cli.wasm`); the TypeScript
+   compiler is no longer in the compiler's own build path. The wireit
+   edge `zena-cli:build → build:cli` was inverted to break the cycle,
+   with dependents given the explicit edge.*
 5. **Prove a clean-checkout build from the seed alone**, with the TypeScript
    compiler still present but unused — a dry run that can be reverted.
 6. **Delete `packages/compiler`**, and with it the `@skip: bootstrap` markers
