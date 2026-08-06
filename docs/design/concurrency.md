@@ -1,5 +1,13 @@
 # Concurrency Design for Zena
 
+> **Status note (2026-08):** the focused async v1 design — surface
+> syntax, `Future<T>`, the split-pass extension, and the host/driver
+> contract — now lives in [async.md](async.md), which supersedes this
+> document's v1 sketches (and flips the annotation convention:
+> `async (url: String): Future<Response>`, per generators.md §10.2).
+> This document remains the wider exploration: workers, channels,
+> shared memory, WASI P3 threading, and the JSPI survey.
+
 This document explores concurrency models for Zena, analyzing WASI P3's cooperative threading, JS-style async/await, and web host support via JSPI.
 
 ## Design Decision: Stackless-Only

@@ -77,11 +77,13 @@ The async-specific refinement:
   Fusion is the generator _performance_ story; async needs only the
   suspension transform. Critical path: **G0 → G1 → async v1**, with G2
   proceeding in parallel as capacity allows.
-- **Start the async runtime design during G1**, since it's the half
-  generators teach nothing about: the `Future<T>` type and checker
-  rules, and the first host driver — JSPI on a JS host is the cheapest
-  first event loop; the WASI P3 callback ABI comes second
-  (concurrency.md).
+- **The async v1 design is [async.md](async.md)** (milestones A0–A3
+  there). Its driver conclusion revises the earlier sketch: the event
+  loop is a plain Zena library inside the module, so Level 0 (tests,
+  internal completions) runs on today's unmodified hosts; timers ride
+  WASI p1 `poll_oneoff`; JS-host completions are a tiny runtime-lib
+  wrapper — **no JSPI**, no zena-cli changes until real native I/O;
+  WASI P3's callback ABI maps onto step()/drain later.
 - Churn guard: the split machinery is effect-kind-tagged from day one
   (generators.md §5.3) and G0 reserves `async`/`await` alongside
   `gen`/`yield`, so a later effect-row generalization — if it ever
