@@ -7,37 +7,22 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ```
-### Self-hosted compiler cannot compile generic methods on classes
+### Self-hosted compiler cannot *call* a generic method on a class
 - **Found**: 2026-08-05 (wiring `wit-parser` into the package map; the
   self-hosted compiler could not build the WIT parser's own source)
-- **Severity**: high (blocks the self-hosted compiler consuming
-  `packages/wit-parser`, which is a prerequisite for first-class WIT imports)
-- **Tests**: `tests/language/execution/classes/generic-method.zena` and
-  `generic-private-method.zena`, both `@skip: self-hosted`. They pass under
-  bootstrap.
-- **Details**: Two distinct failures, one per visibility.
-
-  A generic **private** method fails in the *parser*. Seeing `#name` followed
-  by `<`, it decides this is a private field:
-
-  ```
-  packages/wit-parser/zena/parser.zena:2156:13:
-    Private field must have a type annotation or initializer (got '<')
-  ```
-
-  This is what blocks the WIT parser specifically: `Parser.#parseList<T>` is
-  declared this way and called six times.
-
-  *Calling* a generic **public** method gets past the parser and fails in ZIR
-  with `zir unsupported: method not found @Box_s787.run`. Declaring one is
-  fine — `tests/language/execution/classes/generic-loop-member.zena` has
-  `fold<R>(…)` and runs under self-hosted today — but that method is never
-  called, so no portable test covered the call path until now. Worth knowing
-  when judging how much of the feature works: declaration coverage is not call
-  coverage.
-
-  The bootstrap compiler handles both, which is why `packages/wit-parser`
-  builds today and why this went unnoticed.
+- **Severity**: medium (no longer blocks `packages/wit-parser`)
+- **Tests**: `tests/language/execution/classes/generic-method.zena`,
+  `@skip: self-hosted`. Passes under bootstrap.
+- **Details**: *Calling* a generic public method fails in ZIR with
+  `zir unsupported: method not found @Box_s787.run`. Declaring one is fine —
+  `tests/language/execution/classes/generic-loop-member.zena` has `fold<R>(…)`
+  and runs under self-hosted today — but that method is never called, so no
+  portable test covered the call path until now. Declaration coverage is not
+  call coverage.
+- **Fixed half**: this entry originally also covered generic *private*
+  methods, which the parser rejected as private fields. Fixed by 0e7effe4;
+  `classes/generic-private-method.zena` is no longer skipped. That was the
+  half blocking the WIT parser (`Parser.#parseList<T>`).
 
 ### if-let accepts any refutable pattern but only inline tuples are implemented
 - **Found**: 2026-07-31 (review question on #95: "if-let should work
@@ -97,49 +82,47 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-### Self-hosted checker does not treat `extends`-declared subclasses of a sealed class as variants
+### ZIR: closures cannot capture their own (or a later sibling's) binding — needs celled captures
 
-- **Found**: 2026-08-05 (compiling wit-parser with the self-hosted
-  compiler for retirement wave 2)
-- **Severity**: high for retirement (blocks the wit-parser build swap —
-  `ast-json-types.zena` uses the pattern pervasively)
-- **Details**: `sealed class Base { … }` with subclasses declared
-  separately as `export final class X(field: T) extends Base` (same
-  module) — the bootstrap treats the subclasses as the sealed variant
-  set; the self-hosted checker does not register them as variants, so:
-  1. `match (base)` over the subclasses reports Non-exhaustive
-     (`parser.zena` UsePath.getName, `ast-json-types.zena` several).
-  2. A case-class-style field on the subclass that shares a name with a
-     base member reports `Duplicate field` (`InterfaceOwner(index)` vs a
-     base method `index()` — that specific instance was dead code and
-     was deleted, but `UseElement` has more).
-  Either the self-hosted checker should learn the external-subclass
-  variant form, or the form should be rejected by BOTH compilers and
-  wit-parser migrated to `case` members — a language-semantics decision
-  (relates to "Method/field same-name semantics are unsettled" above).
-- **Workaround**: rewrite matches as if/else `is`-chains (done for
-  UsePath.getName); avoid field names that collide with base members.
+- **Found**: 2026-08-05 (wit-parser wave-2 swap; the LAST compiler bug
+  blocking it — `ast-json.zena`'s recursive local `visit`/
+  `ensureRegistered` closures)
+- **Severity**: high for retirement (blocks `ast-json.zena`,
+  `parser-test-harness.zena`, `wit.zena`)
+- **Details**: `let visit = (k) => { … visit(dep); … }` — the closure
+  captures its own binding, which has no value yet when the closure's
+  context struct is built. The CHECKER side is fixed (block statement
+  lists now run the pending-function prescan, so the reference
+  resolves), but ZIR lowering bails with `captured symbol not local`
+  (and the neighboring `celled capture` bail shows cell-based capture
+  is a known hole). The fix is celled captures: allocate a cell at the
+  declaration, capture the cell ref in the context struct, and read
+  or write through it in the closure body.
+- **Test**: `execution/closures/recursive-local-closure.zena`
+  (`@skip: self-hosted` — drop the marker when this lands; passes the
+  bootstrap).
 
-### Methods reached only through vtable population miss body dependency registration
+### RESOLVED: distributed sealed variants and vtable-population reach (the other two wit-parser blockers)
 
-- **Found**: 2026-08-05 (wit-parser wave-2 swap; minimal evidence via
-  `parser.zena`)
-- **Severity**: high for retirement (blocks the wit-parser build swap)
-- **Details**: `String.split` is never called anywhere in
-  `parser.zena`'s import graph, yet it is emitted (reached via the
-  class's vtable population — `populateClassStructAndMethods` registers
-  every instance method when a class needs its full vtable). Bodies
-  reached only through that path do not get their dependencies
-  registered: split's `new FixedArray<String>(…)` finds no extension
-  constructor and lowering fails with `extension constructor not found:
-  FixedArray_s154_String_s211`. Most programs mask this by registering
-  `FixedArray<String>` via some other edge (any string-array literal).
-  Either vtable-population-reached methods must get the same dependency
-  traversal as call-reached ones, or vtable slots for never-called
-  methods should not require lowered bodies.
-- **Reproduce**: `zena-cli build packages/wit-parser/zena/parser.zena
-  --target host -o /tmp/x.wasm` (after the sealed-variant issue above is
-  worked around).
+- **Fixed 2026-08-05**, kept briefly as a map:
+  1. **Distributed sealed variants** (`case X` in the sealed class +
+     standalone `final class X(...) extends Base`): the standalone
+     class now links into the sealed class's variant list at its
+     `extends` check; `BindingPattern` (`case let X {…}`) participates
+     in exhaustiveness subtraction (it previously fell through and
+     never subtracted ANYWHERE — possibly related to the Z2022
+     false-positive entry below, not yet confirmed); and a case param
+     may shadow an inherited base METHOD (the polymorphic-accessor
+     pattern `docs()` over a variant's `docs` field), matching the
+     bootstrap. Test: `execution/match/sealed-distributed-variants.zena`.
+  2. **Vtable-population reach**: `registerClassMethod` added functions
+     to `wasm.functions` unconditionally but `markFunctionReached` was
+     a no-op when the ambient phase flag said "checkable", leaving
+     emitted bodies whose dependencies were never traversed — a
+     graph-order-dependent miss (`String.split` lowering without its
+     `FixedArray<String>` extension constructor, in wit-parser's graph
+     but not others). Registration now force-reaches
+     (`forceReachFunction`), making it deterministic.
 
 ### Bootstrap miscompiles an assignment as the last statement of a try block
 
