@@ -4,7 +4,8 @@
 
 - **Status**: Proposed — no implementation; open questions marked
   **DECIDE** below
-- **Date**: 2026-08-04
+- **Date**: 2026-08-04, Part 5 and Part 8 revised 2026-08-06 against measured
+  WASI p2 (see Part 8's re-ordering note)
 - **Supersedes**: the "Strategy" and "Implementation Plan" sketches in
   [wasi.md](./wasi.md), which predate the WIT parser being finished
 
@@ -300,26 +301,55 @@ composed into a middleware chain no matter how good the composer is.
 
 ## Part 5: Type mapping
 
-| WIT | Zena | Notes |
-| --- | --- | --- |
-| `u8`…`u64`, `s8`…`s64`, `f32`, `f64` | `u8`…`u64`, `i8`…`i64`, `f32`, `f64` | direct |
-| `bool`, `char` | `boolean`, `char`/`u32` | **DECIDE**: Zena has no `char` |
-| `string` | `String` | lift/lower through linear memory |
-| `list<T>` | `Array<T>` | |
-| `tuple<A, B>` | inline tuple | already unboxed multi-value |
-| `option<T>` | `Option<T>` | existing `Some<T> \| None` |
-| `result<T, E>` | `Result<T, E>` | **does not exist** — must be added to stdlib |
-| `record` | case class | `class Point(x: f64, y: f64)` fits exactly |
-| `variant` | sealed case-class hierarchy | pattern matching already exhaustive-checks these |
-| `enum` | enum | |
-| `flags` | bitfield over `u32`/`u64` | **DECIDE**: no obvious existing analogue |
-| `resource` | `final class` wrapping an `i32` handle | see Part 6 |
-| `own<T>` / `borrow<T>` | same class, differing lifetime rules | see Part 6 |
-| `stream<T>` / `future<T>` | needs async | see Part 7 |
+Measured over the pinned `wasi-http` tree (WASI p2: 33 files, 7 packages, 32
+interfaces, 173 functions). Counts are comment-stripped text matches, so ±a
+few — they are for sizing, not accounting.
 
-`result<T, E>` is a real stdlib gap. `Option<T>` exists; there is no `Result`.
-Nearly every WIT function returns one, so bindgen cannot proceed without it.
-It should be added as a normal union (`Ok<T> | Err<E>`) mirroring `Option`.
+| WIT | Zena | p2 uses | State |
+| --- | --- | --- | --- |
+| `s32`, `s64`, `f32`, `f64` | `i32`, `i64`, `f32`, `f64` | 2 | ✅ exists |
+| `u32`, `u64` | `u32`, `u64` | 53 | ✅ exists |
+| `u8`, `u16`, `s8`, `s16` | `u8`, `u16`, `i8`, `i16` | 34 | ❌ **Zena has no narrow integers** |
+| `bool` | `boolean` | | ✅ exists |
+| `char` | — | **0** | deferred: p2 never uses it |
+| `string` | `String` | | ✅ exists |
+| `list<u8>` | `FixedArray<u8>` | 11 | ❌ needs `u8` |
+| `list<T>` (other) | `Array<T>` / `FixedArray<T>` | 11 | ✅ exists |
+| `tuple<A, B>` | inline tuple | 11 | ✅ exists |
+| `option<T>` | `Option<T>` | 50 | ✅ exists |
+| `result<T, E>` | `Result<T, E>` | **101 + 10 bare** | ❌ **not in stdlib** |
+| `record` | case class | 10 | ✅ exists |
+| `variant` | sealed case-class hierarchy | 8 | ✅ exists |
+| `enum` | enum | 6 | ✅ exists |
+| `flags` | `u32` newtype | 3 | ❌ no analogue |
+| `resource` | `final class` + `Disposable` | **25** | ❌ see Part 6 |
+| `own<T>` / `borrow<T>` | same class, differing lifetime rules | 0 / 13 explicit | see Part 6 |
+| `stream<T>` / `future<T>` | needs async | **0** | not needed for p2 |
+
+Three corrections to what this table used to say, each found by measuring
+rather than reading:
+
+**Zena has no `u8`/`u16`/`i8`/`i16`.** The row claiming `u8`…`u64` mapped
+"direct" was simply wrong: the compiler has `i32`/`u32`/`i64`/`u64` and
+nothing narrower. p2 uses `u8` 21 times and `u16` 13. See
+[arithmetic-conversions.md](./arithmetic-conversions.md) for the semantics
+decided for them.
+
+**`list<u8>` is half of all lists** (11 of 22) — request and response bodies.
+It should map to a packed byte array, not `Array<u32>`. Today's `ByteArray` is
+a bespoke primitive in the checker (`ByteArrayType`, a wasm `(array i8)`); once
+`u8` exists it becomes exactly `FixedArray<u8>`, and the special case can be
+retired. Note `Array<T>` is the *growable* heap class
+(`stdlib/zena/growable-array.zena`) while `FixedArray<T>` is the extension
+class over the intrinsic `array<T>` — so `ByteArray` is the latter, not the
+former.
+
+**`result<T, E>` is not "a normal union `Ok<T> | Err<E>`".** That was this
+document's original advice and it is superseded by Part 8a and PR #155: the
+representation is an inline multi-value union, so an ok/err return costs no
+allocation. 77 of 173 p2 functions (45%) mention `result`.
+
+`Option<T>` exists and needs nothing.
 
 ---
 
@@ -481,7 +511,52 @@ open question 2 is not cosmetic.
 
 ## Part 8: What has to be built
 
-Ordered; each stage is useful on its own.
+**Re-ordered 2026-08-06.** The original ordering put "first-class WIT imports"
+first and "bindgen, types only" third, as if binding symbols were separable
+from typing them. It is not: synthesizing a `ModuleExports` *is* the type side
+of bindgen, and it cannot be done for a WIT that mentions `result` or a
+`resource` — which, measured on p2, is 45% and 79% of all functions
+respectively. So the language work that gives those two a Zena type now comes
+first.
+
+The revised order, decided with the measurements in Part 5:
+
+| # | Stage | Why here |
+| --- | --- | --- |
+| 0a | **`Result<T,E>` + `inline` in type aliases** | gates 45% of p2 functions |
+| 0b | **Narrow integers `u8`/`u16`/`i8`/`i16`** | gates `list<u8>`, 34 direct uses |
+| 0c | **`FixedArray<u8>`/`Array<u8>`; retire `ByteArrayType`** | the body/bytes type |
+| 0d | **`Disposable`** | gives `resource` a Zena shape (79% of functions) |
+| 1 | First-class WIT imports | now has a type for everything it must bind |
+| 2… | Canonical ABI, ownership, component emission, p2 server | unchanged below |
+
+Stages 0a–0d are **language and stdlib work, done in the self-hosted compiler
+only** — `packages/compiler` is about to be deleted (see
+[bootstrap-retirement.md](./bootstrap-retirement.md)), so new portable tests
+for these carry `@skip: bootstrap`.
+
+Stage 0d deliberately ships `Disposable` *before* the full ownership model of
+stage 5. Resources get a `final class` wrapping the handle plus the Part 6
+`owned|moved|dropped` flag, with runtime checks and no static affine
+guarantees. That is not a stopgap to be thrown away: Part 6 already concluded
+the flag is the permanent story for the non-affine half, and stage 5's
+`Own<T>`/`Borrow<T>` tightens the same surface API rather than replacing it.
+It is viable now because WIT borrows are overwhelmingly *implicit* — 137 of
+p2's 173 functions are resource methods, each an implicit `borrow<self>`,
+while explicit `own<>` appears zero times and explicit `borrow<>` only 13. The
+hard part of ownership governs the rare case; the common case is "call a
+method on a handle you hold".
+
+The alternative — allowing imports but forbidding `resource` — was rejected:
+it removes `input-stream`, `output-stream`, `pollable`, `fields`,
+`incoming-request`, `outgoing-body` and `descriptor`, which is not a subset of
+WASI so much as its absence. At most 36 free functions would remain, several of
+which take or return resources anyway.
+
+---
+
+Original stage list, still accurate from stage 2 onward; each stage is useful
+on its own.
 
 1. **Parser → compiler integration.** The parser now has a public entry point
    (`wit-parser:wit` — `parse`, `parseSyntax`, `resolve`, `toJson`) and is an
@@ -497,8 +572,12 @@ Ordered; each stage is useful on its own.
    What remains is making WIT imports *first-class*: a WIT-backed package
    resolving to a `SourceFile` whose `ModuleExports` are synthesized from the
    resolved WIT, so `import {Request} from 'wasi:http/types'` binds real symbols
-   with no generated source. Blocked on the self-hosted compiler being able to
-   compile `packages/wit-parser` at all — see BUGS.md, generic methods.
+   with no generated source.
+
+   This used to say it was blocked on the self-hosted compiler being able to
+   compile `packages/wit-parser` at all. That is fixed — all 12 modules compile
+   and the package is consumable (PRs #164, #165, #171). It is now blocked only
+   on stages 0a–0d above, which give it types to bind.
 2. **`Result<T, E>` in the stdlib — as an inline multi-value union, not a
    heap type.** Blocks essentially every binding. **DECIDED 2026-08-05:** the
    representation is
@@ -512,10 +591,23 @@ Ordered; each stage is useful on its own.
    inline tuples compile to WASM multi-value returns, so an ok/err return costs
    no allocation. Pattern-based narrowing (`if (let (true, v) = f())`) already
    works on it. See Part 8a for where this meets WIT.
-3. **Bindgen, types only.** WIT types → Zena declarations. No ABI yet; output
-   is checkable Zena source. Verifiable against real `wasi:http` WIT. Resource
-   wrappers take their shape from stage 5, so this follows the ownership model
-   rather than being written twice.
+3. **Bindgen, types only.** WIT types → Zena declarations. No ABI yet.
+   Verifiable against real `wasi:http` WIT.
+
+   Mostly **absorbed into stages 0a–0d and 1**: once every WIT construct has a
+   Zena type and imports synthesize a `ModuleExports`, "bindgen, types only"
+   *is* stage 1. What remains distinct is the ability to **dump** the
+   synthesized declarations as Zena source — a verification and debugging
+   artifact, letting us diff our type mapping against real `wasi:http` by
+   reading it.
+
+   This item used to read "output is checkable Zena source", which invited the
+   opposite reading: that bindings are *delivered* as generated `.zena` files.
+   They are not — see Part 2. Zena binds symbols directly, with no generated
+   source on the build path.
+
+   Resource wrappers no longer wait for stage 5; stage 0d gives them their
+   shape, which stage 5 tightens rather than replaces.
 4. **Canonical ABI.** Lift/lower for string/list/record/variant/flags,
    `cabi_realloc` (build on the existing `FreeListAllocator` in
    `stdlib/zena/memory.zena`), post-return, and resource tables with the Part 6

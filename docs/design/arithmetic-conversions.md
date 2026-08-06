@@ -1,85 +1,124 @@
-# Arithmetic Conversions Design
+# Arithmetic Conversions
 
-This document outlines the proposed rules for mixed-type arithmetic operations in Zena.
+## Status
+
+- **Implemented** for `i32`/`u32`/`i64`/`u64`/`f32`/`f64` — the tables below
+  describe `promoteNumeric` in `packages/zena-compiler/zena/lib/types.zena`,
+  not a proposal.
+- **Narrow integers (`u8`, `u16`, `i8`, `i16`) decided 2026-08-06, not yet
+  implemented.** See [Narrow integers](#narrow-integers).
+- This document previously proposed rules that the compiler never adopted —
+  notably `i32 op u32 -> i32` by bit-pattern reinterpretation. The compiler
+  **rejects** that combination. The proposal has been replaced with what
+  actually ships.
 
 ## Principles
 
-1.  **Widening**: When mixing types of different sizes or precision, operands are promoted to the larger/more precise type.
-2.  **Signedness**: Mixing signed and unsigned integers requires care.
-3.  **Division**: The `/` operator on integers produces a float (matching JavaScript/TypeScript), while a separate operator or function is used for integer division.
+1. **Widening within a signedness.** Mixing sizes is fine when both operands
+   are signed, or both unsigned: the narrower operand widens.
+2. **Mixed signedness is an error.** `i32 + u32` does not compile. There is no
+   reinterpretation and no silent promotion to a wider signed type; write the
+   conversion you mean. This is the one place Zena refuses to guess, because
+   both plausible answers (reinterpret vs widen to `i64`) are defensible and
+   silently differ.
+3. **Narrowing is always explicit.** No arithmetic result implicitly narrows.
 
-## Proposed Conversion Table
+## Result types for `+`, `-`, `*`, `%`
 
-The following table defines the result type for binary operations (`+`, `-`, `*`, `/`, `%`) between different numeric types.
+Symmetric — swapping the operands gives the same answer.
 
-| Left  | Right | Result | Notes                                                                           |
-| :---- | :---- | :----- | :------------------------------------------------------------------------------ |
-| `i32` | `i32` | `i32`  | Standard integer arithmetic. **Exception**: `/` returns `f32` (Default Float).  |
-| `i32` | `i64` | `i64`  | `i32` promoted to `i64`. **Exception**: `/` returns `f64`.                      |
-| `i32` | `f32` | `f32`  | `i32` promoted to `f32`.                                                        |
-| `i32` | `f64` | `f64`  | `i32` promoted to `f64`.                                                        |
-| `i32` | `u32` | `i32`  | `u32` reinterpreted as `i32`. (User suggestion). Alternative: Promote to `i64`. |
-| `u32` | `i64` | `i64`  | `u32` promoted to `i64`. **Exception**: `/` returns `f64`.                      |
-| `u32` | `f32` | `f32`  | `u32` promoted to `f32`.                                                        |
-| `u32` | `f64` | `f64`  | `u32` promoted to `f64`.                                                        |
-| `i64` | `i64` | `i64`  | Standard integer arithmetic. **Exception**: `/` returns `f64`.                  |
-| `i64` | `f32` | `f64`  | `i64` promoted to `f64` to preserve precision.                                  |
-| `i64` | `f64` | `f64`  | `i64` promoted to `f64` (Precision loss possible).                              |
-| `f32` | `f32` | `f32`  | Standard float arithmetic.                                                      |
-| `f32` | `f64` | `f64`  | `f32` promoted to `f64`.                                                        |
-| `f64` | `f64` | `f64`  | Standard float arithmetic.                                                      |
+| Left | Right | Result |
+| --- | --- | --- |
+| anything | `f64` | `f64` |
+| `f32` | `i64`/`u64` | `f64` (precision) |
+| `f32` | anything else | `f32` |
+| `u64` | `u64` | `u64` |
+| `u64` | anything else | **error** |
+| `i64` | any signed integer | `i64` |
+| `u32` | `u32` | `u32` |
+| `i32` | `i32` | `i32` |
+| signed int | unsigned int | **error** |
 
-_Note: The table is symmetric. `Right` | `Left` produces the same result._
+Integer literals without a `.` start as `i32`; with a `.`, `f64`.
 
-## Division Semantics
+## Division
 
-**Decision**: The `/` operator always performs floating-point division.
+`/` always produces a float — `i32 / i32` is `f64`, not `0`. This avoids the
+`1 / 2 == 0` surprise.
 
-**Integer / Integer**:
+For truncating integer division use `div` from `zena:math`, which lowers
+directly to `i32.div_s` / `i64.div_s` at zero cost. For powers of two, `>> 1`
+is idiomatic (and appears throughout the compiler).
 
-- `i32 / i32` -> `f32` (Default Float)
-- `i64 / i64` -> `f64` (Promoted to preserve precision)
-- `i32 / i64` -> `f64`
+## Narrow integers
 
-**Mixed Integer / Float**:
+`u8`, `u16`, `i8`, `i16` exist for two reasons: WIT interop (WASI p2 uses `u8`
+21 times and `u16` 13 times) and packed array storage. They are **not** a
+general-purpose numeric tier.
 
-- `i32 / f32` -> `f32`
-- `i32 / f64` -> `f64`
-- `i64 / f32` -> `f64` (Promoted to preserve precision)
-- `i64 / f64` -> `f64`
+### Two representations
 
-**Float / Float**:
+A narrow integer is stored packed and computed wide:
 
-- `f32 / f32` -> `f32`
-- `f32 / f64` -> `f64`
-- `f64 / f64` -> `f64`
+| Position | Representation |
+| --- | --- |
+| array element, struct/record field | packed — wasm `i8` / `i16` storage |
+| local, parameter, return, expression value | unpacked — wasm `i32` |
 
-This avoids the "surprise" of `1 / 2 == 0` and aligns with JavaScript/TypeScript behavior. The return type is the default floating point type (currently `f32`), but may change to `f64` in the future.
+This is exactly what `ByteArray` already does: a wasm `(array i8)` whose reads
+produce `i32`. Loads zero-extend for unsigned types (`array.get_u`) and
+sign-extend for signed ones (`array.get_s`), so the unpacked value always
+carries the mathematically correct number, never a bit pattern needing
+interpretation.
 
-**Integer Division**:
-To perform integer division (truncating), use the `div` function from `zena:math`.
+### Arithmetic: narrow operands promote, narrow results do not exist
 
-- `div(10, 3)` -> `3`
-- `div(-10, 3)` -> `-3`
+**Decision: mixed-size arithmetic is allowed within a signedness — consistent
+with `i32 + i64 -> i64`, which already ships — but a narrow type never
+survives an arithmetic operation.** Every narrow operand promotes to its
+32-bit counterpart first:
 
-This function maps directly to the WASM `i32.div_s` or `i64.div_s` instructions, ensuring zero overhead.
+- `u8`, `u16` → `u32`
+- `i8`, `i16` → `i32`
 
-## Unsigned Mixing
+So `b[i] + 1` is `u32`, `u8 + u8` is `u32`, `u8 + u32` is `u32`, and
+`u8 + i32` is an error like every other mixed-signedness pair. Assigning back
+into a narrow location requires an explicit `as u8`, which is where the range
+check or mask happens — one conversion at a place the author chose.
 
-`i32` op `u32`:
+Two alternatives were considered and rejected:
 
-- If result is `i32`: `u32` is treated as `i32` (bit pattern).
-  - `(-1 as i32) + (1 as u32)` -> `-1 + 1 = 0`.
-  - `(1 as i32) + (0xFFFFFFFF as u32)` -> `1 + -1 = 0`.
-- If result is `i64`: Both promoted to `i64`. Safe.
-  - `(-1 as i32)` -> `-1L`.
-  - `(0xFFFFFFFF as u32)` -> `4294967295L`.
-  - Result: `4294967294L`.
+**`u8 + u8 -> u8`, wrapping at 8 bits.** Superficially the most consistent
+choice, since `u32 + u32 -> u32`. Rejected because it costs a mask after every
+operation to maintain the invariant, and because `200 + 100 == 44` is a far
+sharper edge than `i32` wrapping at 2³² — the widths people actually reach in
+practice are the narrow ones.
 
-The `i64` promotion is safer but might be unexpected if the user wants wrapping 32-bit arithmetic.
+**Forbidding narrow arithmetic entirely, requiring an explicit widen.** Safe
+and cheap to implement, and relaxable later without breaking code. Rejected
+because `b[i] + 1` is the single most common thing anyone does with a byte,
+and making it `(b[i] as u32) + 1` taxes every byte loop in the standard
+library to buy nothing — the promotion is not lossy, so there is no error for
+the ceremony to prevent.
 
-## Implementation Plan
+The promotion is implicit, which is a real cost against "no implicit
+coercion". It is precedented (`i32 + i64 -> i64` already widens implicitly)
+and it is *value-preserving* — unlike the mixed-signedness case, no operand
+changes meaning. Narrowing, which can change meaning, stays explicit.
 
-1.  Update `checkBinaryExpression` to implement the lookup table.
-2.  Update `generateBinaryExpression` to emit conversion instructions.
-3.  Decide on Division.
+### Comparison and equality
+
+Comparisons follow the same promotion, so `b[i] == 0` works without a cast.
+Mixed signedness is an error in comparisons too.
+
+### `as` conversions
+
+`x as u8` on a wider integer truncates to the low 8 bits — the same semantics
+as the packed store it feeds. It is explicit precisely because it can lose
+information.
+
+## Related
+
+- [component-model.md](./component-model.md) — the WIT interop that motivates
+  the narrow types
+- [arrays.md](./arrays.md) — packed array storage

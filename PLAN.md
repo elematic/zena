@@ -43,6 +43,20 @@ This document tracks completed work and planned features. For project instructio
 
 - **Async Functions & Cooperative Multithreading**: Native support for asynchronous execution, targeting upcoming WASM P3 features with cooperative multithreading.
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
+  - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
+    resolve); what remains is everything that turns a parsed WIT into a running
+    component. The near-term work is *language* work, because a WIT import needs
+    a Zena type for every construct it mentions — see
+    [component-model.md](docs/design/component-model.md) Part 8:
+    1. `Result<T, E>` in the stdlib, plus `inline` tuples permitted in type
+       aliases (45% of WASI p2 functions return a `result`)
+    2. Narrow integers `u8`/`u16`/`i8`/`i16`
+       ([arithmetic-conversions.md](docs/design/arithmetic-conversions.md))
+    3. `FixedArray<u8>` / `Array<u8>`, retiring the bespoke `ByteArray`
+       primitive (`list<u8>` is half of all lists in p2)
+    4. `Disposable`, giving WIT `resource` a shape (79% of p2 functions are
+       resource methods)
+    5. Only then: first-class WIT imports.
 - **Tooling & DX**: A package manager, online playground, and enhanced VS Code integration.
 
 ### Phase 3: Post-Bootstrap Headline Features
