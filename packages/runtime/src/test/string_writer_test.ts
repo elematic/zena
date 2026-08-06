@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compile} from '@zena-lang/compiler';
+import {compile} from './compile-zena.js';
 import {
   createConsoleImports,
   createStringReader,

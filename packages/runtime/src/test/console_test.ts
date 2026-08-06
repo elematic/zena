@@ -2,7 +2,7 @@ import {suite, test} from 'node:test';
 import assert from 'node:assert';
 
 // Import compiler to compile Zena source
-import {compile} from '@zena-lang/compiler';
+import {compile} from './compile-zena.js';
 
 /**
  * Create test console imports that capture output instead of logging.
