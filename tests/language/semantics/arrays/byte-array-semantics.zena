@@ -1,4 +1,7 @@
 // @mode: check
+// `ByteArray` is `array<u8>`: an ordinary packed array, not a bespoke
+// primitive. Its length is an i32, and an element is a `u8` — which is
+// what a byte always was, now said in the type system.
 import { newByteArray } from 'zena:byte-array';
 
 let arr = newByteArray(10);
@@ -7,10 +10,19 @@ let arr = newByteArray(10);
 let len: i32 = arr.length;
 let lenErr: String = arr.length; // @error: Type mismatch
 
-// 2. Index access
-let val: i32 = arr[0];
+// 2. Index access yields u8
+let val: u8 = arr[0];
+let widened: i32 = arr[0] as i32;
 let valErr: String = arr[0]; // @error: Type mismatch
 
-// 3. Index assignment
+// An element does not implicitly widen, in either signedness.
+let noImplicitWiden: i32 = arr[0]; // @error: Type mismatch
+let noImplicitUnsigned: u32 = arr[0]; // @error: Type mismatch
+
+// 3. Index assignment takes an in-range byte
 arr[1] = 42;
 arr[2] = "hello"; // @error: Type mismatch
+arr[3] = 256; // @error: out of range
+
+// 4. Arithmetic promotes to u32 and does not stay narrow
+let sum: u32 = arr[0] + arr[1];

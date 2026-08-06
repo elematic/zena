@@ -64,7 +64,8 @@ A narrow integer is stored packed and computed wide:
 
 | Position | Representation | Status |
 | --- | --- | --- |
-| array element, struct/record field | packed — wasm `i8` / `i16` storage | **not yet** — currently `i32` like everything else |
+| array element | packed — wasm `i8` / `i16` storage | implemented |
+| struct/record field | packed — wasm `i8` / `i16` storage | **not yet** — currently `i32` |
 | local, parameter, return, expression value | unpacked — wasm `i32` | implemented |
 
 This is exactly what `ByteArray` already does: a wasm `(array i8)` whose reads

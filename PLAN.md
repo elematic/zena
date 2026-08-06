@@ -55,9 +55,11 @@ This document tracks completed work and planned features. For project instructio
        ([arithmetic-conversions.md](docs/design/arithmetic-conversions.md)).
        Their packed `i8`/`i16` storage is deliberately left to step 3, which
        is the step that needs it.
-    3. `FixedArray<u8>` / `Array<u8>`, retiring the bespoke `ByteArray`
-       primitive (`list<u8>` is half of all lists in p2), and with it the
-       packed storage representation for narrow fields and elements
+    3. ~~`FixedArray<u8>` / `Array<u8>`, retiring the bespoke `ByteArray`
+       primitive~~ **done** (`list<u8>` is half of all lists in p2): narrow
+       array elements are stored packed, and `ByteArray` is now simply
+       `array<u8>` rather than a type of its own. Packed *struct fields*
+       are still outstanding.
     4. `Disposable`, giving WIT `resource` a shape (79% of p2 functions are
        resource methods)
     5. Only then: first-class WIT imports.

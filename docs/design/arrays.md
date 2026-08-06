@@ -59,18 +59,29 @@ When the compiler sees a method call on a `FixedArray<T>`:
 1.  It checks if the method exists on the `FixedArray` extension.
 2.  It emits a call to the corresponding static function, passing the array instance as the first argument (`this`).
 
-## ByteArray vs Array<i8>
+## ByteArray
 
-Zena includes a specialized `ByteArray` type.
+`ByteArray` **is** `array<u8>` — an ordinary packed array, not a type of its
+own. It was a bespoke primitive in the checker until narrow integers and
+packed array elements landed; the future this section used to anticipate
+("if Zena supports `i8` as a distinct type in the type system … could become
+an alias") arrived, and the primitive was deleted.
 
-### Why not just `FixedArray<i8>`?
+### Storage
 
 1.  **WASM Storage Types**: While WASM only has `i32`/`i64`/`f32`/`f64` as value types on the stack, it supports `i8` and `i16` as **storage types** in arrays and structs.
-2.  **Efficiency**: `ByteArray` maps directly to `(array (mut i8))`. This is the most compact representation for binary data and strings.
-3.  **Ambiguity**: If we used `FixedArray<i32>` (since `i8` isn't a first-class language type yet), it would use 4 bytes per element. `ByteArray` guarantees 1 byte per element.
-4.  **Access**: Accessing a `ByteArray` uses `array.get_u` (or `array.get_s`), which loads the byte and automatically extends it to an `i32` on the stack. No manual shifting is required.
+2.  **Efficiency**: `array<u8>` maps to `(array (mut i8))` — 1 byte per element, the most compact representation for binary data and strings.
+3.  **Access**: An element load is `array.get_u` (or `array.get_s` for the signed narrow types), which extends the stored byte to an `i32` on the stack. No manual shifting is required.
 
-In the future, if Zena supports `i8` as a distinct type in the type system (even if it's `i32` at runtime), `FixedArray<i8>` could become an alias for `ByteArray`. For now, `ByteArray` is an explicit primitive for this optimized storage.
+Nothing changed at the wasm level: `getByteArrayType()` and `array<u8>` resolve
+to the *same* cached array type. What changed is the source-level type of an
+element, which is now `u8` rather than `i32` — what a byte always was in fact.
+Combining one with an `i32` therefore needs an explicit `as`, like any other
+mixed-signedness pair.
+
+`FixedArray<u8>` is the same storage with the full `Sequence` API (slicing,
+iteration, `map`) on top, and is the better choice for new code; `ByteArray`
+remains the low-level spelling used by `String` and the byte-buffer plumbing.
 
 ## Growability
 

@@ -91,7 +91,7 @@ import {
   Type, TypeId, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
   U8Type, U16Type, I8Type, I16Type,
   BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType,
-  AnyRefType, EqRefType, ByteArrayType,
+  AnyRefType, EqRefType,
   BoolLiteralType, StringLiteralType, NumLiteralType,
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
   UnionType as UnionT, RecordType as RecordT,
@@ -1593,8 +1593,21 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   // =========================
   // Compiler Intrinsics
   // =========================
-  // ByteArray type
-  let byteArrayType = new ByteArrayType();
+  // `ByteArray` used to be a primitive of its own (`ByteArrayType`),
+  // with hand-written `length`/`[]`/`[]=` handling in the checker and a
+  // dedicated wasm array type. It is now simply `array<u8>`: narrow
+  // integers give the element a real type, and packed array storage
+  // gives it the same `(array (mut i8))` representation as before, so
+  // nothing changes at the wasm level.
+  //
+  // Deliberately registered here rather than as a stdlib type alias.
+  // The stdlib is compiled by the PINNED SEED when the compiler is
+  // built, and the seed predates narrow integers — a stdlib source file
+  // saying `u8` would not compile until the seed was re-cut. Keeping
+  // the definition inside the checker means the stdlib text is
+  // unchanged and only the compiler's own `U8Type` class is involved,
+  // which any seed can compile.
+  let byteArrayType = new ArrayType(new U8Type());
   ctx.registerPreludeType("ByteArray", byteArrayType);
 
   // __byte_array_new(size: i32): ByteArray
@@ -2261,6 +2274,17 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
         }
       }
       case ArrayType as at: {
+        // Only the bare `array` prelude type is generic — its element is
+        // a type parameter awaiting an argument. A name that already
+        // resolves to a concrete array (`ByteArray` is `array<u8>`) is
+        // complete, and demanding an argument for it would reject every
+        // use of the name.
+        if (!(at.elementType is TypeParameterType)) {
+          if (hasTypeArgs) {
+            ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
+          }
+          return at;
+        }
         if (!hasTypeArgs || resolvedArgs.length != 1) {
           ctx.error("Type 'array' is generic and requires exactly 1 type argument.", DiagnosticCode.TypeMismatch, ann.loc);
           return new ErrorType();
@@ -3208,7 +3232,6 @@ let isReferenceType = (type: Type): boolean => {
     case NullType: true
     case AnyRefType: true
     case EqRefType: true
-    case ByteArrayType: true
     case StringLiteralType: true
     case _: false
   };
@@ -3459,7 +3482,7 @@ let isBoxablePrimitive = (t: Type): boolean => match (baseType(t)) {
 let isAnyRefSource = (t: Type): boolean => {
   if (t is ClassType || t is InterfaceType || t is ArrayType ||
       t is RecordT || t is TupleT || t is FunctionType ||
-      t is NullType || t is ByteArrayType || t is AnyRefType ||
+      t is NullType || t is AnyRefType ||
       t is StringLiteralType) {
     return true;
   }
@@ -3824,7 +3847,6 @@ let typesEqual = (a: Type, b: Type): boolean => {
     case UnknownType: b is UnknownType
     case AnyRefType: b is AnyRefType
     case EqRefType: b is EqRefType
-    case ByteArrayType: b is ByteArrayType
     case BoolLiteralType {value as va}: {
       match (b) {
         case BoolLiteralType {value as vb}: va == vb
@@ -10521,17 +10543,6 @@ let resolveMemberType = (
       );
       return new ErrorType();
     }
-    case ByteArrayType: {
-      if (propName == "length") {
-        return new I32Type();
-      }
-      ctx.error(
-        "Property '" + propName + "' does not exist on type 'ByteArray'.",
-        DiagnosticCode.PropertyNotFound,
-        loc
-      );
-      return new ErrorType();
-    }
     case TypeParameterType {name as tname, constraint}: {
       if (constraint != null) {
         return resolveMemberType(ctx, constraint as Type, propName, loc);
@@ -10681,16 +10692,6 @@ let resolveIndexType = (
         );
       }
       return elementType;
-    }
-    case ByteArrayType: {
-      if (!isIntegerType(indexType)) {
-        ctx.error(
-          "ByteArray index must be an integer, got '" + typeToString(indexType) + "'.",
-          DiagnosticCode.TypeMismatch,
-          loc
-        );
-      }
-      return new I32Type();
     }
     case TupleT {elementTypes}: {
       // Tuple indexing — return specific element type for literal index.

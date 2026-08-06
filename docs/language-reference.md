@@ -123,8 +123,10 @@ as f64`).
 - **`never`**: The bottom type. It represents a value that never occurs (e.g.,
   the result of `throw` or a function that never returns). `never` is a subtype
   of every type.
-- **`ByteArray`**: A mutable array of 8-bit integers. This is a low-level type
-  primarily used for implementing strings and binary data manipulation.
+- **`ByteArray`**: A mutable packed array of bytes — a name for `array<u8>`,
+  not a distinct type. Elements read as `u8` and the storage is one byte per
+  element. Low-level, used mainly for strings and binary data;
+  `FixedArray<u8>` is the same storage with the full sequence API.
 
 ### The `anyref` Type
 

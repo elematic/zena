@@ -139,12 +139,65 @@ immediately trying to fix it (which can pollute the current task's context).
   `case ClasType:` in an otherwise-exhaustive match would silently turn
   into a catch-all, and exhaustiveness would stop protecting that match
   from then on — with no diagnostic anywhere.
+- **Recurrences** (both 2026-08-06, same day it was filed — this is not a
+  rare shape):
+  - *Deleting* a variant does it too, not just failing to import one.
+    Removing `ByteArrayType` turned two surviving multi-line
+    `case ByteArrayType: { … }` arms into catch-alls and produced nine
+    `Unreachable case.` errors on innocent arms. Note the asymmetry that
+    makes this easy to half-fix: a search-and-replace written for
+    single-line arms (`case X: expr`) silently leaves the block form
+    (`case X: { … }`) behind, and the block form is exactly the one that
+    then swallows the match.
+  - Because the diagnostics name *later* arms, the instinct is to
+    investigate the arms that are reported. Both times the actual
+    mistake was the *first* line that stopped erroring — i.e. the arm
+    immediately above the first reported one. That is the place to look.
 - **Fix sketch**: an identifier pattern whose name is capitalized, or
   which resolves to nothing while the scrutinee is a sealed type, should
   be an error suggesting the import. Distinguishing "intended binding"
   from "intended class pattern" purely by resolution is the fuzzy
   fallback here; a capitalization convention check would be a cheap
   additional signal.
+
+### The stdlib cannot use a new language feature until the seed is re-cut
+
+- **Found**: 2026-08-06 (retiring the `ByteArray` primitive; the obvious
+  implementation — `export type ByteArray = FixedArray<u8>;` in
+  `packages/stdlib/zena/byte-array.zena` — fails to build).
+- **Severity**: medium (not a miscompile; a bootstrapping constraint that
+  is invisible until it bites, and whose error message points nowhere
+  near the cause)
+- **Symptom**: `zena:byte-array:13:37 - Error: Type 'u8' not found.`,
+  followed by a cascade of `FixedArray<<error>>` mismatches across every
+  module that touches the affected stdlib type. Nothing in the message
+  suggests the *compiler binary* is the problem.
+- **Details**: `build:cli` compiles the compiler — and with it the whole
+  stdlib — using the pinned seed at
+  `packages/zena-compiler/bootstrap/cli.wasm`. The seed is a compiler
+  from an earlier commit, so it only understands language features that
+  existed when it was cut. Narrow integers had landed in the source
+  tree, but the seed predates them, so stdlib *source text* saying `u8`
+  is unbuildable. Verified directly: the seed rejects `let b: u8 = 200;`
+  while the freshly built compiler accepts it.
+- **The asymmetry that makes this survivable**: the *compiler's own*
+  source is under the same constraint, but it rarely trips, because the
+  compiler refers to new types through its own classes (`new U8Type()`)
+  rather than through the surface syntax (`u8`). A feature can therefore
+  be implemented and used inside the compiler immediately, while the
+  stdlib has to wait a release cycle. `ByteArray` was defined in the
+  checker's prelude instead of the stdlib for exactly this reason.
+- **Resolution when it does block you**: `npm run reseed -w
+  @zena-lang/zena-compiler` copies `zena/out/cli-self.wasm` over
+  `bootstrap/cli.wasm`, gated on the full test suite passing. That is
+  the intended mechanism, but it rewrites a checked-in 4MB binary that
+  is the build's trust root, so it deserves its own commit and an
+  explicit decision rather than being done in passing.
+- **Worth considering**: nothing warns about this. A stdlib file using a
+  too-new feature fails with a type-not-found error rather than
+  something like "the pinned seed does not support `u8`; re-cut the seed
+  or move the definition into the compiler". A note in
+  `docs/design/bootstrapping.md` would be the cheap fix.
 
 ### zena-cli cannot compile files outside the repository root
 
