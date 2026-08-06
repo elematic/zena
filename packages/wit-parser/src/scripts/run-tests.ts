@@ -12,8 +12,8 @@ import {join, dirname, relative, posix} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execSync} from 'node:child_process';
 import * as fs from 'node:fs';
-import {Compiler, CodeGenerator} from '@zena-lang/compiler';
 import {instantiate} from '@zena-lang/runtime';
+import {compileZenaFile} from './compile.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // When compiled, we're in scripts/; when running from source, we're in src/scripts/
@@ -129,69 +129,11 @@ const compareJson = (
 let cachedWasm: Uint8Array | null = null;
 
 /**
- * Create a compiler host for wit-parser modules.
- */
-const createHost = () => ({
-  load: (p: string): string => {
-    if (p.startsWith('/wit-parser/')) {
-      const name = p.substring('/wit-parser/'.length);
-      return fs.readFileSync(join(witParserPath, name), 'utf-8');
-    }
-    if (p.startsWith('zena:')) {
-      const name = p.substring(5);
-      const rel = name.endsWith('.zena') ? name : `${name}.zena`;
-      return fs.readFileSync(join(stdlibPath, rel), 'utf-8');
-    }
-    throw new Error(`File not found: ${p}`);
-  },
-  resolve: (specifier: string, referrer: string): string => {
-    if (specifier.startsWith('./') && referrer.startsWith('/wit-parser/')) {
-      return '/wit-parser/' + specifier.substring(2);
-    }
-    // zena:console is virtual - map to console/host.zena for host target
-    if (specifier === 'zena:console') {
-      return 'zena:console/host.zena';
-    }
-    // Relative imports between stdlib modules resolve to path ids
-    if (
-      (specifier.startsWith('./') || specifier.startsWith('../')) &&
-      referrer.startsWith('zena:')
-    ) {
-      return (
-        'zena:' +
-        posix.normalize(posix.join(posix.dirname(referrer.slice(5)), specifier))
-      );
-    }
-    return specifier;
-  },
-});
-
-/**
- * Compile the parser harness (cached).
+ * Compile the parser harness with the self-hosted compiler (cached).
  */
 const compileParserHarness = (): Uint8Array => {
   if (cachedWasm) return cachedWasm;
-
-  const host = createHost();
-  const compiler = new Compiler(host);
-  const entryPoint = '/wit-parser/parser-test-harness.zena';
-  const modules = compiler.compile(entryPoint);
-
-  const errors = modules.flatMap((m) => m.diagnostics ?? []);
-  if (errors.length > 0) {
-    throw new Error(
-      `Compilation failed: ${errors.map((e) => e.message).join(', ')}`,
-    );
-  }
-
-  const generator = new CodeGenerator(
-    modules,
-    entryPoint,
-    compiler.semanticContext,
-    compiler.checkerContext,
-    {debug: true},
-  );
-  cachedWasm = generator.generate();
+  cachedWasm = compileZenaFile(join(witParserPath, 'parser-test-harness.zena'));
   return cachedWasm;
 };
 

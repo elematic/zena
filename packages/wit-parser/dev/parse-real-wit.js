@@ -26,67 +26,16 @@ import {
   verifyCorpus,
 } from './wit-corpus.js';
 import * as fs from 'node:fs';
-import {Compiler, CodeGenerator} from '@zena-lang/compiler';
 import {instantiate} from '@zena-lang/runtime';
+import {compileZenaFile} from '../scripts/compile.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const stdlibPath = join(__dirname, '../../stdlib/zena');
 const witParserPath = join(__dirname, '../zena');
-
-// Mirrors createHost() in src/scripts/run-tests.ts.
-const createHost = () => ({
-  load: (p) => {
-    if (p.startsWith('/wit-parser/')) {
-      return fs.readFileSync(
-        join(witParserPath, p.substring('/wit-parser/'.length)),
-        'utf-8',
-      );
-    }
-    if (p.startsWith('zena:')) {
-      const name = p.substring(5);
-      const rel = name.endsWith('.zena') ? name : `${name}.zena`;
-      return fs.readFileSync(join(stdlibPath, rel), 'utf-8');
-    }
-    throw new Error(`File not found: ${p}`);
-  },
-  resolve: (specifier, referrer) => {
-    if (specifier.startsWith('./') && referrer.startsWith('/wit-parser/')) {
-      return '/wit-parser/' + specifier.substring(2);
-    }
-    if (specifier === 'zena:console') return 'zena:console/host.zena';
-    if (
-      (specifier.startsWith('./') || specifier.startsWith('../')) &&
-      referrer.startsWith('zena:')
-    ) {
-      return (
-        'zena:' +
-        posix.normalize(posix.join(posix.dirname(referrer.slice(5)), specifier))
-      );
-    }
-    return specifier;
-  },
-});
 
 let cachedWasm = null;
 const compileParserHarness = () => {
   if (cachedWasm) return cachedWasm;
-  const compiler = new Compiler(createHost());
-  const entryPoint = '/wit-parser/parser-test-harness.zena';
-  const modules = compiler.compile(entryPoint);
-  const errors = modules.flatMap((m) => m.diagnostics ?? []);
-  if (errors.length > 0) {
-    throw new Error(
-      `Compilation failed: ${errors.map((e) => e.message).join(', ')}`,
-    );
-  }
-  const generator = new CodeGenerator(
-    modules,
-    entryPoint,
-    compiler.semanticContext,
-    compiler.checkerContext,
-    {debug: true},
-  );
-  cachedWasm = generator.generate();
+  cachedWasm = compileZenaFile(join(witParserPath, 'parser-test-harness.zena'));
   return cachedWasm;
 };
 

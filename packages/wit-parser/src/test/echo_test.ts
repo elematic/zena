@@ -12,77 +12,20 @@
 
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {readFileSync} from 'node:fs';
-import {join, dirname, posix} from 'node:path';
+import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Compiler, type CompilerHost} from '@zena-lang/compiler';
-import {CodeGenerator} from '@zena-lang/compiler';
+import {compileZenaFile} from '../scripts/compile.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Path to stdlib
-const stdlibPath = join(__dirname, '../../stdlib/zena');
 
 // Path to echo module
 const echoPath = join(__dirname, '../zena/echo.zena');
 
 /**
- * Create a compiler host that can load the echo module and stdlib.
- */
-const createHost = (mainPath: string): CompilerHost => ({
-  load: (p: string) => {
-    if (p === mainPath) {
-      return readFileSync(echoPath, 'utf-8');
-    }
-    if (p.startsWith('zena:')) {
-      const name = p.substring(5);
-      const rel = name.endsWith('.zena') ? name : `${name}.zena`;
-      return readFileSync(join(stdlibPath, rel), 'utf-8');
-    }
-    throw new Error(`File not found: ${p}`);
-  },
-  resolve: (specifier: string, referrer: string) => {
-    // zena:console is virtual - map to console/host.zena for host target
-    if (specifier === 'zena:console') {
-      return 'zena:console/host.zena';
-    }
-    // Relative imports between stdlib modules resolve to path ids
-    if (
-      (specifier.startsWith('./') || specifier.startsWith('../')) &&
-      referrer.startsWith('zena:')
-    ) {
-      return (
-        'zena:' +
-        posix.normalize(posix.join(posix.dirname(referrer.slice(5)), specifier))
-      );
-    }
-    return specifier;
-  },
-});
-
-/**
- * Compile the echo module and return WASM bytes.
+ * Compile the echo module with the self-hosted compiler.
  */
 const compileEcho = (): Uint8Array => {
-  const host = createHost('/echo.zena');
-  const compiler = new Compiler(host);
-  const modules = compiler.compile('/echo.zena');
-
-  const errors = modules.flatMap((m) => m.diagnostics ?? []);
-  if (errors.length > 0) {
-    throw new Error(
-      `Compilation failed:\n${errors.map((e) => `  ${e.message}`).join('\n')}`,
-    );
-  }
-
-  const generator = new CodeGenerator(
-    modules,
-    '/echo.zena',
-    compiler.semanticContext,
-    compiler.checkerContext,
-  );
-
-  return generator.generate();
+  return compileZenaFile(echoPath);
 };
 
 /**

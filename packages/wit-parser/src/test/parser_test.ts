@@ -3,92 +3,20 @@
  */
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {readFileSync} from 'node:fs';
-import {join, dirname, posix} from 'node:path';
+import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Compiler, CodeGenerator} from '@zena-lang/compiler';
+import {compileZenaFile} from '../scripts/compile.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Path to stdlib
-const stdlibPath = join(__dirname, '../../stdlib/zena');
 
 // Path to wit-parser zena files
 const witParserPath = join(__dirname, '../zena');
 
 /**
- * Create a compiler host for wit-parser modules.
- */
-const createHost = () => ({
-  load: (p: string): string => {
-    // Handle wit-parser local imports
-    if (p.startsWith('/wit-parser/')) {
-      const name = p.substring('/wit-parser/'.length);
-      return readFileSync(join(witParserPath, name), 'utf-8');
-    }
-
-    // Handle stdlib imports
-    if (p.startsWith('zena:')) {
-      const name = p.substring(5);
-      const rel = name.endsWith('.zena') ? name : `${name}.zena`;
-      return readFileSync(join(stdlibPath, rel), 'utf-8');
-    }
-
-    throw new Error(`File not found: ${p}`);
-  },
-  resolve: (specifier: string, referrer: string): string => {
-    // Local imports from wit-parser modules
-    if (specifier.startsWith('./') && referrer.startsWith('/wit-parser/')) {
-      return '/wit-parser/' + specifier.substring(2);
-    }
-
-    // zena:console is virtual - map to console/host.zena for host target
-    if (specifier === 'zena:console') {
-      return 'zena:console/host.zena';
-    }
-
-    // Relative imports between stdlib modules resolve to path ids
-    if (
-      (specifier.startsWith('./') || specifier.startsWith('../')) &&
-      referrer.startsWith('zena:')
-    ) {
-      return (
-        'zena:' +
-        posix.normalize(posix.join(posix.dirname(referrer.slice(5)), specifier))
-      );
-    }
-
-    return specifier;
-  },
-});
-
-/**
- * Compile a wit-parser module.
+ * Compile a wit-parser module with the self-hosted compiler.
  */
 const compileModule = (moduleName: string) => {
-  const host = createHost();
-  const compiler = new Compiler(host);
-  const entryPoint = `/wit-parser/${moduleName}`;
-  const modules = compiler.compile(entryPoint);
-
-  const errors = modules.flatMap((m) => m.diagnostics ?? []);
-  if (errors.length > 0) {
-    const formatted = errors.map((e) => {
-      const loc = e.location
-        ? `${e.location.file}:${e.location.line}:${e.location.column}: `
-        : '';
-      return `  ${loc}${e.message}`;
-    });
-    throw new Error(`Compilation failed:\n${formatted.join('\n')}`);
-  }
-
-  const generator = new CodeGenerator(
-    modules,
-    entryPoint,
-    compiler.semanticContext,
-    compiler.checkerContext,
-  );
-  return generator.generate();
+  return compileZenaFile(join(witParserPath, moduleName));
 };
 
 /**

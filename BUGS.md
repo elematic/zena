@@ -121,6 +121,30 @@ immediately trying to fix it (which can pollute the current task's context).
   example is guarded by `npm run test:example -w @zena-lang/wit-parser`,
   which runs the **bootstrap** check only, for this reason.
 
+### Synthesized field getter typed anyref over an i32 field (last wit-parser test blocker)
+
+- **Found**: 2026-08-05 (wit-parser build swap; parser-test-harness only)
+- **Severity**: high for retirement (blocks 18 of 317 wit-parser unit
+  tests — everything needing the combined parser-test-harness program;
+  lexer harness and echo interop pass)
+- **Details**: in the combined harness program (parser + resolver +
+  ast-json in one compilation), the synthesized accessor
+  `StringType_s1413.get#fixedLength` gets vtable-slot signature
+  `(param (ref null …)) (result anyref)` while the physical field is
+  i32 — the body returns i32 against an anyref result:
+  `type mismatch: expected anyref, found i32`. `fixedLength` is a plain
+  `var fixedLength = 0 - 1;` i32 field on the sealed `Type` base
+  (parser.zena:305), and `parser.zena` standalone compiles and
+  validates fine — the mis-typed signature only appears in the larger
+  program, so the member map consulted by `getClassMemberSignature` /
+  the get# registration presumably lacks `fixedLength` for the variant
+  in that configuration (falls to a default). Two invalid-wasm bugs
+  with the same shape were fixed on the way here (adapted record
+  dispatch types unrooted; see below) — this is the remaining one.
+- **Reproduce**: `zena-cli build
+  packages/wit-parser/zena/parser-test-harness.zena --target host -o
+  /tmp/x.wasm && wasm-tools validate --features all /tmp/x.wasm`.
+
 ### RESOLVED: self/forward-referencing closure captures (the last wit-parser blocker)
 
 - **Fixed 2026-08-05.** `let visit = (k) => { … visit(dep); … }` and
