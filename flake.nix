@@ -123,13 +123,20 @@
 
             mkdir -p $out/lib/zena
             cp -r packages $out/lib/zena/
-            cp -r node_modules $out/lib/zena/
             cp package.json $out/lib/zena/
+            cp target/release/zena-cli $out/lib/zena/zena-cli
 
+            # The zena command is zena-cli (Rust/wasmtime host) running the
+            # compiler the build produced. ZENA_REPO_ROOT locates the stdlib
+            # and source files, ZENA_COMPILER_WASM the compiler; both default
+            # to the installed tree and can be overridden to point at a
+            # checkout (zena-cli only compiles files under ZENA_REPO_ROOT).
             mkdir -p $out/bin
             cat > $out/bin/zena << EOF
             #!${pkgs.bash}/bin/bash
-            exec ${nodejs}/bin/node $out/lib/zena/packages/cli/lib/cli.js "\$@"
+            export ZENA_REPO_ROOT="\''${ZENA_REPO_ROOT:-$out/lib/zena}"
+            export ZENA_COMPILER_WASM="\''${ZENA_COMPILER_WASM:-$out/lib/zena/packages/zena-compiler/zena/out/cli.wasm}"
+            exec $out/lib/zena/zena-cli "\$@"
             EOF
             chmod +x $out/bin/zena
 
