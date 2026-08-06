@@ -630,7 +630,7 @@ are covered.
 let result = match (x) {
   case 0: "zero"
   case 1: "one"
-  case n if n < 0: "negative"
+  case let n if n < 0: "negative"
   case _: "other"
 };
 ```
@@ -647,8 +647,11 @@ case "hello": ...
 case true: ...
 case null: ...
 
-// Identifier (binds value)
+// Binding (`let`/`var` binds the matched value)
 case let x: x + 1
+
+// Type pattern (a bare name must name a class; it matches instances of it)
+case Circle: ...
 
 // Wildcard (matches anything)
 case _: ...
@@ -659,8 +662,10 @@ case let (a, b): a + b
 // Record destructuring
 case let { x, y }: x + y
 
-// Note: Without `let` or `var`, indentifiers are evaluated as existing variables to match against
-case { x, y }: "matches record where fields equal the values of existing variables `x` and `y`"
+// Shorthand fields bind, like `let { x, y } = rec` destructuring.
+// `as` binds a field under a different name.
+case { x, y }: x + y
+case { x as first }: first
 
 // Class destructuring
 case let Point { x: 0, y }: "on y-axis"
@@ -669,7 +674,7 @@ case let Point { x: 0, y }: "on y-axis"
 case 1 | 2 | 3: "small"
 
 // Guard patterns
-case n if n > 100: "large"
+case let n if n > 100: "large"
 ```
 
 ### Block Cases

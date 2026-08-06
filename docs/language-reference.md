@@ -1993,10 +1993,16 @@ let result = match (x) {
   case null: ...
   ```
 
-- **Identifiers**: Bind the matched value to a variable.
+- **Bindings**: `let` (or `var`) binds the matched value to a new variable.
 
   ```zena
   case let x: x + 1
+  ```
+
+- **Type patterns**: A bare name matches instances of the class it names.
+
+  ```zena
+  case Circle: ... // matches any Circle
   ```
 
 - **Wildcard**: `_` matches any value without binding.
@@ -2017,16 +2023,14 @@ let result = match (x) {
   case let { a: 1, b }: ...
   ```
 
-  _Note on explicit bindings_: Identifiers in object, record, and tuple patterns are treated as existing constants or variables to match against unless they are explicitly prefixed with a binding keyword (`let` or `var`).
+  Shorthand fields bind, exactly like `let { a, b } = record` destructuring: in
+  `case { a: 1, b }` the `b` introduces a new variable holding the record's `b`
+  field. Use `as` to bind a field under a different name.
 
   ```zena
-  let b = 10;
   match (record) {
-    // Shorthand field match: matches against the existing variable `b`
-    case { a: 1, b }: "matched"
-
-    // Explicit binding: creates local variables `a` and `b`
-    case let { a, b }: "bound new vars"
+    case { a: 1, b }: b          // binds `b` to record.b
+    case { a as first }: first   // binds record.a as `first`
   }
   ```
 
@@ -2047,6 +2051,45 @@ Patterns can be nested.
 
 ```zena
 case let Point { x: 0, y: (1, z) }: ...
+```
+
+#### Names in Patterns
+
+Whether a name in a pattern *binds* a new variable or *refers* to something
+that already exists is decided syntactically, by the enclosing `let`/`var` —
+never by whether the name happens to resolve.
+
+- Under a `let` or `var`, every name in the pattern binds. `let` distributes
+  into nested patterns, so `case let Point { x, y }` binds both `x` and `y`.
+- Otherwise a bare name is a reference: it must name a class, and it matches
+  instances of that class. A name that resolves to nothing is an error.
+- Shorthand fields (`{ x }`) always bind, since they are destructuring; use
+  `as` to bind a field under a different name.
+
+This is why a mistyped variant name is reported instead of quietly becoming a
+catch-all:
+
+```zena
+match (shape) {
+  case Circle: "circle"
+  case Squre:  "square" // Error: 'Squre' does not name a class. Did you mean 'Square'?
+}
+```
+
+Zena deliberately does not follow Rust in using capitalization to decide
+binder-versus-matcher. Making the decision depend on a naming convention means
+a name that is merely misspelled still parses as a valid binding; making it
+depend on the explicit `let`/`var` (as Swift does) means every unresolved name
+is a diagnosable error.
+
+There is no pattern that compares against an existing variable's *value*. Use a
+guard instead:
+
+```zena
+match (x) {
+  case let n if n == expected: "matched"
+  case _: "other"
+}
 ```
 
 #### Guard Patterns

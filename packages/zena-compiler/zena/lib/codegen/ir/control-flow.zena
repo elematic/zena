@@ -85,7 +85,12 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
   }
   // A literal `false` first element matches when the flag is 0:
   // invert. Literal `true` and plain bindings take the flag as-is.
-  let first = tp.elements[0];
+  // The `let` is explicit here, so the element is a LiteralPattern; the
+  // bare-literal form is still accepted for patterns built elsewhere.
+  var first = tp.elements[0];
+  if (first != null && first is LiteralPattern) {
+    first = (first as LiteralPattern).value;
+  }
   if (first != null && first is BooleanLiteral) {
     if (!(first as BooleanLiteral).value) {
       cond = cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);

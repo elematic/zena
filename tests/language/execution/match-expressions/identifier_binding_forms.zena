@@ -1,0 +1,63 @@
+// @mode: run
+// @result: 10
+
+// The three ways a bare name can appear at the head of a pattern, now that an
+// unresolved identifier is an error instead of an implicit catch-all binding:
+//   - `Variant`      — a variant test (the name must resolve to a class)
+//   - `let x`/`var x` — an explicit binding
+//   - `_`            — a wildcard
+
+sealed class Shape {
+  case Circle(r: i32)
+  case Square(s: i32)
+  case Tri(a: i32)
+}
+
+// Bare variant names still test the type.
+let classify = (shape: Shape): i32 => match (shape) {
+  case Circle: 1
+  case Square: 2
+  case Tri: 3
+};
+
+// `let` at the head binds the whole value, including as a catch-all.
+let radiusOrZero = (shape: Shape): i32 => match (shape) {
+  case Circle {r}: r
+  case let other: 0
+};
+
+// `let` distributes into nested patterns, so identifiers under it bind.
+let inner = (shape: Shape): i32 => match (shape) {
+  case let Circle {r}: r
+  case let Square {s}: s
+  case _: 0
+};
+
+// A field sub-pattern is a pattern, so `let` is how you bind one.
+class Wrapper {
+  shape: Shape;
+  new(this.shape);
+}
+
+let unwrap = (w: Wrapper): i32 => match (w) {
+  case Wrapper {shape: let s}: classify(s)
+};
+
+export let main = (): i32 => {
+  if (classify(new Circle(7)) != 1) return 1;
+  if (classify(new Square(7)) != 2) return 2;
+  if (classify(new Tri(7)) != 3) return 3;
+
+  if (radiusOrZero(new Circle(4)) != 4) return 4;
+  if (radiusOrZero(new Square(4)) != 0) return 5;
+
+  if (inner(new Circle(6)) != 6) return 6;
+  if (inner(new Square(8)) != 8) return 7;
+  if (inner(new Tri(9)) != 0) return 8;
+
+  if (unwrap(new Wrapper(new Circle(1))) != 1) return 9;
+  if (unwrap(new Wrapper(new Square(1))) != 2) return 11;
+  if (unwrap(new Wrapper(new Tri(1))) != 3) return 12;
+
+  return 10;
+};

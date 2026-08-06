@@ -11580,12 +11580,123 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
 };
 
 /**
+ * Levenshtein edit distance, used only to suggest a correction for a name that
+ * failed to resolve. Byte-wise, which is exact for the ASCII identifiers this
+ * is called with.
+ */
+let editDistance = (a: String, b: String): i32 => {
+  let n = a.length;
+  let m = b.length;
+  if (n == 0) { return m; }
+  if (m == 0) { return n; }
+  let prev = new Array<i32>(m + 1);
+  let curr = new Array<i32>(m + 1);
+  var j = 0;
+  while (j <= m) {
+    prev.push(j);
+    curr.push(0);
+    j += 1;
+  }
+  var i = 1;
+  while (i <= n) {
+    curr[0] = i;
+    var k = 1;
+    while (k <= m) {
+      let cost = if (a.getByteAt(i - 1) == b.getByteAt(k - 1)) { 0 } else { 1 };
+      var best = prev[k] + 1;
+      let insertion = curr[k - 1] + 1;
+      if (insertion < best) { best = insertion; }
+      let substitution = prev[k - 1] + cost;
+      if (substitution < best) { best = substitution; }
+      curr[k] = best;
+      k += 1;
+    }
+    var c = 0;
+    while (c <= m) {
+      prev[c] = curr[c];
+      c += 1;
+    }
+    i += 1;
+  }
+  return prev[m];
+};
+
+/**
+ * Names a bare identifier pattern plausibly meant, given the type being
+ * matched: the type's own name plus, for a sealed class, its variants.
+ * Unions contribute the candidates of each member.
+ */
+let collectPatternNameCandidates = (t: Type, out: Array<String>): void => {
+  match (t) {
+    case ClassType as ct: {
+      out.push(ct.name);
+      let variants = ct.sealedVariants;
+      if (variants != null) {
+        for (let variant in variants as Array<ClassType>) {
+          out.push(variant.name);
+        }
+      }
+    }
+    case UnionT {types}: {
+      for (let member in types) {
+        collectPatternNameCandidates(member, out);
+      }
+    }
+    case _: {}
+  }
+};
+
+/**
+ * The diagnostic for a bare identifier in a pattern that names no class.
+ * Suggests the closest variant of the scrutinee when there is a near miss —
+ * this error exists to catch mistyped variant names, so the suggestion is the
+ * whole point.
+ *
+ * @param namesNonClassType True when the identifier resolved to a type that
+ *   just isn't a class (a primitive, an alias); the advice differs from a name
+ *   that resolved to nothing at all.
+ */
+let unresolvedPatternNameMessage = (
+  name: String,
+  expectedType: Type,
+  namesNonClassType: boolean
+): String => {
+  if (namesNonClassType) {
+    return "'" + name + "' names a type, but only classes can be matched by name. " +
+      "Write 'let " + name + "' to bind the matched value to a new variable.";
+  }
+  let candidates = new Array<String>(8);
+  collectPatternNameCandidates(expectedType, candidates);
+  var closest: String | null = null;
+  var closestDistance = 0;
+  for (let candidate in candidates) {
+    let distance = editDistance(name.asciiLowerCase(), candidate.asciiLowerCase());
+    if (closest == null || distance < closestDistance) {
+      closest = candidate;
+      closestDistance = distance;
+    }
+  }
+  // Allow one edit per three characters, at least one, so short names don't
+  // suggest an unrelated variant.
+  var threshold = name.length / 3;
+  if (threshold < 1) { threshold = 1; }
+  if (threshold > 3) { threshold = 3; }
+  var suggestion = "";
+  if (closest != null && closestDistance <= threshold) {
+    suggestion = " Did you mean '" + (closest as String) + "'?";
+  }
+  return "'" + name + "' does not name a class, so it cannot be used as a pattern." +
+    suggestion +
+    " Write 'let " + name + "' to bind the matched value to a new variable.";
+};
+
+/**
  * Check a pattern against an expected type and bind pattern variables.
  * Uses bindPattern for identifier bindings through the DeclarationMap → Symbol path.
  *
  * @param expectedType The type to match against. For top-level match arms this is the
- *   remaining scrutinee type after earlier arms have been subtracted, so catch-all
- *   identifier bindings (`case b:`) get the narrowed type automatically. For nested
+ *   remaining scrutinee type after earlier arms have been subtracted, so an explicit
+ *   catch-all binding (`case let b:`) gets the narrowed type automatically. For nested
  *   patterns (class fields, tuple elements, etc.) it is the field/element type.
  */
 let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): void => {
@@ -11701,10 +11812,13 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       checkPattern(ctx, right, expectedType);
     }
     case Identifier as ident: {
-      // Match-context patterns produce Identifier nodes (not IdentifierPattern).
+      // Match-context patterns produce Identifier nodes; `let x` / `var x`
+      // produces an IdentifierPattern under a BindingPattern instead. So a
+      // bare identifier here is a *reference*, never a binding, and has to
+      // resolve to a class (a variant test). If it doesn't, say so: silently
+      // treating it as a fresh binding turns a mistyped variant name into a
+      // catch-all that swallows every remaining case.
       if (ident.name != "_") {
-        // Check if this identifier refers to a sealed variant (unit variant pattern).
-        // If so, skip binding — it's a type match, not a variable binding.
         let resolvedType = ctx.resolveTypeName(ident.name);
         if (resolvedType != null) {
           ctx.setNodeType(ident, resolvedType as Type);
@@ -11717,6 +11831,13 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
           }
         }
         if (!isVariant) {
+          ctx.error(
+            unresolvedPatternNameMessage(ident.name, expectedType, resolvedType != null),
+            DiagnosticCode.InvalidPattern,
+            ident.loc
+          );
+          // Bind it anyway so the case body reports its own errors rather than
+          // a cascade of "Variable not found" on top of the real diagnostic.
           let info = ctx.model.resolveDeclaration(ident);
           if (info != null) {
             ctx.declareBinding(info as Symbol, expectedType);
