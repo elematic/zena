@@ -166,6 +166,13 @@ fn build_file(file: &str, output: &str, verbose: bool, time: bool, _no_cache: bo
     // Wireit's own input tracking. Always compile rather than second-guessing
     // with mtime heuristics.
     let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, true, debug, target)?;
+    // Output directories like zena/out/ are gitignored, so a clean checkout
+    // does not have them.
+    if let Some(parent) = std::path::Path::new(output).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     std::fs::copy(&cached_wasm_path, output)?;
     Ok(())
 }
