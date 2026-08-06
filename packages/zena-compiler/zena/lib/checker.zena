@@ -1708,6 +1708,40 @@ let checkCyclicImportRules = (
   }
 };
 
+/**
+ * Index `let f = (…) => …` bindings in a statement list for lazy
+ * resolution, enabling forward references and mutual recursion between
+ * function bindings. Run over the module body AND over every block's
+ * statements: block-scoped function bindings (recursive local `visit`
+ * closures, forward references between siblings) resolve through the
+ * same pending-function machinery.
+ */
+let prescanPendingFunctions = (ctx: CheckerContext, body: Array<Statement>): void => {
+  var fi = 0;
+  while (fi < body.length) {
+    match (body[fi]) {
+      case VariableDeclaration {pattern, init}: {
+        match (pattern) {
+          case IdentifierPattern as pat: {
+            match (init) {
+              case FunctionExpression as fe: {
+                let info = ctx.model.resolveDeclaration(pat);
+                if (info != null) {
+                  ctx.registerPendingFunction((info as Symbol).id, fe as Node);
+                }
+              }
+              case _: {}
+            }
+          }
+          case _: {}
+        }
+      }
+      case _: {}
+    }
+    fi += 1;
+  }
+};
+
 export let checkModule = (
   ast: Module,
   scopeResult: ScopeResult,
@@ -1738,29 +1772,7 @@ export let checkModule = (
   // Type declarations (classes, interfaces, etc.) are registered eagerly in
   // Phase 1 below, but are also materialized on demand by resolveTypeName when
   // first referenced (e.g. during Phase 1 superclass resolution).
-  var fi = 0;
-  while (fi < ast.body.length) {
-    match (ast.body[fi]) {
-      case VariableDeclaration {pattern, init}: {
-        match (pattern) {
-          case IdentifierPattern as pat: {
-            match (init) {
-              case FunctionExpression as fe: {
-                let info = ctx.model.resolveDeclaration(pat);
-                if (info != null) {
-                  ctx.registerPendingFunction((info as Symbol).id, fe as Node);
-                }
-              }
-              case _: {}
-            }
-          }
-          case _: {}
-        }
-      }
-      case _: {}
-    }
-    fi += 1;
-  }
+  prescanPendingFunctions(ctx, ast.body);
 
   // Emit errors for same-scope redeclarations detected by the scope builder.
   for (let dup in scopeResult.duplicateDeclarations) {
@@ -4522,6 +4534,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     }
     case BlockStatement {body}: {
       ctx.enterScope();
+      prescanPendingFunctions(ctx, body);
       var i = 0;
       while (i < body.length) {
         let stmtNode = body[i];
@@ -6973,6 +6986,26 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               DiagnosticCode.IncompatibleTypes,
               cd.loc
             );
+          } else {
+            // Distributed variant (`case X` in the sealed class, defined
+            // as a standalone `final class X(...) extends Base`): this
+            // class IS the variant — link it into the sealed class's
+            // variant list so match exhaustiveness can enumerate it.
+            // Dedup by name: re-check passes revisit this declaration
+            // against the same shared ClassType.
+            if (st.sealedVariants == null) {
+              st.sealedVariants = new Array<ClassType>();
+            }
+            let variantList = st.sealedVariants as Array<ClassType>;
+            var alreadyLinked = false;
+            for (let v in variantList) {
+              if (v.name == className) {
+                alreadyLinked = true;
+              }
+            }
+            if (!alreadyLinked) {
+              variantList.push(classType);
+            }
           }
         }
         classType.superType = st;
@@ -7183,8 +7216,18 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       if (classType.members.has(fieldName) && classType.members[fieldName].isAbstract) {
         isImplementingAbstract = true;
       }
+      // A case param may share its name with an INHERITED METHOD (a
+      // sealed base's polymorphic accessor, e.g. docs(): Docs over a
+      // variant's docs field) — the bootstrap accepts this and
+      // wit-parser depends on it. Only a genuine field duplicate errors.
+      var shadowsInheritedMethod = false;
+      if (classType.members.has(fieldName) &&
+          classType.members[fieldName] is MethodInfo) {
+        shadowsInheritedMethod = true;
+      }
 
-      if (classType.members.has(fieldName) && !isImplementingAbstract) {
+      if (classType.members.has(fieldName) && !isImplementingAbstract &&
+          !shadowsInheritedMethod) {
         ctx.error(
           "Duplicate field '" + fieldName + "' in class '" + className + "'.",
           DiagnosticCode.DuplicateField,
@@ -8490,6 +8533,7 @@ let checkMethodBody = (
   // Check body.
   match (md.body as Node) {
     case BlockStatement as block: {
+      prescanPendingFunctions(ctx, block.body);
       var j = 0;
       while (j < block.body.length) {
         checkStatement(ctx, block.body[j]);
@@ -10766,6 +10810,11 @@ let subtractPatternFromType = (ctx: CheckerContext, t: Type, pattern: Node): Typ
     case AsPattern as ap: {
       return subtractPatternFromType(ctx, t, ap.pattern);
     }
+    case BindingPattern as bp: {
+      // `case let Leaf {size}: …` — the binding prefix doesn't change
+      // what the inner pattern covers.
+      return subtractPatternFromType(ctx, t, bp.pattern);
+    }
     case BooleanLiteral {value}: {
       // Subtract the specific boolean literal from the remaining type.
       let lit: Type = new BoolLiteralType(value);
@@ -11124,6 +11173,7 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
     case BlockStatement as block: {
       // Execute statements; need to track return type.
       let stmts = block.body;
+      prescanPendingFunctions(ctx, stmts);
       var lastType: Type = new VoidType();
       var si = 0;
       while (si < stmts.length) {
@@ -11588,6 +11638,7 @@ let checkFunctionExpression = (
       // return type as context, so statement-position expressions
       // (a match with value arms) type as values, not void.
       var tailConforms = false;
+      prescanPendingFunctions(ctx, block.body);
       let tailIndex = if (!needsInference && !(retType is VoidType) &&
           block.body.length > 0 &&
           block.body[block.body.length - 1] is ExpressionStatement) {

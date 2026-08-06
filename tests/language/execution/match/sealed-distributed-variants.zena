@@ -1,0 +1,34 @@
+// @mode: run
+// @result: 42
+// Distributed sealed variants: `case Leaf, Pair` declared in the sealed
+// class with the case-class bodies as standalone `final class ... extends`
+// declarations (wit-parser's ast-json-types.zena shape). The checker must
+// (a) treat the standalone classes as THE variants so matches over them
+// are exhaustive, and (b) allow a variant's case param to share a name
+// with an inherited base METHOD (the polymorphic accessor pattern:
+// size() over a `size` field).
+
+sealed class Tree {
+  case Leaf, Pair
+
+  size(): i32 {
+    return match (this) {
+      case let Leaf {size}: size
+      case let Pair {a, b}: a + b
+    };
+  }
+}
+
+export final class Leaf(size: i32) extends Tree
+export final class Pair(a: i32, b: i32) extends Tree
+
+// Call the accessor through the BASE type (as wit-parser does): on the
+// variant itself, or through a reference narrowed to it, the case-param
+// field shadows the method name.
+let measure = (t: Tree): i32 => {
+  return t.size();
+};
+
+export let main = (): i32 => {
+  return measure(new Leaf(30)) + measure(new Pair(5, 7));
+};

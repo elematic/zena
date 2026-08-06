@@ -1,0 +1,21 @@
+// @skip: self-hosted
+// @mode: run
+// @result: 55
+// A local function expression may reference its own binding — the
+// closure captures the variable, which is initialized by the time any
+// call can happen. wit-parser's ast-json.zena uses recursive local
+// `visit` closures for topological sorts; the bootstrap has always
+// accepted them. The self-hosted CHECKER now resolves these (block
+// statements run the pending-function prescan), but ZIR still bails on
+// the self-referencing capture ('captured symbol not local') — it
+// needs celled captures. Drop the skip when those land (BUGS.md).
+
+export let main = (): i32 => {
+  let fib = (n: i32): i32 => {
+    if (n < 2) {
+      return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+  };
+  return fib(10);
+};

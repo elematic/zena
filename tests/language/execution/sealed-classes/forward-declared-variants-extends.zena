@@ -1,0 +1,35 @@
+// @mode: run
+// @result: 25
+
+// A sealed class that forward-declares its variant *names* with a bare
+// `case A, B` and gives each one its body separately, as a case class with
+// `extends`.
+//
+// This is the shape the WIT parser's `ast-json-types.zena` uses throughout. It
+// matters because the variants carry fields, and a bare `case Circle, Square`
+// cannot declare them, so the payload has to arrive from the separate
+// declaration. Writing the variants inline (`case Circle(r: i32)`) is the form
+// every other sealed-class test uses, which is why this went uncovered.
+
+sealed class Shape {
+  case Circle, Square
+
+  area(): i32 {
+    return match (this) {
+      case let Circle {r}: r * r
+      case let Square {s}: s * s
+    };
+  }
+}
+
+final class Circle(r: i32) extends Shape
+final class Square(s: i32) extends Shape
+
+export let main = (): i32 => {
+  let shapes = [new Circle(3) as Shape, new Square(4) as Shape];
+  var total = 0;
+  for (let shape in shapes) {
+    total += shape.area();
+  }
+  return total;
+};
