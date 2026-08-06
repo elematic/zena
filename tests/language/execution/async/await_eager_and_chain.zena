@@ -1,0 +1,45 @@
+// @mode: run
+// @result: 1234
+// @skip: bootstrap
+// Eager start (async.md §1.1): calling an async function runs its body
+// synchronously up to the first await, so "start several, then await
+// them" gives real concurrency with no spawn primitive. Also covers an
+// async function awaiting another async function's future.
+import { Future, Completer, drainMicrotasks } from 'zena:async';
+
+var trace = 0;
+
+let leg = async (c: Completer<i32>, mark: i32): Future<i32> => {
+  // Runs synchronously during the call, before any suspension.
+  trace = trace * 10 + mark;
+  let v = await c.future;
+  return v;
+};
+
+let both = async (a: Completer<i32>, b: Completer<i32>): Future<i32> => {
+  // Both start immediately; neither is awaited yet.
+  let fa = leg(a, 1);
+  let fb = leg(b, 2);
+  let x = await fa;
+  let y = await fb;
+  return x * 10 + y;
+};
+
+export let main = (): i32 => {
+  let a = new Completer<i32>();
+  let b = new Completer<i32>();
+  let f = both(a, b);
+  // Both legs ran their pre-await segment during `both(...)`.
+  if (trace != 12) {
+    return -1;
+  }
+  // Complete out of order: `both` still resumes in await order.
+  b.complete(4);
+  a.complete(3);
+  drainMicrotasks();
+  if (!f.isCompleted) {
+    return -2;
+  }
+  // trace 12, result 34 => 1234
+  return trace * 100 + f.valueOrThrow();
+};

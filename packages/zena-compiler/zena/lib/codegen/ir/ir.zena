@@ -61,8 +61,10 @@
  *                b -> [count, (target, argc, arg*)*]  (last entry = default)
  *   ret:         a = value, or -1 for void
  *   yield_:      a = yielded value, b -> [target, argc, arg*]
- *                (presplit generator bodies only; rewritten by the
- *                split pass, never emitted)
+ *   await_:      a = awaited future, b -> [target, argc, arg*]
+ *                (both: presplit suspension bodies only — generator
+ *                bodies for yield_, async bodies for await_ — and
+ *                rewritten by the split pass, never emitted)
  *
  * A result type of -1 in `typeId` means the instruction produces no value.
  * Instruction and block ids are plain i32 indices for now; -1 means "none".
@@ -272,6 +274,13 @@ export enum IrOp {
    * yields value `a` and resumes at the single successor. Never
    * emitted — the split pass rewrites every yield before emission. */
   yield_,
+  /** Async suspension (presplit form only, async.md §3): awaits the
+   * `Future` in slot `a` and resumes at the single successor. The
+   * awaited future is an ordinary live value across the suspension, so
+   * the resume edge carries no arguments — the resumed segment reads
+   * the settled result back off the future. Never emitted; the split
+   * pass rewrites every await before emission. */
+  await_,
   /** Sentinel: the number of ops. Keep last. */
   op_count
 }
@@ -585,7 +594,7 @@ export final class IrBody {
     }
     if (op == IrOp.br_if || op == IrOp.br_on_cast ||
         op == IrOp.br_on_cast_fail || op == IrOp.br_table ||
-        op == IrOp.yield_) {
+        op == IrOp.yield_ || op == IrOp.await_) {
       out.push(av);
       this.#appendSuccessorArgs(inst, out);
       return;
@@ -695,7 +704,7 @@ export final class IrBody {
     }
     if (op == IrOp.br_if || op == IrOp.br_on_cast ||
         op == IrOp.br_on_cast_fail || op == IrOp.br_table ||
-        op == IrOp.yield_) {
+        op == IrOp.yield_ || op == IrOp.await_) {
       this.a[inst] = map(av);
       this.#rewriteSuccessorArgs(inst, map);
       return;
@@ -777,7 +786,7 @@ export final class IrBody {
       }
       return result;
     }
-    if (op == IrOp.yield_) {
+    if (op == IrOp.yield_ || op == IrOp.await_) {
       let idx = this.b[inst];
       let argc = this.extra[idx + 1];
       result.push(new IrSuccessor(this.extra[idx], idx + 2, argc));
@@ -971,6 +980,7 @@ let buildIrOpNames = (): Array<String> => {
   n[IrOp.throw as i32] = 'throw';
   n[IrOp.unreachable as i32] = 'unreachable';
   n[IrOp.yield_ as i32] = 'yield';
+  n[IrOp.await_ as i32] = 'await';
   return n;
 };
 

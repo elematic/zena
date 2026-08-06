@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 42
+// @skip: bootstrap
+// The A1 transform end to end (async.md §3): an async function
+// suspends on a Completer's future, the microtask drain resumes it,
+// and its own future settles with the returned value.
+import { Future, Completer, drainMicrotasks } from 'zena:async';
+
+let addTwo = async (c: Completer<i32>): Future<i32> => {
+  let v = await c.future;
+  return v + 2;
+};
+
+export let main = (): i32 => {
+  let c = new Completer<i32>();
+  let f = addTwo(c);
+  // Eager start ran the body up to the await; nothing has settled.
+  if (f.isCompleted) {
+    return -1;
+  }
+  c.complete(40);
+  // Still nothing: the always-async rule keeps the resume on the queue.
+  if (f.isCompleted) {
+    return -2;
+  }
+  drainMicrotasks();
+  if (!f.isCompleted) {
+    return -3;
+  }
+  return f.valueOrThrow();
+};

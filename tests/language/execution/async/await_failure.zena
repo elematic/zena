@@ -1,0 +1,52 @@
+// @mode: run
+// @result: 7
+// @skip: bootstrap
+// Failure propagation (async.md §3): awaiting a rejected future
+// resurfaces as an ordinary throw at the resume point, unwinds into
+// step()'s failure-capture region, and rejects the frame's own future.
+// A throw before any suspension takes the same path.
+import {
+  Future, FutureState, Completer, drainMicrotasks,
+} from 'zena:async';
+
+let awaitsFailure = async (c: Completer<i32>): Future<i32> => {
+  let v = await c.future;
+  // Never reached: the await above throws.
+  return v + 1;
+};
+
+let throwsEagerly = async (): Future<i32> => {
+  throw new Error('eager');
+};
+
+export let main = (): i32 => {
+  var score = 0;
+
+  let c = new Completer<i32>();
+  let f = awaitsFailure(c);
+  c.fail(new Error('nope'));
+  drainMicrotasks();
+  if (f.state == FutureState.Rejected) {
+    score += 1;
+  }
+
+  // The failure of an awaited future must not leak as a trap: the
+  // program is still running, and the drain queue is still usable.
+  let ok = new Completer<i32>();
+  let g = awaitsFailure(ok);
+  ok.complete(5);
+  drainMicrotasks();
+  if (g.state == FutureState.Resolved) {
+    score += 2;
+  }
+
+  // A body that throws before its first suspension rejects too — the
+  // ramp runs that segment eagerly, inside the same region.
+  let h = throwsEagerly();
+  if (h.state == FutureState.Rejected) {
+    score += 4;
+  }
+
+  // 1 + 2 + 4 = 7
+  return score;
+};

@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 46
+// @skip: bootstrap
+// `async function` declarations: the async modifier lands on the
+// declaration's inner FunctionExpression, so the split pass sees the
+// same node it does for `let f = async () => ...`. Covers the
+// interaction between top-level `function` declarations and A1, which
+// landed independently of each other.
+import { Future, Completer } from 'zena:async';
+
+async function doubled(c: Completer<i32>): Future<i32> {
+  let v = await c.future;
+  return v * 2;
+}
+
+// Hoisting still applies: this is declared below its use above.
+async function plusSix(c: Completer<i32>): Future<i32> {
+  let v = await doubled(c);
+  return v + 6;
+}
+
+export let main = async (): Future<i32> => {
+  let c = new Completer<i32>();
+  let f = plusSix(c);
+  c.complete(20);
+  // 20 * 2 + 6 = 46
+  return await f;
+};

@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 99
+// @skip: bootstrap
+// An async `main` at Level 0 (async.md §4): the exported entry point
+// is a synthesized wrapper that starts the body, drains the microtask
+// queue to empty, and returns the settled value — so this runs under
+// plain `wasmtime --invoke main` with no host event loop at all.
+import { Future, Completer, futureOf } from 'zena:async';
+
+var trace = 0;
+
+let step = async (c: Completer<i32>, mark: i32): Future<i32> => {
+  trace = trace * 10 + mark;
+  let v = await c.future;
+  return v;
+};
+
+// Declaration form, per docs/design/async.md §8 q2 — the sibling test
+// async_function_decl.zena uses the `export let main = async ...`
+// form, so both entry-point spellings reach the export wrapper.
+export async function main(): Future<i32> {
+  // Already-resolved awaits still hop through the queue, so the drain
+  // has to keep running tasks that other tasks enqueue.
+  let a = await futureOf(90);
+
+  // A completer settled from inside the async body: the parked frame
+  // is resumed by the same drain that is already running.
+  let c = new Completer<i32>();
+  let pending = step(c, 7);
+  c.complete(9);
+  let b = await pending;
+
+  if (trace != 7) {
+    return -1;
+  }
+  return a + b;
+}

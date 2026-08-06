@@ -8799,6 +8799,12 @@ let checkMethodSignature = (
 
   // Async methods: the annotation is the full Future<T> return type.
   if (md.isAsync) {
+    // Same as async functions: the transform's failure-capture region
+    // needs the exception infrastructure.
+    let asyncDeps = ctx.currentDependencies();
+    if (asyncDeps != null) {
+      asyncDeps.needsExceptionInfra = true;
+    }
     if (md.returnType == null) {
       ctx.error(
         "An async method requires a return type annotation of 'Future<T>'.",
@@ -12257,6 +12263,13 @@ let checkFunctionExpression = (
   let isAsync = fe.isAsync;
   var declaredFutureType: Type | null = null;
   if (isAsync) {
+    // step()'s failure-capture region is a try_br: an async body needs
+    // the exception tag and payload global even when it never throws
+    // in source (async.md §3).
+    let asyncDeps = ctx.currentDependencies();
+    if (asyncDeps != null) {
+      asyncDeps.needsExceptionInfra = true;
+    }
     if (returnTypeAnn != null) {
       let extracted = extractFutureValueType(ctx, retType);
       if (extracted == null) {

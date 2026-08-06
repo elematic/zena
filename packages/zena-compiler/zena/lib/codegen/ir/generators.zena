@@ -131,9 +131,14 @@ let iteratorInstantiationOf = (func: WasmFunction): InterfaceType => {
 // Raw IrBody append helpers. The transform mutates the presplit body in
 // place (blocks own their inst lists; the flat arrays are append-only),
 // so it cannot go through IrBuilder, which refuses terminated blocks.
+//
+// These, computeLiveIn, loopContainsSuspend, weakenToNullable, and
+// rerouteEdges are exported because the async split pass (async.zena)
+// is the same transform over a different suspension terminator and
+// reuses them verbatim. Keep them suspension-kind neutral.
 // ---------------------------------------------------------------------------
 
-let truncate = (a: Array<i32>): void => {
+export let truncate = (a: Array<i32>): void => {
   while (a.length > 0) {
     a.pop();
   }
@@ -141,14 +146,14 @@ let truncate = (a: Array<i32>): void => {
 
 /** Replaces dst's contents with src's, in place (IrBlock fields are
  * immutable bindings; the arrays themselves are mutable). */
-let replaceContents = (dst: Array<i32>, src: Array<i32>): void => {
+export let replaceContents = (dst: Array<i32>, src: Array<i32>): void => {
   truncate(dst);
   for (let v in src) {
     dst.push(v);
   }
 };
 
-let internVt = (body: IrBody, vt: ValType): i32 => {
+export let internVt = (body: IrBody, vt: ValType): i32 => {
   let table = body.typeTable;
   var i = 0;
   while (i < table.length) {
@@ -161,13 +166,13 @@ let internVt = (body: IrBody, vt: ValType): i32 => {
   return table.length - 1;
 };
 
-let addRawRef = (body: IrBody, ref: IrRef): i32 => {
+export let addRawRef = (body: IrBody, ref: IrRef): i32 => {
   body.refTable.push(ref);
   return body.refTable.length - 1;
 };
 
 /** Appends an instruction to the flat arrays, unplaced (instBlock -1). */
-let rawInst = (body: IrBody, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
+export let rawInst = (body: IrBody, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
   body.opcode.push(op as i32);
   body.typeId.push(typeIdx);
   body.a.push(a);
@@ -176,12 +181,12 @@ let rawInst = (body: IrBody, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
   return body.opcode.length - 1;
 };
 
-let placeInst = (body: IrBody, blockId: i32, inst: i32): void => {
+export let placeInst = (body: IrBody, blockId: i32, inst: i32): void => {
   body.blocks[blockId].insts.push(inst);
   body.instBlock[inst] = blockId;
 };
 
-let rawParam = (body: IrBody, blockId: i32, vt: ValType): i32 => {
+export let rawParam = (body: IrBody, blockId: i32, vt: ValType): i32 => {
   let inst = rawInst(body, IrOp.param, internVt(body, vt), -1, -1);
   body.blocks[blockId].params.push(inst);
   body.instBlock[inst] = blockId;
@@ -220,7 +225,7 @@ let rawDefaultOf = (body: IrBody, vt: ValType): i32 => {
 // ---------------------------------------------------------------------------
 
 /** live-in set per block: values live on entry (block params excluded). */
-let computeLiveIn = (body: IrBody, cfg: IrCfg): Array<HashSet<i32>> => {
+export let computeLiveIn = (body: IrBody, cfg: IrCfg): Array<HashSet<i32>> => {
   let n = body.blocks.length;
   let uses = new Array<HashSet<i32>>(n);
   let defs = new Array<HashSet<i32>>(n);
@@ -395,7 +400,7 @@ let prepareOne = (
   var hb = 0;
   while (hb < presplit.blocks.length) {
     if (cfg.isReachable(hb) && !pcOfBlock.has(hb) && hb != 0 &&
-        loopContainsYield(presplit, cfg, hb, yieldBlocks)) {
+        loopContainsSuspend(presplit, cfg, hb, yieldBlocks)) {
       pcOfBlock[hb] = nextPc;
       nextPc += 1;
     }
@@ -506,14 +511,18 @@ let prepareOne = (
   nextBodies[nextFunc.uid] = artifacts;
 };
 
-/** Does the natural loop of header h (any backedge into h) contain a yield? */
-let loopContainsYield = (
+/**
+ * Does the natural loop of header h (any backedge into h) contain a
+ * suspension? Shared by both split passes — `suspendBlocks` holds the
+ * yield_ blocks for generators and the await_ blocks for async.
+ */
+export let loopContainsSuspend = (
   body: IrBody,
   cfg: IrCfg,
   h: i32,
-  yieldBlocks: Array<i32>
+  suspendBlocks: Array<i32>
 ): boolean => {
-  if (yieldBlocks.length == 0) {
+  if (suspendBlocks.length == 0) {
     return false;
   }
   // Collect the natural loop: h plus every block reaching a backedge
@@ -541,15 +550,15 @@ let loopContainsYield = (
       }
     }
   }
-  for (let yb in yieldBlocks) {
-    if (inLoop.has(yb)) {
+  for (let sb in suspendBlocks) {
+    if (inLoop.has(sb)) {
       return true;
     }
   }
   return false;
 };
 
-let weakenToNullable = (vt: ValType): ValType => {
+export let weakenToNullable = (vt: ValType): ValType => {
   return match (vt) {
     case ValTypeRef {target}: new ValTypeRefNull(target)
     case _: vt
@@ -955,7 +964,7 @@ let buildNextBody = (
  * dispatch target branches to the dispatcher with that target's pc,
  * spilling the edge's branch args into the target's param fields.
  */
-let rerouteEdges = (
+export let rerouteEdges = (
   body: IrBody,
   blockId: i32,
   pcOfBlock: HashMap<i32, i32>,
@@ -973,9 +982,10 @@ let rerouteEdges = (
   let term = block.insts[block.insts.length - 1];
   let op = body.op(term);
   if (op == IrOp.ret || op == IrOp.ret_multi || op == IrOp.throw ||
-      op == IrOp.unreachable || op == IrOp.yield_) {
-    // yield_ successors are resume blocks; the suspension rewrite
-    // replaces the terminator wholesale, so no reroute is needed.
+      op == IrOp.unreachable || op == IrOp.yield_ || op == IrOp.await_) {
+    // yield_/await_ successors are resume blocks; the suspension
+    // rewrite replaces the terminator wholesale, so no reroute is
+    // needed.
     return;
   }
   // Decode all successors up front (re-encoding appends to extra).
@@ -1004,7 +1014,7 @@ let rerouteEdges = (
     return;
   }
   if (op == IrOp.try_br || op == IrOp.br_table) {
-    throw new Error('generator split: unsupported terminator shape into a resume point');
+    throw new Error('suspension split: unsupported terminator shape into a resume point');
   }
 
   // Inserted instructions go right before the terminator.
@@ -1017,7 +1027,7 @@ let rerouteEdges = (
       let tps = dParamsById[target];
       let args = argLists[si];
       if (tps.length != args.length) {
-        throw new Error('generator split: edge arity mismatch at resume point');
+        throw new Error('suspension split: edge arity mismatch at resume point');
       }
       var pi = 0;
       while (pi < tps.length) {
@@ -1078,7 +1088,7 @@ let rerouteEdges = (
     }
     body.b[term] = idx;
   } else {
-    throw new Error('generator split: unhandled terminator during reroute');
+    throw new Error('suspension split: unhandled terminator during reroute');
   }
 
   // Place the inserted spills/consts before the terminator.

@@ -34,7 +34,7 @@ import {
   IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression,
   ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, CatchClause, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement,
   LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant,
-  RecordPattern, BindingProperty
+  RecordPattern, BindingProperty, AwaitExpression
 } from '../../ast.zena';
 import { Type, I32Type, I64Type, U32Type, U64Type, F32Type, F64Type, BooleanType, VoidType, ClassType, InterfaceType, ThisType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, NullType, instantiateClassType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, typeToString, arrayElementType, isSignedNarrowIntType } from '../../types.zena';
 import { InterfaceAdaptation, RecordAdaptation, FunctionAdaptation } from '../../semantic-model.zena';
@@ -55,6 +55,9 @@ import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootC
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
 import { lowerGeneratorRamp, lowerGeneratorNext } from './generators.zena';
+import {
+  lowerAsyncRamp, lowerAsyncStep, lowerAsyncMainWrapper,
+} from './async.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
 import { LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported } from './lowering-context.zena';
 import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
@@ -598,6 +601,12 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     if (func.isGeneratorNext) {
       return lowerGeneratorNext(wasm, func);
     }
+    if (func.isAsyncStep) {
+      return lowerAsyncStep(wasm, func);
+    }
+    if (func.isAsyncMainWrapper) {
+      return lowerAsyncMainWrapper(wasm, func);
+    }
     if (func.interfaceTrampolineTarget != null) {
       return synthesizeInterfaceTrampoline(func);
     }
@@ -654,6 +663,10 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   if (func.isGeneratorRamp) {
     return lowerGeneratorRamp(wasm, func);
   }
+  // Async functions: same shape, prepared by ir/async.zena.
+  if (func.isAsyncRamp) {
+    return lowerAsyncRamp(wasm, func);
+  }
   var isGenFn = false;
   var isAsyncFn = false;
   match (func.node as Node) {
@@ -677,8 +690,8 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     var asyncName = 'anonymous';
     if (func.name != null) { asyncName = func.name as String; }
     throw new Error(
-      "Async functions are not yet supported by code generation " +
-      "(async.md milestone A1) [in " + asyncName + "]");
+      "async function was not prepared by the split pass [in " +
+      asyncName + "]");
   }
   // No adaptations, trampolines, synthesized accessors, imports, or
   // generics. Plain top-level functions, written-out method bodies,
@@ -789,6 +802,30 @@ export final class FunctionLowerer {
   var presplitGenerator = false;
   /** The wasm type of the yield slot, set alongside presplitGenerator. */
   var presplitYieldVt: ValType | null = null;
+
+  /**
+   * Presplit-async mode (async.md §3): `await` lowers to an await_
+   * terminator plus a resume segment that reads the settled value back
+   * off the awaited future, and `return e` returns the future's VALUE
+   * type rather than the declared `Future<T>` (the split pass rewrites
+   * those returns into completions of the frame's own future). Like
+   * presplitGenerator, the produced body is never emitted directly.
+   */
+  var presplitAsync = false;
+  /**
+   * The wasm type of the async function's value slot — the `T` of its
+   * declared `Future<T>` — set alongside presplitAsync. Null for
+   * `Future<void>`, which returns no value.
+   */
+  var presplitAsyncValueVt: ValType | null = null;
+  /**
+   * Per-await-site `Future<A>.subscribeResumable`, keyed by the id of
+   * the await_ instruction that suspends on it. Each await site parks
+   * on its OWN awaited type's specialization, so the split pass cannot
+   * derive this from the frame — it is recorded here, where the
+   * operand's semantic type is still in hand.
+   */
+  awaitSubscribeTargets = new HashMap<i32, WasmFunction>();
 
   new(this.wasm, this.func);
 
@@ -979,7 +1016,7 @@ export final class FunctionLowerer {
       // before any statement runs (see precellBindings).
       this.#cx().precellBindings(stmts);
       var tailExpr: Expression | null = null;
-      if (!this.presplitGenerator && sig.returns.length == 1 &&
+      if (!this.presplitGenerator && this.#returnSlotVt() != null &&
           stmts.length > 0 &&
           stmts[stmts.length - 1] is ExpressionStatement) {
         let te = (stmts[stmts.length - 1] as ExpressionStatement).expression;
@@ -994,10 +1031,13 @@ export final class FunctionLowerer {
       }
       if (tailExpr != null && this.#cx().reachable) {
         let tailValue = this.#lowerExpressionCtx(
-            tailExpr as Expression, sig.returns[0]);
+            tailExpr as Expression, this.#returnSlotVt());
         this.#emitCheckedRet(tailValue);
       } else if (this.#cx().reachable) {
-        if (sig.returns.length == 0 || this.presplitGenerator) {
+        // A `Future<void>` async body falls off the end like a void
+        // function; a valued one still must have returned (below).
+        if (sig.returns.length == 0 || this.presplitGenerator ||
+            (this.presplitAsync && this.presplitAsyncValueVt == null)) {
           // Falling off a generator body completes it (rewritten to the
           // DONE return by the split pass).
           this.b.retVoid();
@@ -1009,6 +1049,21 @@ export final class FunctionLowerer {
       }
     } else {
       // Expression-bodied function.
+      if (this.presplitAsync) {
+        // `async (): Future<T> => expr`: the expression IS the value the
+        // frame's future completes with (or a void body's effects).
+        if (this.presplitAsyncValueVt == null) {
+          this.#lowerExpression(body as Expression);
+          if (this.#cx().reachable) {
+            this.b.retVoid();
+          }
+        } else {
+          let value = this.#lowerExpressionCtx(
+              body as Expression, this.presplitAsyncValueVt);
+          this.#emitCheckedRet(value);
+        }
+        return this.b.finish();
+      }
       if (sig.returns.length == 0) {
         // Void body: evaluate for effects; any produced value is
         // simply never used (SSA has no stack to pop).
@@ -1710,14 +1765,28 @@ export final class FunctionLowerer {
     return this.#bailValue('placeholder type');
   }
 
-  #emitCheckedRet(value: i32): void {
+  /**
+   * The type a `return e` must conform to. Normally the function's
+   * single wasm result; in presplit-async mode the awaited-away value
+   * type `T` of the declared `Future<T>` instead (§3: the split pass
+   * turns these returns into completions of the frame's future).
+   */
+  #returnSlotVt(): ValType | null {
+    if (this.presplitAsync) {
+      return this.presplitAsyncValueVt;
+    }
     let sig = this.func.signature;
-    if (sig.returns.length != 1) {
+    return if (sig.returns.length == 1) sig.returns[0] else null;
+  }
+
+  #emitCheckedRet(value: i32): void {
+    let slot = this.#returnSlotVt();
+    if (slot == null) {
       this.#bail('return value in void function');
     }
     var v = value;
     let have = this.#valueType(v);
-    let want = sig.returns[0];
+    let want = slot as ValType;
     if (!this.#cx().refConforms(have, want)) {
       // Returns conform like stores (the signature is the binding):
       // a nullable value whose non-null form conforms re-asserts (the
@@ -1766,11 +1835,11 @@ export final class FunctionLowerer {
       case ReturnStatement {argument}: {
         if (argument == null) {
           this.b.retVoid();
-        } else if (this.func.signature.returns.length > 1) {
+        } else if (!this.presplitAsync &&
+            this.func.signature.returns.length > 1) {
           this.#lowerMultiReturn(argument as Expression);
         } else {
-          let sig = this.func.signature;
-          let ctx = if (sig.returns.length == 1) sig.returns[0] else null;
+          let ctx = this.#returnSlotVt();
           let value = this.#lowerExpressionCtx(argument as Expression, ctx);
           this.#emitCheckedRet(value);
         }
@@ -2380,6 +2449,7 @@ export final class FunctionLowerer {
       case PipelineExpression as pipe: this.#lowerPipeline(pipe)
       case PipePlaceholder: this.#lowerPipePlaceholder()
       case TaggedTemplateExpression as tagged: this.#lowerTaggedTemplate(tagged)
+      case AwaitExpression as aw: this.#lowerAwait(aw)
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
   }
@@ -2391,6 +2461,65 @@ export final class FunctionLowerer {
    * return-type mapping uses). Inline tuples never appear in value
    * position; their construction lives in the multi-value paths.
    */
+  /**
+   * `await e` (async.md §3): suspend on the future `e` produces, and
+   * resume by reading the settled result back off that same future.
+   *
+   * The awaited future is an ordinary SSA value that is live across the
+   * suspension, so the split pass's existing liveness/spill machinery
+   * gives it a frame field for free — the resume segment needs no
+   * incoming block parameter. Reading the result with `valueOrThrow()`
+   * is what makes a rejected future propagate as a plain throw into
+   * step()'s failure-capture region.
+   */
+  #lowerAwait(aw: AwaitExpression): i32 {
+    if (!this.presplitAsync) {
+      // The checker rejects await outside an async body, so reaching
+      // here means the split pass failed to enable presplit-async mode.
+      throw new Error('await reached ZIR lowering outside an async body');
+    }
+    let operandTypeOpt = this.#substitutedNodeType(aw.argument);
+    if (operandTypeOpt == null) {
+      this.#bail('untyped await operand');
+    }
+    let resolved = eraseTypeParameters(baseType(operandTypeOpt as Type));
+    if (!(resolved is ClassType)) {
+      // `T | Future<T>` awaits (async.md §1) need a runtime test on the
+      // union payload; the checker accepts them but A1 does not lower
+      // them yet. Loud rather than silently wrong.
+      this.#bail('await of a union operand is not supported yet');
+    }
+    let futureClass = resolved as ClassType;
+    let getterKey = getClassMethodKey(getClassKey(futureClass), 'valueOrThrow');
+    let getterOpt =
+        if (let (true, g) = this.wasm.classMethodMap.get(getterKey)) g else null;
+    if (getterOpt == null) {
+      this.#bail('await operand is not a Future: ' +
+          (getClassKey(futureClass) as String));
+    }
+    let getter = getterOpt as WasmFunction;
+    let subKey =
+        getClassMethodKey(getClassKey(futureClass), 'subscribeResumable');
+    let subOpt =
+        if (let (true, s) = this.wasm.classMethodMap.get(subKey)) s else null;
+    if (subOpt == null) {
+      this.#bail('await operand has no subscribeResumable: ' +
+          (getClassKey(futureClass) as String));
+    }
+
+    let future = this.#lowerExpression(aw.argument);
+    let resume = this.b.newBlock();
+    let suspend = this.b.awaitTo(future, resume, new Array<i32>(0));
+    this.awaitSubscribeTargets[suspend] = subOpt as WasmFunction;
+    this.b.switchTo(resume);
+
+    let args = new Array<i32>();
+    args.push(future);
+    let sig = getter.signature;
+    let resultVt = if (sig.returns.length == 1) sig.returns[0] else null;
+    return this.b.callFunc(this.b.addRef(new IrRefFunc(getter)), args, resultVt);
+  }
+
   #lowerTupleLiteralExpr(tl: TupleLiteral): i32 {
     let tOpt = this.#substitutedNodeType(tl);
     if (tOpt == null) {

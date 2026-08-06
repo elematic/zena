@@ -120,6 +120,28 @@ class CallbackListener<A> implements FutureListener<A> {
   }
 }
 
+/**
+ * A suspended async computation waiting on a future.
+ *
+ * Compiler-synthesized async frames implement this: `resume()` runs
+ * the next segment of the frame's state machine. The frame reads the
+ * settled value out of the future itself (`valueOrThrow`), so this
+ * interface carries no type parameter and one implementation serves
+ * every await site in a function, whatever it awaits.
+ */
+export interface Resumable {
+  resume(): void;
+}
+
+/** Queued resumption of one suspended frame. */
+class ResumeDelivery implements Microtask {
+  frame: Resumable;
+  new(this.frame);
+  run(): void {
+    this.frame.resume();
+  }
+}
+
 /** Queued delivery of a settled value to one listener. */
 class ValueDelivery<A> implements Microtask {
   listener: FutureListener<A>;
@@ -145,6 +167,7 @@ export class Future<T> {
   var #value: Box<T> | null = null;
   var #error: Error | null = null;
   #listeners: Array<FutureListener<T>> = new Array<FutureListener<T>>();
+  #resumables: Array<Resumable> = new Array<Resumable>();
 
   new();
 
@@ -184,6 +207,49 @@ export class Future<T> {
     this.#listeners.push(listener);
   }
 
+  /**
+   * Registers a suspended async frame: `r.resume()` runs from the
+   * microtask queue once this future settles (scheduled immediately if
+   * it already has — the always-async rule holds here too, so a frame
+   * awaiting a completed future still yields one queue hop).
+   *
+   * This is what the A1 `await` transform emits. It is deliberately
+   * untyped in T: the frame reads the settled value back with
+   * valueOrThrow() when it resumes.
+   */
+  subscribeResumable(r: Resumable): void {
+    if (this.#state == FutureState.Pending) {
+      this.#resumables.push(r);
+      return;
+    }
+    scheduleTask(new ResumeDelivery(r));
+  }
+
+  /**
+   * The settled value, or a throw of the stored failure.
+   *
+   * Async frames call this at each resume point, which is what makes a
+   * failed await propagate as an ordinary exception: it unwinds into
+   * step()'s failure-capture region and rejects the frame's own
+   * future, with no separate error slot to thread (async.md §3).
+   */
+  valueOrThrow(): T {
+    if (this.#state == FutureState.Rejected) {
+      throw this.#error as Error;
+    }
+    if (this.#state == FutureState.Pending) {
+      // At an async resume point this cannot happen — the frame only
+      // runs once its future has settled. Reaching it means the
+      // microtask queue drained with work still parked and nothing
+      // left that could complete it: a deadlock (async.md §4).
+      throw new Error(
+        'Deadlock: the microtask queue is empty but this future is ' +
+        'still pending, and no external completion source exists');
+    }
+    let stored = this.#value as Box<T>;
+    return stored.value;
+  }
+
   /** Settles this future with a value. Throws if already settled. */
   complete(value: T): void {
     if (!(this.#state == FutureState.Pending)) {
@@ -199,6 +265,7 @@ export class Future<T> {
       i += 1;
     }
     this.#clearListeners();
+    this.#scheduleResumables();
   }
 
   /** Settles this future with a failure. Throws if already settled. */
@@ -214,6 +281,7 @@ export class Future<T> {
       i += 1;
     }
     this.#clearListeners();
+    this.#scheduleResumables();
   }
 
   // NOTE: completeWith (one-level adoption, async.md §2) is part of
@@ -226,6 +294,18 @@ export class Future<T> {
   #clearListeners(): void {
     while (this.#listeners.length > 0) {
       this.#listeners.pop();
+    }
+  }
+
+  /** Moves every parked frame onto the queue and drops the list. */
+  #scheduleResumables(): void {
+    var i = 0;
+    while (i < this.#resumables.length) {
+      scheduleTask(new ResumeDelivery(this.#resumables[i]));
+      i += 1;
+    }
+    while (this.#resumables.length > 0) {
+      this.#resumables.pop();
     }
   }
 }

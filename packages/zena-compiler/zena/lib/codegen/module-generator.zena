@@ -6,6 +6,7 @@ import { WasmModule, WasmFunction, WasmSignature,
 import { ByteBuffer } from 'zena:byte-buffer';
 import { ReachabilityAnalysis } from './reachability/analysis.zena';
 import { prepareGenerators } from './ir/generators.zena';
+import { prepareAsyncFunctions } from './ir/async.zena';
 import { getClassKey, getInterfaceKey, getInterfaceMemberKey, sortStringsByLengthDescending, parseI64OrU64Literal } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -312,6 +313,13 @@ export final class ModuleGenerator {
     let tGenerators = performance.start("codegen-generators");
     prepareGenerators(wasm, pass);
     performance.end(tGenerators);
+
+    // Async split pass (ir/async.zena): the same treatment for every
+    // `async` body — frame structs, step() functions, Resumable
+    // vtable globals. Also before layout().
+    let tAsync = performance.start("codegen-async");
+    prepareAsyncFunctions(wasm, pass);
+    performance.end(tAsync);
 
     wasm.layout();
     performance.end(tLayout);

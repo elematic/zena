@@ -369,10 +369,37 @@ website served by a Zena server":
   `Future<T>`/`Completer<T>`/executor in the stdlib (ordinary code,
   both compilers compile it); portable syntax/semantics tests with
   `@skip: bootstrap`.
-- **A1 — transform.** `await` suspension terminator with the
-  resume-value slot; async mode in the split pass (frame-is-future,
-  eager ramp, step(), failure-capture region); execution tests at
-  Level 0 (Completers, ordering, failure propagation, deadlock trap).
+- **A1 — transform. Implemented** (`codegen/ir/async.zena`), with two
+  deviations from §3 and one gap, all deliberate:
+  - **The frame is not the future; it holds one and implements
+    `Resumable`.** Making a synthesized struct a true subclass of the
+    specialized `Future<T>` means inheriting its vtable and layout
+    through RTA — a lot of machinery to save one allocation. The
+    observable semantics are identical.
+  - **No resume-value slot.** The awaited future is an ordinary value
+    live across the suspension, so the generator pass's existing
+    liveness/spill machinery already gives it a frame field; the
+    resumed segment reads the settled result back off it with
+    `Future.valueOrThrow()`. That also makes failure propagation fall
+    out for free — a rejected future resurfaces as a plain throw at the
+    resume point, unwinds into the failure-capture region, and rejects
+    the frame's own future, with no error slot to thread. When
+    await-in-try lands (§6) this stays correct; a per-frame error slot
+    would not have.
+  - **Not yet: `await` on a `T | Future<T>` union** (§1). The checker
+    accepts it; lowering rejects it loudly. It needs a runtime test on
+    the union payload, which is its own piece of work.
+  - **Not yet: `Future<void>`** (§8 question 1), blocked on something
+    older and more general than async — `void` as a generic type
+    argument lowers to a void-typed *parameter*, which ZIR rejects. A
+    plain `new Completer<void>()` in non-async code fails identically.
+    Async lowering says so explicitly rather than failing deep in the
+    stdlib.
+
+  Level-0 execution tests cover eager start, multi-suspension bodies,
+  suspension inside a loop, failure propagation, async methods and
+  closures, and an async `main` driven by the synthesized export
+  wrapper (§4).
 - **A2 — timers.** `sleep`/timeout over WASI p1 `poll_oneoff`; the
   drain/park arm; JS-host parking via the event loop.
 - **A3 — external completions on the JS host.** The
@@ -422,6 +449,14 @@ input for async v1.)
 1. **`Future<void>`**: does `async (): Future<void>` want a distinct
    spelling (`async (): void`?) or is `Future<void>` fine? (Leaning:
    `Future<void>`, no special case — consistency over brevity.)
+   _A1 status_: the spelling question is still open, but the answer is
+   currently forced — `Future<void>` does not compile, for a reason
+   that has nothing to do with async. `void` as a generic type
+   argument produces a void-typed parameter (here,
+   `CallbackListener<void>.onValue`) that ZIR rejects; `new
+   Completer<void>()` in ordinary non-async code fails the same way.
+   Whichever spelling wins, fire-and-forget async needs that generics
+   hole fixed first, so it is the natural next piece of work after A1.
 2. **Async main**: is `export async function main(): Future<i32>` the
    blessed form, with the export wrapper doing start+drain? (Leaning:
    yes; sync main stays valid.)

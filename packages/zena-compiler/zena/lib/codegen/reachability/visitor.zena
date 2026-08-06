@@ -3,7 +3,7 @@ import { Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisito
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { SemanticModel, InterfaceAdaptation } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType } from '../../types.zena';
-import { Node, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral } from '../../ast.zena';
+import { Node, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction } from '../wasm-module.zena';
 import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeExternRef } from '../wasm.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
@@ -434,6 +434,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is MapLiteral) {
         this.registerMapLiteral(n as MapLiteral, model, resolveType);
       }
+      this.registerAsyncNode(n, model, resolveType);
       if (n is CallExpression) {
         // Plain identifier calls: the dependency records omit
         // module-private symbols, so the call edge here is the only
@@ -545,6 +546,137 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
   }
 
+  /**
+   * The `zena:async` runtime the A1 transform will call (async.md §3).
+   *
+   * RTA cannot see these calls: the split pass synthesizes them after
+   * this analysis has finished. So an async function declares what its
+   * frame needs, and an await site declares what its resume segment
+   * needs — the same shape as for-in declaring `Iterator.next`.
+   *
+   * `isFrameFuture` distinguishes the two roles. An async function's
+   * OWN `Future<T>` is constructed by the ramp and settled by step();
+   * an AWAITED `Future<A>` is parked on and read back.
+   */
+  registerAsyncFuture(futureType: ClassType, model: SemanticModel,
+      isFrameFuture: boolean): void {
+    this.pass.specializer.instantiateClassType(futureType, model);
+    this.pass.typeLowerer.discoverType(futureType as Type, model);
+    if (isFrameFuture) {
+      this.queueExplicitCtor(futureType);
+      this.queuePrivateMethod(futureType, 'complete');
+      this.queuePrivateMethod(futureType, 'fail');
+      // An async `main` is driven by a synthesized export wrapper that
+      // drains the queue and unwraps the result (async.md §4, Level 0).
+      // Whether THIS function is that main is not knowable here, so
+      // reach both pieces for any async function: two small stdlib
+      // entries, and no way to be wrong about it later.
+      this.queuePrivateMethod(futureType, 'valueOrThrow');
+      this.queueStdlibFunction('zena:async', 'drainMicrotasks');
+    } else {
+      this.queuePrivateMethod(futureType, 'valueOrThrow');
+      this.queuePrivateMethod(futureType, 'subscribeResumable');
+    }
+    this.registerResumableInterface(futureType, model);
+  }
+
+  /**
+   * The frame implements `Resumable`, so its vtable struct must carry
+   * a `resume` slot. Nothing in user code references the interface, so
+   * mark it used HERE — by the time the split pass runs, the vtable
+   * struct's fields are already fixed.
+   *
+   * The interface is read off `subscribeResumable`'s parameter rather
+   * than looked up by name: every async function resolves its own
+   * `Future<T>` anyway, so this needs no well-known-type registry.
+   */
+  registerResumableInterface(futureType: ClassType,
+      model: SemanticModel): void {
+    if (!futureType.members.has('subscribeResumable')) {
+      return;
+    }
+    let mi = futureType.members['subscribeResumable'];
+    if (!(mi is MethodInfo)) {
+      return;
+    }
+    let ft = (mi as MethodInfo).type;
+    if (!(ft is FunctionType)) {
+      return;
+    }
+    let params = (ft as FunctionType).parameters;
+    if (params.length != 1 || !(params[0] is InterfaceType)) {
+      return;
+    }
+    let iface = params[0] as InterfaceType;
+    this.pass.typeLowerer.discoverType(iface as Type, model);
+    let iKey = getInterfaceKey(iface.genericSource ?? iface);
+    this.pass.wasm.usedInterfaceMembers[
+        getInterfaceMemberKey(iKey, 'resume')] = true;
+    this.pass.addReferencedInterfaceMember(
+        i32ToString((iface.genericSource ?? iface).id as i32) + '.resume');
+  }
+
+  /**
+   * An async function or an await expression, from either RTA walk.
+   * Both reduce to "which Future instantiation does this need?".
+   */
+  registerAsyncNode(n: Node, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (n is AwaitExpression) {
+      let awaited = model.getNodeType((n as AwaitExpression).argument);
+      if (awaited != null) {
+        let resolved = resolveType(awaited as Type);
+        if (resolved is ClassType) {
+          this.registerAsyncFuture(resolved as ClassType, model, false);
+        }
+      }
+      return;
+    }
+    var isAsyncFn = false;
+    match (n) {
+      case FunctionExpression {isAsync}: { isAsyncFn = isAsync; }
+      case MethodDefinition {isAsync}: { isAsyncFn = isAsync; }
+      case _: {}
+    }
+    if (!isAsyncFn) {
+      return;
+    }
+    let ft = model.getNodeType(n);
+    if (ft == null || !(ft is FunctionType)) {
+      return;
+    }
+    let ret = resolveType((ft as FunctionType).returnType);
+    if (ret is ClassType) {
+      this.registerAsyncFuture(ret as ClassType, model, true);
+    }
+  }
+
+  /**
+   * Queues a module-level stdlib function by module path and export
+   * name, for code the compiler synthesizes rather than reads out of
+   * an AST — nothing in the program need reference it.
+   */
+  queueStdlibFunction(modulePath: String, exportName: String): void {
+    let prog = this.pass.program;
+    if (!prog.unitsByPath.has(modulePath)) {
+      return;
+    }
+    let unit = prog.unitsByPath[modulePath];
+    for (let stmt in unit.ast.body) {
+      if (stmt is VariableDeclaration) {
+        let vd = stmt as VariableDeclaration;
+        if (vd.pattern is IdentifierPattern &&
+            (vd.pattern as IdentifierPattern).name == exportName) {
+          let sym = unit.model.resolveDeclaration(vd.pattern as IdentifierPattern);
+          if (sym != null) {
+            this.pass.queueReferrer(new Referrer(true, (sym as Symbol).id,
+                -1, unit.model, null, true));
+          }
+        }
+      }
+    }
+  }
+
   /** Queues a specialization's private method (by name) as reachable. */
   queuePrivateMethod(classType: ClassType, methName: String,
       typeArguments: Array<Type> | null = null): void {
@@ -652,6 +784,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is MapLiteral) {
         this.registerMapLiteral(n as MapLiteral, model, resolveType);
       }
+      this.registerAsyncNode(n, model, resolveType);
       if (n is CallExpression) {
         // Plain identifier calls: the dependency records omit
         // module-private symbols, so the call edge here is the only

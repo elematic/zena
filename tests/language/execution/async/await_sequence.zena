@@ -1,0 +1,41 @@
+// @mode: run
+// @result: 321
+// @skip: bootstrap
+// Several suspensions in one body: values defined before a suspension
+// and used after it must survive as frame fields (async.md §3), and
+// the resume points must dispatch to the right segment each time.
+import { Future, Completer, drainMicrotasks } from 'zena:async';
+
+var trace = 0;
+
+let stages = async (a: Completer<i32>, b: Completer<i32>): Future<i32> => {
+  let first = await a.future;
+  trace = trace * 10 + 1;
+  let second = await b.future;
+  trace = trace * 10 + 2;
+  // `first` was defined before the second suspension and is used
+  // after it: it only survives if the spill machinery gave it a field.
+  return first * 100 + second;
+};
+
+export let main = (): i32 => {
+  let a = new Completer<i32>();
+  let b = new Completer<i32>();
+  let f = stages(a, b);
+  a.complete(3);
+  drainMicrotasks();
+  // Only the first segment has run.
+  if (trace != 1) {
+    return -1;
+  }
+  if (f.isCompleted) {
+    return -2;
+  }
+  b.complete(21);
+  drainMicrotasks();
+  if (trace != 12) {
+    return -3;
+  }
+  // 3 * 100 + 21 = 321
+  return f.valueOrThrow();
+};

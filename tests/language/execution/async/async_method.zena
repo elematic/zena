@@ -1,0 +1,41 @@
+// @mode: run
+// @result: 55
+// @skip: bootstrap
+// async methods and async closures: the receiver and the captured
+// context arrive as ordinary parameters of the ramp and are spilled to
+// frame fields like any other, so neither needs special handling.
+import { Future, Completer, drainMicrotasks } from 'zena:async';
+
+class Adder {
+  base: i32;
+  new(this.base);
+
+  async addFrom(c: Completer<i32>): Future<i32> {
+    let v = await c.future;
+    // `this` survives the suspension as a frame field.
+    return this.base + v;
+  }
+}
+
+export let main = (): i32 => {
+  let a = new Adder(50);
+  let c = new Completer<i32>();
+  let f = a.addFrom(c);
+
+  let captured = 5;
+  let viaClosure = async (d: Completer<i32>): Future<i32> => {
+    let v = await d.future;
+    return captured + v;
+  };
+  let d = new Completer<i32>();
+  let g = viaClosure(d);
+
+  c.complete(3);
+  d.complete(-3);
+  drainMicrotasks();
+  if (!f.isCompleted || !g.isCompleted) {
+    return -1;
+  }
+  // (50 + 3) + (5 + -3) = 53 + 2 = 55
+  return f.valueOrThrow() + g.valueOrThrow();
+};

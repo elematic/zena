@@ -42,6 +42,16 @@ This document tracks completed work and planned features. For project instructio
 ### Phase 2: Platform Features (Post-Retirement)
 
 - **Async Functions & Cooperative Multithreading**: Native support for asynchronous execution, targeting upcoming WASM P3 features with cooperative multithreading.
+  - **A0 (front end) and A1 (transform) are done.** `async`/`await` parse,
+    check, and *run*: the split pass compiles async bodies into frame-based
+    state machines that park on futures and resume off a microtask queue, and
+    an async `main` is driven to completion by a synthesized export wrapper —
+    so async programs run under plain `wasmtime --invoke main` today, with no
+    host event loop and no changes to `zena-cli`. See
+    [async.md](docs/design/async.md) §5 for what A1 deliberately left out
+    (union `await`, `Future<void>`, await-in-try).
+  - Next: A2 (timers over WASI p1 `poll_oneoff`), then A3 (external
+    completions on a JS host).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running

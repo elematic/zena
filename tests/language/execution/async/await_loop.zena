@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 60
+// @skip: bootstrap
+// A suspension inside a loop: the loop header is a dispatch target
+// with a pc above the suspend range, and the loop-carried values
+// (accumulator, counter) become frame fields.
+import { Future, Completer, drainMicrotasks, futureOf } from 'zena:async';
+
+let sumFirst = async (n: i32): Future<i32> => {
+  var total = 0;
+  var i = 0;
+  while (i < n) {
+    // Already-resolved: still one queue hop per iteration.
+    let v = await futureOf(i * 10);
+    total += v;
+    i += 1;
+  }
+  return total;
+};
+
+export let main = (): i32 => {
+  let f = sumFirst(4);
+  // Every iteration parks, so the whole loop needs repeated drains;
+  // drainMicrotasks runs tasks queued while draining, so one is enough.
+  drainMicrotasks();
+  if (!f.isCompleted) {
+    return -1;
+  }
+  // 0 + 10 + 20 + 30 = 60
+  return f.valueOrThrow();
+};

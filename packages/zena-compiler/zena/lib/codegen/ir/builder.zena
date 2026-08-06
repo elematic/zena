@@ -305,6 +305,19 @@ export final class IrBuilder {
     this.#emitInCurrent(IrOp.yield_, -1, value, idx);
   }
 
+  /** await_: a = awaited future, b = [resumeTarget, argc, arg*].
+   * Suspension terminator for presplit async bodies; the split pass
+   * rewrites every await before emission. */
+  awaitTo(future: i32, resumeTarget: i32, args: Array<i32>): i32 {
+    let idx = this.body.extra.length;
+    this.body.extra.push(resumeTarget);
+    this.body.extra.push(args.length);
+    for (let v in args) {
+      this.body.extra.push(v);
+    }
+    return this.#emitInCurrent(IrOp.await_, -1, future, idx);
+  }
+
   retVoid(): void {
     this.#emitInCurrent(IrOp.ret, -1, -1, -1);
   }
