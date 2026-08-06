@@ -81,6 +81,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   // RTA Reachability tracking state
   reachedGlobals = new HashSet<SymbolId>();
   reachedMembers = new HashSet<String>();
+  /**
+   * Members traversed with `currentReachable` set, tracked apart from
+   * `reachedMembers` for the same reason `queueReferrer` keeps
+   * `reached` apart from `visited`: a checkable-phase traversal
+   * discovers a member's dependencies without marking them reached, so
+   * it must not satisfy a later reachable traversal of the same member.
+   */
+  reachedReachableMembers = new HashSet<String>();
   instantiatedClasses = new HashSet<SymbolId>();
   instantiatedSpecializedClasses = new HashSet<String>();
   var isRtaActive = true;
@@ -174,9 +182,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       suffix += "<" + getSpecializedName("", ref.typeArguments as Array<Type>) + ">";
     }
     let key = (if (ref.isSymbol) "sym:" + i32ToString(ref.symId as i32) else "node:" + i32ToString(ref.nodeId)) + suffix;
-    
 
-    
+
+
     if (ref.isReachable) {
       if (!this.reached.has(key)) {
         this.reached.add(key);
@@ -2057,7 +2065,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           let suffix = if (ref.classType != null) "@" + (getClassKey(ref.classType as ClassType) as String) else "";
           let key = (if (ref.isSymbol) "sym:" + i32ToString(ref.symId as i32) else "node:" + i32ToString(ref.nodeId)) + suffix;
 
-          
+
           if (ref.isSymbol) {
             let symId = ref.symId;
             let model = ref.model;
@@ -2095,10 +2103,25 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               memberSuffix += "<" + getSpecializedName("", ref.typeArguments as Array<Type>) + ">";
             }
             let memberKey = i32ToString(nodeId) + memberSuffix;
-            if (this.reachedMembers.has(memberKey)) {
-              continue;
+            // A checkable visit records only `reachedMembers`, so a
+            // later reachable visit of the same member still runs.
+            // Collapsing the two skipped that second traversal, and
+            // with it the marking of closures the first pass created
+            // but left unreached — pruned from wasm.functions, they
+            // kept index -1 while lowering still emitted a ref_func to
+            // them.
+            if (ref.isReachable) {
+              if (this.reachedReachableMembers.has(memberKey)) {
+                continue;
+              }
+              this.reachedReachableMembers.add(memberKey);
+              this.reachedMembers.add(memberKey);
+            } else {
+              if (this.reachedMembers.has(memberKey)) {
+                continue;
+              }
+              this.reachedMembers.add(memberKey);
             }
-            this.reachedMembers.add(memberKey);
             
             let nodeOpt = if (this.nodeIdToNode.has(nodeId)) this.nodeIdToNode[nodeId] else null;
              if (nodeOpt != null) {

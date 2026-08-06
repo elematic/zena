@@ -64,20 +64,19 @@ not.
 
 That guard only works if something builds it, and for a while nothing did: the
 example had rotted into calling `.toString()` on an `i32`, which neither
-compiler accepts. `npm test` now type-checks it (`test:example`).
+compiler accepts. `npm test` now builds *and runs* it with the self-hosted CLI
+(`test:example`), so a broken package map, a compile regression, or a parser
+that throws all fail the suite.
 
-> **All 12 modules now compile under the self-hosted compiler.** Every
-> blocker is fixed: generic *private* methods (`Parser.#parseList<T>`,
-> 0e7effe4), distributed sealed variants and block-scoped function bindings
-> (#164), and self/forward-referencing closure captures (#165).
->
-> **Consuming the package from another module still crashes that compiler**,
-> so this example builds only under the bootstrap. A caller reaching the
-> package through the package map dies in emit with `Invalid ref_func:
-> index < 0`; compiling this package as an *entry point* is fine, and a
-> type-only import is fine, so it is the cross-module **call** that trips
-> it. See BUGS.md. It blocks the next stage directly: making WIT imports
-> first-class makes the compiler itself a consumer of this package.
+> **The package both compiles and is consumable under the self-hosted
+> compiler.** All 12 modules compile — generic *private* methods
+> (`Parser.#parseList<T>`, 0e7effe4), distributed sealed variants and
+> block-scoped function bindings (#164), self/forward-referencing closure
+> captures (#165) — and a *consumer* reaching the package through the
+> package map now works too. That last one was a reachability bug, not
+> anything cross-module: a checkable-phase visit of a member satisfied
+> the later reachable visit, stranding closures the first visit had
+> created but not marked reached. See BUGS.md.
 
 Nothing in the *compiler* calls the parser yet — making WIT imports first-class
 is the next step; see

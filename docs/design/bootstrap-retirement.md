@@ -300,6 +300,15 @@ plan can be redone.
    inherited-member snapshots freezing pre-inference field types, and
    record literals ignoring their contextual type. The full wit-parser
    suite passes self-hosted-compiled.*
+
+   *2026-08-06: the package's last bootstrap caller is gone too.
+   `test:example` ran `../cli/lib/cli.js check` on
+   `examples/parse-wit.zena` because the self-hosted compiler crashed
+   on it; it now builds and runs that example with `zena-cli`. The
+   crash was a seventh compiler bug — a checkable-phase member visit
+   satisfying the later reachable one, stranding closures it had
+   created but not marked reached (BUGS.md). `packages/wit-parser` no
+   longer invokes the bootstrap anywhere.*
 4. **Choose and populate the seed** (§2), with the pin in-tree.
 5. **Prove a clean-checkout build from the seed alone**, with the TypeScript
    compiler still present but unused — a dry run that can be reverted.

@@ -1000,7 +1000,17 @@ export final class ZirFunctionEmitter {
         if (!(ref is IrRefFunc)) {
           throw new Error('zir emit: ref_func ref kind');
         }
-        this.emitter.emitRefFunc((ref as IrRefFunc).target.index);
+        let target = (ref as IrRefFunc).target;
+        if (target.index < 0) {
+          // An unindexed target means reachability never saw this
+          // function, so it has no slot in the function section. The
+          // bare emitter assert names neither party; both are needed to
+          // tell which lowering path invented the reference.
+          throw new Error('zir emit: ref_func target has no index: ' +
+              (target.name ?? '<anonymous>') + ' [in ' +
+              (this.func.name ?? '<anonymous>') + ']');
+        }
+        this.emitter.emitRefFunc(target.index);
       }
       case IrOp.ref_null: { this.#emitRefNullInst(inst); }
       case IrOp.ref_cast: { this.#emitRefCastInst(inst); }

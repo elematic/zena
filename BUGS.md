@@ -82,44 +82,39 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-### Self-hosted: calling into a package-mapped module crashes emit with `Invalid ref_func: index < 0`
+### RESOLVED: a checkable member visit satisfied the later reachable one, stranding its closures (`Invalid ref_func: index < 0`)
 
-- **Found**: 2026-08-05, immediately after the celled-captures fix made
-  all 12 wit-parser modules compile.
-- **Severity**: blocking for the WIT track — the *next* stage makes the
-  compiler itself a consumer of `wit-parser`, which is exactly the
-  shape that crashes.
-- **Details**: compiling the wit-parser package as an entry point
-  succeeds (`zena-cli build packages/wit-parser/zena/wit.zena`), but a
-  *consumer* reaching it through the package map crashes the compiler:
-
-  ```zena
-  import { parse } from 'wit-parser:wit';
-  export let main = (): i32 => {
-    let doc = parse("package a:b@1.0.0;\n");
-    return doc.items.length;
-  };
-  ```
-
-  → `Exception caught in CLI compiler! Invalid ref_func: index < 0`,
-  thrown from `BinaryEmitter.emitRefFunc` via `ZirFunctionEmitter`.
-  `emit.zena`'s `IrOp.ref_func` case emits
-  `(ref as IrRefFunc).target.index`, so some `WasmFunction` reached
-  lowering without RTA assigning it an index — a function synthesized
-  during lowering (an adaptation wrapper is the likeliest candidate;
-  `lowering.zena` has four `ref_func` sites) that the reachability pass
-  never saw for a cross-module target.
-- **Narrowing already done**:
-  - `parse` and `parseSyntax` both crash → not resolve-specific.
-  - A **type-only** import (`import {AstItemTag}` + a match on it)
-    compiles fine → importing the package is not enough; *calling* into
-    it is what triggers it.
-  - Nothing to do with `console` or string formatting; the minimal
-    repro above has neither.
-- **Blocks**: `packages/wit-parser/examples/parse-wit.zena` under the
-  self-hosted compiler (it type-checks now, and reaches codegen). The
-  example is guarded by `npm run test:example -w @zena-lang/wit-parser`,
-  which runs the **bootstrap** check only, for this reason.
+- **Fixed 2026-08-06.** The guess in the original entry — an adaptation
+  wrapper synthesized during lowering — was wrong; nothing is
+  synthesized late. RTA visits a member twice, once while only
+  *checking* it and once as *reachable*, and `processQueues` gated both
+  on a single `reachedMembers` set. So the checkable visit consumed the
+  key and the reachable visit hit `continue` and never ran. That
+  mattered because the closure branch of `traverseDependencies` calls
+  `addFunction` unconditionally but `markFunctionReached` only when
+  `currentReachable` — a closure created during the checkable visit is
+  therefore *added but not reached*, and the reachable re-visit is what
+  would have marked it. Skipped, it stayed unmarked, so RTA's
+  `wasm.functions = reachedList` pruning dropped it and it never got an
+  index in `layout()`, while lowering still emitted a `ref_func` to it.
+  Fix: `reachedReachableMembers` alongside `reachedMembers`, mirroring
+  the `reached`/`visited` split `queueReferrer` already keeps (and the
+  `referencedInterfaceMembers` /
+  `referencedReachableInterfaceMembers` pair beside it).
+- **Why it looked cross-module-only**: nothing about it is. It needs
+  the checkable visit of a member to land *before* the reachable one,
+  and the reachable queue drains first, so a small single-module
+  program never orders them that way. Attempts to distill it into a
+  portable test all passed pre-fix for that reason; the regression
+  guard is `test:example` (below) instead.
+- **Guard**: `npm run test:example -w @zena-lang/wit-parser` now
+  compiles *and runs* `examples/parse-wit.zena` with the self-hosted
+  CLI. Verified failing before the fix and passing after.
+- **Diagnosis aid kept**: the `ref_func` case in `emit.zena` used to
+  fail inside `BinaryEmitter.emitRefFunc` with a message naming neither
+  the target nor the enclosing function. It now throws with both, which
+  is what turned this from "somewhere in codegen" into a named closure
+  and its source location.
 
 ### RESOLVED: inherited-member snapshot froze pre-inference field types (the anyref getter)
 
