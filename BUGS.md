@@ -97,6 +97,50 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Self-hosted checker does not treat `extends`-declared subclasses of a sealed class as variants
+
+- **Found**: 2026-08-05 (compiling wit-parser with the self-hosted
+  compiler for retirement wave 2)
+- **Severity**: high for retirement (blocks the wit-parser build swap —
+  `ast-json-types.zena` uses the pattern pervasively)
+- **Details**: `sealed class Base { … }` with subclasses declared
+  separately as `export final class X(field: T) extends Base` (same
+  module) — the bootstrap treats the subclasses as the sealed variant
+  set; the self-hosted checker does not register them as variants, so:
+  1. `match (base)` over the subclasses reports Non-exhaustive
+     (`parser.zena` UsePath.getName, `ast-json-types.zena` several).
+  2. A case-class-style field on the subclass that shares a name with a
+     base member reports `Duplicate field` (`InterfaceOwner(index)` vs a
+     base method `index()` — that specific instance was dead code and
+     was deleted, but `UseElement` has more).
+  Either the self-hosted checker should learn the external-subclass
+  variant form, or the form should be rejected by BOTH compilers and
+  wit-parser migrated to `case` members — a language-semantics decision
+  (relates to "Method/field same-name semantics are unsettled" above).
+- **Workaround**: rewrite matches as if/else `is`-chains (done for
+  UsePath.getName); avoid field names that collide with base members.
+
+### Methods reached only through vtable population miss body dependency registration
+
+- **Found**: 2026-08-05 (wit-parser wave-2 swap; minimal evidence via
+  `parser.zena`)
+- **Severity**: high for retirement (blocks the wit-parser build swap)
+- **Details**: `String.split` is never called anywhere in
+  `parser.zena`'s import graph, yet it is emitted (reached via the
+  class's vtable population — `populateClassStructAndMethods` registers
+  every instance method when a class needs its full vtable). Bodies
+  reached only through that path do not get their dependencies
+  registered: split's `new FixedArray<String>(…)` finds no extension
+  constructor and lowering fails with `extension constructor not found:
+  FixedArray_s154_String_s211`. Most programs mask this by registering
+  `FixedArray<String>` via some other edge (any string-array literal).
+  Either vtable-population-reached methods must get the same dependency
+  traversal as call-reached ones, or vtable slots for never-called
+  methods should not require lowered bodies.
+- **Reproduce**: `zena-cli build packages/wit-parser/zena/parser.zena
+  --target host -o /tmp/x.wasm` (after the sealed-variant issue above is
+  worked around).
+
 ### Bootstrap miscompiles an assignment as the last statement of a try block
 
 - **Found**: 2026-08-05 (adding manifest loading to the self-hosted CLI's

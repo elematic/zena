@@ -286,6 +286,17 @@ plan can be redone.
    bugs each swap exposed are fixed with portable tests — see §1 and
    BUGS.md). `zena-compiler`'s own `build:cli` intentionally stays on
    the bootstrap until the seed lands (§2).*
+
+   *Wave two progress 2026-08-05: the `runtime` restructure is DONE —
+   its tests write inline sources to an in-repo scratch dir and shell
+   out to `zena-cli build --target host`; the package no longer depends
+   on `@zena-lang/compiler` at all. The `wit-parser` swap is STARTED
+   but blocked on two self-hosted compiler bugs (BUGS.md:
+   sealed-with-`extends` variants not recognized by the checker;
+   vtable-population-reached methods missing body dependency
+   registration). Generic private methods (`#name<T>`), which
+   wit-parser's parser depends on, now parse, specialize, and run —
+   fixed with portable tests along the way.*
 4. **Choose and populate the seed** (§2), with the pin in-tree.
 5. **Prove a clean-checkout build from the seed alone**, with the TypeScript
    compiler still present but unused — a dry run that can be reverted.
