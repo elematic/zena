@@ -976,6 +976,13 @@ export final class LoweringContext {
       let bindingType = this.func.model.getBindingType(sym);
       if (bindingType == null) { continue; }
       let bindingVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
+      // Same invariant as cellAlloc: post-layout, the cell shape must
+      // already be interned by discovery or its casts emit heap type -1.
+      if (this.wasm.isLayoutLocked &&
+          !this.wasm.cellStructs.has(getCellKey(bindingVt))) {
+        throw new Error('cell struct not laid out (discovery bug): ' +
+            (this.func.name ?? '<unnamed>'));
+      }
       let cellStruct = getCellStruct(this.wasm, bindingVt);
       let fieldVt = cellStruct.fields[0].type;
       if (!(fieldVt is ValTypeRefNull)) { continue; }
