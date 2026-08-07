@@ -408,9 +408,17 @@ export final class Parser {
       return this.#parseSealedClassEntry(exported, startToken);
     }
     
+    // `resource` is a contextual modifier, not a reserved word: it only means
+    // "resource class" when a class declaration actually follows, so `let
+    // resource = ...` keeps working. See docs/design/ownership.md.
+    if (this.#isResourceClassAhead()) {
+      this.#advance();   // consume `resource`
+      return this.#parseClassDeclarationEntry(exported, startToken, true);
+    }
+
     // Class declarations
     if (this.#check(TokenType.Class) || this.#check(TokenType.Final) || this.#check(TokenType.Abstract) || this.#check(TokenType.Extension)) {
-      return this.#parseClassDeclarationEntry(exported, startToken);
+      return this.#parseClassDeclarationEntry(exported, startToken, false);
     }
     
     // Interface declarations
@@ -2554,11 +2562,24 @@ export final class Parser {
   // Class Declarations
   // ==========================================================================
   
-  #parseClassDeclarationEntry(exported: boolean, startToken: Token): ClassDeclaration {
+  /**
+   * True when the current token is the contextual modifier `resource` and a
+   * class declaration follows it. Keeps `resource` usable as an identifier.
+   */
+  #isResourceClassAhead(): boolean {
+    if (!this.#check(TokenType.Identifier) || this.#peek().value != 'resource') {
+      return false;
+    }
+    let next = this.#peek2().kind;
+    return next == TokenType.Class || next == TokenType.Final ||
+        next == TokenType.Abstract;
+  }
+
+  #parseClassDeclarationEntry(exported: boolean, startToken: Token, isResource: boolean): ClassDeclaration {
     var isFinal = false;
     var isAbstract = false;
     var isExtension = false;
-    
+
     if (this.#match(TokenType.Final)) {
       isFinal = true;
       // final extension class
@@ -2571,9 +2592,15 @@ export final class Parser {
     } else if (this.#match(TokenType.Extension)) {
       isExtension = true;
     }
-    
+
     this.#consume(TokenType.Class, "Expected 'class'");
-    return this.#parseClassDeclaration(exported, isFinal, isAbstract, isExtension, false, startToken);
+    if (isResource && isExtension) {
+      // An extension class re-presents an existing representation (a
+      // primitive, an array); a resource class is defined by having no
+      // unwrapped form. The two cannot both hold.
+      throw this.#error("'resource' cannot be combined with 'extension'");
+    }
+    return this.#parseClassDeclaration(exported, isFinal, isAbstract, isExtension, false, startToken, isResource);
   }
   
   #parseSealedClassEntry(exported: boolean, startToken: Token): ClassDeclaration {
@@ -2581,10 +2608,10 @@ export final class Parser {
     // sealed abstract class ...
     let isAbstract = this.#match(TokenType.Abstract);
     this.#consume(TokenType.Class, "Expected 'class' after 'sealed'");
-    return this.#parseClassDeclaration(exported, false, isAbstract, false, true, startToken);
+    return this.#parseClassDeclaration(exported, false, isAbstract, false, true, startToken, false);
   }
   
-  #parseClassDeclaration(exported: boolean, isFinal: boolean, isAbstract: boolean, isExtension: boolean, isSealed: boolean, startToken: Token): ClassDeclaration {
+  #parseClassDeclaration(exported: boolean, isFinal: boolean, isAbstract: boolean, isExtension: boolean, isSealed: boolean, startToken: Token, isResource: boolean): ClassDeclaration {
     let name = this.#parseIdentifier();
     
     // Type parameters: class Foo<T, U>
@@ -2690,7 +2717,7 @@ export final class Parser {
       name, typeParameters, caseParams, superClass, mixins, implementsList,
       body, exported, isFinal, isAbstract, isExtension, isSealed,
       if (sealedVariants.length > 0) { sealedVariants } else { null },
-      onType, this.#makeLocation(startToken)
+      onType, isResource, this.#makeLocation(startToken)
     );
   }
   

@@ -85,7 +85,7 @@ Alternatives considered are recorded because several were close calls.
 
 | Concept | Spelling | Rejected, and why |
 | --- | --- | --- |
-| A class whose instances hold a non-GC resource | `resource class Descriptor` | `affine class` — economical (one keyword for this and the generic opt-in) but loses design goal 1, WIT vocabulary alignment. WIT says `resource`. |
+| A class whose instances hold a non-GC resource | `resource class Descriptor` | `affine class` — see §"Resource-ness and affineness are different properties": the modifier does not declare affineness, so naming it `affine` would be wrong, not merely less WIT-aligned. A `Resource` marker *interface* is rejected there too. |
 | Affine handle: one owner, implicit drop | `Own<T>` | unchanged — WIT's `own` |
 | Restricted alias: cannot outlive the owner | `Borrow<T>` | unchanged — WIT's `borrow` |
 | Manually-managed handle: aliasable, never implicitly dropped | `Unmanaged<T>` | `Raw<T>` (suggests a pointer); `Unowned<T>` (Swift already uses this for a non-owning *weak* reference — the opposite hazard) |
@@ -106,6 +106,80 @@ implement `Disposable`: a lock guard or a tracing span stays unrestricted,
 stays spellable bare, and is released by `using`. That preserves the
 two-population decision in §"`using` stays" while giving the wrapper types a
 clean domain.
+
+### Resource-ness and affineness are different properties
+
+**Decided (2026-08-06).** The class modifier and the type wrapper declare two
+different things, and conflating them is what made `resource` vs `affine` look
+like a choice between synonyms:
+
+| | Declares | Spelled |
+| --- | --- | --- |
+| Class modifier | **Resource-ness** — this class has no unwrapped form, and carries a disposal obligation | `resource class Descriptor` |
+| Type wrapper | **Affineness** — this reference is the owning one | `Own<T>` |
+
+Two consequences follow, and both are load-bearing.
+
+**Why the marker must be at the declaration, not the use site.** `Own<Descriptor>`
+claims "this is *the* owning reference". That claim holds only if no unwrapped
+`Descriptor` alias can exist. Making bare `Descriptor` unspellable is exactly
+the premise that supports it — so the marker has to be a property of the class,
+uniform across every mention. A use-site modifier could not do that job: one
+reference could be annotated affine and another not, both naming the same
+object.
+
+**Why `affine class` would be the wrong name.** Layer 4's `isolated<T>` wants
+affineness for an ordinary GC data structure with no OS handle behind it, where
+`resource class Tree` reads absurd — and under this split it needs no class
+modifier at all. Affineness comes from `Own<Tree>`; `Tree` stays an ordinary
+class. Had the modifier been called `affine`, layer 4 would have had to either
+misuse it or invent a second mechanism.
+
+#### `Own<T>` over a non-resource class
+
+Allowing that is what gives layer 4 its vocabulary, but it needs one extra
+premise, because a GC language has ambient aliasing: `Own<Tree>` and a bare
+`Tree` could otherwise name the same object and the exclusivity claim would be
+a lie. §"Containers" already settled the rule for `Resource<C>`, and it
+generalizes:
+
+- **`Own<R>` for `resource class R`** — always available. There is no
+  unwrapped form to alias.
+- **`Own<C>` for an ordinary class `C`** — available only from a **provably
+  exclusive source**: a fresh allocation, or an `Own<T>` moved in.
+
+Same wrapper, same checking, one extra premise in the second case. O0
+implements only the first; the second is O4's. The rule is recorded now so the
+two do not diverge the way concurrency.md and this document did.
+
+#### Rejected: `Resource` as a marker interface
+
+The tempting alternative is no modifier at all — declare an interface
+`Resource extends Disposable`, and let a class opt in by implementing it. It
+does not work, because **affineness would enter the subtype lattice**, which is
+the axis §"Three universes" exists to keep it out of:
+
+```zena
+class Descriptor implements Resource { … }   // Resource extends Disposable
+
+let d: Own<Descriptor> = fs.open(path);
+let x: Disposable = d;    // Descriptor <: Resource <: Disposable — a legal upcast
+```
+
+That upcast launders the affineness away. `Disposable` is deliberately *not*
+affine (§"`using` stays"), so an affine value now sits in an unrestricted static
+type, freely aliasable, with nothing tracking it. Closing the hole means banning
+upcasts from a resource class to any non-affine supertype — at which point
+`Resource` no longer behaves like the language's other interfaces, and the
+modifier has been reinvented with extra machinery and a surprising subtyping
+rule.
+
+`Hashable` is not a counterexample. It *is* a real interface with a special
+satisfaction rule in the checker (`checker.zena` matches on interface name plus
+`sourcePath`), but what it does is **constrain type arguments** — `K extends
+Hashable`. It does not change the structural rules governing values of the type.
+An interface is the right shape for "this type supports an operation" and the
+wrong shape for "this type may not be duplicated".
 
 ---
 

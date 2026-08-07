@@ -46,3 +46,37 @@ export interface Disposable {
    */
   :dispose(): void;
 }
+
+/**
+ * The owning reference to a resource. Affine: it may be moved, returned or
+ * stored, but not duplicated, and it is released when it leaves scope unmoved.
+ *
+ * `Own<T>` is what declares **affineness**; `resource class` declares
+ * resource-ness. The two are separate on purpose — see ownership.md
+ * §"Resource-ness and affineness are different properties" — which is why
+ * `Own<T>` will also apply to ordinary classes (from a provably exclusive
+ * source) once layer 4 needs it.
+ */
+export final class Own<T> {}
+
+/**
+ * A borrowed reference. Freely copied, but **second-class**: it may not be
+ * returned (except derived from a single borrow parameter), stored in a field
+ * or array, or captured by a closure. Never releases what it points at.
+ *
+ * At unrestricted instantiations `Borrow<T>` is the identity — `Borrow<i32>`
+ * is `i32` — which is what keeps container APIs from forking.
+ */
+export final class Borrow<T> {}
+
+/**
+ * A disowned resource: aliasable like an ordinary reference, and **never**
+ * implicitly dropped. You must `dispose()` it yourself or `adopt()` it back
+ * into the affine world.
+ *
+ * This is the population `using` was designed for. Entering it costs
+ * leak-freedom and compile-time use-after-dispose detection; it costs neither
+ * type soundness nor memory safety, because the state flag turns a bad
+ * `adopt` into a clean error rather than a double free.
+ */
+export final class Unmanaged<T> {}

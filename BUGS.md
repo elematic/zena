@@ -110,6 +110,27 @@ immediately trying to fix it (which can pollute the current task's context).
   and report unexpected errors even when some are expected. Expect
   fallout: some existing tests are likely relying on the looseness.
 
+### Type-annotation diagnostics are reported one line and one column late
+- **Found**: 2026-08-06 (adding the `resource class` bare-mention error; the new
+  diagnostic inherited the same offset, which is how it was noticed)
+- **Severity**: low, but it affects *every* diagnostic that passes a
+  `NamedTypeAnnotation`'s `loc`, so it is broad.
+- **Details**: the `loc` carried by a `NamedTypeAnnotation` renders one line and
+  one column past the annotation. Pre-existing and not specific to any one
+  check:
+
+  ```zena
+  let bad = (d: Nope): void => {};   // `Nope` is at 1:15
+  ```
+
+  reports `1:15`'s error at `2:16`. The same file with a `resource class`
+  mention misreports identically, which is what confirmed it is the shared
+  location and not the individual `ctx.error` call.
+- **Fix sketch**: find where `NamedTypeAnnotation`'s `loc` is built in
+  `parser.zena` — the +1/+1 pattern suggests a location captured after the
+  annotation's token has been consumed, or a 1-based value being incremented
+  again at render time in `diagnostics.zena`.
+
 ### Inline tuples can be bound to a variable
 
 - **Found**: 2026-08-06 (same investigation).

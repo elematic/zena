@@ -1,0 +1,33 @@
+// @mode: check
+
+// A `resource class` has no unwrapped form: every mention in a type position
+// must be Own<T>, Borrow<T> or Unmanaged<T>. See docs/design/ownership.md
+// §"Resource-ness and affineness are different properties".
+
+import { Own, Borrow, Unmanaged, Disposable } from 'zena:ownership';
+
+resource class Descriptor implements Disposable {
+  :Disposable.dispose(): void {}
+}
+
+// Ordinary classes are untouched.
+class Plain {}
+
+let takesOwn = (d: Own<Descriptor>): void => {};
+let takesBorrow = (d: Borrow<Descriptor>): void => {};
+let takesUnmanaged = (d: Unmanaged<Descriptor>): void => {};
+let takesPlain = (p: Plain): void => {};
+
+// @error: resource class
+let bareParam = (d: Descriptor): void => {};
+
+// @error: resource class
+let bareReturn = (): Descriptor => {
+  throw new Error('unreachable');
+};
+
+class Holder {
+  // @error: resource class
+  field: Descriptor;
+  new(this.field);
+}
