@@ -1,0 +1,21 @@
+// @mode: check
+// Casting to a bare type parameter is only justified when something already
+// says the value could be one. These are the cases where nothing does.
+
+class Animal {}
+class Machine {}
+
+// The laundering vector: an unconstrained T is satisfied by nothing, so this
+// reinterprets any representation as any other.
+let launder = <T>(x: i32): T => x as T; // @error: Cannot cast type 'i32' to type parameter 'T'
+
+// Reference types launder just as well as primitives.
+let launderRef = <T>(a: Animal): T => a as T; // @error: to type parameter 'T'
+
+// A constraint narrows what is acceptable but does not admit unrelated types.
+let wrongBound = <T extends Animal>(m: Machine): T => m as T; // @error: to type parameter 'T'
+
+// A container launders just as well: distinct types are erased, so
+// `Array<i32>` and `Array<T>` share a representation and this mints a T for
+// every element.
+let launderArray = <T>(xs: Array<i32>): Array<T> => xs as Array<T>; // @error: would mint values of them

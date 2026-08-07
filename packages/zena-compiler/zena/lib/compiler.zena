@@ -34,14 +34,14 @@ import {
 } from './library-loader.zena';
 import { buildStdlibConfig, loadPackageMap } from './package-manifest.zena';
 import { getStandardPrelude } from './prelude.zena';
-import { Symbol, SymbolId } from './scope/symbol.zena';
+import { Symbol, SymbolId, makeSymbolIdGenerator } from './scope/symbol.zena';
 import { Scope, ScopeKind } from './scope/scope.zena';
 import { ScopeBuilder, ScopeResult, ModuleExports as ScopeModuleExports, UnresolvedName } from './scope/scope-builder.zena';
 import {
   ImportDeclaration, ImportSpecifier, ExportFromDeclaration, ExportAllDeclaration,
   MemberExpression, FieldDefinition, MethodDefinition, ClassDeclaration,
   Identifier, CaseClassParam, Expression, ThisExpression,
-  Node, Module, SourceLocation, IdGenerator, NodeId
+  Node, Module, SourceLocation, IdGenerator, NodeId, makeNodeIdGenerator
 } from './ast.zena';
 import { parse } from './parser.zena';
 import { checkModule, CheckResult, SharedCheckerState } from './checker.zena';
@@ -218,7 +218,7 @@ export final class Compiler {
   #resolver: ModuleResolver;
   #loader: LibraryLoader;
   #options: CompilerOptions;
-  #nodeIdGenerator = new IdGenerator<NodeId>();
+  #nodeIdGenerator = makeNodeIdGenerator();
 
   /**
    * Each module's export map as the scope builder produced it (local
@@ -228,7 +228,7 @@ export final class Compiler {
    * statement order keeps its last-writer-wins semantics.
    */
   #localExports = new HashMap<String, ScopeModuleExports>();
-  #symbolIdGenerator = new IdGenerator<SymbolId>();
+  #symbolIdGenerator = makeSymbolIdGenerator();
 
   new(host: CompilerHost, options: CompilerOptions, resolver: ModuleResolver, loader: LibraryLoader)
     : #host = host,

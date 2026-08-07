@@ -454,19 +454,33 @@ does not violate that. If you also want to hide the representation, use a
 `class` with private fields instead — that is a different tool for a different
 job.
 
-#### Known limitation: casts through type parameters
+#### Casts through type parameters
 
-A cast whose target is an unconstrained type parameter is not checked, so a
-generic helper can still launder a value:
+A generic function's type parameter is not a loophole. Because generics are
+monomorphized and distinct types are erased, `x as T` with `T = Token` would
+compile to `i32 as Token` and then to nothing at all — checked neither at
+compile time (the checker only ever sees `T`) nor at run time. So a cast to a
+type parameter is only accepted when something already says the value could be
+one:
 
 ```zena
-let launder = <T>(x: i32): T => x as T;
-let forged = launder<Token>(0); // Not currently rejected
+let launder = <T>(x: i32): T => x as T;      // Error: 'T' is unconstrained
+let identity = <T>(x: T): T => x as T;       // OK — redundant
+let unwrap = <T>(x: T | null): T => x as T;  // OK — narrowing
+let pick = <T extends Animal>(a: Animal): T => a as T; // OK — downcast in bound
 ```
 
-This is a pre-existing hole in cast checking that opaque types inherit rather
-than introduce — the same trick forges any distinct type or class. It is
-tracked in [BUGS.md](../BUGS.md).
+The same applies when a type parameter appears *inside* the target, since
+minting a container of them is no better than minting one:
+
+```zena
+let launderAll = <T>(xs: Array<i32>): Array<T> => xs as Array<T>; // Error
+let relabel = <T>(xs: Array<T>): Sequence<T> => xs as Sequence<T>; // OK
+```
+
+The difference is whether the source already supplies the type arguments. The
+second cast re-labels a container whose elements are already `T`, so it mints
+nothing; the first would produce a `T` for every element.
 
 ### Function Types
 

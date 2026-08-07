@@ -1,11 +1,19 @@
 export distinct type StepId = i32;
 
+/** Mint a StepId. Lives here, with the type, so the cast does too. */
+export let makeStepId = (id: i32): StepId => id as StepId;
+
+// Still generic, so `new Gen<StepId>()` in the helper's default expression
+// exercises resolving a generic instantiation in the callee's module scope --
+// which is what this test is actually about. `next()` returns the raw counter
+// rather than `id as T`: casting to a bare type parameter is a forge the
+// checker now rejects, and callers mint through `makeStepId` instead.
 export final class Gen<T> {
   var #nextId: i32;
   new(nextId: i32 = 1) : #nextId = nextId;
-  next(): T {
+  next(): i32 {
     let id = this.#nextId;
     this.#nextId += 1;
-    return id as T;
+    return id;
   }
 }

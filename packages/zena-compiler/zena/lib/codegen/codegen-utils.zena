@@ -184,90 +184,9 @@ export final class SpecializedFunctionKey implements Hashable {
   }
 }
 
-export let typeContainsTypeParameter = (t: Type): boolean => {
-  return match (t) {
-    case TypeParameterType: true
-    case UnionType {types}: {
-      for (let subtype in types) {
-        if (typeContainsTypeParameter(subtype)) { return true; }
-      }
-      false
-    }
-    case ArrayType {elementType}: typeContainsTypeParameter(elementType)
-    case TupleType {elementTypes}: {
-      for (let elem in elementTypes) {
-        if (typeContainsTypeParameter(elem)) { return true; }
-      }
-      false
-    }
-    case InlineTupleType {elementTypes}: {
-      for (let elem in elementTypes) {
-        if (typeContainsTypeParameter(elem)) { return true; }
-      }
-      false
-    }
-    case RecordType {properties}: {
-      for (let pair in properties) {
-        if (typeContainsTypeParameter(pair.value)) { return true; }
-      }
-      false
-    }
-    case FunctionType as ft: {
-      for (let param in ft.parameters) {
-        if (typeContainsTypeParameter(param)) { return true; }
-      }
-      typeContainsTypeParameter(ft.returnType)
-    }
-    case ClassType as ct: {
-      if (ct.typeParameters != null && (ct.typeParameters as Array<TypeParameterType>).length > 0 && ct.typeArguments == null) {
-        return true;
-      }
-      if (ct.typeArguments != null) {
-        for (let arg in (ct.typeArguments as Array<Type>)) {
-          if (typeContainsTypeParameter(arg)) { return true; }
-        }
-      }
-      false
-    }
-    case InterfaceType as it: {
-      if (it.typeParameters != null && (it.typeParameters as Array<TypeParameterType>).length > 0 && it.typeArguments == null) {
-        return true;
-      }
-      if (it.typeArguments != null) {
-        for (let arg in (it.typeArguments as Array<Type>)) {
-          if (typeContainsTypeParameter(arg)) { return true; }
-        }
-      }
-      false
-    }
-    case TypeAliasType as ta: {
-      if (ta.typeParameters != null && (ta.typeParameters as Array<TypeParameterType>).length > 0 && ta.typeArguments == null) {
-        return true;
-      }
-      if (ta.typeArguments != null) {
-        for (let arg in (ta.typeArguments as Array<Type>)) {
-          if (typeContainsTypeParameter(arg)) { return true; }
-        }
-      }
-      false
-    }
-    case MixinType as mt: {
-      if (mt.typeParameters != null && (mt.typeParameters as Array<TypeParameterType>).length > 0 && mt.typeArguments == null) {
-        return true;
-      }
-      if (mt.typeArguments != null) {
-        for (let arg in (mt.typeArguments as Array<Type>)) {
-          if (typeContainsTypeParameter(arg)) { return true; }
-        }
-      }
-      if (mt.onType != null && typeContainsTypeParameter(mt.onType as Type)) {
-        return true;
-      }
-      false
-    }
-    case _: false
-  };
-};
+// `typeContainsTypeParameter` moved to types.zena (it is a pure function over
+// Type, and the checker needs it too). Re-exported here for existing callers.
+export { typeContainsTypeParameter } from '../types.zena';
 
 export let isConcrete = (t: Type): boolean => {
   return match (t) {

@@ -10,15 +10,40 @@ import { Array } from 'zena:array';
  */
 export distinct type NodeId = i32;
 
+/**
+ * A monotonic ID counter, generic over the ID type it mints.
+ *
+ * The forging cast is not in here — it arrives as `mint`, a closure written
+ * beside the type it produces. That keeps one counter implementation while
+ * putting each `i32 -> Id` conversion in the file that declares that Id, which
+ * is where it would have to be if any of these became `opaque`. It also means
+ * this body contains no cast at all, so it does not need the type-parameter
+ * exemption that `return id as T` would (and could not get — see
+ * docs/design/opaque-types.md).
+ *
+ * `mint` is private, so a generator hands out IDs but never the conversion
+ * that made them.
+ */
 export final class IdGenerator<T> {
+  #mint: (id: i32) => T;
   var #nextId: i32;
-  new(nextId: i32 = 1) : #nextId = nextId;
+  new(mint: (id: i32) => T, nextId: i32 = 1)
+    : #mint = mint,
+      #nextId = nextId;
   next(): T {
     let id = this.#nextId;
     this.#nextId += 1;
-    return id as T;
+    return this.#mint(id);
   }
 }
+
+/**
+ * The only way to get NodeIds. There is deliberately no `makeNodeId(i32)`:
+ * what matters about these is that they are unique within a compilation, and
+ * a public conversion hands that away to every caller.
+ */
+export let makeNodeIdGenerator = (nextId: i32 = 1): IdGenerator<NodeId> =>
+  new IdGenerator<NodeId>((id: i32): NodeId => id as NodeId, nextId);
 
 export final class SourceLocation(
   /** 1-based line number */

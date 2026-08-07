@@ -129,20 +129,81 @@ which is public.
 If you want the representation itself hidden, a `class` with private fields is
 the tool for that. `opaque` is about unforgeability, not encapsulation.
 
-## Known limitation: casts through type parameters
+## Type parameters are not a loophole
 
-A cast whose target is a bare type parameter is not checked at all, so a
-generic helper still launders values:
+A generic function's type parameter used to be the way around all of this:
 
 ```zena
 let launder = <T>(x: i32): T => x as T;
-let forged = launder<Token>(0);   // not rejected
+let forged = launder<Token>(0);
 ```
 
-This is a pre-existing hole in `isValidCast` that opaque types inherit rather
-than introduce — the same trick forges any distinct type or class — and it caps
-what opacity can promise until it is closed. Tracked in
-[BUGS.md](../../BUGS.md).
+Generics are monomorphized and distinct types are erased, so this compiled to
+`i32 as Token` and then to nothing — checked neither at compile time (the
+checker only ever sees `T`) nor at run time. It forged any distinct type, any
+opaque type, and any class.
+
+The fix cannot live at the instantiation site, because the compiler's own
+`IdGenerator<T>` was the same code:
+
+```zena
+export final class IdGenerator<T> {
+  next(): T { ...; return id as T; }   // indistinguishable from launder
+}
+```
+
+Deciding per instantiation — `IdGenerator<SymbolId>` fine, `launder<Token>`
+not — would need per-parameter obligations recorded on each generic, stored
+across modules, checked at every call/`new`/method site, propagated through
+nested generics, and ordered so a generic's body is always checked before its
+instantiations (which hoisting breaks). That is a feature, not a fix.
+
+So the rule is at the definition site: a cast to a type parameter is accepted
+only when the source already overlaps it, or overlaps its constraint. See
+`checkTypeParameterCast`.
+
+`IdGenerator<T>` keeps its type parameter but no longer contains a cast at
+all. The `i32 -> Id` conversion arrives as a private `mint` closure, written
+beside the type it produces:
+
+```zena
+export final class IdGenerator<T> {
+  #mint: (id: i32) => T;
+  next(): T { ...; return this.#mint(id); }   // no cast here
+}
+
+// ast.zena, beside `distinct type NodeId`
+export let makeNodeIdGenerator = (nextId: i32 = 1): IdGenerator<NodeId> =>
+  new IdGenerator<NodeId>((id: i32): NodeId => id as NodeId, nextId);
+```
+
+One counter implementation, one mint per ID type, each in the file that
+declares that ID — which is where `opaque` would require it. Because `mint` is
+private, a generator hands out IDs but never the conversion that made them,
+and there is deliberately no exported `makeNodeId(i32)`: what matters about
+these IDs is that they are unique within a compilation, and a public
+conversion hands that away to every caller.
+
+Two things that look like they should work, and do not:
+
+- `IdGenerator<T extends NodeId | SymbolId>` parses, but `id as T` under that
+  bound is still asking to turn an arbitrary `i32` into a `NodeId`. A
+  constraint narrows *which* types you can forge, not *whether* you are
+  forging, so the rule rejects it — correctly.
+- Wrapping the instantiation in a factory (`makeNodeIdGenerator = () => new
+  IdGenerator<NodeId>()`) does not help while the body still casts: the
+  unjustified cast is inside `next()`, and it is checked where it is written,
+  not where the generic is instantiated. Injecting the closure works precisely
+  because it removes that cast rather than relocating its instantiation.
+
+The indirect call through `mint` is not measurable above noise: self-compile
+minimum went 6852ms to 6960ms across 7 runs each, against run-to-run spread of
+6852-11013ms on the same box.
+
+Targets that merely *mention* a type parameter are checked the same way, by
+comparing type arguments pairwise (`castMintsTypeParameter`): `Array<T>` to
+`ImmutableArray<T>` re-labels a container whose elements are already `T` and
+mints nothing, while `Array<i32>` to `Array<T>` mints one per element.
 
 ## Implementation
 
@@ -153,6 +214,7 @@ what opacity can promise until it is closed. Tracked in
 | AST flag | `ast.zena` `TypeAliasDeclaration.isOpaque` |
 | Type flag + declaring module | `types.zena` `TypeAliasType.isOpaque`, `.declaringModule` |
 | Cast check | `checker.zena` `findForeignOpaque`, `checkOpaqueCast` |
+| Type-parameter cast check | `checker.zena` `checkTypeParameterCast`, `castMintsTypeParameter` |
 | Diagnostic | `diagnostics.zena` `DiagnosticCode.OpaqueTypeCast` |
 
 `declaringModule` is set once, where the alias is materialized from its
@@ -180,3 +242,8 @@ minting a second identity.
   code fail.
 - `tests/language/execution/operators/as/opaque.zena` — erasure; the value
   survives a round trip through the opaque type.
+- `.../opaque-types/via-generic/main.zena` — the generic laundering route,
+  which used to make all of the above decorative.
+- `tests/language/semantics/type-system/type-parameter-casts/rejected.zena`
+  and `allowed.zena` — the type-parameter rule in its own right, split the same
+  way and for the same reason.

@@ -84,36 +84,6 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-### Casts to a bare type parameter are unchecked, so generics launder any type
-
-- **Found**: 2026-08-07 (adding `opaque` types — the hole caps what
-  opacity can promise, but it long predates the feature)
-- **Severity**: medium (soundness hole in `as`; no known miscompile)
-- **Details**: `isValidCast` rejects primitive→reference and
-  null→non-nullable casts, then falls through to "all other casts are
-  allowed (checked at runtime)". A `TypeParameterType` target lands in
-  that fall-through, so a one-line generic helper reinterprets anything
-  as anything:
-
-  ```zena
-  let launder = <T>(x: i32): T => x as T;
-  let forged = launder<Token>(0);   // no diagnostic
-  ```
-
-  This forges `distinct` types, `opaque` types (bypassing the
-  declaring-file restriction that is the whole point of
-  `docs/design/opaque-types.md`), and class types alike. Distinct types
-  are erased, so the forged value is representationally valid and
-  nothing fails at runtime — it just defeats the type system.
-
-- **Fix sketch**: in the `AsExpression` arm, when the target resolves to
-  a `TypeParameterType`, require the source to be assignable to the
-  parameter's constraint, and reject outright when it is unconstrained.
-  The same rule covers the nested case, `x as Array<T>`.
-- **Tests**: none. A test asserting the hole is open would pass on
-  today's behaviour and fail the moment someone fixes it; add coverage
-  with the fix.
-
 ### Codegen emits a spurious value-wrapper, and which one moves with hash order
 
 - **Found**: 2026-08-07, while fixing the multi-entrypoint codegen bug

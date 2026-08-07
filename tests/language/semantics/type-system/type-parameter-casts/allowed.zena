@@ -1,0 +1,32 @@
+// @mode: check
+// The casts to a bare type parameter that must stay legal. No @error
+// directive, so the runner fails this file on any diagnostic at all.
+
+class Animal {}
+class Dog extends Animal {}
+
+// Redundant: the source is already a T.
+let identity = <T>(x: T): T => x as T;
+
+// Narrowing a nullable T -- ordinary code wherever a T | null is handled.
+let unwrap = <T>(x: T | null): T => x as T;
+
+// A downcast within the constraint, exactly like `animal as Dog`.
+let pick = <T extends Animal>(a: Animal): T => a as T;
+
+// The constraint may be reached through the source rather than the target.
+let widen = <T extends Animal>(t: T): Animal => t as Animal;
+
+export let main = (): i32 => {
+  let d = new Dog();
+  let a = identity<Dog>(d);
+  let n = unwrap<Dog>(d);
+  let p = pick<Dog>(a as Animal);
+  return 0;
+};
+
+// Re-labelling a container whose elements are already T mints nothing. This
+// is the shape the stdlib uses to cast intrinsic results into their public
+// types, so it has to stay legal.
+class Bag<T> { items: Array<T> = new Array<T>(); }
+let relabel = <T>(xs: Array<T>): Sequence<T> => xs as Sequence<T>;

@@ -102,7 +102,7 @@ import {
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, baseType,
   integerLiteralFits,
-  promoteNumeric, typeToString, requiredParameterCount
+  promoteNumeric, typeToString, requiredParameterCount, makeTypeIdGenerator, typeContainsTypeParameter
 } from './types.zena';
 import { SemanticModel, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency } from './semantic-model.zena';
 import {
@@ -147,7 +147,7 @@ let lookupBindingTypeInDeps = (ctx: CheckerContext, sym: Symbol): Type | null =>
  * registerTypeParameter() as soon as each TypeParameterType is created.
  */
 export final class SharedCheckerState {
-  var typeIdGenerator = new IdGenerator<TypeId>();
+  var typeIdGenerator = makeTypeIdGenerator();
   preludeTypes = new HashMap<String, Type>();
   preludeValues = new HashMap<String, Type>();
   var preludeRegistered: boolean = false;
@@ -3568,6 +3568,157 @@ let checkOpaqueCast = (
   );
 };
 
+/** Do `a` and `b` overlap enough that a cast between them reinterprets nothing? */
+let typesOverlap = (ctx: CheckerContext, a: Type, b: Type): boolean => {
+  return isAssignableTo(ctx, a, b) || isAssignableTo(ctx, b, a);
+};
+
+/**
+ * The type arguments of `t` if it is a generic instantiation, else null.
+ *
+ * `array<T>` is included because the intrinsic array type and the public
+ * container classes wrap the same representation, and the stdlib casts between
+ * them constantly.
+ */
+let castTypeArguments = (t: Type): Array<Type> | null => {
+  return match (t) {
+    case ClassType as ct: ct.typeArguments
+    case InterfaceType as it: it.typeArguments
+    case MixinType as mt: mt.typeArguments
+    case TypeAliasType as ta: ta.typeArguments
+    case ArrayType {elementType}: {
+      let one = new Array<Type>();
+      one.push(elementType);
+      one
+    }
+    case _: null
+  };
+};
+
+/** Same nominal head, ignoring type arguments? */
+let sameGenericHead = (a: Type, b: Type): boolean => {
+  return match (a) {
+    case ClassType as ca: match (b) {
+      case ClassType as cb: (ca.genericSource ?? ca).symbolId == (cb.genericSource ?? cb).symbolId
+      case _: false
+    }
+    case InterfaceType as ia: match (b) {
+      case InterfaceType as ib: (ia.genericSource ?? ia).symbolId == (ib.genericSource ?? ib).symbolId
+      case _: false
+    }
+    case _: false
+  };
+};
+
+/**
+ * Would casting `source` to `target` mint values of a type parameter that the
+ * source does not already supply?
+ *
+ * The two types are compared structurally rather than whole: `Array<T>` to
+ * `ImmutableArray<T>` re-labels a container whose elements are already `T`, so
+ * it mints nothing, while `Array<i32>` to `Array<T>` mints a `T` for every
+ * element. Only the second is a forge, and the difference is visible exactly
+ * in the type arguments.
+ */
+let castMintsTypeParameter = (
+  ctx: CheckerContext,
+  source: Type,
+  target: Type,
+  depth: i32
+): boolean => {
+  if (depth <= 0) { return false; }
+  if (!typeContainsTypeParameter(target)) { return false; }
+  if (typesOverlap(ctx, source, target)) { return false; }
+
+  let sArgs = castTypeArguments(source);
+  let tArgs = castTypeArguments(target);
+  // An open generic naming itself -- `this as Array<T>` inside `Array<T>` --
+  // has no type arguments on the source side. Same head, nothing minted.
+  if (sArgs == null) { return !sameGenericHead(source, target); }
+  if (tArgs == null) { return true; }
+  let sa = sArgs as Array<Type>;
+  let ta = tArgs as Array<Type>;
+  if (sa.length != ta.length) { return true; }
+  for (var i = 0; i < sa.length; i += 1) {
+    if (castMintsTypeParameter(ctx, sa[i], ta[i], depth - 1)) { return true; }
+  }
+  return false;
+};
+
+/**
+ * Reject `expr as T` where `T` is a bare type parameter and nothing about the
+ * source says it could be a `T`.
+ *
+ * Every other cast target is either checked at runtime (`ref.cast` traps on a
+ * bad downcast) or is a compile-time assertion over a known representation.
+ * A type parameter is neither: generics are monomorphized, so `x as T` with
+ * `T = Token` becomes `i32 as Token`, which is erased to nothing. Nothing
+ * checks it at compile time — the checker only ever sees `T` — and nothing
+ * checks it at runtime. So a one-line generic launders any type into any
+ * other:
+ *
+ *     let launder = <T>(x: i32): T => x as T;
+ *     let forged = launder<Token>(0);
+ *
+ * That forges `distinct` types, `opaque` types (defeating the declaring-file
+ * rule entirely), and class types alike.
+ *
+ * A cast is justified when the source already overlaps `T` — `x as T` where
+ * `x: T` is redundant, and where `x: T | null` it is narrowing — or when it
+ * overlaps `T`'s constraint, which makes it an ordinary downcast:
+ *
+ *     let pick = <T extends Animal>(a: Animal): T => a as T;   // fine
+ *
+ * An unconstrained `T` admits neither unless the source is already `T`, which
+ * is what closes the hole: there is no honest way to produce an arbitrary `T`
+ * out of an unrelated representation.
+ *
+ * A target that merely *mentions* a type parameter launders too --
+ * `xs as Array<T>` mints a whole container of them -- so those are checked as
+ * well, by comparing type arguments pairwise (see `castMintsTypeParameter`).
+ */
+let checkTypeParameterCast = (
+  ctx: CheckerContext,
+  sourceType: Type,
+  targetType: Type,
+  loc: SourceLocation | null
+): void => {
+  match (targetType) {
+    case TypeParameterType as tp: {
+      if (typesOverlap(ctx, sourceType, tp as Type)) { return; }
+      let constraint = tp.constraint;
+      if (constraint != null && typesOverlap(ctx, sourceType, constraint as Type)) {
+        return;
+      }
+      let detail = if (constraint == null) {
+        "'" + tp.name + "' is unconstrained, so nothing is known to be one. "
+          + "Take a value of type '" + tp.name + "', or a function returning one, "
+          + "as a parameter."
+      } else {
+        "'" + tp.name + "' is constrained to '" + typeToString(constraint as Type)
+          + "', and '" + typeToString(sourceType) + "' is unrelated to it."
+      };
+      ctx.error(
+        "Cannot cast type '" + typeToString(sourceType) + "' to type parameter '"
+          + tp.name + "'. " + detail,
+        DiagnosticCode.UnjustifiedTypeParameterCast,
+        loc
+      );
+    }
+    case _: {
+      if (castMintsTypeParameter(ctx, sourceType, targetType, 8)) {
+        ctx.error(
+          "Cannot cast type '" + typeToString(sourceType) + "' to '"
+            + typeToString(targetType) + "': the target's type arguments are not "
+            + "supplied by the source, so the cast would mint values of them.",
+          DiagnosticCode.UnjustifiedTypeParameterCast,
+          loc
+        );
+      }
+    }
+  }
+};
+
 let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void => {
   var effectiveTarget = targetType;
   match (targetType) {
@@ -6831,6 +6982,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // impossible does not also need to be reported as a forge.
     if (validCast) {
       checkOpaqueCast(ctx, sourceType, targetType, loc);
+      checkTypeParameterCast(ctx, sourceType, targetType, loc);
     }
     checkAndRegisterInterfaceAdaptation(ctx, expr, sourceType, targetType);
     targetType

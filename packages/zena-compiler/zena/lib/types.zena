@@ -19,7 +19,7 @@ import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
 
 
-import { Expression, Statement } from './ast.zena';
+import { Expression, Statement, IdGenerator } from './ast.zena';
 import { SymbolId } from './scope/symbol.zena';
 import { Hashable } from 'zena:hashable';
 
@@ -27,6 +27,13 @@ import { Hashable } from 'zena:hashable';
 declare function hash<T>(value: T): i32;
 
 export distinct type TypeId = i32;
+
+/**
+ * The only way to get TypeIds. See `makeNodeIdGenerator` in ast.zena for why
+ * the conversion lives here rather than being exported on its own.
+ */
+export let makeTypeIdGenerator = (nextId: i32 = 1): IdGenerator<TypeId> =>
+  new IdGenerator<TypeId>((id: i32): TypeId => id as TypeId, nextId);
 
 var _nextTypeUid: i32 = 1;
 let nextTypeUid = (): i32 => {
@@ -941,6 +948,91 @@ export final class TypeAliasType(
    */
   var resolving: boolean = false;
 }
+
+export let typeContainsTypeParameter = (t: Type): boolean => {
+  return match (t) {
+    case TypeParameterType: true
+    case UnionType {types}: {
+      for (let subtype in types) {
+        if (typeContainsTypeParameter(subtype)) { return true; }
+      }
+      false
+    }
+    case ArrayType {elementType}: typeContainsTypeParameter(elementType)
+    case TupleType {elementTypes}: {
+      for (let elem in elementTypes) {
+        if (typeContainsTypeParameter(elem)) { return true; }
+      }
+      false
+    }
+    case InlineTupleType {elementTypes}: {
+      for (let elem in elementTypes) {
+        if (typeContainsTypeParameter(elem)) { return true; }
+      }
+      false
+    }
+    case RecordType {properties}: {
+      for (let pair in properties) {
+        if (typeContainsTypeParameter(pair.value)) { return true; }
+      }
+      false
+    }
+    case FunctionType as ft: {
+      for (let param in ft.parameters) {
+        if (typeContainsTypeParameter(param)) { return true; }
+      }
+      typeContainsTypeParameter(ft.returnType)
+    }
+    case ClassType as ct: {
+      if (ct.typeParameters != null && (ct.typeParameters as Array<TypeParameterType>).length > 0 && ct.typeArguments == null) {
+        return true;
+      }
+      if (ct.typeArguments != null) {
+        for (let arg in (ct.typeArguments as Array<Type>)) {
+          if (typeContainsTypeParameter(arg)) { return true; }
+        }
+      }
+      false
+    }
+    case InterfaceType as it: {
+      if (it.typeParameters != null && (it.typeParameters as Array<TypeParameterType>).length > 0 && it.typeArguments == null) {
+        return true;
+      }
+      if (it.typeArguments != null) {
+        for (let arg in (it.typeArguments as Array<Type>)) {
+          if (typeContainsTypeParameter(arg)) { return true; }
+        }
+      }
+      false
+    }
+    case TypeAliasType as ta: {
+      if (ta.typeParameters != null && (ta.typeParameters as Array<TypeParameterType>).length > 0 && ta.typeArguments == null) {
+        return true;
+      }
+      if (ta.typeArguments != null) {
+        for (let arg in (ta.typeArguments as Array<Type>)) {
+          if (typeContainsTypeParameter(arg)) { return true; }
+        }
+      }
+      false
+    }
+    case MixinType as mt: {
+      if (mt.typeParameters != null && (mt.typeParameters as Array<TypeParameterType>).length > 0 && mt.typeArguments == null) {
+        return true;
+      }
+      if (mt.typeArguments != null) {
+        for (let arg in (mt.typeArguments as Array<Type>)) {
+          if (typeContainsTypeParameter(arg)) { return true; }
+        }
+      }
+      if (mt.onType != null && typeContainsTypeParameter(mt.onType as Type)) {
+        return true;
+      }
+      false
+    }
+    case _: false
+  };
+};
 
 export let instantiateTypeAliasType = (
   source: TypeAliasType,
