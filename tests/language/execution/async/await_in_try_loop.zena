@@ -1,0 +1,105 @@
+// @mode: run
+// @result: 777
+// @skip: bootstrap
+// Harder shapes around a protected suspension (async.md §6):
+//  - several awaits in one try region (each resume re-enters it),
+//  - a suspension inside a loop inside a try (the loop header is its
+//    own dispatch target, and re-entry must still land inside the
+//    region),
+//  - a throw raised BEFORE any suspension in the try body, which must
+//    still be caught by the same handler.
+import { Future, Completer, drainMicrotasks, futureOf } from 'zena:async';
+
+class Cell {
+  var v: i32 = 0;
+  new();
+  set(x: i32): void {
+    this.v = x;
+  }
+  add(x: i32): void {
+    this.v = this.v + x;
+  }
+}
+
+/** Two suspensions in one region; the second one fails. */
+let twoAwaits = async (a: Completer<i32>, b: Completer<i32>): Future<i32> => {
+  let out = new Cell();
+  try {
+    out.add(await a.future);
+    out.add(await b.future);
+  } catch (e) {
+    out.set(0 - 1);
+  }
+  return out.v;
+};
+
+/** A suspension inside a loop inside a try. */
+let loopInTry = async (n: i32): Future<i32> => {
+  let out = new Cell();
+  try {
+    var i = 0;
+    while (i < n) {
+      out.add(await futureOf(i + 1));
+      i += 1;
+    }
+  } catch (e) {
+    out.set(0 - 1);
+  }
+  return out.v;
+};
+
+/** Throws before reaching its await; the handler still runs. */
+let throwsFirst = async (c: Completer<i32>): Future<i32> => {
+  let out = new Cell();
+  try {
+    if (out.v == 0) {
+      throw new Error('before any suspension');
+    }
+    out.add(await c.future);
+  } catch (e) {
+    out.set(7);
+  }
+  return out.v;
+};
+
+export let main = (): i32 => {
+  // Two awaits, second fails => handler runs.
+  let a = new Completer<i32>();
+  let b = new Completer<i32>();
+  let f1 = twoAwaits(a, b);
+  a.complete(5);
+  drainMicrotasks();
+  b.fail(new Error('nope'));
+  drainMicrotasks();
+  if (!f1.isCompleted || f1.valueOrThrow() != -1) {
+    return -1;
+  }
+
+  // Two awaits, both succeed => 5 + 6 = 11.
+  let c = new Completer<i32>();
+  let d = new Completer<i32>();
+  let f2 = twoAwaits(c, d);
+  c.complete(5);
+  d.complete(6);
+  drainMicrotasks();
+  if (!f2.isCompleted || f2.valueOrThrow() != 11) {
+    return -2;
+  }
+
+  // Loop of 4 suspensions inside the region => 1+2+3+4 = 10.
+  let f3 = loopInTry(4);
+  drainMicrotasks();
+  if (!f3.isCompleted || f3.valueOrThrow() != 10) {
+    return -3;
+  }
+
+  // Pre-suspension throw is caught by the same handler => 7.
+  let e = new Completer<i32>();
+  let f4 = throwsFirst(e);
+  drainMicrotasks();
+  if (!f4.isCompleted || f4.valueOrThrow() != 7) {
+    return -4;
+  }
+
+  return 777;
+};

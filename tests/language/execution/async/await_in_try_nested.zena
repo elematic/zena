@@ -1,0 +1,70 @@
+// @mode: run
+// @result: 1234
+// @skip: bootstrap
+// Nested try regions around a suspension (async.md §6): resuming has
+// to re-enter BOTH regions, innermost last, or the inner handler is
+// skipped and the failure lands in the wrong one.
+//
+// Arms end in expression statements and results travel through object
+// fields: ZIR bails on a try arm ending in `return` ("value block
+// tail") and on assignment to an enclosing local, both independently
+// of async.
+import { Future, Completer, drainMicrotasks } from 'zena:async';
+
+class Cell {
+  var v: i32 = 0;
+  new();
+  set(x: i32): void {
+    this.v = x;
+  }
+  add(x: i32): void {
+    this.v = this.v * 10 + x;
+  }
+}
+
+let nested = async (c: Completer<i32>, trace: Cell): Future<i32> => {
+  let out = new Cell();
+  try {
+    try {
+      trace.add(1);
+      out.set(await c.future);
+      trace.add(2);
+    } catch (inner) {
+      // The inner handler must win: it is the closest enclosing one.
+      trace.add(3);
+      out.set(0 - 1);
+    }
+  } catch (outer) {
+    trace.add(9);
+    out.set(0 - 2);
+  }
+  return out.v;
+};
+
+export let main = (): i32 => {
+  // Success: body runs straight through, no handler.
+  let okTrace = new Cell();
+  let ok = new Completer<i32>();
+  let a = nested(ok, okTrace);
+  ok.complete(4);
+  drainMicrotasks();
+
+  // Failure: the INNER handler must run, not the outer one.
+  let badTrace = new Cell();
+  let bad = new Completer<i32>();
+  let b = nested(bad, badTrace);
+  bad.fail(new Error('nope'));
+  drainMicrotasks();
+
+  if (!a.isCompleted || !b.isCompleted) {
+    return -1;
+  }
+  if (a.valueOrThrow() != 4 || b.valueOrThrow() != -1) {
+    return -2;
+  }
+  // Success traced 1 then 2; failure traced 1 then 3 (inner, not 9).
+  if (okTrace.v != 12 || badTrace.v != 13) {
+    return -3;
+  }
+  return 1234;
+};

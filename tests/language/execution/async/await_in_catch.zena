@@ -1,0 +1,68 @@
+// @mode: run
+// @result: 909
+// @skip: bootstrap
+// Suspending inside a CATCH block. Two things have to hold:
+//  - the catch body is not inside its own try region (the emitter puts
+//    it after the try_table), so resuming there must NOT re-enter that
+//    region — it would re-arm a handler the source did not,
+//  - the caught error is read from the exception payload GLOBAL at
+//    catch entry, so anything still live across the suspension must
+//    already be in a frame field; a re-read after resuming would see
+//    whatever threw most recently instead.
+import { Future, Completer, drainMicrotasks, futureOf } from 'zena:async';
+
+class Cell {
+  var v: i32 = 0;
+  new();
+  set(x: i32): void {
+    this.v = x;
+  }
+}
+
+let recover = async (c: Completer<i32>, fallback: Completer<i32>): Future<i32> => {
+  let out = new Cell();
+  try {
+    out.set(await c.future);
+  } catch (e) {
+    // `e` is bound before this suspension and used after it.
+    let replacement = await fallback.future;
+    // Another future settles in between; the earlier binding must
+    // still be the one this handler caught.
+    if (e.message == 'first') {
+      out.set(replacement);
+    } else {
+      out.set(0 - 5);
+    }
+  }
+  return out.v;
+};
+
+export let main = (): i32 => {
+  let c = new Completer<i32>();
+  let fb = new Completer<i32>();
+  let f = recover(c, fb);
+
+  c.fail(new Error('first'));
+  drainMicrotasks();
+  // Now in the catch, parked on `fallback`. Make something else throw
+  // and be caught, to clobber the payload global if it were re-read.
+  let other = new Completer<i32>();
+  let g = recover(other, fb);
+  other.fail(new Error('second'));
+  drainMicrotasks();
+
+  fb.complete(9);
+  drainMicrotasks();
+
+  if (!f.isCompleted || !g.isCompleted) {
+    return -1;
+  }
+  if (f.valueOrThrow() != 9) {
+    return -2;
+  }
+  // g caught 'second', so it takes the else arm.
+  if (g.valueOrThrow() != -5) {
+    return -3;
+  }
+  return 909;
+};

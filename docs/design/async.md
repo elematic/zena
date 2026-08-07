@@ -66,12 +66,12 @@ Checker rules:
   (The transform operates on the lowered CFG, so partially-evaluated
   operands live across the suspension are spilled like any other
   value — expression-position await costs nothing special.)
-- **v1 restriction: `await` may not appear inside `try`** — same
-  restriction and same reason as yield-in-try (generators.md §6),
-  BUT with a difference in urgency: try/catch around awaits is
-  bread-and-butter async code, so unlike generators this restriction
-  gets a concrete lifting plan (§6) and is the top fast-follow, not
-  an indefinite deferral.
+- **`await` inside `try` is supported** (§6, implemented). This was a
+  v1 restriction — same one as yield-in-try (generators.md §6) — but
+  try/catch around awaits is bread-and-butter async code, so it was
+  the top fast-follow rather than an indefinite deferral, and it has
+  now landed. Generators still reject yield-in-try; the construction
+  §6 describes carries over to them whenever that is picked up.
 
 ### 1.1 Semantics: eager start, run-to-completion
 
@@ -383,9 +383,9 @@ website served by a Zena server":
     `Future.valueOrThrow()`. That also makes failure propagation fall
     out for free — a rejected future resurfaces as a plain throw at the
     resume point, unwinds into the failure-capture region, and rejects
-    the frame's own future, with no error slot to thread. When
-    await-in-try lands (§6) this stays correct; a per-frame error slot
-    would not have.
+    the frame's own future, with no error slot to thread. This held
+    up under await-in-try (§6), which needed no change to the error
+    path at all — a per-frame error slot would have.
   - **Not yet: `await` on a `T | Future<T>` union** (§1). The checker
     accepts it; lowering rejects it loudly. It needs a runtime test on
     the union payload, which is its own piece of work.
@@ -405,30 +405,57 @@ website served by a Zena server":
 - **A3 — external completions on the JS host.** The
   `__zena_complete`/`__zena_drain` exports + runtime-library Promise
   wrapper; first real async I/O (fetch on the web playground).
-- **Post-v1** (each its own design conversation): await-in-try (§6),
-  cancellation + structured concurrency (TaskGroup, from
-  concurrency.md), combinators (`Future.all`/`race`), Rust-CLI tokio
-  I/O, WASI P3 backend, streams/`async gen`.
+- **Await-in-try — done** (§6), the fast-follow to A1: resuming
+  re-enters each enclosing `try` region, so a failed await is caught
+  by the handler the user wrote.
+- **Post-v1** (each its own design conversation): cancellation +
+  structured concurrency (TaskGroup, from concurrency.md),
+  combinators (`Future.all`/`race`), Rust-CLI tokio I/O, WASI P3
+  backend, streams/`async gen`.
 
-## 6. Await-in-try: the lifting plan (fast-follow, not v1)
+## 6. Await-in-try (implemented)
 
-Why it is hard: a suspension edge that leaves a `try_br` region and
+Why it was hard: a suspension edge that leaves a `try_br` region and
 re-enters it on resume requires reconstructing exception-region
 nesting around resumed control flow — the region surgery ir.md §15
-flags. Why it is urgent anyway: `try { await f(); } catch` is normal
+flags. Why it was urgent anyway: `try { await f(); } catch` is normal
 async code in a way that yield-in-try never was for generators.
 
-The known-good construction (C#/Kotlin do the equivalent): resume
-points inside a try region are not entered directly from the
-function-level dispatcher; instead the dispatcher enters the region
-through its `try_br` and a small _inner_ dispatcher inside the region
-routes to the right resume block. Nesting composes (one inner
-dispatcher per suspension-containing region). This keeps regions
-properly nested and the CFG reducible at the cost of one extra
-dispatch hop per region level on resume. `finally` semantics on
-_abandonment_ (a pending try's future is dropped) remain coupled to
-cancellation and are decided there — same one-place answer promised
-in generators.md §6, which generators then inherit.
+Failing to do it is **silent**, which is what made the restriction
+worth keeping until it was fixed: without the construction below the
+code still compiles and the success path still works, but the region
+quietly shrinks to exclude the resumed segment — so the dispatcher
+enters it unprotected, and a failure surfacing at `valueOrThrow()`
+sails straight past the handler the user wrote and rejects the
+function's own future instead.
+
+The construction: the dispatcher lives outside every user region, so
+it cannot branch at a resume block directly. Instead, resuming
+**re-enters** each enclosing region through a fresh `try_br` whose
+catch is that region's own handler, innermost last, so the resumed
+segment runs at the same protection depth the source put it at.
+Nesting composes — one fresh `try_br` per enclosing region per resume
+point — and every region is still entered normally through its own
+`try_br`, so regions stay properly nested and the CFG reducible.
+
+This is a simplification of the known-good construction C# and Kotlin
+use (and of what this section originally planned): those thread the
+resume pc through the region's ORIGINAL `try_br` into a small _inner_
+dispatcher inside the region. Re-entering through fresh `try_br`s
+needs no inner dispatcher, no pc threading across a region edge, and
+no splitting of the block holding the original `try_br` — and it
+builds the same region, because a region's extent is the dominator
+subtree of its body target and a resume block dominates precisely the
+rest of its try body.
+
+`finally` semantics on _abandonment_ (a pending try's future is
+dropped) remain coupled to cancellation and are decided there — same
+one-place answer promised in generators.md §6, which generators then
+inherit. Note that ZIR does not lower `finally` at all yet, and two
+other `try` limitations bound what await-in-try can look like today,
+both independent of async: a try arm ending in `return` bails
+("value block tail"), and so does assignment to an enclosing local
+from a try body (BUGS.md).
 
 ## 7. Errors: plain `Error`, everywhere
 
