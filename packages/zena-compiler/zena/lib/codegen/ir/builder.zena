@@ -106,6 +106,25 @@ export final class IrBuilder {
     return this.body.refTable.length - 1;
   }
 
+  // -- Mutable variables (ir.md §5.1) ----------------------------------
+
+  /** Allocates a fresh mutable variable of type `vt`; returns its id. */
+  newVar(vt: ValType): i32 {
+    this.body.varTypes.push(vt);
+    return this.body.varTypes.length - 1;
+  }
+
+  /** Reads a mutable variable at its declared type. */
+  varGet(varId: i32): i32 {
+    return this.#emitInCurrent(IrOp.var_get,
+        this.internType(this.body.varTypes[varId]), -1, varId);
+  }
+
+  /** Writes `value` into a mutable variable. */
+  varSet(varId: i32, value: i32): void {
+    this.#emitInCurrent(IrOp.var_set, -1, value, varId);
+  }
+
   // -- Low-level emission ----------------------------------------------
 
   /** Emits a value-producing instruction with inline operands. */

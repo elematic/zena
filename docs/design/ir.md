@@ -573,6 +573,12 @@ the exception value. Constraints on passes:
   a callee proven non-throwing — a cheap bottom-up module analysis we get for
   free from the callgraph scan).
 - Code motion never moves an instruction into or out of a handled region.
+- A handler edge leaves from *anywhere* in the region, so it can carry no
+  per-variable SSA state: values threaded along it can only be the ones
+  live at region entry. Locals the region ASSIGNS therefore cannot ride
+  it — the handler would not see an assignment the body completed before
+  it threw. **Mutable variables** (below) cover exactly that gap. Any
+  future handler-edge representation has to keep the split.
 
 Emission reconstructs wasm `try_table` nesting from handler-edge structure;
 since lowering only ever produces properly nested handled regions and passes
@@ -580,6 +586,36 @@ can't create new handler edges, this reconstruction is straightforward
 (§12). This is deliberately conservative — optimizing _across_ try
 boundaries is out of scope for v1; optimizing _within_ them (the common
 case: a hot loop inside a `try`) works fully.
+
+#### 5.1.1 Mutable variables
+
+Wasm locals survive an exception unwinding to a handler in the same
+frame; SSA values do not, because a value is a *definition*, reachable
+only along edges from its defining block. ZIR therefore has one
+non-SSA construct, used for nothing else:
+
+    var_get v      -> value          ; reads variable v
+    var_set v, x                     ; writes x into variable v
+
+`IrBody.varTypes` declares them; emission gives each its own wasm local
+and keeps it out of copy coalescing, so nothing else can land there.
+Reads are not value-numbered — GVN's key function returns null for both
+ops, which falls out of its pure-op whitelist.
+
+Lowering uses them only for the enclosing locals a `try` body assigns.
+The binding stays an ordinary SSA variable: reads, merges and loop
+carries are untouched, so nothing about using such a variable gets
+slower. What changes is that every assignment ALSO writes the mirror
+(`LoweringContext.noteVarWrite`), the mirror is seeded at try entry,
+and the handler block seeds its environment by reading it back. Past
+the join both arms arrive as ordinary merge params and the mirror goes
+out of scope. Nested tries share one mirror per symbol — the innermost
+handler wants the same "last value written" the outer one does.
+
+The one place this cannot work is a `gen`/`async` body, whose locals do
+not survive a suspension. There the same symbols are boxed into heap
+cells (the closure-capture mechanism), decided in the checker on the
+enclosing function and asserted by a ZIR bail if the two disagree.
 
 ### 5.2 Traps
 

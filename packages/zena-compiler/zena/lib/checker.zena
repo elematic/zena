@@ -48,7 +48,7 @@ import { isValidIntrinsic } from './intrinsics.zena';
 import { console } from 'zena:console';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
-import { analyzeCaptures } from './analysis/capture.zena';
+import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
 import { parseI32, i32ToString } from 'zena:string-convert';
@@ -2478,6 +2478,30 @@ let containsType = (types: Array<Type>, target: Type): boolean => {
     i += 1;
   }
   return false;
+};
+
+/**
+ * Combines the arm types of a `match` or `try` into the type of the
+ * whole expression.
+ *
+ * `never` arms drop out — they never complete, so they contribute no
+ * value (createUnionType does this). A `void` arm instead ABSORBS: it
+ * completes, and completes with nothing, so no value survives every
+ * path and the expression as a whole has none. `T | void` is not a
+ * type any binding can hold and has no wasm representation, so
+ * producing it here only defers the failure to codegen.
+ *
+ * This is what makes a statement-position `try`/`match` whose arms end
+ * in an assignment (`{ … x = v; }`, an expression statement with a
+ * value) come out `void` rather than `T | void`.
+ */
+let combineArmTypes = (types: Array<Type>, ctx: CheckerContext | null = null, loc: SourceLocation | null = null): Type => {
+  for (let t in types) {
+    if (t is VoidType) {
+      return new VoidType();
+    }
+  }
+  return createUnionType(types, ctx, loc);
 };
 
 /**
@@ -6955,11 +6979,22 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       checkMatchCaseBody(ctx, finalizer as Node, null);
     }
     ctx.exitTry();
+    if (deps != null && (ctx.yieldType != null || ctx.asyncFutureType != null)) {
+      // Enclosing locals the body assigns cannot ride the protected
+      // edge (see analyzeTryBodyAssignments). In an ordinary function
+      // ZIR mirrors them into a wasm local; inside a `gen`/`async`
+      // body a local does not survive a suspension, so those are
+      // celled instead — which is what this records. Runs after the
+      // body is checked, so its identifiers resolve.
+      for (let symId in analyzeTryBodyAssignments(body as Node, ctx.model)) {
+        (deps as SymbolDependencies).tryMutatedSymbols.add(symId);
+      }
+    }
     if (catchType != null) {
       let types = new Array<Type>();
       types.push(tryType);
       types.push(catchType as Type);
-      createUnionType(types)
+      combineArmTypes(types)
     } else {
       tryType
     }
@@ -11625,7 +11660,7 @@ let checkMatchExpr = (
   if (resultTypes.length == 1) {
     return resultTypes[0];
   }
-  return createUnionType(resultTypes, ctx, loc);
+  return combineArmTypes(resultTypes, ctx, loc);
 };
 
 /**
@@ -11648,14 +11683,21 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
           }
           case ReturnStatement {argument}: {
             if (argument != null) {
-              lastType = checkExpression(ctx, argument as Expression, ctx.returnType);
-            } else {
-              lastType = new VoidType();
+              checkExpression(ctx, argument as Expression, ctx.returnType);
             }
+            // The value leaves the function, it does not flow to the
+            // enclosing match/try expression — which therefore gets no
+            // value from this arm at all. `never`, exactly like an arm
+            // ending in `throw`.
+            lastType = new NeverType();
           }
           case _: {
             checkStatement(ctx, stmts[si]);
-            lastType = new VoidType();
+            lastType = if (branchDefinitelyExits(stmts[si])) {
+              new NeverType() as Type
+            } else {
+              new VoidType() as Type
+            };
           }
         }
         si = si + 1;

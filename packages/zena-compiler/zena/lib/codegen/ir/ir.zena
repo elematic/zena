@@ -28,6 +28,8 @@
  *   str_lit:     b = ref (string literal)
  *   global_get:  b = ref (global)
  *   global_set:  a = value, b = ref (global)
+ *   var_get:     b = var index (into varTypes)
+ *   var_set:     a = value, b = var index
  *   struct_new:  a -> [argc, arg*],           b = ref (struct type)
  *   struct_get:  a = receiver,                b = ref (field)
  *   struct_set:  a -> [receiver, value],      b = ref (field)
@@ -242,6 +244,15 @@ export enum IrOp {
   // module-level accesses
   global_get,
   global_set,
+  /**
+   * Reads a mutable variable (§5.1). Distinct from every other value in
+   * ZIR: a variable is STORAGE, not an SSA definition, so a read is not
+   * value-numbered and sees whatever the last executed `var_set` wrote.
+   * Emits as `local.get` on a dedicated wasm local, never coalesced.
+   */
+  var_get,
+  /** Writes a mutable variable. `local.set` on its dedicated local. */
+  var_set,
   str_lit,
   // dispatch (docs/design/ir.md §5)
   iface_pack,
@@ -345,7 +356,8 @@ export let isSingleValueOp = (op: IrOp): boolean => {
       op == IrOp.extern_convert_any || op == IrOp.any_convert_extern ||
       op == IrOp.i32_load || op == IrOp.i32_load8_u || op == IrOp.i64_load ||
       op == IrOp.f32_load || op == IrOp.f64_load || op == IrOp.memory_grow ||
-      op == IrOp.global_set || op == IrOp.struct_get || op == IrOp.iface_pack ||
+      op == IrOp.global_set || op == IrOp.var_set ||
+      op == IrOp.struct_get || op == IrOp.iface_pack ||
       op == IrOp.iface_vtable || op == IrOp.iface_instance ||
       op == IrOp.mv_get;
 };
@@ -448,6 +460,16 @@ export final class IrBody {
   constI64 = new Array<i64>();
   constF64 = new Array<f64>();
 
+  /**
+   * Mutable variables (§5.1), indexed by var id: the declared type of
+   * each. Emission gives every one its OWN wasm local, excluded from
+   * coalescing, so its stored value survives an exception unwinding to
+   * a handler in the same frame — which no SSA value can, since a
+   * handler edge leaves from anywhere in the protected region and can
+   * only carry values live at its entry.
+   */
+  varTypes = new Array<ValType>();
+
   instCount(): i32 {
     return this.opcode.length;
   }
@@ -484,7 +506,8 @@ export final class IrBody {
     if (op == IrOp.nop || op == IrOp.param || op == IrOp.const_i32 ||
         op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
         op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
-        op == IrOp.global_get || op == IrOp.struct_new_default ||
+        op == IrOp.global_get || op == IrOp.var_get ||
+        op == IrOp.struct_new_default ||
         op == IrOp.memory_size || op == IrOp.unreachable) {
       return;
     }
@@ -614,7 +637,8 @@ export final class IrBody {
     if (op == IrOp.nop || op == IrOp.param || op == IrOp.const_i32 ||
         op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
         op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
-        op == IrOp.global_get || op == IrOp.struct_new_default ||
+        op == IrOp.global_get || op == IrOp.var_get ||
+        op == IrOp.struct_new_default ||
         op == IrOp.memory_size || op == IrOp.unreachable) {
       return;
     }
@@ -962,6 +986,8 @@ let buildIrOpNames = (): Array<String> => {
   n[IrOp.array_len as i32] = 'array.len';
   n[IrOp.global_get as i32] = 'global.get';
   n[IrOp.global_set as i32] = 'global.set';
+  n[IrOp.var_get as i32] = 'var.get';
+  n[IrOp.var_set as i32] = 'var.set';
   n[IrOp.str_lit as i32] = 'str.lit';
   n[IrOp.iface_pack as i32] = 'iface.pack';
   n[IrOp.iface_vtable as i32] = 'iface.vtable';

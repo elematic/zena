@@ -389,28 +389,33 @@ immediately trying to fix it (which can pollute the current task's context).
      but not others). Registration now force-reaches
      (`forceReachFunction`), making it deterministic.
 
-### Bootstrap miscompiles an assignment as the last statement of a try block
+### RESOLVED: no catch-and-recover try shape lowered (tail assignment, arm `return`)
 
 - **Found**: 2026-08-05 (adding manifest loading to the self-hosted CLI's
   `main.zena`)
-- **Severity**: medium (emits invalid wasm — fails at instantiation, not
-  silently — but the trigger is an ordinary statement shape)
-- **Workaround**: don't end a `try` (or `catch`) block with a bare
-  assignment; hoist the pattern into a helper that `return`s instead.
-- **Details**: The bootstrap compiler leaves the value of an assignment
-  expression on the stack when the assignment is the last statement of a
-  `try` block, producing `type mismatch: values remaining on stack at end
-  of block` at validation/instantiation. ZIR does not miscompile the same
-  shape but does not support it either — it bails loudly with `assignment
-  to enclosing local in try body`, and additionally treats a try whose
-  body `return`s as a value expression, bailing with `value block tail`
-  (tail position) or `try result type` (statement position). In practice
-  no catch-and-recover try shape lowers today; prefer probing the failure
-  condition up front (e.g. `fs.exists`). So the portable coverage is currently
-  double-skipped: `tests/language/execution/exceptions/
-  try-tail-assignment.zena` (`@skip: bootstrap, self-hosted`); whichever
-  side gains support first drops its marker. Probably not worth fixing in
-  the bootstrap given retirement.
+- **Fixed 2026-08-06.** Two independent bails between them ruled out
+  every `try` that actually recovers: assigning an enclosing local from
+  the body, and a body that `return`s.
+- The assignment half was a semantics problem, not a missing feature. A
+  protected edge leaves from anywhere in the region, so it can only
+  carry values live at the region's ENTRY — never an assignment the
+  body completed before it threw. ZIR grew mutable variables for it
+  (`var_get`/`var_set`, one dedicated wasm local each); design and the
+  `async`/`gen` exception are in ir.md §5.1.1.
+- The `return` half was two checker bugs. `checkMatchCaseBody` typed a
+  block ending in `return X` as X's type, when the value leaves the
+  FUNCTION and the enclosing match/try gets nothing from that arm — it
+  is `never`, like a `throw` tail. And arm types were combined with
+  `createUnionType`, which drops `never` but kept `void`, minting
+  `T | void`: no binding can hold it and it has no wasm representation,
+  so it only deferred the failure to codegen. `combineArmTypes` lets
+  `void` absorb, which is also what makes a statement-position
+  try/match whose arms end in an assignment come out `void`.
+- **Tests**: `execution/exceptions/try-tail-assignment.zena`
+  (un-skipped), `try-body-assignment-visible.zena`,
+  `try-arm-return.zena`, `execution/async/try-body-assignment-async.zena`,
+  and `zir backend > try/catch keeps an assigned local off the heap`
+  for the no-allocation invariant.
 
 ### Index writes through an interface are unsupported in ZIR
 

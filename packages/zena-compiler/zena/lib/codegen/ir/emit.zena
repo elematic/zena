@@ -57,6 +57,13 @@ export final class ZirFunctionEmitter {
   #movePlans = new HashMap<i32, Array<i32>>();
   /** Locals beyond the signature params, in index order. */
   localTypes = new Array<ValType>();
+  /**
+   * Per mutable variable id: its dedicated wasm local. Allocated
+   * before any SSA value gets one and never entered into a coalescing
+   * class, so nothing else can land in it — the whole point is that
+   * the stored value survives an unwind to a handler in this frame.
+   */
+  #varLocal = new Array<i32>();
   /** Multi-result call -> its mv_get projections, ascending index. */
   #mvProjections = new HashMap<i32, Array<i32>>();
   frames = new Array<EmitFrame>();
@@ -115,6 +122,14 @@ export final class ZirFunctionEmitter {
     i = 0;
     while (i < entryParams.length) {
       this.localOf[entryParams[i]] = i;
+      i += 1;
+    }
+    // Mutable variables claim their locals first. They are never in
+    // #classOf, so coalescing cannot route an SSA value into one.
+    i = 0;
+    while (i < body.varTypes.length) {
+      this.#varLocal.push(paramCount + this.localTypes.length);
+      this.localTypes.push(this.#localTypeFor(body.varTypes[i]));
       i += 1;
     }
     this.#coalesceCopies();
@@ -606,7 +621,8 @@ export final class ZirFunctionEmitter {
         // call_ref is OFF the list: its decode order is callee-first
         // but wasm pushes the callee funcref LAST, after the args.
         op == IrOp.struct_new || op == IrOp.array_new_fixed ||
-        op == IrOp.global_set || op == IrOp.iface_instance ||
+        op == IrOp.global_set || op == IrOp.var_set ||
+        op == IrOp.iface_instance ||
         op == IrOp.iface_vtable ||
         op == IrOp.i32_load || op == IrOp.i32_load8_u ||
         op == IrOp.i64_load || op == IrOp.f32_load || op == IrOp.f64_load ||
@@ -979,6 +995,19 @@ export final class ZirFunctionEmitter {
       case IrOp.global_set: {
         this.#pushValue(body.a[inst]);
         this.emitter.emitGlobalSet(this.#globalIndexOf(inst));
+      }
+      case IrOp.var_get: {
+        this.emitter.emitLocalGet(this.#varLocal[body.b[inst]]);
+        // The local is defaultable (#localTypeFor widens), so a
+        // non-null declared type re-asserts on the way out — the same
+        // round trip #pushValue does for SSA values.
+        if (body.resultType(inst) is ValTypeRef) {
+          this.emitter.emitRefAsNonNull();
+        }
+      }
+      case IrOp.var_set: {
+        this.#pushValue(body.a[inst]);
+        this.emitter.emitLocalSet(this.#varLocal[body.b[inst]]);
       }
       case IrOp.struct_new_default: {
         this.emitter.emitStructNewDefault(this.#typeIndexOf(inst));

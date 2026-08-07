@@ -1780,6 +1780,13 @@ export final class FunctionLowerer {
   }
 
   #emitCheckedRet(value: i32): void {
+    if (!this.#cx().reachable) {
+      // The tail expression never produced a value — every path
+      // through it left the function already (an if/match/try all of
+      // whose arms `return` or `throw`). There is nothing to return
+      // and no block left to return it from.
+      return;
+    }
     let slot = this.#returnSlotVt();
     if (slot == null) {
       this.#bail('return value in void function');
@@ -5424,6 +5431,15 @@ export final class FunctionLowerer {
     }
     return this.#lowerExpressionCtx(e, want as ValType);
   }
+  /**
+   * True while lowering a `gen`/`async` body, before the split pass
+   * turns it into a state machine. Wasm locals do not survive a
+   * suspension, so a mutable variable cannot back a `try`-assigned
+   * local here — those are celled instead.
+   */
+  inSuspensionBody(): boolean {
+    return this.presplitGenerator || this.presplitAsync;
+  }
   hostLowerExprRaw(e: Expression): i32 {
     return this.#lowerExpressionDispatch(e);
   }
@@ -6003,6 +6019,7 @@ export final class FunctionLowerer {
       this.#cellWrite(this.#cx().env[resolved.id], value);
     } else {
       this.#cx().env[resolved.id] = value;
+      this.#cx().noteVarWrite(resolved.id, value);
     }
     return value;
   }
@@ -6042,6 +6059,7 @@ export final class FunctionLowerer {
       this.#cellWrite(this.#cx().env[symId], rhs);
     } else {
       this.#cx().env[symId] = rhs;
+      this.#cx().noteVarWrite(symId, rhs);
     }
     let mergeB = this.b.newBlock();
     let mergeParams = this.#addParams(mergeB, mergeSyms);
@@ -6301,6 +6319,10 @@ let hostOf = (cx: LoweringContext): FunctionLowerer =>
 /** Lower `e` as a value; a non-null `want` supplies the context type. */
 export let lowerExpr = (cx: LoweringContext, e: Expression, want: ValType | null): i32 =>
     hostOf(cx).hostLowerExpr(e, want);
+
+/** True while lowering a presplit `gen`/`async` body. */
+export let inSuspensionBody = (cx: LoweringContext): boolean =>
+    hostOf(cx).inSuspensionBody();
 
 /** Adaptation-free expression lowering (see #lowerExpressionDispatch). */
 export let lowerExprRaw = (cx: LoweringContext, e: Expression): i32 =>

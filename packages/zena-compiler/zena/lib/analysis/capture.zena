@@ -119,6 +119,55 @@ let isCapturedBeforeInit = (s: Symbol, func: FunctionExpression, model: Semantic
   return false;
 };
 
+/** True when `sym`'s declaration sits anywhere inside `root`'s subtree. */
+let isDeclaredWithin = (sym: Symbol, root: Node, model: SemanticModel): boolean => {
+  if (sym.declaration == null) { return false; }
+  var curr = sym.declaration as Node;
+  while (true) {
+    if (curr.id == root.id) { return true; }
+    let parent = model.getParent(curr);
+    if (parent == null) { return false; }
+    curr = parent as Node;
+  }
+  return false;
+};
+
+/**
+ * Locals assigned inside a `try` body that are declared OUTSIDE it.
+ *
+ * These must live in heap cells, for the same reason a closure-mutated
+ * capture does. The handler is entered from an arbitrary point in the
+ * body's dynamic extent, so a value threaded along the protected edge
+ * can only carry the state at `try` entry — every assignment the body
+ * completed before it threw would be invisible to the handler and to
+ * the code after the `try`. A cell is written in place, so both see
+ * the last value written.
+ *
+ * Consumed by RTA (which interns the cell struct and registers the
+ * symbol as celled); lowering then routes reads and writes through the
+ * cell with no further knowledge of `try`.
+ */
+export let analyzeTryBodyAssignments = (tryBody: Node, model: SemanticModel): Array<SymbolId> => {
+  let out = new Array<SymbolId>();
+  let seen = new HashSet<SymbolId>();
+  walkEnter(tryBody, (n: Node): void => {
+    if (!(n is AssignmentExpression)) { return; }
+    let assign = n as AssignmentExpression;
+    if (!(assign.left is Identifier)) { return; }
+    let symOpt = model.resolve(assign.left as Identifier);
+    if (symOpt == null) { return; }
+    // Lowering asks `isCelled` about the resolve TARGET, so the set has
+    // to be keyed the same way.
+    let sym = (symOpt as Symbol).resolveTarget();
+    if (seen.has(sym.id)) { return; }
+    if (!isLocalSymbol(sym, model)) { return; }
+    if (isDeclaredWithin(sym, tryBody, model)) { return; }
+    seen.add(sym.id);
+    out.push(sym.id);
+  });
+  return out;
+};
+
 export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): CaptureInfo => {
   let info = new CaptureInfo();
   let seen = new HashSet<SymbolId>();

@@ -121,6 +121,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   reachedTypesSet = new HashSet<WasmType>();
   emittedTypes = new Array<WasmType>();
 
+  /**
+   * Cell structs interned for `try`-body-assigned locals. Closure cells
+   * reach the type section through their context struct's field type;
+   * these have no such referrer — only the lowered body's struct.new —
+   * so layout roots them explicitly.
+   */
+  tryCellStructs = new Array<WasmStruct>();
+
   var currentReachable = true;
 
   parsedClassMethodRefs = new HashMap<String, ParsedMethodRef>();
@@ -1336,6 +1344,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     for (let pair in this.wasm.closureStructs) {
       this.markTypeReached(pair.value);
     }
+    for (let cell in this.tryCellStructs) {
+      this.markTypeReached(cell);
+    }
     this.closeReachedTypes();
     this.wasm.types = this.emittedTypes;
     performance.end(tLayout3);
@@ -1463,6 +1474,22 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     if (deps.needsExceptionInfra) {
       this.wasm.ensureExceptionInfra(model);
+    }
+
+    // Enclosing locals assigned inside a `try` body live in heap cells,
+    // exactly like closure-mutated captures: the handler is entered
+    // from anywhere in the protected extent, so only a cell can show it
+    // the assignments the body completed before it threw. Registering
+    // the symbol here is all lowering needs — `isCelled` already routes
+    // the declaration, reads, and writes through the cell. The struct
+    // must be interned NOW: lowering runs after layout, where a miss is
+    // a hard error.
+    for (let symId in deps.tryMutatedSymbols) {
+      let bindingType = model.getBindingTypeById(symId);
+      if (bindingType == null) { continue; }
+      let valType = typeToValType(this.wasm, resolveType(bindingType as Type));
+      this.tryCellStructs.push(getCellStruct(this.wasm, valType));
+      this.wasm.mutableCapturedSymbols.add(symId);
     }
 
     // 1. Discover referenced types

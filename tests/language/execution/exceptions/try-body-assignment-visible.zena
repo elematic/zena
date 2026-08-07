@@ -1,0 +1,118 @@
+// @mode: run
+// @result: 42
+// The handler must see assignments the try body COMPLETED before it
+// threw — not the state at try entry. Same for the code after the try.
+
+import { Error } from 'zena:error';
+
+let boom = (fail: boolean): i32 => {
+  if (fail) {
+    throw new Error("boom");
+  }
+  return 1;
+};
+let sink = (v: i32): void => {};
+
+// The write to `n` happens, then a later call throws.
+let midBody = (): i32 => {
+  var n = 0;
+  try {
+    n = 7;
+    sink(boom(true));
+    n = 99;
+  } catch (e) {
+    n += 1;
+  }
+  return n;
+};
+
+// Re-entered every iteration; the loop carries the celled variable.
+let inLoop = (): i32 => {
+  var total = 0;
+  var i = 0;
+  while (i < 5) {
+    try {
+      total += i;
+      sink(boom(i == 3));
+      total += 100;
+    } catch (e) {
+      total += 1000;
+    }
+    i += 1;
+  }
+  return total;
+};
+
+// A reference-typed local, read back in the handler.
+let refTyped = (): String => {
+  var msg = 'start';
+  try {
+    msg = 'mid';
+    sink(boom(true));
+    msg = 'end';
+  } catch (e) {
+    msg = msg + '-caught';
+  }
+  return msg;
+};
+
+// An inner catch assigning a local the outer try body also assigns.
+let nested = (): i32 => {
+  var n = 0;
+  try {
+    n = 1;
+    try {
+      n = 2;
+      sink(boom(true));
+      n = 3;
+    } catch (e) {
+      n += 10;
+    }
+    n += 100;
+    sink(boom(true));
+    n = 0;
+  } catch (e) {
+    n += 1000;
+  }
+  return n;
+};
+
+// Celled by BOTH the closure capture and the try body.
+let withClosure = (): i32 => {
+  var c = 1;
+  let bump = (): void => { c += 10; };
+  bump();
+  try {
+    c += 100;
+    sink(boom(true));
+    c = 0;
+  } catch (e) {
+    c += 1000;
+  }
+  bump();
+  return c;
+};
+
+// A type-parameter-typed local: the cell struct is per instantiation.
+let generic = <T>(a: T, b: T): T => {
+  var picked = a;
+  try {
+    picked = b;
+    sink(boom(true));
+    picked = a;
+  } catch (e) {
+    sink(0);
+  }
+  return picked;
+};
+
+export let main = (): i32 => {
+  if (midBody() != 8) { return 0 - 1; }
+  if (inLoop() != 1410) { return 0 - 2; }
+  if (refTyped() != 'mid-caught') { return 0 - 3; }
+  if (nested() != 1112) { return 0 - 4; }
+  if (withClosure() != 1121) { return 0 - 5; }
+  if (generic(7, 9) != 9) { return 0 - 6; }
+  if (generic('a', 'b') != 'b') { return 0 - 7; }
+  return 42;
+};

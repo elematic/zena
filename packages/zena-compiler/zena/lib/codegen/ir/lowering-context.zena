@@ -950,6 +950,36 @@ export final class LoweringContext {
   precelledBindings = new HashSet<SymbolId>();
 
   /**
+   * Enclosing locals assigned inside an ACTIVE `try` body, mapped to
+   * the mutable variable mirroring them (ir.md §5.1).
+   *
+   * The binding stays an ordinary SSA variable everywhere — reads,
+   * merges and loop carries are untouched, so there is no cost to
+   * reading one. The mirror exists for the handler alone, which no SSA
+   * edge can reach carrying the body's assignments: the protected edge
+   * leaves from anywhere in the region and can only carry values live
+   * at its entry. So every assignment ALSO writes the variable, and
+   * the handler seeds its environment by reading it back.
+   *
+   * Nested tries share one variable per symbol: the innermost handler
+   * wants the same "last value written" the outer one does.
+   */
+  tryVars = new HashMap<SymbolId, i32>();
+
+  /**
+   * Mirrors a newly stored value into the symbol's try variable, when
+   * it has one. Every site that stores an SSA value for a symbol into
+   * `env` must call this — a missed one leaves the handler reading a
+   * stale value.
+   */
+  noteVarWrite(symId: SymbolId, value: i32): void {
+    if (let (true, varId) = this.tryVars.get(symId)) {
+      this.b.varSet(varId,
+          this.conformToSlot(value, this.b.body.varTypes[varId], 'try var type'));
+    }
+  }
+
+  /**
    * Pre-allocates empty cells for celled `let f = (…) => …` bindings
    * in a statement list, BEFORE any statement lowers. Self- and
    * forward-referencing closures capture the binding before its

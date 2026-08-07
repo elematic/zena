@@ -64,6 +64,13 @@ parameter.
   variable symbol to its current value id; joins introduce block
   parameters for variables assigned in the joined regions; loop headers
   carry params for everything assigned anywhere in the loop (pre-scan).
+- **One non-SSA construct: mutable variables** (`var_get`/`var_set`,
+  ir.md §5.1.1), each pinned to its own wasm local. They exist because
+  a handler edge leaves from anywhere in a protected region and so can
+  carry only entry-live values, which is not enough for locals the
+  `try` body assigns. Every site that stores a new SSA value for a
+  symbol into `env` must call `noteVarWrite` — a missed one leaves the
+  handler reading a stale value, and nothing else will catch it.
 - **Determinism is a hard gate.** Stage-2 byte parity (below) fails on
   any iteration-order- or identity-dependent output. No wall-clock, no
   randomness, no hash-order-dependent emission.

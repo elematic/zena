@@ -66,7 +66,38 @@ export final class IrVerifier {
     this.#cfg = new IrCfg(this.body);
     this.#checkReachability();
     this.#checkUses();
+    this.#checkVars();
     return this.errors;
+  }
+
+  /**
+   * Mutable variables: the id must be in range and a write must supply
+   * the declared type. Reads need no dominance check — a variable is
+   * storage, not an SSA definition — which is exactly why emission
+   * must keep its local out of coalescing.
+   */
+  #checkVars(): void {
+    let body = this.body;
+    var i = 0;
+    while (i < body.instCount()) {
+      let op = body.op(i);
+      if (op == IrOp.var_get || op == IrOp.var_set) {
+        let varId = body.b[i];
+        if (varId < 0 || varId >= body.varTypes.length) {
+          this.#error('%' + i32ToString(i) + ' (' + irOpName(op) +
+              ') names out-of-range var ' + i32ToString(varId));
+        } else if (op == IrOp.var_set) {
+          let have = body.resultType(body.a[i]);
+          let want = body.varTypes[varId];
+          if (have != null && !isValSubtype(have as ValType, want)) {
+            this.#error('%' + i32ToString(i) + ' writes ' +
+                debugValType(have as ValType) + ' into var ' +
+                i32ToString(varId) + ' of type ' + debugValType(want));
+          }
+        }
+      }
+      i += 1;
+    }
   }
 
   #error(message: String): void {

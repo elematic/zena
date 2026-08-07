@@ -1,0 +1,75 @@
+// @mode: run
+// @result: 42
+// @skip: bootstrap
+// A try body assigning an enclosing local, inside an `async` body.
+//
+// In an ordinary function those locals are mirrored into a wasm local
+// (ir.md §5.1.1). A local does not survive a suspension, so a
+// suspension body cells them instead — decided in the checker, on the
+// enclosing function being `async`/`gen`, and asserted by a ZIR bail if
+// the two ever disagree. The first case below is the one that makes
+// that split load-bearing: the assignment happens, then the body parks,
+// and the handler runs only after the frame has been off the stack.
+import {
+  Future, FutureState, Completer, drainMicrotasks,
+} from 'zena:async';
+
+// Assign, suspend, then fail: the handler must still see the value
+// written before the suspension.
+let acrossSuspension = async (c: Completer<i32>): Future<i32> => {
+  var n = 0;
+  try {
+    n = 7;
+    n += await c.future;
+    n = 99;
+  } catch (e) {
+    n += 1;
+  }
+  return n;
+};
+
+// Assign, then throw without suspending.
+let recovers = async (c: Completer<i32>): Future<i32> => {
+  let base = await c.future;
+  var n = 0;
+  try {
+    n = base;
+    throw new Error('boom');
+  } catch (e) {
+    n += 1;
+  }
+  return n;
+};
+
+export let main = (): i32 => {
+  var score = 0;
+
+  // Parks on the await, then rejects: n is 7 at the throw.
+  let bad = new Completer<i32>();
+  let f = acrossSuspension(bad);
+  bad.fail(new Error('nope'));
+  drainMicrotasks();
+  if (f.state == FutureState.Resolved && f.valueOrThrow() == 8) {
+    score += 10;
+  }
+
+  // Same shape, resolving: the body runs to its last assignment.
+  let good = new Completer<i32>();
+  let g = acrossSuspension(good);
+  good.complete(1);
+  drainMicrotasks();
+  if (g.state == FutureState.Resolved && g.valueOrThrow() == 99) {
+    score += 12;
+  }
+
+  let h0 = new Completer<i32>();
+  let h = recovers(h0);
+  h0.complete(5);
+  drainMicrotasks();
+  if (h.state == FutureState.Resolved && h.valueOrThrow() == 6) {
+    score += 20;
+  }
+
+  // 10 + 12 + 20 = 42
+  return score;
+};

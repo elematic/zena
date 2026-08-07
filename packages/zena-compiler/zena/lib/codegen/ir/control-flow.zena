@@ -42,7 +42,7 @@ import {
   typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefGlobal, IrRefTag } from './ir.zena';
-import { lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, throwStmt, varDecl } from './lowering.zena';
+import { inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, throwStmt, varDecl } from './lowering.zena';
 import {
   LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported,
   noValues, oneValue, twoValues,
@@ -176,7 +176,10 @@ export let applyLetBinds = (cx: LoweringContext, binds: LetCondBinds, failB: i32
 
 /**
  * Lowers an if-expression or match-case arm: a plain expression, or a
- * value-block whose trailing expression statement supplies the value.
+ * value-block whose trailing expression statement supplies the value —
+ * or whose tail is a statement that never falls through (`return`,
+ * `break`, `continue`, a bare `throw`), in which case the arm ends
+ * unreachable and supplies no value at all.
  * `ctxVt` is the arm's contextual result type (for null literals);
  * null when the context is void. Returns -1 when the arm ends
  * unreachable (or the context is void).
@@ -219,8 +222,14 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
       let value = lowerExpr(cx, lastExpr, ctxVt);
       return if (isVoid) -1 else value;
     }
-    if (isVoid) {
-      lowerStmt(cx, last);
+    // A non-expression tail supplies no value. That is fine when the
+    // context is void, and fine in a value context when the statement
+    // cannot fall through — `return`/`break`/`continue` end the arm
+    // unreachable, so the caller skips its merge branch and the arm
+    // never has to produce one. Anything that DOES fall through in a
+    // value context is a real gap; bail on it.
+    lowerStmt(cx, last);
+    if (isVoid || !cx.reachable) {
       return -1;
     }
     bail(cx, 'value block tail');
@@ -461,11 +470,18 @@ export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 =>
  * ends with try_br: normal flow enters the body; an exception thrown
  * anywhere in the body's dynamic extent lands at the catch block
  * with the payload in the exception global (streaming-compatible).
- * Both arms join like an if-expression. Finalizers bail. A body
- * that assigns enclosing locals also bails: the catch edge carries
- * the state at entry, so assignments made before the throw would
- * not be visible in the handler — streaming's locals keep them
- * visible, and the two backends must agree.
+ * Both arms join like an if-expression. Finalizers bail.
+ *
+ * Enclosing locals the body ASSIGNS cannot ride the protected edge —
+ * it carries the state at try entry, so the handler would not see an
+ * assignment the body completed before it threw. Each gets a mutable
+ * variable (ir.md §5.1, one dedicated wasm local) that every
+ * assignment mirrors into and the handler reads back; the binding
+ * itself stays ordinary SSA, so nothing else about it gets slower.
+ *
+ * A suspension body is the exception: its locals do not survive a
+ * suspension, so there the symbols are celled instead (RTA, gated on
+ * the enclosing function being `async`/`gen`) and never reach here.
  */
 export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 => {
   if (expr.finalizer != null) {
@@ -478,8 +494,11 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
     bail(cx, 'exception infra missing');
   }
   let bodyAssigned = cx.assignedEnvSyms(expr.body as Node);
-  if (bodyAssigned.length > 0) {
-    bail(cx, 'assignment to enclosing local in try body');
+  if (bodyAssigned.length > 0 && inSuspensionBody(cx)) {
+    // Celling is RTA's job and it gates on the same condition; a
+    // symbol arriving here uncelled means the two disagree, and a
+    // wasm local would silently lose its value across the suspension.
+    bail(cx, 'uncelled assignment to enclosing local in suspension try body');
   }
   let nodeType = cx.func.model.getNodeType(expr);
   if (nodeType == null) {
@@ -495,7 +514,24 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
   };
 
   let handler = expr.handler as CatchClause;
+  // Both arms can assign, and both feed the join.
   let mergeSyms = cx.assignedEnvSyms(handler.body as Node);
+  cx.appendAssignedEnvSyms(expr.body as Node, mergeSyms);
+
+  // Mirror variables for what the body assigns, seeded with the value
+  // at entry (the handler sees that when the body throws before
+  // assigning). An enclosing try already mirroring a symbol keeps
+  // ownership of its variable — one per symbol, always holding the
+  // last value written.
+  let ownedVars = new Array<SymbolId>();
+  for (let symId in bodyAssigned) {
+    if (cx.tryVars.has(symId)) { continue; }
+    let vt = cx.bindingValType(symId);
+    let varId = cx.b.newVar(vt);
+    cx.b.varSet(varId, cx.conformToSlot(cx.env[symId], vt, 'try var type'));
+    cx.tryVars[symId] = varId;
+    ownedVars.push(symId);
+  }
 
   let tagRef = cx.b.addRef(new IrRefTag(cx.wasm.exceptionTag as WasmTag));
   let bodyB = cx.b.newBlock();
@@ -514,6 +550,11 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
   cx.env = cx.copyOf(saved);
   cx.reachable = true;
   cx.b.switchTo(catchB);
+  // The protected edge carried the entry values; read the body's
+  // assignments back out of their variables instead.
+  for (let symId in bodyAssigned) {
+    cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
+  }
   if (handler.param != null) {
     let paramIdent = handler.param as Identifier;
     let symOpt = cx.func.model.resolveDeclaration(paramIdent);
@@ -535,6 +576,12 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
     cx.mergeArm(m, catchValue, 'try arm type');
   }
 
+  // Past the join both arms' assignments arrive as ordinary merge
+  // params, so the mirrors this try owns go out of scope. An enclosing
+  // try's stay live — its handler is still reachable.
+  for (let symId in ownedVars) {
+    cx.tryVars.delete(symId);
+  }
   return cx.finishMerge(m, saved);
 };
 
