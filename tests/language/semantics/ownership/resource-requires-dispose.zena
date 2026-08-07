@@ -1,0 +1,28 @@
+// @mode: check
+
+// A resource class is defined by holding something the GC cannot reclaim, so
+// it always has a release action. `resource` is itself the Disposable
+// conformance — no `implements Disposable` clause — but the member must exist.
+// See docs/design/ownership.md §Resource.
+
+import { Own, Disposable } from 'zena:ownership';
+
+resource class Descriptor {
+  #handle: i32;
+  new(handle: i32) : #handle = handle;
+  :Disposable.dispose(): void {}
+}
+
+let usesIt = (d: Own<Descriptor>): void => {};
+
+// @error: must define
+resource class Leaky {
+  #handle: i32;
+  new(handle: i32) : #handle = handle;
+}
+
+// An ordinary class needs no dispose — it is not a resource.
+class Plain {
+  #handle: i32;
+  new(handle: i32) : #handle = handle;
+}

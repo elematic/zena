@@ -8647,6 +8647,25 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
     }
   }
 
+  // A resource class is defined by holding something the GC cannot reclaim,
+  // so it always has a release action. `resource` is itself the Disposable
+  // conformance — no `implements Disposable` clause is written, following the
+  // way case classes nominally implement Hashable — but the member must
+  // exist, or implicit drop would have nothing to call and `Own<R>` would
+  // mean "unique but never released". See docs/design/ownership.md §Resource.
+  if (cd.isResource && !cd.isAbstract) {
+    if (!classType.members.has(":dispose")) {
+      ctx.error(
+        "Resource class '" + className + "' must define ':Disposable.dispose(): void'. " +
+        "A resource class always has a release action; a class that needs uniqueness " +
+        "but has nothing to release should be an ordinary class used as 'Own<" +
+        className + ">'.",
+        DiagnosticCode.AbstractMethodNotImplemented,
+        cd.loc
+      );
+    }
+  }
+
   // Check for unimplemented abstract fields in non-abstract classes.
   if (!cd.isAbstract && !cd.isSealed) {
     let fieldKeys = classType.members.keys();
