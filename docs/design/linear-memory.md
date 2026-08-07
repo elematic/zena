@@ -340,9 +340,22 @@ const leak = (): void => {
 };
 ```
 
-### Future: `using` Declaration
+### Releasing memory: regions, not pointers
 
-Inspired by C# `using` and TC39 Explicit Resource Management:
+Allocation lifetime follows [ownership.md](./ownership.md), which specifies
+`using`, the `Disposable` protocol and the ownership model. Two of its rules
+shape the linear-memory API directly.
+
+**The unit of ownership is the region, not the pointer.** An arena is never
+freed per allocation, it is freed as a unit, so per-object ownership is the
+wrong granularity: one `Own<Arena>`, N borrows into it, and every borrow is
+statically dead before the arena drops. That is also why arena allocation is
+fast — no per-object bookkeeping and no per-object drop.
+
+**A `using` binding is optional**, so a scope-bound allocation that is never
+named reads as `using allocOrPanic(defaultAllocator, 1024);`.
+
+Sketch of a scoped allocation:
 
 ```zena
 // Future syntax - not yet implemented
@@ -883,3 +896,12 @@ Until then, explicit lifetime management via manual `free()` calls is required.
 
 4. **Async FFI**: How do we handle C libraries that use callbacks for async?
    Should we bridge to Zena's future async model?
+
+---
+
+## Changes
+
+- **2026-08-07** — Allocation lifetime now defers to
+  [ownership.md](./ownership.md) rather than sketching its own `using`. The
+  linear-memory-specific consequence is that the unit of ownership is the
+  region rather than the pointer.

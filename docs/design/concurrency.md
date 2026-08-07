@@ -638,7 +638,7 @@ _Cons_: Complex ownership system, steep learning curve
 **Pony: Reference Capabilities**
 
 ```pony
-// iso  = isolated (unique reference, can transfer)
+// iso  = Own (unique reference, can transfer)
 // val  = deeply immutable (freely shareable)
 // ref  = mutable (local only)
 // box  = read-only view
@@ -682,56 +682,72 @@ _Cons_: Research language, complex runtime
 
 #### Proposed Design for Zena
 
+Shared-memory parallelism is a _use_ of the ownership model rather than a
+second one. The vocabulary is [ownership.md](./ownership.md)'s — `Own<T>`,
+`Borrow<T>`, `BorrowMut<T>` — and this section adds only what parallelism needs
+on top: deep immutability.
+
 ##### Core Concepts
 
-**1. `frozen` Types (Deeply Immutable)**
+**1. `Own<T>` — unique ownership, and what makes a value transferable**
+
+A value safe to hand to another thread is one nothing else can reach. That is
+exactly affine ownership, so transfer is a move:
 
 ```zena
-// Deeply immutable - can be freely shared across threads
+let node: Own<Node> = new Node();
+
+spawn move(node) {
+  // This thread now exclusively owns node.
+  node.mutate();
+};
+// node has been moved — using it here is a compile error
+```
+
+`Own<T>` over an ordinary class is available only from a _provably exclusive
+source_ — a fresh allocation, or an `Own<T>` moved in — because a GC language
+has ambient aliasing and the exclusivity claim would otherwise be false. See
+ownership.md §"Uniqueness without a resource"; this is that rule's main
+consumer, since a data structure handed to another thread has nothing to
+release but must not be aliased once transferred.
+
+**2. `Frozen<T>` — deep immutability**
+
+This is the one concept parallelism genuinely adds. `Own<T>` is about
+_uniqueness_; `Frozen<T>` is about transitive _reachability_, and it is what
+makes a value safely **shareable** rather than merely borrowable — many threads
+may hold it at once, with no exclusion at all.
+
+```zena
+// Deeply immutable: freely shared across threads, no locking.
 frozen class Config {
-  host: string;
+  host: String;
   port: i32;
 }
 
-// All fields must be frozen or primitive
-frozen class ASTNode {
-  kind: NodeKind;            // enum (frozen)
-  children: frozen<array<ASTNode>>;  // frozen array
-  span: Span;                // frozen record type
+// Every field must itself be frozen or primitive.
+frozen class AstNode {
+  kind: NodeKind;                  // enum (frozen)
+  children: Frozen<Array<AstNode>>;  // frozen array
+  span: Span;                      // frozen record type
 }
 
-// Mutable class can be frozen after construction
-var tree = MutableTree.new();
+// A mutable structure can be frozen once, after construction.
+let tree: Own<MutableTree> = new MutableTree();
 buildTree(tree);
-let frozenTree = tree.freeze();  // Consumes tree, returns frozen
-// tree is now inaccessible (moved)
+let shared: Frozen<Tree> = freeze(tree);   // consumes the Own
 ```
 
-**Compiler enforcement**:
+`freeze` consumes an `Own<T>` for the same reason `disown` does: the exclusive
+reference is the proof that no mutable alias survives the transition. After it,
+the value is unrestricted — freely duplicated and shared — because nothing can
+observe a change.
 
-- `frozen` types can only contain `frozen` or primitive fields
-- Frozen values can be freely shared (no locking needed)
-- Parse trees, type representations, IR nodes are natural fits
+Compiler enforcement:
 
-**2. `isolated` References (Unique Ownership)**
-
-```zena
-// isolated = unique reference, can be transferred between threads
-let node: isolated<Node> = Node.new();
-
-// Transfer ownership to another thread
-spawn move(node) {
-  // This thread now exclusively owns node
-  node.mutate();
-};
-// Error: node has been moved
-
-// isolated can be "opened" for local use
-let node: isolated<Node> = Node.new();
-let local: Node = node.open();  // Consumes isolated wrapper
-local.mutate();                 // Full local access
-// But can't transfer local anymore
-```
+- A `frozen` class may contain only frozen or primitive fields.
+- `Frozen<T>` values need no locking and no borrow scope.
+- Parse trees, type representations and IR nodes are natural fits.
 
 **3. Scoped Parallel Borrowing**
 
@@ -943,7 +959,7 @@ The context stack handles nesting naturally - `new Region()` pushes a new contex
 **Interaction with frozen**:
 
 ```zena
-let config: frozen<Config> = ...;  // Frozen = world-readable
+let config: Frozen<Config> = ...;  // Frozen = world-readable
 
 let region = new Region(sendable () => {
   // OK: frozen values can be referenced from anywhere
@@ -1006,16 +1022,16 @@ let sealed: Region<Node> = region.seal();
 ##### Compiler Use Case: Parallel Compilation
 
 ```zena
-// Phase 1: Parse (embarrassingly parallel, isolated results)
-let asts: array<isolated<AST>> = parallel.map(files, (file) => {
-  isolated(parseFile(file))  // Wrap result as isolated
+// Phase 1: Parse (embarrassingly parallel, owned results)
+let asts: Array<Own<Ast>> = parallel.map(files, (file) => {
+  own(parseFile(file))  // the result is uniquely owned
 });
 
-// Phase 2: Local analysis (parallel, each AST isolated)
-let modules: array<isolated<Module>> = parallel.map(asts, (ast) => {
+// Phase 2: Local analysis (parallel, each AST uniquely owned)
+let modules: array<Own<Module>> = parallel.map(asts, (ast) => {
   isolate {
     let module = analyzeLocal(ast.open());
-    isolated(module)
+    own(module)
   }
 });
 
@@ -1057,16 +1073,16 @@ interface Sendable { }
 // Automatically Sendable:
 // - Primitives (i32, f64, boolean, etc.)
 // - frozen types
-// - isolated references
+// - Own<T> references
 // - Records/tuples of Sendable types
 
 // Not Sendable:
-// - Mutable classes (unless wrapped in isolated)
+// - Mutable classes (unless wrapped in Own<T>)
 // - Closures capturing non-Sendable state
 
 // spawn requires Sendable arguments
-const processData = (data: isolated<Data>) => {
-  spawn move(data) {  // data is Sendable (isolated)
+const processData = (data: Own<Data>) => {
+  spawn move(data) {  // data is Sendable (uniquely owned)
     ...
   };
 };
@@ -1095,7 +1111,7 @@ let broken = sendable (x: i32) => {
 };
 
 // Can capture frozen/immutable values
-let config: frozen<Config> = ...;
+let config: Frozen<Config> = ...;
 let processor = sendable (x: Data) => process(x, config);  // OK: config is frozen
 ```
 
@@ -1159,13 +1175,13 @@ spawn sendable {
 
 ##### Summary of Sharing Modes
 
-| Mode          | Mutability | Sharing               | Use Case                       |
-| ------------- | ---------- | --------------------- | ------------------------------ |
-| `frozen<T>`   | Immutable  | Free sharing          | Parse trees, config, constants |
-| `isolated<T>` | Mutable    | Transfer only         | Work items, results            |
-| `borrow`      | Mutable    | Scoped exclusive      | Parallel subtree processing    |
-| `share`       | Read-only  | Scoped shared         | Parallel analysis              |
-| `Region<T>`   | Mutable    | Transfer whole region | Object graphs (ASTs, DOMs)     |
+| Mode        | Mutability | Sharing               | Use Case                       |
+| ----------- | ---------- | --------------------- | ------------------------------ |
+| `Frozen<T>` | Immutable  | Free sharing          | Parse trees, config, constants |
+| `Own<T>`    | Mutable    | Transfer only         | Work items, results            |
+| `borrow`    | Mutable    | Scoped exclusive      | Parallel subtree processing    |
+| `share`     | Read-only  | Scoped shared         | Parallel analysis              |
+| `Region<T>` | Mutable    | Transfer whole region | Object graphs (ASTs, DOMs)     |
 
 ##### What We Avoid
 
@@ -1177,12 +1193,12 @@ spawn sendable {
 
 ##### Open Questions
 
-1. **Ergonomics**: Is `isolated<T>` too verbose for common cases?
+1. **Ergonomics**: Is `Own<T>` too verbose for common cases?
 2. **Inference**: Can we infer `frozen` for classes with only frozen fields?
 3. **Escape analysis**: Can compiler auto-`isolate` local objects?
 4. **Region growth**: `MutableRegion` + `seal()` vs `region.extend()`? How does adding objects interact with existing references?
 5. **Nested parallelism**: How do borrows compose with parallel regions?
-6. **Region + isolated**: Can an `isolated<T>` point into a region? Or must the whole region be isolated?
+6. **Region + ownership**: can an `Own<T>` point into a region, or must the whole region be owned as a unit?
 7. **Region context cost**: Runtime context check on every `new` - acceptable overhead? Can we optimize common paths (no region active)?
 8. **Sendable class inference**: Infer Sendable automatically, or require explicit `sendable class` annotation? Inference is convenient but may surprise users when a class becomes non-Sendable due to a change.
 9. **Sendable closure syntax**: Explicit `sendable` keyword vs inferred at call site vs both?
@@ -1205,8 +1221,8 @@ Before WASM GC gets native threading, we can implement the **same API** on top o
 
 | Concept        | True Shared Memory     | Workers (Polyfill)                        |
 | -------------- | ---------------------- | ----------------------------------------- |
-| `frozen<T>`    | Share pointer          | Serialize → send → deserialize (cached)   |
-| `isolated<T>`  | Transfer pointer       | Serialize → send → delete original        |
+| `Frozen<T>`    | Share pointer          | Serialize → send → deserialize (cached)   |
+| `Own<T>`       | Transfer pointer       | Serialize → send → delete original        |
 | `borrow` scope | Lend pointer           | Serialize → work → send back → apply      |
 | `share` scope  | Multiple read pointers | Serialize once → broadcast to all workers |
 | `Region`       | Transfer base pointer  | Serialize all region objects together     |
@@ -1252,10 +1268,10 @@ impl Sendable for ASTNode {
 
 ```zena
 // User code - identical for workers or true threading
-const parseFiles = (files: array<string>) => array<isolated<AST>> {
+const parseFiles = (files: Array<String>) => Array<Own<Ast>> {
   parallel.map(files, (file) => {
     let content = readFile(file);
-    isolated(parse(content))  // Result wrapped as isolated
+    own(parse(content))  // the result is uniquely owned
   })
 };
 ```
@@ -1274,7 +1290,7 @@ files[N/2..N] ──serialize─────────────────
                                                     serialize result
               ◄────────────────────────────────────
 deserialize results
-return isolated<AST>[]
+return Array<Own<Ast>>
 ```
 
 **With true threading (future)**:
@@ -1284,11 +1300,11 @@ Main                          Thread 1              Thread 2
 ────                          ────────              ────────
 files[0..N/2] ──pointer────►
                               parse()
-                              ◄──return isolated──
+                              ◄──return Own<Ast>──
 files[N/2..N] ──pointer──────────────────────────►
                                                     parse()
-              ◄────────────────return isolated─────
-return isolated<AST>[]
+              ◄──────────────return Own<Ast>─────
+return Array<Own<Ast>>
 ```
 
 ##### Worker Communication Layer
@@ -1356,7 +1372,7 @@ let results = parallel.map(files, parseFile);
 // API is identical, semantics are identical
 ```
 
-The `Sendable` trait, `frozen`, `isolated`, and scoped borrowing all have the same **semantics** whether backed by copying or true sharing. The compiler can switch implementations based on target capabilities.
+The `Sendable` trait, `Frozen<T>`, `Own<T>`, and scoped borrowing all have the same **semantics** whether backed by copying or true sharing. The compiler can switch implementations based on target capabilities.
 
 ---
 
@@ -1460,8 +1476,8 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 ### Phase 6: True Parallelism API (Worker Polyfill)
 
 - [ ] `Sendable` trait (auto-derived for safe types)
-- [ ] `frozen<T>` types (deeply immutable)
-- [ ] `isolated<T>` references (unique ownership, transferable)
+- [ ] `Frozen<T>` types (deeply immutable)
+- [ ] `Own<T>` references (unique ownership, transferable)
 - [ ] Compiler-generated binary serialization for `Sendable` types
 - [ ] `parallel.map()`, `parallel.scope()` with `borrow`/`share`
 - [ ] WorkerPool implementation (JS Workers / WASI component spawning)
@@ -1479,8 +1495,8 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 ### Phase 8: Native Shared-Memory (When WASM GC + shared-everything-threads ships)
 
 - [ ] Detect runtime supports shared GC refs
-- [ ] Replace serialization with pointer sharing for `frozen<T>`
-- [ ] Replace transfer-by-copy with move semantics for `isolated<T>`
+- [ ] Replace serialization with pointer sharing for `Frozen<T>`
+- [ ] Replace transfer-by-copy with move semantics for `Own<T>`
 - [ ] Implement true scoped borrowing (no serialize round-trip)
 - [ ] Same API, zero code changes required
 
@@ -1500,7 +1516,7 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 
 1. All suspension points are marked with `await` (no implicit blocking)
 2. Channels are a stdlib library, not a language feature
-3. True parallelism uses ownership types (`frozen`, `isolated`, `borrow`) not locks
+3. True parallelism uses ownership types (`Own<T>`, `Borrow<T>`, `Frozen<T>`) not locks
 4. Same API whether backed by worker serialization (today) or true sharing (future)
 
 ### Target Host Compatibility
@@ -1516,7 +1532,7 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 
 🔮 = Future (requires WASM GC + shared-everything-threads proposal)
 
-**Migration**: Code using `frozen`, `isolated`, `parallel.map()` works identically on polyfill (today) and native (future). Only the implementation changes - serialization becomes pointer sharing.
+**Migration**: Code using `Frozen<T>`, `Own<T>`, `parallel.map()` works identically on polyfill (today) and native (future). Only the implementation changes - serialization becomes pointer sharing.
 
 ## References
 
@@ -1540,3 +1556,16 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 - [Verona Language (Microsoft Research)](https://github.com/microsoft/verona)
 - [Swift Sendable and Actors](https://docs.swift.org/swift-book/LanguageGuide/Concurrency.html)
 - [Rust Send and Sync](https://doc.rust-lang.org/nomicon/send-and-sync.html)
+
+---
+
+## Changes
+
+- **2026-08-07** — Ownership vocabulary unified with
+  [ownership.md](./ownership.md), which is the reference. `isolated<T>` became
+  `Own<T>` (the same type: unique, transferable, move-on-transfer),
+  `borrow child` became `BorrowMut<T>`, `share` became `Borrow<T>`, and
+  `frozen<T>` became `Frozen<T>`, capitalized like the rest of the type
+  vocabulary. `Frozen<T>` is the one concept parallelism adds that ownership
+  does not have: it is about transitive reachability rather than uniqueness,
+  which is what makes a value _shareable_ rather than merely borrowable.

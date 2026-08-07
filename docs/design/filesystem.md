@@ -336,8 +336,15 @@ type DirEntry = {
   fileType: FileType,
 };
 
-// Core descriptor class wrapping a WASI handle
-class Descriptor implements Disposable {
+// Core descriptor class wrapping a WASI handle.
+//
+// A descriptor is a resource: it holds something the collector cannot reclaim.
+// So it is a `resource class` (ownership.md §Resource), which means bare
+// `Descriptor` is not a spellable type — every mention is `Own<Descriptor>`,
+// `Borrow<Descriptor>` or `Unmanaged<Descriptor>` — and the `resource`
+// modifier carries the Disposable requirement, so no `implements` clause is
+// written and release consumes its receiver.
+resource class Descriptor {
   #handle: DescriptorHandle;
 
   new(handle: DescriptorHandle) {
@@ -836,3 +843,12 @@ When WASI Preview 3 stabilizes with async support, add async file operations:
 // Future API
 let readFileAsync = async (path: String): Promise<String> => { ... };
 ```
+
+---
+
+## Changes
+
+- **2026-08-07** — `Descriptor` is a `resource class` under
+  [ownership.md](./ownership.md): bare `Descriptor` is not a spellable type,
+  the `resource` modifier carries the `Disposable` requirement, and release
+  consumes its receiver.
