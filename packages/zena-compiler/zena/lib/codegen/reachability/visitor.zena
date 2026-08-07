@@ -6,7 +6,7 @@ import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, Record
 import { Node, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction } from '../wasm-module.zena';
 import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeExternRef } from '../wasm.zena';
-import { SymbolId, Symbol } from '../../scope/symbol.zena';
+import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
@@ -100,7 +100,7 @@ export final class TypeLowerer implements TypeLowererInterface {
       let contextStruct = getClosureStruct(this.pass.wasm, eraseType(ft) as FunctionType);
       this.pass.markTypeReached(contextStruct);
 
-      if (ft.functionSymbolId != (-1 as SymbolId)) {
+      if (ft.functionSymbolId != noSymbolId) {
         let specializer = this.pass.specializer;
         let visitor = this.pass.visitor;
         let targetSymId = ft.functionSymbolId;
@@ -188,13 +188,13 @@ export final class TypeLowerer implements TypeLowererInterface {
           list.push(ct);
           if (let (true, reachedSet) = this.pass.reachedClassMembers.get(lookupId)) {
             for (let nid in reachedSet) {
-              this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, nid, model, ct, this.pass.currentReachable));
+              this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, this.pass.currentReachable));
             }
           }
           if (this.pass.currentReachable) {
             if (let (true, reachedSet) = this.pass.reachedReachableClassMembers.get(lookupId)) {
               for (let nid in reachedSet) {
-                this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, nid, model, ct, true));
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, true));
               }
             }
           }
@@ -520,7 +520,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (member is MethodDefinition) {
         let md = member as MethodDefinition;
         if (ctorMethodName(md) == "<constructor>") {
-          this.pass.queueReferrer(new Referrer(false, -1 as SymbolId,
+          this.pass.queueReferrer(new Referrer(false, noSymbolId,
               (md as Node).id as i32, cdModel, resolved, true));
         }
       }
@@ -703,7 +703,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 cdNode, methName, md as Node,
                 typeArguments as Array<Type>, cdModel);
           } else {
-            this.pass.queueReferrer(new Referrer(false, -1 as SymbolId,
+            this.pass.queueReferrer(new Referrer(false, noSymbolId,
                 (md as Node).id as i32, cdModel, classType, true));
           }
         }
@@ -989,7 +989,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               let targetModel = this.pass.getClassModel(resolvedClass);
               let mds = cha.findImplementingMethods(resolvedClass, ":iterator");
               for (let md in mds) {
-                this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedClass, this.pass.currentReachable));
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedClass, this.pass.currentReachable));
               }
 
               let specializedIterable = findImplementedInterfaceTransitive(this.pass.wasm, resolvedClass, "Iterable");
@@ -1070,17 +1070,17 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 let cd = if (let (true, decl) = this.pass.classDecls.get(unspecCdId)) decl else null;
                 specializer.instantiateGenericMethod(ct, cd, propName, md as Node, methodTypeArgs as Array<Type>, this.pass.getNodeModel(md as Node, targetModel));
               } else {
-                this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), ct, this.pass.currentReachable));
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), ct, this.pass.currentReachable));
               }
             }
             if (!isMethod) {
               let fd = cha.findImplementingField(ct, propName);
               if (fd != null) {
-                this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (fd as Node).id as i32, this.pass.getNodeModel(fd as Node, targetModel), ct, this.pass.currentReachable));
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, this.pass.getNodeModel(fd as Node, targetModel), ct, this.pass.currentReachable));
               }
               let acc = cha.findImplementingAccessor(ct, resolvedName);
               if (acc != null) {
-                this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), ct, this.pass.currentReachable));
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), ct, this.pass.currentReachable));
               }
             }
           }
@@ -1183,9 +1183,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               }
             }
             let isSpecialized = resolvedArgs.length > 0;
-            if (isSpecialized && targetSymId != (-1 as SymbolId) && this.pass.wasm.genericFunctions.has(targetSymId)) {
+            if (isSpecialized && targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
               this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
-            } else if (targetSymId != (-1 as SymbolId) && this.pass.wasm.functionMap.has(targetSymId)) {
+            } else if (targetSymId != noSymbolId && this.pass.wasm.functionMap.has(targetSymId)) {
               let targetFunc = this.pass.wasm.functionMap[targetSymId];
               this.pass.markFunctionReached(targetFunc);
             }
@@ -1222,7 +1222,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
     }
     let isSpecialized = resolvedArgs.length > 0;
-    if (isSpecialized && targetSymId != (-1 as SymbolId) && this.pass.wasm.genericFunctions.has(targetSymId)) {
+    if (isSpecialized && targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
       this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
     }
     
@@ -1273,7 +1273,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         var erasedTargetWasmFunc: WasmFunction | null = null;
         if (let (true, f) = this.pass.wasm.specializedFunctions.get(erasedSpecKey)) {
           erasedTargetWasmFunc = f;
-        } else if (targetSymId != (-1 as SymbolId) && this.pass.wasm.genericFunctions.has(targetSymId)) {
+        } else if (targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
           erasedTargetWasmFunc = this.pass.specializer.instantiateGenericFunction(targetSymId, erasedArgs);
         }
         
@@ -1314,7 +1314,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
 
   discoverFunctionValueWrapper(ft: FunctionType, model: SemanticModel): void {
     let targetSymId = ft.functionSymbolId;
-    if (targetSymId == (-1 as SymbolId)) {
+    if (targetSymId == noSymbolId) {
       return;
     }
     
@@ -1325,7 +1325,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
     }
     let isSpecialized = resolvedArgs.length > 0;
-    if (isSpecialized && targetSymId != (-1 as SymbolId) && this.pass.wasm.genericFunctions.has(targetSymId)) {
+    if (isSpecialized && targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
       this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
     }
     
@@ -1376,7 +1376,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         var erasedTargetWasmFunc: WasmFunction | null = null;
         if (let (true, f) = this.pass.wasm.specializedFunctions.get(erasedSpecKey)) {
           erasedTargetWasmFunc = f;
-        } else if (targetSymId != (-1 as SymbolId) && this.pass.wasm.genericFunctions.has(targetSymId)) {
+        } else if (targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
           erasedTargetWasmFunc = this.pass.specializer.instantiateGenericFunction(targetSymId, erasedArgs);
         }
         

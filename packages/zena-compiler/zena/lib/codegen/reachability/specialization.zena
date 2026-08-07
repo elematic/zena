@@ -5,7 +5,7 @@ import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidTy
 import { Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, TypeAnnotation, InterfaceDeclaration, Expression, MixinDeclaration } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, ClassCodegenInfo } from '../wasm-module.zena';
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, ValTypeFuncRef, valTypeToOpcode } from '../wasm.zena';
-import { SymbolId } from '../../scope/symbol.zena';
+import { SymbolId, noSymbolId } from '../../scope/symbol.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
@@ -91,7 +91,7 @@ export final class Specializer implements SpecializerInterface {
         } else {
           unspecModel
         };
-        this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, memberNodeId, memberModel, classType, false));
+        this.pass.queueReferrer(new Referrer(false, noSymbolId, memberNodeId, memberModel, classType, false));
       }
     }
     if (let (true, reachedSet) = this.pass.reachedReachableClassMembers.get(classId)) {
@@ -101,16 +101,16 @@ export final class Specializer implements SpecializerInterface {
         } else {
           unspecModel
         };
-        this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, memberNodeId, memberModel, classType, true));
+        this.pass.queueReferrer(new Referrer(false, noSymbolId, memberNodeId, memberModel, classType, true));
       }
     }
     let eqMethod = cha.findImplementingMethod(classType, "==");
     if (eqMethod != null) {
-      this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (eqMethod as Node).id as i32, this.pass.getNodeModel(eqMethod as Node, unspecModel), classType, this.pass.currentReachable));
+      this.pass.queueReferrer(new Referrer(false, noSymbolId, (eqMethod as Node).id as i32, this.pass.getNodeModel(eqMethod as Node, unspecModel), classType, this.pass.currentReachable));
     }
     let hashMethod = cha.findImplementingMethod(classType, "hashCode");
     if (hashMethod != null) {
-      this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (hashMethod as Node).id as i32, this.pass.getNodeModel(hashMethod as Node, unspecModel), classType, this.pass.currentReachable));
+      this.pass.queueReferrer(new Referrer(false, noSymbolId, (hashMethod as Node).id as i32, this.pass.getNodeModel(hashMethod as Node, unspecModel), classType, this.pass.currentReachable));
     }
 
     if (classType.superType != null) {
@@ -175,12 +175,12 @@ export final class Specializer implements SpecializerInterface {
           let md = member as MethodDefinition;
           let mName = getMethodName(md);
           if (mName == "<constructor>") {
-            this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, model, classType, this.pass.currentReachable));
+            this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, model, classType, this.pass.currentReachable));
           }
         } else if (member is FieldDefinition) {
           let fd = member as FieldDefinition;
           if (fd.value != null) {
-            this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (fd as Node).id as i32, model, classType, this.pass.currentReachable));
+            this.pass.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, model, classType, this.pass.currentReachable));
           }
         }
       }
@@ -225,17 +225,17 @@ export final class Specializer implements SpecializerInterface {
             let mds = cha.findImplementingMethods(targetClassType, mName);
             if (mds.length > 0) {
               for (let md in mds) {
-                this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), targetClassType, isReachable));
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), targetClassType, isReachable));
               }
             } else {
               let acc = cha.findImplementingAccessor(targetClassType, mName);
               if (acc != null) {
-                this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), targetClassType, isReachable));
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), targetClassType, isReachable));
               } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
                 let fieldName = mName.sliceBytes(4, mName.length);
                 let fd = cha.findImplementingField(targetClassType, fieldName);
                 if (fd != null) {
-                  this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (fd as Node).id as i32, this.pass.getNodeModel(fd as Node, targetModel), targetClassType, isReachable));
+                  this.pass.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, this.pass.getNodeModel(fd as Node, targetModel), targetClassType, isReachable));
                 }
               }
             }

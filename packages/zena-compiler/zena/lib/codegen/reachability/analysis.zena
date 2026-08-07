@@ -12,7 +12,7 @@ import { StringBuilder } from 'zena:string-builder';
 import { i32ToString, parseI32 } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, mixinScopeOfMember, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName } from '../codegen-utils.zena';
 import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext } from '../type-mapping.zena';
-import { SymbolId, Symbol } from '../../scope/symbol.zena';
+import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeEqRef, ValTypeExternRef } from '../wasm.zena';
 import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
@@ -164,7 +164,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         set.add(nodeId);
         if (let (true, specList) = this.specializedClassTypes.get(classSymId)) {
           for (let specCt in specList) {
-            this.queueReferrer(new Referrer(false, -1 as SymbolId, nodeId, model, specCt, true));
+            this.queueReferrer(new Referrer(false, noSymbolId, nodeId, model, specCt, true));
           }
         }
       }
@@ -177,7 +177,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         set.add(nodeId);
         if (let (true, specList) = this.specializedClassTypes.get(classSymId)) {
           for (let specCt in specList) {
-            this.queueReferrer(new Referrer(false, -1 as SymbolId, nodeId, model, specCt, false));
+            this.queueReferrer(new Referrer(false, noSymbolId, nodeId, model, specCt, false));
           }
         }
       }
@@ -276,7 +276,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           this.nodeIdToModel[fnNode.id as i32] = func.model;
           this.queueReferrer(new Referrer(
             false,
-            -1 as SymbolId,
+            noSymbolId,
             fnNode.id as i32,
             func.model,
             func.classType,
@@ -679,7 +679,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         if (!(stmt is VariableDeclaration) && !(stmt is FunctionDeclaration) && !(stmt is DeclareFunction) && !(stmt is ClassDeclaration) && !(stmt is InterfaceDeclaration) && !(stmt is MixinDeclaration) && !(stmt is ImportDeclaration) && !(stmt is ExportAllDeclaration) && !(stmt is ExportFromDeclaration)) {
           this.nodeIdToNode[stmt.id as i32] = stmt;
           this.nodeIdToModel[stmt.id as i32] = model;
-          this.queueReferrer(new Referrer(false, -1 as SymbolId, stmt.id as i32, model, null, true));
+          this.queueReferrer(new Referrer(false, noSymbolId, stmt.id as i32, model, null, true));
         }
       }
     }
@@ -1554,7 +1554,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           let classId = if (let (true, cid) = parseI32(classIdStr)) cid else -1;
           parsed = new ParsedMethodRef(classId as SymbolId, mName);
         } else {
-          parsed = new ParsedMethodRef(-1 as SymbolId, "");
+          parsed = new ParsedMethodRef(noSymbolId, "");
         }
         this.parsedClassMethodRefs[methStr] = parsed as ParsedMethodRef;
       }
@@ -1596,17 +1596,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let mds = cha.findImplementingMethods(subCt, mName);
               if (mds.length > 0) {
                 for (let md in mds) {
-                  this.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.getNodeModel(md as Node, subModel), subCt, this.currentReachable));
+                  this.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.getNodeModel(md as Node, subModel), subCt, this.currentReachable));
                 }
               } else {
                 let acc = cha.findImplementingAccessor(subCt, mName);
                 if (acc != null) {
-                  this.queueReferrer(new Referrer(false, -1 as SymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable));
+                  this.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable));
                 } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
                   let fieldName = mName.sliceBytes(4, mName.length);
                   let fd = cha.findImplementingField(subCt, fieldName);
                   if (fd != null) {
-                    this.queueReferrer(new Referrer(false, -1 as SymbolId, (fd as Node).id as i32, this.getNodeModel(fd as Node, subModel), subCt, this.currentReachable));
+                    this.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, this.getNodeModel(fd as Node, subModel), subCt, this.currentReachable));
                   }
                 }
               }
@@ -1635,7 +1635,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           let ifaceId = if (let (true, iid) = parseI32(ifaceIdStr)) iid else -1;
           parsed = new ParsedInterfaceMemberRef(ifaceId as SymbolId, mName);
         } else {
-          parsed = new ParsedInterfaceMemberRef(-1 as SymbolId, "");
+          parsed = new ParsedInterfaceMemberRef(noSymbolId, "");
         }
         this.parsedInterfaceMemberRefs[ifaceStr] = parsed as ParsedInterfaceMemberRef;
       }
@@ -1683,7 +1683,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         if (this.currentReachable) {
           this.markFunctionReached(existingFunc);
         }
-        this.queueReferrer(new Referrer(false, -1 as SymbolId, funcExpr.id as i32, model, classType, this.currentReachable));
+        this.queueReferrer(new Referrer(false, noSymbolId, funcExpr.id as i32, model, classType, this.currentReachable));
         continue;
       }
       
@@ -1802,7 +1802,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       
       this.wasm.specializedClosures[closureKey] = wasmFunc;
 
-      this.queueReferrer(new Referrer(false, -1 as SymbolId, funcExpr.id as i32, model, classType, this.currentReachable));
+      this.queueReferrer(new Referrer(false, noSymbolId, funcExpr.id as i32, model, classType, this.currentReachable));
     }
 
     // 6. Record function adaptations
@@ -1977,17 +1977,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             let mds = cha.findImplementingMethods(cType, mName);
             if (mds.length > 0) {
               for (let md in mds) {
-                this.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.getNodeModel(md as Node, this.getClassModel(cType)), cType, this.currentReachable));
+                this.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.getNodeModel(md as Node, this.getClassModel(cType)), cType, this.currentReachable));
               }
             } else {
               let acc = cha.findImplementingAccessor(cType, mName);
               if (acc != null) {
-                this.queueReferrer(new Referrer(false, -1 as SymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, this.getClassModel(cType)), cType, this.currentReachable));
+                this.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, this.getClassModel(cType)), cType, this.currentReachable));
               } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
                 let fieldName = mName.sliceBytes(4, mName.length);
                 let fd = cha.findImplementingField(cType, fieldName);
                 if (fd != null) {
-                  this.queueReferrer(new Referrer(false, -1 as SymbolId, (fd as Node).id as i32, this.getNodeModel(fd as Node, this.getClassModel(cType)), cType, this.currentReachable));
+                  this.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, this.getNodeModel(fd as Node, this.getClassModel(cType)), cType, this.currentReachable));
                 }
               }
             }

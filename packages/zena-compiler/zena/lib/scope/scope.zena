@@ -1,7 +1,7 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Node, IdGenerator } from '../ast.zena';
-import { Symbol, SymbolId, makeSymbolIdGenerator } from './symbol.zena';
+import { Symbol, SymbolId, makeSymbolIdGenerator, noSymbolId } from './symbol.zena';
 
 /**
  * What kind of lexical scope this is.
@@ -47,7 +47,7 @@ export final class Scope {
     isMutable: boolean,
     declaration: Node | null,
     modulePath: String,
-    id: SymbolId = 0 as SymbolId): boolean {
+    id: SymbolId = noSymbolId): boolean {
       
     if (this.#bindings.has(name)) {
       // TODO: This should be an error, but we call declare() multiple times
@@ -55,7 +55,7 @@ export final class Scope {
       // We should refactor to only call declare() once per unique name.
       return false;
     }
-    let actualId = if (id as i32 != 0) id else this.#symbolIdGenerator.next();
+    let actualId = if (id != noSymbolId) id else this.#symbolIdGenerator.next();
     this.#bindings[name] = new Symbol(name, declaration, modulePath, isMutable, actualId);
     return true;
   }

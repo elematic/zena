@@ -17,6 +17,24 @@ export let makeSymbolIdGenerator = (nextId: i32 = 1): IdGenerator<SymbolId> =>
   new IdGenerator<SymbolId>((id: i32): SymbolId => id as SymbolId, nextId);
 
 /**
+ * The absence of a symbol, and the only SymbolId that is not minted by a
+ * generator.
+ *
+ * Two situations share it, because both mean "there is no declaration behind
+ * this" and generated ids start at 1, so no real id can collide:
+ *
+ *   - A synthetic type — an inferred class, a specialization, a function type
+ *     with no declared name — permanently has no symbol.
+ *   - A `Scope.declare` / `Symbol` call that supplies no id, asking the scope's
+ *     generator to mint one.
+ *
+ * Named rather than written as `-1 as SymbolId` at 60-odd call sites so that
+ * this file stays the only place a SymbolId is minted, which is what `opaque`
+ * would require if SymbolId ever became one.
+ */
+export let noSymbolId: SymbolId = -1 as SymbolId;
+
+/**
  * Information about a declared name in a scope.
  *
  * Stored in scope bindings. The `declaration` field references the
@@ -101,7 +119,9 @@ export final class Symbol {
     this.declaration: Node | null,
     this.modulePath: String,
     this.isMutable: boolean = false,
-    this.id: SymbolId = 0 as SymbolId);
+    // Inlined rather than `noSymbolId`: a constructor default cannot
+    // reference a module-level binding. Same value, same meaning.
+    this.id: SymbolId = -1 as SymbolId);
 
   resolveTarget(): Symbol {
     var current = this;

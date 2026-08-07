@@ -108,7 +108,7 @@ import { SemanticModel, InterfaceAdaptation, SymbolDependencies, ClosureDependen
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
-import { Symbol, SymbolId } from './scope/symbol.zena';
+import { Symbol, SymbolId, noSymbolId } from './scope/symbol.zena';
 import { ScopeResult, ModuleExports } from './scope/scope-builder.zena';
 
 let lookupBindingTypeInDeps = (ctx: CheckerContext, sym: Symbol): Type | null => {
@@ -397,7 +397,7 @@ final class CheckerContext {
     this.model.setNodeType(node, type);
     if (type is FunctionType) {
       let ft = type as FunctionType;
-      if (ft.functionSymbolId != (-1 as SymbolId)) {
+      if (ft.functionSymbolId != noSymbolId) {
         let deps = this.currentDependencies();
         if (deps != null) {
           deps.referencedTypes.add(ft);
@@ -5592,7 +5592,7 @@ case _: {
                             ctx.declareBinding(localTypeInfo, preludeType);
                           }
                         } else {
-                          let ct = new ClassType(ctx.freshTypeId(), -1 as SymbolId, name.name);
+                          let ct = new ClassType(ctx.freshTypeId(), noSymbolId, name.name);
                           ctx.declareTypeName(localName, ct);
                           if (localTypeInfo != null) {
                             ctx.declareBinding(localTypeInfo, ct);
@@ -5600,14 +5600,14 @@ case _: {
                         }
                       }
                       case InterfaceDeclaration {name}: {
-                        let it = new InterfaceType(ctx.freshTypeId(), -1 as SymbolId, name.name);
+                        let it = new InterfaceType(ctx.freshTypeId(), noSymbolId, name.name);
                         ctx.declareTypeName(localName, it);
                         if (localTypeInfo != null) {
                           ctx.declareBinding(localTypeInfo, it);
                         }
                       }
                       case SealedVariant {name}: {
-                        let ct = new ClassType(ctx.freshTypeId(), -1 as SymbolId, name.name);
+                        let ct = new ClassType(ctx.freshTypeId(), noSymbolId, name.name);
                         ct.isCaseClass = true;
                         ctx.declareTypeName(localName, ct);
                         if (localTypeInfo != null) {
@@ -7645,7 +7645,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
   // Look up the pre-registered ClassType from the forward-declaration pass.
   // If not found (shouldn't happen), create one.
-  var classType: ClassType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, className);
+  var classType: ClassType = new ClassType(ctx.freshTypeId(), noSymbolId, className);
   let preRegistered = ctx.resolveTypeName(className);
   if (preRegistered != null) {
     match (preRegistered as Type) {
@@ -8585,7 +8585,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         // declaration in scope analysis if this variant was referenced earlier.
         // If not, create a fresh ClassType.
         let existingType = ctx.resolveTypeName(variantName);
-        var variantType: ClassType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, variantName);
+        var variantType: ClassType = new ClassType(ctx.freshTypeId(), noSymbolId, variantName);
         if (existingType != null) {
           // Check scope analysis: if the name's declaration is a SealedVariant,
           // the existing type was forward-materialized from this variant — reuse.
@@ -8698,7 +8698,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             sealedVars.push(ct);
           }
           case _: {
-            let unitType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, variantName);
+            let unitType = new ClassType(ctx.freshTypeId(), noSymbolId, variantName);
             unitType.superType = classType;
             unitType.isCaseClass = true;
             unitType.isFinal = true;
@@ -8742,7 +8742,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   let className = cd.name.name;
 
   // Look up the ClassType registered by registerClassDeclaration.
-  var classType: ClassType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, className);
+  var classType: ClassType = new ClassType(ctx.freshTypeId(), noSymbolId, className);
   let resolved = ctx.resolveTypeName(className);
   if (resolved != null) {
     match (resolved as Type) {
@@ -9291,10 +9291,10 @@ let checkMethodSignature = (
       if (isReferenced[0]) {
         paramSymbols.push(symId);
       } else {
-        paramSymbols.push(-1 as SymbolId);
+        paramSymbols.push(noSymbolId);
       }
     } else {
-      paramSymbols.push(-1 as SymbolId);
+      paramSymbols.push(noSymbolId);
     }
     pi += 1;
   }
@@ -9564,7 +9564,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   let ifaceName = id.name.name;
 
   // Look up the pre-registered InterfaceType from the forward-declaration pass.
-  var ifaceType: InterfaceType = new InterfaceType(ctx.freshTypeId(), -1 as SymbolId, ifaceName);
+  var ifaceType: InterfaceType = new InterfaceType(ctx.freshTypeId(), noSymbolId, ifaceName);
   let preRegistered = ctx.resolveTypeName(ifaceName);
   if (preRegistered != null) {
     match (preRegistered as Type) {
@@ -9980,7 +9980,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
 
   // 1. Create a synthetic ClassType for "this" inside the mixin early
-  let thisType = new ClassType(ctx.freshTypeId(), -1 as SymbolId, mixinName + "_This");
+  let thisType = new ClassType(ctx.freshTypeId(), noSymbolId, mixinName + "_This");
   // Mixin privates are lexically scoped to the mixin declaration and
   // shared across applications (member-lookup.md §6). This key
   // namespaces the mixin's private FIELDS inside every host class:
@@ -10808,7 +10808,7 @@ let resolveMemberType = (
         var classSymId = (ct.genericSource ?? ct).symbolId;
         if (ct.name.length >= 5 && ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
           let mixinName = ct.name.sliceBytes(0, ct.name.length - 5);
-          var foundId = -1 as SymbolId;
+          var foundId = noSymbolId;
           let mixinKeys = ctx.model.mixinDeclarations.keys();
           while (let (true, k) = mixinKeys.next()) {
             let decl = ctx.model.mixinDeclarations[k];
@@ -12930,10 +12930,10 @@ let checkFunctionExpression = (
       if (isReferenced[0]) {
         paramSymbols.push(symId);
       } else {
-        paramSymbols.push(-1 as SymbolId);
+        paramSymbols.push(noSymbolId);
       }
     } else {
-      paramSymbols.push(-1 as SymbolId);
+      paramSymbols.push(noSymbolId);
     }
     pi += 1;
   }
