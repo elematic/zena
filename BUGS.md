@@ -84,38 +84,76 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-### Compiling many entry points in one process still fails, and the guard test does not catch it
+### `Compiler.invalidate(path)` corrupts the codegen of the compile that follows it
 
-- **Found**: 2026-08-07, while moving codegen's caches off checker types.
-- **Severity**: blocking for batch compilation; invisible to a normal
-  build, where each process compiles one module.
-- **Correction**: the "20 failures → 0" figure in the commit message of
-  "Restart the wasm uid sequence per module" **does not reproduce**.
-  Re-measured on main with a freshly built compiler: still 20 of 40.
-  Restarting `nextWasmTypeUid` per module was necessary but is not
-  sufficient.
-- **Repro**: compile 40 execution tests in sequence in one process, a
-  fresh `Compiler` each. Twenty fail from the fourth onward with
-  `zir unsupported:` reasons that vary between runs — "interface vtable
-  global not found", "unresolved parameter", "static interface access",
-  "for-in iterable kind" — all naming stdlib generic instantiations.
-  `tests/language/execution/arrays/extension_class.zena` is the fourth
-  and fails; it builds clean on its own. So something other than the uid
-  sequence still makes lowering depend on a module's position in the
-  process.
-- **The guard test is weak**: `multi-entrypoint-codegen_test.zena`
-  passes, but only because its six entry points happen to place the
-  fragile one where it works. Strengthening it to a set that fails is
-  the first step of the fix — it is left as-is for now rather than
-  committing a red test.
-- **On top of that**, sharing a checked stdlib across entry points — the
-  actual prize, since checking 40 files incrementally takes 61ms against
-  ~15s of full compiles — traps in the _second_ compilation's checking:
-  `checkCompilation` → `getBindingType` → `Program.symbolToModel` →
-  `wasm trap: cast failure`. `Program`'s constructor points every unit's
-  `SemanticModel` at itself, and stdlib models are shared with the next
-  compilation. Detaching them at the end of `ModuleGenerator.compile` is
-  **not** sufficient (tried, reverted).
+- **Found**: 2026-08-07, isolating why a batching probe failed.
+- **Severity**: high for any long-lived compiler — `invalidate` is how a
+  reused `Compiler` picks up a changed file, so an editor/daemon/watch
+  mode depends on it. Nothing in the build uses it today.
+- **Repro**: on a **fresh** `Compiler`, call `invalidate(p)` then
+  `compile(p)` for `tests/language/execution/arrays/extension_class.zena`
+  and run codegen. It fails with
+  `zir unsupported: interface vtable global not found @FixedArray_s186_u8.slice`.
+  Without the `invalidate` call the same file compiles clean. It is the
+  _first_ compile of the process, so this is not a cross-compile effect;
+  `invalidate` alone is enough. Over a 40-file run it takes out 20.
+- **Note**: this masqueraded as a multi-entrypoint bug. Two earlier
+  claims in this file were wrong and are withdrawn: compiling many entry
+  points in one process **does** work (40 of 40, fresh `Compiler` each),
+  and `multi-entrypoint-codegen_test.zena` is a real guard, not a lucky
+  ordering. Every failure attributed to position came from the probe
+  calling `invalidate`.
+
+### One shared compiler across entry points miscompiles an interface trampoline
+
+- **Found**: 2026-08-07, measuring shared-stdlib batch compilation.
+- **Severity**: blocking for batch compilation; invisible today, since
+  nothing shares a compiler across entry points.
+- **What works**: 200 execution tests compiled through **one** `Compiler`,
+  threading the incremental `ProgramCheckResult`, all 200 emit without
+  error, and it is about twice as fast as a fresh compiler per entry
+  (2.8s against 5.2s over 40). Running the 200 emitted modules, **199
+  produce their expected result**.
+- **The failure**: `execution/control-flow/for_in_custom_iterable.zena`
+  returns `6` when compiled alone and traps when compiled in the batch:
+
+  ```
+  wasm backtrace:
+    0: MyIterable_s4379_Iterable_s17_Item_s4233_:iterator_trampoline
+    1: main
+  ```
+
+  So a shared compiler can emit a bad interface trampoline. That is the
+  one thing to fix before batching can be turned on.
+
+- **Minimal repro — two files, and they collide on a class name**:
+
+  ```
+  c = createCompiler(...)
+  build(c, "execution/control-flow/for-in-destructure.zena", null)   // also declares `class Item`
+  build(c, "execution/control-flow/for_in_custom_iterable.zena", prev)  // traps when run
+  ```
+
+  The second file alone on its own compiler runs and returns 6. Preceded
+  by the first, on the same `Compiler` with the check result threaded, it
+  traps. Both files declare a `class Item`, and the bad trampoline names
+  `Item_s4233` — so the suspicion is state keyed by something that does
+  not separate two same-named classes from different entry points,
+  surviving on a shared `SemanticModel` (`zena:iterator`'s) from the
+  first compile into the second. The trap is a **cast failure**: the
+  trampoline downcasts its receiver to a struct the object was not
+  allocated as.
+
+- **Not the problem** (checked, so nobody re-checks it): the batch does
+  _not_ over-include. For a module that differs, both versions have the
+  same 604 functions — identical after normalising symbol ids — and are
+  the same size once the `name` section is stripped (57632 bytes each).
+  The whole ~400-byte delta is the debug name section, where a shared
+  compiler's higher symbol ids print an extra digit. What is left after
+  stripping is a type-section permutation with references consistently
+  renumbered, from the process-global `_nextTypeUid` feeding
+  `Type.hashCode` — cosmetic, but it does mean batch output is not
+  byte-reproducible against non-batch output.
 
 ### Codegen emits a spurious value-wrapper, and which one moves with hash order
 

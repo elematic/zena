@@ -96,13 +96,12 @@ sets the pool size (`ZENA_TEST_PARALLELISM`, else `min(cpus, 8)`).
 Cold, the whole execution suite is ~37s; warm, ~5s. Nearly all of the
 cold cost is the stdlib being parsed and checked once per test —
 compiling a five-line test takes 0.385s against 0.027s for a cache hit.
-Sharing one compiler across tests would remove that, and checking is
-ready for it — `portable_semantics.zena` checks 525 files in 2s off one
-incremental `ProgramCheckResult`, and 40 entry points check in 61ms
-that way. **Codegen is not ready**, so nothing batches yet. Compiling
-40 entry points in one process still fails 20 of them, and sharing a
-checked stdlib on top of that traps outright. See BUGS.md; this is a
-compiler fix, not the runner change it was previously described as.
+Sharing one compiler across tests would cut that roughly in half — 40
+entry points take 2.8s through one shared compiler against 5.2s with a
+fresh one each — and it very nearly works: 200 execution tests compile
+through one shared compiler and 199 of them then run correctly. The one
+that does not (a miscompiled interface trampoline) is what blocks turning
+batching on. See BUGS.md.
 
 **Discovery has no allow-list.** A test runs because the file exists.
 The only way to hold one back is an explicit directive in the file:
