@@ -2213,11 +2213,27 @@ let checkAliasTargetInlineTuples = (
  * docs/design/ownership.md §"Resource-ness and affineness are different
  * properties".
  */
+/** The resource type behind a handle, or null if `t` is not a handle. */
+let ownershipHandleInner = (t: Type): Type | null => {
+  if (!isOwnershipWrapper(t)) { return null; }
+  let args = (t as TypeAliasType).typeArguments;
+  if (args == null) { return null; }
+  let a = args as Array<Type>;
+  if (a.length != 1) { return null; }
+  return a[0];
+};
+
 let isOwnershipWrapper = (t: Type): boolean => {
-  if (!(t is ClassType)) { return false; }
-  let ct = t as ClassType;
-  if (ct.sourcePath != "zena:ownership") { return false; }
-  return ct.name == "Own" || ct.name == "Borrow" || ct.name == "Unmanaged";
+  if (!(t is TypeAliasType)) { return false; }
+  let ta = t as TypeAliasType;
+  if (!ta.isDistinct) { return false; }
+  return ta.name == "Own" || ta.name == "Borrow" || ta.name == "Unmanaged";
+};
+
+/** The name of the handle `t` is, or "" if it is not one. */
+let ownershipHandleName = (t: Type): String => {
+  if (!isOwnershipWrapper(t)) { return ""; }
+  return (t as TypeAliasType).name;
 };
 
 let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean = false): Type => {
@@ -3576,6 +3592,20 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
   }
   // Same type (identity check via match).
   if (typesEqual(source, target)) { return true; }
+
+  // Borrowing at a call site is implicit: an `Own<R>` is accepted where a
+  // `Borrow<R>` is expected, and borrowing does not consume. The reverse is
+  // not true — a borrow is not an owner — and `Unmanaged<R>` is reached only
+  // through an explicit `disown`. See docs/design/ownership.md §Borrowing.
+  if (isOwnershipWrapper(source) && isOwnershipWrapper(target)) {
+    if (ownershipHandleName(source) == "Own" && ownershipHandleName(target) == "Borrow") {
+      let si = ownershipHandleInner(source);
+      let ti = ownershipHandleInner(target);
+      if (si != null && ti != null && typesEqual(si as Type, ti as Type)) {
+        return true;
+      }
+    }
+  }
 
   // `never` is assignable to anything.
   if (source is NeverType) { return true; }
@@ -6607,6 +6637,30 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case AsExpression {expression, typeAnnotation, loc}: {
     let sourceType = checkExpression(ctx, expression, null);
     let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
+    // The ownership handles are `distinct type` aliases, and casting into a
+    // distinct type is otherwise allowed — which would let a Borrow<R> be
+    // forged into an Own<R> (two owners, so two drops) or an Unmanaged<R> be
+    // promoted without adopt()'s state-flag check. Both defeat the static
+    // guarantee rather than degrading to a runtime error, so the handles are
+    // only convertible inside zena:ownership, where disown/adopt live.
+    // Generalizes to `opaque distinct type`; see docs/design/ownership.md.
+    if (!ctx.filePath.startsWith("zena:ownership")) {
+      let handleName = if (isOwnershipWrapper(targetType)) {
+        ownershipHandleName(targetType)
+      } else {
+        ownershipHandleName(sourceType)
+      };
+      if (handleName != "" && !typesEqual(sourceType, targetType)) {
+        ctx.error(
+          "Cannot cast to or from '" + handleName + "': ownership handles are " +
+          "not forgeable. Use 'disown'/'adopt' to change regime, or pass an " +
+          "'Own' where a 'Borrow' is expected — that borrows implicitly.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        return targetType;
+      }
+    }
     let isNarrowed = ctx.isExpressionNarrowed(expression);
     let isAutoCasted = if (expression is Identifier) {
       targetType is ClassType || targetType is InterfaceType
@@ -10450,6 +10504,17 @@ let resolveMemberType = (
   propName: String,
   loc: SourceLocation | null
 ): Type => {
+  // Member access forwards through the ownership handles. `Own<R>`,
+  // `Borrow<R>` and `Unmanaged<R>` carry no members of their own — they
+  // differ in permissions, not data — so `d.read()` on an `Own<Descriptor>`
+  // resolves against `Descriptor`. A resource class has no unwrapped form, so
+  // forwarding is the only way its members are reachable at all.
+  // See docs/design/ownership.md §Handles.
+  let handleInner = ownershipHandleInner(objectType);
+  if (handleInner != null) {
+    return resolveMemberType(ctx, handleInner as Type, propName, loc);
+  }
+
   match (objectType) {
     case ClassType as ct: {
       let deps = ctx.currentDependencies();

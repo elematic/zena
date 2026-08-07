@@ -51,13 +51,17 @@ export interface Disposable {
  * The owning reference to a resource. Affine: it may be moved, returned or
  * stored, but not duplicated, and it is released when it leaves scope unmoved.
  *
+ * Erased at codegen: a `distinct type` is nominally distinct for checking but
+ * shares its target's representation, so a handle costs no allocation and no
+ * indirection. The three differ in permissions, not data.
+ *
  * `Own<T>` is what declares **affineness**; `resource class` declares
  * resource-ness. The two are separate on purpose — see ownership.md
  * §"Resource-ness and affineness are different properties" — which is why
  * `Own<T>` will also apply to ordinary classes (from a provably exclusive
  * source) once layer 4 needs it.
  */
-export final class Own<T> {}
+export distinct type Own<T> = T;
 
 /**
  * A borrowed reference. Freely copied, but **second-class**: it may not be
@@ -67,7 +71,7 @@ export final class Own<T> {}
  * At unrestricted instantiations `Borrow<T>` is the identity — `Borrow<i32>`
  * is `i32` — which is what keeps container APIs from forking.
  */
-export final class Borrow<T> {}
+export distinct type Borrow<T> = T;
 
 /**
  * A disowned resource: aliasable like an ordinary reference, and **never**
@@ -79,4 +83,4 @@ export final class Borrow<T> {}
  * type soundness nor memory safety, because the state flag turns a bad
  * `adopt` into a clean error rather than a double free.
  */
-export final class Unmanaged<T> {}
+export distinct type Unmanaged<T> = T;

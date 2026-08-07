@@ -1,0 +1,32 @@
+// @mode: check
+
+// Ownership handles are `distinct type` aliases, and casting into a distinct
+// type is otherwise allowed. Without this rule a Borrow<R> could be forged
+// into an Own<R> — two owners, so two drops — and an Unmanaged<R> could be
+// promoted without adopt()'s state-flag check. Both defeat the static
+// guarantee rather than degrading to a runtime error.
+// See docs/design/ownership.md.
+
+import { Own, Borrow, Unmanaged, Disposable } from 'zena:ownership';
+
+resource class D {
+  :Disposable.dispose(): void {}
+}
+
+// @error: not forgeable
+let forgeOwnFromBorrow = (b: Borrow<D>): Own<D> => b as Own<D>;
+
+// @error: not forgeable
+let promoteWithoutAdopt = (u: Unmanaged<D>): Own<D> => u as Own<D>;
+
+// @error: not forgeable
+let stripOwnership = (o: Own<D>): Unmanaged<D> => o as Unmanaged<D>;
+
+// The legal route from Own to Borrow needs no cast at all: borrowing at a
+// call site is implicit.
+let reads = (b: Borrow<D>): i32 => 0;
+let lends = (o: Own<D>): i32 => reads(o);
+
+// Ordinary distinct types keep their casts.
+distinct type Meters = i32;
+let toMeters = (n: i32): Meters => n as Meters;

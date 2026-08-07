@@ -1,0 +1,37 @@
+// @mode: check
+
+// Own<R>, Borrow<R> and Unmanaged<R> carry no members of their own, so member
+// access forwards to R. A resource class has no unwrapped form, so forwarding
+// is the only way its members are reachable at all.
+//
+// See docs/design/ownership.md §Handles.
+
+import { Own, Borrow, Unmanaged, Disposable } from 'zena:ownership';
+
+resource class Counter {
+  var #n: i32;
+  new(n: i32) : #n = n;
+
+  value(): i32 { return this.#n; }
+  bump(by: i32): void { this.#n += by; }
+
+  :Disposable.dispose(): void {}
+}
+
+// Own, Borrow and Unmanaged all forward.
+let viaOwn = (c: Own<Counter>): i32 => c.value();
+let viaBorrow = (c: Borrow<Counter>): i32 => c.value();
+let viaUnmanaged = (c: Unmanaged<Counter>): i32 => c.value();
+
+// Borrowing at a call site is implicit: an Own<R> is accepted where a
+// Borrow<R> is expected. The reverse is not — a borrow is not an owner.
+let lends = (c: Own<Counter>): i32 => viaBorrow(c);
+
+// @error: not assignable
+let cannotOwnABorrow = (c: Borrow<Counter>): i32 => viaOwn(c);
+
+// Unmanaged is reached only through an explicit disown.
+// @error: not assignable
+let cannotDisownImplicitly = (c: Own<Counter>): i32 => viaUnmanaged(c);
+
+export function main(): i32 { return 0; }
