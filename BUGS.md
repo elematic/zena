@@ -121,45 +121,6 @@ immediately trying to fix it (which can pollute the current task's context).
   to resolve. Pinned (as a comment, not a directive) in
   `semantics/type-system/inline_tuple_restrictions.zena`.
 
-### An unresolved name in a `case` pattern silently becomes a catch-all
-
-- **Found**: 2026-08-06 (adding the narrow integer types; four new
-  `case U8Type:` arms were added to a match in `compiler.zena` without
-  adding the names to that file's import list).
-- **Severity**: high (silently disables exhaustiveness checking, which is
-  the main safety property of sealed hierarchies)
-- **Details**: `case SomeName:` where `SomeName` resolves to nothing is
-  parsed as an *identifier pattern* — a binding that matches anything —
-  rather than a class pattern. No unresolved-name diagnostic is emitted.
-  The arm therefore consumes the whole scrutinee, and every later arm is
-  reported as `Unreachable case.`, which points the reader at the wrong
-  arms entirely: the errors began ten lines *below* the actual mistake,
-  and the arms named in them were all perfectly correct.
-- **Why it is dangerous**: a *typo* in a variant name has the same shape.
-  `case ClasType:` in an otherwise-exhaustive match would silently turn
-  into a catch-all, and exhaustiveness would stop protecting that match
-  from then on — with no diagnostic anywhere.
-- **Recurrences** (both 2026-08-06, same day it was filed — this is not a
-  rare shape):
-  - *Deleting* a variant does it too, not just failing to import one.
-    Removing `ByteArrayType` turned two surviving multi-line
-    `case ByteArrayType: { … }` arms into catch-alls and produced nine
-    `Unreachable case.` errors on innocent arms. Note the asymmetry that
-    makes this easy to half-fix: a search-and-replace written for
-    single-line arms (`case X: expr`) silently leaves the block form
-    (`case X: { … }`) behind, and the block form is exactly the one that
-    then swallows the match.
-  - Because the diagnostics name *later* arms, the instinct is to
-    investigate the arms that are reported. Both times the actual
-    mistake was the *first* line that stopped erroring — i.e. the arm
-    immediately above the first reported one. That is the place to look.
-- **Fix sketch**: an identifier pattern whose name is capitalized, or
-  which resolves to nothing while the scrutinee is a sealed type, should
-  be an error suggesting the import. Distinguishing "intended binding"
-  from "intended class pattern" purely by resolution is the fuzzy
-  fallback here; a capitalization convention check would be a cheap
-  additional signal.
-
 ### The stdlib cannot use a new language feature until the seed is re-cut
 
 - **Found**: 2026-08-06 (retiring the `ByteArray` primitive; the obvious
@@ -215,6 +176,63 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Workaround**: set ZENA_REPO_ROOT to a checkout containing the
   files (the flake wrapper keeps ZENA_COMPILER_WASM pointing at the
   installed compiler).
+
+### RESOLVED: an unresolved name in a `case` pattern silently became a catch-all
+
+- **Fixed**: 2026-08-06 by b5cc02fa, "Report unresolved names in patterns
+  instead of binding them" — a bare identifier in a pattern is a
+  *reference*, not a binding; binding is spelled `let x` / `var x`, which
+  the parser already produces as a distinct node. The checker no longer
+  invents a binding when the name fails to resolve to a class.
+- **Verified**: a mistyped variant now reports at the mistake, with a
+  suggestion, instead of silently swallowing the match:
+
+  ```
+  'Crcle' does not name a class, so it cannot be used as a pattern.
+  Did you mean 'Circle'? Write 'let Crcle' to bind the matched value to
+  a new variable.
+  ```
+
+  (A cascading `Unreachable case.` still follows on the arms after it,
+  which is normal once the first arm has errored.)
+- **Found**: 2026-08-06 (adding the narrow integer types; four new
+  `case U8Type:` arms were added to a match in `compiler.zena` without
+  adding the names to that file's import list).
+- **Severity**: was high (silently disabled exhaustiveness checking, the
+  main safety property of sealed hierarchies)
+- **Details**: `case SomeName:` where `SomeName` resolves to nothing is
+  parsed as an *identifier pattern* — a binding that matches anything —
+  rather than a class pattern. No unresolved-name diagnostic is emitted.
+  The arm therefore consumes the whole scrutinee, and every later arm is
+  reported as `Unreachable case.`, which points the reader at the wrong
+  arms entirely: the errors began ten lines *below* the actual mistake,
+  and the arms named in them were all perfectly correct.
+- **Why it is dangerous**: a *typo* in a variant name has the same shape.
+  `case ClasType:` in an otherwise-exhaustive match would silently turn
+  into a catch-all, and exhaustiveness would stop protecting that match
+  from then on — with no diagnostic anywhere.
+- **Recurrences** (both 2026-08-06, same day it was filed — this is not a
+  rare shape):
+  - *Deleting* a variant does it too, not just failing to import one.
+    Removing `ByteArrayType` turned two surviving multi-line
+    `case ByteArrayType: { … }` arms into catch-alls and produced nine
+    `Unreachable case.` errors on innocent arms. Note the asymmetry that
+    makes this easy to half-fix: a search-and-replace written for
+    single-line arms (`case X: expr`) silently leaves the block form
+    (`case X: { … }`) behind, and the block form is exactly the one that
+    then swallows the match.
+  - Because the diagnostics name *later* arms, the instinct is to
+    investigate the arms that are reported. Both times the actual
+    mistake was the *first* line that stopped erroring — i.e. the arm
+    immediately above the first reported one. That is the place to look.
+- **Why the fix is the right shape**: the original sketch here proposed
+  guessing intent from capitalization. The fix that landed is better and
+  needs no heuristic — binding already has its own syntax (`let x`) and
+  its own AST node, so a bare identifier in pattern position is
+  unambiguously a reference. The bug was the checker not holding a line
+  the parser had already drawn. Worth remembering as an instance of the
+  project's no-fuzzy-fallbacks rule: the fallback that invented a binding
+  was exactly what made the failure silent.
 
 ### RESOLVED: a checkable member visit satisfied the later reachable one, stranding its closures (`Invalid ref_func: index < 0`)
 
