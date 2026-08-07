@@ -1,0 +1,56 @@
+// @mode: check
+// @skip: bootstrap
+// `void` is a legal type argument, and it is ZERO-WIDTH: a value of
+// type void occupies no slot. The checker consequence is that a
+// parameter whose (substituted) type is void is OMITTABLE — there is
+// no way to spell a void argument except by calling a void function,
+// so requiring one would make `void` unusable as a type argument.
+//
+// The execution side of these rules lives in
+// tests/language/execution/generics/void_type_argument.zena.
+
+class Cell<T> {
+  var value: T;
+  new(this.value);
+  set(v: T): void {
+    this.value = v;
+  }
+  get(): T {
+    return this.value;
+  }
+}
+
+let nothing = (): void => {};
+
+let ok = (): void => {
+  // The erased constructor argument may be omitted...
+  let c = new Cell<void>();
+  // ...and so may the erased method argument.
+  c.set();
+  // Supplying an explicit void-typed expression is also fine: it is
+  // assignable to the void parameter, and runs for its side effects.
+  c.set(nothing());
+  // A void-typed result is a statement, not a value.
+  c.get();
+
+  // Omitting is only allowed where the parameter really is void.
+  let i = new Cell<i32>(1);
+  i.set(); // @error: Expected 1 arguments, got 0
+};
+
+// NOTE: `let x = c.get();` — binding a void result — is NOT asserted
+// here. It is currently accepted by the checker and only fails later
+// in ZIR ('binding type'), but that is a PRE-EXISTING looseness about
+// `void` generally, not something `void`-as-a-type-argument
+// introduced: `let x = nothing();` on the plain void function above
+// behaves exactly the same way. Asserting an @error here would pass
+// spuriously, since the runner matches @error against any diagnostic
+// in the file.
+
+let stillTypeChecked = (): void => {
+  let c = new Cell<void>();
+  // Nothing but void is assignable to a void parameter, which is what
+  // makes counting (rather than position-matching) omitted arguments
+  // safe.
+  c.set(1); // @error: not assignable
+};

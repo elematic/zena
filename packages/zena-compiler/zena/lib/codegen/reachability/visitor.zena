@@ -14,7 +14,7 @@ import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive } from '../type-mapping.zena';
+import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -1288,7 +1288,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     let wrapperParams = new Array<ValType>();
     wrapperParams.push(new ValTypeStructRef());
     for (let p in ft.parameters) {
-      wrapperParams.push(typeToValType(this.pass.wasm, p));
+      mapParamTypeToWasmParams(this.pass.wasm, p, wrapperParams);
     }
     let wrapperReturns = new Array<ValType>();
     mapReturnTypeToWasmResults(this.pass.wasm, ft.returnType, wrapperReturns);
@@ -1485,7 +1485,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (funcTypeNode is FunctionType) {
         let fType = funcTypeNode as FunctionType;
         for (let p in fType.parameters) {
-          params.push(typeToValType(this.pass.wasm, p));
+          mapParamTypeToWasmParams(this.pass.wasm, p, params);
         }
         mapReturnTypeToWasmResults(this.pass.wasm, fType.returnType, returns);
       } else {
@@ -1665,7 +1665,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       let funcType = moduleModel.getNodeType(decl) as FunctionType;
       let params = new Array<ValType>();
       for (let pt in funcType.parameters) {
-        params.push(typeToValType(this.pass.wasm, pt));
+        mapParamTypeToWasmParams(this.pass.wasm, pt, params);
       }
       let returns = new Array<ValType>();
       mapReturnTypeToWasmResults(this.pass.wasm, funcType.returnType, returns);

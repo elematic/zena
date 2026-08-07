@@ -11,7 +11,7 @@ import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString, parseI32 } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, mixinScopeOfMember, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName } from '../codegen-utils.zena';
-import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext } from '../type-mapping.zena';
+import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { SymbolId, Symbol } from '../../scope/symbol.zena';
 import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeEqRef, ValTypeExternRef } from '../wasm.zena';
 import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair } from './context.zena';
@@ -1701,7 +1701,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (funcTypeNode is FunctionType) {
         let ft = funcTypeNode as FunctionType;
         for (let p in ft.parameters) {
-          params.push(typeToValType(this.wasm, p));
+          mapParamTypeToWasmParams(this.wasm, p, params);
         }
         mapReturnTypeToWasmResults(this.wasm, ft.returnType, returns);
       } else {
@@ -1841,7 +1841,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 let paramValTypes = new Array<ValType>();
                 paramValTypes.push(new ValTypeStructRef()); // context
                 for (let p in paramFt.parameters) {
-                  paramValTypes.push(typeToValType(this.wasm, p));
+                  mapParamTypeToWasmParams(this.wasm, p, paramValTypes);
                 }
                 let returnValTypes = new Array<ValType>();
                 if (!isVoidOrNeverType(paramFt.returnType)) {
@@ -1860,7 +1860,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let pValTypes = new Array<ValType>();
         pValTypes.push(new ValTypeStructRef()); // ctx
         for (let p in tgt.parameters) {
-          pValTypes.push(typeToValType(this.wasm, p));
+          mapParamTypeToWasmParams(this.wasm, p, pValTypes);
         }
         let rValTypes = new Array<ValType>();
         mapReturnTypeToWasmResults(this.wasm, tgt.returnType, rValTypes);

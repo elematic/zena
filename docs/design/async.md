@@ -386,12 +386,14 @@ website served by a Zena server":
   - **Not yet: `await` on a `T | Future<T>` union** (§1). The checker
     accepts it; lowering rejects it loudly. It needs a runtime test on
     the union payload, which is its own piece of work.
-  - **Not yet: `Future<void>`** (§8 question 1), blocked on something
-    older and more general than async — `void` as a generic type
-    argument lowers to a void-typed _parameter_, which ZIR rejects. A
-    plain `new Completer<void>()` in non-async code fails identically.
-    Async lowering says so explicitly rather than failing deep in the
-    stdlib.
+  - **`Future<void>` now works** (§8 question 1), and it took no
+    async-specific machinery: what was missing was the general rule
+    that `void` is a ZERO-WIDTH type argument (language reference,
+    "Generics"). Once a void-typed parameter takes no wasm slot,
+    `complete(value: T)` at `T = void` specializes to the receiver
+    alone, so the value type this pass reads falls out `null` — which
+    is precisely the case `presplitAsyncValueVt` was already
+    documented to handle.
 
   Level-0 execution tests cover eager start, multi-suspension bodies,
   suspension inside a loop, failure propagation, async methods and
@@ -470,14 +472,15 @@ input for async v1.)
 1. **`Future<void>`**: does `async (): Future<void>` want a distinct
    spelling (`async (): void`?) or is `Future<void>` fine? (Leaning:
    `Future<void>`, no special case — consistency over brevity.)
-   _A1 status_: the spelling question is still open, but the answer is
-   currently forced — `Future<void>` does not compile, for a reason
-   that has nothing to do with async. `void` as a generic type
-   argument produces a void-typed parameter (here,
-   `CallbackListener<void>.onValue`) that ZIR rejects; `new
-Completer<void>()` in ordinary non-async code fails the same way.
-   Whichever spelling wins, fire-and-forget async needs that generics
-   hole fixed first, so it is the natural next piece of work after A1.
+   _RESOLVED_: `Future<void>`, no special case. It compiles and runs
+   (`tests/language/execution/async/future_void.zena`) as an ordinary
+   instantiation, so a distinct spelling would buy only brevity and
+   would cost a second way to write the same type. The blocker was
+   never async: it was that `void` could not be a type argument at
+   all. That is now the general zero-width rule — a `void` value takes
+   no wasm slot, so a `void` parameter has none either and callers
+   omit its argument (`c.complete()`). `new Completer<void>()` works
+   in ordinary non-async code for the same reason.
 2. **Async main**: is `export async function main(): Future<i32>` the
    blessed form, with the export wrapper doing start+drain? (Leaning:
    yes; sync main stays valid.)

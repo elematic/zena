@@ -718,7 +718,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     }
     let params = new Array<ValType>();
     params.push(new ValTypeAnyRef());
-    params.push(typeToValType(wasm, memberType as Type));
+    mapParamTypeToWasmParams(wasm, memberType as Type, params);
     let returns = new Array<ValType>();
     return wasm.getSignature(params, returns);
   } else {
@@ -728,7 +728,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     let params = new Array<ValType>();
     params.push(new ValTypeAnyRef());
     for (let p in resolvedFt.parameters) {
-      params.push(typeToValType(wasm, p));
+      mapParamTypeToWasmParams(wasm, p, params);
     }
     let returns = new Array<ValType>();
     mapReturnTypeToWasmResults(wasm, resolvedFt.returnType, returns);
@@ -1008,7 +1008,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
       let resolvedFt = substituteTypeParamsInClassContext(erasedCt, ft) as FunctionType;
       fieldType = resolvedFt.parameters[0];
     }
-    params.push(typeToValType(wasm, fieldType));
+    mapParamTypeToWasmParams(wasm, fieldType, params);
     return wasm.getSignature(params, returns);
   } else {
     var ft: FunctionType | null = null;
@@ -1020,7 +1020,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
     if (ft != null) {
       let fType = ft as FunctionType;
       for (let p in fType.parameters) {
-        params.push(typeToValType(wasm, p));
+        mapParamTypeToWasmParams(wasm, p, params);
       }
       mapReturnTypeToWasmResults(wasm, fType.returnType, returns);
     }
@@ -1090,7 +1090,7 @@ export let getClosureStruct = (wasm: WasmModule, ftVal: anyref): WasmStruct => {
   let params = new Array<ValType>();
   params.push(new ValTypeStructRef()); // ctx
   for (let p in ft.parameters) {
-    params.push(typeToValType(wasm, p));
+    mapParamTypeToWasmParams(wasm, p, params);
   }
   let returns = new Array<ValType>();
   mapReturnTypeToWasmResults(wasm, ft.returnType, returns);
@@ -1384,6 +1384,32 @@ let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionTyp
     i += 1;
   }
   return true;
+};
+
+/**
+ * Appends the wasm parameter slots for one source parameter.
+ *
+ * The dual of mapReturnTypeToWasmResults: `void` is a ZERO-WIDTH type,
+ * so a void-typed parameter contributes NO slot at all, exactly as a
+ * void return contributes no result. That is what lets `void` be used
+ * as a type argument — `Future<void>` specializes `complete(value: T)`
+ * to a one-argument-in-source, zero-parameter-in-wasm function.
+ *
+ * Every site that builds a parameter list must go through here, and
+ * every site that lowers an argument list must skip the matching
+ * arguments (isZeroWidthValType), or the arity gates in lowering fire.
+ */
+export let mapParamTypeToWasmParams = (wasm: WasmModule, type: Type, params: Array<ValType>): void => {
+  let vt = typeToValType(wasm, type);
+  if (vt is ValTypeVoid) {
+    return;
+  }
+  params.push(vt);
+};
+
+/** Whether a lowered value of this type occupies a wasm slot. */
+export let isZeroWidthValType = (vt: ValType): boolean => {
+  return vt is ValTypeVoid;
 };
 
 export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: Array<ValType>): void => {

@@ -46,7 +46,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 
 
 
-import { ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical } from '../wasm-module.zena';
 import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 
@@ -81,6 +81,18 @@ import {
 // ZirUnsupported now lives in lowering-context.zena (imported above):
 // split modules throw it too, and importing it from lowering would
 // cycle.
+
+/**
+ * The absence of a value, where an IR value id is expected.
+ *
+ * A `void` expression is ZERO-WIDTH: it occupies no wasm slot, so
+ * lowering it yields no operand. Only consumers that genuinely accept
+ * `void` ever see this — a statement, a void `return`, a store to an
+ * erased field, or an argument for an erased parameter — because the
+ * checker rejects a void value anywhere else. Passing it on as a real
+ * operand is a bug that the ZIR verifier catches.
+ */
+export let NO_VALUE = -1;
 
 /** Bail-reason tag for expression kinds without a dispatch arm. */
 
@@ -892,7 +904,23 @@ export final class FunctionLowerer {
     }
     let paramList = params as Array<Parameter>;
     let setterExtra = if (setterParamIdent != null) 1 else 0;
-    if (sig.params.length != paramList.length + paramOffset + setterExtra) {
+    // Zero-width (`void`) parameters occupy NO wasm slot: the signature
+    // was built by mapParamTypeToWasmParams, which drops them. So both
+    // the shape gate and the binding loop below count only the
+    // parameters that survived, and the erased ones bind no value.
+    // Source parameter index -> signature index, or -1 when the
+    // parameter is zero-width and has no slot at all.
+    let paramSigIndex = new Array<i32>();
+    var liveParamCount = 0;
+    for (var pi = 0; pi < paramList.length; pi += 1) {
+      if (this.#isZeroWidthParam(paramList[pi])) {
+        paramSigIndex.push(-1);
+      } else {
+        paramSigIndex.push(liveParamCount + paramOffset);
+        liveParamCount += 1;
+      }
+    }
+    if (sig.params.length != liveParamCount + paramOffset + setterExtra) {
       this.#bail('signature/param shape mismatch');
     }
 
@@ -929,7 +957,22 @@ export final class FunctionLowerer {
       // list), so the callee binds the parameter normally; call sites
       // that actually omit arguments still bail at 'call arity
       // adaptation'.
-      let vt = sig.params[i + paramOffset];
+      let sigIndex = paramSigIndex[i];
+      if (sigIndex < 0) {
+        // Zero-width parameter: no wasm slot, so nothing to bind. Every
+        // use of it in the body is itself zero-width and lowers to no
+        // operand (NO_VALUE), so the binding is never read.
+        let voidSym = this.func.model.resolveDeclaration(p.name);
+        if (voidSym != null) {
+          this.#cx().env[(voidSym as Symbol).id] = NO_VALUE;
+          this.#cx().symbols[(voidSym as Symbol).id] = voidSym as Symbol;
+        }
+        if (p.pattern != null) {
+          this.#bail('destructuring a zero-width parameter');
+        }
+        continue;
+      }
+      let vt = sig.params[sigIndex];
       this.#requireSupported(vt, 'parameter type');
       let value = this.b.blockParam(entry, vt);
       let sym = this.func.model.resolveDeclaration(p.name);
@@ -965,11 +1008,16 @@ export final class FunctionLowerer {
     // Celled parameters (captured and mutated through a closure) move
     // into their heap cells before any body code runs.
     for (var i = 0; i < paramList.length; i += 1) {
+      if (paramSigIndex[i] < 0) {
+        // Nothing to spill: a zero-width parameter holds no value, so
+        // capturing it through a closure captures nothing.
+        continue;
+      }
       let sym = this.func.model.resolveDeclaration(paramList[i].name);
       if (sym != null && this.#isCelled((sym as Symbol).id)) {
         let symId = (sym as Symbol).id;
         this.#cx().env[symId] = this.#cellAlloc(
-            sig.params[i + paramOffset], this.#cx().env[symId]);
+            sig.params[paramSigIndex[i]], this.#cx().env[symId]);
       }
     }
     if (needsThisDowncast) {
@@ -1624,13 +1672,18 @@ export final class FunctionLowerer {
       }
       let superCtor = superCtorOpt as WasmFunction;
       let superSig = superCtor.signature;
-      if (superSig.params.length != si.args.length + 1) {
+      if (superSig.params.length != this.#liveArgCount(si.args) + 1) {
         this.#bail('super constructor arity');
       }
       let args = new Array<i32>();
       args.push(this.#cx().thisValue);
+      var sIdx = 1;
       for (var i = 0; i < si.args.length; i += 1) {
-        let paramVt = superSig.params[i + 1];
+        if (this.#dropZeroWidthArg(si.args[i])) {
+          continue;
+        }
+        let paramVt = superSig.params[sIdx];
+        sIdx += 1;
         this.#requireSupported(paramVt, 'super arg type');
         var value = this.#lowerExpressionCtx(si.args[i], paramVt);
         value = this.#conformToSlot(value, paramVt, 'super argument type');
@@ -1670,6 +1723,11 @@ export final class FunctionLowerer {
     }
     let found = structType.fieldIndexByName(lookupName) >= 0;
     if (!found) {
+      if (this.#isZeroWidthExpr(value)) {
+        // Erased field (T = void): no slot to store into, but the
+        // initializer still runs.
+        this.#lowerExpression(value);
+      }
       return;
     }
     let fieldVt = this.#fieldValType(structType, lookupName);
@@ -1841,6 +1899,15 @@ export final class FunctionLowerer {
       }
       case ReturnStatement {argument}: {
         if (argument == null) {
+          this.b.retVoid();
+        } else if (this.#isZeroWidthExpr(argument as Expression) &&
+            this.func.signature.returns.length == 0) {
+          // `return this.value;` where T = void: the operand exists in
+          // the source but not in wasm. Run it for its effects, then
+          // return nothing. (Guarded on the signature having no result
+          // so a `never`-typed operand — a throw — in a value-returning
+          // function keeps its existing path.)
+          this.#lowerExpression(argument as Expression);
           this.b.retVoid();
         } else if (!this.presplitAsync &&
             this.func.signature.returns.length > 1) {
@@ -2181,14 +2248,20 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('method multi-value return');
     }
-    if (sig.params.length != call.args.length) {
+    if (sig.params.length != this.#liveArgCount(call.args)) {
       this.#bail('static call arity');
     }
     let args = new Array<i32>();
-    for (var i = 0; i < sig.params.length; i += 1) {
-      this.#requireSupported(sig.params[i], 'method param type');
-      var v = this.#lowerExpressionCtx(call.args[i], sig.params[i]);
-      v = this.#conformToSlot(v, sig.params[i], 'method argument type');
+    var sIdx = 0;
+    for (var i = 0; i < call.args.length; i += 1) {
+      if (this.#dropZeroWidthArg(call.args[i])) {
+        continue;
+      }
+      let pt = sig.params[sIdx];
+      sIdx += 1;
+      this.#requireSupported(pt, 'method param type');
+      var v = this.#lowerExpressionCtx(call.args[i], pt);
+      v = this.#conformToSlot(v, pt, 'method argument type');
       args.push(v);
     }
     let fr = this.b.addRef(new IrRefFunc(target));
@@ -2250,13 +2323,18 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('method multi-value return');
     }
-    if (sig.params.length != call.args.length) {
+    if (sig.params.length != this.#liveArgCount(call.args)) {
       this.#bail('specialized call arity');
     }
     let defaults = this.#defaultArgInfo(call);
     let args = new Array<i32>();
+    var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
-      let pt = sig.params[i];
+      if (this.#dropZeroWidthArg(call.args[i])) {
+        continue;
+      }
+      let pt = sig.params[sIdx];
+      sIdx += 1;
       this.#requireSupported(pt, 'method param type');
       var v = this.#lowerArgWithDefaults(call, i, pt, defaults, -1);
       v = this.#conformToSlot(v, pt, 'method argument type');
@@ -2809,6 +2887,12 @@ export final class FunctionLowerer {
   }
 
   #lowerIdentifier(ident: Identifier): i32 {
+    if (this.#isZeroWidthExpr(ident as Expression)) {
+      // A zero-width binding (a `void` parameter) holds no value and
+      // reading it has no effect, so it yields nothing. Bailing out
+      // here keeps NO_VALUE away from #valueType.
+      return NO_VALUE;
+    }
     let sym = this.func.model.resolve(ident);
     if (sym == null) {
       this.#bail('unresolved identifier');
@@ -3092,14 +3176,21 @@ export final class FunctionLowerer {
       }
       let ctor = ctorOpt as WasmFunction;
       let sig = ctor.signature;
-      if (sig.returns.length != 1 || sig.params.length != expr.args.length) {
+      if (sig.returns.length != 1 ||
+          sig.params.length != this.#liveArgCount(expr.args)) {
         this.#bail('extension constructor shape');
       }
       let args = new Array<i32>();
+      var sIdx = 0;
       for (var i = 0; i < expr.args.length; i += 1) {
-        this.#requireSupported(sig.params[i], 'constructor param type');
-        var value = this.#lowerExpressionCtx(expr.args[i], sig.params[i]);
-        value = this.#conformToSlot(value, sig.params[i], 'constructor argument type');
+        if (this.#dropZeroWidthArg(expr.args[i])) {
+          continue;
+        }
+        let pt = sig.params[sIdx];
+        sIdx += 1;
+        this.#requireSupported(pt, 'constructor param type');
+        var value = this.#lowerExpressionCtx(expr.args[i], pt);
+        value = this.#conformToSlot(value, pt, 'constructor argument type');
         args.push(value);
       }
       this.#requireSupported(sig.returns[0], 'extension constructor type');
@@ -3138,13 +3229,18 @@ export final class FunctionLowerer {
     let ctorKey = getClassMethodKey(cKey, '<constructor>');
     if (let (true, ctor) = this.wasm.classMethodMap.get(ctorKey)) {
       let sig = ctor.signature;
-      if (sig.params.length != argExprs.length + 1) {
+      if (sig.params.length != this.#liveArgCount(argExprs) + 1) {
         this.#bail('constructor arity adaptation');
       }
       let args = new Array<i32>();
       args.push(inst);
+      var sIdx = 1;
       for (var i = 0; i < argExprs.length; i += 1) {
-        let paramVt = sig.params[i + 1];
+        if (this.#dropZeroWidthArg(argExprs[i])) {
+          continue;
+        }
+        let paramVt = sig.params[sIdx];
+        sIdx += 1;
         this.#requireSupported(paramVt, 'constructor param type');
         var value = this.#lowerExpressionCtx(argExprs[i], paramVt);
         value = this.#conformToSlot(value, paramVt, 'constructor argument type');
@@ -3588,6 +3684,13 @@ export final class FunctionLowerer {
     if (member.optional) {
       return this.#lowerOptionalChainExpr(member as Expression);
     }
+    if (this.#isZeroWidthExpr(member as Expression)) {
+      // A zero-width field (`Box<void>.value`) has no storage to read.
+      // The receiver still has to be evaluated for its effects; the
+      // read itself yields nothing.
+      this.#lowerExpression(member.object);
+      return NO_VALUE;
+    }
     let objectType = this.#substitutedNodeType(member.object);
     // Enum member access lowers to a constant, mirroring the
     // streaming backend: numeric members inline their (implicit or
@@ -3873,7 +3976,7 @@ export final class FunctionLowerer {
     if (multiOut != null) {
       this.#bail('super call in multi-value position');
     }
-    if (sig.params.length != call.args.length + 1) {
+    if (sig.params.length != this.#liveArgCount(call.args) + 1) {
       this.#bail('super method arity');
     }
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
@@ -3881,8 +3984,13 @@ export final class FunctionLowerer {
     }
     let args = new Array<i32>();
     args.push(receiver);
+    var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
-      let paramVt = sig.params[i + 1];
+      if (this.#dropZeroWidthArg(call.args[i])) {
+        continue;
+      }
+      let paramVt = sig.params[sIdx];
+      sIdx += 1;
       this.#requireSupported(paramVt, 'super param type');
       var value = this.#lowerExpressionCtx(call.args[i], paramVt);
       value = this.#conformToSlot(value, paramVt, 'super argument type');
@@ -4438,7 +4546,7 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('method multi-value return');
     }
-    if (sig.params.length != call.args.length + 1) {
+    if (sig.params.length != this.#liveArgCount(call.args) + 1) {
       this.#bail('method arity adaptation');
     }
 
@@ -4448,8 +4556,13 @@ export final class FunctionLowerer {
     let defaults = this.#defaultArgInfo(call);
     let args = new Array<i32>();
     args.push(receiver);
+    var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
-      let paramVt = sig.params[i + 1];
+      if (this.#dropZeroWidthArg(call.args[i])) {
+        continue;
+      }
+      let paramVt = sig.params[sIdx];
+      sIdx += 1;
       this.#requireSupported(paramVt, 'method param type');
       var value = this.#lowerArgWithDefaults(call, i, paramVt, defaults, receiver);
       value = this.#conformToSlot(value, paramVt, 'method argument type');
@@ -4722,7 +4835,7 @@ export final class FunctionLowerer {
       this.#bail('interface member multi-value return');
     }
     let argCount = if (argExprs == null) 0
-        else (argExprs as Array<Expression>).length;
+        else this.#liveArgCount(argExprs as Array<Expression>);
     if (sig.params.length != argCount + 1) {
       this.#bail('interface call arity adaptation');
     }
@@ -4741,8 +4854,13 @@ export final class FunctionLowerer {
     args.push(inst);
     if (argExprs != null) {
       let list = argExprs as Array<Expression>;
+      var sIdx = 1;
       for (var i = 0; i < list.length; i += 1) {
-        let paramVt = sig.params[i + 1];
+        if (this.#dropZeroWidthArg(list[i])) {
+          continue;
+        }
+        let paramVt = sig.params[sIdx];
+        sIdx += 1;
         this.#requireSupported(paramVt, 'interface param type');
         var value = this.#lowerExpressionCtx(list[i], paramVt);
         value = this.#conformToSlot(value, paramVt, 'interface argument type');
@@ -5366,7 +5484,7 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1) {
       this.#bail('array extension multi-value');
     }
-    if (sig.params.length != call.args.length + 1) {
+    if (sig.params.length != this.#liveArgCount(call.args) + 1) {
       this.#bail('array extension arity');
     }
     for (let p in sig.params) {
@@ -5381,9 +5499,15 @@ export final class FunctionLowerer {
     receiver = this.#conformToSlot(receiver, sig.params[0], 'array extension receiver');
     let args = new Array<i32>();
     args.push(receiver);
+    var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
-      var value = this.#lowerExpressionCtx(call.args[i], sig.params[i + 1]);
-      value = this.#conformToSlot(value, sig.params[i + 1], 'array extension argument');
+      if (this.#dropZeroWidthArg(call.args[i])) {
+        continue;
+      }
+      let paramVt = sig.params[sIdx];
+      sIdx += 1;
+      var value = this.#lowerExpressionCtx(call.args[i], paramVt);
+      value = this.#conformToSlot(value, paramVt, 'array extension argument');
       args.push(value);
     }
     let funcRef = this.b.addRef(new IrRefFunc(target));
@@ -5683,7 +5807,7 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('callee multi-value return');
     }
-    if (sig.params.length != call.args.length) {
+    if (sig.params.length != this.#liveArgCount(call.args)) {
       this.#bail('call arity adaptation');
     }
     for (var i = 0; i < sig.params.length; i += 1) {
@@ -5691,9 +5815,15 @@ export final class FunctionLowerer {
     }
     let defaults = this.#defaultArgInfo(call);
     let args = new Array<i32>();
+    var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
-      var value = this.#lowerArgWithDefaults(call, i, sig.params[i], defaults, -1);
-      value = this.#conformToSlot(value, sig.params[i], 'call argument type');
+      if (this.#dropZeroWidthArg(call.args[i])) {
+        continue;
+      }
+      let paramVt = sig.params[sIdx];
+      sIdx += 1;
+      var value = this.#lowerArgWithDefaults(call, i, paramVt, defaults, -1);
+      value = this.#conformToSlot(value, paramVt, 'call argument type');
       args.push(value);
     }
     let funcRef = this.b.addRef(new IrRefFunc(target));
@@ -5945,7 +6075,7 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1) {
       this.#bail('closure multi-value return');
     }
-    if (sig.params.length != call.args.length + 1) {
+    if (sig.params.length != this.#liveArgCount(call.args) + 1) {
       this.#bail('closure arity adaptation');
     }
     let ctxRef = this.b.addRef(new IrRefField(closureStruct, 'ctx'));
@@ -5953,8 +6083,13 @@ export final class FunctionLowerer {
         closureStruct.fields[1].type, callee, ctxRef);
     let args = new Array<i32>();
     args.push(ctxVal);
+    var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
-      let paramVt = sig.params[i + 1];
+      if (this.#dropZeroWidthArg(call.args[i])) {
+        continue;
+      }
+      let paramVt = sig.params[sIdx];
+      sIdx += 1;
       this.#requireSupported(paramVt, 'closure param type');
       var value = this.#lowerExpressionCtx(call.args[i], paramVt);
       value = this.#conformToSlot(value, paramVt, 'closure argument type');
@@ -5973,6 +6108,16 @@ export final class FunctionLowerer {
   }
 
   #lowerAssignment(assign: AssignmentExpression): i32 {
+    if (this.#isZeroWidthExpr(assign.left)) {
+      // Assigning to a zero-width location (`this.value = v` where the
+      // field is erased) stores nothing. Both sides still run for
+      // their effects, and the assignment yields no value.
+      if (assign.left is MemberExpression) {
+        this.#lowerExpression((assign.left as MemberExpression).object);
+      }
+      this.#lowerExpression(assign.value);
+      return NO_VALUE;
+    }
     if (assign.left is MemberExpression) {
       return this.#lowerMemberAssign(assign);
     }
@@ -6168,6 +6313,77 @@ export final class FunctionLowerer {
 
   #exprValType(expr: Expression): ValType {
     return this.#cx().exprVt(expr);
+  }
+
+  /**
+   * Whether this expression is zero-width in THIS specialization — a
+   * `void`/`never` value, which occupies no wasm slot.
+   *
+   * Substitution matters: the same `f(x)` in a generic template is a
+   * real argument at `T = i32` and no argument at all at `T = void`.
+   */
+  #isZeroWidthExpr(expr: Expression): boolean {
+    let t = this.#substitutedNodeType(expr);
+    if (t == null) {
+      return false;
+    }
+    // A semantic test, NOT typeToValType: this runs on every argument
+    // and receiver, including multi-value expressions (an inline tuple
+    // from `map.get(k)`) that have no single wasm type at all and make
+    // typeToValType throw. It agrees with mapParamTypeToWasmParams on
+    // everything that can actually BE a parameter type — the one
+    // divergence, a union containing void, cannot arise because void
+    // absorbs in unions (`T | void` collapses to `void`).
+    return isVoidOrNeverType(t as Type);
+  }
+
+  /**
+   * How many of these arguments occupy a wasm slot.
+   *
+   * Every call-site arity gate compares against THIS, not
+   * `args.length`: the callee's signature dropped its zero-width
+   * parameters, so the argument list has to be counted the same way.
+   */
+  #liveArgCount(args: Array<Expression>): i32 {
+    var live = 0;
+    for (var i = 0; i < args.length; i += 1) {
+      if (!this.#isZeroWidthExpr(args[i])) {
+        live += 1;
+      }
+    }
+    return live;
+  }
+
+  /**
+   * If this argument is zero-width, lower it for its side effects and
+   * report that it contributes no operand.
+   *
+   * The evaluation is not skipped: `c.set(record(1))` still has to run
+   * `record(1)`. Only the (nonexistent) value is dropped.
+   */
+  #dropZeroWidthArg(arg: Expression): boolean {
+    if (!this.#isZeroWidthExpr(arg)) {
+      return false;
+    }
+    this.#lowerExpression(arg);
+    return true;
+  }
+
+  /**
+   * Whether this parameter is zero-width, and so contributes no wasm
+   * slot — the callee-side mirror of #isZeroWidthExpr, and the exact
+   * condition mapParamTypeToWasmParams drops the slot on.
+   */
+  #isZeroWidthParam(p: Parameter): boolean {
+    let sym = this.func.model.resolveDeclaration(p.name);
+    if (sym == null) {
+      return false;
+    }
+    let bt = this.func.model.getBindingType(sym as Symbol);
+    if (bt == null) {
+      return false;
+    }
+    return typeToValTypeWithSub(this.wasm, bt as Type, this.func) is ValTypeVoid;
   }
 
   /**

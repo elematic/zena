@@ -49,11 +49,16 @@ This document tracks completed work and planned features. For project instructio
     so async programs run under plain `wasmtime --invoke main` today, with no
     host event loop and no changes to `zena-cli`. See
     [async.md](docs/design/async.md) §5 for what A1 deliberately left out
-    (union `await`, `Future<void>`).
+    (union `await`).
   - **await-in-try is done too** (§6), the fast-follow to A1: resuming
     re-enters each enclosing `try` region, so a failed await is caught by
     the handler the user wrote rather than silently rejecting the
     function's own future.
+  - **`Future<void>` works** — the fire-and-forget shape. It needed no
+    async machinery: the blocker was that `void` could not be a type
+    argument at all. `void` is now a zero-width type argument (it takes
+    no wasm slot, so callers omit its arguments); see the language
+    reference under "Generic Classes".
   - Next: A2 (timers over WASI p1 `poll_oneoff`), then A3 (external
     completions on a JS host).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.

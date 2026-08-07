@@ -102,7 +102,7 @@ import {
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, baseType,
   integerLiteralFits,
-  promoteNumeric, typeToString
+  promoteNumeric, typeToString, requiredParameterCount
 } from './types.zena';
 import { SemanticModel, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency } from './semantic-model.zena';
 import {
@@ -10388,18 +10388,12 @@ let checkNewExpression = (
         ctx.model.setOriginalArgCount(newExpr, callerArgCount);
       }
 
-      // Check argument count (accounting for optional parameters).
+      // Check argument count (accounting for optional and zero-width
+      // parameters — a `void` parameter, which a `void` type argument
+      // produces, is omittable because no argument can express it).
       let expectedCount = ctor.parameters.length;
-      var requiredCount = expectedCount;
-      if (ctor.optionalParameters != null) {
-        let optionals = ctor.optionalParameters as Array<boolean>;
-        requiredCount = 0;
-        var oi = 0;
-        while (oi < optionals.length) {
-          if (!optionals[oi]) { requiredCount = requiredCount + 1; }
-          oi += 1;
-        }
-      }
+      let requiredCount = requiredParameterCount(
+          ctor.parameters, ctor.optionalParameters);
       if (callerArgCount < requiredCount || callerArgCount > expectedCount) {
         let expectedMsg = if (requiredCount == expectedCount) {
           `${expectedCount}`
@@ -13178,17 +13172,10 @@ let checkCallExpressionInner = (
 
       let actualCount = args.length;
 
-      // Count required parameters (not optional).
-      var requiredCount = expectedCount;
-      if (effectiveFt.optionalParameters != null) {
-        let optionals = effectiveFt.optionalParameters as Array<boolean>;
-        requiredCount = 0;
-        var i = 0;
-        while (i < optionals.length) {
-          if (!optionals[i]) { requiredCount = requiredCount + 1; }
-          i += 1;
-        }
-      }
+      // Count required parameters (not optional, not zero-width — see
+      // requiredParameterCount).
+      let requiredCount = requiredParameterCount(
+          effectiveFt.parameters, effectiveFt.optionalParameters);
 
       if (originalActualCount < requiredCount || originalActualCount > expectedCount) {
         // Show range for optional parameters, single count otherwise

@@ -2836,6 +2836,51 @@ class Container<T extends Box<V>, V> {
 }
 ```
 
+### `void` as a Type Argument
+
+`void` is a valid type argument. It is a **zero-width** type: a value of
+type `void` occupies no space at runtime, so a `T`-typed field or
+parameter simply disappears when `T` is `void`.
+
+The visible consequence is at call sites. There is no way to write a
+`void` value, so an argument for a `void` parameter is **omitted**:
+
+```zena
+class Cell<T> {
+  var value: T;
+  new(this.value);
+  set(v: T): void { this.value = v; }
+  get(): T { return this.value; }
+}
+
+let c = new Cell<void>();  // the constructor argument is omitted
+c.set();                   // so is the method argument
+c.get();                   // a void result is a statement, not a value
+```
+
+Omitting is permitted, not required: an expression that is *already*
+`void` can be passed explicitly, and still runs for its side effects.
+
+```zena
+let log = (): void => { /* ... */ };
+c.set(log());  // runs log(), stores nothing
+```
+
+Nothing but `void` is assignable to a `void` parameter, so an omitted
+argument can never be silently filled by the next one along — a
+misaligned argument fails its own type check.
+
+This is what makes `Future<void>` work — the fire-and-forget async
+shape — with no special case in the language:
+
+```zena
+let save = async (): Future<void> => {
+  await write(data);
+};
+
+await save();  // a statement: there is no value to bind
+```
+
 ### Generic Methods
 
 Classes and Mixins can define generic methods. Type parameters are specified after the method name.

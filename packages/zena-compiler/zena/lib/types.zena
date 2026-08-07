@@ -1085,6 +1085,42 @@ export let isVoidOrNeverType = (t: Type): boolean => {
 };
 
 /**
+ * How many arguments a call must actually supply.
+ *
+ * Optional parameters are omittable, and so are ZERO-WIDTH ones. A
+ * `void` parameter carries no value: codegen erases it (it takes no
+ * wasm slot), and there is no way to spell a `void` argument except by
+ * calling a void-returning function. That is what makes `void` usable
+ * as a type argument — `Completer<void>` instantiates
+ * `complete(value: T)` into a parameter nothing can be passed for, so
+ * callers write `c.complete()`.
+ *
+ * Omitting is permitted, not required: an explicit void-typed
+ * expression still type-checks in the slot, and still runs for its
+ * side effects.
+ *
+ * Counting (rather than position-matching) is safe here because void
+ * accepts nothing but void: an argument that slides into a void
+ * parameter's position fails its own assignability check.
+ */
+export let requiredParameterCount = (
+    parameters: Array<Type>, optionals: Array<boolean> | null): i32 => {
+  var required = 0;
+  for (var i = 0; i < parameters.length; i += 1) {
+    let isOptional = if (optionals != null) {
+      let o = optionals as Array<boolean>;
+      i < o.length && o[i]
+    } else {
+      false
+    };
+    if (!isOptional && !isVoidOrNeverType(parameters[i])) {
+      required += 1;
+    }
+  }
+  return required;
+};
+
+/**
  * Get the name of a numeric type.
  */
 export let numericTypeName = (t: Type): String => match (t) {

@@ -1,0 +1,73 @@
+// @mode: run
+// @result: 1234
+// @skip: bootstrap
+// `Future<void>` — the fire-and-forget shape (async.md §8 question 1).
+// It needs no async-specific machinery: it falls out of `void` being a
+// zero-width type argument (see
+// tests/language/execution/generics/void_type_argument.zena). An async
+// function declaring `Future<void>` completes its future with no
+// value, and awaiting one is a statement rather than an expression.
+import { Future, Completer, drainMicrotasks } from 'zena:async';
+
+var log = 0;
+
+let mark = (n: i32): void => {
+  log = log * 10 + n;
+};
+
+/** An async function that produces no value. */
+let step = async (n: i32): Future<void> => {
+  mark(n);
+};
+
+/** Awaiting a Future<void> — a statement, and its failure still
+ * propagates as an ordinary throw at the resume point. */
+let failing = async (): Future<void> => {
+  throw new Error('nope');
+};
+
+export async function main(): Future<i32> {
+  // A plain Completer<void>, driven from non-async code: the value
+  // callback takes no argument, because there is no value.
+  let c = new Completer<void>();
+  c.future.onComplete(
+    () => {
+      mark(1);
+    },
+    (e) => {
+      log = -1;
+    }
+  );
+  // The erased argument is omitted.
+  c.complete();
+  drainMicrotasks();
+  if (log != 1) {
+    return -2;
+  }
+
+  // Awaiting a Future<void> from an async body.
+  await step(2);
+  if (log != 12) {
+    return -3;
+  }
+
+  // Two in sequence, to pin that the resume path carries no value.
+  await step(3);
+  await step(4);
+  if (log != 1234) {
+    return -4;
+  }
+
+  // A rejected Future<void> throws at the await, like any other.
+  var caught = 0;
+  try {
+    await failing();
+  } catch (e) {
+    caught = 1;
+  }
+  if (caught != 1) {
+    return -5;
+  }
+
+  return log;
+}

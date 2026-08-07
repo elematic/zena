@@ -1,0 +1,51 @@
+// @mode: run
+// @result: 71
+// @skip: bootstrap
+// `void` is a ZERO-WIDTH type argument: a value of type void occupies
+// no wasm slot anywhere — no field, no parameter, no local, no result
+// (the result case was always true). So a generic instantiated at
+// `void` has its T-typed fields and parameters erased, and callers
+// simply omit the corresponding arguments.
+//
+// This is the general rule that `Future<void>` rests on; nothing here
+// mentions async.
+
+class Cell<T> {
+  var value: T;
+  new(this.value);
+  set(v: T): void {
+    this.value = v;
+  }
+  get(): T {
+    return this.value;
+  }
+}
+
+var trace = 0;
+
+/** A void-typed expression with a side effect. */
+let record = (n: i32): void => {
+  trace = trace * 10 + n;
+};
+
+export let main = (): i32 => {
+  // Erased field, erased constructor argument.
+  let c = new Cell<void>();
+
+  // An erased parameter: the argument may be omitted entirely...
+  c.set();
+
+  // ...or supplied as a void-typed expression, which still has to run
+  // for its side effects even though it yields no value.
+  c.set(record(1));
+
+  // A void-typed field read is a statement, not a value.
+  c.get();
+
+  // The same generic at a normal type argument is unaffected.
+  let i = new Cell<i32>(6);
+  i.set(i.get() + 1);
+
+  // trace 1, i 7 => 71
+  return i.get() * 10 + trace;
+};

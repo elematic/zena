@@ -413,22 +413,15 @@ let prepareOne = (
   let failFn = methodOf(wasm, fKey, 'fail', name);
   let futureCtor = methodOf(wasm, fKey, '<constructor>', name);
   // `complete(this, value: T)` is where the value type comes from.
+  // `Future<void>` (async.md §8 question 1) needs nothing special here:
+  // `void` is a zero-width type argument, so `complete` specializes to
+  // the receiver alone and valueVt falls out null — exactly the "no
+  // value slot" case presplitAsyncValueVt already describes.
   let valueVt = if (completeFn.signature.params.length > 1) {
     completeFn.signature.params[1]
   } else {
     null
   };
-  if (valueVt != null && valueVt is ValTypeVoid) {
-    // `Future<void>` (async.md §8 question 1) is blocked on something
-    // older and more general than async: `void` as a generic type
-    // argument lowers to a void-typed PARAMETER, which ZIR rejects.
-    // A plain `new Completer<void>()` in non-async code fails the same
-    // way. Say so here rather than surfacing that deep in the stdlib.
-    throw new Error('async lowering: Future<void> is not supported yet — ' +
-        'void as a generic type argument produces a void-typed ' +
-        'parameter the backend rejects. Return a value type for now. ' +
-        '[in ' + name + ']');
-  }
 
   if (wasm.exceptionTag == null || wasm.exceptionPayload == null) {
     // step()'s failure-capture region needs the exception infra; the

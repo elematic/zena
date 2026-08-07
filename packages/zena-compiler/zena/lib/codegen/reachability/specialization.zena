@@ -4,7 +4,7 @@ import { SemanticModel } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo } from '../../types.zena';
 import { Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, TypeAnnotation, InterfaceDeclaration, Expression, MixinDeclaration } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, ClassCodegenInfo } from '../wasm-module.zena';
-import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, ValTypeFuncRef, valTypeToOpcode } from '../wasm.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, ValTypeFuncRef, valTypeToOpcode } from '../wasm.zena';
 import { SymbolId } from '../../scope/symbol.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -12,7 +12,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { i32ToString } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature } from '../type-mapping.zena';
+import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature } from '../type-mapping.zena';
 
 /**
  * Specializer handles the monomorphization of generic classes and functions,
@@ -957,7 +957,7 @@ export final class Specializer implements SpecializerInterface {
     if (methodTypeNode is FunctionType) {
       let fType = methodTypeNode as FunctionType;
       for (let p in fType.parameters) {
-        params.push(typeToValType(this.pass.wasm, p));
+        mapParamTypeToWasmParams(this.pass.wasm, p, params);
       }
       if (methName != "<constructor>") {
         mapReturnTypeToWasmResults(this.pass.wasm, fType.returnType, returns);
@@ -1465,6 +1465,12 @@ export final class Specializer implements SpecializerInterface {
         };
         let resolvedType = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, pair.value.type);
         let valType = typeToValType(this.pass.wasm, resolvedType);
+        if (valType is ValTypeVoid) {
+          // A zero-width field (`Box<void>.value`) holds nothing, so it
+          // gets no storage. Reads of it lower to no value and writes
+          // to it lower to just their right-hand side's effects.
+          continue;
+        }
         let nullableValType = match (valType) {
           case ValTypeRef {target}: new ValTypeRefNull(target)
           case _: valType
@@ -1515,7 +1521,7 @@ export final class Specializer implements SpecializerInterface {
     
     for (let p in funcTypeNode.parameters) {
       let subType = substituteTypeParamsInCodegen(typeParams, typeArgs, p);
-      concreteParams.push(typeToValType(this.pass.wasm, subType));
+      mapParamTypeToWasmParams(this.pass.wasm, subType, concreteParams);
     }
     
     let subReturn = substituteTypeParamsInCodegen(typeParams, typeArgs, funcTypeNode.returnType);
