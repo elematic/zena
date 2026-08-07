@@ -132,16 +132,117 @@ let iteratorInstantiationOf = (func: WasmFunction): InterfaceType => {
 // place (blocks own their inst lists; the flat arrays are append-only),
 // so it cannot go through IrBuilder, which refuses terminated blocks.
 //
-// These, computeLiveIn, loopContainsSuspend, weakenToNullable, and
-// rerouteEdges are exported because the async split pass (async.zena)
-// is the same transform over a different suspension terminator and
-// reuses them verbatim. Keep them suspension-kind neutral.
+// These, computeLiveIn, loopContainsSuspend, weakenToNullable,
+// rerouteEdges and the TryRegion helpers are exported because the async
+// split pass (async.zena) is the same transform over a different
+// suspension terminator and reuses them verbatim. Keep them
+// suspension-kind neutral.
 // ---------------------------------------------------------------------------
 
 export let truncate = (a: Array<i32>): void => {
   while (a.length > 0) {
     a.pop();
   }
+};
+
+/**
+ * One user-level `try` region of a presplit body: the try_br's body and
+ * catch successors, plus its exception-tag ref.
+ *
+ * A region's extent is the dominator subtree of its body target — that
+ * is exactly what the emitter places inside the `try_table` (emit.zena's
+ * try_br case emits the body successor's subtree inline), so dominance
+ * is the authoritative membership test.
+ */
+export final class TryRegion(bodyTarget: i32, catchTarget: i32, tagRef: i32)
+
+/**
+ * Every user `try` region in the presplit body, in block order.
+ *
+ * Regions either split pass synthesizes for itself — async's
+ * failure-capture region around the whole machine, and the fresh
+ * re-entry try_brs below — are built later and are not in here; this
+ * sees only regions the user wrote.
+ */
+export let collectTryRegions = (body: IrBody): Array<TryRegion> => {
+  let regions = new Array<TryRegion>();
+  var bi = 0;
+  while (bi < body.blocks.length) {
+    let insts = body.blocks[bi].insts;
+    if (insts.length > 0) {
+      let term = insts[insts.length - 1];
+      if (body.op(term) == IrOp.try_br) {
+        let succs = body.successors(term);
+        regions.push(new TryRegion(succs[0].target, succs[1].target,
+            body.a[term]));
+      }
+    }
+    bi += 1;
+  }
+  return regions;
+};
+
+/**
+ * The regions enclosing `block`, outermost first.
+ *
+ * Ordering is by dominance between the regions' body targets: an outer
+ * region's body dominates an inner one's, so re-entering them in this
+ * order rebuilds the same nesting the source had.
+ */
+export let enclosingRegionsOf = (
+  cfg: IrCfg,
+  regions: Array<TryRegion>,
+  block: i32
+): Array<TryRegion> => {
+  let hits = new Array<TryRegion>();
+  for (let r in regions) {
+    if (cfg.dominates(r.bodyTarget, block)) {
+      hits.push(r);
+    }
+  }
+  // Insertion sort, outermost (most-dominating) first.
+  var i = 1;
+  while (i < hits.length) {
+    let cur = hits[i];
+    var j = i - 1;
+    while (j >= 0 && !cfg.dominates(hits[j].bodyTarget, cur.bodyTarget)) {
+      hits[j + 1] = hits[j];
+      j -= 1;
+    }
+    hits[j + 1] = cur;
+    i += 1;
+  }
+  return hits;
+};
+
+/**
+ * Which user `try` regions enclose each dispatch target, keyed by block.
+ *
+ * Every dispatch target, not just the resume blocks: rerouteEdges sends
+ * every edge into a dispatch target through the dispatcher, so a
+ * suspending loop's header is left by the loop's entry edge and its
+ * backedge alike. Covering only resume blocks protects the segment after
+ * each suspension — which is dominated by its resume block — but leaves
+ * the stretch from the header down to the suspension running outside the
+ * region on every iteration.
+ *
+ * Computed on the pristine CFG, before the transform rewires edges.
+ */
+export let dispatchRegionsOf = (
+  body: IrBody,
+  cfg: IrCfg,
+  pcOfBlock: HashMap<i32, i32>
+): HashMap<i32, Array<TryRegion>> => {
+  let regions = collectTryRegions(body);
+  let out = new HashMap<i32, Array<TryRegion>>();
+  var b = 0;
+  while (b < body.blocks.length) {
+    if (pcOfBlock.has(b)) {
+      out[b] = enclosingRegionsOf(cfg, regions, b);
+    }
+    b += 1;
+  }
+  return out;
 };
 
 /** Replaces dst's contents with src's, in place (IrBlock fields are
@@ -407,6 +508,10 @@ let prepareOne = (
     hb += 1;
   }
 
+  // Which user try regions enclose each dispatch target, so the
+  // dispatcher can re-enter them (generators.md §6, async.md §6).
+  let dispatchRegions = dispatchRegionsOf(presplit, cfg, pcOfBlock);
+
   let liveIn = computeLiveIn(presplit, cfg);
 
   // Spill set: everything live into a dispatch target, every dispatch
@@ -504,7 +609,7 @@ let prepareOne = (
   // The two bodies.
   let rampBody = buildRamp(func, frame, fatPtr, vtableGlobal, entryParamIds);
   let nextBody = buildNextBody(presplit, cfg, frame, spilled, pcOfBlock,
-      dTargets, slotSig, resumeOf);
+      dTargets, slotSig, resumeOf, dispatchRegions);
   let artifacts = new GeneratorArtifacts(rampBody, nextBody);
   func.isGeneratorRamp = true;
   rampBodies[func.uid] = artifacts;
@@ -612,7 +717,8 @@ let buildNextBody = (
   pcOfBlockIn: HashMap<i32, i32>,
   dTargetsIn: Array<i32>,
   slotSig: WasmSignature,
-  resumeOf: Array<i32>
+  resumeOf: Array<i32>,
+  dispatchRegions: HashMap<i32, Array<TryRegion>>
 ): IrBody => {
   let origCount = body.blocks.length;
   let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
@@ -740,6 +846,41 @@ let buildNextBody = (
   dispatchArgs.push(stateVal);
   brTo(enterBlock, dispatcher, dispatchArgs);
 
+  /**
+   * Re-enters the user `try` regions enclosing a dispatch target, and
+   * returns the block the dispatcher should branch to (generators.md
+   * §6; the construction and its rationale are async.md §6).
+   *
+   * The dispatcher lives outside every user region, so branching
+   * straight at the target would leave the segment it heads
+   * unprotected: the region silently shrinks to exclude it, and a
+   * `throw` there sails past the handler the source wrote. Each
+   * enclosing region is instead re-entered through a fresh `try_br`
+   * whose catch is that region's own handler, innermost last.
+   */
+  let reenterRegions = (dispatchTarget: i32): i32 => {
+    let regions =
+        if (let (true, rs) = dispatchRegions.get(dispatchTarget)) rs
+        else new Array<TryRegion>(0);
+    var target = dispatchTarget;
+    // Innermost first, so the outermost try_br ends up on the outside.
+    var ri = regions.length - 1;
+    while (ri >= 0) {
+      let r = regions[ri];
+      let t = newBlockId();
+      let idx = body.extra.length;
+      body.extra.push(target);
+      body.extra.push(0);
+      body.extra.push(r.catchTarget);
+      body.extra.push(0);
+      let inst = rawInst(body, IrOp.try_br, -1, r.tagRef, idx);
+      placeInst(body, t, inst);
+      target = t;
+      ri -= 1;
+    }
+    return target;
+  };
+
   // dispatcher(pc): br_if chain over the dispatch targets, ascending
   // pc. The final fall-through is an invalid state — trap.
   let pcParam = rawParam(body, dispatcher, i32Vt);
@@ -760,7 +901,7 @@ let buildNextBody = (
       fb += 1;
     }
     if (found >= 0) {
-      chainTargets.push(found);
+      chainTargets.push(reenterRegions(found));
       chainPcs.push(scanPc);
       remaining -= 1;
     }

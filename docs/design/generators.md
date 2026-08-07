@@ -114,9 +114,10 @@ Checker rules:
 - `yield` inside a non-`gen` closure nested in a `gen` body is an error
   (the closure is its own function; it cannot suspend its lexical parent).
   Same rule JS has, and the same rule `await` will have.
-- **v1 restriction: `yield` may not appear inside `try`** (either block).
-  §6 explains why (early-termination cleanup is a protocol question we
-  refuse to answer prematurely). Diagnostic, not a silent limitation.
+- `yield` may appear inside `try` and inside `catch`; a throw after the
+  suspension reaches the handler the source wrote. §6. (This was a v1
+  restriction, lifted once async's await-in-try supplied the region
+  construction.)
 - `break`/`continue`/`return` inside the generator behave normally (they
   are local control flow of the generator body).
 
@@ -158,7 +159,7 @@ and a half of them.
 | `next()` → `{value, done}` (pull)                        | ✅ as `inline (true, T) \| (false, _)`     | The iteration protocol; already exists.                                          |
 | Generator is itself iterable                             | ✅ (trivially — for-in accepts `Iterator`) |                                                                                  |
 | `next(v)` — send values in                               | ❌                                         | §3.2                                                                             |
-| `return(v)` / early termination cleanup                  | ❌                                         | §6 — follows from no-yield-in-try                                                |
+| `return(v)` / early termination cleanup                  | ❌                                         | §6 — decided with cancellation, on the async side                                |
 | `throw(e)` — inject exception                            | ❌                                         | Only exists to support the async-via-generators polyfill; Zena gets native async |
 | Completion value (`return v` → `{done: true, value: v}`) | ❌                                         | §3.1                                                                             |
 
@@ -379,38 +380,45 @@ This is the concrete sense in which generators "flush out the transform"
 ## 6. Exceptions, `try`, and early termination
 
 Throwing **out** of a generator works (§5.2: propagates from `next()`,
-poisons the frame). Yielding **inside** a `try` is rejected in v1:
+poisons the frame). Yielding **inside** a `try` is **supported**:
 
 ```zena
-gen (): i32 => {
+gen (): Iterator<i32> => {
   try {
-    yield 1;        // error: cannot yield inside try (v1)
+    yield 1;
+    throw new Error('boom');   // caught below
   } catch (e) { ... }
 }
 ```
 
-Rationale — this is a protocol question wearing a syntax costume:
+This was rejected in v1 for two reasons, one of which turned out to be
+the whole difficulty and one of which turned out not to bind:
 
-- If a consumer abandons a suspended generator (`break` out of `for-in`),
-  a pending `finally` around the yield can only run if the protocol has a
-  termination signal — JS's `it.return()`, called implicitly by `for-of`
-  on early exit. That drags in: a second protocol method on `Iterator`
-  (taxing every iterator), a defined behavior for yield-inside-finally,
-  and "generator finalization" semantics we'd be inventing under time
-  pressure. C# forbids `yield` in `catch` and in `try`-with-`catch` for
-  cousin reasons; we start stricter.
 - ZIR's exception regions (`try_br`, `emit.zena:822`) require properly
-  nested handler regions; a suspension edge leaving a handled region and
-  re-entering it from `next()`'s dispatch is exactly the kind of region
-  surgery ir.md §15 already flags as a risk for plain inlining.
-- The restriction is loud, local, and removable. When cancellation is
-  designed for async (which faces the same question as "what happens to
-  a pending `finally` when a task is cancelled"), generators adopt the
-  same answer, and this restriction is lifted in one place.
+  nested handler regions, and a suspension edge that leaves a handled
+  region and re-enters it from `next()`'s dispatch is exactly the region
+  surgery ir.md §15 flags. **This is now solved**, by async's
+  await-in-try work — see [async.md](async.md) §6 for the construction
+  and why getting it wrong is silent. Generators inherit it verbatim:
+  the two split passes share one implementation
+  (`generators.zena`'s `dispatchRegionsOf` plus a `reenterRegions` per
+  pass), because they are the same transform over a different
+  suspension terminator.
+- The protocol question — if a consumer abandons a suspended generator
+  (`break` out of `for-in`), a pending `finally` around the yield can
+  only run if the protocol has a termination signal, JS's `it.return()`.
+  That still drags in a second protocol method on `Iterator` (taxing
+  every iterator), a behavior for yield-inside-finally, and generator
+  finalization semantics. But it never justified banning `try`/`catch`:
+  it is an argument about **`finally` on abandonment**, and ZIR does not
+  lower `finally` at all yet. C# forbids `yield` in `catch` for cousin
+  reasons; having the region construction, we don't need to.
 
-Consequence: **no `return()` / disposal protocol in v1**, and `for-in`
-over generators needs no early-exit hook — `break` just drops the frame
-(or, fused, is a plain branch).
+So the standing restriction is narrower than "no yield in try": there is
+still **no `return()` / disposal protocol**, so `for-in` over generators
+needs no early-exit hook — `break` just drops the frame (or, fused, is a
+plain branch) — and what happens to a pending `finally` on abandonment
+is still decided once, with cancellation, on the async side.
 
 ## 7. The fast path: for-in fusion
 
@@ -620,6 +628,7 @@ progress; M3 loop not started).
   in the self-hosted tokenizer; parse `gen` functions/methods and `yield`
   statements; AST + checker (yield typing, `Iterator<T>` wrapping,
   yield-in-try and yield-in-closure rejections, lazy-call semantics).
+  The yield-in-try rejection has since been lifted — see §6.
   Portable syntax/semantics tests with `// @skip: bootstrap`.
   _No dependency on ZIR work; can start immediately._
 - **G1 — split pass (protocol form).** ✅ **Done**

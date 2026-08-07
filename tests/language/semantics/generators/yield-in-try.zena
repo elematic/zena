@@ -1,9 +1,26 @@
 // @mode: check
+// `yield` inside `try` is supported (generators.md §6). This used to be
+// a checker error; the split pass now re-enters the enclosing regions
+// at every dispatch target, so the suspension keeps its protection.
 let g = gen (): Iterator<i32> => {
   try {
-    yield 1; // @error: 'yield' may not appear inside 'try'
+    yield 1;
+    throw new Error('after the suspension');
   } catch (e) {
     let _m = e;
   }
   yield 2;
+};
+
+// Nested regions, and a suspension in the handler.
+let h = gen (): Iterator<i32> => {
+  try {
+    try {
+      yield 1;
+    } catch (inner) {
+      yield 2;
+    }
+  } catch (outer) {
+    yield 3;
+  }
 };

@@ -1,0 +1,61 @@
+// @mode: run
+// @result: 321
+// `yield` inside `try` (generators.md §6). The generator suspends
+// inside a protected region and resumes back into it, so a throw after
+// the suspension reaches the handler the source wrote.
+//
+// Failing to do this is silent: the code still compiles and the
+// no-throw path still works, because a resume block that is never left
+// by an exception looks identical either way.
+
+/** Suspends inside a try; optionally throws after resuming. */
+let g = gen (fail: boolean): Iterator<i32> => {
+  try {
+    yield 1;
+    if (fail) {
+      throw new Error('after the suspension');
+    }
+    yield 2;
+  } catch (e) {
+    yield 9;
+  }
+  yield 3;
+};
+
+/** A throw raised BEFORE any suspension still reaches the handler. */
+let throwsFirst = gen (): Iterator<i32> => {
+  try {
+    if (1 == 1) {
+      throw new Error('before any suspension');
+    }
+    yield 1;
+  } catch (e) {
+    yield 7;
+  }
+  yield 8;
+};
+
+let collect = (it: Iterator<i32>): i32 => {
+  var acc = 0;
+  for (let v in it) {
+    acc = acc * 10 + v;
+  }
+  return acc;
+};
+
+export let main = (): i32 => {
+  // No throw: 1, 2, 3.
+  if (collect(g(false)) != 123) {
+    return -1;
+  }
+  // Throws after resuming; the handler runs, then execution continues
+  // past the try: 1, 9, 3.
+  if (collect(g(true)) != 193) {
+    return -2;
+  }
+  // 7, 8.
+  if (collect(throwsFirst()) != 78) {
+    return -3;
+  }
+  return 321;
+};

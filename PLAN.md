@@ -53,7 +53,16 @@ This document tracks completed work and planned features. For project instructio
   - **await-in-try is done too** (§6), the fast-follow to A1: resuming
     re-enters each enclosing `try` region, so a failed await is caught by
     the handler the user wrote rather than silently rejecting the
-    function's own future.
+    function's own future. Re-entry happens at every dispatch target,
+    not only the resume blocks — a suspending loop's header is one too,
+    and covering resume blocks alone leaves the stretch before each
+    `await` unprotected on every iteration.
+  - **`yield` inside `try` now works as well.** It was a v1 generator
+    restriction waiting on exactly this region construction, so
+    generators inherit it: both split passes share one implementation.
+    See [generators.md](docs/design/generators.md) §6 — what remains
+    deferred there is the `return()`/disposal protocol and `finally` on
+    abandonment, which are decided with cancellation.
   - **`Future<void>` works** — the fire-and-forget shape. It needed no
     async machinery: the blocker was that `void` could not be a type
     argument at all. `void` is now a zero-width type argument (it takes

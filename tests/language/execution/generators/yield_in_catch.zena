@@ -1,0 +1,94 @@
+// @mode: run
+// @result: 909
+// Nested try regions, and a suspension inside a CATCH block.
+//
+// The nesting is what makes this sharp. A catch body is not inside its
+// own region — the emitter places it after the try_table — so resuming
+// there must NOT re-enter the region it handles, or it would re-arm a
+// handler the source did not. But an inner catch body IS inside the
+// OUTER region, so resuming there must re-enter exactly that one. The
+// dominator test picks the right set in both cases; a rule like
+// "re-enter the region whose resume block this is" would not.
+
+/** Suspends in an inner handler, then throws on to the outer one. */
+let nested = gen (): Iterator<i32> => {
+  try {
+    try {
+      yield 1;
+      throw new Error('inner');
+    } catch (i1) {
+      // Inside the outer region, not the inner one.
+      yield 2;
+      throw new Error('rethrown from the inner handler');
+    }
+  } catch (o) {
+    yield 3;
+  }
+  yield 4;
+};
+
+/** A suspension in a handler with no enclosing region at all. */
+let bare = gen (): Iterator<i32> => {
+  try {
+    throw new Error('caught');
+  } catch (e) {
+    yield 5;
+    // Nothing protects this stretch; it must run unprotected, and the
+    // generator must finish normally rather than re-entering a region.
+    yield 6;
+  }
+  yield 7;
+};
+
+/** The caught error must survive a suspension inside the handler. */
+let bindingSurvives = gen (msg: String): Iterator<i32> => {
+  try {
+    throw new Error(msg);
+  } catch (e) {
+    yield 1;
+    if (e.message == 'first') {
+      yield 2;
+    } else {
+      yield 8;
+    }
+  }
+};
+
+let collect = (it: Iterator<i32>): i32 => {
+  var acc = 0;
+  for (let v in it) {
+    acc = acc * 10 + v;
+  }
+  return acc;
+};
+
+export let main = (): i32 => {
+  if (collect(nested()) != 1234) {
+    return -1;
+  }
+  if (collect(bare()) != 567) {
+    return -2;
+  }
+  // Interleave two generators so a second error is thrown and caught
+  // while the first is parked in its handler: the binding each handler
+  // caught must still be its own.
+  let a = bindingSurvives('first');
+  let b = bindingSurvives('second');
+  var acc = 0;
+  var stepped = 0;
+  // Pull one value from each, alternating, then drain.
+  for (let v in a) {
+    acc = acc * 10 + v;
+    stepped += 1;
+    if (stepped == 1) {
+      for (let w in b) {
+        acc = acc * 10 + w;
+      }
+    }
+  }
+  // a yields 1; then b runs fully (1, 8); then a resumes (2).
+  if (acc != 1182) {
+    return -3;
+  }
+  return 909;
+};

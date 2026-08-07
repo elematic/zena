@@ -66,9 +66,9 @@ Checker rules:
   (The transform operates on the lowered CFG, so partially-evaluated
   operands live across the suspension are spilled like any other
   value — expression-position await costs nothing special.)
-- **`await` inside `try` is supported** (§6). Generators still reject
-  yield-in-try; the construction §6 describes carries over to them
-  whenever that is picked up.
+- **`await` inside `try` is supported** (§6). Generators picked the
+  construction up, so `yield` inside `try` works too and both split
+  passes share one implementation of it.
 
 ### 1.1 Semantics: eager start, run-to-completion
 

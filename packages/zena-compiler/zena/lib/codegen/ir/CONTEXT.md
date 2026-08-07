@@ -39,7 +39,7 @@ emitZirFunction(...)        → wasm bytes    (emit.zena)
 | `intrinsics.zena`       | One function per `@intrinsic`; `lowerIntrinsic` is a pure router.                                                                                                                                                                                                                                    |
 | `scaffold.zena`         | Helpers synthesized without an AST (string creation/hashing, wasi write).                                                                                                                                                                                                                            |
 | `generators.zena`       | The generator split pass (generators.md §5): presplit-lowers `gen` bodies, synthesizes frame structs + `next()` + `Iterator<T>` vtable globals between RTA and layout, rewrites bodies into dispatcher-loop state machines.                                                                          |
-| `async.zena`            | The async split pass (async.md §3): the same treatment for `async` bodies — frame structs + `step()` + `Resumable` vtable globals, an eager ramp, a `try_br` failure-capture region, and the async-`main` export wrapper. Shares generators.zena's raw-IrBody helpers, liveness, and edge rerouting. |
+| `async.zena`            | The async split pass (async.md §3): the same treatment for `async` bodies — frame structs + `step()` + `Resumable` vtable globals, an eager ramp, a `try_br` failure-capture region, and the async-`main` export wrapper. Shares generators.zena's raw-IrBody helpers, liveness, edge rerouting, and try-region analysis. |
 | `gvn.zena`              | Dominator-scoped value numbering; string keys + id-order walk keep it deterministic.                                                                                                                                                                                                                 |
 | `verifier.zena`         | Structural/type checks on `IrBody`; failures are loud compile errors.                                                                                                                                                                                                                                |
 | `emit.zena`             | SSA destruction: stack scheduling (`#pushValue` discipline), block-param copy coalescing, domtree stackifier, terminator streaming.                                                                                                                                                                  |
@@ -71,6 +71,15 @@ parameter.
   `try` body assigns. Every site that stores a new SSA value for a
   symbol into `env` must call `noteVarWrite` — a missed one leaves the
   handler reading a stale value, and nothing else will catch it.
+- **A split pass must re-enter try regions at _every_ dispatch target.**
+  Both suspension passes route every edge into a dispatch target through
+  a dispatcher that sits outside all user regions, so a target inside a
+  `try` is entered unprotected unless the dispatcher branches to a fresh
+  `try_br` carrying that region's handler (async.md §6). Resume blocks
+  are not the whole set: a suspending loop's header is a dispatch target
+  too. **This fails silently** — the success path is byte-for-byte
+  plausible and only the throwing path skips the handler — so any change
+  here needs a test that throws, on both sides of the suspension.
 - **Determinism is a hard gate.** Stage-2 byte parity (below) fails on
   any iteration-order- or identity-dependent output. No wall-clock, no
   randomness, no hash-order-dependent emission.

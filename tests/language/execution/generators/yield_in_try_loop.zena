@@ -1,0 +1,85 @@
+// @mode: run
+// @result: 777
+// A suspension inside a LOOP inside a try.
+//
+// This is the dispatch-target case. A loop whose body suspends makes
+// the loop HEADER a dispatch target, and rerouteEdges sends every edge
+// into a dispatch target through the dispatcher — the loop's entry edge
+// and its backedge alike. So the loop body is entered from outside
+// every user region on every iteration, and it is only protected if
+// re-entry happens at the header too, not just at the resume blocks.
+//
+// The two cases are not equivalent: a throw AFTER the yield is
+// dominated by the resume block and so is covered by that block's own
+// re-entry, while a throw BEFORE the yield is dominated only by the
+// header. Covering resume blocks alone passes the first and fails the
+// second.
+
+/** Throws from the loop body BEFORE the suspension. */
+let throwsBeforeYield = gen (n: i32): Iterator<i32> => {
+  try {
+    var i = 0;
+    while (i < n) {
+      if (i == 2) {
+        throw new Error('before the suspension');
+      }
+      yield i;
+      i += 1;
+    }
+  } catch (e) {
+    yield 9;
+  }
+};
+
+/** Throws from the loop body AFTER the suspension. */
+let throwsAfterYield = gen (n: i32): Iterator<i32> => {
+  try {
+    var i = 0;
+    while (i < n) {
+      yield i;
+      if (i == 2) {
+        throw new Error('after the suspension');
+      }
+      i += 1;
+    }
+  } catch (e) {
+    yield 9;
+  }
+};
+
+/** Runs to completion inside the region — no throw at all. */
+let cleanLoop = gen (n: i32): Iterator<i32> => {
+  try {
+    var i = 0;
+    while (i < n) {
+      yield i;
+      i += 1;
+    }
+  } catch (e) {
+    yield 9;
+  }
+};
+
+let collect = (it: Iterator<i32>): i32 => {
+  var acc = 0;
+  for (let v in it) {
+    acc = acc * 10 + v;
+  }
+  return acc;
+};
+
+export let main = (): i32 => {
+  // 0, 1, then i == 2 throws before yielding => 9.
+  if (collect(throwsBeforeYield(10)) != 19) {
+    return -1;
+  }
+  // 0, 1, 2, then the throw after yielding => 9.
+  if (collect(throwsAfterYield(10)) != 129) {
+    return -2;
+  }
+  // 0, 1, 2, 3 with no throw.
+  if (collect(cleanLoop(4)) != 123) {
+    return -3;
+  }
+  return 777;
+};

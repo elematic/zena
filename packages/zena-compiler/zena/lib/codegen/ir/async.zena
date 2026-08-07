@@ -65,7 +65,7 @@ import { FunctionLowerer } from './lowering.zena';
 import {
   truncate, replaceContents, internVt, addRawRef, rawInst, placeInst,
   rawParam, computeLiveIn, weakenToNullable, loopContainsSuspend,
-  rerouteEdges,
+  rerouteEdges, TryRegion, dispatchRegionsOf,
 } from './generators.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
@@ -88,17 +88,6 @@ let STATE_FIRST_SUSPEND = 3;
 
 /** The finished bodies for one async function, keyed by WasmFunction uid. */
 final class AsyncArtifacts(rampBody: IrBody, stepBody: IrBody)
-
-/**
- * One user-level `try` region of the presplit body: the try_br's body
- * and catch successors, plus its exception-tag ref.
- *
- * A region's extent is the dominator subtree of its body target —
- * that is exactly what the emitter places inside the `try_table`
- * (emit.zena's try_br case emits the body successor's subtree inline),
- * so dominance is the authoritative membership test.
- */
-final class TryRegion(bodyTarget: i32, catchTarget: i32, tagRef: i32)
 
 /**
  * Prep-time registry: prepareAsyncFunctions fills it, the per-function
@@ -185,64 +174,6 @@ let resumableInterfaceOf = (futureType: ClassType): InterfaceType => {
     throw new Error('subscribeResumable does not take a Resumable');
   }
   return params[0] as InterfaceType;
-};
-
-/**
- * Every user `try` region in the presplit body, in block order.
- *
- * The failure-capture region step() wraps around the whole machine is
- * synthesized later and is not in here — this sees only regions the
- * user wrote.
- */
-let collectTryRegions = (body: IrBody): Array<TryRegion> => {
-  let regions = new Array<TryRegion>();
-  var bi = 0;
-  while (bi < body.blocks.length) {
-    let insts = body.blocks[bi].insts;
-    if (insts.length > 0) {
-      let term = insts[insts.length - 1];
-      if (body.op(term) == IrOp.try_br) {
-        let succs = body.successors(term);
-        regions.push(new TryRegion(succs[0].target, succs[1].target,
-            body.a[term]));
-      }
-    }
-    bi += 1;
-  }
-  return regions;
-};
-
-/**
- * The regions enclosing `block`, outermost first.
- *
- * Ordering is by dominance between the regions' body targets: an outer
- * region's body dominates an inner one's, so re-entering them in this
- * order rebuilds the same nesting the source had.
- */
-let enclosingRegionsOf = (
-  cfg: IrCfg,
-  regions: Array<TryRegion>,
-  block: i32
-): Array<TryRegion> => {
-  let hits = new Array<TryRegion>();
-  for (let r in regions) {
-    if (cfg.dominates(r.bodyTarget, block)) {
-      hits.push(r);
-    }
-  }
-  // Insertion sort, outermost (most-dominating) first.
-  var i = 1;
-  while (i < hits.length) {
-    let cur = hits[i];
-    var j = i - 1;
-    while (j >= 0 && !cfg.dominates(hits[j].bodyTarget, cur.bodyTarget)) {
-      hits[j + 1] = hits[j];
-      j -= 1;
-    }
-    hits[j + 1] = cur;
-    i += 1;
-  }
-  return hits;
 };
 
 /** A method of the given specialized class, or a loud failure. */
@@ -475,25 +406,8 @@ let prepareOne = (
     hb += 1;
   }
 
-  // Which user try regions enclose each DISPATCH TARGET (async.md §6).
-  // Computed on the pristine CFG, before the transform rewires edges.
-  //
-  // Every dispatch target, not just the resume blocks: rerouteEdges
-  // sends every edge into a dispatch target through the dispatcher, so
-  // a suspending loop's header is left by the loop's entry edge and its
-  // backedge alike. Covering only resume blocks protects the segment
-  // after each await — which is dominated by its resume block — but
-  // leaves the segment from the header down to the await running
-  // outside the region on every iteration.
-  let tryRegions = collectTryRegions(presplit);
-  let dispatchRegions = new HashMap<i32, Array<TryRegion>>();
-  var rb = 0;
-  while (rb < presplit.blocks.length) {
-    if (pcOfBlock.has(rb)) {
-      dispatchRegions[rb] = enclosingRegionsOf(cfg, tryRegions, rb);
-    }
-    rb += 1;
-  }
+  // Which user try regions enclose each dispatch target (async.md §6).
+  let dispatchRegions = dispatchRegionsOf(presplit, cfg, pcOfBlock);
 
   let liveIn = computeLiveIn(presplit, cfg);
 
