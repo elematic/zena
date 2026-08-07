@@ -1,0 +1,66 @@
+// @mode: run
+// @result: 1234
+// A2: timers over WASI p1 poll_oneoff (async.md §4, Level 1).
+//
+// The point of this milestone is that the drain loop learns to *wait*.
+// Until now an empty microtask queue meant "done"; with a timer armed
+// it means "park until the deadline, then keep going". Nothing in
+// zena:async knows what a timer is — zena:time registers itself as a
+// Parker.
+//
+// Durations are kept short and only their ORDER is asserted. Asserting
+// elapsed wall-clock would make this flaky on a loaded machine; the
+// ordering is what the timer queue actually promises.
+import { Future, drainMicrotasks } from 'zena:async';
+import { sleep, monotonicNs } from 'zena:time';
+
+var log = 0;
+
+let mark = (n: i32): void => {
+  log = log * 10 + n;
+};
+
+/** Completes after its own delay, recording when it did. */
+let after = async (ms: i32, n: i32): Future<void> => {
+  await sleep(ms);
+  mark(n);
+};
+
+export async function main(): Future<i32> {
+  // Armed out of order; they must fire in deadline order, not call
+  // order. This is the whole behaviour: without a park arm in the
+  // drain loop, none of them would fire at all.
+  let c = after(60, 3);
+  let a = after(20, 1);
+  let d = after(80, 4);
+  let b = after(40, 2);
+
+  await d;
+  // Awaiting the last one to fire means all four have run.
+  if (log != 1234) {
+    return 0 - 1;
+  }
+  // The others are already settled.
+  if (!a.isCompleted || !b.isCompleted || !c.isCompleted) {
+    return 0 - 2;
+  }
+
+  // A timer really does advance the monotonic clock.
+  let start = monotonicNs();
+  await sleep(30);
+  if (monotonicNs() - start <= (0 as i64)) {
+    return 0 - 3;
+  }
+
+  // sleep(0) is still asynchronous — it completes through the queue,
+  // so this mark happens after the synchronous tail below.
+  log = 0;
+  let zero = after(0, 9);
+  mark(8);
+  await zero;
+  if (log != 89) {
+    return 0 - 4;
+  }
+
+  return 1234;
+}

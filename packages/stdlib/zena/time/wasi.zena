@@ -1,0 +1,197 @@
+/**
+ * zena:time — sleeping and the monotonic clock, over WASI preview 1
+ * (docs/design/async.md §4, Level 1).
+ *
+ * This is the target-conditional half of async. The `Future`/
+ * `Completer`/executor core in zena:async is target-independent; what
+ * differs per host is only how you *wait*. Here that is
+ * `poll_oneoff` with a clock subscription. On a JS host it would be
+ * `setTimeout` completing the same `Completer`, with the event loop
+ * doing the waiting — the same module, a different entry file.
+ *
+ * Nothing else in the stdlib needs to know: the timer queue registers
+ * itself with zena:async as a `Parker`, so `drainMicrotasks()` waits
+ * for timers without any dependency on this module.
+ */
+import { Future, Completer, Parker, setParker } from 'zena:async';
+import { Memory, defaultAllocator } from 'zena:memory';
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+
+@external("wasi_snapshot_preview1", "clock_time_get")
+declare function __wasi_clock_time_get(
+  clockId: i32,
+  precision: i64,
+  timePtr: i32
+): i32;
+
+@external("wasi_snapshot_preview1", "poll_oneoff")
+declare function __wasi_poll_oneoff(
+  inPtr: i32,
+  outPtr: i32,
+  nsubscriptions: i32,
+  neventsPtr: i32
+): i32;
+
+/** WASI clockid: 1 is CLOCK_MONOTONIC. */
+let CLOCK_MONOTONIC = 1;
+let NS_PER_MS = 1000000 as i64;
+
+/** Nanoseconds on the monotonic clock. */
+export let monotonicNs = (): i64 => {
+  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
+    let res = __wasi_clock_time_get(CLOCK_MONOTONIC, 1 as i64, addr);
+    if (res != 0) {
+      defaultAllocator.free(addr);
+      throw new Error('zena:time: clock_time_get failed');
+    }
+    let ns = Memory.default.getI64(addr);
+    defaultAllocator.free(addr);
+    return ns;
+  }
+  throw new Error('zena:time: out of memory reading the clock');
+};
+
+/** Milliseconds on the monotonic clock. Only differences are meaningful. */
+export let monotonicMs = (): f64 => {
+  return (monotonicNs() as f64) / 1000000.0;
+};
+
+/**
+ * Block the whole module for `ns` nanoseconds.
+ *
+ * The WASI p1 `subscription` is 48 bytes and `event` is 32; the layout
+ * written below is from the preview-1 ABI:
+ *
+ *   subscription { userdata: u64 @0, u: { tag: u8 @8,
+ *     clock: { id: u32 @16, timeout: u64 @24,
+ *              precision: u64 @32, flags: u16 @40 } } }
+ *
+ * `flags` 0 means the timeout is *relative*, which is what a sleep
+ * wants — an absolute deadline would need SUBSCRIPTION_CLOCK_ABSTIME.
+ */
+let parkNs = (ns: i64): void => {
+  if (let (true, buf) = defaultAllocator.allocAligned(96, 8)) {
+    let mem = Memory.default;
+    let sub = buf;
+    let evt = buf + 48;
+    let nev = buf + 80;
+
+    // The subscription must start zeroed: userdata, the union tag (0 =
+    // clock) and the reserved padding all have to read as 0.
+    var z = 0;
+    while (z < 48) {
+      mem.setI32(sub + z, 0);
+      z += 4;
+    }
+    mem.setI32(sub + 16, CLOCK_MONOTONIC);
+    mem.setI64(sub + 24, ns);
+    mem.setI64(sub + 32, 1 as i64);
+
+    let res = __wasi_poll_oneoff(sub, evt, 1, nev);
+    let n = mem.getI32(nev);
+    defaultAllocator.free(buf);
+    if (res != 0) {
+      throw new Error('zena:time: poll_oneoff failed');
+    }
+    if (n != 1) {
+      throw new Error('zena:time: poll_oneoff returned no event');
+    }
+    return;
+  }
+  throw new Error('zena:time: out of memory arming a timer');
+};
+
+/** One pending sleep. `seq` breaks deadline ties in insertion order. */
+final class Timer {
+  deadlineNs: i64;
+  seq: i32;
+  completer: Completer<void>;
+  new(this.deadlineNs, this.seq, this.completer);
+}
+
+/**
+ * Pending timers, waited on by the drain loop.
+ *
+ * Ties are broken by insertion order rather than left to the scan,
+ * because emission and test output both have to be deterministic —
+ * two timers armed for the same millisecond must always complete in
+ * the order they were armed.
+ */
+class TimerQueue implements Parker {
+  #timers = new Array<Timer>();
+  var #nextSeq = 0;
+
+  arm(deadlineNs: i64, completer: Completer<void>): void {
+    this.#timers.push(new Timer(deadlineNs, this.#nextSeq, completer));
+    this.#nextSeq += 1;
+  }
+
+  /** Wait for the earliest timer, complete it, and report progress. */
+  park(): boolean {
+    if (this.#timers.length == 0) {
+      return false;
+    }
+    var best = 0;
+    var i = 1;
+    while (i < this.#timers.length) {
+      let t = this.#timers[i];
+      let b = this.#timers[best];
+      if (t.deadlineNs < b.deadlineNs ||
+          (t.deadlineNs == b.deadlineNs && t.seq < b.seq)) {
+        best = i;
+      }
+      i += 1;
+    }
+    let timer = this.#timers[best];
+    // Shift the tail down rather than swapping with the last element:
+    // a swap would scramble the insertion order `seq` exists to keep.
+    var j = best;
+    while (j < this.#timers.length - 1) {
+      this.#timers[j] = this.#timers[j + 1];
+      j += 1;
+    }
+    this.#timers.pop();
+
+    let now = monotonicNs();
+    if (timer.deadlineNs > now) {
+      parkNs(timer.deadlineNs - now);
+    }
+    timer.completer.complete();
+    return true;
+  }
+}
+
+let timers = new TimerQueue();
+
+// Registered on first use rather than at module init: a module-level
+// binding whose value is never read is a dead-code-elimination target,
+// and losing the registration would show up only as a drain that ends
+// early — silently, and only when a timer was pending.
+var registered = false;
+
+/**
+ * A future that completes after at least `ms` milliseconds.
+ *
+ * "At least": the deadline is when the timer becomes *eligible*, and
+ * it completes through the microtask queue like every other future, so
+ * a busy queue can delay it further. `sleep(0)` still yields — it never
+ * completes synchronously, per the always-async rule.
+ *
+ * The wait happens inside `drainMicrotasks()`. Nothing runs while the
+ * module is parked: this is cooperative single-threaded concurrency,
+ * so a sleeping task does not let other *non-async* work proceed — it
+ * lets other futures proceed.
+ */
+export let sleep = (ms: i32): Future<void> => {
+  if (!registered) {
+    setParker(timers);
+    registered = true;
+  }
+  if (ms < 0) {
+    throw new Error('zena:time: sleep() needs a non-negative duration');
+  }
+  let c = new Completer<void>();
+  timers.arm(monotonicNs() + (ms as i64) * NS_PER_MS, c);
+  return c.future;
+};

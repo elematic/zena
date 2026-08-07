@@ -255,6 +255,18 @@ the target distinction the compiler already has (`--target wasi` vs
 `--target host`), and the `Future`/`Completer`/executor core is
 target-independent.
 
+**Implemented** as described, with one refinement worth recording: the
+drain arm is a registered `Parker`, not a branch in the drain loop that
+knows about timers. `zena:async` exposes `interface Parker { park():
+boolean }` and `setParker`; `zena:time` registers itself on the first
+`sleep()`. `park()` returning false is what ends a drain, so a parker
+with nothing outstanding terminates the loop rather than spinning.
+
+Registration is lazy on purpose. A module-level binding whose value is
+never read is a dead-code-elimination target, and losing the
+registration would surface only as a drain that ended early — silently,
+and only when a timer happened to be pending.
+
 ### Level 2 — external completions (JS host; later, custom Rust I/O)
 
 Real I/O means the host completes futures. The generic shape, on any
@@ -400,8 +412,28 @@ website served by a Zena server":
   closures, and an async `main` driven by the synthesized export
   wrapper (§4).
 
-- **A2 — timers.** `sleep`/timeout over WASI p1 `poll_oneoff`; the
-  drain/park arm; JS-host parking via the event loop.
+- **A2 — timers. Implemented** for the WASI side (`zena:time`):
+  `sleep(ms): Future<void>` over `poll_oneoff` with a relative
+  monotonic clock subscription, plus the drain/park arm. JS-host
+  parking via the event loop is still to come, and is the same module
+  with a different entry file (`time/host.zena`) — `zena:time` is
+  registered as a virtual module, WASI-only for now, exactly like
+  `zena:process`.
+
+  The drain arm is a hook, not a special case: `zena:async` gained a
+  `Parker` interface and a `setParker`, and an empty queue now means
+  "ask the parker to wait" rather than "done". `zena:async` still has
+  no idea what a timer is — `zena:time` registers itself on the first
+  `sleep()`. One parker slot rather than a list, deliberately: waiting
+  on several sources means waiting on whichever is ready *first*,
+  which a loop over independent parkers gets wrong. A target with more
+  than one source registers a parker that knows how to wait on all of
+  them, which is what a host event loop already is.
+
+  Note that `sleep()` needed `Future<void>`, which is why that had to
+  land first: a sleep carries no value, and faking it with
+  `Future<i32>` would have put a meaningless zero in the stdlib
+  permanently.
 - **A3 — external completions on the JS host.** The
   `__zena_complete`/`__zena_drain` exports + runtime-library Promise
   wrapper; first real async I/O (fetch on the web playground).

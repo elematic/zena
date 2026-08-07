@@ -80,6 +80,43 @@ class MicrotaskQueue {
 
 let queue = new MicrotaskQueue();
 
+/**
+ * A source of completions that arrive from outside the queue, and that
+ * the drain loop can wait for (async.md §4, Level 1).
+ *
+ * The microtask queue alone can only run work that already exists. A
+ * timer, or host I/O, settles a `Completer` at a moment nothing in the
+ * queue can cause — so when the queue empties, the drain loop asks the
+ * parker to block until the next such completion is ready.
+ *
+ * `park()` returns true if it delivered a completion (the drain loop
+ * then runs the microtasks that produced and asks again) and false if
+ * there is nothing outstanding to wait for. Returning false is what
+ * ends the drain; a parker that always returns true never terminates.
+ */
+export interface Parker {
+  park(): boolean;
+}
+
+/**
+ * The one registered parker, or null when nothing external can
+ * complete — which is the plain case, and the one the deadlock message
+ * in `Future.valueOrThrow` describes.
+ *
+ * A single slot rather than a list, deliberately: waiting on several
+ * sources means waiting on whichever is ready *first*, which a loop
+ * over independent parkers gets wrong (it would block on the first one
+ * while the second was already ready). When a target has more than one
+ * source, it registers one parker that knows how to wait on all of
+ * them — which is exactly what a host event loop already is.
+ */
+var parker: Parker | null = null;
+
+/** Register the drain loop's park source, replacing any previous one. */
+export let setParker = (p: Parker): void => {
+  parker = p;
+};
+
 /** Enqueue a task on the microtask queue. */
 export let scheduleTask = (task: Microtask): void => {
   queue.schedule(task);
@@ -90,9 +127,24 @@ export let scheduleMicrotask = (cb: () => void): void => {
   queue.schedule(new ClosureMicrotask(cb));
 };
 
-/** Run microtasks until the queue is empty. */
+/**
+ * Run microtasks until the queue is empty and nothing external is left
+ * to wait for.
+ *
+ * With no parker registered this is exactly "drain the queue". With
+ * one, an empty queue is not the end: the loop parks, and whatever
+ * that delivers is drained in turn, until the parker reports nothing
+ * outstanding.
+ */
 export let drainMicrotasks = (): void => {
   queue.drain();
+  let p = parker;
+  if (p != null) {
+    let source = p as Parker;
+    while (source.park()) {
+      queue.drain();
+    }
+  }
 };
 
 // ---------------------------------------------------------------------------
