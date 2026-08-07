@@ -102,7 +102,7 @@ let funcDisplayName = (func: WasmFunction): String => {
  * memoized instantiation object, so interface keys match the call
  * sites').
  */
-let iteratorInstantiationOf = (func: WasmFunction): InterfaceType => {
+let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): InterfaceType => {
   let t = func.model.getNodeType(func.node as Node);
   if (t == null || !(t is FunctionType)) {
     throw new Error('generator has no checked function type: ' +
@@ -112,12 +112,12 @@ let iteratorInstantiationOf = (func: WasmFunction): InterfaceType => {
   if (func.classType != null) {
     let ct = func.classType as ClassType;
     if (ct.typeArguments != null) {
-      ret = substituteTypeParamsInCodegen(
+      ret = substituteTypeParamsInCodegen(wasm, 
           getClassTypeParameters(ct), ct.typeArguments, ret);
     }
   }
   if (func.typeParameters != null && func.typeArguments != null) {
-    ret = substituteTypeParamsInCodegen(
+    ret = substituteTypeParamsInCodegen(wasm, 
         func.typeParameters, func.typeArguments, ret);
   }
   if (!(ret is InterfaceType)) {
@@ -445,7 +445,7 @@ let prepareOne = (
   // scope (and between sibling iterators) through the cell.
 
   // The Iterator<T> instantiation and its wasm-side structs.
-  let iface = iteratorInstantiationOf(func);
+  let iface = iteratorInstantiationOf(wasm, func);
   pass.typeLowerer.discoverType(iface as Type, func.model);
   let iKey = getInterfaceKey(iface);
   if (!wasm.interfaceStructs.has(iKey) ||

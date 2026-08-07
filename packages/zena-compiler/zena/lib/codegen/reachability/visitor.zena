@@ -32,7 +32,7 @@ export final class TypeLowerer implements TypeLowererInterface {
 
   discoverType(rawT: Type | null, model: SemanticModel): void {
     if (rawT == null) { return; }
-    let t = eraseTypeParameters(rawT as Type);
+    let t = eraseTypeParameters(this.pass.wasm, rawT as Type);
     let typeStr = getTypeUniqueKey(t);
     if (this.pass.currentReachable) {
       if (this.pass.reachedSemanticTypes.has(typeStr)) {
@@ -215,12 +215,12 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
       
       if (ct.isExtension && ct.onType != null) {
-        let subOn = substituteTypeParamsInClassContext(ct, ct.onType as Type);
+        let subOn = substituteTypeParamsInClassContext(this.pass.wasm, ct, ct.onType as Type);
         this.discoverType(subOn, model);
       }
       for (let pair in ct.members) {
         if (pair.value is FieldInfo) {
-          let resolvedType = substituteTypeParamsInCodegen(getClassTypeParameters(ct), ct.typeArguments, pair.value.type);
+          let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, getClassTypeParameters(ct), ct.typeArguments, pair.value.type);
           this.discoverType(resolvedType, model);
         }
       }
@@ -260,12 +260,12 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
       let itParams = getInterfaceTypeParameters(it);
       for (let ext in it.extendsList) {
-        let resolvedExt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ext);
+        let resolvedExt = substituteTypeParamsInCodegen(this.pass.wasm, itParams, it.typeArguments, ext);
         this.discoverType(resolvedExt, model);
       }
       for (let pair in it.members) {
         if (pair.value is FieldInfo) {
-          let resolvedType = substituteTypeParamsInCodegen(itParams, it.typeArguments, pair.value.type);
+          let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, itParams, it.typeArguments, pair.value.type);
           this.discoverType(resolvedType, model);
         }
       }
@@ -304,7 +304,7 @@ export final class TypeLowerer implements TypeLowererInterface {
    */
   discoverSignatureType(rawT: Type | null, model: SemanticModel): void {
     if (rawT == null) { return; }
-    let t = eraseTypeParameters(rawT as Type);
+    let t = eraseTypeParameters(this.pass.wasm, rawT as Type);
     if (t is FunctionType) {
       let ft = t as FunctionType;
       for (let paramType in ft.parameters) {
@@ -992,7 +992,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 this.pass.queueReferrer(new Referrer(false, -1 as SymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedClass, this.pass.currentReachable));
               }
 
-              let specializedIterable = findImplementedInterfaceTransitive(resolvedClass, "Iterable");
+              let specializedIterable = findImplementedInterfaceTransitive(this.pass.wasm, resolvedClass, "Iterable");
               if (specializedIterable != null) {
                 typeLowerer.discoverType(specializedIterable, model);
               }

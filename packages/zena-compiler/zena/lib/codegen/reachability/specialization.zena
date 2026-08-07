@@ -328,7 +328,7 @@ export final class Specializer implements SpecializerInterface {
     let cha = this.pass.cha;
     for (let pair in ct.members) {
       if (pair.value is FieldInfo) {
-        let resolvedType = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, pair.value.type);
+        let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, ctParams, ct.typeArguments, pair.value.type);
         typeLowerer.discoverType(resolvedType, sourceModel);
       }
     }
@@ -668,7 +668,7 @@ export final class Specializer implements SpecializerInterface {
 
     // 2. Discover referenced types in members (fields, methods)
     for (let pair in it.members) {
-      let resolvedType = substituteTypeParamsInCodegen(itParams, it.typeArguments, pair.value.type);
+      let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, itParams, it.typeArguments, pair.value.type);
       this.pass.typeLowerer.discoverType(resolvedType, sourceModel);
     }
 
@@ -730,7 +730,7 @@ export final class Specializer implements SpecializerInterface {
         if (methodTypeNode == null && cType.genericSource != null) {
           let gs = cType.genericSource as ClassType;
           if (gs.constructorType != null) {
-            methodTypeNode = substituteTypeParamsInCodegen(
+            methodTypeNode = substituteTypeParamsInCodegen(this.pass.wasm, 
                 gs.typeParameters, cType.typeArguments,
                 gs.constructorType as FunctionType);
           }
@@ -911,11 +911,11 @@ export final class Specializer implements SpecializerInterface {
     }
 
     if (methodTypeNode != null && cType != null) {
-      methodTypeNode = substituteTypeParamsInCodegen(getClassTypeParameters(cType), cType.typeArguments, methodTypeNode as Type);
+      methodTypeNode = substituteTypeParamsInCodegen(this.pass.wasm, getClassTypeParameters(cType), cType.typeArguments, methodTypeNode as Type);
       if (methodTypeArgs != null && methodTypeNode is FunctionType) {
         let fType = methodTypeNode as FunctionType;
         if (fType.typeParameters != null) {
-          methodTypeNode = substituteTypeParamsInCodegen(fType.typeParameters as Array<TypeParameterType>, methodTypeArgs, methodTypeNode as Type);
+          methodTypeNode = substituteTypeParamsInCodegen(this.pass.wasm, fType.typeParameters as Array<TypeParameterType>, methodTypeArgs, methodTypeNode as Type);
         }
       }
     }
@@ -1463,7 +1463,7 @@ export final class Specializer implements SpecializerInterface {
         } else {
           pair.key
         };
-        let resolvedType = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, pair.value.type);
+        let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, ctParams, ct.typeArguments, pair.value.type);
         let valType = typeToValType(this.pass.wasm, resolvedType);
         if (valType is ValTypeVoid) {
           // A zero-width field (`Box<void>.value`) holds nothing, so it
@@ -1520,11 +1520,11 @@ export final class Specializer implements SpecializerInterface {
     let concreteReturns = new Array<ValType>();
     
     for (let p in funcTypeNode.parameters) {
-      let subType = substituteTypeParamsInCodegen(typeParams, typeArgs, p);
+      let subType = substituteTypeParamsInCodegen(this.pass.wasm, typeParams, typeArgs, p);
       mapParamTypeToWasmParams(this.pass.wasm, subType, concreteParams);
     }
     
-    let subReturn = substituteTypeParamsInCodegen(typeParams, typeArgs, funcTypeNode.returnType);
+    let subReturn = substituteTypeParamsInCodegen(this.pass.wasm, typeParams, typeArgs, funcTypeNode.returnType);
     mapReturnTypeToWasmResults(this.pass.wasm, subReturn, concreteReturns);
     
     let sig = this.pass.wasm.getSignature(concreteParams, concreteReturns);

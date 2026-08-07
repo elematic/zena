@@ -84,6 +84,39 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Compiling many entry points in one process still fails, and the guard test does not catch it
+
+- **Found**: 2026-08-07, while moving codegen's caches off checker types.
+- **Severity**: blocking for batch compilation; invisible to a normal
+  build, where each process compiles one module.
+- **Correction**: the "20 failures → 0" figure in the commit message of
+  "Restart the wasm uid sequence per module" **does not reproduce**.
+  Re-measured on main with a freshly built compiler: still 20 of 40.
+  Restarting `nextWasmTypeUid` per module was necessary but is not
+  sufficient.
+- **Repro**: compile 40 execution tests in sequence in one process, a
+  fresh `Compiler` each. Twenty fail from the fourth onward with
+  `zir unsupported:` reasons that vary between runs — "interface vtable
+  global not found", "unresolved parameter", "static interface access",
+  "for-in iterable kind" — all naming stdlib generic instantiations.
+  `tests/language/execution/arrays/extension_class.zena` is the fourth
+  and fails; it builds clean on its own. So something other than the uid
+  sequence still makes lowering depend on a module's position in the
+  process.
+- **The guard test is weak**: `multi-entrypoint-codegen_test.zena`
+  passes, but only because its six entry points happen to place the
+  fragile one where it works. Strengthening it to a set that fails is
+  the first step of the fix — it is left as-is for now rather than
+  committing a red test.
+- **On top of that**, sharing a checked stdlib across entry points — the
+  actual prize, since checking 40 files incrementally takes 61ms against
+  ~15s of full compiles — traps in the _second_ compilation's checking:
+  `checkCompilation` → `getBindingType` → `Program.symbolToModel` →
+  `wasm trap: cast failure`. `Program`'s constructor points every unit's
+  `SemanticModel` at itself, and stdlib models are shared with the next
+  compilation. Detaching them at the end of `ModuleGenerator.compile` is
+  **not** sufficient (tried, reverted).
+
 ### Codegen emits a spurious value-wrapper, and which one moves with hash order
 
 - **Found**: 2026-08-07, while fixing the multi-entrypoint codegen bug

@@ -799,14 +799,14 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
   let resolved = cx.resolveSelfType(iterableType);
   var iter = -1;
   if (resolved is ClassType) {
-    let ct = eraseTypeParameters(resolved) as ClassType;
+    let ct = eraseTypeParameters(cx.wasm, resolved) as ClassType;
     let recv = lowerExprRaw(cx, stmt.iterable);
-    let iteratorIface = findImplementedInterfaceTransitive(ct, 'Iterator');
+    let iteratorIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Iterator');
     if (iteratorIface != null) {
       // The iterable IS an iterator: no :iterator call.
       iter = cx.packInterface(recv, ct, iteratorIface as InterfaceType);
     } else {
-      let iterableIface = findImplementedInterfaceTransitive(ct, 'Iterable');
+      let iterableIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Iterable');
       if (iterableIface == null) {
         bail(cx, 'for-in iterable kind');
       }

@@ -2217,7 +2217,7 @@ export final class FunctionLowerer {
     if (!(resolved is ClassType)) {
       this.#bail('static receiver kind');
     }
-    let ct = eraseTypeParameters(resolved) as ClassType;
+    let ct = eraseTypeParameters(this.wasm, resolved) as ClassType;
     var name = getMemberPropertyName(
         member.isSymbolAccess, member.property.name);
     // Overload choice belongs to the checker; the recorded selection
@@ -2305,7 +2305,7 @@ export final class FunctionLowerer {
     }
     let out = new Array<Type>();
     for (let a in raw) {
-      out.push(substituteTypeParamsInFunctionContext(this.func, a));
+      out.push(substituteTypeParamsInFunctionContext(this.wasm, this.func, a));
     }
     return out;
   }
@@ -2490,8 +2490,8 @@ export final class FunctionLowerer {
     }
     if (this.func.classType != null) {
       let ct = this.func.classType as ClassType;
-      srcType = substituteTypeParamsInClassContext(ct, srcType);
-      tgtType = substituteTypeParamsInClassContext(ct, tgtType);
+      srcType = substituteTypeParamsInClassContext(this.wasm, ct, srcType);
+      tgtType = substituteTypeParamsInClassContext(this.wasm, ct, tgtType);
     }
     if (!(srcType is ClassType) || !(tgtType is InterfaceType)) {
       this.#bail('interface adaptation shape');
@@ -2567,7 +2567,7 @@ export final class FunctionLowerer {
     if (operandTypeOpt == null) {
       this.#bail('untyped await operand');
     }
-    let resolved = eraseTypeParameters(baseType(operandTypeOpt as Type));
+    let resolved = eraseTypeParameters(this.wasm, baseType(operandTypeOpt as Type));
     if (!(resolved is ClassType)) {
       // `T | Future<T>` awaits (async.md §1) need a runtime test on the
       // union payload; the checker accepts them but A1 does not lower
@@ -2697,7 +2697,7 @@ export final class FunctionLowerer {
             } else if (nn is ClassType) {
               // Class spreads copy PHYSICAL public fields; anything
               // else falls through and the missing-field bail fires.
-              var ct = eraseTypeParameters(
+              var ct = eraseTypeParameters(this.wasm, 
                   this.#resolveSelfType(nn as Type)) as ClassType;
               if (ct.members.has(key) &&
                   !(key.length > 0 && key.sliceBytes(0, 1) == '#')) {
@@ -2800,7 +2800,7 @@ export final class FunctionLowerer {
     if (targetTypeOpt == null) {
       this.#bail('untyped is target');
     }
-    let targetType = substituteTypeParamsInFunctionContext(
+    let targetType = substituteTypeParamsInFunctionContext(this.wasm, 
         this.func, targetTypeOpt as Type);
     let value = this.#lowerExpression(isExpr.expression);
     if (!isRefType(sourceType)) {
@@ -3156,11 +3156,11 @@ export final class FunctionLowerer {
     // class check, not after: constructing a resource is typed `Own<R>`, a
     // distinct-type alias that erases to `R`, so checking first would bail on
     // a type that does have a class behind it.
-    let selfResolved = eraseTypeParameters(this.#resolveSelfType(nodeType as Type));
+    let selfResolved = eraseTypeParameters(this.wasm, this.#resolveSelfType(nodeType as Type));
     if (!(selfResolved is ClassType)) {
       this.#bail('new of non-class');
     }
-    let classType = eraseTypeParameters(selfResolved);
+    let classType = eraseTypeParameters(this.wasm, selfResolved);
     if (!(classType is ClassType)) {
       this.#bail('new erased kind');
     }
@@ -3720,7 +3720,7 @@ export final class FunctionLowerer {
       let selfR = this.#resolveSelfType(objectType as Type);
       if (selfR is ClassType) {
         return this.#lowerStaticMemberRead(
-            member, eraseTypeParameters(selfR) as ClassType);
+            member, eraseTypeParameters(this.wasm, selfR) as ClassType);
       }
     }
     if (member.object is SuperExpression) {
@@ -4029,7 +4029,7 @@ export final class FunctionLowerer {
     if (!(selfR is ClassType)) {
       this.#bail('static receiver kind');
     }
-    let ct = eraseTypeParameters(selfR) as ClassType;
+    let ct = eraseTypeParameters(this.wasm, selfR) as ClassType;
     let propName = getMemberPropertyName(
         member.isSymbolAccess, member.property.name);
     let gOpt = this.#staticFieldGlobal(ct, propName);
@@ -4142,7 +4142,7 @@ export final class FunctionLowerer {
       if (objectType != null) {
         let selfR = this.#resolveSelfType(objectType as Type);
         if (selfR is ClassType && (selfR as ClassType).isExtension) {
-          extCt = eraseTypeParameters(selfR) as ClassType;
+          extCt = eraseTypeParameters(this.wasm, selfR) as ClassType;
         }
       }
       if (extCt == null) {
@@ -4340,7 +4340,7 @@ export final class FunctionLowerer {
     // Erase before dispatching on the receiver's kind: a receiver typed
     // `Own<R>`/`Borrow<R>`/`Unmanaged<R>` is a distinct-type alias that erases
     // to `R`, and member access forwards through it (ownership.md §Handles).
-    let selfResolved = eraseTypeParameters(this.#resolveSelfType(objectType as Type));
+    let selfResolved = eraseTypeParameters(this.wasm, this.#resolveSelfType(objectType as Type));
     if (selfResolved is InterfaceType) {
       let propName = getMemberPropertyName(
           member.isSymbolAccess, member.property.name);
@@ -4382,7 +4382,7 @@ export final class FunctionLowerer {
     // node types name the GENERIC class inside specialized-method
     // bodies, but specialized methods register under their own key.
     let receiver = this.#lowerExpression(member.object);
-    var ct = eraseTypeParameters(selfResolved) as ClassType;
+    var ct = eraseTypeParameters(this.wasm, selfResolved) as ClassType;
     let fromValue = this.#classTypeOfValue(receiver);
     if (fromValue != null && !ct.isExtension) {
       ct = fromValue as ClassType;
@@ -4707,7 +4707,7 @@ export final class FunctionLowerer {
     let ct = if (fromValue != null) {
       fromValue
     } else if (selfResolved is ClassType) {
-      eraseTypeParameters(selfResolved) as ClassType
+      eraseTypeParameters(this.wasm, selfResolved) as ClassType
     } else {
       null
     };
@@ -4909,7 +4909,7 @@ export final class FunctionLowerer {
     if (objectType != null) {
       let selfResolved = this.#resolveSelfType(objectType as Type);
       if (selfResolved is ClassType) {
-        return eraseTypeParameters(selfResolved) as ClassType;
+        return eraseTypeParameters(this.wasm, selfResolved) as ClassType;
       }
     }
     return fallback;
@@ -4984,7 +4984,7 @@ export final class FunctionLowerer {
     if (checkedType != null) {
       let selfR = this.#resolveSelfType(checkedType as Type);
       if (selfR is ClassType && (selfR as ClassType).isExtension) {
-        return eraseTypeParameters(selfR) as ClassType;
+        return eraseTypeParameters(this.wasm, selfR) as ClassType;
       }
     }
     let fromValue = this.#classTypeOfValue(receiver);
@@ -4999,7 +4999,7 @@ export final class FunctionLowerer {
     if (!(selfResolved is ClassType)) {
       this.#bail('member on non-class');
     }
-    return eraseTypeParameters(selfResolved) as ClassType;
+    return eraseTypeParameters(this.wasm, selfResolved) as ClassType;
   }
 
   #vtableSlotIndex(classInfo: ClassCodegenInfo, slotName: String): i32 {
@@ -5239,7 +5239,7 @@ export final class FunctionLowerer {
     let ct = if (fromValue != null) {
       fromValue
     } else if (selfResolved is ClassType) {
-      eraseTypeParameters(selfResolved) as ClassType
+      eraseTypeParameters(this.wasm, selfResolved) as ClassType
     } else {
       null
     };

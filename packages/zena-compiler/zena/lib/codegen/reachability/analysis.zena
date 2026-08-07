@@ -772,7 +772,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       // type, producing an invalid module.
       let itParams = getInterfaceTypeParameters(it);
       for (let mPair in it.members) {
-        let resolvedType = substituteTypeParamsInCodegen(itParams, it.typeArguments, mPair.value.type);
+        let resolvedType = substituteTypeParamsInCodegen(this.wasm, itParams, it.typeArguments, mPair.value.type);
         this.typeLowerer.discoverType(resolvedType, ifaceModel);
       }
       let keys = it.members.keys();
@@ -1196,7 +1196,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 if (mi is MethodInfo) {
                   let ft = (mi as MethodInfo).type as FunctionType;
                   let itParams = getInterfaceTypeParameters(iface);
-                  let resolvedFt = substituteTypeParamsInCodegen(itParams, iface.typeArguments, ft) as FunctionType;
+                  let resolvedFt = substituteTypeParamsInCodegen(this.wasm, itParams, iface.typeArguments, ft) as FunctionType;
                   let sigKey = getSignatureKey(resolvedFt);
                   let mKeyWithSig = getClassMethodKey(getClassKey(currClass as ClassType), fName + sigKey);
                   if (this.wasm.classMethodMap.has(mKeyWithSig)) {
@@ -1404,12 +1404,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let ctArgs: Array<Type> | null = if (classType != null) (classType as ClassType).typeArguments else null;
 
     let resolveType = (t: Type): Type => {
-      var res = substituteTypeParamsInClassContext(classType, t);
+      var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
       if (typeArguments != null && node != null && node is FunctionExpression) {
         let fe = node as FunctionExpression;
         let ft = model.getNodeType(fe) as FunctionType;
         if (ft.typeParameters != null) {
-          res = substituteTypeParamsInCodegen(ft.typeParameters as Array<TypeParameterType>, typeArguments as Array<Type>, res);
+          res = substituteTypeParamsInCodegen(this.wasm, ft.typeParameters as Array<TypeParameterType>, typeArguments as Array<Type>, res);
         }
       }
       return res;
@@ -1689,7 +1689,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       
       let rawFuncTypeNode = model.getNodeType(funcExpr);
       let funcTypeNode = if (classType != null && ctParams != null) {
-        substituteTypeParamsInCodegen(ctParams as Array<TypeParameterType>, ctArgs, rawFuncTypeNode as Type)
+        substituteTypeParamsInCodegen(this.wasm, ctParams as Array<TypeParameterType>, ctArgs, rawFuncTypeNode as Type)
       } else {
         rawFuncTypeNode
       };
@@ -1771,7 +1771,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       for (let symId in closureDep.captures) {
         let rawSymType = model.getBindingTypeById(symId);
         let symType = if (classType != null && ctParams != null) {
-          substituteTypeParamsInCodegen(ctParams as Array<TypeParameterType>, ctArgs, rawSymType as Type)
+          substituteTypeParamsInCodegen(this.wasm, ctParams as Array<TypeParameterType>, ctArgs, rawSymType as Type)
         } else {
           rawSymType
         };
@@ -2169,12 +2169,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let visitor = this.visitor;
               let specializer = this.specializer;
               let resolver = (t: Type): Type => {
-                var res = substituteTypeParamsInClassContext(classType, t);
+                var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
                 if (ref.typeArguments != null && node is FunctionExpression) {
                   let fe = node as FunctionExpression;
                   let ft = model.getNodeType(fe) as FunctionType;
                   if (ft.typeParameters != null) {
-                    res = substituteTypeParamsInCodegen(ft.typeParameters as Array<TypeParameterType>, ref.typeArguments as Array<Type>, res);
+                    res = substituteTypeParamsInCodegen(this.wasm, ft.typeParameters as Array<TypeParameterType>, ref.typeArguments as Array<Type>, res);
                   }
                 }
                 return res;

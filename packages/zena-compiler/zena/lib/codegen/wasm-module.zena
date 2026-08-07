@@ -645,7 +645,57 @@ export final class StringLiteralLocation {
   new(this.offset, this.length);
 }
 
+/**
+ * Codegen's memo tables for one class, owned by the `WasmModule` of the
+ * compile that filled them.
+ *
+ * These were fields on `ClassType`. A checker type outlives the compile
+ * that produced it whenever check results are reused — the point of
+ * sharing an already-checked stdlib across entry points — so codegen
+ * state parked on one is visible to every later compile. The entries are
+ * pure functions of checker types, so sharing them is not *wrong*, but
+ * they grow without bound in a long-lived process and the instantiations
+ * table hands out `ClassType` identities that downstream codegen treats
+ * as belonging to the current module.
+ *
+ * Owning them per compile also survives the compiler going async: a
+ * module-global swept between compiles would pull the memo out from
+ * under any compile that happened to be interleaved with the sweep, and
+ * hand it a different `ClassType` for an instantiation it had already
+ * used.
+ */
+export final class ClassSubstitutions {
+  /** Type parameters and arguments in scope for the class, flattened. */
+  var params: Array<TypeParameterType> | null = null;
+  var args: Array<Type> | null = null;
+  /** substituteTypeParamsInClassContext results, by input type identity. */
+  substCache = new HashMap<Type, Type>();
+  /** Instantiations of this class, keyed by substituted argument uids. */
+  instantiations = new HashMap<String, ClassType>();
+
+  new();
+}
+
 export final class WasmModule {
+  /**
+   * Per-class substitution memos for this compile. Keyed by
+   * `ClassType.uid`, not by the type: `Type`'s cases are case classes, so
+   * `==` is structural while `hashCode` is the uid — an inconsistent pair
+   * to hash on. The uid is the identity these tables want ("type identity
+   * is equality", types.zena).
+   */
+  classSubstitutions = new HashMap<i32, ClassSubstitutions>();
+
+  /** The memo tables for `ct`, created on first use. */
+  substitutionsFor(ct: ClassType): ClassSubstitutions {
+    if (let (true, existing) = this.classSubstitutions.get(ct.uid)) {
+      return existing;
+    }
+    let fresh = new ClassSubstitutions();
+    this.classSubstitutions[ct.uid] = fresh;
+    return fresh;
+  }
+
   var types = new Array<WasmType>();
   tags = new Array<WasmTag>();
   exportTagMap = new HashMap<String, WasmTag>();

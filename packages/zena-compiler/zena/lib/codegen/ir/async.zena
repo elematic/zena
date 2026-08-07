@@ -126,7 +126,7 @@ let funcDisplayName = (func: WasmFunction): String => {
  * (the memoized instantiation object, so class keys match the ones
  * RTA specialized).
  */
-let futureInstantiationOf = (func: WasmFunction): ClassType => {
+let futureInstantiationOf = (wasm: WasmModule, func: WasmFunction): ClassType => {
   let t = func.model.getNodeType(func.node as Node);
   if (t == null || !(t is FunctionType)) {
     throw new Error('async function has no checked function type: ' +
@@ -136,12 +136,12 @@ let futureInstantiationOf = (func: WasmFunction): ClassType => {
   if (func.classType != null) {
     let ct = func.classType as ClassType;
     if (ct.typeArguments != null) {
-      ret = substituteTypeParamsInCodegen(
+      ret = substituteTypeParamsInCodegen(wasm, 
           getClassTypeParameters(ct), ct.typeArguments, ret);
     }
   }
   if (func.typeParameters != null && func.typeArguments != null) {
-    ret = substituteTypeParamsInCodegen(
+    ret = substituteTypeParamsInCodegen(wasm, 
         func.typeParameters, func.typeArguments, ret);
   }
   if (!(ret is ClassType)) {
@@ -244,7 +244,7 @@ let prepareAsyncMain = (wasm: WasmModule, pass: ReachabilityAnalysis): void => {
   if (!ramp.isAsyncRamp) {
     return;
   }
-  let futureType = futureInstantiationOf(ramp);
+  let futureType = futureInstantiationOf(wasm, ramp);
   let fKey = getClassKey(futureType);
   let valueOrThrowFn = methodOf(wasm, fKey, 'valueOrThrow', 'async main');
   let drainOpt = wasm.getStdlibFunc('zena:async', 'drainMicrotasks');
@@ -327,7 +327,7 @@ let prepareOne = (
   // generator closures do not: the context struct arrives as param 0
   // of the ramp and is spilled to a frame field like any other param.
 
-  let futureType = futureInstantiationOf(func);
+  let futureType = futureInstantiationOf(wasm, func);
   pass.typeLowerer.discoverType(futureType as Type, func.model);
   let fKey = getClassKey(futureType);
   let futureInfoOpt =

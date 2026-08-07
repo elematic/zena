@@ -39,6 +39,7 @@ export let getInterfaceTypeParameters = (it: InterfaceType): Array<TypeParameter
 };
 
 export let substituteTypeParamsInCodegen = (
+  wasm: WasmModule,
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null,
   t: Type
@@ -63,7 +64,7 @@ export let substituteTypeParamsInCodegen = (
       t
     }
     case ArrayType {elementType}: {
-      let sub = substituteTypeParamsInCodegen(params, args, elementType);
+      let sub = substituteTypeParamsInCodegen(wasm, params, args, elementType);
       if (sub == elementType) {
         return t;
       }
@@ -73,7 +74,7 @@ export let substituteTypeParamsInCodegen = (
       let newElems = new Array<Type>(elementTypes.length);
       var elemsChanged = false;
       for (let el in elementTypes) {
-        let sub = substituteTypeParamsInCodegen(params, args, el);
+        let sub = substituteTypeParamsInCodegen(wasm, params, args, el);
         newElems.push(sub);
         if (sub != el) {
           elemsChanged = true;
@@ -88,7 +89,7 @@ export let substituteTypeParamsInCodegen = (
       let newElems = new Array<Type>(elementTypes.length);
       var elemsChanged = false;
       for (let el in elementTypes) {
-        let sub = substituteTypeParamsInCodegen(params, args, el);
+        let sub = substituteTypeParamsInCodegen(wasm, params, args, el);
         newElems.push(sub);
         if (sub != el) {
           elemsChanged = true;
@@ -103,7 +104,7 @@ export let substituteTypeParamsInCodegen = (
       let newTypes = new Array<Type>(types.length);
       var typesChanged = false;
       for (let ut in types) {
-        let sub = substituteTypeParamsInCodegen(params, args, ut);
+        let sub = substituteTypeParamsInCodegen(wasm, params, args, ut);
         newTypes.push(sub);
         if (sub != ut) {
           typesChanged = true;
@@ -120,7 +121,7 @@ export let substituteTypeParamsInCodegen = (
       let keys = rec.properties.keys();
       while (let (true, key) = keys.next()) {
         let original = rec.properties[key];
-        let sub = substituteTypeParamsInCodegen(params, args, original);
+        let sub = substituteTypeParamsInCodegen(wasm, params, args, original);
         newProps[key] = sub;
         if (sub != original) {
           propsChanged = true;
@@ -137,13 +138,13 @@ export let substituteTypeParamsInCodegen = (
       let newParams = new Array<Type>(ft.parameters.length);
       var paramsChanged = false;
       for (let p in ft.parameters) {
-        let sub = substituteTypeParamsInCodegen(params, args, p);
+        let sub = substituteTypeParamsInCodegen(wasm, params, args, p);
         newParams.push(sub);
         if (sub != p) {
           paramsChanged = true;
         }
       }
-      let newRet = substituteTypeParamsInCodegen(params, args, ft.returnType);
+      let newRet = substituteTypeParamsInCodegen(wasm, params, args, ft.returnType);
       var retChanged = newRet != ft.returnType;
       
       var argsChanged = false;
@@ -151,7 +152,7 @@ export let substituteTypeParamsInCodegen = (
       if (ft.typeArguments != null) {
         newArgs = new Array<Type>((ft.typeArguments as Array<Type>).length);
         for (let arg in (ft.typeArguments as Array<Type>)) {
-          let sub = substituteTypeParamsInCodegen(params, args, arg);
+          let sub = substituteTypeParamsInCodegen(wasm, params, args, arg);
           (newArgs as Array<Type>).push(sub);
           if (sub != arg) {
             argsChanged = true;
@@ -196,7 +197,7 @@ export let substituteTypeParamsInCodegen = (
         let newArgs = new Array<Type>(ctArgsVal.length);
         var argsChanged = false;
         for (let arg in ctArgsVal) {
-          let sub = substituteTypeParamsInCodegen(params, args, arg);
+          let sub = substituteTypeParamsInCodegen(wasm, params, args, arg);
           newArgs.push(sub);
           if (sub != arg) {
             argsChanged = true;
@@ -221,13 +222,7 @@ export let substituteTypeParamsInCodegen = (
         for (let arg in newArgs) {
           instKey = instKey + i32ToString(arg.uid) + ",";
         }
-        var icache = ct.codegenInstantiations;
-        if (icache == null) {
-          let fresh = new HashMap<String, ClassType>();
-          ct.codegenInstantiations = fresh;
-          icache = fresh;
-        }
-        let icacheVal = icache as HashMap<String, ClassType>;
+        let icacheVal = wasm.substitutionsFor(ct).instantiations;
         if (let (true, hit) = icacheVal.get(instKey)) {
           return hit;
         }
@@ -259,13 +254,13 @@ export let substituteTypeParamsInCodegen = (
         }
 
         if (ct.superType != null) {
-          inst.superType = substituteTypeParamsInCodegen(combinedParams, combinedArgs, ct.superType as Type) as ClassType;
+          inst.superType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, ct.superType as Type) as ClassType;
         }
         for (let impl in ct.implementsList) {
-          inst.implementsList.push(substituteTypeParamsInCodegen(combinedParams, combinedArgs, impl) as InterfaceType);
+          inst.implementsList.push(substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, impl) as InterfaceType);
         }
         for (let m in ct.mixins) {
-          let subM = substituteTypeParamsInCodegen(combinedParams, combinedArgs, m);
+          let subM = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, m);
           inst.mixins.push(subM as MixinType);
         }
         inst.members = ct.members;
@@ -273,7 +268,7 @@ export let substituteTypeParamsInCodegen = (
           let ctor = ct.constructorType as FunctionType;
           let newParams = new Array<Type>(ctor.parameters.length);
           for (let p in ctor.parameters) {
-            let sub = substituteTypeParamsInCodegen(combinedParams, combinedArgs, p);
+            let sub = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, p);
             newParams.push(sub);
           }
           let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
@@ -296,7 +291,7 @@ export let substituteTypeParamsInCodegen = (
         inst.declaredFields = ct.declaredFields;
         inst.forwardVariantNames = ct.forwardVariantNames;
         if (ct.onType != null) {
-          inst.onType = substituteTypeParamsInCodegen(combinedParams, combinedArgs, ct.onType as Type);
+          inst.onType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, ct.onType as Type);
         }
         inst.sourcePath = ct.sourcePath;
         // Register only after the instantiation is fully built: a
@@ -327,7 +322,7 @@ export let substituteTypeParamsInCodegen = (
         let newArgs = new Array<Type>(itArgsVal.length);
         var argsChanged = false;
         for (let arg in itArgsVal) {
-          let sub = substituteTypeParamsInCodegen(params, args, arg);
+          let sub = substituteTypeParamsInCodegen(wasm, params, args, arg);
           newArgs.push(sub);
           if (sub != arg) {
             argsChanged = true;
@@ -358,7 +353,7 @@ export let substituteTypeParamsInCodegen = (
         }
         let newExtends = new Array<InterfaceType>(it.extendsList.length);
         for (let ext in it.extendsList) {
-          newExtends.push(substituteTypeParamsInCodegen(combinedParams, combinedArgs, ext) as InterfaceType);
+          newExtends.push(substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, ext) as InterfaceType);
         }
         inst.extendsList = newExtends;
         inst.members = it.members;
@@ -386,7 +381,7 @@ export let substituteTypeParamsInCodegen = (
       if (hasArgs && mtArgsVal.length > 0) {
         let newArgs = new Array<Type>(mtArgsVal.length);
         for (let arg in mtArgsVal) {
-          newArgs.push(substituteTypeParamsInCodegen(params, args, arg));
+          newArgs.push(substituteTypeParamsInCodegen(wasm, params, args, arg));
         }
         let inst = new MixinType(mt.name);
         inst.typeParameters = mtParams;
@@ -409,10 +404,10 @@ export let substituteTypeParamsInCodegen = (
           combinedArgs.push(a);
         }
         if (mt.onType != null) {
-          inst.onType = substituteTypeParamsInCodegen(combinedParams, combinedArgs, mt.onType as Type);
+          inst.onType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, mt.onType as Type);
         }
         for (let m in mt.mixins) {
-          let subM = substituteTypeParamsInCodegen(combinedParams, combinedArgs, m);
+          let subM = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, m);
           inst.mixins.push(subM as MixinType);
         }
         inst.members = mt.members;
@@ -427,6 +422,7 @@ export let substituteTypeParamsInCodegen = (
 };
 
 let addTransitiveInterfaces = (
+  wasm: WasmModule,
   it: InterfaceType,
   allParams: Array<TypeParameterType>,
   allArgs: Array<Type>,
@@ -455,12 +451,13 @@ let addTransitiveInterfaces = (
   
   for (let ext in it.extendsList) {
     let itParamsVal = getInterfaceTypeParameters(it);
-    let resolvedExt = substituteTypeParamsInCodegen(itParamsVal, it.typeArguments, ext) as InterfaceType;
-    addTransitiveInterfaces(resolvedExt, allParams, allArgs, seen);
+    let resolvedExt = substituteTypeParamsInCodegen(wasm, itParamsVal, it.typeArguments, ext) as InterfaceType;
+    addTransitiveInterfaces(wasm, resolvedExt, allParams, allArgs, seen);
   }
 };
 
 let addClassTransitiveInterfaces = (
+  wasm: WasmModule,
   ct: ClassType,
   allParams: Array<TypeParameterType>,
   allArgs: Array<Type>,
@@ -469,13 +466,13 @@ let addClassTransitiveInterfaces = (
   let ctParams = getClassTypeParameters(ct);
   for (let impl in ct.implementsList) {
     if (impl is InterfaceType) {
-      let resolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, impl) as InterfaceType;
-      addTransitiveInterfaces(resolved, allParams, allArgs, seen);
+      let resolved = substituteTypeParamsInCodegen(wasm, ctParams, ct.typeArguments, impl) as InterfaceType;
+      addTransitiveInterfaces(wasm, resolved, allParams, allArgs, seen);
     }
   }
   if (ct.superType != null) {
     let superCt = ct.superType as ClassType;
-    let superResolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, superCt) as ClassType;
+    let superResolved = substituteTypeParamsInCodegen(wasm, ctParams, ct.typeArguments, superCt) as ClassType;
     
     // Add superclass's own type parameters
     let genericSource = superResolved.genericSource ?? superResolved;
@@ -494,7 +491,7 @@ let addClassTransitiveInterfaces = (
     }
     
     // Recursively add superclass's interfaces and superclasses
-    addClassTransitiveInterfaces(superResolved, allParams, allArgs, seen);
+    addClassTransitiveInterfaces(wasm, superResolved, allParams, allArgs, seen);
   }
 };
 
@@ -543,13 +540,15 @@ let addClassTransitiveMixins = (
   }
 };
 
-export let substituteTypeParamsInClassContext = (classType: ClassType | null, t: Type): Type => {
+export let substituteTypeParamsInClassContext = (
+    wasm: WasmModule, classType: ClassType | null, t: Type): Type => {
   if (classType == null) {
     return t;
   }
-  
+
   let ct = classType as ClassType;
-  if (ct.cachedParams == null || ct.cachedArgs == null) {
+  let subs = wasm.substitutionsFor(ct);
+  if (subs.params == null || subs.args == null) {
     let params = new Array<TypeParameterType>();
     let args = new Array<Type>();
     
@@ -570,28 +569,22 @@ export let substituteTypeParamsInClassContext = (classType: ClassType | null, t:
     
     // 2. Add implements list and superType recursively
     let seen = new HashMap<String, boolean>();
-    addClassTransitiveInterfaces(ct, params, args, seen);
+    addClassTransitiveInterfaces(wasm, ct, params, args, seen);
     
     // 3. Add mixins transitively
     let seenMixins = new HashMap<String, boolean>();
     addClassTransitiveMixins(ct, params, args, seenMixins);
     
-    ct.cachedParams = params;
-    ct.cachedArgs = args;
+    subs.params = params;
+    subs.args = args;
   }
-  
-  var cache = ct.codegenSubstCache;
-  if (cache == null) {
-    let fresh = new HashMap<Type, Type>();
-    ct.codegenSubstCache = fresh;
-    cache = fresh;
-  }
-  let cacheVal = cache as HashMap<Type, Type>;
+
+  let cacheVal = subs.substCache;
   if (let (true, hit) = cacheVal.get(t)) {
     return hit;
   }
 
-  let substituted = substituteTypeParamsInCodegen(ct.cachedParams as Array<TypeParameterType>, ct.cachedArgs as Array<Type>, t);
+  let substituted = substituteTypeParamsInCodegen(wasm, subs.params as Array<TypeParameterType>, subs.args as Array<Type>, t);
   let result = mapMixinThisInType(ct, substituted);
   cacheVal[t] = result;
   return result;
@@ -604,13 +597,13 @@ export let substituteTypeParamsInClassContext = (classType: ClassType | null, t:
  * per-module (stmt/loops.zena, reachability/visitor.zena, ir/); this
  * is the one shared copy.
  */
-export let findImplementedInterfaceTransitive = (ct: ClassType, name: String): InterfaceType | null => {
+export let findImplementedInterfaceTransitive = (wasm: WasmModule, ct: ClassType, name: String): InterfaceType | null => {
   let seen = new HashMap<InterfaceKey, boolean>();
   let queue = new Array<InterfaceType>();
 
   let ctParams = getClassTypeParameters(ct);
   for (let impl in ct.implementsList) {
-    let resolved = substituteTypeParamsInCodegen(ctParams, ct.typeArguments, impl) as InterfaceType;
+    let resolved = substituteTypeParamsInCodegen(wasm, ctParams, ct.typeArguments, impl) as InterfaceType;
     queue.push(resolved);
   }
 
@@ -619,7 +612,7 @@ export let findImplementedInterfaceTransitive = (ct: ClassType, name: String): I
     let superCt = currSuper as ClassType;
     let superCtParams = getClassTypeParameters(superCt);
     for (let impl in superCt.implementsList) {
-      let resolved = substituteTypeParamsInCodegen(superCtParams, superCt.typeArguments, impl) as InterfaceType;
+      let resolved = substituteTypeParamsInCodegen(wasm, superCtParams, superCt.typeArguments, impl) as InterfaceType;
       queue.push(resolved);
     }
     currSuper = superCt.superType;
@@ -638,7 +631,7 @@ export let findImplementedInterfaceTransitive = (ct: ClassType, name: String): I
       }
       let itParams = getInterfaceTypeParameters(it);
       for (let ext in it.extendsList) {
-        let resolvedExt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ext) as InterfaceType;
+        let resolvedExt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ext) as InterfaceType;
         queue.push(resolvedExt);
       }
     }
@@ -646,7 +639,7 @@ export let findImplementedInterfaceTransitive = (ct: ClassType, name: String): I
   return null;
 };
 
-export let substituteTypeParamsInFunctionContext = (wasmFunction: WasmFunction | null, t: Type): Type => {
+export let substituteTypeParamsInFunctionContext = (wasm: WasmModule, wasmFunction: WasmFunction | null, t: Type): Type => {
   if (wasmFunction == null) {
     return t;
   }
@@ -664,13 +657,13 @@ export let substituteTypeParamsInFunctionContext = (wasmFunction: WasmFunction |
 
   var substituted = t;
   if (wasmFunction.classType != null) {
-    substituted = substituteTypeParamsInClassContext(wasmFunction.classType, substituted);
+    substituted = substituteTypeParamsInClassContext(wasm, wasmFunction.classType, substituted);
   }
 
   if (wasmFunction.typeParameters != null && wasmFunction.typeArguments != null) {
     let tps = wasmFunction.typeParameters as Array<TypeParameterType>;
     let tas = wasmFunction.typeArguments as Array<Type>;
-    substituted = substituteTypeParamsInCodegen(tps, tas, substituted);
+    substituted = substituteTypeParamsInCodegen(wasm, tps, tas, substituted);
   }
 
   cacheVal[t] = substituted;
@@ -684,11 +677,11 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     var memberType: Type | null = null;
     if (it.members.has(propName)) {
       let fi = it.members[propName] as FieldInfo;
-      memberType = substituteTypeParamsInCodegen(itParams, it.typeArguments, fi.type);
+      memberType = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, fi.type);
     } else if (it.members.has(fieldName)) {
       let mi = it.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      let resolvedFt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ft) as FunctionType;
+      let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
       memberType = resolvedFt.returnType;
     }
     if (memberType == null) {
@@ -704,11 +697,11 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     var memberType: Type | null = null;
     if (it.members.has(propName)) {
       let fi = it.members[propName] as FieldInfo;
-      memberType = substituteTypeParamsInCodegen(itParams, it.typeArguments, fi.type);
+      memberType = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, fi.type);
     } else if (it.members.has(fieldName)) {
       let mi = it.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      let resolvedFt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ft) as FunctionType;
+      let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
       if (resolvedFt.parameters.length > 0) {
         memberType = resolvedFt.parameters[0];
       }
@@ -724,7 +717,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
   } else {
     let mi = it.members[fieldName] as MethodInfo;
     let ft = mi.type as FunctionType;
-    let resolvedFt = substituteTypeParamsInCodegen(itParams, it.typeArguments, ft) as FunctionType;
+    let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
     let params = new Array<ValType>();
     params.push(new ValTypeAnyRef());
     for (let p in resolvedFt.parameters) {
@@ -736,7 +729,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
   }
 };
 
-export let eraseTypeParameters = (t: Type): Type => {
+export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
   return match (t) {
     case TypeParameterType: new AnyRefType()
     case TypeAliasType as ta: {
@@ -755,13 +748,13 @@ export let eraseTypeParameters = (t: Type): Type => {
       let tps = ta.typeParameters;
       let targs = ta.typeArguments;
       if (tps != null && targs != null) {
-        return eraseTypeParameters(substituteTypeParamsInCodegen(
+        return eraseTypeParameters(wasm, substituteTypeParamsInCodegen(wasm, 
             tps as Array<TypeParameterType>, targs as Array<Type>, ta.target));
       }
-      eraseTypeParameters(ta.target)
+      eraseTypeParameters(wasm, ta.target)
     }
     case ArrayType {elementType}: {
-      let sub = eraseTypeParameters(elementType);
+      let sub = eraseTypeParameters(wasm, elementType);
       if (sub == elementType) { return t; }
       new ArrayType(sub)
     }
@@ -771,7 +764,7 @@ export let eraseTypeParameters = (t: Type): Type => {
         let newArgs = new Array<Type>();
         var changed = false;
         for (let arg in args) {
-          let sub = eraseTypeParameters(arg);
+          let sub = eraseTypeParameters(wasm, arg);
           if (sub != arg) { changed = true; }
           newArgs.push(sub);
         }
@@ -780,21 +773,21 @@ export let eraseTypeParameters = (t: Type): Type => {
         let inst = new ClassType(ct.id, ct.symbolId, ct.name);
         inst.typeArguments = newArgs;
         if (ct.superType != null) {
-          inst.superType = eraseTypeParameters(ct.superType as Type) as ClassType;
+          inst.superType = eraseTypeParameters(wasm, ct.superType as Type) as ClassType;
         }
         inst.members = ct.members;
         inst.typeParameters = ct.typeParameters;
         inst.isExtension = ct.isExtension;
         if (ct.isExtension && ct.onType != null) {
-          inst.onType = eraseTypeParameters(ct.onType as Type);
+          inst.onType = eraseTypeParameters(wasm, ct.onType as Type);
         }
         inst.genericSource = ct.genericSource ?? ct;
         inst.sourcePath = ct.sourcePath;
         for (let impl in ct.implementsList) {
-          inst.implementsList.push(eraseTypeParameters(impl) as InterfaceType);
+          inst.implementsList.push(eraseTypeParameters(wasm, impl) as InterfaceType);
         }
         for (let m in ct.mixins) {
-          inst.mixins.push(eraseTypeParameters(m) as MixinType);
+          inst.mixins.push(eraseTypeParameters(wasm, m) as MixinType);
         }
         inst.fieldSetterNames = ct.fieldSetterNames;
         inst.isFinal = ct.isFinal;
@@ -808,9 +801,9 @@ export let eraseTypeParameters = (t: Type): Type => {
           let ctor = ct.constructorType as FunctionType;
           let newParams = new Array<Type>(ctor.parameters.length);
           for (let p in ctor.parameters) {
-            newParams.push(eraseTypeParameters(p));
+            newParams.push(eraseTypeParameters(wasm, p));
           }
-          let newFt = new FunctionType(newParams, ctor.parameterNames, eraseTypeParameters(ctor.returnType));
+          let newFt = new FunctionType(newParams, ctor.parameterNames, eraseTypeParameters(wasm, ctor.returnType));
           newFt.parameterInitializers = ctor.parameterInitializers;
           newFt.parameterSymbols = ctor.parameterSymbols;
           newFt.optionalParameters = ctor.optionalParameters;
@@ -831,7 +824,7 @@ export let eraseTypeParameters = (t: Type): Type => {
         let newArgs = new Array<Type>();
         var changed = false;
         for (let arg in args) {
-          let sub = eraseTypeParameters(arg);
+          let sub = eraseTypeParameters(wasm, arg);
           if (sub != arg) { changed = true; }
           newArgs.push(sub);
         }
@@ -843,7 +836,7 @@ export let eraseTypeParameters = (t: Type): Type => {
         inst.genericSource = it.genericSource ?? it;
         inst.sourcePath = it.sourcePath;
         for (let ext in it.extendsList) {
-          inst.extendsList.push(eraseTypeParameters(ext) as InterfaceType);
+          inst.extendsList.push(eraseTypeParameters(wasm, ext) as InterfaceType);
         }
         inst as Type
       } else {
@@ -854,11 +847,11 @@ export let eraseTypeParameters = (t: Type): Type => {
       let newParams = new Array<Type>();
       var changed = false;
       for (let p in ft.parameters) {
-        let sub = eraseTypeParameters(p);
+        let sub = eraseTypeParameters(wasm, p);
         if (sub != p) { changed = true; }
         newParams.push(sub);
       }
-      let newRet = eraseTypeParameters(ft.returnType);
+      let newRet = eraseTypeParameters(wasm, ft.returnType);
       if (newRet != ft.returnType) { changed = true; }
       if (!changed) { return t; }
       let inst = new FunctionType(newParams, ft.parameterNames, newRet);
@@ -881,7 +874,7 @@ export let eraseTypeParameters = (t: Type): Type => {
         let newArgs = new Array<Type>();
         var changed = false;
         for (let arg in args) {
-          let sub = eraseTypeParameters(arg);
+          let sub = eraseTypeParameters(wasm, arg);
           if (sub != arg) { changed = true; }
           newArgs.push(sub);
         }
@@ -894,7 +887,7 @@ export let eraseTypeParameters = (t: Type): Type => {
         inst.members = mt.members;
         inst.sourcePath = mt.sourcePath;
         for (let composed in mt.mixins) {
-          inst.mixins.push(eraseTypeParameters(composed) as MixinType);
+          inst.mixins.push(eraseTypeParameters(wasm, composed) as MixinType);
         }
         inst as Type
       } else {
@@ -905,7 +898,7 @@ export let eraseTypeParameters = (t: Type): Type => {
       let newTypes = new Array<Type>();
       var changed = false;
       for (let subT in types) {
-        let sub = eraseTypeParameters(subT);
+        let sub = eraseTypeParameters(wasm, subT);
         if (sub != subT) { changed = true; }
         newTypes.push(sub);
       }
@@ -916,7 +909,7 @@ export let eraseTypeParameters = (t: Type): Type => {
       let newElems = new Array<Type>();
       var changed = false;
       for (let subT in elementTypes) {
-        let sub = eraseTypeParameters(subT);
+        let sub = eraseTypeParameters(wasm, subT);
         if (sub != subT) { changed = true; }
         newElems.push(sub);
       }
@@ -927,7 +920,7 @@ export let eraseTypeParameters = (t: Type): Type => {
       let newElems = new Array<Type>();
       var changed = false;
       for (let subT in elementTypes) {
-        let sub = eraseTypeParameters(subT);
+        let sub = eraseTypeParameters(wasm, subT);
         if (sub != subT) { changed = true; }
         newElems.push(sub);
       }
@@ -940,7 +933,7 @@ export let eraseTypeParameters = (t: Type): Type => {
       let keys = rec.properties.keys();
       while (let (true, key) = keys.next()) {
         let propType = rec.properties[key];
-        let sub = eraseTypeParameters(propType);
+        let sub = eraseTypeParameters(wasm, propType);
         if (sub != propType) { changed = true; }
         newProps[key] = sub;
       }
@@ -958,7 +951,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
   if (let (true, f) = wasm.classMethodMap.get(key)) {
     return f.signature;
   }
-  let erasedCt = eraseTypeParameters(ct) as ClassType;
+  let erasedCt = eraseTypeParameters(wasm, ct) as ClassType;
   let erasedKey = getClassMethodKey(getClassKey(erasedCt), fieldName);
   if (let (true, f) = wasm.classMethodMap.get(erasedKey)) {
     return f.signature;
@@ -988,11 +981,11 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
     let propName = fieldName.sliceBytes(4, fieldName.length);
     var fieldType: Type = new VoidType();
     if (erasedCt.members.has(propName)) {
-      fieldType = substituteTypeParamsInClassContext(erasedCt, erasedCt.members[propName].type);
+      fieldType = substituteTypeParamsInClassContext(wasm, erasedCt, erasedCt.members[propName].type);
     } else if (erasedCt.members.has(fieldName)) {
       let mi = erasedCt.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      let resolvedFt = substituteTypeParamsInClassContext(erasedCt, ft) as FunctionType;
+      let resolvedFt = substituteTypeParamsInClassContext(wasm, erasedCt, ft) as FunctionType;
       fieldType = resolvedFt.returnType;
     }
     returns.push(typeToValType(wasm, fieldType));
@@ -1001,11 +994,11 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
     let propName = fieldName.sliceBytes(4, fieldName.length);
     var fieldType: Type = new VoidType();
     if (erasedCt.members.has(propName)) {
-      fieldType = substituteTypeParamsInClassContext(erasedCt, erasedCt.members[propName].type);
+      fieldType = substituteTypeParamsInClassContext(wasm, erasedCt, erasedCt.members[propName].type);
     } else if (erasedCt.members.has(fieldName)) {
       let mi = erasedCt.members[fieldName] as MethodInfo;
       let ft = mi.type as FunctionType;
-      let resolvedFt = substituteTypeParamsInClassContext(erasedCt, ft) as FunctionType;
+      let resolvedFt = substituteTypeParamsInClassContext(wasm, erasedCt, ft) as FunctionType;
       fieldType = resolvedFt.parameters[0];
     }
     mapParamTypeToWasmParams(wasm, fieldType, params);
@@ -1015,7 +1008,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
     if (erasedCt.members.has(fieldName)) {
       let mi = erasedCt.members[fieldName] as MethodInfo;
       let rawFt = mi.type as FunctionType;
-      ft = substituteTypeParamsInClassContext(erasedCt, rawFt) as FunctionType;
+      ft = substituteTypeParamsInClassContext(wasm, erasedCt, rawFt) as FunctionType;
     }
     if (ft != null) {
       let fType = ft as FunctionType;
@@ -1157,7 +1150,7 @@ export let typeToStorageValType = (wasm: WasmModule, t: Type): ValType => {
 };
 
 export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
-  let erasedT = eraseTypeParameters(t);
+  let erasedT = eraseTypeParameters(wasm, t);
   return match (erasedT) {
     case TypeAliasType as a: typeToValType(wasm, a.target)
   case BoolLiteralType: new ValTypeI32()
@@ -1228,7 +1221,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
       return new ValTypeRef(wasm.getByteArrayType());
     }
     if (ct.isExtension && ct.onType != null) {
-      let subOn = substituteTypeParamsInClassContext(ct, ct.onType as Type);
+      let subOn = substituteTypeParamsInClassContext(wasm, ct, ct.onType as Type);
       return typeToValType(wasm, subOn);
     }
     if (let (true, ctInfo) = wasm.classInfos.get(getClassKey(ct))) {
@@ -1460,14 +1453,14 @@ export let getNonNullableType = (type: Type): Type => match (type) {
 
 export let typeToValTypeWithSub = (wasm: WasmModule, t: Type, wasmFunction: WasmFunction | null): ValType => {
   if (wasmFunction != null) {
-    return typeToValType(wasm, substituteTypeParamsInFunctionContext(wasmFunction, t));
+    return typeToValType(wasm, substituteTypeParamsInFunctionContext(wasm, wasmFunction, t));
   }
   return typeToValType(wasm, t);
 };
 
 export let mapReturnTypeToWasmResultsWithSub = (wasm: WasmModule, type: Type, returns: Array<ValType>, wasmFunction: WasmFunction | null): void => {
   if (wasmFunction != null) {
-    mapReturnTypeToWasmResults(wasm, substituteTypeParamsInFunctionContext(wasmFunction, type), returns);
+    mapReturnTypeToWasmResults(wasm, substituteTypeParamsInFunctionContext(wasm, wasmFunction, type), returns);
   } else {
     mapReturnTypeToWasmResults(wasm, type, returns);
   }
