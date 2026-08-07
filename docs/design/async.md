@@ -255,6 +255,20 @@ the target distinction the compiler already has (`--target wasi` vs
 `--target host`), and the `Future`/`Completer`/executor core is
 target-independent.
 
+**Correction from the implementation.** The `setTimeout` shape above
+depends on "completing a `Completer` through the Level-2 exports" — so
+it is not actually available at Level 1, because the host has no way to
+call back into wasm until those exports exist. Only the entry module's
+exports become wasm exports, so `zena:time` cannot publish one itself.
+
+The host entry therefore parks *synchronously* too, on an import pair
+(`time.now_ms`, `time.sleep_ms`) that `@zena-lang/runtime` provides;
+`sleep_ms` blocks with `Atomics.wait`. The conditionality is still
+confined to the one module, and less of it than expected: the timer
+queue is shared, and only the `Clock` differs. The `setTimeout` version
+becomes possible — and preferable — once A3 lands the drain export, and
+`time/host.zena` is where it goes.
+
 **Implemented** as described, with one refinement worth recording: the
 drain arm is a registered `Parker`, not a branch in the drain loop that
 knows about timers. `zena:async` exposes `interface Parker { park():
@@ -412,13 +426,29 @@ website served by a Zena server":
   closures, and an async `main` driven by the synthesized export
   wrapper (§4).
 
-- **A2 — timers. Implemented** for the WASI side (`zena:time`):
-  `sleep(ms): Future<void>` over `poll_oneoff` with a relative
-  monotonic clock subscription, plus the drain/park arm. JS-host
-  parking via the event loop is still to come, and is the same module
-  with a different entry file (`time/host.zena`) — `zena:time` is
-  registered as a virtual module, WASI-only for now, exactly like
-  `zena:process`.
+- **A2 — timers. Implemented on both targets** (`zena:time`):
+  `sleep(ms): Future<void>` and a monotonic clock, plus the drain/park
+  arm. The WASI entry parks on `poll_oneoff` with a relative monotonic
+  clock subscription; the host entry parks on two imports supplied by
+  `@zena-lang/runtime`. Only the clock differs — `time/queue.zena`
+  holds the timer queue and is shared.
+
+  **The host wait blocks, rather than being driven by `setTimeout`**,
+  which is a deliberate reversal of what this document assumed below.
+  A callback-driven timer needs the host to call back *into* wasm to
+  settle the `Completer`, and only the entry module's exports become
+  wasm exports — a stdlib module cannot publish that entry point. It
+  arrives with A3's `__zena_drain` export. Until then blocking is what
+  both targets can express, and it buys something worth having: a
+  program behaves identically under wasmtime and under Node, so the
+  same test asserts the same thing on both.
+
+  The cost is stated plainly in the module: `drainMicrotasks()` blocks
+  the JS thread while a timer is pending, exactly as it blocks the
+  module under WASI. Fine in Node and in a worker; on a browser main
+  thread it would freeze the tab, so the runtime raises a clear error
+  when it cannot block properly rather than busy-waiting — which would
+  freeze it just as hard while looking like it worked.
 
   The drain arm is a hook, not a special case: `zena:async` gained a
   `Parker` interface and a `setParker`, and an empty queue now means

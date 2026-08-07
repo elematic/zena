@@ -165,10 +165,11 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   processVirtual["zena-cli"] = "process/wasi.zena";
   exports["process"] = new ModuleExport(processVirtual);
 
-  // Virtual module: time → sleeping and the monotonic clock. WASI-only
-  // for now: the wasi entry parks on poll_oneoff, and a `host` entry
-  // waits on the JS event loop instead (async.md §4, Level 2).
+  // Virtual module: time → sleeping and the monotonic clock. Both
+  // entries park synchronously and share time/queue.zena; only the
+  // clock differs (poll_oneoff vs a host import). See async.md §4.
   let timeVirtual = new HashMap<String, String>();
+  timeVirtual["host"] = "time/host.zena";
   timeVirtual["wasi"] = "time/wasi.zena";
   timeVirtual["zena-cli"] = "time/wasi.zena";
   exports["time"] = new ModuleExport(timeVirtual);

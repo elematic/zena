@@ -1,0 +1,149 @@
+/**
+ * The target-independent half of zena:time: the timer queue and its
+ * `Parker` registration (docs/design/async.md §4, Level 1).
+ *
+ * Private to the library — reachable only through `time/wasi.zena` or
+ * `time/host.zena`, which supply the one thing that genuinely differs
+ * per target: a `Clock`.
+ */
+import { Future, Completer, Parker, setParker } from 'zena:async';
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+
+/**
+ * Reading the monotonic clock, and blocking on it.
+ *
+ * Both operations are host primitives, and both are synchronous. A
+ * callback-driven timer (JS `setTimeout` completing a `Completer`) would
+ * be the more natural JS shape, but it needs the host to call back
+ * *into* wasm, and only the entry module's exports become wasm exports —
+ * a stdlib module cannot publish the entry point that would need. That
+ * arrives with A3's `__zena_drain` export; until then a blocking park is
+ * what both targets can express, and it keeps their semantics identical.
+ */
+export interface Clock {
+  /** Nanoseconds on a monotonic clock. Only differences are meaningful. */
+  nowNs(): i64;
+  /** Block the whole module for `ns` nanoseconds. */
+  parkNs(ns: i64): void;
+}
+
+var clock: Clock | null = null;
+
+/** Install the target's clock. Idempotent; the entry modules call it. */
+export let installClock = (c: Clock): void => {
+  clock = c;
+};
+
+let currentClock = (): Clock => {
+  let c = clock;
+  if (c == null) {
+    throw new Error('zena:time: no clock installed');
+  }
+  return c as Clock;
+};
+
+/** Nanoseconds on the monotonic clock. */
+export let monotonicNs = (): i64 => {
+  return currentClock().nowNs();
+};
+
+/** Milliseconds on the monotonic clock. */
+export let monotonicMs = (): f64 => {
+  return (monotonicNs() as f64) / 1000000.0;
+};
+
+let NS_PER_MS = 1000000 as i64;
+
+/** One pending sleep. `seq` breaks deadline ties in insertion order. */
+final class Timer {
+  deadlineNs: i64;
+  seq: i32;
+  completer: Completer<void>;
+  new(this.deadlineNs, this.seq, this.completer);
+}
+
+/**
+ * Pending timers, waited on by the drain loop.
+ *
+ * Ties are broken by insertion order rather than left to the scan,
+ * because test output has to be deterministic — two timers armed for the
+ * same millisecond must always complete in the order they were armed.
+ */
+class TimerQueue implements Parker {
+  #timers = new Array<Timer>();
+  var #nextSeq = 0;
+
+  arm(deadlineNs: i64, completer: Completer<void>): void {
+    this.#timers.push(new Timer(deadlineNs, this.#nextSeq, completer));
+    this.#nextSeq += 1;
+  }
+
+  /** Wait for the earliest timer, complete it, and report progress. */
+  park(): boolean {
+    if (this.#timers.length == 0) {
+      return false;
+    }
+    var best = 0;
+    var i = 1;
+    while (i < this.#timers.length) {
+      let t = this.#timers[i];
+      let b = this.#timers[best];
+      if (t.deadlineNs < b.deadlineNs ||
+          (t.deadlineNs == b.deadlineNs && t.seq < b.seq)) {
+        best = i;
+      }
+      i += 1;
+    }
+    let timer = this.#timers[best];
+    // Shift the tail down rather than swapping with the last element:
+    // a swap would scramble the insertion order `seq` exists to keep.
+    var j = best;
+    while (j < this.#timers.length - 1) {
+      this.#timers[j] = this.#timers[j + 1];
+      j += 1;
+    }
+    this.#timers.pop();
+
+    let now = monotonicNs();
+    if (timer.deadlineNs > now) {
+      currentClock().parkNs(timer.deadlineNs - now);
+    }
+    timer.completer.complete();
+    return true;
+  }
+}
+
+let timers = new TimerQueue();
+
+// Registered on first use rather than at module init: a module-level
+// binding whose value is never read is a dead-code-elimination target,
+// and losing the registration would show up only as a drain that ended
+// early — silently, and only when a timer happened to be pending.
+var registered = false;
+
+/**
+ * A future that completes after at least `ms` milliseconds.
+ *
+ * "At least": the deadline is when the timer becomes *eligible*, and it
+ * completes through the microtask queue like every other future, so a
+ * busy queue can delay it further. `sleep(0)` still yields — it never
+ * completes synchronously, per the always-async rule.
+ *
+ * The wait happens inside `drainMicrotasks()`. Nothing runs while the
+ * module is parked: this is cooperative single-threaded concurrency, so
+ * a sleeping task does not let other *non-async* work proceed — it lets
+ * other futures proceed.
+ */
+export let sleep = (ms: i32): Future<void> => {
+  if (!registered) {
+    setParker(timers);
+    registered = true;
+  }
+  if (ms < 0) {
+    throw new Error('zena:time: sleep() needs a non-negative duration');
+  }
+  let c = new Completer<void>();
+  timers.arm(monotonicNs() + (ms as i64) * NS_PER_MS, c);
+  return c.future;
+};

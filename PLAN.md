@@ -68,15 +68,16 @@ This document tracks completed work and planned features. For project instructio
     argument at all. `void` is now a zero-width type argument (it takes
     no wasm slot, so callers omit its arguments); see the language
     reference under "Generic Classes".
-  - **A2 (timers) is done on the WASI side.** `zena:time` provides
-    `sleep(ms): Future<void>` and a monotonic clock over WASI p1
-    `poll_oneoff`, and `zena:async` grew a `Parker` hook so an empty
-    microtask queue means "wait for the next external completion"
-    rather than "done". No `zena-cli` changes — it is stdlib code over
-    WASI imports the compiler already emits. `sleep` is what
+  - **A2 (timers) is done, on both targets.** `zena:time` provides
+    `sleep(ms): Future<void>` and a monotonic clock, and `zena:async`
+    grew a `Parker` hook so an empty microtask queue means "wait for
+    the next external completion" rather than "done". The WASI entry
+    parks on `poll_oneoff`; the host entry parks on two imports from
+    `@zena-lang/runtime`. No `zena-cli` changes. `sleep` is what
     `Future<void>` was blocking.
-  - Next: the JS-host half of A2 (`time/host.zena`, parking on the
-    event loop), then A3 (external completions on a JS host).
+  - Next: A3 (external completions on a JS host). Its `__zena_drain`
+    export is also what would let `zena:time`'s host entry park on the
+    event loop via `setTimeout` instead of blocking.
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running

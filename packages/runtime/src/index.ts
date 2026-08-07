@@ -1,6 +1,7 @@
 export interface ZenaImports {
   env?: Record<string, Function>;
   console?: Record<string, Function>;
+  time?: Record<string, Function>;
   [key: string]: any;
 }
 
@@ -202,6 +203,66 @@ export function createConsoleImports(
 }
 
 /**
+ * Create the `time` imports backing `zena:time` on a non-WASI host.
+ *
+ * Two primitives, both synchronous: a monotonic reading and a blocking
+ * wait. Time crosses as f64 milliseconds so no BigInt marshalling is
+ * involved.
+ *
+ * `sleep_ms` blocks the thread on purpose. Zena's drain loop parks
+ * rather than yielding to an event loop, because the callback-driven
+ * alternative needs the host to call back into wasm and only the entry
+ * module's exports become wasm exports — a stdlib module cannot publish
+ * that entry point yet. Blocking is also what the WASI target does, so a
+ * program behaves identically under wasmtime and under Node.
+ *
+ * `Atomics.wait` is the only way to block a JS thread precisely. It is
+ * available on Node's main thread and in workers, but throws on a
+ * browser main thread — where blocking would freeze the tab anyway. We
+ * surface that as a clear error rather than busy-waiting, which would
+ * freeze it just as hard while looking like it worked.
+ */
+export function createTimeImports(): Record<string, Function> {
+  // A private, never-notified location: Atomics.wait on a value that
+  // never changes always runs the full timeout and returns 'timed-out'.
+  let waitBuffer: Int32Array | null = null;
+  const getWaitBuffer = (): Int32Array => {
+    if (waitBuffer === null) {
+      if (typeof SharedArrayBuffer === 'undefined') {
+        throw new Error(
+          'zena:time: sleep() needs SharedArrayBuffer to block this thread. ' +
+            'In a browser that means a cross-origin-isolated context, and ' +
+            'preferably a worker — blocking the main thread freezes the page.',
+        );
+      }
+      waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+    }
+    return waitBuffer;
+  };
+
+  return {
+    now_ms: (): number => {
+      // performance.now() is monotonic where available; Date.now() is
+      // not, but is the only fallback and is adequate for timers.
+      return typeof performance !== 'undefined' && performance.now
+        ? performance.now()
+        : Date.now();
+    },
+    sleep_ms: (ms: number): void => {
+      if (!(ms > 0)) {
+        return;
+      }
+      const result = Atomics.wait(getWaitBuffer(), 0, 0, ms);
+      if (result === 'not-equal') {
+        // Cannot happen: index 0 is never written. Fail loudly rather
+        // than silently returning early from a sleep.
+        throw new Error('zena:time: sleep() woke unexpectedly');
+      }
+    },
+  };
+}
+
+/**
  * Instantiate a WebAssembly module with Zena default and user-provided imports.
  *
  * @param wasm
@@ -261,6 +322,7 @@ export async function instantiate(
   const defaultImports = {
     env: envImports,
     console: createConsoleImports(() => instanceExports),
+    time: createTimeImports(),
   };
 
   const imports = {
@@ -268,6 +330,7 @@ export async function instantiate(
     ...userImports,
     env: {...defaultImports.env, ...userImports.env},
     console: {...defaultImports.console, ...userImports.console},
+    time: {...defaultImports.time, ...userImports.time},
   };
 
   if (wasm instanceof WebAssembly.Module) {
