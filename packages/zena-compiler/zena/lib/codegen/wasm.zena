@@ -24,6 +24,22 @@ export let nextWasmTypeUid = (): i32 => {
   return id;
 };
 
+/**
+ * Restarts the uid sequence. `ModuleGenerator.compile` calls this so a
+ * module's uids depend only on that module.
+ *
+ * These uids are `hashCode`, so they set the iteration order of every
+ * HashMap and HashSet keyed by a WasmType or WasmFunction — and that
+ * order reaches the output. Left running across compilations, a module
+ * would be emitted differently depending on how many modules preceded
+ * it in the process. Everything they key is built fresh by each module
+ * pass (the WasmModule model and its types and functions), so nothing
+ * from an earlier pass is alive to collide with the restarted sequence.
+ */
+export let resetWasmTypeUids = (): void => {
+  _nextWasmTypeUid = 1;
+};
+
 export class WasmType implements Hashable {
   var index: i32 = -1;
   /** Process-unique id, used for identity-based cache keys. */

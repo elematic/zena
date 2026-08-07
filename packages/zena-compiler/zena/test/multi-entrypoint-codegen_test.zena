@@ -1,0 +1,121 @@
+/**
+ * Codegen must not carry state from one module into the next.
+ *
+ * `zena-cli` compiles exactly one module per process, so nothing else in
+ * the suite would notice if it did — `test:fixpoint` runs its two stages
+ * as separate processes too. But any batch or daemon compile mode needs
+ * several entry points to go through one process, and that used to be
+ * broken: from the fourth module onward, lowering failed with
+ * `zir unsupported:` reasons that varied between runs and named stdlib
+ * generic instantiations that compiled fine on their own.
+ *
+ * The cause was `nextWasmTypeUid`. Uids are `hashCode` for WasmType and
+ * WasmFunction, so they set the iteration order of every hash container
+ * keyed by one, and that order drives specialization and emission. Left
+ * running across modules, the order a module saw depended on how many
+ * modules preceded it. `ModuleGenerator.compile` now restarts the
+ * sequence per module.
+ *
+ * These tests compile real files, so they are slower than most unit
+ * tests; the count is kept low deliberately. Compiling one module is not
+ * enough to catch a regression — the failures began at the fourth.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { CompilerHost } from '../lib/library-loader.zena';
+import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
+import { loadPackageMap } from '../lib/package-manifest.zena';
+import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+
+let stdlibRoot = 'packages/stdlib/zena';
+
+class FsHost implements CompilerHost {
+  new();
+
+  readFile(path: String): String {
+    if (path.startsWith('zena:')) {
+      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+    }
+    return readFile(path);
+  }
+}
+
+/** Compiles one entry to wasm bytes, throwing on any error. */
+let compileToWasm = (
+    host: FsHost,
+    packages: HashMap<String, PackageConfig>,
+    path: String): ByteArray => {
+  let options = new CompilerOptions('zena-cli', stdlibRoot, packages);
+  let compiler = createCompiler(host, options);
+  let compResult = compiler.compile(path);
+  let checkResults = checkCompilation(compResult, null, false);
+  for (let diag in checkResults.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      throw new Error(`${path}: ${diag.message}`);
+    }
+  }
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    let res = checkResults.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+  return new BinaryGenerator('zena-cli', false)
+    .generate(new Program(units, entryUnit))
+    .toByteArray();
+};
+
+/**
+ * Entry points that between them reach a good spread of the stdlib —
+ * arrays, strings, generic instantiation and interface dispatch — since
+ * the failures were all in shared generic instantiations.
+ */
+let entryPoints = [
+  'tests/language/execution/variables/local_let.zena',
+  'tests/language/execution/arrays/array-literal.zena',
+  'tests/language/execution/arrays/extension_class.zena',
+  'tests/language/execution/strings/string_template.zena',
+  'tests/language/execution/classes/basic_class.zena',
+  'tests/language/execution/interfaces/basic_method.zena',
+];
+
+export let tests = suite('Multi-entrypoint codegen', (): void => {
+  test('six different modules compile in one process', (ctx: TestContext): void => {
+    let host = new FsHost();
+    let packages = loadPackageMap(host, 'zena-packages.json');
+    for (let path in entryPoints) {
+      let bytes = compileToWasm(host, packages, path);
+      isTrue(bytes.length > 0, `${path} emitted no bytes`);
+    }
+  });
+
+  test('the same module compiles to the same size however many precede it', (ctx: TestContext): void => {
+    // Byte-for-byte equality is not asserted: a spurious value-wrapper
+    // is still emitted for a directly-called function, and which one it
+    // picks moves with hash order (see BUGS.md). The size is stable, so
+    // this still catches a module whose contents drift with position.
+    let host = new FsHost();
+    let packages = loadPackageMap(host, 'zena-packages.json');
+    let path = 'tests/language/execution/variables/local_let.zena';
+    let first = compileToWasm(host, packages, path).length;
+    for (var i = 0; i < 4; i += 1) {
+      let again = compileToWasm(host, packages, path).length;
+      isTrue(again == first, `compile ${i + 2} emitted ${again} bytes, first emitted ${first}`);
+    }
+  });
+});

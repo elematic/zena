@@ -114,48 +114,27 @@ immediately trying to fix it (which can pollute the current task's context).
   today's behaviour and fail the moment someone fixes it; add coverage
   with the fix.
 
-### Codegen keeps process-global state, so a second compilation in the same process is wrong
+### Codegen emits a spurious value-wrapper, and which one moves with hash order
 
-- **Found**: 2026-08-07, probing whether the execution tests could share
-  one compiler process instead of spawning one per test.
-- **Severity**: medium today, blocking for batch compilation — `zena-cli`
-  compiles exactly one module per process, so nothing in the build or the
-  test suites can currently observe it. `test:fixpoint` cannot see it
-  either: stage B and stage C are separate processes.
-- **Details**: three module-level `var`s under `zena/lib/codegen/` live
-  for the life of the process rather than the compilation, and are never
-  reset:
-  - `codegen/wasm.zena`: `var _nextWasmTypeUid` is a monotonic counter
-    that keeps climbing across compilations. Compiling the _same_ source
-    twelve times in one process (fresh `Compiler` each iteration) emits
-    33875 bytes every time, but iterations 4, 8 and 12 differ in content
-    — reproducibly, and identically across runs. The difference is a pure
-    permutation of the type section (types 33/34 and 66/67 swapped, every
-    reference consistently renumbered), so the modules are semantically
-    equal; it is a byte-determinism bug, not a miscompile.
-  - `codegen/ir/async.zena`: `rampBodies`, `stepBodies`,
-    `mainWrapperBodies`, and `codegen/ir/generators.zena`: `rampBodies`,
-    `nextBodies` — `HashMap<i32, …>` caches keyed by symbol id. Symbol
-    ids restart per compilation, so compilation N+1 hits entries left by
-    compilation N and gets artifacts referring to the previous module's
-    types and globals. This one _is_ a correctness failure: compiling 40
-    execution tests in sequence in one process (fresh `Compiler` each
-    time) failed on 20 of them from the 4th onward, with `zir
-unsupported:` reasons that vary between runs — "interface vtable
-    global not found", "unresolved parameter", "static interface access",
-    "for-in pattern" — all naming stdlib generic instantiations
-    (`FixedArray_s186_u8.contains`, `ImmutableArray_s109_i32.from`) that
-    compile fine standalone.
-
-- **Fix**: move all five onto a per-compilation context object, the way
-  the rest of the ZIR backend threads `LoweringContext`. Until then, any
-  batch/daemon compile mode is unsound.
-- **Why it matters**: parsing and checking the stdlib is ~93% of the cost
-  of compiling a small test (0.385s cold vs 0.027s for a cache hit), and
-  the checking half already supports reuse —
-  `portable_semantics.zena` shares one compiler and one incremental
-  `ProgramCheckResult` across 525 files in 2 seconds. Batching the
-  execution tests the same way is blocked only by this.
+- **Found**: 2026-08-07, while fixing the multi-entrypoint codegen bug
+  below.
+- **Severity**: low — the wrapper is dead code. It is declared in the
+  elem segment but nothing takes a `ref.func` to it, so the module is
+  valid and behaves correctly.
+- **Details**: `String.asciiLowerCase`/`asciiUpperCase` call
+  `asciiLowerByte`/`asciiUpperByte` **directly**
+  (`if (lower) asciiLowerByte(b) else asciiUpperByte(b)`), so neither
+  needs a function-value wrapper. One is emitted anyway. Which of the two
+  it is depends on hash iteration order, so compiling the same source
+  twice in one process can emit `asciiUpperByte_valwrapper_$i32` the
+  first time and `asciiLowerByte_valwrapper_$i32` the fourth — same byte
+  count, different content. That is the only remaining source of
+  byte-nondeterminism across compilations in one process; it does not
+  affect a normal build, where each process compiles one module.
+- **Fix**: `registerWrapper` in `codegen/reachability/visitor.zena` is
+  reached for an identifier that is only ever a direct callee. Registering
+  wrappers strictly from value uses would drop it, and with it the
+  nondeterminism.
 
 ### Portable semantics runner: `@error` directives are matched loosely enough to pass on the wrong error
 

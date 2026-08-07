@@ -74,6 +74,16 @@ parameter.
 - **Determinism is a hard gate.** Stage-2 byte parity (below) fails on
   any iteration-order- or identity-dependent output. No wall-clock, no
   randomness, no hash-order-dependent emission.
+  - It only gates output as a function of _input_, though: both stages
+    are separate processes, each compiling one module, so it cannot see
+    output that depends on what the **process** did earlier. `WasmType`
+    and `WasmFunction` hash by a uid from a counter, so that counter
+    ordered every hash container keyed by one — and left running across
+    modules it made the fourth module in a process compile differently
+    from the first, and often fail outright. `ModuleGenerator.compile`
+    restarts it per module; `multi-entrypoint-codegen_test.zena` guards
+    it. Any new process-global in codegen needs the same treatment, and
+    a `^var ` at module scope under `codegen/` is the smell.
 - **Every operand load in emit goes through `#pushValue`** (except the
   copy-semantics `#copyArgs`). It enforces the stack schedule and
   throws on violations — those asserts catch real bugs; don't bypass

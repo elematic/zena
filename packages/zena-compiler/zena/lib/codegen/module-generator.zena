@@ -14,7 +14,7 @@ import { Node, VariableDeclaration, IdentifierPattern, Expression, NumberLiteral
 import { SymbolId, Symbol } from '../scope/symbol.zena';
 import { String } from 'zena:string';
 import { walk, walkEnter } from '../visitor.zena';
-import { ValType } from './wasm.zena';
+import { ValType, resetWasmTypeUids } from './wasm.zena';
 import { parseI32, parseF64, parseI64, i32ToString } from 'zena:string-convert';
 import { Array } from 'zena:array';
 import { HashSet } from 'zena:set';
@@ -73,6 +73,12 @@ export final class ModuleGenerator {
 
   
   compile(): void {
+    // Uids are hashCode for WasmType and WasmFunction, so they order
+    // every hash container keyed by one, and that order reaches the
+    // emitted bytes. Restart the sequence per module so a module is
+    // emitted the same whether or not others were compiled first.
+    resetWasmTypeUids();
+
     for (let u in this.program.units) {
       u.model.program = this.program;
     }
