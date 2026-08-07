@@ -110,6 +110,33 @@ immediately trying to fix it (which can pollute the current task's context).
   and report unexpected errors even when some are expected. Expect
   fallout: some existing tests are likely relying on the looseness.
 
+### Default parameters are not applied to forward-referenced callees
+
+- **Found**: 2026-08-07 (adding a second defaulted parameter to
+  `resolveTypeAnnotation` in `checker.zena`)
+- **Severity**: medium — it silently constrains how top-level functions can
+  evolve, and the error blames the *call site* rather than the declaration.
+- **Details**: a top-level `let f = (…) => …` whose parameters have defaults is
+  arity-checked as if the defaults were required when the call appears
+  **lexically above** the definition. Adding a second defaulted parameter to
+  `resolveTypeAnnotation` (declared ~line 2200, called from ~line 775) produced
+  `Expected 4 arguments, got 3` at every earlier call site, while the same
+  function shape compiles and runs correctly in isolation:
+
+  ```zena
+  let f = (a: i32, b: i32 = 1, c: i32 = 2): i32 => a + b + c;
+  export let main = (): i32 => f(10) + f(10, 5);   // 13 + 17 = 30, correct
+  ```
+
+  The pre-existing single default on that function never exposed it, because
+  every call passed all three arguments.
+- **Workaround in place**: `checker.zena` carries `resourceMentionOk` as a field
+  on `CheckerContext` instead of a parameter, with a comment pointing here.
+- **Fix sketch**: the forward-reference path appears to record a signature from
+  the declaration's parameter *count* before default expressions are attached.
+  Compare how arity is resolved for a call whose callee is already checked
+  versus one resolved through the forward-declaration stub.
+
 ### Type-annotation diagnostics are reported one line and one column late
 - **Found**: 2026-08-06 (adding the `resource class` bare-mention error; the new
   diagnostic inherited the same offset, which is how it was noticed)
