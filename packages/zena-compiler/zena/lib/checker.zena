@@ -3538,9 +3538,26 @@ let checkOpaqueCast = (
   let alias = findForeignOpaque(targetType, ctx.filePath, 16);
   if (alias == null) { return; }
   let opaque = alias as TypeAliasType;
-  if (isAssignableTo(ctx, sourceType, targetType)
-      || isAssignableTo(ctx, targetType, sourceType)) {
+  // A forward-assignable cast is a no-op: the value already has the target
+  // type, so nothing is minted.
+  if (isAssignableTo(ctx, sourceType, targetType)) {
     return;
+  }
+  // The other legal shape is *narrowing* — `Handle | null` to `Handle` — where
+  // the value being cast already exists as the target type, it is just being
+  // selected out of a union. Recognizing that by the target being a member of
+  // the source union is narrower than "the target is assignable to the
+  // source", which also admits genuine forging: `Own<R>` is assignable to
+  // `Borrow<R>` through the implicit-borrow coercion, so `b as Own<R>` read as
+  // an ordinary downcast and minted a second owner.
+  // See docs/design/ownership.md §"Handles are not forgeable".
+  match (sourceType) {
+    case UnionT {types}: {
+      for (let member in types) {
+        if (typesEqual(member, targetType)) { return; }
+      }
+    }
+    case _: {}
   }
   ctx.error(
     "Cannot cast to opaque type '" + opaque.name + "'. Values of an opaque "
@@ -6785,30 +6802,6 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case AsExpression {expression, typeAnnotation, loc}: {
     let sourceType = checkExpression(ctx, expression, null);
     let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
-    // The ownership handles are `distinct type` aliases, and casting into a
-    // distinct type is otherwise allowed — which would let a Borrow<R> be
-    // forged into an Own<R> (two owners, so two drops) or an Unmanaged<R> be
-    // promoted without adopt()'s state-flag check. Both defeat the static
-    // guarantee rather than degrading to a runtime error, so the handles are
-    // only convertible inside zena:ownership, where disown/adopt live.
-    // Generalizes to `opaque distinct type`; see docs/design/ownership.md.
-    if (!ctx.filePath.startsWith("zena:ownership")) {
-      let handleName = if (isOwnershipWrapper(targetType)) {
-        ownershipHandleName(targetType)
-      } else {
-        ownershipHandleName(sourceType)
-      };
-      if (handleName != "" && !typesEqual(sourceType, targetType)) {
-        ctx.error(
-          "Cannot cast to or from '" + handleName + "': ownership handles are " +
-          "not forgeable. Use 'disown'/'adopt' to change regime, or pass an " +
-          "'Own' where a 'Borrow' is expected — that borrows implicitly.",
-          DiagnosticCode.TypeMismatch,
-          loc
-        );
-        return targetType;
-      }
-    }
     let isNarrowed = ctx.isExpressionNarrowed(expression);
     let isAutoCasted = if (expression is Identifier) {
       targetType is ClassType || targetType is InterfaceType

@@ -1,10 +1,14 @@
 // @mode: check
 
-// Ownership handles are `distinct type` aliases, and casting into a distinct
-// type is otherwise allowed. Without this rule a Borrow<R> could be forged
-// into an Own<R> — two owners, so two drops — and an Unmanaged<R> could be
-// promoted without adopt()'s state-flag check. Both defeat the static
-// guarantee rather than degrading to a runtime error.
+// The handles are `opaque type` aliases, so only zena:ownership can mint one.
+// Without that a Borrow<R> could be forged into an Own<R> — two owners, so
+// two drops — and an Unmanaged<R> could be promoted without adopt()'s
+// state-flag check. Both defeat the static guarantee rather than degrading to
+// a runtime error.
+//
+// The Borrow -> Own case is the one the general opaque rule missed until the
+// reverse-assignability escape was narrowed: `Own<R>` is assignable to
+// `Borrow<R>` by the implicit-borrow coercion, so the cast read as a downcast.
 // See docs/design/ownership.md.
 
 import { Own, Borrow, Unmanaged, Disposable } from 'zena:ownership';
@@ -13,13 +17,13 @@ resource class D {
   :Disposable.dispose(): void {}
 }
 
-// @error: not forgeable
+// @error: opaque type
 let forgeOwnFromBorrow = (b: Borrow<D>): Own<D> => b as Own<D>;
 
-// @error: not forgeable
+// @error: opaque type
 let promoteWithoutAdopt = (u: Unmanaged<D>): Own<D> => u as Own<D>;
 
-// @error: not forgeable
+// @error: opaque type
 let stripOwnership = (o: Own<D>): Unmanaged<D> => o as Unmanaged<D>;
 
 // The legal route from Own to Borrow needs no cast at all: borrowing at a
