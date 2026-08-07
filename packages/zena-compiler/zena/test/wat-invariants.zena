@@ -1,0 +1,71 @@
+/**
+ * Invariant assertions over emitted WAT.
+ *
+ * A snapshot pins exact bytes, so it fails on ANY emission change and
+ * the standard fix is to regenerate it. That makes snapshots a poor
+ * guard for a PROPERTY: the regression and the innocent reformat look
+ * identical, and re-baselining quietly accepts both. These assert the
+ * property itself — the failure names what stopped being true, and no
+ * regeneration can silence it. Use them alongside a snapshot, not
+ * instead of one: the snapshot shows you what changed, the invariant
+ * tells you whether it mattered.
+ *
+ * Everything is scoped to a single function. A module's WAT contains
+ * whatever else reachability pulled in, so a module-wide `contains`
+ * proves close to nothing.
+ */
+import { String } from 'zena:string';
+import { Array } from 'zena:array';
+import { isTrue, fail } from 'zena:assert';
+
+/**
+ * The text of one function definition: from `(func $name` up to the
+ * next `(func `. Empty when the module defines no such function.
+ */
+export let watFunction = (wat: String, name: String): String => {
+  for (let chunk in wat.split('(func ')) {
+    // A definition is `$name (type …)`; the same split also yields the
+    // parameter lists of `(type (;n;) (func …))`, which never match.
+    if (chunk.startsWith(name + ' ') || chunk.startsWith(name + '\n')) {
+      return chunk;
+    }
+  }
+  return '';
+};
+
+/** `name` must exist and its body must contain none of `ops`. */
+export let assertFunctionOmits = (wat: String, name: String,
+    ops: Array<String>, why: String): void => {
+  let body = watFunction(wat, name);
+  isTrue(body.length > 0, 'no function ' + name + ' in the emitted module');
+  for (let op in ops) {
+    if (body.contains(op)) {
+      fail(name + ' emits `' + op + '`: ' + why);
+    }
+  }
+};
+
+/** `name` must exist and its body must contain every one of `ops`. */
+export let assertFunctionUses = (wat: String, name: String,
+    ops: Array<String>, why: String): void => {
+  let body = watFunction(wat, name);
+  isTrue(body.length > 0, 'no function ' + name + ' in the emitted module');
+  for (let op in ops) {
+    if (!body.contains(op)) {
+      fail(name + ' never emits `' + op + '`: ' + why);
+    }
+  }
+};
+
+/**
+ * `name` must not allocate. `struct.new` and `array.new` are prefixes
+ * of every wasm GC allocation opcode (`…_default`, `…_fixed`,
+ * `…_data`), so the two of them cover all of it.
+ */
+export let assertNoAllocation = (wat: String, name: String,
+    why: String): void => {
+  let ops = new Array<String>();
+  ops.push('struct.new');
+  ops.push('array.new');
+  assertFunctionOmits(wat, name, ops, why);
+};

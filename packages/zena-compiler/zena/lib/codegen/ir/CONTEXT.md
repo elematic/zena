@@ -97,9 +97,31 @@ UPDATE_SNAPSHOTS=1 npm run test:unit         # regenerate zir WAT snapshots
 ```
 
 Snapshot tests fail on _any_ emission change — regenerate and eyeball
-the diff rather than fighting them. The final gate for backend changes
-is **stage-2 byte parity**: the compiler compiled by itself must
-byte-match the compiler that compiled it:
+the diff rather than fighting them.
+
+**That is exactly why a snapshot alone cannot guard a property.** The
+regression and the innocent reformat produce the same failure, and
+regenerating accepts both. When emission has to keep a property —
+"this function does not allocate", "this shape still compiles to a
+protected region" — assert the property too, with
+`zena/test/wat-invariants.zena`:
+
+```zena
+assertNoAllocation(wat, '$main', 'a try-assigned local is mirrored into a wasm local');
+assertFunctionUses(wat, '$main', usesTry, 'the fixture should compile a try region');
+assertFunctionOmits(wat, '$name', ops, why);
+```
+
+They scope to one function (a module-wide `contains` proves close to
+nothing, since reachability drags in the stdlib) and name the property
+in the failure. Pair them with a snapshot: the snapshot shows you what
+changed, the invariant tells you whether it mattered. Write the
+invariant so you have SEEN it fail — force the old lowering back, watch
+the message, revert.
+
+The final gate for backend changes is **stage-2 byte parity**: the
+compiler compiled by itself must byte-match the compiler that compiled
+it:
 
 ```bash
 npm run build:self-hosted   # writes zena/out/cli-self.wasm
