@@ -1,244 +1,92 @@
 /**
- * Portable syntax tests — auto-discovers .zena files under tests/language/syntax/
- *   syntax/    → parsed AST JSON compared against .ast.json snapshots
+ * Portable syntax tests — every `.zena` file under
+ * `tests/language/syntax/` is parsed and its AST compared against the
+ * `.ast.json` snapshot beside it. A file carrying an `@error:` directive
+ * asserts that parsing fails instead.
  *
- * Requires WASI (run with wasmtime via npm run test:syntax)
+ * Discovery walks the directory tree with no allow-list; the only way
+ * to hold a test back is an explicit `@skip: <reason>` in the file,
+ * which the summary then reports.
+ *
+ * Requires WASI (run with wasmtime via `npm run test:syntax`).
  */
 
-import { Suite, runAndReport } from 'zena:test';
+import { runAndReport, suite } from 'zena:test';
 import { console } from 'zena:console';
-import { suite, test, TestContext } from 'zena:test';
-import { equal, isTrue, isFalse } from 'zena:assert';
 import { jsonEqual } from 'zena:assert';
-import { readFile, writeFile, listDir, exists, DirEntry, FileType } from 'zena:fs';
-import { parseJson, stringify, JsonValue, JsonOptions } from 'zena:json';
-import { Array } from 'zena:array';
-import { StringReader } from 'zena:string-reader';
+import { readFile, writeFile, exists } from 'zena:fs';
+import { parseJson, stringify } from 'zena:json';
 import { parse } from '../lib/parser.zena';
 import { nodeToJson } from '../lib/ast-json.zena';
 import { ExpressionStatement } from '../lib/ast.zena';
+import { Discovery, TestFile, registerSuites } from './portable-harness.zena';
 
-type SkipEntry = { path: String, reason: String };
+let testsRoot = 'tests/language/syntax';
 
-let skippedTests = [
-  // syntax skips
-  { path: "syntax/classes/case-classes/exported.zena", reason: "snapshot is full Module (no @target: statement directive)" }
-];
-
-// Returns true if the source has any // @error: directive
-let hasErrorDirective = (directives: Array<Directive>): boolean => {
-  for (let directive in directives) {
-    if (directive.name == "error") {
-      return true;
-    }
-  }
-  return false;
+/** The AST node a snapshot covers: the whole module unless the file says otherwise. */
+let targetOf = (f: TestFile): String => {
+  let target = f.directive('target');
+  return if (target == null) { 'module' } else { target as String };
 };
 
-// ============================================================================
-// Directive parsing
-// ============================================================================
+/** The `.ast.json` snapshot that sits beside a `.zena` test. */
+let snapshotPathOf = (f: TestFile): String =>
+  f.path.sliceBytes(0, f.path.length - 5) + '.ast.json';
 
-type Directive = { name: String, line: i32, value: String };
-
-// Parses all // @name: value directives from a file
-let parseDirectives = (source: String): Array<Directive> => {
-  let results = new Array<Directive>(4);
-  let marker = "// @";
-  if (!source.contains(marker)) {
-    return results;
-  }
-
-  var lineNum = 1;
-  let r = new StringReader(source);
-  while (!r.isAtEnd) {
-    let lineStart = r.mark();
-    while (!r.isAtEnd && r.peekByte() != 10) { // 10 = '\n'
-      r.advanceByte();
-    }
-    let line = r.sliceFrom(lineStart);
-
-    if (line.contains(marker)) {
-      var mi = 0;
-      while (mi <= line.length - marker.length) {
-        if (line.sliceBytes(mi, mi + marker.length) == marker) {
-          var colonIndex = mi + marker.length;
-          var foundColon = false;
-          while (colonIndex < line.length) {
-            if (line.getByteAt(colonIndex) == 58) { // ':'
-              foundColon = true;
-              break;
-            }
-            colonIndex += 1;
-          }
-
-          if (foundColon) {
-            let name = line.sliceBytes(mi + marker.length, colonIndex);
-            var valStart = colonIndex + 1;
-            while (valStart < line.length) {
-              let b = line.getByteAt(valStart);
-              if (b == 32 || b == 9) { // space or \t
-                valStart += 1;
-              } else {
-                break;
-              }
-            }
-            var valEnd = line.length;
-            while (valEnd > valStart) {
-              let b = line.getByteAt(valEnd - 1);
-              if (b == 32 || b == 13) { // space or \r
-                valEnd -= 1;
-              } else {
-                break;
-              }
-            }
-            let value = line.sliceBytes(valStart, valEnd);
-            results.push({ name: name, line: lineNum, value: value });
-          }
-          break;
-        }
-        mi += 1;
-      }
-    }
-
-    if (r.peekByte() == 10) {
-      r.advanceByte();
-    }
-    lineNum += 1;
-  }
-
-  return results;
-};
-
-// Determine target from directives
-let getTarget = (directives: Array<Directive>): String => {
-  for (let directive in directives) {
-    if (directive.name == "target") {
-      return directive.value;
-    }
-  }
-  return "module";
-};
-
-let runSyntaxTest = (
-    source: String,
-    filePath: String,
-    directives: Array<Directive>,
-    isErrorTest: boolean,
-    snapshotPath: String,
-    fileName: String): void => {
-  if (isErrorTest) {
-    // Error test: parser should throw
+let runSyntaxTest = (f: TestFile): void => {
+  if (f.has('error')) {
+    // Error test: the parser is expected to reject this source.
     let threw = try {
-      parse(source, fileName);
+      parse(f.source, f.name);
       false
     } catch (e) {
       true
     };
     if (!threw) {
-      throw new Error("Expected parse error (has @error directive) but parsing succeeded: " + filePath);
+      throw new Error(
+        `Expected parse error (has @error directive) but parsing succeeded: ${f.path}`);
     }
-  } else {
-    // Positive test: compare AST against snapshot
-    let mod = parse(source, fileName);
+    return;
+  }
 
-    let actual = match (getTarget(directives)) {
-      case "statement": {
-        nodeToJson(mod.body[0]);
-      }
-      case "expression": {
-        let stmt = mod.body[0] as ExpressionStatement;
-        nodeToJson(stmt.expression);
-      }
-      case _: {
-        nodeToJson(mod)
-      }
-    };
-
-    if (!exists(snapshotPath)) {
-      // Mirror the bootstrap runner: a missing snapshot is generated on
-      // the first run (needed for @skip: bootstrap tests, which the
-      // bootstrap runner never sees).
-      writeFile(snapshotPath, stringify(actual, "  "));
-      return;
+  let mod = parse(f.source, f.name);
+  let actual = match (targetOf(f)) {
+    case 'statement': {
+      nodeToJson(mod.body[0]);
     }
-
-    let expectedSnapshot = readFile(snapshotPath);
-    let expected = parseJson(expectedSnapshot, { allowComments: false, trackLocations: true });
-    jsonEqual(actual, expected, filePath);
-  }
-};
-
-let isSkipped = (relPath: String): String | null => {
-  for (let skip in skippedTests) {
-    if (relPath.startsWith(skip.path)) {
-      return skip.reason;
+    case 'expression': {
+      let stmt = mod.body[0] as ExpressionStatement;
+      nodeToJson(stmt.expression);
     }
-  }
-  return null;
-};
-
-// Discovers and registers tests for all .zena files in a directory (recursively).
-let runTests = (dirPath: String, relPrefix: String): void => {
-  let entries = listDir(dirPath);
-  
-  let subdirs = new Array<DirEntry>(4);
-  let files = new Array<DirEntry>(8);
-  
-  for (let entry in entries) {
-    if (entry.fileType == FileType.Directory) {
-      if (entry.name != "." && entry.name != "..") {
-        subdirs.push(entry);
-      }
-    } else if (entry.fileType == FileType.RegularFile) {
-      if (entry.name.endsWith(".zena")) {
-        files.push(entry);
-      }
+    case _: {
+      nodeToJson(mod)
     }
-  }
-  
-  for (let file in files) {
-    let fileName = file.name;
-    let filePath = dirPath + "/" + fileName;
-    
-    let relPath = if (relPrefix.length > 0) {
-      relPrefix + "/" + fileName
-    } else {
-      fileName
-    };
-    
-    let snapshotPath = filePath.sliceBytes(0, filePath.length - 5) + ".ast.json";
-    
-    let source = readFile(filePath);
-    let directives = parseDirectives(source);
-    let isErrorTest = hasErrorDirective(directives);
+  };
 
-    let reason = isSkipped(relPath);
-    if (reason == null) {
-      test(fileName, (ctx: TestContext): void => {
-        runSyntaxTest(source, filePath, directives, isErrorTest, snapshotPath, fileName);
-      });
-    }
+  let snapshotPath = snapshotPathOf(f);
+  if (!exists(snapshotPath)) {
+    // A missing snapshot is generated on the first run rather than
+    // failing, so a newly added test records its own baseline.
+    writeFile(snapshotPath, stringify(actual, '  '));
+    return;
   }
-  
-  for (let subdir in subdirs) {
-    let subName = subdir.name;
-    let subPath = dirPath + "/" + subName;
-    let subRel = if (relPrefix.length > 0) {
-      relPrefix + "/" + subName
-    } else {
-      subName
-    };
-    
-    suite(subName, (): void => {
-      runTests(subPath, subRel);
-    });
-  }
+
+  let expected = parseJson(
+    readFile(snapshotPath), { allowComments: false, trackLocations: true });
+  jsonEqual(actual, expected, f.path);
 };
 
 export let main = (): i32 => {
+  let discovery = new Discovery();
   let root = suite('Portable Syntax Tests', (): void => {
-    runTests("tests/language/syntax", "syntax");
+    // Every `.zena` file under syntax/ is a test: parsing one never
+    // needs a second file, so there are no support modules to exclude.
+    registerSuites(
+      testsRoot, '', discovery, (f: TestFile): boolean => true, runSyntaxTest);
   });
-  return runAndReport(root, (s: String): void => { console.log(s); });
+  // Registration is complete once `suite` returns, so what was found can
+  // be reported before anything runs.
+  let write = (s: String): void => { console.log(s); };
+  discovery.report('Syntax', write);
+  return runAndReport(root, write);
 };

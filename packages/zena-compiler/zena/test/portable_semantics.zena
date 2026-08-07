@@ -1,122 +1,38 @@
 /**
- * Portable semantics tests — auto-discovers .zena files under tests/language/semantics/
- *   semantics/ → parsed, scope-analysed, type-checked; @error directives validated
+ * Portable semantics tests — every `.zena` file under
+ * `tests/language/semantics/` is parsed, scope-analysed and type-checked,
+ * and the diagnostics produced are matched against the file's `@error:`
+ * and `@warning:` directives.
  *
- * Requires WASI (run with wasmtime via npm run test:semantics)
+ * Discovery walks the directory tree with no allow-list; the only way
+ * to hold a test back is an explicit `@skip: <reason>` in the file,
+ * which the summary then reports.
+ *
+ * Requires WASI (run with wasmtime via `npm run test:semantics`).
  */
 
-import { Suite, runAndReport } from 'zena:test';
+import { runAndReport, suite } from 'zena:test';
 import { console } from 'zena:console';
-import { suite, test, TestContext } from 'zena:test';
-import { equal, isTrue, isFalse } from 'zena:assert';
-import { readFile, listDir, exists, DirEntry, FileType } from 'zena:fs';
+import { readFile } from 'zena:fs';
 import { Array } from 'zena:array';
-import { StringReader } from 'zena:string-reader';
-import { ScopeBuilder } from '../lib/scope/scope-builder.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
-import { checkModule, CheckResult } from '../lib/checker.zena';
 import { Diagnostic, DiagnosticSeverity, formatDiagnostic } from '../lib/diagnostics.zena';
-import { createCompiler, CompilerOptions, checkCompilation, Compiler, ProgramCheckResult } from '../lib/compiler.zena';
+import { createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
+import { Directive, Discovery, TestFile, registerSuites } from './portable-harness.zena';
 
-type SkipEntry = { path: String, reason: String };
+let testsRoot = 'tests/language/semantics';
 
-let skippedTests = [
-  // semantics skips
-  { path: "semantics/classes/fields/field-init-required.zena", reason: "field init check not implemented" },
-  { path: "semantics/interfaces/var-field-needs-setter.zena", reason: "var field setter check not implemented" }
-];
-
-// Returns true if the source has any // @error: directive
-let hasErrorDirective = (directives: Array<Directive>): boolean => {
-  for (let directive in directives) {
-    if (directive.name == "error") {
-      return true;
-    }
-  }
-  return false;
-};
-
-// ============================================================================
-// Directive parsing
-// ============================================================================
-
-type Directive = { name: String, line: i32, value: String };
-
-// Parses all // @name: value directives from a file
-let parseDirectives = (source: String): Array<Directive> => {
-  let results = new Array<Directive>(4);
-  let marker = "// @";
-  if (!source.contains(marker)) {
-    return results;
-  }
-
-  var lineNum = 1;
-  let r = new StringReader(source);
-  while (!r.isAtEnd) {
-    let lineStart = r.mark();
-    while (!r.isAtEnd && r.peekByte() != 10) { // 10 = '\n'
-      r.advanceByte();
-    }
-    let line = r.sliceFrom(lineStart);
-
-    if (line.contains(marker)) {
-      var mi = 0;
-      while (mi <= line.length - marker.length) {
-        if (line.sliceBytes(mi, mi + marker.length) == marker) {
-          var colonIndex = mi + marker.length;
-          var foundColon = false;
-          while (colonIndex < line.length) {
-            if (line.getByteAt(colonIndex) == 58) { // ':'
-              foundColon = true;
-              break;
-            }
-            colonIndex += 1;
-          }
-
-          if (foundColon) {
-            let name = line.sliceBytes(mi + marker.length, colonIndex);
-            var valStart = colonIndex + 1;
-            while (valStart < line.length) {
-              let b = line.getByteAt(valStart);
-              if (b == 32 || b == 9) { // space or \t
-                valStart += 1;
-              } else {
-                break;
-              }
-            }
-            var valEnd = line.length;
-            while (valEnd > valStart) {
-              let b = line.getByteAt(valEnd - 1);
-              if (b == 32 || b == 13) { // space or \r
-                valEnd -= 1;
-              } else {
-                break;
-              }
-            }
-            let value = line.sliceBytes(valStart, valEnd);
-            results.push({ name: name, line: lineNum, value: value });
-          }
-          break;
-        }
-        mi += 1;
-      }
-    }
-
-    if (r.peekByte() == 10) {
-      r.advanceByte();
-    }
-    lineNum += 1;
-  }
-
-  return results;
-};
-
+/**
+ * Reads from disk, except for the one file under test, whose source is
+ * injected so the compiler sees it without a round trip through the
+ * filesystem.
+ */
 class FsHost implements CompilerHost {
   #stdlibRoot: String;
-  var filePathOverride: String = "";
-  var fileSourceOverride: String = "";
+  var filePathOverride: String = '';
+  var fileSourceOverride: String = '';
 
   new(stdlibRoot: String)
     : #stdlibRoot = stdlibRoot;
@@ -125,58 +41,74 @@ class FsHost implements CompilerHost {
     if (path == this.filePathOverride) {
       return this.fileSourceOverride;
     }
-    if (path.startsWith("zena:")) {
-      let fsPath = this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path);
-      return readFile(fsPath);
+    if (path.startsWith('zena:')) {
+      return readFile(`${this.#stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
     return readFile(path);
   }
 }
 
-// Global/top-level compiler instance and state for incremental type-checking
-let stdlibRoot = "packages/stdlib/zena";
+// One compiler instance is shared across the whole suite so that
+// checking is incremental — which is also why discovery order has to be
+// deterministic (see portable-harness.zena).
+let stdlibRoot = 'packages/stdlib/zena';
 let host = new FsHost(stdlibRoot);
-let packages = loadPackageMap(host, "zena-packages.json");
-let options = new CompilerOptions("host", stdlibRoot, packages);
+let packages = loadPackageMap(host, 'zena-packages.json');
+let options = new CompilerOptions('host', stdlibRoot, packages);
 let compiler = createCompiler(host, options);
 var prevCheckResult: ProgramCheckResult | null = null;
 
-/**
- * Run a semantic test: parse → scope → check, then match diagnostics.
- */
-let runSemanticTest = (
-    source: String,
-    filePath: String,
-    directives: Array<Directive>): void => {
-  let expectedErrors = new Array<Directive>(4);
-  let expectedWarnings = new Array<Directive>(4);
-  var warnUnnecessaryCasts = false;
-  
-  for (let directive in directives) {
-    if (directive.name == "error") {
-      expectedErrors.push(directive);
-    } else if (directive.name == "warning") {
-      expectedWarnings.push(directive);
-    } else if (directive.name == "warnUnnecessaryCasts") {
-      warnUnnecessaryCasts = directive.value == "true";
+/** Renders diagnostics one per line for a failure message. */
+let formatAll = (diagnostics: Array<Diagnostic>, source: String): String => {
+  if (diagnostics.length == 0) {
+    return '(none)';
+  }
+  var out = '';
+  for (var i = 0; i < diagnostics.length; i += 1) {
+    if (i > 0) {
+      out = out + '\n';
+    }
+    out = out + formatDiagnostic(diagnostics[i], source);
+  }
+  return out;
+};
+
+let severityMatches = (d: Diagnostic, wanted: DiagnosticSeverity): boolean =>
+  match (d.severity) {
+    case DiagnosticSeverity.Error: wanted == DiagnosticSeverity.Error
+    case DiagnosticSeverity.Warning: wanted == DiagnosticSeverity.Warning
+    case _: false
+  };
+
+let filterBySeverity = (
+    diagnostics: Array<Diagnostic>,
+    wanted: DiagnosticSeverity): Array<Diagnostic> => {
+  let matches = new Array<Diagnostic>(4);
+  for (let d in diagnostics) {
+    if (severityMatches(d, wanted)) {
+      matches.push(d);
     }
   }
+  return matches;
+};
 
-  // Set the override on the shared host.
-  host.filePathOverride = filePath;
-  host.fileSourceOverride = source;
+/** Parse → scope → check the file, then match diagnostics against directives. */
+let runSemanticTest = (f: TestFile): void => {
+  let expectedErrors = f.all('error');
+  let expectedWarnings = f.all('warning');
+  let warnUnnecessaryCasts = f.directive('warnUnnecessaryCasts') == 'true';
 
-  // Invalidate the loader cache for this test file path so it is read fresh.
-  compiler.invalidate(filePath);
+  host.filePathOverride = f.path;
+  host.fileSourceOverride = f.source;
 
+  // Invalidate the loader cache for this path so the file is re-read.
+  compiler.invalidate(f.path);
   options.warnUnnecessaryCasts = warnUnnecessaryCasts;
 
-  let result = compiler.compile(filePath);
+  let result = compiler.compile(f.path);
   let checkResult = checkCompilation(result, prevCheckResult, false, warnUnnecessaryCasts);
-  
-  // Store the check result for subsequent tests to use incrementally.
   prevCheckResult = checkResult;
-  
+
   // Aggregate diagnostics from every non-stdlib module of this
   // compilation, not just the entry: import-cycle diagnostics land in
   // the cycle member that evaluates first, which is never the entry.
@@ -189,18 +121,7 @@ let runSemanticTest = (
     }
   }
 
-  // Collect only errors (not warnings).
-  let errors = new Array<Diagnostic>(4);
-  for (let diagnostic in diagnostics) {
-    match (diagnostic.severity) {
-      case DiagnosticSeverity.Error: {
-        errors.push(diagnostic);
-      }
-      case _: {}
-    }
-  }
-
-  // Match expected errors against actual diagnostics.
+  let errors = filterBySeverity(diagnostics, DiagnosticSeverity.Error);
   for (let expected in expectedErrors) {
     var matched = false;
     for (let error in errors) {
@@ -210,200 +131,67 @@ let runSemanticTest = (
       }
     }
     if (!matched) {
-      var actualStr = "(none)";
-      if (errors.length > 0) {
-        actualStr = "";
-        var ai = 0;
-        while (ai < errors.length) {
-          if (ai > 0) { actualStr = actualStr + "\n"; }
-          actualStr = actualStr + formatDiagnostic(errors[ai], source);
-          ai += 1;
-        }
-      }
       throw new Error(
-        `Expected error matching '${expected.value}' on line ${expected.line} but found none.\nActual errors:\n${actualStr}\nFile: ${filePath}`
-      );
+        `Expected error matching '${expected.value}' on line ${expected.line} but found none.\n` +
+        `Actual errors:\n${formatAll(errors, f.source)}\nFile: ${f.path}`);
     }
   }
 
-  // If no expected errors, fail on any unexpected errors.
   if (expectedErrors.length == 0 && errors.length > 0) {
-    var errStr = "";
-    for (var i = 0; i < errors.length; i += 1) {
-      if (i > 0) {
-        errStr = errStr + "\n";
-      }
-      errStr = errStr + formatDiagnostic(errors[i], source);
-    }
-    throw new Error(
-      "Unexpected errors:\n" + errStr + "\nFile: " + filePath
-    );
+    throw new Error(`Unexpected errors:\n${formatAll(errors, f.source)}\nFile: ${f.path}`);
   }
 
-  // Match expected warnings against actual diagnostics.
-  let warnings = new Array<Diagnostic>(4);
-  for (let diagnostic in diagnostics) {
-    match (diagnostic.severity) {
-      case DiagnosticSeverity.Warning: {
-        warnings.push(diagnostic);
-      }
-      case _: {}
-    }
-  }
-
-  let matchedWarnings = new Array<boolean>(warnings.length);
+  // Warnings match one-for-one: two `@warning:` directives require two
+  // distinct warnings, not one warning matching both.
+  let warnings = filterBySeverity(diagnostics, DiagnosticSeverity.Warning);
+  let claimed = new Array<boolean>(warnings.length);
   for (var i = 0; i < warnings.length; i += 1) {
-    matchedWarnings.push(false);
+    claimed.push(false);
   }
 
   for (let expected in expectedWarnings) {
     var warningMatched = false;
     for (var i = 0; i < warnings.length; i += 1) {
-      if (warnings[i].message.contains(expected.value)) {
-        if (!matchedWarnings[i]) {
-          warningMatched = true;
-          matchedWarnings[i] = true;
-          break;
-        }
+      if (!claimed[i] && warnings[i].message.contains(expected.value)) {
+        warningMatched = true;
+        claimed[i] = true;
+        break;
       }
     }
     if (!warningMatched) {
-      var actualWarnStr = "(none)";
-      if (warnings.length > 0) {
-        actualWarnStr = "";
-        for (var i = 0; i < warnings.length; i += 1) {
-          if (i > 0) {
-            actualWarnStr = actualWarnStr + "\n";
-          }
-          actualWarnStr = actualWarnStr + formatDiagnostic(warnings[i], source);
-        }
-      }
       throw new Error(
-        `Expected warning matching '${expected.value}' on line ${expected.line} but found none.\nActual warnings:\n${actualWarnStr}\nFile: ${filePath}`
-      );
+        `Expected warning matching '${expected.value}' on line ${expected.line} but found none.\n` +
+        `Actual warnings:\n${formatAll(warnings, f.source)}\nFile: ${f.path}`);
     }
   }
 
-  // Check for any unexpected warnings, but only if the test explicitly checks for warnings.
+  // Unexpected warnings only fail tests that opted into checking them.
   if (expectedWarnings.length > 0) {
-    var unexpectedWarnStr = "";
-    var hasUnexpectedWarnings = false;
+    let unclaimed = new Array<Diagnostic>(4);
     for (var i = 0; i < warnings.length; i += 1) {
-      if (!matchedWarnings[i]) {
-        hasUnexpectedWarnings = true;
-        if (unexpectedWarnStr.length > 0) {
-          unexpectedWarnStr = unexpectedWarnStr + "\n";
-        }
-        unexpectedWarnStr = unexpectedWarnStr + formatDiagnostic(warnings[i], source);
+      if (!claimed[i]) {
+        unclaimed.push(warnings[i]);
       }
     }
-    
-    if (hasUnexpectedWarnings) {
+    if (unclaimed.length > 0) {
       throw new Error(
-        "Unexpected warnings:\n" + unexpectedWarnStr + "\nFile: " + filePath
-      );
+        `Unexpected warnings:\n${formatAll(unclaimed, f.source)}\nFile: ${f.path}`);
     }
-  }
-};
-
-let isSkipped = (relPath: String): String | null => {
-  for (let skip in skippedTests) {
-    if (relPath.startsWith(skip.path)) {
-      return skip.reason;
-    }
-  }
-  return null;
-};
-
-let lexLess = (a: String, b: String): boolean => {
-  let n = if (a.length < b.length) { a.length } else { b.length };
-  for (var i = 0; i < n; i += 1) {
-    let ca = a.getByteAt(i);
-    let cb = b.getByteAt(i);
-    if (ca != cb) {
-      return ca < cb;
-    }
-  }
-  return a.length < b.length;
-};
-
-/** Insertion sort by entry name (byte-wise ascending). */
-let sortByName = (entries: Array<DirEntry>): void => {
-  for (var i = 1; i < entries.length; i += 1) {
-    let e = entries[i];
-    var j = i - 1;
-    while (j >= 0 && lexLess(e.name, entries[j].name)) {
-      entries[j + 1] = entries[j];
-      j -= 1;
-    }
-    entries[j + 1] = e;
-  }
-};
-
-// Discovers and registers tests for all .zena files in a directory (recursively).
-let runTests = (dirPath: String, relPrefix: String): void => {
-  let entries = listDir(dirPath);
-  
-  let subdirs = new Array<DirEntry>(4);
-  let files = new Array<DirEntry>(8);
-  
-  for (let entry in entries) {
-    if (entry.fileType == FileType.Directory) {
-      if (entry.name != "." && entry.name != "..") {
-        subdirs.push(entry);
-      }
-    } else if (entry.fileType == FileType.RegularFile) {
-      if (entry.name.endsWith(".zena")) {
-        files.push(entry);
-      }
-    }
-  }
-
-  // Deterministic discovery order: readdir order varies by platform and
-  // filesystem, and tests share one compiler, so the cache state a test
-  // sees must not depend on where the suite runs.
-  sortByName(subdirs);
-  sortByName(files);
-
-  for (let file in files) {
-    let fileName = file.name;
-    let filePath = dirPath + "/" + fileName;
-    
-    let relPath = if (relPrefix.length > 0) {
-      relPrefix + "/" + fileName
-    } else {
-      fileName
-    };
-    
-    let source = readFile(filePath);
-    let directives = parseDirectives(source);
-
-    let reason = isSkipped(relPath);
-    if (reason == null) {
-      test(fileName, (ctx: TestContext): void => {
-        runSemanticTest(source, filePath, directives);
-      });
-    }
-  }
-  
-  for (let subdir in subdirs) {
-    let subName = subdir.name;
-    let subPath = dirPath + "/" + subName;
-    let subRel = if (relPrefix.length > 0) {
-      relPrefix + "/" + subName
-    } else {
-      subName
-    };
-    
-    suite(subName, (): void => {
-      runTests(subPath, subRel);
-    });
   }
 };
 
 export let main = (): i32 => {
+  let discovery = new Discovery();
   let root = suite('Portable Semantics Tests', (): void => {
-    runTests("tests/language/semantics", "semantics");
+    // Every `.zena` file under semantics/ is checked on its own, the
+    // modules that exist to be imported by another test included: a
+    // module that fails to check in isolation is itself a bug.
+    registerSuites(
+      testsRoot, '', discovery, (f: TestFile): boolean => true, runSemanticTest);
   });
-  return runAndReport(root, (s: String): void => { console.log(s); });
+  // Registration is complete once `suite` returns, so what was found can
+  // be reported before anything runs.
+  let write = (s: String): void => { console.log(s); };
+  discovery.report('Semantics', write);
+  return runAndReport(root, write);
 };

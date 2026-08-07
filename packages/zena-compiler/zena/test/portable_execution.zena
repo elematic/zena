@@ -1,0 +1,290 @@
+/**
+ * Portable execution tests — every `.zena` file under
+ * `tests/language/execution/` is compiled and run, and its result is
+ * matched against the `@result:` / `@stdout:` directive in the file.
+ *
+ * Each test runs in its own `zena-cli run` process (via `zena:process`,
+ * bounded pool) so a trap or an infinite recursion takes down one test
+ * rather than the runner. `zena-cli` caches compilation keyed on the
+ * source, compiler and stdlib, so a repeat run only re-compiles what
+ * actually changed — there is no staleness bookkeeping here.
+ *
+ * Discovery has no allow-list: a file runs because it exists. A file is
+ * a test if it declares `@result:` or `@stdout:`; a file with neither is
+ * a support module that some sibling test imports. `@skip: <reason>`
+ * holds a test back and is reported. All three counts are printed, so a
+ * test that stops being collected shows up as a number that moved.
+ *
+ * Usage (spawned by `run-wasmtime.js`, which grants `--allow-spawn`):
+ *   portable_execution <zenaCli> <parallelism> [filter]
+ */
+
+import { getArguments } from 'zena:cli';
+import { console } from 'zena:console';
+import { Array } from 'zena:array';
+import { HashSet } from 'zena:set';
+import { StringBuilder } from 'zena:string-builder';
+import { parseI64 } from 'zena:string-convert';
+import { Process, ProcessResult, spawn } from 'zena:process';
+import {
+  Discovery,
+  TestFile,
+  collect,
+  siblingImports,
+  unescapeNewlines,
+  unquote,
+} from './portable-harness.zena';
+
+let testsRoot = 'tests/language/execution';
+
+/** ANSI SGR sequence (string literals have no escape for ESC). */
+let sgr = (code: String): String => {
+  let b = new StringBuilder();
+  b.appendByte(27);
+  b.append('[');
+  b.append(code);
+  b.append('m');
+  return b.toString();
+};
+
+let green = sgr('32');
+let red = sgr('31');
+let dim = sgr('2');
+let reset = sgr('0');
+
+/** What a test file asserts about the program it describes. */
+class Expectation {
+  /** Expected `--invoke` return value, or null when the test checks stdout. */
+  result: String | null;
+  /** Expected program output, or null when the test checks the return value. */
+  stdout: String | null;
+  /** Export to invoke; `main` unless the file says otherwise. */
+  invoke: String;
+
+  new(this.result, this.stdout, this.invoke);
+}
+
+let expectationOf = (f: TestFile): Expectation => {
+  let result = f.directive('result');
+  let stdout = f.directive('stdout');
+  let invoke = f.directive('invoke');
+  return new Expectation(
+    if (result == null) { null } else { unquote(result as String) },
+    if (stdout == null) { null } else { unescapeNewlines(unquote(stdout as String)) },
+    if (invoke == null) { 'main' } else { invoke as String });
+};
+
+/** A test file is only a test if it says what running it should produce. */
+let isExecutionTest = (f: TestFile): boolean => f.has('result') || f.has('stdout');
+
+let isWhitespaceByte = (b: i32): boolean => b == 32 || b == 9 || b == 13 || b == 10;
+
+let trim = (s: String): String => {
+  var start = 0;
+  var end = s.length;
+  while (start < end && isWhitespaceByte(s.getByteAt(start))) {
+    start += 1;
+  }
+  while (end > start && isWhitespaceByte(s.getByteAt(end - 1))) {
+    end -= 1;
+  }
+  return s.sliceBytes(start, end);
+};
+
+/**
+ * `zena-cli run --invoke` prints the returned value on its own final
+ * line, after anything the program itself printed. A `void` return
+ * prints nothing, which is why `@result: undefined` expects the empty
+ * string.
+ */
+let lastLine = (output: String): String => {
+  let trimmed = trim(output);
+  var i = trimmed.length - 1;
+  while (i >= 0) {
+    if (trimmed.getByteAt(i) == 10) {
+      return trimmed.sliceBytes(i + 1, trimmed.length);
+    }
+    i -= 1;
+  }
+  return trimmed;
+};
+
+/**
+ * Booleans cross the `--invoke` boundary as the i32 they are, so the
+ * runner maps them back to what a Zena programmer would write. This is
+ * a representation mapping, not a fuzzy match: `1` only reads as `true`
+ * where `true` was the stated expectation.
+ */
+let normalizeResult = (actual: String, expected: String): String => {
+  if (expected == 'true' && actual == '1') {
+    return 'true';
+  }
+  if (expected == 'false' && actual == '0') {
+    return 'false';
+  }
+  if (expected == 'undefined' && actual.length == 0) {
+    return 'undefined';
+  }
+  return actual;
+};
+
+/** A test whose worker process has been started but not yet waited on. */
+class RunningTest {
+  file: TestFile;
+  expectation: Expectation;
+  process: Process;
+
+  new(this.file, this.expectation, this.process);
+}
+
+/** Why a test failed, or null if it passed. */
+let failureOf = (e: Expectation, res: ProcessResult): String | null => {
+  if (res.exitCode != 0) {
+    let detail = if (res.stderr.length > 0) { res.stderr } else { res.stdout };
+    return `exited ${res.exitCode}\n${trim(detail)}`;
+  }
+
+  let expectedStdout = e.stdout;
+  if (expectedStdout != null) {
+    let actual = trim(res.stdout);
+    if (actual == expectedStdout as String) {
+      return null;
+    }
+    return `expected stdout: ${expectedStdout as String}\n  actual stdout: ${actual}`;
+  }
+
+  let expected = e.result as String;
+  let actual = normalizeResult(lastLine(res.stdout), expected);
+  if (actual == expected) {
+    return null;
+  }
+  return `expected: ${expected}\n  actual:   ${actual}`;
+};
+
+/** Waits on a started test and prints its outcome. Returns whether it passed. */
+let report = (running: RunningTest): boolean => {
+  let failure = failureOf(running.expectation, running.process.wait());
+  if (failure == null) {
+    return true;
+  }
+  console.log(`${red}FAIL${reset} ${running.file.relPath}`);
+  for (let line in (failure as String).split('\n')) {
+    console.log(`  ${dim}${line}${reset}`);
+  }
+  return false;
+};
+
+/**
+ * Support modules that nothing imports.
+ *
+ * "Has no `@result:`/`@stdout:`" is what makes a file a support module
+ * rather than a test, which would make a forgotten directive look
+ * exactly like a helper — the silent skip this runner exists to prevent.
+ * So the claim is checked: every non-test must be some other file's
+ * import, and anything left over is reported as an error.
+ */
+let orphanedSupportModules = (d: Discovery): Array<TestFile> => {
+  let imported = new HashSet<String>();
+  for (let f in d.all()) {
+    for (let path in siblingImports(f)) {
+      imported.add(path);
+    }
+  }
+  let orphans = new Array<TestFile>(2);
+  for (let f in d.support) {
+    if (!imported.has(f.path)) {
+      orphans.push(f);
+    }
+  }
+  return orphans;
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  if (args.length < 3) {
+    console.error('Usage: portable_execution <zenaCli> <parallelism> [filter]');
+    return 1;
+  }
+  let zenaCli = args[1];
+  var parallelism = 1;
+  if (let (true, n) = parseI64(args[2])) {
+    if (n > 1) {
+      parallelism = n as i32;
+    }
+  }
+  let filter = if (args.length > 3) { args[3] } else { '' };
+
+  let discovery = new Discovery();
+  collect(testsRoot, '', discovery, isExecutionTest);
+
+  let orphans = orphanedSupportModules(discovery);
+  if (orphans.length > 0) {
+    console.error(
+      `${red}${orphans.length} file(s) declare neither @result: nor @stdout:, ` +
+      `and nothing imports them — add a directive or delete them:${reset}`);
+    for (let f in orphans) {
+      console.error(`  - ${f.relPath}`);
+    }
+    return 1;
+  }
+
+  let files = new Array<TestFile>(discovery.tests.length);
+  for (let f in discovery.tests) {
+    if (filter.length == 0 || f.relPath.contains(filter)) {
+      files.push(f);
+    }
+  }
+
+  if (files.length == 0) {
+    console.error(`No execution tests matched '${filter}' under ${testsRoot}`);
+    return 1;
+  }
+
+  // Report what was found before running anything, so a run that stalls
+  // still says what it was going to do.
+  discovery.report('Execution', (s: String): void => { console.log(s); });
+  if (filter.length > 0) {
+    console.log(`${dim}(filter '${filter}': ${files.length} of ${discovery.tests.length} run)${reset}`);
+  }
+  console.log('');
+
+  // Sliding-window pool: at most `parallelism` `zena-cli run` workers in
+  // flight, results reported in discovery order as the window advances.
+  var passed = 0;
+  var failed = 0;
+  let running = new Array<RunningTest>(files.length);
+  var reported = 0;
+  var next = 0;
+  while (next < files.length || reported < running.length) {
+    if (running.length - reported >= parallelism || next >= files.length) {
+      let oldest = running[reported];
+      reported += 1;
+      if (report(oldest)) {
+        passed += 1;
+      } else {
+        failed += 1;
+      }
+      continue;
+    }
+    let file = files[next];
+    next += 1;
+    let expectation = expectationOf(file);
+    let argv = new Array<String>(6);
+    argv.push(zenaCli);
+    argv.push('run');
+    argv.push('--invoke');
+    argv.push(expectation.invoke);
+    argv.push(file.path);
+    running.push(new RunningTest(file, expectation, spawn(argv)));
+  }
+
+  // Worded exactly as `zena:test`'s runAndReport does, so this suite
+  // reads the same as the others and run-wasmtime.js can count it.
+  console.log('');
+  if (failed == 0) {
+    console.log(`${green}✓ ${passed} of ${passed} test(s) passed${reset}`);
+  } else {
+    console.log(`${red}✗ ${failed} failed, ${passed} passed of ${passed + failed} test(s)${reset}`);
+  }
+  return failed;
+};

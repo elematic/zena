@@ -1,12 +1,23 @@
 #!/usr/bin/env node
 /**
- * Run zena-compiler tests using wasmtime.
+ * Run a zena-compiler test program under zena-cli.
  *
- * Each .wasm file exports main() which runs the test suite via runAndReport,
- * printing results to stdout. The return value (last line) is the failure count.
+ * Every test program built by `build-wasi-tests.js` exports `main()`,
+ * prints its own report, and returns the number of failures; zena-cli
+ * prints that return value as the last line of stdout.
+ *
+ * With no argument, runs all of the unit suites. With one, runs just
+ * that program — an optional second argument is passed through to it as
+ * a filter (the portable-execution runner uses this; the others ignore
+ * it).
+ *
+ * The test programs are repo tooling, not sandboxed guests: they get the
+ * whole repo as a preopen and the spawn capability, which the portable
+ * execution runner needs to run each language test in its own process.
  */
 
-import {execSync, spawnSync} from 'node:child_process';
+import {spawnSync} from 'node:child_process';
+import {availableParallelism} from 'node:os';
 import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
@@ -15,8 +26,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const outDir = join(pkgDir, 'zena', 'out');
 const repoRoot = join(pkgDir, '..', '..');
+const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 
-// Colors
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
@@ -28,24 +39,15 @@ if (process.env.HOST_PATH) {
   process.env.PATH = `${process.env.HOST_PATH}:${process.env.PATH ?? ''}`;
 }
 
-// Find all .wasm files
-const pattern = join(outDir, '**/*.wasm');
-const allWasmFiles = await glob(pattern);
-const testSubdir = 'test-self';
+const [target, filter] = process.argv.slice(2);
 
-let wasmFiles = allWasmFiles.filter(
-  (f) =>
-    f.includes(`/${testSubdir}/`) &&
-    !f.endsWith('cli.wasm') &&
-    !f.endsWith('cli-self.wasm') &&
-    !f.includes('/execution/') &&
-    !f.endsWith('portable_syntax.wasm') &&
-    !f.endsWith('portable_semantics.wasm'),
-);
-
-if (process.argv[2]) {
-  wasmFiles = [resolve(process.argv[2])];
-}
+// The portable runners are whole programs of their own and are invoked
+// by name; a bare run means "the unit suites".
+const wasmFiles = target
+  ? [resolve(target)]
+  : (await glob(join(outDir, 'test-self', '**/*.wasm')))
+      .filter((f) => !/portable_[^/]*\.wasm$/.test(f))
+      .sort();
 
 if (wasmFiles.length === 0) {
   console.error(`${YELLOW}No .wasm files found${NC}`);
@@ -53,87 +55,85 @@ if (wasmFiles.length === 0) {
   process.exit(1);
 }
 
+// Workers a runner may keep in flight. Bounded well below the CPU count
+// by default: each worker is a wasmtime process with its own GC heap,
+// and oversubscribing them OOMs small machines.
+const envParallelism = Number.parseInt(process.env.ZENA_TEST_PARALLELISM ?? '', 10);
+const parallelism =
+  Number.isFinite(envParallelism) && envParallelism > 0
+    ? envParallelism
+    : Math.max(1, Math.min(availableParallelism(), 8));
+
+/** Extract the test count from a `runAndReport` summary line. */
+const parseSummary = (report: string): number => {
+  // Matches "✓ N of M test(s) passed" or "✗ X failed, Y passed of M test(s)"
+  const match = report.match(/of (\d+) test/);
+  return match ? Number.parseInt(match[1], 10) : 0;
+};
+
 console.log('');
 
 let passed = 0;
 let failed = 0;
 let totalTests = 0;
 
-// Extract test count from runAndReport summary line
-const parseSummary = (report: string): number => {
-  // Matches "✓ N of M test(s) passed" or "✗ X failed, Y passed of M test(s)"
-  const match = report.match(/of (\d+) test/);
-  return match ? parseInt(match[1], 10) : 0;
-};
-
-for (const wasmFile of wasmFiles.sort()) {
+for (const wasmFile of wasmFiles) {
   const relPath = relative(outDir, wasmFile);
 
-  // Run from repo root with access to tests/language/ directory
-  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
   const result = spawnSync(
     zenaCli,
     [
       '--debug',
       'run',
+      // Map the repo root to / so tests/language/ is reachable at the
+      // same relative path a runner would use from the repo root.
       '--dir',
-      `${repoRoot}::/`, // Map repo root to / so tests/language/ is accessible at /tests/language/
+      `${repoRoot}::/`,
       '--dir',
       '/tmp::/tmp',
+      '--allow-spawn',
       '--invoke',
       'main',
       wasmFile,
+      zenaCli,
+      String(parallelism),
+      ...(filter ? [filter] : []),
     ],
-    {
-      encoding: 'utf-8',
-      timeout: 300000, // TODO: reduce this timeout
-      cwd: repoRoot,
-    },
+    // Generous: on a cold compile cache the execution runner compiles
+    // every language test before it can run it.
+    {encoding: 'utf-8', timeout: 3_600_000, cwd: repoRoot},
   );
 
   const output = result.stdout?.trim() ?? '';
 
-  // wasmtime --invoke prints the return value as the last line
+  // zena-cli prints main()'s return value as the last line; everything
+  // before it is the program's own report.
   const lines = output.split('\n');
   const returnValue = lines.pop()?.trim();
-  // Everything before the return value is the test report
   const report = lines
-    .map((line) => {
-      // Unescape explicit color strings returned by Zena tests
-      return line.replace(/\\x1b/g, '\x1B').replace(/\\n/g, '\n');
-    })
+    // Unescape the color strings Zena tests emit as literal text.
+    .map((line) => line.replace(/\\x1b/g, '\x1b').replace(/\\n/g, '\n'))
     .join('\n');
-  const testCount = parseSummary(report);
-  totalTests += testCount;
+  totalTests += parseSummary(report);
 
   if (result.status === 0 && returnValue === '0') {
-    // Show a compact summary for passing suites
     const displayName = relPath.replace(/\.wasm$/, '');
     console.log(
-      `${GREEN}✔${NC} ${displayName} ${DIM}(${testCount} tests)${NC}`,
+      `${GREEN}✔${NC} ${displayName} ${DIM}(${parseSummary(report)} tests)${NC}`,
     );
-    // Show any logs that were printed during the test
-    if (
-      report &&
-      report.trim() &&
-      !report.match(/^✓ \d+ of \d+ test\(s\) passed$/)
-    ) {
+    // Surface anything the suite printed beyond its own pass summary.
+    if (report.trim() && !report.match(/^✓ \d+ of \d+ test\(s\) passed$/)) {
       console.log(report);
     }
     passed++;
   } else {
-    // Show the full report from runAndReport on failure
-    if (result.status === 0 && returnValue === '0') {
-      // ... handled above
-    } else {
-      if (report) {
-        console.log(report);
-      }
-      if (result.stderr) {
-        console.error(result.stderr.trim());
-      }
-      failed++;
+    if (report) {
+      console.log(report);
     }
+    if (result.stderr) {
+      console.error(result.stderr.trim());
+    }
+    failed++;
   }
 }
 
@@ -142,8 +142,6 @@ console.log('─'.repeat(50));
 if (failed === 0) {
   console.log(`${GREEN}All tests passed (${totalTests} total)${NC}`);
 } else {
-  console.log(
-    `${RED}${failed} suite(s) failed (${totalTests} total tests)${NC}`,
-  );
+  console.log(`${RED}${failed} suite(s) failed (${totalTests} total tests)${NC}`);
   process.exit(1);
 }

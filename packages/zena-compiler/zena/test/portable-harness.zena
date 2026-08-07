@@ -1,0 +1,392 @@
+/**
+ * Shared plumbing for the portable test runners under `tests/language/`.
+ *
+ * All three runners (syntax, semantics, execution) discover their tests
+ * the same way: walk the category directory, read every `.zena` file,
+ * parse its `// @name: value` directives, and account for every file
+ * found. There is deliberately no allow-list of directories — a test is
+ * discovered because it exists, and the only way to not run one is an
+ * explicit `// @skip: <reason>` directive in the file itself, which the
+ * runner then reports.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { Array } from 'zena:array';
+import { StringReader } from 'zena:string-reader';
+import { StringBuilder } from 'zena:string-builder';
+import { readFile, listDir, DirEntry, FileType } from 'zena:fs';
+
+/** One `// @name: value` comment directive and the line it was found on. */
+export type Directive = { name: String, line: i32, value: String };
+
+/**
+ * Parses every `// @name: value` directive in a source file. The value
+ * is everything after the colon with surrounding whitespace stripped;
+ * only the first directive on a line is read.
+ */
+export let parseDirectives = (source: String): Array<Directive> => {
+  let results = new Array<Directive>(4);
+  let marker = '// @';
+  if (!source.contains(marker)) {
+    return results;
+  }
+
+  var lineNum = 1;
+  let r = new StringReader(source);
+  while (!r.isAtEnd) {
+    let lineStart = r.mark();
+    while (!r.isAtEnd && r.peekByte() != 10) { // 10 = '\n'
+      r.advanceByte();
+    }
+    let line = r.sliceFrom(lineStart);
+
+    if (line.contains(marker)) {
+      var mi = 0;
+      while (mi <= line.length - marker.length) {
+        if (line.sliceBytes(mi, mi + marker.length) == marker) {
+          var colonIndex = mi + marker.length;
+          var foundColon = false;
+          while (colonIndex < line.length) {
+            if (line.getByteAt(colonIndex) == 58) { // ':'
+              foundColon = true;
+              break;
+            }
+            colonIndex += 1;
+          }
+
+          if (foundColon) {
+            let name = line.sliceBytes(mi + marker.length, colonIndex);
+            var valStart = colonIndex + 1;
+            while (valStart < line.length) {
+              let b = line.getByteAt(valStart);
+              if (b == 32 || b == 9) { // space or tab
+                valStart += 1;
+              } else {
+                break;
+              }
+            }
+            var valEnd = line.length;
+            while (valEnd > valStart) {
+              let b = line.getByteAt(valEnd - 1);
+              if (b == 32 || b == 13) { // space or '\r'
+                valEnd -= 1;
+              } else {
+                break;
+              }
+            }
+            results.push({ name: name, line: lineNum, value: line.sliceBytes(valStart, valEnd) });
+          }
+          break;
+        }
+        mi += 1;
+      }
+    }
+
+    if (r.peekByte() == 10) {
+      r.advanceByte();
+    }
+    lineNum += 1;
+  }
+
+  return results;
+};
+
+/** A `.zena` file discovered under a `tests/language/` category. */
+export class TestFile {
+  /** Path as given to `zena:fs`, e.g. `tests/language/execution/arrays/push.zena`. */
+  path: String;
+  /** Path relative to the category root, e.g. `arrays/push.zena`. Used for display. */
+  relPath: String;
+  /** Base name, e.g. `push.zena`. */
+  name: String;
+  source: String;
+  directives: Array<Directive>;
+
+  new(this.path, this.relPath, this.name, this.source, this.directives);
+
+  /** The value of the first `@name:` directive, or null if there is none. */
+  directive(name: String): String | null {
+    for (let d in this.directives) {
+      if (d.name == name) {
+        return d.value;
+      }
+    }
+    return null;
+  }
+
+  has(name: String): boolean {
+    return this.directive(name) != null;
+  }
+
+  /** Every `@name:` directive, in file order. */
+  all(name: String): Array<Directive> {
+    let matches = new Array<Directive>(2);
+    for (let d in this.directives) {
+      if (d.name == name) {
+        matches.push(d);
+      }
+    }
+    return matches;
+  }
+
+  /**
+   * The reason this test is skipped, or null to run it. A bare
+   * `// @skip:` with no reason still skips, but reports as unexplained
+   * so it shows up as something to fix.
+   */
+  skipReason(): String | null {
+    let reason = this.directive('skip');
+    if (reason == null) {
+      return null;
+    }
+    return if ((reason as String).length == 0) { '(no reason given)' } else { reason };
+  }
+}
+
+/**
+ * The outcome of one discovery pass. Every `.zena` file found lands in
+ * exactly one bucket, so a test cannot quietly stop running: the totals
+ * move, and skips are reported with their reasons.
+ */
+export class Discovery {
+  /** Files handed to the runner as tests. */
+  tests = new Array<TestFile>(64);
+  /** Files held back by an explicit `@skip:` directive. */
+  skipped = new Array<TestFile>(4);
+  /** Files that are not tests at all — modules a test imports. */
+  support = new Array<TestFile>(8);
+
+  new();
+
+  /** Every file seen, whichever bucket it landed in. */
+  all(): Array<TestFile> {
+    let files = new Array<TestFile>(this.total());
+    for (let f in this.tests) {
+      files.push(f);
+    }
+    for (let f in this.skipped) {
+      files.push(f);
+    }
+    for (let f in this.support) {
+      files.push(f);
+    }
+    return files;
+  }
+
+  total(): i32 {
+    return this.tests.length + this.skipped.length + this.support.length;
+  }
+
+  /**
+   * Prints the skip list and the per-bucket counts. Always printed, even
+   * when nothing was skipped: the counts are what makes a vanished test
+   * visible.
+   */
+  report(label: String, write: (s: String) => void): void {
+    if (this.skipped.length > 0) {
+      write(`\n${this.skipped.length} skipped:`);
+      for (let f in this.skipped) {
+        write(`  - ${f.relPath} — ${f.skipReason() as String}`);
+      }
+    }
+    write(
+      `\n${label}: ${this.tests.length} tests, ${this.skipped.length} skipped, ` +
+      `${this.support.length} support modules (${this.total()} files)`);
+  }
+}
+
+/** Byte-wise `a < b`, so discovery order does not depend on the host. */
+let lexLess = (a: String, b: String): boolean => {
+  let n = if (a.length < b.length) { a.length } else { b.length };
+  for (var i = 0; i < n; i += 1) {
+    let ca = a.getByteAt(i);
+    let cb = b.getByteAt(i);
+    if (ca != cb) {
+      return ca < cb;
+    }
+  }
+  return a.length < b.length;
+};
+
+/** Insertion sort by entry name (byte-wise ascending). */
+let sortByName = (entries: Array<DirEntry>): void => {
+  for (var i = 1; i < entries.length; i += 1) {
+    let e = entries[i];
+    var j = i - 1;
+    while (j >= 0 && lexLess(e.name, entries[j].name)) {
+      entries[j + 1] = entries[j];
+      j -= 1;
+    }
+    entries[j + 1] = e;
+  }
+};
+
+/** The `.zena` files and the subdirectories of `dirPath`, each sorted by name. */
+class DirContents {
+  files = new Array<DirEntry>(8);
+  subdirs = new Array<DirEntry>(4);
+
+  new(dirPath: String) {
+    for (let entry in listDir(dirPath)) {
+      if (entry.fileType == FileType.Directory) {
+        if (entry.name != '.' && entry.name != '..') {
+          this.subdirs.push(entry);
+        }
+      } else if (entry.fileType == FileType.RegularFile) {
+        if (entry.name.endsWith('.zena')) {
+          this.files.push(entry);
+        }
+      }
+    }
+    // readdir order varies by platform and filesystem, and the runners
+    // share one compiler instance, so the state a test sees must not
+    // depend on where the suite runs.
+    sortByName(this.subdirs);
+    sortByName(this.files);
+  }
+}
+
+let joinRel = (prefix: String, name: String): String =>
+  if (prefix.length > 0) { `${prefix}/${name}` } else { name };
+
+let load = (dirPath: String, relPrefix: String, name: String): TestFile => {
+  let path = `${dirPath}/${name}`;
+  let source = readFile(path);
+  return new TestFile(path, joinRel(relPrefix, name), name, source, parseDirectives(source));
+};
+
+/**
+ * Walks `dirPath` recursively and registers a `zena:test` case per file,
+ * mirroring the directory tree as nested suites. `isTest` separates real
+ * tests from modules that only exist to be imported by one; `run` is the
+ * test body.
+ *
+ * Used by the in-process runners (syntax, semantics). The execution
+ * runner spawns a process per test and uses `collect` instead.
+ */
+export let registerSuites = (
+    dirPath: String,
+    relPrefix: String,
+    d: Discovery,
+    isTest: (f: TestFile) => boolean,
+    run: (f: TestFile) => void): void => {
+  let contents = new DirContents(dirPath);
+
+  for (let entry in contents.files) {
+    let f = load(dirPath, relPrefix, entry.name);
+    if (f.skipReason() != null) {
+      d.skipped.push(f);
+    } else if (!isTest(f)) {
+      d.support.push(f);
+    } else {
+      d.tests.push(f);
+      test(f.name, (ctx: TestContext): void => {
+        run(f);
+      });
+    }
+  }
+
+  for (let entry in contents.subdirs) {
+    suite(entry.name, (): void => {
+      registerSuites(
+        `${dirPath}/${entry.name}`, joinRel(relPrefix, entry.name), d, isTest, run);
+    });
+  }
+};
+
+/**
+ * Walks `dirPath` recursively, sorting every file found into `d`. Used
+ * by the execution runner, which needs the whole list up front so it can
+ * keep a pool of worker processes busy.
+ */
+export let collect = (
+    dirPath: String,
+    relPrefix: String,
+    d: Discovery,
+    isTest: (f: TestFile) => boolean): void => {
+  let contents = new DirContents(dirPath);
+
+  for (let entry in contents.files) {
+    let f = load(dirPath, relPrefix, entry.name);
+    if (f.skipReason() != null) {
+      d.skipped.push(f);
+    } else if (!isTest(f)) {
+      d.support.push(f);
+    } else {
+      d.tests.push(f);
+    }
+  }
+
+  for (let entry in contents.subdirs) {
+    collect(`${dirPath}/${entry.name}`, joinRel(relPrefix, entry.name), d, isTest);
+  }
+};
+
+/**
+ * The `./name` module specifiers a source imports, resolved against the
+ * directory it sits in and normalised to end in `.zena`.
+ *
+ * Portable tests only ever import siblings, so this is a literal scan
+ * for `from './…'` rather than a parse — it exists to prove that a file
+ * with no test directives is genuinely somebody's dependency.
+ */
+export let siblingImports = (f: TestFile): Array<String> => {
+  let dir = f.path.sliceBytes(0, f.path.length - f.name.length - 1);
+  let found = new Array<String>(2);
+  let marker = "from './";
+  var i = 0;
+  while (i + marker.length <= f.source.length) {
+    if (f.source.sliceBytes(i, i + marker.length) != marker) {
+      i += 1;
+      continue;
+    }
+    var end = i + marker.length;
+    while (end < f.source.length && f.source.getByteAt(end) != 39) { // '\''
+      end += 1;
+    }
+    let name = f.source.sliceBytes(i + marker.length, end);
+    if (name.length > 0) {
+      // Module specifiers may leave the extension off.
+      let fileName = if (name.endsWith('.zena')) { name } else { `${name}.zena` };
+      found.push(`${dir}/${fileName}`);
+    }
+    i = end + 1;
+  }
+  return found;
+};
+
+/**
+ * Strips one layer of matching quotes from a directive value, so
+ * `@result: "a b"` and `@result: a b` mean the same thing.
+ */
+export let unquote = (value: String): String => {
+  if (value.length < 2) {
+    return value;
+  }
+  let first = value.getByteAt(0);
+  let last = value.getByteAt(value.length - 1);
+  if ((first == 34 && last == 34) || (first == 39 && last == 39)) { // '"' / '\''
+    return value.sliceBytes(1, value.length - 1);
+  }
+  return value;
+};
+
+/** Expands the `\n` escape directive values use for multi-line expectations. */
+export let unescapeNewlines = (value: String): String => {
+  if (!value.contains('\\n')) {
+    return value;
+  }
+  let out = new StringBuilder(value.length);
+  var i = 0;
+  while (i < value.length) {
+    let b = value.getByteAt(i);
+    if (b == 92 && i + 1 < value.length && value.getByteAt(i + 1) == 110) { // '\' 'n'
+      out.appendByte(10);
+      i += 2;
+    } else {
+      out.appendByte(b);
+      i += 1;
+    }
+  }
+  return out.toString();
+};

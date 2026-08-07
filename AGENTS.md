@@ -136,6 +136,17 @@ directives. They're organized into three categories:
 - **`semantics/`** — Type checker tests. Directive: `// @mode: check` with `// @error:` on error lines.
 - **`execution/`** — Codegen tests. Directive: `// @mode: run` with `// @result:` for expected return value.
 
+The runners are Zena programs in `packages/zena-compiler/zena/test/`
+(`portable_syntax`, `portable_semantics`, `portable_execution`). They
+discover tests by walking the directory — there is no list of tests or
+directories to add to. A test that cannot run yet says so in the file:
+
+```zena
+// @skip: <why this cannot run yet>
+```
+
+Skips are printed, with their reasons, in every run's summary.
+
 When fixing bugs or adding features, prefer adding portable tests here.
 
 ## Project Structure

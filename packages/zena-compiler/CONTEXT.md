@@ -74,15 +74,38 @@ Code generation separates semantic discovery from lowering and emission
   the `.json` `output` glob intersections immediately—make sure `build:tests` is
   safely excluding `cli.wasm`.
 
-## Portable Tests & Selective Execution
+## Portable Tests
 
-- **Portable tests** are compiler-agnostic language tests located in
-  `tests/language/`.
-- **Category gating (`runList`)**: `src/scripts/run-execution-tests.ts`
-  filters execution tests by top-level category directory via its
-  `runList` array, which currently names every category. A new test in
-  an existing category runs automatically; a new category _directory_
-  must be added to `runList` or its tests are silently skipped.
-- Run execution tests locally via: `npm run test:execution  -w @zena-lang/zena-compiler -- [filter]` explicitly to isolate generated Wasm regressions
-  natively using the `wasmtime --invoke main` interface wrapped by Node.js.
-  For example, to run just the variable tests, use `npm run test:execution -w @zena-lang/zena-compiler -- variables`.
+**Portable tests** are compiler-agnostic language tests under
+`tests/language/`, split into `syntax/`, `semantics/` and `execution/`.
+Each category has a runner written in Zena, in `zena/test/`:
+
+| Runner                   | Checks                                                  |
+| ------------------------ | ------------------------------------------------------- |
+| `portable_syntax.zena`   | parse → AST vs. the `.ast.json` snapshot beside the test |
+| `portable_semantics.zena`| check → diagnostics vs. `@error:` / `@warning:`          |
+| `portable_execution.zena`| compile + run → vs. `@result:` / `@stdout:`              |
+
+They share `zena/test/portable-harness.zena` (directory discovery,
+`// @name: value` directive parsing, skip accounting). The execution
+runner additionally uses `zena:process` to run each language test in its
+own `zena-cli run` worker, with a bounded pool; `run-wasmtime.js` grants
+it `--allow-spawn`.
+
+**Discovery has no allow-list.** A test runs because the file exists.
+The only way to hold one back is an explicit directive in the file:
+
+```zena
+// @skip: <why this cannot run yet>
+```
+
+Every runner prints `N tests, M skipped, K support modules` and lists
+each skip with its reason, so a test that stops being collected shows up
+as a number that moved. (A _support module_ is an execution-test file
+with no `@result:`/`@stdout:` — a module some sibling test imports.)
+
+Run one category, optionally filtered by path substring:
+
+```bash
+npm run test:execution -w @zena-lang/zena-compiler -- variables
+```

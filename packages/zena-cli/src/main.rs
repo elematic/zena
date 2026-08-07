@@ -228,7 +228,12 @@ fn build_file(file: &str, output: &str, verbose: bool, time: bool, _no_cache: bo
 }
 
 fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache: bool, dirs: &[String], args: &[String], debug: bool, allow_spawn: bool) -> Result<()> {
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, no_cache, debug, None)?;
+    // Capture the compiler's own output rather than inheriting stdout:
+    // `run` prints the program's output, and a compile that happens to
+    // miss the cache must not change what the program appears to print.
+    // On failure the captured text is replayed to stderr; `-v` streams
+    // it live instead.
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, !verbose, no_cache, debug, None)?;
     run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args, debug, allow_spawn)
 }
 
