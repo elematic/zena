@@ -430,13 +430,27 @@ sails straight past the handler the user wrote and rejects the
 function's own future instead.
 
 The construction: the dispatcher lives outside every user region, so
-it cannot branch at a resume block directly. Instead, resuming
+it cannot branch at a dispatch target directly. Instead, dispatching
 **re-enters** each enclosing region through a fresh `try_br` whose
-catch is that region's own handler, innermost last, so the resumed
-segment runs at the same protection depth the source put it at.
-Nesting composes — one fresh `try_br` per enclosing region per resume
-point — and every region is still entered normally through its own
-`try_br`, so regions stay properly nested and the CFG reducible.
+catch is that region's own handler, innermost last, so the segment it
+heads runs at the same protection depth the source put it at. Nesting
+composes — one fresh `try_br` per enclosing region per dispatch target
+— and every region is still entered normally through its own `try_br`,
+so regions stay properly nested and the CFG reducible.
+
+This covers **every dispatch target, not just the resume blocks**, and
+the difference is not cosmetic. `rerouteEdges` sends every edge into a
+dispatch target through the dispatcher, and a loop whose body suspends
+makes the loop _header_ a dispatch target — so the loop's entry edge
+and its backedge both leave the region. Re-entry at the resume blocks
+alone protects the stretch after each `await`, which is what that
+resume block dominates, and leaves the stretch from the header down to
+the `await` unprotected on every iteration. A `throw` there escapes
+the user's handler; a `throw` after the `await` does not, which is
+exactly the sort of half-working that hides in a test suite. (It hid
+in this one: the original await-in-try tests exercised a loop, but
+awaited a future that never fails and threw nothing ahead of the
+suspension.)
 
 This is a simplification of the known-good construction C# and Kotlin
 use (and of what this section originally planned): those thread the
@@ -445,8 +459,8 @@ dispatcher inside the region. Re-entering through fresh `try_br`s
 needs no inner dispatcher, no pc threading across a region edge, and
 no splitting of the block holding the original `try_br` — and it
 builds the same region, because a region's extent is the dominator
-subtree of its body target and a resume block dominates precisely the
-rest of its try body.
+subtree of its body target and a dispatch target inside a try body
+dominates precisely the part of that body it heads.
 
 `finally` semantics on _abandonment_ (a pending try's future is
 dropped) remain coupled to cancellation and are decided there — same

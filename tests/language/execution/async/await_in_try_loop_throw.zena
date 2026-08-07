@@ -1,0 +1,102 @@
+// @mode: run
+// @result: 555
+// @skip: bootstrap
+// A throw from inside a LOOP inside a try, in an async function.
+//
+// This is the dispatch-target case await_in_try_loop.zena missed. A
+// loop whose body suspends makes the loop HEADER a dispatch target
+// (generators.zena assigns it a pc above the suspend range), and
+// rerouteEdges sends every edge into a dispatch target through the
+// dispatcher — including the loop's entry edge and its backedge. So
+// the loop body is entered from outside every user region on every
+// iteration, and unless resuming re-enters the enclosing regions at
+// the header too, a throw from the loop body sails past the handler
+// the source wrote (async.md §6's silent failure mode).
+//
+// The two directions are not equivalent. A throw AFTER the await is
+// dominated by the resume block and so is covered by that block's own
+// re-entry; a throw BEFORE the await is dominated only by the header.
+// Covering resume blocks alone passes the first and fails the second,
+// which is why await_in_try_loop.zena — a loop awaiting `futureOf`,
+// which never fails, and throwing nothing — passed either way.
+import { Future, Completer, drainMicrotasks, futureOf } from 'zena:async';
+
+/** Throws from the loop body, after the suspension. */
+let throwsAfterAwait = async (n: i32): Future<i32> => {
+  var out = 0;
+  try {
+    var i = 0;
+    while (i < n) {
+      out += await futureOf(1);
+      if (i == 2) {
+        throw new Error('after the suspension');
+      }
+      i += 1;
+    }
+  } catch (e) {
+    out += 100;
+  }
+  return out;
+};
+
+/** Throws from the loop body, before the suspension. */
+let throwsBeforeAwait = async (n: i32): Future<i32> => {
+  var out = 0;
+  try {
+    var i = 0;
+    while (i < n) {
+      if (i == 2) {
+        throw new Error('before the suspension');
+      }
+      out += await futureOf(1);
+      i += 1;
+    }
+  } catch (e) {
+    out += 100;
+  }
+  return out;
+};
+
+/** The awaited future itself fails, from inside a loop inside a try. */
+let awaitFailsInLoop = async (c: Completer<i32>): Future<i32> => {
+  var out = 0;
+  try {
+    var i = 0;
+    while (i < 3) {
+      out += await c.future;
+      i += 1;
+    }
+  } catch (e) {
+    out += 100;
+  }
+  return out;
+};
+
+export let main = (): i32 => {
+  // Iterations 0,1,2 each add 1 (out == 3), then i == 2 throws after
+  // awaiting. Caught => 103.
+  let f1 = throwsAfterAwait(10);
+  drainMicrotasks();
+  if (!f1.isCompleted || f1.valueOrThrow() != 103) {
+    return -1;
+  }
+
+  // Iterations 0,1 each add 1 (out == 2), then i == 2 throws before
+  // reaching the await. Caught => 102.
+  let f2 = throwsBeforeAwait(10);
+  drainMicrotasks();
+  if (!f2.isCompleted || f2.valueOrThrow() != 102) {
+    return -2;
+  }
+
+  // A rejected await inside the loop must reach the same handler.
+  let c = new Completer<i32>();
+  let f3 = awaitFailsInLoop(c);
+  c.fail(new Error('rejected'));
+  drainMicrotasks();
+  if (!f3.isCompleted || f3.valueOrThrow() != 100) {
+    return -3;
+  }
+
+  return 555;
+};
