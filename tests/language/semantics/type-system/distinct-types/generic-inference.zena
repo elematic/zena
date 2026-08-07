@@ -1,0 +1,69 @@
+// @mode: check
+
+// A generic `distinct type` must work as an ordinary parameter type: the
+// argument's type arguments have to unify with the parameter's, and the
+// result has to come back substituted.
+//
+// Rejections live in ./generic-inference-rejected.zena rather than here. The
+// portable-semantics runner only reports unexpected errors for a file that
+// declares no @error directive, so this file is the regression guard: any
+// diagnostic at all fails it.
+
+class Thing {
+  var n: i32;
+  new(n: i32) : n = n;
+  get(): i32 { return this.n; }
+}
+
+distinct type Box<T> = T;
+distinct type Pair<A, B> = A;
+
+let unwrap = <T>(b: Box<T>): T => b as T;
+let rewrap = <T>(b: Box<T>): Box<T> => b;
+let first = <A, B>(p: Pair<A, B>): A => p as A;
+
+let t = new Thing(1);
+let boxed = t as Box<Thing>;
+
+// Inferred: `Box<Thing>` against `Box<T>` binds T = Thing.
+let inferred = unwrap(boxed);
+
+// The result is the substituted type, so its members resolve. Before the fix
+// this reported `Property 'get' does not exist on type 'T'`.
+let viaInferred: i32 = inferred.get();
+
+// Spelled out, the same thing.
+let explicit: Thing = unwrap<Thing>(boxed);
+let viaExplicit: i32 = explicit.get();
+
+// A result that is itself the alias stays the alias, still substituted.
+let sameBox: Box<Thing> = rewrap(boxed);
+
+// Several parameters, and one that appears only on the alias's target side.
+let pair = t as Pair<Thing, i32>;
+let firstOut: Thing = first(pair);
+
+// A primitive argument travels the same path.
+let boxedInt = 7 as Box<i32>;
+let intOut: i32 = unwrap(boxedInt);
+
+// Nested: the type parameter is not the whole argument.
+distinct type Wrapper<T> = Box<T>;
+let unnest = <T>(w: Wrapper<T>): Box<T> => w as Box<T>;
+let nested = boxed as Wrapper<Thing>;
+let unnested: Box<Thing> = unnest(nested);
+
+// Reading a distinct alias and re-wrapping its target are both casts to or
+// from a type parameter, so they answer to the type-parameter cast rule
+// (checker.zena `checkTypeParameterCast`). A distinct alias IS its target at
+// runtime, so neither mints anything — the rule compares erased forms. These
+// are the generic spellings of `A as i32` / `i32 as A`, which have always been
+// legal for a non-generic distinct type.
+let unwrapAgain = <T>(b: Box<T>): T => b as T;
+let wrapAgain = <T>(v: T): Box<T> => v as Box<T>;
+
+// A phantom parameter — one the target does not mention — may be chosen at the
+// mint, because `Ptr<T>` is an i32 whatever `T` is. Cashing it back out into a
+// `T` is rejected; see ./generic-inference-rejected.zena.
+distinct type Ptr<T> = i32;
+let mintPtr = <T>(raw: i32): Ptr<T> => raw as Ptr<T>;

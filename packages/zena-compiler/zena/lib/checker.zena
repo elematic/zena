@@ -2281,6 +2281,28 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation, allowInli
   return t;
 };
 
+/**
+ * Resolve an explicit type argument at a call or `new` site.
+ *
+ * A `resource class` may be named bare here. The bare-mention rule exists so
+ * that the ownership regime of a *value* is always visible at its type — but a
+ * type argument is not a value's type, it is the thing a handle wraps.
+ * `adopt<Descriptor>(u)` fills a parameter the signature already spells
+ * `Unmanaged<T>`, and inference produces that same binding from `adopt(u)`
+ * with nothing written down. Rejecting the spelled-out form would reject only
+ * the spelling.
+ *
+ * The relaxation stops at the argument itself: it is `ctx.resourceMentionOk`,
+ * which `resolveTypeAnnotationInner` consumes on the outermost name and then
+ * re-derives per nested argument, so `Array<Descriptor>` is still an error.
+ */
+let resolveExplicitTypeArgument = (ctx: CheckerContext, ann: TypeAnnotation): Type => {
+  ctx.resourceMentionOk = true;
+  let t = resolveTypeAnnotation(ctx, ann);
+  ctx.resourceMentionOk = false;
+  return t;
+};
+
 let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean): Type => match (ann) {
   case NamedTypeAnnotation {name, typeArguments}: {
     // Resolve through scope analysis so lexical shadowing is honored.
@@ -2943,6 +2965,43 @@ let substituteTypeParams = (
       }
       return t;
     }
+    case TypeAliasType as ta: {
+      // `Own<T>` under `T := Descriptor` is `Own<Descriptor>`. Without this
+      // case a generic alias fell through to `case _` and came back
+      // unsubstituted, so a signature returning `Unmanaged<T>` reported
+      // `Unmanaged<T>` at every call site and members of the erased type were
+      // never found.
+      //
+      // Only a distinct alias reaches here — `resolveTypeAnnotation` unwraps a
+      // transparent one to its substituted target — plus one that is still
+      // `resolving`, whose `target` must not be read.
+      if (ta.typeArguments != null) {
+        let srcArgs = ta.typeArguments as Array<Type>;
+        let subArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in srcArgs) {
+          let sub = substituteTypeParams(typeParams, typeArgs, arg);
+          subArgs.push(sub);
+          if (sub !== arg) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          let inst = instantiateTypeAliasType(ta, subArgs);
+          // `ta.target` already has the alias's *own* parameters replaced by
+          // `ta.typeArguments` (resolveTypeAnnotationInner does that), so the
+          // outer substitution applies to it directly. A `TypeAliasType` keeps
+          // no `genericSource`, so there is no declaration-shaped target to go
+          // back to.
+          if (!ta.resolving) {
+            inst.target = substituteTypeParams(typeParams, typeArgs, ta.target);
+          }
+          inst.resolving = ta.resolving;
+          return inst;
+        }
+      }
+      return t;
+    }
     case _: { return t; }
   }
 };
@@ -3159,7 +3218,7 @@ let instantiateGenericClass = (
     let typeArgs = new Array<Type>();
     var i = 0;
     while (i < explicit.length) {
-      typeArgs.push(resolveTypeAnnotation(ctx, explicit[i]));
+      typeArgs.push(resolveExplicitTypeArgument(ctx, explicit[i]));
       i += 1;
     }
     applyAndCheckTypeArguments(ctx, params, typeArgs, loc);
@@ -3250,6 +3309,38 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
             i += 1;
           }
           inferTypeArg(pt.returnType, at.returnType, inferred);
+        }
+        case _: {}
+      }
+    }
+    case TypeAliasType as pt: {
+      // Own<T> against Own<Descriptor> → infer T = Descriptor.
+      //
+      // A distinct alias is nominal, so the two must name the same alias —
+      // the same test `isAssignableTo` applies to a pair of distinct aliases.
+      // Without this case nothing bound, and the call was then rejected as
+      // "argument 'Own<Descriptor>' is not assignable to parameter 'Own<T>'",
+      // which made a generic alias unusable as a parameter type.
+      match (argType) {
+        case TypeAliasType as at: {
+          // Borrowing at a call site is implicit — an `Own<R>` is accepted
+          // where a `Borrow<R>` is expected — so inference has to see through
+          // that coercion too, or a generic `Borrow<T>` parameter would bind
+          // nothing when handed the owner. See isAssignableTo.
+          let borrowsFromOwn =
+            pt.name == "Borrow" && at.name == "Own" &&
+            isOwnershipWrapper(pt) && isOwnershipWrapper(at);
+          if (pt.name == at.name || borrowsFromOwn) {
+            if (pt.typeArguments != null && at.typeArguments != null) {
+              let ptArgs = pt.typeArguments as Array<Type>;
+              let atArgs = at.typeArguments as Array<Type>;
+              var i = 0;
+              while (i < ptArgs.length && i < atArgs.length) {
+                inferTypeArg(ptArgs[i], atArgs[i], inferred);
+                i += 1;
+              }
+            }
+          }
         }
         case _: {}
       }
@@ -3568,9 +3659,43 @@ let checkOpaqueCast = (
   );
 };
 
+/**
+ * Peel type aliases off `t`, exposing the representation a cast actually
+ * reinterprets. Transparent aliases are already unwrapped by `isAssignableTo`;
+ * the ones that reach here and matter are the distinct ones.
+ *
+ * A `distinct type` is nominal for assignability and erased at codegen, so
+ * `Own<T>` and `T` are the same bits. The type-parameter rule below asks a
+ * representational question — "would this cast mint a `T` the source does not
+ * already hold?" — and must therefore compare erased forms. Unwrapping
+ * `Box2<T>` to `T` mints nothing; it is the only way to read a distinct alias
+ * at all.
+ *
+ * This does not soften what `distinct` and `opaque` guarantee. Nominal
+ * assignability is unaffected, and forging an opaque value is caught by
+ * `checkOpaqueCast`, which is a separate check keyed on the declaring module.
+ *
+ * `depth` bounds the walk for the same reason `findForeignOpaque` bounds its
+ * own: an alias may be recursive, and `resolving` marks one whose `target` is
+ * mid-computation and must not be read.
+ */
+let eraseDistinctAliases = (t: Type, depth: i32): Type => {
+  if (depth <= 0) { return t; }
+  return match (t) {
+    case TypeAliasType as ta: {
+      if (ta.resolving) { t } else { eraseDistinctAliases(ta.target, depth - 1) }
+    }
+    case _: t
+  };
+};
+
 /** Do `a` and `b` overlap enough that a cast between them reinterprets nothing? */
 let typesOverlap = (ctx: CheckerContext, a: Type, b: Type): boolean => {
-  return isAssignableTo(ctx, a, b) || isAssignableTo(ctx, b, a);
+  if (isAssignableTo(ctx, a, b) || isAssignableTo(ctx, b, a)) { return true; }
+  let ea = eraseDistinctAliases(a, 16);
+  let eb = eraseDistinctAliases(b, 16);
+  if (ea === a && eb === b) { return false; }
+  return isAssignableTo(ctx, ea, eb) || isAssignableTo(ctx, eb, ea);
 };
 
 /**
@@ -13196,7 +13321,7 @@ let checkCallExpressionInner = (
           if (typeArguments != null) {
             let typeArgs = new Array<Type>();
             for (let typeArg in typeArguments) {
-              typeArgs.push(resolveTypeAnnotation(ctx, typeArg));
+              typeArgs.push(resolveExplicitTypeArgument(ctx, typeArg));
             }
             // Substitute type parameters in params and return type.
             let subParams = new Array<Type>();

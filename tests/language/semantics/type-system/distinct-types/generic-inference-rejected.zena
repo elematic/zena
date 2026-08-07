@@ -1,0 +1,48 @@
+// @mode: check
+
+// Unifying through a generic distinct alias must not make the alias any less
+// nominal. The counterpart to ./generic-inference.zena.
+
+class Thing {
+  var n: i32;
+  new(n: i32) : n = n;
+}
+
+distinct type Box<T> = T;
+distinct type Crate<T> = T;
+
+let unwrap = <T>(b: Box<T>): T => b as T;
+
+let t = new Thing(1);
+let boxed = t as Box<Thing>;
+let crated = t as Crate<Thing>;
+
+// Two distinct aliases over the same target are still different types, so a
+// `Crate` does not unify with a `Box` parameter.
+let wrongAlias = unwrap(crated); // @error: not assignable
+
+// The bare target does not unify with the alias either — that is what
+// `distinct` means, and the cast is the only way in.
+let bareTarget = unwrap(t); // @error: not assignable
+
+// A mismatched type argument is still a mismatch once unification works.
+let boxedInt = 7 as Box<i32>;
+let wrongArg: Box<Thing> = boxedInt; // @error: Type mismatch
+
+// Minting a type parameter through the alias stays a forge: `Box<T>` erases
+// to `T`, so this is `i32 as T` wearing a wrapper.
+let launder = <T>(x: i32): Box<T> => x as Box<T>; // @error: would mint values
+
+// And through the alias's argument position, for the same reason.
+let launderArg = <T>(b: Box<i32>): Box<T> => b as Box<T>; // @error: would mint values
+
+// A *phantom* parameter — one the alias's target does not mention — may be
+// chosen freely (see ./generic-inference.zena) but must never be cashed out
+// into a value of it. `Ptr<T>` is an i32 at runtime and holds no `T`, so there
+// is nothing here to return.
+distinct type Ptr<T> = i32;
+let cashOut = <T>(p: Ptr<T>): T => p as T; // @error: unconstrained
+
+// Erasure is not transitive through a container's element type: unwrapping the
+// alias is what is allowed, not reaching inside a different generic head.
+let launderElement = <T>(xs: Array<i32>): Array<T> => xs as Array<T>; // @error: would mint values

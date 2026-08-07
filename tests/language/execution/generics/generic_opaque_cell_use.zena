@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 60
+
+// Using a generic opaque alias from outside its declaring file, which is the
+// whole point of the pair: the consumer never casts, it calls the factory and
+// the reader. That is `disown`/`adopt` in miniature.
+
+import { Cell, wrap, unwrap, rewrap } from './generic_opaque_cell.zena';
+
+class Thing {
+  var n: i32;
+  new(n: i32) : n = n;
+  get(): i32 { return this.n; }
+}
+
+export function main(): i32 {
+  // Reference instantiation: inferred in, and the result comes back
+  // substituted, so `get` resolves on it.
+  let cell: Cell<Thing> = wrap(new Thing(20));
+  let thing = unwrap(cell);
+
+  // Primitive instantiation, spelled out. Both coexist in one module.
+  let counter: Cell<i32> = wrap<i32>(19);
+  let stillACell: Cell<i32> = rewrap(counter);
+
+  // Inference straight off another call's result.
+  let direct = unwrap(wrap<i32>(21));
+
+  return thing.get() + unwrap(stillACell) + direct;
+}

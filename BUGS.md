@@ -193,44 +193,41 @@ immediately trying to fix it (which can pollute the current task's context).
   Compare how arity is resolved for a call whose callee is already checked
   versus one resolved through the forward-declaration stub.
 
-### Generic inference does not unify through a generic distinct-type alias
+### A generic *function*'s callback parameter does not contextually type its closure
 
-- **Found**: 2026-08-07 (writing `disown`/`adopt` for `zena:ownership`)
-- **Severity**: high for any design that puts a wrapper type in a generic
-  signature — it makes generic distinct types unusable as parameters.
-- **Details**: a type parameter inside a generic `distinct type` instantiation
-  is never bound. Not specific to `opaque` or to ownership:
+- **Found**: 2026-08-07 (writing execution tests for generic distinct-type
+  aliases — a `map`-shaped helper over the alias hit it, and the alias turned
+  out to be irrelevant)
+- **Severity**: medium — it rules out the whole `map`/`fold`/`forEach` shape on
+  free functions, which is where most of them naturally live.
+- **Details**: when a generic free function takes a callback whose signature
+  mentions the type parameter, an unannotated closure argument is checked with
+  the parameter still unsubstituted:
 
   ```zena
-  class Thing { var n: i32; new(n: i32) : n = n; get(): i32 { return this.n; } }
-  distinct type Box2<T> = T;
-  let unwrap = <T>(b: Box2<T>): T => b as T;
+  let apply = <T>(c: T, f: (v: T) => T): T => f(c);
 
-  let b = t as Box2<Thing>;
-  unwrap(b);   // Error: argument 'Box2<Thing>' is not assignable to
-               // parameter 'Box2<T>'
+  apply<i32>(19, (v) => v + 1);   // Error: cannot apply operator '+' to T and i32
+  apply(19, (v) => v + 1);        // same, inferred or explicit alike
   ```
 
-  The return side is broken the same way: with an explicit type argument the
-  result still reports as `Unmanaged<T>` rather than the substituted type, so
-  members of the erased type are not found (`Property 'value' does not exist
-on type 'T'`).
+  Two neighbouring shapes are fine, which is what localizes it:
 
-- **What it blocks**: `disown`/`adopt` cannot be written as ordinary generic
-  Zena in `zena:ownership`, so `Unmanaged<T>` currently has no way in or out.
-  It will also block ownership.md's `affine T` and `scoped T` opt-ins, which
-  are generics over handle-typed values.
-- **Fix sketch**: the checker's inference and substitution both need to
-  traverse `TypeAliasType.typeArguments`. Compare how `ClassType`
-  instantiations are unified — a distinct alias carries `typeParameters` plus
-  `typeArguments` in the same shape, but `instantiateTypeAliasType` keeps the
-  _unsubstituted_ target (types.zena), so substitution has to go through
-  `substituteTypeParams(typeParameters, typeArguments, target)` rather than
-  reading `target` directly.
-- **Related**: a resource class is also rejected as an explicit type argument
-  (`disown<S>(o)` — "'S' is a resource class and has no unwrapped form"), the
-  bare-mention rule applying in type-argument position. That needs relaxing for
-  the same call sites, though it is moot while inference is broken.
+  ```zena
+  apply<i32>(19, (v: i32) => v + 1);            // annotating the closure works
+  new Box<i32>(19).run((x) => x + 1);           // a generic *method* works
+  ```
+
+  So the substituted parameter list is reaching the assignability check (the
+  call is not rejected) but not the contextual type handed to the closure.
+- **Fix sketch**: the call path substitutes `effectiveFt.parameters` into
+  `subParams` before checking arguments, and the generic-method path already
+  contextually types from the substituted signature. Compare the two — the free
+  function path appears to contextually type each argument from the
+  *pre-substitution* parameter type.
+- **Tests**: none yet. `tests/language/execution/generics/generic_opaque_cell.zena`
+  had a `map` written against this shape and it was cut back to first-order
+  helpers; that is the test to restore with the fix.
 
 ### Type-annotation diagnostics are reported one line and one column late
 

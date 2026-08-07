@@ -1,0 +1,42 @@
+// @mode: check
+
+// A `resource class` may be named bare as an *explicit type argument*, and
+// nowhere else. The bare-mention rule keeps a value's ownership regime visible
+// at its type; a type argument is not a value's type, it is the thing the
+// handles wrap. `read<Descriptor>(d)` fills a parameter the signature already
+// spells `Borrow<T>`, and inference produces that same binding from `read(d)`
+// with nothing written down — so rejecting it would reject only the spelling.
+//
+// Legal uses live here; the positions that stay errors are in
+// ./resource-class-bare-mention.zena.
+
+import { Own, Borrow, Unmanaged, Disposable } from 'zena:ownership';
+
+resource class Descriptor {
+  value(): i32 { return 1; }
+  :Disposable.dispose(): void {}
+}
+
+class Box<T> {
+  var item: T;
+  new(this.item);
+}
+
+let read = <T>(b: Borrow<T>): Borrow<T> => b;
+let hold = <T>(o: Own<T>): Own<T> => o;
+let release = <T>(u: Unmanaged<T>): Unmanaged<T> => u;
+
+let d = new Descriptor();
+
+// Inferred — `Own<Descriptor>` against `Borrow<T>` binds T = Descriptor.
+let inferred = read(d);
+
+// The same binding, written down.
+let explicit = read<Descriptor>(d);
+let held = hold<Descriptor>(d);
+
+// A handle spelled around the resource is still fine in the same position.
+let wrapped = read<Descriptor>(d);
+
+// `new` takes explicit type arguments through the same path.
+let boxOfHandles = new Box<Own<Descriptor>>(d);

@@ -178,6 +178,45 @@ export let substituteTypeParamsInCodegen = (
       newFt.functionSymbolName = ft.functionSymbolName;
       newFt
     }
+    case TypeAliasType as ta: {
+      // `Cell<T>` in a body specialized at `T = i32` is `Cell<i32>`, whose
+      // representation is i32. Without this case the alias came back
+      // unsubstituted, `typeToValType` read its still-generic `target` as
+      // anyref, and a cast that should have been a no-op reached
+      // `scalarConvert` as anyref-to-i32 and bailed with "cast kind".
+      //
+      // Both halves have to move: the arguments feed `eraseTypeParameters`,
+      // and `target` is what `typeToValType` reads. An alias's own type
+      // parameters are distinct objects from the enclosing function's, and
+      // substitution matches by identity, so no capture is possible here.
+      var changed = false;
+      var newArgs: Array<Type> | null = null;
+      if (ta.typeArguments != null) {
+        let srcArgs = ta.typeArguments as Array<Type>;
+        let acc = new Array<Type>(srcArgs.length);
+        for (let arg in srcArgs) {
+          let sub = substituteTypeParamsInCodegen(params, args, arg);
+          acc.push(sub);
+          if (sub != arg) { changed = true; }
+        }
+        newArgs = acc;
+      }
+      // `resolving` marks an alias whose target is mid-computation; reading
+      // it would not terminate.
+      let newTarget = if (ta.resolving) {
+        ta.target
+      } else {
+        substituteTypeParamsInCodegen(params, args, ta.target)
+      };
+      if (newTarget != ta.target) { changed = true; }
+      if (!changed) { return ta; }
+      let inst = new TypeAliasType(
+        ta.name, ta.typeParameters, newTarget, ta.isDistinct, newArgs,
+        ta.isOpaque, ta.declaringModule
+      );
+      inst.resolving = ta.resolving;
+      inst
+    }
     case ClassType as ct: {
       var hasArgs = false;
       let ctArgsVal = new Array<Type>();

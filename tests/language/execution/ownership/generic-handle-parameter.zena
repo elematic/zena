@@ -1,0 +1,39 @@
+// @mode: run
+// @result: 45
+
+// A generic over a handle-typed value — what ownership.md's `affine T` and
+// `scoped T` opt-ins are built on. Two things have to hold for it to work:
+// `Own<Counter>` must unify with a `Borrow<T>` parameter (borrowing at a call
+// site is implicit, so inference has to see the same coercion assignability
+// does), and a resource class must be nameable bare as an explicit type
+// argument.
+
+import { Own, Borrow, Disposable } from 'zena:ownership';
+
+resource class Counter {
+  var #n: i32;
+  new(n: i32) : #n = n;
+
+  value(): i32 { return this.#n; }
+  bump(by: i32): void { this.#n += by; }
+
+  :Disposable.dispose(): void {}
+}
+
+let read = <T>(b: Borrow<T>): Borrow<T> => b;
+
+export function main(): i32 {
+  let owned = new Counter(10);
+  owned.bump(5);
+
+  // Inferred: the argument is an `Own<Counter>`, the parameter a `Borrow<T>`.
+  let viaInference = read(owned).value();
+
+  // Spelled out, with the resource class named bare in type-argument position.
+  let viaExplicit = read<Counter>(owned).value();
+
+  // A borrow of a borrow is still a borrow of the same counter.
+  let viaNested = read(read(owned)).value();
+
+  return viaInference + viaExplicit + viaNested;
+}

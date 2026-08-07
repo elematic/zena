@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 42
+
+// A generic `distinct type` used as a parameter and a return type, end to end.
+// Checking it is one half; the other is that codegen substitutes the alias
+// too. A specialization at `T = i32` reads the alias's representation through
+// its target, and while that target stayed generic the cast below lowered as
+// anyref-to-i32 and failed with "zir unsupported: cast kind".
+
+class Thing {
+  var n: i32;
+  new(n: i32) : n = n;
+  get(): i32 { return this.n; }
+}
+
+distinct type Box<T> = T;
+
+let wrap = <T>(v: T): Box<T> => v as Box<T>;
+let unwrap = <T>(b: Box<T>): T => b as T;
+
+export function main(): i32 {
+  // Reference argument: the value survives the round trip and its members
+  // resolve on the substituted result.
+  let boxed: Box<Thing> = wrap(new Thing(5));
+  let thing = unwrap(boxed);
+
+  // Primitive argument, spelled out. Both specializations coexist.
+  let boxedInt: Box<i32> = wrap<i32>(37);
+
+  return thing.get() + unwrap<i32>(boxedInt);
+}
