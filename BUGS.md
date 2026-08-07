@@ -166,6 +166,44 @@ immediately trying to fix it (which can pollute the current task's context).
   Compare how arity is resolved for a call whose callee is already checked
   versus one resolved through the forward-declaration stub.
 
+### Generic inference does not unify through a generic distinct-type alias
+
+- **Found**: 2026-08-07 (writing `disown`/`adopt` for `zena:ownership`)
+- **Severity**: high for any design that puts a wrapper type in a generic
+  signature — it makes generic distinct types unusable as parameters.
+- **Details**: a type parameter inside a generic `distinct type` instantiation
+  is never bound. Not specific to `opaque` or to ownership:
+
+  ```zena
+  class Thing { var n: i32; new(n: i32) : n = n; get(): i32 { return this.n; } }
+  distinct type Box2<T> = T;
+  let unwrap = <T>(b: Box2<T>): T => b as T;
+
+  let b = t as Box2<Thing>;
+  unwrap(b);   // Error: argument 'Box2<Thing>' is not assignable to
+               // parameter 'Box2<T>'
+  ```
+
+  The return side is broken the same way: with an explicit type argument the
+  result still reports as `Unmanaged<T>` rather than the substituted type, so
+  members of the erased type are not found (`Property 'value' does not exist
+  on type 'T'`).
+- **What it blocks**: `disown`/`adopt` cannot be written as ordinary generic
+  Zena in `zena:ownership`, so `Unmanaged<T>` currently has no way in or out.
+  It will also block ownership.md's `affine T` and `scoped T` opt-ins, which
+  are generics over handle-typed values.
+- **Fix sketch**: the checker's inference and substitution both need to
+  traverse `TypeAliasType.typeArguments`. Compare how `ClassType`
+  instantiations are unified — a distinct alias carries `typeParameters` plus
+  `typeArguments` in the same shape, but `instantiateTypeAliasType` keeps the
+  *unsubstituted* target (types.zena), so substitution has to go through
+  `substituteTypeParams(typeParameters, typeArguments, target)` rather than
+  reading `target` directly.
+- **Related**: a resource class is also rejected as an explicit type argument
+  (`disown<S>(o)` — "'S' is a resource class and has no unwrapped form"), the
+  bare-mention rule applying in type-argument position. That needs relaxing for
+  the same call sites, though it is moot while inference is broken.
+
 ### Type-annotation diagnostics are reported one line and one column late
 
 - **Found**: 2026-08-06 (adding the `resource class` bare-mention error; the new
