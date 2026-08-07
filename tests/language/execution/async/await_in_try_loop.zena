@@ -10,56 +10,45 @@
 //    still be caught by the same handler.
 import { Future, Completer, drainMicrotasks, futureOf } from 'zena:async';
 
-class Cell {
-  var v: i32 = 0;
-  new();
-  set(x: i32): void {
-    this.v = x;
-  }
-  add(x: i32): void {
-    this.v = this.v + x;
-  }
-}
-
 /** Two suspensions in one region; the second one fails. */
 let twoAwaits = async (a: Completer<i32>, b: Completer<i32>): Future<i32> => {
-  let out = new Cell();
+  var out = 0;
   try {
-    out.add(await a.future);
-    out.add(await b.future);
+    out += await a.future;
+    out += await b.future;
   } catch (e) {
-    out.set(0 - 1);
+    out = 0 - 1;
   }
-  return out.v;
+  return out;
 };
 
 /** A suspension inside a loop inside a try. */
 let loopInTry = async (n: i32): Future<i32> => {
-  let out = new Cell();
+  var out = 0;
   try {
     var i = 0;
     while (i < n) {
-      out.add(await futureOf(i + 1));
+      out += await futureOf(i + 1);
       i += 1;
     }
   } catch (e) {
-    out.set(0 - 1);
+    out = 0 - 1;
   }
-  return out.v;
+  return out;
 };
 
 /** Throws before reaching its await; the handler still runs. */
 let throwsFirst = async (c: Completer<i32>): Future<i32> => {
-  let out = new Cell();
+  var out = 0;
   try {
-    if (out.v == 0) {
+    if (out == 0) {
       throw new Error('before any suspension');
     }
-    out.add(await c.future);
+    out += await c.future;
   } catch (e) {
-    out.set(7);
+    out = 7;
   }
-  return out.v;
+  return out;
 };
 
 export let main = (): i32 => {

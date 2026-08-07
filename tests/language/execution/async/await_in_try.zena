@@ -4,28 +4,16 @@
 // await inside try/catch (async.md §6): a rejected future's failure
 // surfaces at the resume point and must be catchable by an enclosing
 // handler in the async body, not just propagate to the caller.
-//
-// The try body mutates an object field rather than an enclosing local:
-// ZIR bails on "assignment to enclosing local in try body" independently
-// of async (see BUGS.md and exceptions/try-tail-assignment.zena).
 import { Future, Completer, drainMicrotasks } from 'zena:async';
 
-class Cell {
-  var v: i32 = 0;
-  new();
-  set(x: i32): void {
-    this.v = x;
-  }
-}
-
 let guarded = async (c: Completer<i32>): Future<i32> => {
-  let cell = new Cell();
+  var v = 0;
   try {
-    cell.set(await c.future);
+    v = await c.future;
   } catch (e) {
-    cell.set(0 - 1);
+    v = 0 - 1;
   }
-  return cell.v;
+  return v;
 };
 
 export let main = (): i32 => {

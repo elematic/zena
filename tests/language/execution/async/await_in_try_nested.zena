@@ -5,52 +5,47 @@
 // to re-enter BOTH regions, innermost last, or the inner handler is
 // skipped and the failure lands in the wrong one.
 //
-// Arms end in expression statements and results travel through object
-// fields: ZIR bails on a try arm ending in `return` ("value block
-// tail") and on assignment to an enclosing local, both independently
-// of async.
+// `trace` stays an object because the caller inspects it after the
+// call; `out` is an ordinary local assigned from both try bodies.
 import { Future, Completer, drainMicrotasks } from 'zena:async';
 
-class Cell {
+class Trace {
   var v: i32 = 0;
   new();
-  set(x: i32): void {
-    this.v = x;
-  }
   add(x: i32): void {
     this.v = this.v * 10 + x;
   }
 }
 
-let nested = async (c: Completer<i32>, trace: Cell): Future<i32> => {
-  let out = new Cell();
+let nested = async (c: Completer<i32>, trace: Trace): Future<i32> => {
+  var out = 0;
   try {
     try {
       trace.add(1);
-      out.set(await c.future);
+      out = await c.future;
       trace.add(2);
     } catch (inner) {
       // The inner handler must win: it is the closest enclosing one.
       trace.add(3);
-      out.set(0 - 1);
+      out = 0 - 1;
     }
   } catch (outer) {
     trace.add(9);
-    out.set(0 - 2);
+    out = 0 - 2;
   }
-  return out.v;
+  return out;
 };
 
 export let main = (): i32 => {
   // Success: body runs straight through, no handler.
-  let okTrace = new Cell();
+  let okTrace = new Trace();
   let ok = new Completer<i32>();
   let a = nested(ok, okTrace);
   ok.complete(4);
   drainMicrotasks();
 
   // Failure: the INNER handler must run, not the outer one.
-  let badTrace = new Cell();
+  let badTrace = new Trace();
   let bad = new Completer<i32>();
   let b = nested(bad, badTrace);
   bad.fail(new Error('nope'));

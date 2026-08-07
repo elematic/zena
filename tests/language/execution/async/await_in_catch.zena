@@ -11,30 +11,22 @@
 //    whatever threw most recently instead.
 import { Future, Completer, drainMicrotasks, futureOf } from 'zena:async';
 
-class Cell {
-  var v: i32 = 0;
-  new();
-  set(x: i32): void {
-    this.v = x;
-  }
-}
-
 let recover = async (c: Completer<i32>, fallback: Completer<i32>): Future<i32> => {
-  let out = new Cell();
+  var out = 0;
   try {
-    out.set(await c.future);
+    out = await c.future;
   } catch (e) {
     // `e` is bound before this suspension and used after it.
     let replacement = await fallback.future;
     // Another future settles in between; the earlier binding must
     // still be the one this handler caught.
     if (e.message == 'first') {
-      out.set(replacement);
+      out = replacement;
     } else {
-      out.set(0 - 5);
+      out = 0 - 5;
     }
   }
-  return out.v;
+  return out;
 };
 
 export let main = (): i32 => {

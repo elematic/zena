@@ -66,12 +66,9 @@ Checker rules:
   (The transform operates on the lowered CFG, so partially-evaluated
   operands live across the suspension are spilled like any other
   value — expression-position await costs nothing special.)
-- **`await` inside `try` is supported** (§6, implemented). This was a
-  v1 restriction — same one as yield-in-try (generators.md §6) — but
-  try/catch around awaits is bread-and-butter async code, so it was
-  the top fast-follow rather than an indefinite deferral, and it has
-  now landed. Generators still reject yield-in-try; the construction
-  §6 describes carries over to them whenever that is picked up.
+- **`await` inside `try` is supported** (§6). Generators still reject
+  yield-in-try; the construction §6 describes carries over to them
+  whenever that is picked up.
 
 ### 1.1 Semantics: eager start, run-to-completion
 
@@ -451,11 +448,7 @@ rest of its try body.
 `finally` semantics on _abandonment_ (a pending try's future is
 dropped) remain coupled to cancellation and are decided there — same
 one-place answer promised in generators.md §6, which generators then
-inherit. Note that ZIR does not lower `finally` at all yet, and two
-other `try` limitations bound what await-in-try can look like today,
-both independent of async: a try arm ending in `return` bails
-("value block tail"), and so does assignment to an enclosing local
-from a try body (BUGS.md).
+inherit. Note that ZIR does not lower `finally` at all yet.
 
 ## 7. Errors: plain `Error`, everywhere
 
