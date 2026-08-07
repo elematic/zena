@@ -80,17 +80,27 @@ Code generation separates semantic discovery from lowering and emission
 `tests/language/`, split into `syntax/`, `semantics/` and `execution/`.
 Each category has a runner written in Zena, in `zena/test/`:
 
-| Runner                   | Checks                                                  |
-| ------------------------ | ------------------------------------------------------- |
-| `portable_syntax.zena`   | parse → AST vs. the `.ast.json` snapshot beside the test |
-| `portable_semantics.zena`| check → diagnostics vs. `@error:` / `@warning:`          |
-| `portable_execution.zena`| compile + run → vs. `@result:` / `@stdout:`              |
+| Runner                    | Checks                                                   |
+| ------------------------- | -------------------------------------------------------- |
+| `portable_syntax.zena`    | parse → AST vs. the `.ast.json` snapshot beside the test |
+| `portable_semantics.zena` | check → diagnostics vs. `@error:` / `@warning:`          |
+| `portable_execution.zena` | compile + run → vs. `@result:` / `@stdout:`              |
 
 They share `zena/test/portable-harness.zena` (directory discovery,
 `// @name: value` directive parsing, skip accounting). The execution
 runner additionally uses `zena:process` to run each language test in its
-own `zena-cli run` worker, with a bounded pool; `run-wasmtime.js` grants
-it `--allow-spawn`.
+own `zena-cli run` worker, with a bounded pool and a 120s per-test
+deadline (`waitFor`); `run-wasmtime.js` grants it `--allow-spawn` and
+sets the pool size (`ZENA_TEST_PARALLELISM`, else `min(cpus, 8)`).
+
+Cold, the whole execution suite is ~37s; warm, ~5s. Nearly all of the
+cold cost is the stdlib being parsed and checked once per test —
+compiling a five-line test takes 0.385s against 0.027s for a cache hit.
+Sharing one compiler across tests would remove that, and the checking
+half already works that way (`portable_semantics.zena` checks 525 files
+in 2s off one incremental `ProgramCheckResult`), but codegen keeps
+process-global state that makes a second compilation in the same process
+wrong — see BUGS.md.
 
 **Discovery has no allow-list.** A test runs because the file exists.
 The only way to hold one back is an explicit directive in the file:

@@ -137,8 +137,23 @@ class RunningTest {
   new(this.file, this.expectation, this.process);
 }
 
+/**
+ * How long a test may run once the pool starts waiting on it, after
+ * which it is killed and reported as a failure. A language test that
+ * cannot finish in this long is looping, not slow — the whole suite
+ * compiles and runs from a cold cache in well under a minute.
+ *
+ * Because the window reports in submission order, a test that is not
+ * yet the oldest keeps running while its predecessors are collected, so
+ * this is a floor on the time it gets rather than an exact deadline.
+ */
+let testTimeoutMs = 120000 as i64;
+
 /** Why a test failed, or null if it passed. */
 let failureOf = (e: Expectation, res: ProcessResult): String | null => {
+  if (res.timedOut) {
+    return `timed out after ${testTimeoutMs}ms and was killed`;
+  }
   if (res.exitCode != 0) {
     let detail = if (res.stderr.length > 0) { res.stderr } else { res.stdout };
     return `exited ${res.exitCode}\n${trim(detail)}`;
@@ -163,7 +178,7 @@ let failureOf = (e: Expectation, res: ProcessResult): String | null => {
 
 /** Waits on a started test and prints its outcome. Returns whether it passed. */
 let report = (running: RunningTest): boolean => {
-  let failure = failureOf(running.expectation, running.process.wait());
+  let failure = failureOf(running.expectation, running.process.waitFor(testTimeoutMs));
   if (failure == null) {
     return true;
   }

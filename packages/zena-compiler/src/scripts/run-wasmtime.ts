@@ -58,7 +58,10 @@ if (wasmFiles.length === 0) {
 // Workers a runner may keep in flight. Bounded well below the CPU count
 // by default: each worker is a wasmtime process with its own GC heap,
 // and oversubscribing them OOMs small machines.
-const envParallelism = Number.parseInt(process.env.ZENA_TEST_PARALLELISM ?? '', 10);
+const envParallelism = Number.parseInt(
+  process.env.ZENA_TEST_PARALLELISM ?? '',
+  10,
+);
 const parallelism =
   Number.isFinite(envParallelism) && envParallelism > 0
     ? envParallelism
@@ -142,6 +145,8 @@ console.log('─'.repeat(50));
 if (failed === 0) {
   console.log(`${GREEN}All tests passed (${totalTests} total)${NC}`);
 } else {
-  console.log(`${RED}${failed} suite(s) failed (${totalTests} total tests)${NC}`);
+  console.log(
+    `${RED}${failed} suite(s) failed (${totalTests} total tests)${NC}`,
+  );
   process.exit(1);
 }

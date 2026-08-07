@@ -60,4 +60,44 @@ export let tests = suite('zena:process', (): void => {
     equal(second.stdout, 'once');
     equal(second.exitCode, 0);
   });
+
+  test('a process that finishes in time is not flagged as timed out', (ctx: TestContext): void => {
+    let res = spawn(argvOf(['/bin/sh', '-c', 'printf quick'])).waitFor(30000 as i64);
+    equal(res.exitCode, 0);
+    equal(res.stdout, 'quick');
+    isFalse(res.timedOut);
+    isTrue(res.succeeded());
+  });
+
+  test('waitFor kills a process that overruns its deadline', (ctx: TestContext): void => {
+    // Would sleep for 30s; the deadline must cut it far shorter.
+    let p = spawn(argvOf(['/bin/sh', '-c', 'exec sleep 30']));
+    let res = p.waitFor(200 as i64);
+    isTrue(res.timedOut, 'expected timedOut');
+    isFalse(res.succeeded(), 'a killed process has not succeeded');
+    isTrue(
+      res.wallNanos < 20000000000 as i64,
+      `expected to be killed promptly, took ${res.wallNanos}ns`);
+  });
+
+  test('output written before the deadline survives the kill', (ctx: TestContext): void => {
+    let p = spawn(argvOf(['/bin/sh', '-c', 'printf early; exec sleep 30']));
+    let res = p.waitFor(400 as i64);
+    isTrue(res.timedOut, 'expected timedOut');
+    equal(res.stdout, 'early');
+  });
+
+  test('a non-positive deadline waits indefinitely', (ctx: TestContext): void => {
+    let res = spawn(argvOf(['/bin/sh', '-c', 'sleep 0.2; printf done'])).waitFor(0 as i64);
+    equal(res.stdout, 'done');
+    isFalse(res.timedOut);
+  });
+
+  test('waitFor twice returns the same result', (ctx: TestContext): void => {
+    let p = spawn(argvOf(['/bin/sh', '-c', 'exec sleep 30']));
+    let first = p.waitFor(200 as i64);
+    let second = p.waitFor(200 as i64);
+    isTrue(first.timedOut);
+    isTrue(second.timedOut, 'the cached result keeps the timed-out flag');
+  });
 });

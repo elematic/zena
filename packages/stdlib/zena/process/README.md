@@ -16,6 +16,11 @@ res.exitCode;   // i32 (-1 if killed by a signal)
 res.stdout;     // String, fully captured
 res.stderr;     // String, fully captured
 res.wallNanos;  // i64, spawn-to-exit wall time
+res.timedOut;   // boolean, true if killed for overrunning a deadline
+
+// Bound how long a child may take. On the deadline it is killed, and
+// the result carries timedOut with whatever it wrote beforehand.
+let bounded = spawn(argv).waitFor(30000 as i64);
 
 // Or start several and wait on each — this is how callers run work in
 // parallel.
@@ -55,11 +60,22 @@ stdlib module:
 - `argv[0]` is the executable, resolved against `PATH` by the host.
 - The child inherits the host's environment, and its working directory
   unless `runIn`/`spawnIn` pass one.
-- Both output streams are fully captured (no streaming in v1) and
-  buffered by the host until `wait()`.
+- Both output streams are fully captured (no streaming in v1) and read
+  on their own host threads, so a child that fills one pipe while the
+  parent is reading the other cannot deadlock.
 - `wait()` blocks; calling it again returns the same result. A process
   that could not be started at all (executable missing) traps with a
   descriptive message from `wait()`.
+- `waitFor(millis)` bounds the wait: on the deadline the child is
+  killed, and the result carries `timedOut` along with whatever it
+  wrote first. This needs no async — the concurrency comes from real
+  processes, and the host does the waiting.
+  - The kill reaches the child, not a process group. A child that
+    forked a grandchild of its own can leave that grandchild holding
+    the output pipes open; the host waits two seconds for them to
+    close, then reports the timeout with the output withheld rather
+    than blocking. `sh -c 'a; exec b'` avoids this by leaving one
+    process to kill.
 - Handles are opaque host references — the guest GC owns their
   lifetime; there is nothing to close.
 

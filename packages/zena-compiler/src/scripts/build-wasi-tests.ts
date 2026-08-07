@@ -55,20 +55,21 @@ mkdirSync(outDir, {recursive: true});
 
 const unitTestFiles = (await glob(join(testDir, '*_test.zena'))).sort();
 const wrapperPath = join(testDir, '__all_tests__.zena');
-writeFileSync(wrapperPath, generateWrapper(unitTestFiles.map((f) => basename(f))));
+writeFileSync(
+  wrapperPath,
+  generateWrapper(unitTestFiles.map((f) => basename(f))),
+);
 
 const portableRunners = (await glob(join(testDir, 'portable_*.zena'))).sort();
 
 /** Every program to compile, as [label, source, output]. */
 const targets: Array<[string, string, string]> = [
   ['compiler unit tests', wrapperPath, join(outDir, '__all_tests__.wasm')],
-  ...portableRunners.map(
-    (src): [string, string, string] => [
-      basename(src, '.zena').replace(/_/g, ' '),
-      src,
-      join(outDir, `${basename(src, '.zena')}.wasm`),
-    ],
-  ),
+  ...portableRunners.map((src): [string, string, string] => [
+    basename(src, '.zena').replace(/_/g, ' '),
+    src,
+    join(outDir, `${basename(src, '.zena')}.wasm`),
+  ]),
 ];
 
 const env = {

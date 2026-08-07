@@ -28,10 +28,34 @@ struct Finished {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     wall_nanos: i64,
+    /// Set when the process overran a `proc_wait_timeout` deadline and
+    /// was killed rather than exiting on its own.
+    timed_out: bool,
+}
+
+/// Drains one of a child's pipes on its own thread. Reading them
+/// sequentially would deadlock on a child that fills the other first.
+fn drain<R: std::io::Read + Send + 'static>(
+    mut pipe: Option<R>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+/// A child being waited on: the result arrives on `rx` when the worker
+/// thread finishes, and `child` is kept so a deadline can kill it.
+struct Pending {
+    rx: std::sync::mpsc::Receiver<std::result::Result<Finished, String>>,
+    child: std::sync::Arc<Mutex<Option<std::process::Child>>>,
 }
 
 enum ProcState {
-    Running(std::thread::JoinHandle<std::result::Result<Finished, String>>),
+    Running(Pending),
     Done(std::result::Result<Finished, String>),
     // Transient state while wait() swaps Running out; never observed.
     Waiting,
@@ -102,25 +126,73 @@ pub(crate) fn add_process_imports(
                     if argv.is_empty() {
                         return Err(wasmtime::Error::msg("proc_spawn: empty argv"));
                     }
-                    let thread = std::thread::spawn(move || {
-                        let t0 = Instant::now();
-                        let mut command = std::process::Command::new(&argv[0]);
-                        command.args(&argv[1..]);
-                        if let Some(cwd) = &cwd {
-                            command.current_dir(cwd);
+                    // The child is spawned here rather than inside the
+                    // worker thread so its handle is reachable for
+                    // `proc_wait_timeout` to kill. Both pipes are read on
+                    // their own threads: a child that fills one while the
+                    // parent reads the other would otherwise deadlock.
+                    let t0 = Instant::now();
+                    let mut command = std::process::Command::new(&argv[0]);
+                    command
+                        .args(&argv[1..])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped());
+                    if let Some(cwd) = &cwd {
+                        command.current_dir(cwd);
+                    }
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let shared_child = match command.spawn() {
+                        Ok(mut child) => {
+                            let out = child.stdout.take();
+                            let err = child.stderr.take();
+                            let shared = std::sync::Arc::new(Mutex::new(Some(child)));
+                            let worker_child = shared.clone();
+                            std::thread::spawn(move || {
+                                let out_t = drain(out);
+                                let err_t = drain(err);
+                                // Poll rather than block in `wait()`: the
+                                // lock has to be free between polls, or a
+                                // deadline could never acquire it to kill
+                                // the child it is waiting on.
+                                let status = loop {
+                                    {
+                                        let mut guard = worker_child.lock().unwrap();
+                                        match guard.as_mut().map(|c| c.try_wait()) {
+                                            Some(Ok(Some(status))) => break Some(Ok(status)),
+                                            Some(Err(e)) => break Some(Err(e)),
+                                            Some(Ok(None)) => {}
+                                            None => break None,
+                                        }
+                                    }
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                };
+                                let stdout = out_t.join().unwrap_or_default();
+                                let stderr = err_t.join().unwrap_or_default();
+                                let _ = tx.send(match status {
+                                    Some(Ok(status)) => Ok(Finished {
+                                        exit_code: status.code().unwrap_or(-1),
+                                        stdout,
+                                        stderr,
+                                        wall_nanos: t0.elapsed().as_nanos() as i64,
+                                        timed_out: false,
+                                    }),
+                                    Some(Err(e)) => Err(format!("waiting on {argv:?}: {e}")),
+                                    None => Err(format!("waiting on {argv:?}: no child")),
+                                });
+                            });
+                            shared
                         }
-                        let output = command
-                            .output()
-                            .map_err(|e| format!("spawning {argv:?}: {e}"))?;
-                        Ok(Finished {
-                            exit_code: output.status.code().unwrap_or(-1),
-                            stdout: output.stdout,
-                            stderr: output.stderr,
-                            wall_nanos: t0.elapsed().as_nanos() as i64,
-                        })
-                    });
+                        Err(e) => {
+                            // Report the failure through the same channel
+                            // so `wait` is the single place that reports.
+                            let _ = tx.send(Err(format!("spawning {argv:?}: {e}")));
+                            std::sync::Arc::new(Mutex::new(None))
+                        }
+                    };
+                    let pending = Pending { rx, child: shared_child };
                     let handle =
-                        ExternRef::new(&mut caller, Mutex::new(ProcState::Running(thread)))?;
+                        ExternRef::new(&mut caller, Mutex::new(ProcState::Running(pending)))?;
                     results[0] = Val::ExternRef(Some(handle));
                     Ok(())
                 })?,
@@ -143,6 +215,31 @@ pub(crate) fn add_process_imports(
                     let bytes = with_finished(&mut caller, &params[0], "proc_stderr",
                         |fin| Ok(fin.stderr.clone()))?;
                     results[0] = make_guest_string(&mut caller, &bytes)?;
+                    Ok(())
+                })?,
+            "proc_wait_timeout" => linker.func_new("zena_process", "proc_wait_timeout", func_ty,
+                |mut caller: Caller<'_, MyState>, params, results| {
+                    let Val::I64(millis) = params[1] else {
+                        return Err(wasmtime::Error::msg("proc_wait_timeout: millis not an i64"));
+                    };
+                    // A non-positive deadline means "no deadline", so a
+                    // caller can disable its timeout without branching.
+                    let timeout = if millis > 0 {
+                        Some(std::time::Duration::from_millis(millis as u64))
+                    } else {
+                        None
+                    };
+                    let code = with_finished_timeout(
+                        &mut caller, &params[0], "proc_wait_timeout", timeout,
+                        |fin| Ok(fin.exit_code))?;
+                    results[0] = Val::I32(code);
+                    Ok(())
+                })?,
+            "proc_timed_out" => linker.func_new("zena_process", "proc_timed_out", func_ty,
+                |mut caller: Caller<'_, MyState>, params, results| {
+                    let flag = with_finished(&mut caller, &params[0], "proc_timed_out",
+                        |fin| Ok(if fin.timed_out { 1 } else { 0 }))?;
+                    results[0] = Val::I32(flag);
                     Ok(())
                 })?,
             "proc_wall_nanos" => linker.func_new("zena_process", "proc_wall_nanos", func_ty,
@@ -179,24 +276,74 @@ fn with_handle<T: 'static, R>(
 }
 
 /// Waits (once) on a process handle, then projects out of the result.
-fn with_finished<R>(
+///
+/// `timeout` bounds the wait: when it elapses the child is killed and
+/// the result it then produces is flagged `timed_out`. `None` waits
+/// indefinitely. Waiting again returns the same cached result either
+/// way.
+fn with_finished_timeout<R>(
     caller: &mut Caller<'_, MyState>,
     param: &Val,
     what: &str,
+    timeout: Option<std::time::Duration>,
     f: impl FnOnce(&Finished) -> Result<R, wasmtime::Error>,
 ) -> Result<R, wasmtime::Error> {
     with_handle::<Mutex<ProcState>, _>(caller, param, what, |state| {
         let mut state = state.lock().unwrap();
         if let ProcState::Running(_) = &*state {
-            let ProcState::Running(thread) = std::mem::replace(&mut *state, ProcState::Waiting)
+            let ProcState::Running(pending) = std::mem::replace(&mut *state, ProcState::Waiting)
             else {
                 unreachable!()
             };
-            let result = thread
-                .join()
-                .map_err(|_| "process wait thread panicked".to_string())
-                .and_then(|r| r);
-            *state = ProcState::Done(result);
+            let (result, killed) = match timeout {
+                Some(dur) => match pending.rx.recv_timeout(dur) {
+                    Ok(r) => (r, false),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // Kill, then take the result the worker sends
+                        // once the child is reaped, so stdout and stderr
+                        // captured before the deadline are preserved.
+                        if let Some(child) = pending.child.lock().unwrap().as_mut() {
+                            let _ = child.kill();
+                        }
+                        // The worker still has to reap the child and
+                        // drain its pipes. That is normally instant, but
+                        // a grandchild the kill did not reach can hold a
+                        // pipe open, so give up after a grace period and
+                        // report the timeout without the output rather
+                        // than hanging on it.
+                        let reaped = pending
+                            .rx
+                            .recv_timeout(std::time::Duration::from_secs(2))
+                            .unwrap_or_else(|_| {
+                                Ok(Finished {
+                                    exit_code: -1,
+                                    stdout: Vec::new(),
+                                    stderr: b"(killed on timeout; \
+                                              output withheld by a surviving child)"
+                                        .to_vec(),
+                                    wall_nanos: dur.as_nanos() as i64,
+                                    timed_out: true,
+                                })
+                            });
+                        (reaped, true)
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (
+                        Err("process wait thread vanished".to_string()),
+                        false,
+                    ),
+                },
+                None => (
+                    pending
+                        .rx
+                        .recv()
+                        .unwrap_or_else(|_| Err("process wait thread vanished".to_string())),
+                    false,
+                ),
+            };
+            *state = ProcState::Done(result.map(|mut fin| {
+                fin.timed_out = killed;
+                fin
+            }));
         }
         match &*state {
             ProcState::Done(Ok(fin)) => f(fin),
@@ -204,6 +351,16 @@ fn with_finished<R>(
             _ => Err(wasmtime::Error::msg(format!("{what}: process in invalid state"))),
         }
     })
+}
+
+/// `with_finished_timeout` with no deadline.
+fn with_finished<R>(
+    caller: &mut Caller<'_, MyState>,
+    param: &Val,
+    what: &str,
+    f: impl FnOnce(&Finished) -> Result<R, wasmtime::Error>,
+) -> Result<R, wasmtime::Error> {
+    with_finished_timeout(caller, param, what, None, f)
 }
 
 fn param_to_externref(

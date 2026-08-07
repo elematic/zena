@@ -85,6 +85,7 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Active Bugs
 
 ### Casts to a bare type parameter are unchecked, so generics launder any type
+
 - **Found**: 2026-08-07 (adding `opaque` types — the hole caps what
   opacity can promise, but it long predates the feature)
 - **Severity**: medium (soundness hole in `as`; no known miscompile)
@@ -104,6 +105,7 @@ immediately trying to fix it (which can pollute the current task's context).
   `docs/design/opaque-types.md`), and class types alike. Distinct types
   are erased, so the forged value is representationally valid and
   nothing fails at runtime — it just defeats the type system.
+
 - **Fix sketch**: in the `AsExpression` arm, when the target resolves to
   a `TypeParameterType`, require the source to be assignable to the
   parameter's constraint, and reject outright when it is unconstrained.
@@ -111,6 +113,49 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Tests**: none. A test asserting the hole is open would pass on
   today's behaviour and fail the moment someone fixes it; add coverage
   with the fix.
+
+### Codegen keeps process-global state, so a second compilation in the same process is wrong
+
+- **Found**: 2026-08-07, probing whether the execution tests could share
+  one compiler process instead of spawning one per test.
+- **Severity**: medium today, blocking for batch compilation — `zena-cli`
+  compiles exactly one module per process, so nothing in the build or the
+  test suites can currently observe it. `test:fixpoint` cannot see it
+  either: stage B and stage C are separate processes.
+- **Details**: three module-level `var`s under `zena/lib/codegen/` live
+  for the life of the process rather than the compilation, and are never
+  reset:
+  - `codegen/wasm.zena`: `var _nextWasmTypeUid` is a monotonic counter
+    that keeps climbing across compilations. Compiling the _same_ source
+    twelve times in one process (fresh `Compiler` each iteration) emits
+    33875 bytes every time, but iterations 4, 8 and 12 differ in content
+    — reproducibly, and identically across runs. The difference is a pure
+    permutation of the type section (types 33/34 and 66/67 swapped, every
+    reference consistently renumbered), so the modules are semantically
+    equal; it is a byte-determinism bug, not a miscompile.
+  - `codegen/ir/async.zena`: `rampBodies`, `stepBodies`,
+    `mainWrapperBodies`, and `codegen/ir/generators.zena`: `rampBodies`,
+    `nextBodies` — `HashMap<i32, …>` caches keyed by symbol id. Symbol
+    ids restart per compilation, so compilation N+1 hits entries left by
+    compilation N and gets artifacts referring to the previous module's
+    types and globals. This one _is_ a correctness failure: compiling 40
+    execution tests in sequence in one process (fresh `Compiler` each
+    time) failed on 20 of them from the 4th onward, with `zir
+unsupported:` reasons that vary between runs — "interface vtable
+    global not found", "unresolved parameter", "static interface access",
+    "for-in pattern" — all naming stdlib generic instantiations
+    (`FixedArray_s186_u8.contains`, `ImmutableArray_s109_i32.from`) that
+    compile fine standalone.
+
+- **Fix**: move all five onto a per-compilation context object, the way
+  the rest of the ZIR backend threads `LoweringContext`. Until then, any
+  batch/daemon compile mode is unsound.
+- **Why it matters**: parsing and checking the stdlib is ~93% of the cost
+  of compiling a small test (0.385s cold vs 0.027s for a cache hit), and
+  the checking half already supports reuse —
+  `portable_semantics.zena` shares one compiler and one incremental
+  `ProgramCheckResult` across 525 files in 2 seconds. Batching the
+  execution tests the same way is blocked only by this.
 
 ### Portable semantics runner: `@error` directives are matched loosely enough to pass on the wrong error
 
@@ -187,7 +232,8 @@ immediately trying to fix it (which can pollute the current task's context).
   The return side is broken the same way: with an explicit type argument the
   result still reports as `Unmanaged<T>` rather than the substituted type, so
   members of the erased type are not found (`Property 'value' does not exist
-  on type 'T'`).
+on type 'T'`).
+
 - **What it blocks**: `disown`/`adopt` cannot be written as ordinary generic
   Zena in `zena:ownership`, so `Unmanaged<T>` currently has no way in or out.
   It will also block ownership.md's `affine T` and `scoped T` opt-ins, which
@@ -196,7 +242,7 @@ immediately trying to fix it (which can pollute the current task's context).
   traverse `TypeAliasType.typeArguments`. Compare how `ClassType`
   instantiations are unified — a distinct alias carries `typeParameters` plus
   `typeArguments` in the same shape, but `instantiateTypeAliasType` keeps the
-  *unsubstituted* target (types.zena), so substitution has to go through
+  _unsubstituted_ target (types.zena), so substitution has to go through
   `substituteTypeParams(typeParameters, typeArguments, target)` rather than
   reading `target` directly.
 - **Related**: a resource class is also rejected as an explicit type argument

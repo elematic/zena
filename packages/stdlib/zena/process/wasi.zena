@@ -41,6 +41,18 @@ declare function __procSpawn(cmd: CmdRef): ProcRef;
 @external("zena_process", "proc_wait")
 declare function __procWait(p: ProcRef): i32;
 
+/**
+ * Blocks until exit or until `millis` elapse, whichever comes first;
+ * on the deadline the child is killed. A non-positive `millis` waits
+ * indefinitely. Returns the exit code.
+ */
+@external("zena_process", "proc_wait_timeout")
+declare function __procWaitTimeout(p: ProcRef, millis: i64): i32;
+
+/** 1 if the process was killed for overrunning its deadline. */
+@external("zena_process", "proc_timed_out")
+declare function __procTimedOut(p: ProcRef): i32;
+
 @external("zena_process", "proc_stdout")
 declare function __procStdout(p: ProcRef): String;
 
@@ -57,11 +69,17 @@ export class ProcessResult {
   stderr: String;
   /** Wall-clock nanoseconds from spawn to exit. */
   wallNanos: i64;
+  /**
+   * True when the process overran a `waitFor` deadline and was killed
+   * rather than exiting on its own. Whatever it had written before the
+   * deadline is still in `stdout`/`stderr`.
+   */
+  timedOut: boolean;
 
-  new(this.exitCode, this.stdout, this.stderr, this.wallNanos);
+  new(this.exitCode, this.stdout, this.stderr, this.wallNanos, this.timedOut);
 
   succeeded(): boolean {
-    return this.exitCode == 0;
+    return this.exitCode == 0 && !this.timedOut;
   }
 }
 
@@ -78,16 +96,28 @@ export final class Process {
   new(proc: ProcRef) : #proc = proc;
 
   wait(): ProcessResult {
+    return this.waitFor(0 as i64);
+  }
+
+  /**
+   * Waits at most `millis` for the process to exit, killing it if it
+   * overruns — the result then has `timedOut` set, and holds whatever
+   * it managed to write first. A non-positive `millis` waits forever,
+   * so a caller can disable its timeout without branching. Waiting
+   * again returns the same result.
+   */
+  waitFor(millis: i64): ProcessResult {
     let cached = this.#result;
     if (cached != null) {
       return cached as ProcessResult;
     }
-    let code = __procWait(this.#proc);
+    let code = __procWaitTimeout(this.#proc, millis);
     let result = new ProcessResult(
       code,
       __procStdout(this.#proc),
       __procStderr(this.#proc),
-      __procWallNanos(this.#proc));
+      __procWallNanos(this.#proc),
+      __procTimedOut(this.#proc) != 0);
     this.#result = result;
     return result;
   }
