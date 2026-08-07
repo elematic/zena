@@ -396,10 +396,33 @@ The decisions this document depends on:
   enforces it, so that later affine checking is a switch rather than an
   excavation.
 
-Sequencing: bindgen waits on the ownership model (ownership.md layers 0–2) so
-that generated wrappers are written once against their final API rather than
-against a runtime-flag model and regenerated later. Stages 1, 2, 4 and 6 below
-are independent of ownership and proceed in parallel.
+### `disown`/`adopt` are the handle-table transitions (2026-08-06)
+
+ownership.md §"Disowning and adopting" adds `Unmanaged<T>` plus two conversions,
+and they are not merely a user-facing escape hatch — **they are the ABI
+boundary operation**, so bindgen needs them either way:
+
+- An **exported** function returning `own<T>` must hand the raw handle index to
+  the host and stop tracking it. That is `disown`.
+- An **imported** function returning `own<T>` yields an index Zena must start
+  tracking. That is `adopt`.
+
+The state flag above grows one value — `owned | disowned | moved | dropped` —
+and `adopt` throws on anything but `disowned`, so a double-adopt is a clean Zena
+error rather than a recycled-index trap. A disowned handle is also the escape
+valve for the two hazards nothing static will catch: **child-before-parent
+ordering** (a disowned `request-options` can outlive its parent `request`) and
+resources whose release point is not lexical.
+
+### Sequencing — revised 2026-08-06
+
+Bindgen's hard dependency is **O0, not O2**. O0 freezes the type lattice —
+`Own<T>`/`Borrow<T>`/`Unmanaged<T>`, `resource class`, `disown`/`adopt` — with
+runtime-only enforcement of move discipline. Since O2 upgrades detection from
+runtime to compile time *without changing any signature*, generated wrappers can
+be written once against their final API as soon as O0 lands, which is much
+earlier than the previous "wait for layers 0–2" reading implied. Stages 1, 2, 4
+and 6 below remain independent of ownership entirely and proceed in parallel.
 
 ---
 
@@ -612,12 +635,13 @@ on its own.
    `cabi_realloc` (build on the existing `FreeListAllocator` in
    `stdlib/zena/memory.zena`), post-return, and resource tables with the Part 6
    state flag in every generated wrapper.
-5. **Ownership** — [ownership.md](./ownership.md): the checker flow graph, the
-   `Disposable` drop protocol, affine `Own<T>`/`Borrow<T>`, and implicit drop.
-   Independent of stages 1, 2, 4 and 6, and of Track G except for the
-   cancellation question. Not a WIT-specific feature — it also settles
-   filesystem.md's descriptors and linear-memory.md's open question 1. Stage 3
-   (bindgen) depends on its API shape.
+5. **Ownership** — [ownership.md](./ownership.md), Track O: the type lattice and
+   drop protocol (O0), `using` (O0.5), the checker flow graph (O1), affine move
+   checking (O2), implicit drop (O3). Independent of stages 1, 2, 4 and 6, and
+   of Track G except for the cancellation drop table. Not a WIT-specific feature
+   — it also settles filesystem.md's descriptors and linear-memory.md's open
+   question 1. **Stage 3 depends only on O0**, which is the whole point of
+   O0's ordering: signatures freeze there.
 6. **Component emission.** Encode the `component-type` custom section from the
    resolved WIT, export `memory` + `cabi_realloc`, then `wasm-tools component
    new`. Shell out first; a native encoder later if it earns its keep.

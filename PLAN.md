@@ -71,7 +71,11 @@ This document tracks completed work and planned features. For project instructio
        `array<u8>` rather than a type of its own. Packed *struct fields*
        are still outstanding.
     4. `Disposable`, giving WIT `resource` a shape (79% of p2 functions are
-       resource methods)
+       resource methods). This is the first step of **Track O**, adopted
+       2026-08-06 — see [ownership.md](docs/design/ownership.md). The layer 0
+       protocol lives in `zena:ownership`; the rest of O0 (`resource class`,
+       `Own<T>`/`Borrow<T>`/`Unmanaged<T>`, `disown`/`adopt`) follows there and
+       is what freezes the generated-wrapper signatures.
     5. Only then: first-class WIT imports.
 - **Tooling & DX**: A package manager, online playground, and enhanced VS Code integration.
 
@@ -79,6 +83,7 @@ This document tracks completed work and planned features. For project instructio
 
 Features that distinguish Zena from TypeScript:
 
+- **Ownership & Affine Resources** (Track O): `Own<T>`/`Borrow<T>`/`Unmanaged<T>`, second-class borrows, a checker flow graph, and implicit drop — one release mechanism shared by WIT handles, WASI descriptors, linear-memory allocations and FFI pointers. Plan of record in [ownership.md](docs/design/ownership.md); phase 2 step 4 above is its first milestone.
 - **Numeric Unit Types & Units of Measure**: Statically verified physical units and units of measure (e.g. preventing adding meters to feet at compile time).
 - **SIMD**: Native WebAssembly vector instruction support for high-performance computing.
 - **Decorators and Macros**: Metaprogramming capabilities for compile-time code generation and extension.

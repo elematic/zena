@@ -1,0 +1,48 @@
+/**
+ * Ownership and resource management — the layer 0 drop protocol.
+ *
+ * See docs/design/ownership.md. This module is Track O's foundation: one
+ * interface that every kind of non-GC resource releases through, so that WIT
+ * handles, linear-memory allocations, WASI descriptors and FFI pointers share
+ * a single release mechanism instead of four.
+ *
+ * `Own<T>`, `Borrow<T>`, `Unmanaged<T>`, `disown` and `adopt` land here in a
+ * later O0 change; `dispose` is what all of them ultimately call.
+ */
+
+/**
+ * A value holding something the garbage collector cannot reclaim.
+ *
+ * `dispose` is **symbol-keyed** rather than name-keyed. `dispose` is a common
+ * enough method name that a class may already have one meaning something
+ * unrelated, and this is a protocol the language itself invokes implicitly —
+ * a silent collision would be a resource released at the wrong time. Call it
+ * as `value.:Disposable.dispose()`.
+ *
+ * ```zena
+ * import { Disposable } from 'zena:ownership';
+ *
+ * class Descriptor implements Disposable {
+ *   #handle: i32;
+ *   new(this.#handle);
+ *   :Disposable.dispose(): void { descriptorDrop(this.#handle); }
+ * }
+ * ```
+ *
+ * Disposal must be **idempotent**: `dispose()` may be called on an already
+ * disposed value and must not release the underlying resource twice. Until
+ * affine checking lands in O2, nothing statically prevents a double call, and
+ * a resource wrapper's state flag is what makes the second one a no-op.
+ */
+export interface Disposable {
+  /** The well-known symbol keying the release method. */
+  static symbol dispose;
+
+  /**
+   * Releases the underlying resource. Idempotent.
+   *
+   * Implementations must not throw: `dispose()` runs on exception-unwind
+   * paths, where a second exception would displace the one being propagated.
+   */
+  :dispose(): void;
+}

@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 1
+
+// Layer 0 of docs/design/ownership.md: one symbol-keyed release protocol that
+// every resource kind shares. Disposal is idempotent — a second dispose() must
+// not release twice.
+
+import { Disposable } from 'zena:ownership';
+
+var released = 0;
+
+class Descriptor implements Disposable {
+  var #open: boolean = true;
+
+  :Disposable.dispose(): void {
+    if (this.#open) {
+      this.#open = false;
+      released += 1;
+    }
+  }
+}
+
+export function main(): i32 {
+  let d = new Descriptor();
+  d.:Disposable.dispose();
+  d.:Disposable.dispose();
+  return released;
+}

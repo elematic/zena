@@ -22,6 +22,7 @@ collected here.
 | **Track A** — A0–A3 | Rows and config records                                     | Below; detail in [row-types.md](row-types.md) §9            |
 | **R3**              | "The flip" — the single breaking record-semantics migration | Below                                                       |
 | **Track B**         | Representation harvest, post-flip                           | Below                                                       |
+| **Track O** — O0–O4 | Ownership and resource management                           | Below; layers and decisions in [ownership.md](ownership.md) |
 | **M1–M5**           | ZIR backend migration milestones                            | [ir.md](ir.md) §14                                          |
 
 Two things that trip people up:
@@ -33,10 +34,9 @@ Two things that trip people up:
   migration in [ir.md](ir.md) §14, referenced here because several items
   depend on it. M1 and M2 are complete; M3 is in progress.
 
-Proposed but **not adopted**: `docs/design/ownership.md` suggests a **Track O**
-(O0–O4) for resource management and ownership. It is a proposal under review,
-not part of this plan of record; treat the label as provisional until it is
-either adopted here or dropped.
+**Track O was adopted on 2026-08-06** (it is listed above; it was previously
+carried here as a provisional label). Its layers, vocabulary and decisions live
+in [ownership.md](ownership.md).
 
 ## Organizing principles
 
@@ -129,6 +129,40 @@ Per row-types.md §9, refined:
   config-ergonomics pain directly, full payoff (immutable fields via
   option-bag constructors) arrives with M4 single-shot construction.
 
+## Track O — ownership and resource management (adopted 2026-08-06)
+
+Detail, vocabulary and the decisions behind the ordering are in
+[ownership.md](ownership.md); this is the schedule view. Track O is checker- and
+front-end work — it wants nothing from the M-track and blocks nothing in G, V or
+A.
+
+- **O0 — the type lattice, no flow analysis.** `resource class`; a new
+  `zena:ownership` with `Own<T>`/`Borrow<T>`/`Unmanaged<T>`/`Disposable`;
+  `disown`/`adopt`; the `owned | disowned | moved | dropped` state flag; drop
+  glue. Purely local rules only — owns are returnable, borrows are second-class,
+  `Own → Borrow` is implicit at borrow-typed parameters. Move discipline is
+  enforced at **runtime** here.
+  **This is the milestone that matters for other work**: it freezes the
+  signatures, so Track W's bindgen (component-model.md Part 8 stage 3) can
+  proceed on O0 without waiting for O2, and `fs.open(): Result<Own<Descriptor>,
+  Error>` becomes writable.
+- **O0.5 — `using`** and the scope-exit cleanup lowering (`try`/`finally` on all
+  exit paths). Same codegen O3 reuses, reached from the easier side.
+- **O1 — the checker flow graph.** TypeScript-style flow nodes as a
+  `SemanticModel`-style side table. Independently justified: fixes the narrowing
+  soundness bug in BUGS.md, generalizes the hand-rolled `definitelyExits`
+  recursion, prerequisite for mutable-field narrowing. Commits us to nothing
+  about ownership.
+- **O2 — affine move checking** on O1, with the meet-plus-edge-drops join rule.
+  Upgrades O0's runtime detection to compile time; **no signature changes**.
+- **O3 — implicit drop.** Needs O2, plus G1 for the per-state cancellation drop
+  table (the liveness already exists in `generators.zena`).
+- **O3.5 — `affine T` type parameters** and container opt-in, landing lazily one
+  container at a time. The one cross-track dependency: needs **A0's member-level
+  `where` bounds**. `Array<Unmanaged<Conn>>` covers the interim.
+- **O4 — `isolated<T>`/`frozen<T>`/regions**, reusing O2. Reconcile
+  concurrency.md's vocabulary first.
+
 ## R3 — the flip (one migration event, at bootstrap retirement)
 
 Closed-by-default record types; literal exactness; `...` existential
@@ -161,6 +195,13 @@ shared lowering (row-types.md §7.4) wired to `-Osize`; SoA/`MultiList`;
 | A3 config records       | nothing (better after M4)         | A0/A1                |
 | R3 flip                 | bootstrap retirement, V0, Track A | —                    |
 | Track B harvest         | R3                                | —                    |
+| O0 type lattice         | nothing                           | everything           |
+| O0.5 `using`            | O0                                | everything           |
+| O1 flow graph           | nothing                           | everything           |
+| O2 move checking        | O0 + O1                           | G, V, A              |
+| O3 implicit drop        | O2 + G1 (cancellation table)      | V, A                 |
+| O3.5 `affine T`         | O2 + **A0 `where` bounds**        | G, V                 |
+| Track W bindgen stage 3 | **O0** (not O2)                   | O1–O3, G-track       |
 
 Both tracks' breaking pieces gate on bootstrap retirement; neither
 blocks the other's path there. Retirement itself (PLAN.md Phase 1)

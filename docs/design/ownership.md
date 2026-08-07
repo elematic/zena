@@ -2,13 +2,33 @@
 
 ## Status
 
-- **Status**: Proposed — unified plan. Sequencing **decided (2026-08-04):
-  ownership first**, rather than shipping `using` as an interim mechanism.
-  Revised after review; remaining open questions marked **DECIDE**.
+- **Status**: Adopted as **Track O** in
+  [implementation-plan.md](./implementation-plan.md). Sequencing **decided
+  (2026-08-04): ownership first**, rather than shipping `using` as an interim
+  mechanism. Remaining open questions marked **DECIDE**.
 - **Reconciliation owed**: [concurrency.md](./concurrency.md) predates this
   document and uses an overlapping but different ownership vocabulary. See
   layer 4.
-- **Date**: 2026-08-04
+- **Date**: 2026-08-04, revised 2026-08-06.
+
+### 2026-08-06 revision
+
+Design review resolved six things and corrected two claims this document made.
+New material: §"Three universes", §"Returning owned values", §"The branch-join
+rule", §"Affine type arguments are opt-in", and §"Disowning and adopting".
+
+Corrections, recorded because both were load-bearing in the earlier text:
+
+- The old §"Two universes" was wrong. `Borrow<T>` is neither unrestricted nor
+  affine; there are three, not two.
+- An earlier draft of this revision claimed affine values in generics would
+  force a broad stdlib migration, citing `Result.unwrap`/`Result.map`. **Those
+  methods do not exist** — `Result<T, E>` is a type alias over an inline
+  multi-value union (`result.zena`), so it has no generic body to check and
+  `Result<Own<T>, E>` costs nothing. A scan of the whole generic stdlib surface
+  found exactly **one** site that duplicates a `T`: `FixedArray.new(length,
+  value)`, which lowers to `array.new`. The real cross-cutting issue is
+  narrower and different in kind — see §"Affine type arguments are opt-in".
 
 ## Why one document
 
@@ -58,22 +78,63 @@ The important structural claim: **layers 0 and 1 deliver the safety property
 that actually matters (release) and need no new analysis.** Layers 2–4 upgrade
 *detection* from runtime to compile time and are where the cost is.
 
+### The vocabulary, decided
+
+Names are settled here so the rest of the document and the implementation agree.
+Alternatives considered are recorded because several were close calls.
+
+| Concept | Spelling | Rejected, and why |
+| --- | --- | --- |
+| A class whose instances hold a non-GC resource | `resource class Descriptor` | `affine class` — economical (one keyword for this and the generic opt-in) but loses design goal 1, WIT vocabulary alignment. WIT says `resource`. |
+| Affine handle: one owner, implicit drop | `Own<T>` | unchanged — WIT's `own` |
+| Restricted alias: cannot outlive the owner | `Borrow<T>` | unchanged — WIT's `borrow` |
+| Manually-managed handle: aliasable, never implicitly dropped | `Unmanaged<T>` | `Raw<T>` (suggests a pointer); `Unowned<T>` (Swift already uses this for a non-owning *weak* reference — the opposite hazard) |
+| `Own<T>` → `Unmanaged<T>` | `disown(x)` | `release(x)` — the fatal one. In every other resource API `release` means *dispose*, so `release` would name the operation that specifically does **not** release. |
+| `Unmanaged<T>` → `Own<T>` | `adopt(x)` | `repossess` (longer, odd register); `manage`; `reclaim` (suggests reclaiming memory) |
+| Type parameter may accept affine arguments | `affine T` | `<T extends Movable>` — `extends` narrows everywhere else in the language and this widens; `<T extends ?Copyable>` — new sigil for one feature |
+| Bound meaning "may be duplicated" | `Copyable` | `Unrestricted` (precise, but needs the substructural literature to parse); `Aliasable` (wrong for `i32`, which you copy rather than alias) |
+
+`Own<T>`, `Borrow<T>`, `Unmanaged<T>`, `Copyable`, `Disposable`, `disown` and
+`adopt` are declared in a new stdlib module `zena:ownership` and are
+compiler-known, following the `Iterable`/`zena:iterator` precedent.
+
+`resource class` is what brings a class into this regime. For a resource class
+`R`, bare `R` is **not a spellable type** — every mention is `Own<R>`,
+`Borrow<R>` or `Unmanaged<R>`, so which regime a signature is in is always
+visible. Ordinary classes are unaffected, including ordinary classes that
+implement `Disposable`: a lock guard or a tracing span stays unrestricted,
+stays spellable bare, and is released by `using`. That preserves the
+two-population decision in §"`using` stays" while giving the wrapper types a
+clean domain.
+
 ---
 
 ## Layer 0: the drop protocol
 
-One interface, many implementations. `dispose` should be **symbol-keyed**,
-following the existing `Iterable` precedent in the language reference:
+One interface, many implementations, in `zena:ownership`. `dispose` is
+**symbol-keyed**, following the existing `Iterable` precedent in the language
+reference:
 
 ```zena
-interface Disposable {
+import { Disposable } from 'zena:ownership';
+
+export interface Disposable {
   static symbol dispose;
+  :dispose(): void;
 }
 
 class Descriptor implements Disposable {
   :Disposable.dispose(): void { __wasi_descriptor_drop(this.#handle); }
 }
 ```
+
+Two obligations on implementors, both load-bearing:
+
+- **Idempotent.** `dispose()` may be called on an already-disposed value and
+  must not release twice. Before O2 nothing statically prevents a double call,
+  so the wrapper's state flag is what makes the second one a no-op.
+- **Must not throw.** `dispose()` runs on exception-unwind paths, where a second
+  exception would displace the one being propagated.
 
 `dispose` is a common enough method name that a class may plausibly already have
 one meaning something unrelated, and this is a protocol the language itself
@@ -147,12 +208,55 @@ disposables — the same split as everywhere else in this document.
 
 ## Layer 2: affine tracking
 
-### Two universes
+### Three universes
 
-- **Unrestricted**: primitives, `String`, ordinary GC classes. Copied and
-  aliased freely.
-- **Affine**: `Own<T>` and types containing it. Cannot be silently duplicated;
-  must be moved, borrowed, or consumed.
+An earlier draft said two. That was wrong, and the error mattered: it made
+`Borrow<T>`'s restrictions look like consequences of affineness, which in turn
+made returning an `Own<T>` look forbidden. `Borrow<T>` is neither unrestricted
+nor affine. The two properties are independent:
+
+| Universe | Members | Duplicate? | Escape the frame? | Dropped? |
+| --- | --- | --- | --- | --- |
+| **Unrestricted** | primitives, `String`, ordinary GC classes, `Unmanaged<R>` | yes | yes | never implicitly |
+| **Affine** | `Own<R>`, and types containing one | **no** | **yes** | at scope exit, unmoved |
+| **Second-class** | `Borrow<R>` | yes | **no** | never — it is not an owner |
+
+Affineness governs *duplication*. Second-class-ness governs *escape*. Rules 1–4
+below constrain `Borrow<T>` only.
+
+### Returning owned values
+
+**A function may return an `Own<T>`.** This needs saying explicitly, because the
+second-class rules sit next to it and have been misread as covering owns.
+
+```zena
+export function open(path: String, flags: Flags): Result<Own<Descriptor>, Error>
+```
+
+A `return f` where `f: Own<T>` is a **move**: the callee's release obligation
+transfers to the caller. Both sides are checkable from the signature alone —
+there is no lifetime to name, nothing derived from an argument, and no
+non-local analysis. This is the same reason returning `T` by value is easy in
+Rust while returning `&'a T` is not.
+
+Two consequences worth stating:
+
+- The **loan pattern is not forced.** `fs.open()` can hand a descriptor back
+  rather than requiring `withFile(path, cb)`.
+- The affine property survives. A return is the value's one permitted use, and
+  implicit drop keeps the discipline *affine* (at most once) rather than
+  *linear* (exactly once) from the programmer's side — you never have to
+  consume explicitly.
+
+`Result<Own<T>, E>` in particular costs nothing extra: `Result` is a type alias
+over an inline multi-value union, so an owned handle simply rides in lane 2 of a
+multi-value return and is destructured at the call site.
+
+```zena
+if (let (true, f, _) = fs.open(path, Flags.Read)) {
+  // f : Own<Descriptor> — moved out of the return, live from here
+}
+```
 
 ### Second-class borrows
 
@@ -241,6 +345,91 @@ first.
 **Building that dataflow framework is the true cost of layer 2**, and it is
 reusable well beyond ownership.
 
+### The branch-join rule — decided
+
+**Decision (2026-08-06):** at a join, the move state is the **meet**, and each
+predecessor edge carries *compensating drops* to reach it. A resource live on
+one incoming edge and dead on another is dropped on the edge where it is live,
+so it is uniformly dead at the merge.
+
+```
+                  [ Entry: live = {f} ]
+             ┌─────────────┴─────────────┐
+             ▼                           ▼
+      [ then: close(f) ]           [ else: no use ]
+        f consumed                 f still live
+             │                           │
+             │                    « compiler drops f »
+             └─────────────┬─────────────┘
+                           ▼
+                  [ Merge: live = {} ]
+```
+
+What this buys, and it is the reason to take it: **no runtime drop flags.**
+Drop points are statically known, so code size is predictable — which matters
+for a wasm target that tracks it. Rust carries runtime drop flags precisely
+because it declines to make this trade.
+
+Three things must be said plainly, because a sketch of this rule elides them.
+
+**1. It is not an alternative to dataflow — it is a choice of join.** The rule
+was proposed as a way to avoid building a flow graph and stay strictly O(N).
+That does not follow: it needs exactly the same graph, and only removes the
+*iteration*. Every structured split is a join, and that includes `&&`, `||`,
+`?:`, `?.`, `match` arms and `if (let …)` — written syntactically, that is the
+same join logic reimplemented eight times. Build it once on the O1 flow graph.
+
+The performance worry behind the proposal is also misdirected. What is
+expensive in Rust is NLL region inference over *lifetime variables*, which this
+design does not have. Move/initialisation checking is plain forward bitset
+dataflow over a reducible CFG; on a 6.5s self-compile with per-function bitsets
+it will not be measurable.
+
+**2. It rejects sound programs.** Move on one arm, fall through, keep using:
+
+```zena
+let f = fs.open(path);
+if (handOff) { pool.give(f); }   // moved here
+f.read();                         // ERROR: f was released at the end of `else`
+```
+
+Mitigating fact: the *common* conditional-handoff shape diverges — `if (x) {
+pool.give(f); return; }` — so the moving branch never reaches the merge and `f`
+stays live. What is actually rejected is the non-diverging form above, which is
+usually a bug. Accepted, with a diagnostic requirement: the checker must retain
+**where** the collapse happened, so the message reads "`f` was moved on the
+`then` branch at line N and released at the end of the `else` branch", never
+"`f` is not live".
+
+**3. It changes release *timing*, not just checking.** In the non-consuming
+branch the resource is released at that branch's `}`, earlier than scope exit.
+If no later use exists, no error fires and the resource simply closed sooner
+than RAII would suggest. Observable when `dispose()` has effects. This is a
+semantics decision, not an implementation detail, and belongs in the language
+reference.
+
+### Where the join rule runs out
+
+Three cases the rule does not cover on its own.
+
+- **Loops.** A forward walk accepts `while (c) { consume(f); }` — `f` is live
+  when the line is reached, and only the back edge makes it wrong. Rule: compare
+  the body's out-state to its in-state and **error** if a resource declared
+  outside the loop was consumed without being reinitialized on every path to the
+  back edge. Sound, one pass, no fixpoint — but note this is still a dataflow
+  rule, with "error" substituted for "iterate".
+- **`try`/`catch`/`finally`.** The state at a `catch` entry is the meet over
+  *every* program point in the `try` body, since any call may throw. There is no
+  syntactic edge to hang a compensating drop on, and "was `f` initialized when we
+  unwound?" is genuinely dynamic. Either a runtime flag returns here, or the try
+  region is split at each acquisition. **DECIDE.** This is the one place the
+  no-drop-flags claim does not hold, and it is the same problem layer 3 item 1
+  names.
+- **Suspension.** After the generator split, locals live across a yield become
+  frame fields, and a suspended frame may be dropped without ever being resumed.
+  "Which owns are live in state *k*" is a per-state table, not a lexical list —
+  see §"What Track G already built".
+
 ### A flow graph, not a new IR
 
 The analysis layer 2 needs is flow-sensitive with merges and a loop fixpoint.
@@ -297,8 +486,8 @@ One pass would serve several consumers:
 - unreachable-code detection
 - `using` scope analysis (layer 1's desugaring wants to know the exit paths)
 - generalizing the narrowing special cases already hand-rolled in
-  `statements.ts` — "narrowing past definite exits", immutable-path checks —
-  into one mechanism
+  `checker.zena` — the `definitelyExits`/`branchDefinitelyExits` recursion,
+  immutable-path checks — into one mechanism
 
 **Why an HIR would mean three IRs.** Type-directed lowering cannot run before
 checking, and Zena leans on types heavily at lowering time: monomorphization,
@@ -321,11 +510,37 @@ The costs that bite hardest here:
   no threads today; concurrency.md's parallelism is a future worker-plus-
   serialization polyfill.
 
+### What Track G already built, and the seam it implies
+
+Track G's split pass is not the checking half of this feature, and the ZIR it
+produces cannot become it: ZIR runs post-check and post-RTA (so it is
+per-instantiation, and does not exist at all for code RTA drops, while checking
+must cover unreached code), and it carries **zero source spans** — `ir.zena` has
+no span field. It cannot report "used after move" at a line.
+
+But `codegen/ir/generators.zena` did build a real piece of layer 3. It computes
+liveness across suspension points and demotes every value live across a yield to
+a frame field. That is precisely the input to a **per-state drop table**: for
+each suspend state, the owned frame fields live in it; the frame's `dispose()`
+walks the table for its current `$state`. That is the answer to open question 5
+("who drops a cancelled task's resources"), and it is mostly mechanical. Write
+it while that pass is still fresh.
+
+**The seam.** The checker decides *legality* and records drop obligations into
+`SemanticModel` as a side table — node or edge → the symbols to release there.
+ZIR lowering *materializes* them, because that is where unwind edges and the
+generator split already live. Diagnostics stay span-faithful; drop placement
+stays in the one component that already understands landing pads and
+suspension. Neither side grows a second notion of control flow it has to keep
+in sync with the other.
+
 ### Narrowing mutable fields: necessary but not sufficient
 
-Narrowing a mutable class field is refused outright today —
-`isExpressionPathImmutable` (checker/statements.ts) requires every field in the
-path to be declared immutable, so `var #x: Foo | null` can never narrow. That is
+Narrowing a mutable class field is refused outright today — the immutable-path
+check requires every field in the path to be declared immutable, so
+`var #x: Foo | null` can never narrow. (This document originally cited
+`isExpressionPathImmutable` in `checker/statements.ts`; that was the bootstrap
+compiler, retired 2026-08-06. The rule now lives in `checker.zena`.) That is
 a deliberate soundness choice, not an oversight, and it is the right one given
 that nothing currently invalidates a narrowing.
 
@@ -411,6 +626,179 @@ arguably `Resource<T>` for a single value. Whether they are one type spelled two
 ways, or two distinct concepts, should be settled when the vocabulary is
 reconciled with concurrency.md (see layer 4). **DECIDE.**
 
+### Affine type arguments are opt-in
+
+A generic body is checked **once**, before it knows what `T` will be, so it must
+be checked against the worst case its bound permits. If `T` may be affine, the
+body may not duplicate a `T`:
+
+```zena
+let duplicate = <T>(x: T): (T, T) => (x, x);
+```
+
+Sound for `T = i32`; for `T = Own<Descriptor>` it creates two owners of one
+handle and two drops of it. So a body that may see an affine `T` must move each
+`T`-typed value **at most once per path** — borrowing stays unlimited.
+
+**Decision (2026-08-06):** type parameters are **unrestricted by default**, and
+accepting affine arguments is opt-in per parameter:
+
+```zena
+class Pool<affine T> { … }          // T may be affine
+class Array<T> { … }                // unchanged: an affine argument is rejected
+let discard = <affine T>(x: T) => {};   // fine for Own<R> and for i32
+```
+
+`affine T` is shorthand for *dropping* the implicit `T extends Copyable` bound.
+Widening what a parameter accepts narrows what its body may do — that is the
+whole trade, and it is Rust's `?Sized` shape with the default inverted.
+
+Three things that look like they would need the opt-in and do not, because they
+are the common cases:
+
+- **Not using a `T` is fine.** `<affine T>(x: T): void => {}` needs no bound;
+  implicit drop releases `x`, and monomorphization emits that glue only for
+  instantiations where `T` is actually affine.
+- **Using it once per *path* is fine**, across branches. `HashMap.[]=` moves
+  `key` and `value` at most once on each path; on the key-already-present path
+  `key` is never consumed and the compiler drops it — which is a bug fix, since
+  today a duplicate affine key would leak.
+- **Generic fields are fine.** `class Box<affine T> { var value: T }` — dropping
+  the box drops the `T` through derived glue.
+
+#### `Borrow<T>` is the identity at unrestricted instantiations
+
+Borrowing an unrestricted value is a no-op, so `Borrow<i32> ≡ i32` and
+`Borrow<String> ≡ String`. This is what keeps the opt-in from forking the
+container API: element accessors are written in borrow form **once** and read
+exactly as they do today at every existing instantiation.
+
+```zena
+operator [](key: K): Borrow<V>      // ≡ V for HashMap<String, i32>
+```
+
+The second-class restrictions on `Borrow<T>` exist to stop a borrow outliving an
+owner. An unrestricted `T` has no owner to outlive, so at those instantiations
+they do not apply. Inside an opted-in generic body they *do*, because the body
+is checked against the worst case — which is sound, and callers see the
+instantiated form.
+
+#### What this costs in the stdlib
+
+Measured, not estimated. Across `result`, `option`, `box`, `sequence`,
+`iterator`, `iterable-utils`, `growable-array`, `fixed-array`,
+`immutable-array`, `map` and `set`, exactly **one** site moves a `T` twice:
+
+```zena
+// fixed-array.zena — array.new fills N slots from one value
+new(length: i32, value: T) : super(__array_new(length, value));
+```
+
+Under `FixedArray<affine T>` that constructor is unsound and must become
+conditionally available, which is what **member-level `where` bounds** are for:
+
+```zena
+new(length: i32, value: T) where T extends Copyable : super(__array_new(length, value));
+```
+
+That mechanism is not new machinery for ownership — it is
+[equality.md](./equality.md) D4, already planned as part of Track A's A0 bounds
+work for `contains where T extends Equatable`. Track O consumes it rather than
+inventing it. (`T extends X` bounds already work; the `where` half does not
+exist yet — the parser has no `where` token.)
+
+The genuinely pervasive issue is different in kind, and it is a *signature*
+question rather than a body question: containers hand out elements by value
+(`operator [](key): V`, `Iterator.next(): (true, T)`, `map`'s callback), and for
+an affine element every one of those is a move out of a slot the container still
+owns. Those become `Borrow<V>` under the identity above, and `Iterable<T>` needs
+a borrowing iterator alongside the draining one so `contains`/`find`/`all` do not
+consume the collection.
+
+#### Declared, not inferred
+
+Whole-program compilation would let the opt-in be inferred from bodies. Rejected:
+errors would land inside stdlib bodies at call sites the user did not write, a
+signature would stop being the contract, and adding a second move to a stdlib
+method would silently break distant callers. With the language service as an
+early deliverable, declared wins.
+
+**The stdlib opts in lazily, one class at a time, when a real client needs it.**
+Nothing in `fs.open()` or WIT resource bindings needs any of it.
+
+### Disowning and adopting
+
+The two populations in §"`using` stays" — statically-safe affine `Own<T>` and
+aliasable non-affine `Disposable` — have never had a way to move *between* them.
+`disown` and `adopt` are those two arrows, and the disowned state is
+`Unmanaged<T>`.
+
+```zena
+let raw: Unmanaged<Descriptor> = disown(f);   // f : Own<Descriptor>, consumed
+// … alias it, store it in a field, put it in an ordinary Array …
+let f2: Own<Descriptor> = adopt(raw);         // back under implicit drop
+```
+
+**This is checked, not `unsafe`.** The generated wrapper already carries the
+`owned | moved | dropped` state flag that component-model.md Part 6 mandates and
+that §"`using` stays" keeps permanently. Add one state:
+
+- `disown(f)` requires `owned`, sets `disowned`, returns the same object typed
+  `Unmanaged<T>`.
+- `adopt(r)` requires `disowned`; on `owned` (someone else adopted it first) or
+  `dropped` it **throws**. It is a programming error, not an expected condition,
+  so throwing is right; add `tryAdopt(): Result<Own<T>, …>` only when a real
+  client wants the branch.
+
+So two racing adopters do not double-free — the loser gets a clean Zena error.
+What is given up is precisely **leak-freedom** and *compile-time* detection of
+use-after-dispose, the latter degrading to a loud runtime error. Type soundness
+and memory safety are untouched. No `unsafe` keyword is required, and open
+question 3 stays confined to raw linear memory where it belongs.
+
+**It is not only an escape hatch — the canonical ABI requires it.** An exported
+function returning WIT `own<T>` must hand the raw handle index to the host and
+stop tracking it; an imported one receives an index and must start. Those are
+`disown` and `adopt` on the handle-table state, so bindgen needs both whether or
+not users ever see them. Exposing them is mostly a matter of not hiding
+machinery that had to exist.
+
+**It unblocks resource-holding containers during the whole opt-in period.**
+`Unmanaged<T>` is unrestricted, so `new Array<Unmanaged<Conn>>()` needs no
+generic-affinity machinery at all. A connection pool can be built while
+`Array`/`FixedArray` have not opted in, paying manual disposal, and migrate to
+`Array<Own<Conn>>` later without the resource type changing.
+
+`using` composes directly, since `Unmanaged<T>` is `Disposable`:
+
+```zena
+using let raw = disown(f);   // deterministic release at scope exit
+```
+
+Four things to pin down:
+
+1. **`disown` consumes its argument** — `Own<T>` by value, not borrow.
+   Otherwise an `Own` that will implicitly drop coexists with an `Unmanaged`
+   alias to the same handle. Falls out of move checking.
+2. **`adopt` cannot retract aliases**, and the asymmetry is worth recording:
+   §"Containers" answers exactly this objection for `Resource<C>` by *requiring
+   exclusivity at construction*. Here that is impossible — aliasability is the
+   point of the disowned state — so the flag is the fallback. Same problem,
+   different answer, deliberately.
+3. **WIT child-before-parent ordering is unenforceable across a disown.** A
+   disowned `request-options` can outlive its parent `request`. Documented
+   hazard of the disowned regime; nothing static will catch it.
+4. **No implicit coercion back.** `adopt` is always explicit and always
+   fallible; a silent re-entry into the affine system with aliases outstanding
+   is the one thing that would make the flag useless.
+
+**Build cost is near zero and needs no flow analysis.** `disown` is a move
+(free once O2 exists; caught by the flag before then), `adopt` is a flag check
+plus a type change, and `Unmanaged<T>` needs the member forwarding that `Own<T>`
+and `Borrow<T>` already require. The whole lattice can therefore ship *before*
+O1/O2 with runtime-only enforcement, and O2 later upgrades `Own<T>` from runtime
+to compile-time detection **without any signature changing**.
+
 ## Layer 3: implicit drop
 
 Inserting `dispose()` automatically when an owned value leaves scope unmoved is
@@ -420,12 +808,13 @@ half, and it needs four things that are easy to leave out of a sketch:
 1. **Unwind paths.** Every scope holding a live resource needs cleanup on
    exception propagation. `finally` makes this expressible; it is still real
    codegen, and it has code-size cost in a project that tracks code size.
-2. **Drop flags.** A value moved in one branch of an `if` and not the other
-   cannot be resolved statically. Rust carries **runtime drop flags** for
-   precisely this case. So the claim that a compile-time system yields *zero*
-   runtime overhead is **false** in general: either conditional moves are
-   forbidden (too restrictive) or a flag is carried. This is consistent with the
-   `owned | moved | dropped` flag already proposed for WIT wrappers.
+2. **Drop flags.** ~~A value moved in one branch of an `if` and not the other
+   cannot be resolved statically.~~ **Resolved (2026-08-06)** by §"The
+   branch-join rule": the meet-plus-edge-drops join makes such a value uniformly
+   dead at the merge, so no runtime drop flag is needed for conditional moves.
+   The residue is `try`/`catch`, where there is no syntactic edge to compensate
+   on — see §"Where the join rule runs out". The `owned | moved | dropped` flag
+   remains, but for the non-affine population and for `adopt`, not for this.
 3. **Child-before-parent ordering.** WIT requires that a `request-options`
    obtained from a `request` be dropped *before* its parent. Reverse-declaration
    order does not automatically satisfy parent/child relationships that were
@@ -434,7 +823,9 @@ half, and it needs four things that are easy to leave out of a sketch:
    in the state-machine struct built by Track G's split pass. If the task is
    cancelled and never resumed, something must still drop it. This is the one
    place ownership genuinely does interact with Track G — and it is a real
-   problem with or without affine types.
+   problem with or without affine types. **Mostly answered (2026-08-06):**
+   `generators.zena` already computes the liveness this needs; the remaining
+   work is a per-state drop table. See §"What Track G already built".
 
 **DECIDE**: implicit drop (Rust-style) versus explicit `using` (C#/TypeScript
 style) as the *default*. They can coexist — `using` for the explicit case,
@@ -514,36 +905,41 @@ allocate/copy/call/free) without per-pointer dataflow.
 [implementation-plan.md](./implementation-plan.md) runs Track G (generators then
 async, the priority track), V (equality contractions), A (rows), and B (the
 post-flip harvest); its Legend section defines those labels and the ZIR M-track.
-This work would be a new **Track O** — a label proposed here, not yet adopted
-into the plan of record. It competes with none of the existing tracks for
-infrastructure: G and B are ZIR/M-track work, V and A are the
-records/equality arc, while O is checker-side plus a small amount of surface
-syntax.
+This work is **Track O**, adopted into the plan of record on 2026-08-06. It
+competes with none of the existing tracks for infrastructure: G and B are
+ZIR/M-track work, V and A are the records/equality arc, while O is checker-side
+plus a small amount of surface syntax.
 
 | | Work | Needs | Independent of |
 | --- | --- | --- | --- |
-| **O0** | `Disposable` + `using` (layers 0–1) | nothing | everything |
+| **O0** | `resource class`, `zena:ownership` (`Own`/`Borrow`/`Unmanaged`/`Disposable`), `disown`/`adopt`, drop glue | nothing | everything |
+| **O0.5** | `using` + scope-exit cleanup lowering | O0 | everything |
 | **O1** | Checker flow graph | nothing | everything |
-| **O2** | Affine `Own<T>`/`Borrow<T>` (layer 2) | O1 | G, V, A |
-| **O3** | Implicit drop (layer 3) | O2, and G1 for the cancellation answer | V, A |
+| **O2** | Affine move checking on the flow graph (layer 2) | O0, O1 | G, V, A |
+| **O3** | Implicit drop (layer 3) | O2; G1 for the cancellation table | V, A |
+| **O3.5** | `affine T` type parameters + container opt-in | O2, A0's `where` | G, V |
 | **O4** | `isolated<T>`/`frozen<T>`/regions (layer 4) | O2 | V, A |
 
-**O0 and O1 go first** — not as a substitute for the ownership system but as
-its substrate (see "Sequencing" below). Both are independently justified:
+**O0 is the milestone that unblocks the most.** The whole three-point type
+lattice ships there with runtime-only enforcement, which means the *signatures*
+freeze immediately — `fs.open(): Result<Own<Descriptor>, Error>` and the WIT
+resource wrappers are written once and never churn, because O2 upgrades
+detection from runtime to compile time without changing a single type. That is
+what makes it safe for Track W's bindgen (Part 8 stage 3) to proceed after O0
+rather than waiting for O2.
 
-- O0 is an expansion, so self-hosted-only under rule 2. It is small, and its
-  scope-exit cleanup lowering is the same machinery layer 3 needs. It also
-  closes filesystem.md's descriptor story and linear-memory.md's open question
-  1 as a side effect.
-- O1 fixes a live soundness bug (above), generalizes the narrowing special cases
-  already hand-rolled in `statements.ts`, and is the prerequisite for any
-  improvement to mutable-field narrowing. It would be worth building if affine
-  types were never adopted.
+O1 is independently justified and commits us to nothing about ownership: it
+fixes the live narrowing soundness bug filed in BUGS.md, generalizes the
+hand-rolled `definitelyExits` recursion in `checker.zena`, and is the
+prerequisite for any improvement to mutable-field narrowing.
 
-O2–O4 are genuinely later, and the plan's principle 4 (concurrency first) still
-holds: O3 depends on G1 for the "who drops a cancelled task's resources"
-question, and O4 *is* concurrency.md's ownership types, which want the G-track
-in place anyway.
+O3.5 is deliberately last of the checker work and lands **lazily, one container
+at a time**, when a real client needs it — `Array<Unmanaged<Conn>>` covers the
+interim. It is the only Track O item with a cross-track dependency: it needs
+member-level `where` bounds from Track A's A0.
+
+O4 *is* concurrency.md's ownership types, which want the G-track in place
+anyway.
 
 For Track W (component-model, see component-model.md Part 8) the hard
 dependency is only **O0**. Under the ownership-first decision Track W's
@@ -577,22 +973,35 @@ still come first — they simply stop being the deliverable:
 
 ### Order
 
-1. **O1 — the checker flow graph.** The hard prerequisite for everything below,
-   and independently justified: it fixes the narrowing soundness bug filed in
-   BUGS.md and generalizes the hand-rolled narrowing special cases. Commits us
-   to nothing about ownership.
-2. **O0 — `Disposable` and drop glue.** Needed by layer 3 regardless. Covers
-   WIT handles, `Allocator.free`, descriptors, and FFI deallocators through one
-   interface.
-3. **`using` + the scope-exit cleanup lowering** — `try`/`finally` on all exit
-   paths. Surfaced as `using` for non-affine `Disposable`, and reused unchanged
-   by implicit drop in step 5.
-4. **O2 — affine tracking.** `Own<T>`/`Borrow<T>`, second-class borrows, move
-   checking on the O1 flow graph.
-5. **O3 — implicit drop**, once its four sub-problems have answers: unwind
-   paths, drop flags for conditional moves, child-before-parent ordering, and
-   cancellation.
-6. **O4 — `isolated<T>`/`frozen<T>`/regions**, reusing O2.
+**Revised 2026-08-06.** The 2026-08-04 order put O1 first because affine types
+were thought to need the flow graph before they could exist at all. They do not:
+the *type lattice* is pure type checking, and enforcement can start at runtime
+on the state flag and be upgraded in place. Freezing the signatures early is
+worth more than checking them early, because signatures are what other tracks
+build against.
+
+1. **O0 — the type lattice, no flow analysis.** `resource class`;
+   `zena:ownership` with `Own<T>`/`Borrow<T>`/`Unmanaged<T>`/`Disposable`;
+   `disown`/`adopt`; the `owned | disowned | moved | dropped` flag; drop glue.
+   The purely local rules land here too — owns are returnable and movable;
+   borrows are second-class (a syntactic rejection on field store, array store,
+   closure capture, and return-without-a-single-borrow-source); implicit
+   `Own → Borrow` at borrow-typed parameters. Enforcement of *move* discipline
+   is runtime-only at this stage.
+2. **O0.5 — `using` + the scope-exit cleanup lowering.** `try`/`finally` on all
+   exit paths. Surfaced as `using` for the non-affine population, and reused
+   unchanged by implicit drop in step 5.
+3. **O1 — the checker flow graph.** Independently justified: fixes the narrowing
+   soundness bug in BUGS.md and generalizes the hand-rolled narrowing special
+   cases. Commits us to nothing about ownership.
+4. **O2 — affine move checking** on the O1 flow graph, with the meet-plus-edge-
+   drops join rule. Upgrades O0's runtime detection to compile time. **No
+   signature changes** — this is the point of the ordering.
+5. **O3 — implicit drop**, once its sub-problems have answers: unwind paths,
+   the `try`/`catch` residue of the join rule, child-before-parent ordering, and
+   the cancellation drop table.
+6. **O3.5 — `affine T`** and container opt-in, lazily, after A0's `where`.
+7. **O4 — `isolated<T>`/`frozen<T>`/regions**, reusing O2.
 
 `distinct type Ptr<T>` remains worth doing early and independently; it is the
 nominal hook affine tracking attaches to for linear memory.
@@ -641,6 +1050,12 @@ undersold: writing bindgen *after* the ownership model exists means the
 generated wrappers are written once against their final API, instead of being
 written against a runtime-flag model and regenerated later.
 
+**Sharpened 2026-08-06:** the dependency is on **O0**, not O2. O0 freezes the
+type lattice and therefore the generated signatures; O2 changes only where the
+errors are reported. Bindgen no longer waits for move checking. Stage 4's
+resource tables and stage 3's wrappers both want `disown`/`adopt` regardless,
+since those *are* the handle-table transitions.
+
 ## Open questions
 
 1. ~~Implicit drop vs. explicit `using`; whether `Disposable` implies affine~~
@@ -654,9 +1069,14 @@ written against a runtime-flag model and regenerated later.
    general `unsafe`? (Recommended: privileged module — ABI marshaling needs
    typed accessors, not arithmetic.)
 4. Child-before-parent drop ordering: recorded on the wrapper, or inferred?
-5. Who drops resources held in a cancelled task's state machine?
-6. Flow graph as an AST side table vs. a pre-check HIR (layer 2). Recommended:
-   side table; revisit only after bootstrap retirement and Track G.
+5. ~~Who drops resources held in a cancelled task's state machine?~~ —
+   **mostly answered**: a per-state drop table derived from the liveness
+   `generators.zena` already computes. Residual: who *calls* the frame's
+   `dispose()` when a task is abandoned rather than cancelled.
+6. ~~Flow graph as an AST side table vs. a pre-check HIR (layer 2)~~ —
+   **decided**: side table. ZIR cannot serve (post-check, post-RTA, no spans),
+   and an HIR would be a third IR plus a permanent bidirectional source map owed
+   to the language service.
 7. Multi-borrow returns: reject, or name the source parameter (layer 2,
    "Returning derived borrows")?
 8. Reconciling concurrency.md's `isolated`/`frozen`/`borrow` vocabulary with
@@ -664,6 +1084,17 @@ written against a runtime-flag model and regenerated later.
 9. Mutable-field narrowing: stay sound and restrictive, adopt TypeScript's
    deliberate unsoundness, or use whole-program reachability to narrow
    `#private` fields soundly (layer 2).
+10. **`try`/`catch` and the join rule** (§"Where the join rule runs out"):
+    reintroduce a runtime drop flag inside `try` bodies, or split the try region
+    at each acquisition? This is the only surviving case where the
+    no-drop-flags claim does not hold.
+11. **Naming**, held open deliberately: `disown`/`adopt` and `Unmanaged<T>` are
+    the current picks with alternatives recorded in §"The vocabulary, decided".
+    Cheap to change until `zena:ownership` has clients.
+12. **Does `resource class` need a `Disposable` implementation, or is `dispose`
+    implicit?** A WIT wrapper's release is always "call the imported drop
+    function with `this.#handle`", which bindgen could synthesize. Hand-written
+    resource classes still need to write one.
 
 ## Related
 
