@@ -1153,7 +1153,7 @@ final class CheckerContext {
           case EnumDeclaration as ed: {
             let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
             let backingType = if (isStringEnum) { this.resolvePreludeType("String") as Type } else { new I32Type() as Type };
-            let enumType = new TypeAliasType(ed.name.name, null, backingType, true, null);
+            let enumType = new TypeAliasType(ed.name.name, null, backingType, true, null, false, "");
             let fields = new HashMap<String, Type>();
             for (let member in ed.members) {
               fields[member.name.name] = enumType;
@@ -1305,7 +1305,7 @@ final class CheckerContext {
       case EnumDeclaration as ed: {
         let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
         let backingType = if (isStringEnum) { this.resolvePreludeType("String") as Type } else { new I32Type() as Type };
-        return new TypeAliasType(ed.name.name, null, backingType, true, null);
+        return new TypeAliasType(ed.name.name, null, backingType, true, null, false, "");
       }
       case TypeAliasDeclaration as ta: {
         this.enterScope();
@@ -1335,7 +1335,9 @@ final class CheckerContext {
           }
         }
         
-        let aliasType = new TypeAliasType(ta.name.name, typeParams, new HoleType(), ta.isDistinct, null);
+        let aliasType = new TypeAliasType(
+          ta.name.name, typeParams, new HoleType(), ta.isDistinct, null,
+          ta.isOpaque, info.modulePath);
         this.#materializedTypes[info.id] = aliasType;
         
         // Permitted here for the same reason as in checkTypeAliasDeclaration:
@@ -3402,6 +3404,118 @@ let isValidCast = (sourceType: Type, targetType: Type): boolean => {
 
   // All other casts are allowed (checked at runtime)
   return true;
+};
+
+/**
+ * Find an opaque alias reachable from `t` that was declared somewhere other
+ * than `currentFile`, or null if there is none.
+ *
+ * The search is not limited to the head of the type: `Array<i32> as
+ * Array<Token>` forges just as effectively as `0 as Token`, because distinct
+ * types are erased and the two have identical runtime representations. So
+ * every position that a cast could reinterpret is visited — element types,
+ * union members, record fields, function parameters and returns, and type
+ * arguments.
+ *
+ * An alias's `target` is followed too. `distinct type Tokens = Array<Token>`
+ * is not itself opaque, but casting to it would mint `Token`s all the same.
+ *
+ * `depth` bounds the walk instead of a visited set: recursive aliases and
+ * self-referential generic instantiations would otherwise not terminate, and
+ * a cast target deep enough to exhaust the budget is not something anyone
+ * writes deliberately. Running out of budget reports "no opaque type found",
+ * which errs toward accepting the cast rather than rejecting valid code.
+ */
+let findForeignOpaque = (t: Type, currentFile: String, depth: i32): TypeAliasType | null => {
+  if (depth <= 0) { return null; }
+  let next = depth - 1;
+  return match (t) {
+    case TypeAliasType as alias: {
+      if (alias.isOpaque && alias.declaringModule != currentFile) {
+        return alias;
+      }
+      let inArgs = findForeignOpaqueInList(alias.typeArguments, currentFile, next);
+      if (inArgs != null) { return inArgs; }
+      // `resolving` means the checker is mid-way through computing this
+      // alias's target; reading it now would recurse forever.
+      if (alias.resolving) { return null; }
+      findForeignOpaque(alias.target, currentFile, next)
+    }
+    case ArrayType {elementType}: findForeignOpaque(elementType, currentFile, next)
+    case TupleT {elementTypes}: findForeignOpaqueInList(elementTypes, currentFile, next)
+    case InlineTupleT {elementTypes}: findForeignOpaqueInList(elementTypes, currentFile, next)
+    case UnionT {types}: findForeignOpaqueInList(types, currentFile, next)
+    case RecordT as rec: {
+      for (let key in rec.properties.keys()) {
+        if (let (true, propType) = rec.properties.get(key)) {
+          let found = findForeignOpaque(propType, currentFile, next);
+          if (found != null) { return found; }
+        }
+      }
+      null
+    }
+    case FunctionType as fn: {
+      let inParams = findForeignOpaqueInList(fn.parameters, currentFile, next);
+      if (inParams != null) { return inParams; }
+      findForeignOpaque(fn.returnType, currentFile, next)
+    }
+    case ClassType as ct: findForeignOpaqueInList(ct.typeArguments, currentFile, next)
+    case InterfaceType as it: findForeignOpaqueInList(it.typeArguments, currentFile, next)
+    case MixinType as mt: findForeignOpaqueInList(mt.typeArguments, currentFile, next)
+    case _: null
+  };
+};
+
+/** The first foreign opaque type in `types`, or null. A null list scans as empty. */
+let findForeignOpaqueInList = (
+  types: Array<Type> | null,
+  currentFile: String,
+  depth: i32
+): TypeAliasType | null => {
+  if (types == null) { return null; }
+  for (let t in types as Array<Type>) {
+    let found = findForeignOpaque(t, currentFile, depth);
+    if (found != null) { return found; }
+  }
+  return null;
+};
+
+/**
+ * Reject `expr as T` when T mentions an opaque type declared in another file
+ * and the cast would actually mint a value of it.
+ *
+ * The point of `opaque` is that outside its defining file the only way to get
+ * one is from code that file hands you. A cast whose source and target already
+ * overlap cannot manufacture anything: `p as Password` where `p: Password` is
+ * redundant, and `p as Password` where `p: Password | null` is narrowing. Both
+ * stay legal, which matters because narrowing a nullable opaque value is
+ * ordinary code at every call site. Only a cast that reinterprets an unrelated
+ * representation — `42 as Password` — is a forge, and that is exactly the case
+ * where neither type is assignable to the other.
+ *
+ * Casting *out* of an opaque type (`pw as String`) is deliberately allowed:
+ * the restriction is on forging values, not on reading them.
+ */
+let checkOpaqueCast = (
+  ctx: CheckerContext,
+  sourceType: Type,
+  targetType: Type,
+  loc: SourceLocation | null
+): void => {
+  let alias = findForeignOpaque(targetType, ctx.filePath, 16);
+  if (alias == null) { return; }
+  let opaque = alias as TypeAliasType;
+  if (isAssignableTo(ctx, sourceType, targetType)
+      || isAssignableTo(ctx, targetType, sourceType)) {
+    return;
+  }
+  ctx.error(
+    "Cannot cast to opaque type '" + opaque.name + "'. Values of an opaque "
+      + "type can only be created in the file that declares it ('"
+      + opaque.declaringModule + "'); use a function exported from that file.",
+    DiagnosticCode.OpaqueTypeCast,
+    loc
+  );
 };
 
 let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void => {
@@ -6678,7 +6792,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         typeAnnotation.loc
       );
     }
-    if (!isValidCast(sourceType, targetType)) {
+    let validCast = isValidCast(sourceType, targetType);
+    if (!validCast) {
       var errorMsg = "Cannot cast type '" + typeToString(sourceType) + "' to '" + typeToString(targetType) + "'.";
       if (sourceType is NullType && !isNullableType(targetType)) {
         errorMsg = "Cannot cast 'null' to non-nullable type '" + typeToString(targetType) + "'.";
@@ -6691,6 +6806,11 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         DiagnosticCode.TypeMismatch,
         loc
       );
+    }
+    // Only when the cast is otherwise well-formed: a cast already rejected as
+    // impossible does not also need to be reported as a forge.
+    if (validCast) {
+      checkOpaqueCast(ctx, sourceType, targetType, loc);
     }
     checkAndRegisterInterfaceAdaptation(ctx, expr, sourceType, targetType);
     targetType
@@ -9558,7 +9678,7 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
 
   let strType = if (stringType != null) { stringType as Type } else { new ErrorType() as Type };
   let backingType = if (isStringEnum) { strType } else { i32Type as Type };
-  let enumType = new TypeAliasType(name, null, backingType, true, null);
+  let enumType = new TypeAliasType(name, null, backingType, true, null, false, "");
 
   // Register the enum in the type namespace.
   ctx.declareTypeName(name, enumType);

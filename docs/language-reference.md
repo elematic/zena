@@ -370,6 +370,104 @@ Distinct types are erased at runtime, so they have no performance overhead.
 Casting between a distinct type and its underlying type is a zero-cost
 operation.
 
+### Opaque Types
+
+An **opaque type** is a distinct type that cannot be forged. Anyone can write
+`10 as Meters`, so a `distinct type` documents intent but does not enforce it.
+An opaque type additionally restricts casts *to* it to the file that declares
+it, which makes the declaring file the only source of values.
+
+```zena
+// tokens.zena
+export opaque type Token = i32;
+
+// The only way to get a Token — the checks live here and cannot be bypassed.
+export let mint = (raw: i32): Token => {
+  if (raw <= 0) { throw new Error('token must be positive'); }
+  return raw as Token;
+};
+
+export let value = (t: Token): i32 => t as i32;
+```
+
+```zena
+// main.zena
+import { Token, mint, value } from './tokens.zena';
+
+let forged = 0 as Token; // Error: Cannot cast to opaque type 'Token'.
+let real = mint(7);      // OK
+let raw = real as i32;   // OK — see "Casting out", below
+```
+
+`opaque` implies `distinct`: an opaque type is not assignable to or from its
+underlying type, and it is erased at runtime exactly like a distinct type, so
+the guarantee costs nothing at runtime.
+
+#### What counts as forging
+
+The restriction is on casts that *manufacture* a value, not on every mention of
+the type in a cast target. A cast is allowed when the source and target types
+already overlap — that is, when either is assignable to the other — because
+such a cast cannot produce a value that did not already exist:
+
+```zena
+let t: Token = mint(1);
+let same = t as Token;                       // OK — redundant, forges nothing
+
+let unwrap = (t: Token | null): Token =>
+  t as Token;                                // OK — narrowing, not forging
+```
+
+Narrowing a nullable opaque value is ordinary code at every call site, so it
+stays legal outside the declaring file.
+
+Because distinct types are erased, `Array<i32>` and `Array<Token>` share a
+representation, and a cast through a type argument forges just as effectively
+as a direct one. Opacity is therefore checked at every position of the cast
+target — element types, union members, record fields, function parameters and
+return types, and type arguments:
+
+```zena
+let ints = [1, 2, 3];
+let forged = ints as Array<Token>; // Error: Cannot cast to opaque type 'Token'.
+```
+
+Naming the type through another alias does not help, since an alias's target is
+checked too:
+
+```zena
+distinct type Tokens = Array<Token>;
+let forged = ints as Tokens; // Error: Cannot cast to opaque type 'Token'.
+```
+
+#### Casting out
+
+Casting *out* of an opaque type is allowed anywhere:
+
+```zena
+let raw: i32 = real as i32; // OK
+```
+
+The guarantee an opaque type provides is that every value of it came from the
+declaring file, so that file's invariants hold. Reading the underlying value
+does not violate that. If you also want to hide the representation, use a
+`class` with private fields instead — that is a different tool for a different
+job.
+
+#### Known limitation: casts through type parameters
+
+A cast whose target is an unconstrained type parameter is not checked, so a
+generic helper can still launder a value:
+
+```zena
+let launder = <T>(x: i32): T => x as T;
+let forged = launder<Token>(0); // Not currently rejected
+```
+
+This is a pre-existing hole in cast checking that opaque types inherit rather
+than introduce — the same trick forges any distinct type or class. It is
+tracked in [BUGS.md](../BUGS.md).
+
 ### Function Types
 
 Function types describe the signature of a function. They are written using
@@ -3040,6 +3138,10 @@ The following pairs of types are indistinguishable at runtime:
     distinct type IdB = String;
     // IdA and IdB are both String at runtime.
     ```
+
+    Opaque types are erased the same way — the cast restriction is enforced
+    entirely at compile time, so an `opaque type` over `String` is also
+    indistinguishable from `String` at runtime.
 
 3.  **Generic Instantiations of Erased Types**:
     ```zena

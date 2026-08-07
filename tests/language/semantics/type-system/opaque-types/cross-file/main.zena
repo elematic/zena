@@ -1,0 +1,28 @@
+// @mode: check
+// Outside the declaring file, an opaque type cannot be forged by casting.
+//
+// Legal uses live in ./allowed.zena rather than here: the portable-semantics
+// runner only reports unexpected errors for files that declare no @error
+// directive, so a file mixing both would hide a regression that made valid
+// code fail.
+
+import { Token, Handle } from './lib.zena';
+import { Array } from 'zena:array';
+
+// The whole point: no cast can manufacture one.
+let forged: Token = 42 as Token; // @error: Cannot cast to opaque type 'Token'
+let forgedHandle: Handle = 'sneaky' as Handle; // @error: Cannot cast to opaque type 'Handle'
+
+// Erasure means `Array<i32>` and `Array<Token>` share a representation, so a
+// cast through a type argument forges just as effectively as a direct one.
+let ints = [1, 2, 3];
+let forgedArray = ints as Array<Token>; // @error: Cannot cast to opaque type 'Token'
+
+// Same for a function type's return position.
+let identity = (x: i32): i32 => x;
+let forgedFn = identity as (x: i32) => Token; // @error: Cannot cast to opaque type 'Token'
+
+// A local alias over the opaque type is not a way around it: casting to
+// `Tokens` would mint `Token`s all the same.
+distinct type Tokens = Array<Token>;
+let forgedAlias = ints as Tokens; // @error: Cannot cast to opaque type 'Token'

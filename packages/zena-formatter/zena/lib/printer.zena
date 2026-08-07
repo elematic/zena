@@ -887,7 +887,13 @@ let printMixinDeclaration = (decl: MixinDeclaration): Doc => {
 let printTypeAliasDeclaration = (decl: TypeAliasDeclaration): Doc => {
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
-  if (decl.isDistinct) { parts.push(text('distinct ')); }
+  // `opaque` implies `isDistinct`, so it has to win — printing both would
+  // produce `distinct opaque type`, which does not parse.
+  if (decl.isOpaque) {
+    parts.push(text('opaque '));
+  } else if (decl.isDistinct) {
+    parts.push(text('distinct '));
+  }
   parts.push(text('type '));
   parts.push(text(decl.name.name));
   if (decl.typeParameters != null) {

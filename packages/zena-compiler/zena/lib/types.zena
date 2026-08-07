@@ -526,7 +526,9 @@ let substituteInType = (
           alias.typeParameters,
           alias.target,
           alias.isDistinct,
-          newArgs
+          newArgs,
+          alias.isOpaque,
+          alias.declaringModule
         );
         inst
       } else {
@@ -915,7 +917,20 @@ export final class TypeAliasType(
   var typeParameters: Array<TypeParameterType> | null,
   var target: Type,
   isDistinct: boolean,
-  var typeArguments: Array<Type> | null
+  var typeArguments: Array<Type> | null,
+  /**
+   * True for `opaque type X = Y`. Always implies `isDistinct`, so the nominal
+   * behaviour (assignability, erasure, codegen) needs no extra cases — the
+   * only thing opacity adds is that casting *to* this alias is restricted to
+   * `declaringModule`. See docs/design/opaque-types.md.
+   */
+  isOpaque: boolean,
+  /**
+   * Canonical path of the module that declared this alias, in the same string
+   * space as `Symbol.modulePath` and `CheckerContext.filePath`. Empty for
+   * synthesized aliases (enum backing types) that are never opaque.
+   */
+  declaringModule: String
 ) extends Type {
   /**
    * Ephemeral flag used by the checker to detect generic type resolution cycles.
@@ -936,7 +951,9 @@ export let instantiateTypeAliasType = (
     source.typeParameters,
     source.target, // We substitute the target in the checker since it needs the map
     source.isDistinct,
-    typeArguments
+    typeArguments,
+    source.isOpaque,
+    source.declaringModule
   );
 };
 

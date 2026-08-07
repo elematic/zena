@@ -1,0 +1,31 @@
+// @mode: check
+// The other half of ./main.zena: everything an opaque type must still permit
+// outside its declaring file. This file declares no @error directive, so the
+// runner fails it on *any* diagnostic — which is exactly the regression guard
+// that a file mixing legal and illegal casts cannot provide.
+
+import { Token, Handle, mintToken, tokenValue, maybeHandle } from './lib.zena';
+
+// Obtaining one from the declaring file's own factory is how it is meant to work.
+let t: Token = mintToken(7);
+
+// Casting *out* is allowed — opacity restricts forging, not reading.
+let raw: i32 = t as i32;
+let viaFn: i32 = tokenValue(t);
+
+// A cast whose source is already the opaque type cannot forge anything.
+let same: Token = t as Token;
+
+// Narrowing a nullable opaque value must stay legal: it is ordinary code at
+// every call site, and the value it produces already existed.
+let unwrap = (h: Handle | null): Handle => h as Handle;
+let narrowed: Handle = unwrap(maybeHandle(true));
+
+// Narrowing by control flow, then casting, is the same story.
+let describe = (h: Handle | null): i32 => {
+  if (h != null) {
+    let inner: Handle = h as Handle;
+    return 1;
+  }
+  return 0;
+};

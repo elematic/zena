@@ -436,13 +436,22 @@ export final class Parser {
       return this.#parseEnumDeclaration(exported, startToken);
     }
     
-    // Type alias declarations: type X = Y; or distinct type X = Y;
+    // Type alias declarations: type X = Y; distinct type X = Y;
+    // or opaque type X = Y;
     if (this.#check(TokenType.Type)) {
-      return this.#parseTypeAliasDeclaration(exported, false, startToken);
+      return this.#parseTypeAliasDeclaration(exported, false, false, startToken);
     }
     if (this.#check(TokenType.Distinct)) {
       this.#advance(); // consume 'distinct'
-      return this.#parseTypeAliasDeclaration(exported, true, startToken);
+      return this.#parseTypeAliasDeclaration(exported, true, false, startToken);
+    }
+    // `opaque` is only a modifier directly before `type`; anywhere else it is
+    // an ordinary identifier (see #isIdentifier).
+    if (this.#check(TokenType.Opaque) && this.#peek2().kind == TokenType.Type) {
+      this.#advance(); // consume 'opaque'
+      // An opaque type is a distinct type with a cast restriction, so both
+      // flags are set — downstream passes only special-case the restriction.
+      return this.#parseTypeAliasDeclaration(exported, true, true, startToken);
     }
     
     // Symbol declarations
@@ -2539,6 +2548,7 @@ export final class Parser {
       || t == TokenType.Static
       || t == TokenType.Extension
       || t == TokenType.Distinct
+      || t == TokenType.Opaque
       || t == TokenType.Final
       || t == TokenType.Extends
       || t == TokenType.Implements
@@ -3562,7 +3572,7 @@ export final class Parser {
     return new SymbolDeclaration(name, exported, this.#makeLocation(startToken));
   }
   
-  #parseTypeAliasDeclaration(exported: boolean, isDistinct: boolean, startToken: Token): TypeAliasDeclaration {
+  #parseTypeAliasDeclaration(exported: boolean, isDistinct: boolean, isOpaque: boolean, startToken: Token): TypeAliasDeclaration {
     this.#consume(TokenType.Type, "Expected 'type' keyword");
     let name = this.#parseIdentifier();
     
@@ -3576,7 +3586,7 @@ export final class Parser {
     let typeAnnotation = this.#parseTypeAnnotation();
     this.#consume(TokenType.Semi, "Expected ';' after type alias declaration");
     
-    return new TypeAliasDeclaration(name, typeParameters, typeAnnotation, exported, isDistinct, this.#makeLocation(startToken));
+    return new TypeAliasDeclaration(name, typeParameters, typeAnnotation, exported, isDistinct, isOpaque, this.#makeLocation(startToken));
   }
 }
 
